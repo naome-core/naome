@@ -526,6 +526,13 @@ impl Client {
     }
 }
 
+pub(crate) fn declared_solver_support(
+    question: &naome_authoring::CompiledQuestion,
+    settings: RoleSettings,
+) -> bool {
+    settings.mock.outcome == MockOutcome::Success && crate::mocks::supports_question(question)
+}
+
 pub(crate) fn solver_identity(settings: RoleSettings) -> String {
     identity(&(provider::DEFAULT_PROVIDER, settings.mock, settings.recovery))
 }

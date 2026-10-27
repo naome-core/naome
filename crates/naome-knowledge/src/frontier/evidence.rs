@@ -39,10 +39,13 @@ pub(super) struct Record {
     last_units: u32,
 }
 impl Record {
-    pub(super) fn unsuccessful(&self) -> u64 {
-        self.outcomes[1..]
+    /// A returned candidate remains unverified until its exact checked solution
+    /// is durable. This is scheduling feedback, never a mathematical negative.
+    pub(super) fn unverified_attempts(&self) -> u64 {
+        self.outcomes
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
+            .saturating_sub(u64::from(self.verified.is_some()))
     }
     fn validate(&self, key: &str) -> Result<(), String> {
         let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;

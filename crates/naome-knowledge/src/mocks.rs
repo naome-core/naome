@@ -38,6 +38,19 @@ pub fn create_question(cursor: u64) -> String {
     catalog(cursor as usize % CATALOG_SIZE).0
 }
 
+/// Declared support of this installed provider, not demonstrated node ability.
+pub(crate) fn supports_question(question: &CompiledQuestion) -> bool {
+    static TARGETS: std::sync::OnceLock<[CompiledQuestion; CATALOG_SIZE]> =
+        std::sync::OnceLock::new();
+    TARGETS
+        .get_or_init(|| {
+            std::array::from_fn(|index| {
+                CompiledQuestion::compile(&catalog(index).0).expect("fixed provider capability")
+            })
+        })
+        .contains(question)
+}
+
 /// Unsupported questions have no candidate. This does not establish proof validity.
 pub fn create_proof(question: &CompiledQuestion) -> Option<String> {
     (0..CATALOG_SIZE).find_map(|index| {

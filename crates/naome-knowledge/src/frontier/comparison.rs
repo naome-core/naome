@@ -52,6 +52,42 @@ fn pool() -> Vec<CompiledQuestion> {
             }
         }
     }
+    let z = FreeVariable::new(2);
+    let close = |variables: &[FreeVariable], mut formula: Formula| {
+        for variable in variables.iter().rev() {
+            formula = Formula::for_all(*variable, formula);
+        }
+        CompiledQuestion::from_formula(formula).unwrap()
+    };
+    questions.extend([
+        close(&[x], Formula::member(x, x)),
+        close(&[x, y], Formula::member(x, y)),
+        close(
+            &[x, y],
+            Formula::implies(Formula::member(x, y), Formula::member(y, x)),
+        ),
+        close(
+            &[x, y],
+            Formula::implies(Formula::member(x, y), Formula::negate(Formula::equal(x, y))),
+        ),
+        close(
+            &[x, y, z],
+            Formula::implies(
+                Formula::conjunction(Formula::member(x, y), Formula::member(y, z)),
+                Formula::member(x, z),
+            ),
+        ),
+        close(&[x], Formula::exists(y, Formula::member(x, y))),
+        CompiledQuestion::from_formula(Formula::exists(
+            x,
+            Formula::for_all(y, Formula::member(y, x)),
+        ))
+        .unwrap(),
+        close(
+            &[x, y],
+            Formula::implies(Formula::equal(x, y), Formula::member(x, y)),
+        ),
+    ]);
     let mut seen = BTreeSet::new();
     questions.retain(|q| seen.insert(*q.resolution_id()));
     questions
@@ -195,7 +231,7 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
     metrics.actual_cpu_nanos = cpu_nanos().saturating_sub(start);
     metrics.wall_nanos = wall.elapsed().as_nanos() as u64;
     // The selector does not train or alter the provider. This is a separate
-    // held-out membership-predicate family, with the same fixed solving cap.
+    // held-out membership-predicate Separation family, with the same fixed solving cap.
     metrics.held_out_total = held_out.len();
     for target in held_out {
         if let Some(source) = crate::mocks::create_proof(&target) {
@@ -245,4 +281,26 @@ fn equal_cpu_budget_against_uniform_random() {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
     println!("FRONTIER_COMPARISON {}", report);
+}
+
+#[test]
+fn comparison_has_eligible_structural_breadth_and_disjoint_held_out_targets() {
+    let graph = Graph::default();
+    let mut questions =
+        crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
+    let pool = pool();
+    let families = pool
+        .iter()
+        .filter(|target| questions.assess(&graph, target).passed())
+        .map(|target| Features::of(target).family)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        families.len() >= 4,
+        "the experiment needs distinct eligible structures"
+    );
+    assert!(
+        held_out()
+            .iter()
+            .all(|a| pool.iter().all(|b| a.resolution_id() != b.resolution_id()))
+    );
 }

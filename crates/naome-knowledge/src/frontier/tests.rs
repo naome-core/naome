@@ -83,7 +83,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
         .attempted(&target, &graph, &result, Outcome::NoCandidate)
         .unwrap();
     let record = frontier.evidence.get(&target).unwrap().unwrap();
-    assert_eq!(record.unsuccessful(), 1);
+    assert_eq!(record.unverified_attempts(), 1);
     assert!(record.verified.is_none());
     assert!(
         frontier
@@ -107,6 +107,15 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     frontier
         .attempted(&target, &graph, &result, Outcome::Candidate)
         .unwrap();
+    assert_eq!(
+        frontier
+            .evidence
+            .get(&target)
+            .unwrap()
+            .unwrap()
+            .unverified_attempts(),
+        2
+    );
     frontier.rejected(&target, 2).unwrap();
     let result = completion(3, jobs::Output::NoCandidate, jobs::State::Expired);
     frontier

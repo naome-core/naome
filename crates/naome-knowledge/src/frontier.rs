@@ -113,8 +113,19 @@ impl Random {
     }
 }
 
+#[derive(Clone, Copy)]
+struct AttemptHint {
+    knowledge: [u8; 32],
+    last_draw: u64,
+    unverified_attempts: u64,
+    verified: bool,
+}
+
 pub(crate) struct Frontier {
     evidence: Evidence,
+    // Bounded scheduling hints. Durable writes evict the affected entry;
+    // selection still crosses the generation-checked checkpoint before work.
+    recent: VecDeque<([u8; 32], Option<AttemptHint>)>,
     random: Random,
     coverage: [u64; SIGNALS],
     building: [u64; SIGNALS],
@@ -138,6 +149,7 @@ impl Frontier {
         let random = Random::new(evidence.random());
         let mut local = Self {
             evidence,
+            recent: VecDeque::new(),
             random,
             coverage: [0; SIGNALS],
             building: [0; SIGNALS],
@@ -224,13 +236,13 @@ impl Frontier {
         while !self.proposals.is_empty()
             && (self.proposals.len() >= limit
                 || bytes(&self.proposals).saturating_add(question.source().len() * 8 + 256)
-                    > crate::resources::active_limits().question_cache_bytes / 2)
+                    > crate::resources::active_limits().question_cache_bytes / 4)
         {
             self.proposals.pop_front();
         }
         if limit > 0
             && question.source().len() * 8 + 256
-                <= crate::resources::active_limits().question_cache_bytes / 2
+                <= crate::resources::active_limits().question_cache_bytes / 4
         {
             self.proposals.push_back(question);
         }
@@ -390,8 +402,42 @@ impl Frontier {
         }
         candidates
     }
+    fn previous(
+        &mut self,
+        question: &CompiledQuestion,
+    ) -> Result<Option<AttemptHint>, crate::Error> {
+        if let Some((_, hint)) = self
+            .recent
+            .iter()
+            .find(|(id, _)| id == question.resolution_id())
+        {
+            return Ok(*hint);
+        }
+        let hint = self
+            .evidence
+            .get(question)?
+            .map(|record| {
+                Ok::<_, crate::Error>(AttemptHint {
+                    knowledge: crate::object::id_bytes(&record.knowledge)
+                        .map_err(crate::Error::storage)?,
+                    last_draw: record.last_draw,
+                    unverified_attempts: record.unverified_attempts(),
+                    verified: record.verified.is_some(),
+                })
+            })
+            .transpose()?;
+        let capacity = (crate::resources::active_limits().question_cache_bytes / 4048).min(128);
+        self.recent.push_back((*question.resolution_id(), hint));
+        while self.recent.len() > capacity {
+            self.recent.pop_front();
+        }
+        Ok(hint)
+    }
+    fn forget_hint(&mut self, question: &CompiledQuestion) {
+        self.recent.retain(|(id, _)| id != question.resolution_id());
+    }
     fn weight(
-        &self,
+        &mut self,
         question: &CompiledQuestion,
         graph: &Graph,
         settings: jobs::RoleSettings,
@@ -435,14 +481,19 @@ impl Frontier {
         if cost > u64::from(settings.limits.work_units) || millis > settings.limits.horizon_ms {
             weight /= 8;
         }
-        if let Some(record) = self.evidence.get(question)?
-            && record.knowledge == crate::hex(&graph.content_root())
-            && record.verified.is_none()
+        if let Some(record) = self.previous(question)?
+            && record.knowledge == graph.content_root()
+            && !record.verified
         {
-            let cooldown = 1u64 << record.unsuccessful().min(8);
+            let cooldown = 1u64 << record.unverified_attempts.min(8);
             if self.evidence.draws().saturating_sub(record.last_draw) < cooldown {
                 weight /= 16;
             }
+        }
+        // Declared provider support is availability metadata, kept separate
+        // from the independently checked observations in `successes`.
+        if jobs::declared_solver_support(question, settings) {
+            weight = weight.saturating_mul(8);
         }
         Ok(weight.max(1))
     }
@@ -504,7 +555,9 @@ impl Frontier {
         question: &CompiledQuestion,
         job: u64,
     ) -> Result<(), crate::Error> {
-        self.evidence.rejected(question, job)
+        self.evidence.rejected(question, job)?;
+        self.forget_hint(question);
+        Ok(())
     }
     pub(crate) fn attempted(
         &mut self,
@@ -514,7 +567,9 @@ impl Frontier {
         outcome: Outcome,
     ) -> Result<(), crate::Error> {
         self.evidence
-            .attempted(question, graph.content_root(), completion, outcome)
+            .attempted(question, graph.content_root(), completion, outcome)?;
+        self.forget_hint(question);
+        Ok(())
     }
     /// Only the locally accepted, freshly checked exact target enters ability
     /// evidence. Received proofs contribute coverage, never local solver skill.
@@ -531,6 +586,7 @@ impl Frontier {
         if let Some((units, millis)) = self.evidence.verified(question, job, root)? {
             self.demonstrated(&Features::of(question), units, millis);
         }
+        self.forget_hint(question);
         Ok(())
     }
 }
