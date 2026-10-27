@@ -973,7 +973,7 @@ fn validate_record(
         if r.provider != crate::learning::PROVIDER
             || !matches!(
                 r.input,
-                Input::Find { .. } | Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
+                Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
             )
         {
             return Err("native provider snapshot role differs".into());

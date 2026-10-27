@@ -16,8 +16,8 @@ async fn exchange(control: &Control, operation: Operation) -> Status {
 }
 
 #[tokio::test]
-async fn automatic_status_and_interest_preserve_identity_and_do_not_override_resource_policy() {
-    const TEST: &str = "runtime::tests::computation::automatic_status_and_interest_preserve_identity_and_do_not_override_resource_policy";
+async fn automatic_status_and_selection_preserve_identity_and_do_not_override_resource_policy() {
+    const TEST: &str = "runtime::tests::computation::automatic_status_and_selection_preserve_identity_and_do_not_override_resource_policy";
     if std::env::var_os("NAOME_AUTOMATIC_STATUS_TEST").is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
@@ -33,7 +33,6 @@ async fn automatic_status_and_interest_preserve_identity_and_do_not_override_res
         return;
     }
     let directory = Directory::new();
-    owner::update(&directory.0, "  logic\nλ  ").unwrap();
     let graph = Graph::open(&directory.0).unwrap();
     let control = Control::bind_test(&directory.0, graph.ownership()).unwrap();
     let endpoint = fs::read(directory.0.join("control.json")).unwrap();
@@ -64,12 +63,9 @@ async fn automatic_status_and_interest_preserve_identity_and_do_not_override_res
         Some("operating system power saving")
     );
     assert_eq!(status.accepted_artifacts, 3);
-    assert_eq!(status.interest, "  logic\nλ  ");
     drop(active);
     assert_eq!(
-        exchange(&control, Operation::Interest("new interest".into()))
-            .await
-            .computation,
+        exchange(&control, Operation::Status).await.computation,
         ComputationState::Paused
     );
     assert_eq!(
@@ -80,7 +76,7 @@ async fn automatic_status_and_interest_preserve_identity_and_do_not_override_res
 }
 
 #[tokio::test]
-async fn invalid_control_token_cannot_mutate_owner_interest() {
+async fn invalid_control_token_cannot_stop_the_node() {
     let directory = Directory::new();
     let graph = Graph::open(&directory.0).unwrap();
     let control = Control::bind_test(&directory.0, graph.ownership()).unwrap();
@@ -92,7 +88,7 @@ async fn invalid_control_token_cannot_mutate_owner_interest() {
             &Request {
                 version: 1,
                 token: "02".repeat(32),
-                operation: Operation::Interest("intruder".into()),
+                operation: Operation::Stop,
             },
         )
         .await
@@ -107,4 +103,5 @@ async fn invalid_control_token_cannot_mutate_owner_interest() {
     let (_, error) = tokio::join!(client, server);
     assert_eq!(error, "local control instance mismatch");
     assert_eq!(control.selection().unwrap(), before);
+    assert!(!control.stopping());
 }

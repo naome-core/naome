@@ -44,7 +44,7 @@ enum Phase {
 }
 
 /// Private grant binds a root, peer, derived source and selected original
-/// question to the complete local assessment, positive interest and lifetime.
+/// question to the complete local assessment, positive selection and lifetime.
 struct ApprovedRoot {
     description: Description,
     selection: Selection,
@@ -81,24 +81,10 @@ pub(crate) enum Progress {
 }
 
 impl Intake {
-    pub(crate) fn invalidate_interest(&mut self) {
+    pub(crate) fn invalidate_selection(&mut self) {
         self.declined.clear();
         self.managed_context = None;
-        self.programs.invalidate_interest();
-    }
-    pub(crate) fn selection_boundary_ready(&self) -> bool {
-        if self.programs.selection_boundary_ready() {
-            return true;
-        }
-        self.active
-            .as_ref()
-            .is_some_and(|root| root.closure.needed().next().is_none())
-            || self.waiting.iter().any(|w| match &w.phase {
-                managed::Phase::Initial | managed::Phase::Final { .. } => {
-                    w.selection.boundary_ready()
-                }
-                managed::Phase::Refresh { ready, .. } => *ready,
-            })
+        self.programs.invalidate_selection();
     }
     pub(crate) fn description_capacity(&self) -> usize {
         crate::resources::active_limits()

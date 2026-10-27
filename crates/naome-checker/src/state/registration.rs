@@ -86,15 +86,11 @@ pub(super) fn validate_definition(
     definition: &crate::CheckedDefinition,
 ) -> Result<(), ArtifactStateError> {
     let access = ArtifactStateError::Context;
-    if let Some(kind) = state
-        .definition_kind(definition.definition_id)
+    if let Some(existing) = state
+        .definition_certificate(definition.definition_id)
         .map_err(access)?
     {
-        let existing = state
-            .resolve_definition(definition.definition_id)
-            .map_err(|error| access(error.into()))?
-            .ok_or_else(|| access(ContextError::Corrupt))?;
-        return if kind == definition.certificate.kind()
+        return if existing.kind() == definition.certificate.kind()
             && existing.body() == definition.certificate.body()
         {
             Err(ArtifactStateError::DuplicateDefinition {

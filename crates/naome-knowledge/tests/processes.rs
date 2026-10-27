@@ -130,12 +130,6 @@ fn ordinary_long_jobs_preserve_responsive_peer_control_and_crash_budgets() {
     }
 }
 
-#[cfg(unix)]
-#[test]
-fn ordinary_owner_interest_is_exact_durable_and_serialized() {
-    run_autonomous("interest");
-}
-
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
 fn automatic_resource_pause_preserves_provider_budgets_and_control() {
@@ -220,7 +214,6 @@ fn run_autonomous(mode: &str) {
     let mut command = python_driver(&root, mode);
     command
         .arg(root.join(match mode {
-            "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",

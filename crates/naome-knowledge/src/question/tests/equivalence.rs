@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn running_node_rejects_certified_equivalence_before_interest_and_after_registry_recovery() {
+async fn running_node_rejects_certified_equivalence_before_selection_and_after_registry_recovery() {
     let directory = Directory::new();
     let baseline = question("goal=and(all(x,mem(x,x)),all(y,not(mem(y,y))))");
     let exchanged = question("goal=and(all(y,not(mem(y,y))),all(x,mem(x,x)))");
@@ -34,7 +34,10 @@ async fn running_node_rejects_certified_equivalence_before_interest_and_after_re
             Some(RejectionReason::ProvenEquivalent)
         );
         assert!(result.assessment.prefilter.equivalence.is_some());
-        assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
+        assert_eq!(
+            result.assessment.selection_result,
+            SelectionAssessment::NotRun
+        );
         assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
         assert_eq!(context(&handle).await, before);
         assert_eq!(calls.load(Ordering::SeqCst), 0);

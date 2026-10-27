@@ -72,7 +72,7 @@ impl Programs {
             self.active = None;
         }
     }
-    pub(super) fn invalidate_interest(&mut self) {
+    pub(super) fn invalidate_selection(&mut self) {
         self.declined.clear();
     }
     pub(super) fn queued(&self) -> usize {
@@ -86,11 +86,6 @@ impl Programs {
                 .queue
                 .iter()
                 .any(|offer| offer.metadata.manifest.artifact_id() == id)
-    }
-    pub(super) fn selection_boundary_ready(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|root| root.authority.boundary_ready())
     }
     fn busy(&self) -> bool {
         self.active.as_ref().is_some_and(|root| {
@@ -243,7 +238,7 @@ impl Programs {
                 let question = offer
                     .metadata
                     .question()?
-                    .ok_or("program has no supported interest question")?;
+                    .ok_or("program has no supported selection question")?;
                 Ok(Selection::new(id, question))
             })();
             match authority {
@@ -281,11 +276,28 @@ impl Programs {
             if !root.allowed {
                 return Ok(None);
             }
+            if root.closure.synchronize(graph)? && matches!(root.stage, Stage::Check(_)) {
+                // A partial check borrowed the former private predecessor.
+                // Replay its durable untrusted input against the rebuilt closure.
+                root.stage = Stage::Fetch;
+            }
             let snapshot = root.budget.refresh(graph.ownership().directory())?.clone();
-            let cache = root.closure.cache_share(snapshot.budget.cache_bytes)?;
+            let cache = root.closure.working_cache(snapshot.budget.cache_bytes)?;
             match &mut root.stage {
-                Stage::Check(check) => check.restrict_cache(cache)?,
-                Stage::Prepare(prepared) => prepared.restrict_cache(cache)?,
+                Stage::Check(check) => {
+                    if root.closure.ready() {
+                        check.restrict_cache(cache)?;
+                    } else {
+                        check.suspend_cache()?;
+                    }
+                }
+                Stage::Prepare(prepared) => {
+                    if root.closure.ready() {
+                        prepared.restrict_cache(cache)?;
+                    } else {
+                        prepared.suspend_cache()?;
+                    }
+                }
                 Stage::Start | Stage::Fetch => {}
             }
             if snapshot.budget.paused.is_some()

@@ -41,7 +41,7 @@ pub struct ResourceProfile {
     pub version: u8,
     /// Charged working memory for one process, including conservative overhead.
     pub memory_bytes: usize,
-    /// Physical provider slots: finding, solving, local interest, peer interest.
+    /// Physical provider slots: finding, solving, local selection, peer selection.
     pub workers: [usize; 4],
     pub tuning: Tuning,
 }
@@ -153,7 +153,7 @@ resource_policy! {
         capacity closure_objects: usize = 128;
         capacity closure_bytes: usize = 512 * 1024;
         capacity closure_steps: usize = 4096;
-        work interest_decisions: usize = 4;
+        work selection_decisions: usize = 4;
         work question_page: usize = 128;
         work question_commands: usize = 8;
         work finding_admissions: usize = 4;
@@ -185,7 +185,6 @@ resource_policy! {
         work checker_cache_bytes: usize = 2 * 1024 * 1024;
         work question_cache_bytes: usize = 256 * 1024;
         work checker_cache_entries: usize = 64;
-        capacity owner_text_bytes: usize = 1024;
         capacity request_burst: usize = 8;
         capacity wanted_attempts: usize = 16;
         capacity gossip_packet_bytes: usize = 1024;
@@ -242,7 +241,6 @@ resource_policy! {
         capacity supervisor_poll_interval, supervisor_poll_interval_ms = Duration::from_millis(50);
         capacity provider_drain_timeout, provider_drain_timeout_ms = Duration::from_secs(3);
         capacity provider_announce_interval, provider_announce_interval_ms = Duration::from_secs(10);
-        capacity profile_poll_interval, profile_poll_interval_ms = Duration::from_secs(1);
         work production_interval, production_interval_ms = Duration::from_secs(1);
         capacity gossip_heartbeat, gossip_heartbeat_ms = Duration::from_secs(1);
         capacity idle_connection_timeout, idle_connection_timeout_ms = Duration::from_secs(60);
@@ -262,7 +260,7 @@ resource_policy! {
         capacity mdns_ttl, mdns_ttl_ms = Duration::from_secs(20);
         capacity relay_circuit_duration, relay_circuit_duration_ms = Duration::from_secs(120);
         capacity root_timeout, root_timeout_ms = Duration::from_secs(60);
-        capacity interest_timeout, interest_timeout_ms = Duration::from_secs(30);
+        capacity selection_timeout, selection_timeout_ms = Duration::from_secs(30);
         capacity control_timeout, control_timeout_ms = Duration::from_secs(2);
         capacity control_request_timeout, control_request_timeout_ms = Duration::from_secs(1);
         capacity lifecycle_timeout, lifecycle_timeout_ms = Duration::from_secs(15);
@@ -427,20 +425,41 @@ static DISK_RESERVATIONS: std::sync::Mutex<std::collections::BTreeMap<u64, u128>
 #[derive(Debug)]
 pub(crate) struct DiskLease {
     volume: u64,
+    #[cfg(test)]
+    reservation: u64,
     bytes: u128,
 }
+fn disk_capacity(path: &std::path::Path) -> Result<(u64, u128), crate::Error> {
+    use std::os::unix::fs::MetadataExt;
+    let volume = std::fs::metadata(path).map_err(|e| e.to_string())?.dev();
+    let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
+    let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
+    #[cfg(test)]
+    let available = TEST_DISK
+        .with(|value| value.get())
+        .map_or(available, |(_, available)| available);
+    Ok((volume, available))
+}
 impl DiskLease {
-    pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
-        let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
-        let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
+    fn reservation_key(&self) -> u64 {
         #[cfg(test)]
-        let available = TEST_DISK
-            .with(|value| value.get())
-            .map_or(available, |(_, available)| available);
+        {
+            self.reservation
+        }
+        #[cfg(not(test))]
+        {
+            self.volume
+        }
+    }
+    pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
+        let (volume, available) = disk_capacity(path)?;
+        if volume != self.volume {
+            return Err("disk reservation filesystem changed".into());
+        }
         let held = *DISK_RESERVATIONS
             .lock()
             .map_err(|_| "disk reservation lock poisoned")?
-            .get(&self.volume)
+            .get(&self.reservation_key())
             .unwrap_or(&0);
         let required = u128::from(limits().disk_reserve_bytes) + held;
         if available < required {
@@ -452,20 +471,39 @@ impl DiskLease {
         Ok(())
     }
     pub(crate) fn acquire(path: &std::path::Path, additional: u64) -> Result<Self, crate::Error> {
-        use std::os::unix::fs::MetadataExt;
-        let volume = std::fs::metadata(path).map_err(|e| e.to_string())?.dev();
-        let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
-        let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
-        #[cfg(test)]
-        let (volume, available) = TEST_DISK
-            .with(|value| value.get())
-            .unwrap_or((volume, available));
+        let (volume, available) = disk_capacity(path)?;
+        let mut lease = Self {
+            volume,
+            bytes: 0,
+            #[cfg(test)]
+            reservation: TEST_DISK
+                .with(|value| value.get())
+                .map_or(volume, |(reservation, _)| reservation),
+        };
+        lease.grow(available, additional)?;
+        Ok(lease)
+    }
+    /// Extend this custody atomically. Failure preserves its previous reservation.
+    pub(crate) fn grow_to(
+        &mut self,
+        path: &std::path::Path,
+        total: u64,
+    ) -> Result<(), crate::Error> {
+        let (volume, available) = disk_capacity(path)?;
+        if volume != self.volume {
+            return Err("disk reservation filesystem changed".into());
+        }
+        self.grow(available, total)
+    }
+    fn grow(&mut self, available: u128, total: u64) -> Result<(), crate::Error> {
         let mut reservations = DISK_RESERVATIONS
             .lock()
             .map_err(|_| "disk reservation lock poisoned")?;
-        let held = reservations.entry(volume).or_default();
+        let held = reservations.entry(self.reservation_key()).or_default();
+        let bytes = self.bytes.max(u128::from(total));
         let next = held
-            .checked_add(u128::from(additional))
+            .checked_sub(self.bytes)
+            .and_then(|other| other.checked_add(bytes))
             .ok_or("disk reservation overflow")?;
         let required = u128::from(limits().disk_reserve_bytes) + next;
         if available < required {
@@ -475,19 +513,18 @@ impl DiskLease {
             });
         }
         *held = next;
-        Ok(Self {
-            volume,
-            bytes: u128::from(additional),
-        })
+        self.bytes = bytes;
+        Ok(())
     }
 }
 impl Drop for DiskLease {
     fn drop(&mut self) {
         let mut reservations = DISK_RESERVATIONS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(held) = reservations.get_mut(&self.volume) {
+        let key = self.reservation_key();
+        if let Some(held) = reservations.get_mut(&key) {
             *held -= self.bytes;
             if *held == 0 {
-                reservations.remove(&self.volume);
+                reservations.remove(&key);
             }
         }
     }
@@ -573,7 +610,7 @@ impl Limits {
             self.queued_metadata,
             self.closure_objects,
             self.closure_steps,
-            self.interest_decisions,
+            self.selection_decisions,
             self.finding_admissions,
             self.solving_jobs,
             self.publications,
@@ -593,7 +630,6 @@ impl Limits {
             self.dht_packet_bytes,
             self.failure_detail_bytes,
             self.producer_bytes,
-            self.owner_text_bytes,
             self.command_bytes,
             self.identify_protocol_bytes,
             self.gossip_packet_bytes,
@@ -626,7 +662,6 @@ impl Limits {
             || self.dht_bucket_size > self.contacts
             || self.relay_reservations_per_peer > self.relay_reservations
             || self.producer_bytes > self.memory_bytes / 8
-            || self.owner_text_bytes > self.memory_bytes / 16
             || self.gossip_packet_bytes > self.memory_bytes / 16
             || self.exchange_streams > self.inbound_streams
             || self.compaction_bytes < naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
@@ -718,7 +753,7 @@ impl Limits {
                 .closure_bytes
                 .checked_mul(8)
                 .is_none_or(|n| n > crate::checkpoint::MAX_ROW)
-            || self.command_bytes < 6 * self.owner_text_bytes + 512
+            || self.command_bytes < 4096
         {
             return Err("inconsistent resource limits or unsupported canonical proof size".into());
         }

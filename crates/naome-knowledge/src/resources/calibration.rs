@@ -118,7 +118,7 @@ fn capacity_with_descriptors(
         relay_circuits_per_peer: Some(DEFAULT.relay_circuits_per_peer),
         transport_events: Some(pages),
         queued_metadata: Some(cores),
-        interest_decisions: Some(cores),
+        selection_decisions: Some(cores),
         question_commands: Some(cores),
         finding_admissions: Some(cores),
         job_commands: Some(pages),

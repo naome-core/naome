@@ -4,6 +4,7 @@ use naome_foundation::ZfcAxiom;
 use naome_proof::{ProofCertificate, program::Command};
 use rusqlite::Connection;
 use std::{collections::BTreeMap, sync::Mutex};
+mod definitions;
 
 #[derive(Default)]
 pub(super) struct MemoryStorage {

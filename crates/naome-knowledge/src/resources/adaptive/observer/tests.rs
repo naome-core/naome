@@ -19,7 +19,7 @@ impl Observer {
     pub(crate) fn fixed_for_test(snapshot: Snapshot) -> Self {
         Self {
             snapshot: Some(snapshot),
-            next: Instant::now() + super::super::super::limits().profile_poll_interval,
+            next: Instant::now() + Duration::from_secs(1),
             governor: Governor::default(),
         }
     }

@@ -1,5 +1,5 @@
-//! Operator presentation; runtime state and persisted owner text stay unchanged.
-use super::{Status, owner};
+//! Operator presentation for lifecycle and passive checked-knowledge status.
+use super::Status;
 use std::{
     ffi::OsString,
     fmt::Write as _,
@@ -13,8 +13,7 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
         }
         [option] if option == "--help" || option == "-h" => Some(
             "NAOME checked-knowledge node\n\n\
-             Usage:\n  naome start\n  naome stop\n  naome status\n  \
-             naome interest <text>\n  naome --help\n  naome --version\n\n\
+             Usage:\n  naome start\n  naome stop\n  naome status\n  naome --help\n  naome --version\n\n\
              Place --json before a command for machine output.\n\
              \nData and configuration:\n\
              NAOME_NODE_DIR selects an isolated node directory. The default is\n\
@@ -27,18 +26,15 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              admitted work drains without new time or work allowances. Bounded\n\
              discovery, checked-artifact serving and lifecycle control remain active.\n\
              No unchecked artifact is admitted. Network allocations retain memory limits.\n\
+             \nResearch:\n\
+             Questions follow gaps in checked local knowledge, with randomized\n\
+             exploration within the automatic computation budgets.\n\
              \nNative proof learning (opt-in):\n\
              Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
-             Use naome interest \"formal: goal = ...\" to select a native formal goal.\n\
-             Goal-derived Separation proposals and checked intermediate lemmas\n\
-             support bounded ZFC set constructions without supplied proof scripts.\n\
-             A fresh 1,003,681-parameter CPU graph model learns from accepted local proofs.\n\
-             Locally checked peer proofs can supply supported reconstructed traces.\n\
-             Training uses fixed question-only curricula and excludes reserved groups.\n\
-             Repeated structure can create checked relation definitions.\n\
-             Checked definitions supply meaning and stable references for later proofs.\n\
-             Model, optimizer and replay stay local; only checked mathematics is gossiped.\n\
-             Candidate promotion is bounded; continued improvement is not established.\n\
+             An optional formal_goal string in config.json selects a native question.\n\
+             Checked lemmas and meanings support bounded ZFC construction and reuse.\n\
+             A fresh 1,004,001-parameter CPU graph policy learns from admitted traces.\n\
+             Model, optimizer and replay remain local. Only checked mathematics is shared.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\
              mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\
@@ -55,14 +51,13 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
 
 pub(super) struct Arguments<'a> {
     pub command: &'a str,
-    pub text: Option<&'a str>,
     pub json: bool,
     pub startup_handoff: bool,
 }
 
 impl<'a> Arguments<'a> {
     pub fn parse(arguments: &'a [OsString]) -> Result<Self, String> {
-        // Only a leading option selects output, so `interest --json` is text.
+        // Only a leading option selects machine output.
         let (json, arguments) = match arguments.split_first() {
             Some((option, rest)) if option == "--json" => (true, rest),
             _ => (false, arguments),
@@ -71,23 +66,17 @@ impl<'a> Arguments<'a> {
             Some((option, rest)) if json && option == "--startup-handoff" => (true, rest),
             _ => (false, arguments),
         };
-        let (command, text) = match arguments {
+        let command = match arguments {
             [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
-                (command.to_str().expect("matched UTF-8 command"), None)
+                command.to_str().expect("matched UTF-8 command")
             }
-            [command, text] if command == "interest" => {
-                let text = text.to_str().ok_or("interest must be valid UTF-8")?;
-                owner::validate(text)?;
-                ("interest", Some(text))
-            }
-            _ => return Err("usage: naome [--json] start | stop | status | interest <text>\nplace --json before the command for machine output".into()),
+            _ => return Err("usage: naome [--json] start | stop | status\nplace --json before the command for machine output".into()),
         };
         if startup_handoff && command != "start" {
             return Err("startup handoff is only valid for --json start".into());
         }
         Ok(Self {
             command,
-            text,
             json,
             startup_handoff,
         })
@@ -120,7 +109,6 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     let action = match command {
         "start" => format!("{green}✓{reset} Start complete"),
         "stop" => format!("{green}✓{reset} Stop complete"),
-        "interest" => format!("{green}✓{reset} Interest saved"),
         _ => "Node status".into(),
     };
     let state = if status.running {
@@ -180,26 +168,6 @@ fn human(command: &str, status: &Status, color: bool) -> String {
             writeln!(output, "    {advice}").expect("String write");
         }
         output.push_str("    Computation resumes automatically after stable recovery.\n");
-    }
-    output.push_str("\n  Interest\n");
-    if status.interest.is_empty() {
-        output.push_str("    (none)\n");
-    } else {
-        for line in status.interest.split('\n') {
-            output.push_str("    │ ");
-            for character in line.chars() {
-                // Escape C0/C1, carriage returns, terminal sequences and Unicode
-                // direction/line controls. Newlines get owned, indented rows.
-                if character.is_control()
-                    || matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-                {
-                    write!(output, "{}", character.escape_default()).expect("String write");
-                } else {
-                    output.push(character);
-                }
-            }
-            output.push('\n');
-        }
     }
     output.push('\n');
     output

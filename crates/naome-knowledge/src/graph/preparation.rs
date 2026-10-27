@@ -46,12 +46,12 @@ impl Stamp {
 
 pub(super) struct Preparation {
     batch: CheckedBatch,
-    ids: BTreeSet<ArtifactId>,
 }
 pub(super) struct ArtifactRegistration {
     checked: CheckedArtifact,
     record: crate::object::BinaryArtifact,
     context_bytes: usize,
+    payload_bytes: usize,
 }
 impl Preparation {
     pub(super) fn new(
@@ -66,13 +66,7 @@ impl Preparation {
         if let Some(prefix) = &prefix {
             prefix.stamp.check(graph)?;
         }
-        let prior_bytes = prefix.as_ref().map_or(0, |prefix| {
-            prefix
-                .entries
-                .iter()
-                .map(|(_, record)| record.bytes.len())
-                .sum::<usize>()
-        });
+        let prior_bytes = prefix.as_ref().map_or(0, |prefix| prefix.payload_bytes);
         let count = count
             .checked_add(prefix.as_ref().map_or(0, |prefix| prefix.entries.len()))
             .ok_or("checked batch count overflow")?;
@@ -81,62 +75,49 @@ impl Preparation {
                 "checked closure operation capacity",
             ));
         }
-        let disk = graph.reserve_publication(
-            bytes
-                .checked_add(prior_bytes)
-                .ok_or("checked batch byte overflow")?,
-            count,
-        )?;
-        Ok(Self::reserved(graph, prefix, stamp, disk))
-    }
-    pub(super) fn reserved(
-        graph: &Graph,
-        prefix: Option<CheckedBatch>,
-        stamp: Stamp,
-        disk: crate::resources::DiskLease,
-    ) -> Self {
-        let (context, context_bytes, entries, edges) = prefix.map_or_else(
-            || {
-                (
-                    graph.context.clone(),
-                    graph.context_bytes,
-                    Vec::new(),
-                    BTreeMap::new(),
-                )
-            },
-            |prefix| {
-                (
-                    prefix.context,
-                    prefix.context_bytes,
-                    prefix.entries,
-                    prefix.edges,
-                )
-            },
-        );
-        let ids = entries.iter().map(|(id, _)| *id).collect();
-        Self {
-            ids,
-            batch: CheckedBatch {
-                context,
-                entries,
-                edges,
+        let bytes = bytes
+            .checked_add(prior_bytes)
+            .ok_or("checked batch byte overflow")?;
+        match prefix {
+            Some(mut batch) => {
+                batch._disk.grow_to(
+                    graph.store.directory(),
+                    Graph::publication_reservation(bytes, count)?,
+                )?;
+                Ok(Self::from_batch(batch))
+            }
+            None => Ok(Self::reserved(
+                graph,
                 stamp,
-                context_bytes,
-                _disk: disk,
-            },
+                graph.reserve_publication(bytes, count)?,
+            )),
         }
+    }
+    pub(super) fn reserved(graph: &Graph, stamp: Stamp, disk: crate::resources::DiskLease) -> Self {
+        Self::from_batch(CheckedBatch {
+            context: graph.context.clone(),
+            entries: Vec::new(),
+            edges: BTreeMap::new(),
+            stamp,
+            context_bytes: graph.context_bytes,
+            _disk: disk,
+            payload_bytes: 0,
+        })
+    }
+    fn from_batch(batch: CheckedBatch) -> Self {
+        Self { batch }
     }
     pub(super) fn context(&self) -> &DiskArtifactState {
         &self.batch.context
     }
-    pub(super) fn ids(&self) -> impl Iterator<Item = ArtifactId> + '_ {
-        self.ids.iter().copied()
+    pub(super) fn contains(&self, id: ArtifactId) -> bool {
+        self.batch.edges.contains_key(&id)
     }
     pub(super) fn stamp(&self) -> &Stamp {
         &self.batch.stamp
     }
     fn require_absent(&self, graph: &Graph, id: ArtifactId) -> Result<(), crate::Error> {
-        if graph.contains(id)? || self.ids.contains(&id) {
+        if graph.contains(id)? || self.batch.edges.contains_key(&id) {
             return Err("duplicate staged object".into());
         }
         Ok(())
@@ -168,6 +149,11 @@ impl Preparation {
             .checked_add(growth)
             .ok_or("checked context capacity")?;
         Ok(ArtifactRegistration {
+            payload_bytes: self
+                .batch
+                .payload_bytes
+                .checked_add(record.bytes.len())
+                .ok_or("checked batch byte overflow")?,
             checked,
             record,
             context_bytes,
@@ -182,10 +168,11 @@ impl Preparation {
             checked,
             record,
             context_bytes,
+            payload_bytes,
         } = registration;
         graph.cold(checked.register(&mut self.batch.context))?;
         self.batch.context_bytes = context_bytes;
-        self.ids.insert(record.id);
+        self.batch.payload_bytes = payload_bytes;
         self.batch
             .edges
             .insert(record.id, record.dependencies.clone());
@@ -208,8 +195,12 @@ impl Preparation {
             .checked_add(growth)
             .ok_or("checked program context width")?;
         self.batch.context = context;
+        self.batch.payload_bytes = self
+            .batch
+            .payload_bytes
+            .checked_add(record.bytes.len())
+            .ok_or("checked batch byte overflow")?;
         self.batch.edges.insert(record.id, dependencies);
-        self.ids.insert(record.id);
         self.batch.entries.push((record.id, record));
         Ok(())
     }

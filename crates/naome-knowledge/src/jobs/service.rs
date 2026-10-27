@@ -933,23 +933,26 @@ impl Owner {
             reject(reply, binding, &error.to_string());
             return Ok(());
         }
-        let native =
-            if self.settings.native_proof_learning && !matches!(input, Input::Interest { .. }) {
-                let mut job = self
-                    .journal
-                    .learning
-                    .as_ref()
-                    .expect("configured native learning state")
-                    .job();
-                job.training = matches!(input, Input::Train { .. });
-                if job.training {
-                    job.evidence = self.disk.replay_evidence(&job.base)?;
-                }
-                job.validate()?;
-                Some(Box::new(job))
-            } else {
-                None
-            };
+        let native = if self.settings.native_proof_learning
+            && matches!(
+                input,
+                Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
+            ) {
+            let mut job = self
+                .journal
+                .learning
+                .as_ref()
+                .expect("configured native learning state")
+                .job();
+            job.training = matches!(input, Input::Train { .. });
+            if job.training {
+                job.evidence = self.disk.replay_evidence(&job.base)?;
+            }
+            job.validate()?;
+            Some(Box::new(job))
+        } else {
+            None
+        };
         self.compact();
         let input_bytes = serde_json::to_vec(&(&input, &binding, settings, &native))
             .map_err(|e| e.to_string())?
@@ -1041,7 +1044,7 @@ impl Owner {
                 input: input.clone(),
                 binding: binding.clone(),
                 provider: if self.settings.native_proof_learning
-                    && !matches!(input, Input::Interest { .. })
+                    && !matches!(input, Input::Select { .. })
                 {
                     crate::learning::PROVIDER
                 } else {
@@ -1523,7 +1526,7 @@ fn output_reservation(input: &Input) -> usize {
             6 * crate::resources::limits().closure_bytes + 1024
         }
         Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
-        Input::Interest { .. } => 64,
+        Input::Select { .. } => 64,
     }
 }
 fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {

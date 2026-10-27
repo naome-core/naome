@@ -7,8 +7,8 @@ use crate::ArtifactState;
 mod program;
 use naome_foundation::Formula;
 use naome_proof::{
-    ArtifactId, DefinitionId, DefinitionKind, DefinitionResolver, DerivationId, ProofId,
-    StatementId,
+    ArtifactId, DefinitionCertificate, DefinitionId, DefinitionKind, DefinitionResolver,
+    DerivationId, ProofId, StatementId,
 };
 pub use program::ProgramSource;
 pub(crate) use program::{ProgramNodes, ProgramRepresentation};
@@ -184,7 +184,15 @@ pub trait ContextView: sealed::Sealed + DefinitionResolver {
         kind: BucketKind,
         target: StatementId,
     ) -> Result<StatementCursor<'_>, ContextError>;
-    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError>;
+    /// Returns one exact authenticated certificate; expansion views grant no identity.
+    fn definition_certificate(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<Cow<'_, DefinitionCertificate>>, ContextError>;
+    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError> {
+        self.definition_certificate(id)
+            .map(|definition| definition.map(|definition| definition.kind()))
+    }
 }
 
 impl sealed::Sealed for ArtifactState {}
@@ -231,8 +239,11 @@ impl ContextView for ArtifactState {
             BucketKind::Instances => Box::new(self.question_index.instances(target).map(Ok)),
         })
     }
-    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError> {
-        Ok(ArtifactState::definition_kind(self, id))
+    fn definition_certificate(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<Cow<'_, DefinitionCertificate>>, ContextError> {
+        Ok(ArtifactState::definition_certificate(self, id).map(Cow::Borrowed))
     }
 }
 

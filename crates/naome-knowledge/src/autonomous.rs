@@ -66,6 +66,7 @@ struct Admission {
     reply: oneshot::Receiver<question::QuestionAdmission>,
 }
 struct Solving {
+    completion: Option<jobs::Completion>,
     question: CompiledQuestion,
     ticket: jobs::Ticket,
     seen: question::Revision,
@@ -108,6 +109,12 @@ struct Publication {
     eligible: bool,
 }
 
+struct EvidencePublication {
+    question: CompiledQuestion,
+    job: u64,
+    root: ArtifactId,
+}
+
 struct RecoveryRetry {
     seen: question::Revision,
     retry: Instant,
@@ -117,7 +124,7 @@ pub(crate) struct Autonomous {
     intervals: Intervals,
     client: jobs::Client,
     cursor: u64,
-    formal_goal: Option<String>,
+    formal_goal: Option<CompiledQuestion>,
     next_question: Instant,
     next_proof: Instant,
     unanswered: VecDeque<CompiledQuestion>,
@@ -137,6 +144,8 @@ pub(crate) struct Autonomous {
     publications: VecDeque<Publication>,
     error: Option<String>,
     pending_receipt: Option<jobs::Receipt>,
+    frontier: Option<crate::frontier::Frontier>,
+    evidence_publications: VecDeque<EvidencePublication>,
 }
 
 impl Autonomous {
@@ -178,7 +187,24 @@ impl Autonomous {
             publications: VecDeque::new(),
             error: None,
             pending_receipt: None,
+            frontier: None,
+            evidence_publications: VecDeque::new(),
         }
+    }
+
+    pub(crate) fn attach_frontier(
+        &mut self,
+        directory: &std::path::Path,
+        graph: &Graph,
+        seed: u64,
+    ) -> Result<(), String> {
+        self.frontier = Some(crate::frontier::Frontier::open(
+            directory,
+            graph,
+            seed,
+            self.intervals.jobs.solving,
+        )?);
+        Ok(())
     }
 
     pub(crate) fn program_busy(&self) -> bool {
@@ -192,17 +218,9 @@ impl Autonomous {
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
-    /// The ordinary interest owner may select a formal question. Its eventual
-    /// admission and proof publication retain the same checked owner paths.
-    pub(crate) fn formal_goal(&mut self, source: Option<String>) {
-        if self.intervals.jobs.native_proof_learning {
-            self.formal_goal = source;
-        }
-    }
-    pub(crate) fn selection_boundary_ready(&self) -> bool {
-        self.publications
-            .iter()
-            .any(|p| p.reply.as_ref().is_some_and(|reply| !reply.is_empty()))
+    /// A canonical question fixed by the stopped node's start configuration.
+    pub(crate) fn formal_goal(&mut self, source: Option<CompiledQuestion>) {
+        self.formal_goal = source;
     }
 
     fn receipt(&mut self, receipt: jobs::Receipt) -> bool {
@@ -224,6 +242,7 @@ impl Autonomous {
     }
     fn accepted_learning(&mut self, job: u64, root: ArtifactId) -> bool {
         job == 0
+            || !self.intervals.jobs.native_proof_learning
             || self.receipt(jobs::Receipt::Accepted {
                 id: job,
                 root: crate::hex(root.as_bytes()),
@@ -301,6 +320,35 @@ impl Autonomous {
             return accepted;
         }
         let now = Instant::now();
+        while let Some(publication) = self.evidence_publications.pop_front() {
+            let result = self
+                .frontier
+                .as_mut()
+                .expect("research evidence owner")
+                .verified(
+                    &publication.question,
+                    graph,
+                    publication.job,
+                    publication.root,
+                );
+            match result {
+                Ok(()) => {
+                    if !self.accepted_learning(publication.job, publication.root)
+                        || !self.acknowledge(publication.job)
+                    {
+                        return accepted;
+                    }
+                }
+                Err(error) if !error.fatal() => {
+                    self.evidence_publications.push_front(publication);
+                    return vec![];
+                }
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    return vec![];
+                }
+            }
+        }
         let revision = questions.revision(graph);
         if self.recovered_finding.is_empty()
             && self.recovered_other.is_empty()
@@ -342,13 +390,15 @@ impl Autonomous {
             }
         }
         // Reconcile at most one retained non-finding record per driver turn.
-        // Interest is reacquired from current metadata/owner policy; solve
+        // Selection is reacquired from current metadata/owner policy; solve
         // outputs remain untrusted and are resumed only for current obligations.
         if let Some(record) = self.recovered_other.pop_front() {
             if let jobs::Input::Solve { question: source } = &record.input {
                 if record.state != jobs::State::InDoubt
                     && (self.solving.len() >= crate::resources::active_limits().solving_jobs
-                        || self.publications.len() + self.solving.len()
+                        || self.publications.len()
+                            + self.solving.len()
+                            + self.evidence_publications.len()
                             >= crate::resources::active_limits().publications)
                 {
                     self.recovered_other.push_back(record);
@@ -370,7 +420,9 @@ impl Autonomous {
                     }
                     let fresh = questions.generation_decision(graph, &question);
                     if fresh.passed()
-                        && self.publications.len() + self.solving.len()
+                        && self.publications.len()
+                            + self.solving.len()
+                            + self.evidence_publications.len()
                             < crate::resources::active_limits().publications
                     {
                         match self
@@ -383,6 +435,7 @@ impl Autonomous {
                                 self.solving.insert(
                                     *question.resolution_id(),
                                     Solving {
+                                        completion: None,
                                         question,
                                         ticket,
                                         seen: questions.revision(graph),
@@ -425,7 +478,7 @@ impl Autonomous {
                         "formal_outcome":result.assessment.prefilter.outcome.code(),
                         "formal_reason":result.assessment.prefilter.reason.map(|reason| reason.code()),
                         "formal_rule":result.assessment.prefilter.rule,
-                        "interest":format!("{:?}",result.assessment.interest)}),
+                        "selection":format!("{:?}",result.assessment.selection_result)}),
                     );
                     let admitted =
                         matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
@@ -448,7 +501,7 @@ impl Autonomous {
 
         if let Some(mut finding) = self.finding.take() {
             match finding.ticket.try_recv() {
-                Ok(completion) => match completion.result {
+                Ok(completion) => match completion.result.clone() {
                     Ok(jobs::Output::Question(source)) => {
                         match CompiledQuestion::compile(&source) {
                             Ok(question) => {
@@ -502,7 +555,43 @@ impl Autonomous {
                     continue;
                 }
             }
-            match solving.ticket.try_recv() {
+            let completion = solving
+                .completion
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| solving.ticket.try_recv());
+            if let (Some(frontier), Ok(observed)) = (&mut self.frontier, &completion) {
+                use crate::frontier::evidence::Outcome;
+                let outcome = match (observed.state, &observed.result) {
+                    (jobs::State::Expired, _) => Outcome::Expired,
+                    (jobs::State::InDoubt, _) => Outcome::InDoubt,
+                    (_, Ok(jobs::Output::Proof { .. } | jobs::Output::Program { .. })) => {
+                        Outcome::Candidate
+                    }
+                    (
+                        _,
+                        Ok(jobs::Output::Native {
+                            solution: Some(_), ..
+                        }),
+                    ) => Outcome::Candidate,
+                    (
+                        _,
+                        Ok(jobs::Output::NoCandidate | jobs::Output::Native { solution: None, .. }),
+                    ) => Outcome::NoCandidate,
+                    _ => Outcome::Failed,
+                };
+                if let Err(error) = frontier.attempted(&solving.question, graph, observed, outcome)
+                {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    } else {
+                        solving.completion = completion.ok();
+                        self.solving.insert(id, solving);
+                    }
+                    return accepted;
+                }
+            }
+            match completion {
                 Ok(completion)
                     if matches!(
                         completion.state,
@@ -518,7 +607,7 @@ impl Autonomous {
                         return accepted;
                     }
                 }
-                Ok(completion) => match completion.result.map(jobs::Output::candidate) {
+                Ok(completion) => match completion.result.clone().map(jobs::Output::candidate) {
                     Ok(jobs::Output::Proof { source, helpers }) => {
                         match graph.prepare_generated(&source, &helpers, &solving.question) {
                             Ok((root, batch)) => {
@@ -534,7 +623,7 @@ impl Autonomous {
                                     retry: now,
                                     expires: now
                                         + Duration::from_millis(
-                                            self.intervals.jobs.interest.limits.horizon_ms,
+                                            self.intervals.jobs.selection.limits.horizon_ms,
                                         ),
                                     seen: None,
                                     eligible: false,
@@ -542,6 +631,21 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 emit(json!({"event":"proof_candidate_rejected","error":error}));
+                                if let Some(frontier) = &mut self.frontier
+                                    && let Err(error) =
+                                        frontier.rejected(&solving.question, completion.id)
+                                {
+                                    if error.fatal() {
+                                        self.error = Some(error.to_string());
+                                    } else {
+                                        solving.completion = Some(completion);
+                                        self.solving.insert(id, solving);
+                                    }
+                                    return accepted;
+                                }
+                                if !self.acknowledge(completion.id) {
+                                    return accepted;
+                                }
                                 self.retain(solving.question);
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
@@ -565,7 +669,7 @@ impl Autonomous {
                             retry: now,
                             expires: now
                                 + Duration::from_millis(
-                                    self.intervals.jobs.interest.limits.horizon_ms,
+                                    self.intervals.jobs.selection.limits.horizon_ms,
                                 ),
                             seen: None,
                             eligible: false,
@@ -619,8 +723,8 @@ impl Autonomous {
                 }
 
                 if !pending.announced {
-                    pending.expires =
-                        now + Duration::from_millis(self.intervals.jobs.interest.limits.horizon_ms);
+                    pending.expires = now
+                        + Duration::from_millis(self.intervals.jobs.selection.limits.horizon_ms);
                 }
                 let decision = questions.generation_decision(graph, &pending.question);
                 if decision.inconclusive() {
@@ -664,6 +768,16 @@ impl Autonomous {
             if let Some((root, _)) = &pending.batch
                 && !pending.announced
             {
+                if let Some(frontier) = &mut self.frontier
+                    && let Err(error) = frontier.prepared(&pending.question, pending.job, *root)
+                {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    } else {
+                        self.publications.push_back(pending);
+                    }
+                    return accepted;
+                }
                 emit(
                     json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(pending.question.resolution_id()),"job":pending.job}),
                 );
@@ -740,6 +854,8 @@ impl Autonomous {
                 match current {
                     Ok(Some(true)) => {
                         let learning_root = pending.batch.as_ref().map(|(root, _)| *root);
+                        let evidence_root =
+                            pending.batch.as_ref().expect("current checked candidate").0;
                         let outcome = (|| -> Result<Vec<ArtifactId>, crate::Error> {
                             let delta = questions.prepare_exchange(
                                 graph,
@@ -759,6 +875,26 @@ impl Autonomous {
                         })();
                         match outcome {
                             Ok(ids) => {
+                                if let Some(frontier) = &mut self.frontier
+                                    && let Err(error) = frontier.verified(
+                                        &pending.question,
+                                        graph,
+                                        pending.job,
+                                        evidence_root,
+                                    )
+                                {
+                                    if error.fatal() {
+                                        self.error = Some(error.to_string());
+                                        return accepted;
+                                    }
+                                    self.evidence_publications.push_back(EvidencePublication {
+                                        question: pending.question.clone(),
+                                        job: pending.job,
+                                        root: evidence_root,
+                                    });
+                                    accepted.extend(ids);
+                                    continue;
+                                }
                                 accepted.extend(ids);
                                 if let Some(root) = learning_root
                                     && !self.accepted_learning(pending.job, root)
@@ -788,7 +924,7 @@ impl Autonomous {
                     }
                     Ok(_) => {
                         // Rebuild the mathematical delta against current roots;
-                        // unrelated graph growth cannot spend another interest job.
+                        // unrelated graph growth cannot spend another selection job.
                         pending.batch = None;
                         pending.retry = now;
                     }
@@ -817,7 +953,7 @@ impl Autonomous {
                 let (selected, reply) = questions.begin_exchange(
                     graph,
                     pending.question.clone(),
-                    now + Duration::from_millis(self.intervals.jobs.interest.limits.horizon_ms),
+                    now + Duration::from_millis(self.intervals.jobs.selection.limits.horizon_ms),
                 );
                 if selected != pending.question {
                     if !self.acknowledge(pending.job) {
@@ -846,11 +982,42 @@ impl Autonomous {
 
         if now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
-            && self.publications.len() + self.solving.len()
+            && self.publications.len() + self.solving.len() + self.evidence_publications.len()
                 < crate::resources::active_limits().publications
         {
             self.next_proof = now + Duration::from_millis(self.intervals.solving_ms());
-            if let Some(question) = self.unanswered.pop_front() {
+            let selected = if let Some(frontier) = &mut self.frontier {
+                self.unanswered.retain(|question| {
+                    if questions.generation_decision(graph, question).has_answer() {
+                        questions.settle_backlog(question.resolution_id());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                let eligible = self
+                    .unanswered
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, question)| questions.generation_decision(graph, question).passed())
+                    .collect::<Vec<_>>();
+                let candidates = eligible
+                    .iter()
+                    .map(|(_, question)| *question)
+                    .collect::<Vec<_>>();
+                match frontier.choose(&candidates, graph, self.intervals.jobs.solving, false) {
+                    Ok(index) => index.map(|index| eligible[index].0),
+                    Err(error) => {
+                        if error.fatal() {
+                            self.error = Some(error.to_string());
+                        }
+                        return accepted;
+                    }
+                }
+            } else {
+                (!self.unanswered.is_empty()).then_some(0)
+            };
+            if let Some(question) = selected.and_then(|index| self.unanswered.remove(index)) {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
                     let context = questions.formal_context(graph);
@@ -864,6 +1031,7 @@ impl Autonomous {
                             self.solving.insert(
                                 *question.resolution_id(),
                                 Solving {
+                                    completion: None,
                                     question,
                                     ticket,
                                     seen: questions.revision(graph),
@@ -895,11 +1063,46 @@ impl Autonomous {
                     return accepted;
                 };
                 self.cursor = next;
+                let source = if let Some(frontier) = &mut self.frontier {
+                    match frontier.refresh(graph) {
+                        Ok(()) => {}
+                        Err(error) if !error.fatal() => return accepted,
+                        Err(error) => {
+                            self.error = Some(error.to_string());
+                            return accepted;
+                        }
+                    }
+                    let candidates = if let Some(question) = &self.formal_goal {
+                        if questions.generation_decision(graph, question).has_answer() {
+                            return accepted;
+                        }
+                        vec![question.clone()]
+                    } else {
+                        frontier.candidates()
+                    };
+                    let candidates = candidates
+                        .into_iter()
+                        .filter(|question| questions.assess(graph, question).passed())
+                        .collect::<Vec<_>>();
+                    let references = candidates.iter().collect::<Vec<_>>();
+                    match frontier.choose(&references, graph, self.intervals.jobs.solving, false) {
+                        Ok(Some(index)) => candidates[index].source().to_owned(),
+                        Ok(None) => return accepted,
+                        Err(error) => {
+                            if error.fatal() {
+                                self.error = Some(error.to_string());
+                            }
+                            return accepted;
+                        }
+                    }
+                } else {
+                    crate::mocks::create_question(cursor)
+                };
                 let context = questions.formal_context(graph);
                 (
                     jobs::Input::Find {
                         cursor,
-                        goal: self.formal_goal.clone(),
+                        question: source,
                     },
                     context.binding(),
                 )

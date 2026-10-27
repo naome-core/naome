@@ -79,7 +79,7 @@ fn ordinary_cli_rejects_removed_commands_without_creating_node_state() {
             assert!(output.stdout.is_empty());
             let error = String::from_utf8(output.stderr).unwrap();
             assert!(
-                error.contains("usage: naome [--json] start | stop | status | interest <text>"),
+                error.contains("usage: naome [--json] start | stop | status | selection <text>"),
                 "{error}"
             );
             assert!(!directory.join("node").exists());

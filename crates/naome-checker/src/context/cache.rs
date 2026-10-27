@@ -10,9 +10,13 @@ pub(crate) struct ReadContext<'a> {
     source: &'a dyn ContextView,
     proofs: RefCell<BTreeMap<ProofId, Option<ProofHeader>>>,
     statements: RefCell<BTreeMap<StatementId, Option<StatementHeader>>>,
-    formulas: Vec<OnceCell<(StatementId, usize, Formula)>>,
+    parsed: Vec<OnceCell<Parsed>>,
     limits: ReadCacheLimits,
-    formula_bytes: Cell<usize>,
+    parsed_bytes: Cell<usize>,
+}
+enum Parsed {
+    Formula(StatementId, usize, Formula),
+    Definition(DefinitionId, DefinitionCertificate),
 }
 impl<'a> ReadContext<'a> {
     pub(crate) fn new(source: &'a dyn ContextView) -> Self {
@@ -20,11 +24,11 @@ impl<'a> ReadContext<'a> {
             source,
             proofs: RefCell::new(BTreeMap::new()),
             statements: RefCell::new(BTreeMap::new()),
-            formulas: (0..source.read_cache_limits().entries)
+            parsed: (0..source.read_cache_limits().entries)
                 .map(|_| OnceCell::new())
                 .collect(),
             limits: source.read_cache_limits(),
-            formula_bytes: Cell::new(source.read_cache_limits().entries * 512),
+            parsed_bytes: Cell::new(source.read_cache_limits().entries * 512),
         }
     }
 }
@@ -34,7 +38,15 @@ impl DefinitionResolver for ReadContext<'_> {
         &self,
         id: DefinitionId,
     ) -> Result<Option<DefinitionResolution<'_>>, naome_proof::DefinitionAccessError> {
-        self.source.resolve_definition(id)
+        Ok(self
+            .definition_certificate(id)
+            .map_err(naome_proof::DefinitionAccessError::from)?
+            .map(|definition| match definition {
+                Cow::Borrowed(definition) => {
+                    DefinitionResolution::new(definition.relation_arity(), definition.body())
+                }
+                Cow::Owned(definition) => definition.resolution(),
+            }))
     }
 }
 impl ContextView for ReadContext<'_> {
@@ -46,6 +58,9 @@ impl ContextView for ReadContext<'_> {
     }
     fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError> {
         self.source.contains_artifact(id)
+    }
+    fn program_source(&self, id: ProofId) -> Result<Option<ProgramSource>, ContextError> {
+        self.source.program_source(id)
     }
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError> {
         if let Some(header) = self.proofs.borrow().get(&id) {
@@ -80,7 +95,7 @@ impl ContextView for ReadContext<'_> {
         id: StatementId,
         maximum: usize,
     ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
-        if let Some((_, length, formula)) = self.cached(id) {
+        if let Some((length, formula)) = self.cached(id) {
             if *length > maximum {
                 return Err(ContextError::Limit);
             }
@@ -121,16 +136,63 @@ impl ContextView for ReadContext<'_> {
     ) -> Result<StatementCursor<'_>, ContextError> {
         self.source.bucket(kind, target)
     }
-    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError> {
-        self.source.definition_kind(id)
+    fn definition_certificate(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<Cow<'_, DefinitionCertificate>>, ContextError> {
+        for parsed in self.parsed.iter().filter_map(OnceCell::get) {
+            if let Parsed::Definition(cached, definition) = parsed
+                && *cached == id
+            {
+                return Ok(Some(Cow::Borrowed(definition)));
+            }
+        }
+        let Some(definition) = self.source.definition_certificate(id)? else {
+            return Ok(None);
+        };
+        if matches!(&definition, Cow::Borrowed(_)) {
+            return Ok(Some(definition));
+        }
+        let charge = definition
+            .canonical_bytes()
+            .len()
+            .checked_mul(64)
+            .and_then(|n| n.checked_add(512))
+            .ok_or(ContextError::Limit)?;
+        if let Some(slot) = self.available_slot(charge) {
+            let parsed = slot.get_or_init(|| Parsed::Definition(id, definition.into_owned()));
+            self.parsed_bytes.set(self.parsed_bytes.get() + charge);
+            let Parsed::Definition(_, definition) = parsed else {
+                unreachable!()
+            };
+            return Ok(Some(Cow::Borrowed(definition)));
+        }
+        Ok(Some(definition))
     }
 }
 impl ReadContext<'_> {
-    fn cached(&self, id: StatementId) -> Option<&(StatementId, usize, Formula)> {
-        self.formulas
+    fn cached(&self, id: StatementId) -> Option<(&usize, &Formula)> {
+        self.parsed
             .iter()
             .filter_map(OnceCell::get)
-            .find(|entry| entry.0 == id)
+            .find_map(|parsed| match parsed {
+                Parsed::Formula(cached, length, formula) if *cached == id => {
+                    Some((length, formula))
+                }
+                _ => None,
+            })
+    }
+    fn available_slot(&self, charge: usize) -> Option<&OnceCell<Parsed>> {
+        if self
+            .parsed_bytes
+            .get()
+            .checked_add(charge)
+            .is_some_and(|n| n <= self.limits.bytes)
+        {
+            self.parsed.iter().find(|slot| slot.get().is_none())
+        } else {
+            None
+        }
     }
     fn remember<'s>(
         &'s self,
@@ -148,17 +210,15 @@ impl ReadContext<'_> {
             .checked_mul(64)
             .and_then(|n| n.checked_add(512))
             .ok_or(ContextError::Limit)?;
-        if self
-            .formula_bytes
-            .get()
-            .checked_add(charge)
-            .is_some_and(|n| n <= self.limits.bytes)
-            && let Some(slot) = self.formulas.iter().find(|slot| slot.get().is_none())
-        {
+        if let Some(slot) = self.available_slot(charge) {
             // OnceCell slots never move or evict within this operation, so warm
             // consumers borrow the decoded tree without another deep clone.
-            let (_, _, formula) = slot.get_or_init(|| (id, length, formula.into_owned()));
-            self.formula_bytes.set(self.formula_bytes.get() + charge);
+            let Parsed::Formula(_, _, formula) =
+                slot.get_or_init(|| Parsed::Formula(id, length, formula.into_owned()))
+            else {
+                unreachable!()
+            };
+            self.parsed_bytes.set(self.parsed_bytes.get() + charge);
             return Ok(Some(Cow::Borrowed(formula)));
         }
         Ok(Some(Cow::Owned(formula.into_owned())))

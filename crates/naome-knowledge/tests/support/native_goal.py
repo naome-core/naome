@@ -54,9 +54,8 @@ def run(trial):
     for node, other in ((a, b), (b, a)):
         node.config["peers"] = [{"id": other.peer, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}]
     goal = question()
-    assert len("formal: " + goal) <= 1024
     (trial.output / "goal.nao").write_text(goal + "\n")
-    trial.call(a, "interest", text="formal: " + goal)
+    a.config["formal_goal"] = goal
     a.config["runtime"]["question_interval_ms"] = 1000
     for node in trial.nodes:
         node.write_config()
@@ -107,11 +106,19 @@ def run(trial):
         status = node.start()
         assert status["artifact_verification"] == "checked"
         assert node.ids() == all_ids
-    trial.call(a, "interest", text="formal: " + question("omega", "value", "bound"))
-    trial.call(a, "interest", text="formal: goal=ex(", success=False)
+    a.stop()
+    a.config["formal_goal"] = question("omega", "value", "bound")
+    a.write_config()
+    a.start()
     assert a.ids() == all_ids
+    a.stop()
+    a.config["formal_goal"] = "goal=ex("
+    a.write_config()
+    trial.call(a, "start", success=False)
     invalid = "goal=ex(w,all(x,iff(mem(x,w),not(mem(x,x)))))"
-    trial.call(a, "interest", text="formal: " + invalid)
+    a.config["formal_goal"] = invalid
+    a.write_config()
+    a.start()
 
     def exhausted():
         for record in records(a):

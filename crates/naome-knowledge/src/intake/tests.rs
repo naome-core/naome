@@ -49,7 +49,7 @@ fn new_questions() -> Questions {
 }
 
 #[tokio::test]
-async fn managed_interest_survives_unrelated_graph_growth_without_provider_retry() {
+async fn managed_selection_survives_unrelated_graph_growth_without_provider_retry() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
@@ -69,7 +69,7 @@ async fn managed_interest_survives_unrelated_graph_growth_without_provider_retry
     let request = owner.requests().remove(0);
     // A separate checked proof changes the node while the old decision waits.
     graph.ingest(fixture(42).0, Instant::now()).unwrap();
-    owner.complete(request.0, Ok(crate::jobs::Output::Interest(true)));
+    owner.complete(request.0, Ok(crate::jobs::Output::Selected(true)));
     let completed = questions.completed().await;
     questions.finish(&graph, completed);
     assert!(matches!(
@@ -78,7 +78,7 @@ async fn managed_interest_survives_unrelated_graph_growth_without_provider_retry
     ));
     assert!(
         owner.requests().is_empty(),
-        "unrelated graph growth does not rerun interest"
+        "unrelated graph growth does not rerun selection"
     );
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
@@ -92,7 +92,7 @@ async fn managed_interest_survives_unrelated_graph_growth_without_provider_retry
     assert_eq!(intake.needed(), [(peer, id, id)]);
 }
 
-async fn interest<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
+async fn selection<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
 where
     F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
@@ -122,7 +122,7 @@ where
         Progress::Waiting
     ));
     assert!(intake.needed().is_empty());
-    interest(questions, graph).await;
+    selection(questions, graph).await;
     assert!(matches!(
         intake.advance(graph, questions),
         Progress::Waiting
@@ -282,7 +282,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
                 crate::resources::limits().closure_steps
             );
             intake.advance(&mut graph, &mut questions);
-            interest(&mut questions, &graph).await;
+            selection(&mut questions, &graph).await;
             assert!(
                 matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids == vec![id])
             );
@@ -305,7 +305,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn absent_false_error_and_timeout_interest_never_authorize_payloads() {
+async fn absent_false_error_and_timeout_selection_never_authorize_payloads() {
     let (_, metadata) = fixture(1);
     let mut graph = Graph::default();
     let root = graph.content_root();
@@ -322,7 +322,7 @@ async fn absent_false_error_and_timeout_interest_never_authorize_payloads() {
         let mut questions = LocalQuestions::new(Some(move |_| async move {
             match mode {
                 0 => Ok(false),
-                1 => Err("interest failed".into()),
+                1 => Err("selection failed".into()),
                 _ => std::future::pending::<Result<bool, String>>().await,
             }
         }));
@@ -332,7 +332,7 @@ async fn absent_false_error_and_timeout_interest_never_authorize_payloads() {
             intake.advance(&mut graph, &mut questions),
             Progress::Waiting
         ));
-        interest(&mut questions, &graph).await;
+        selection(&mut questions, &graph).await;
         assert!(matches!(
             intake.advance(&mut graph, &mut questions),
             Progress::Skipped(..)
@@ -354,7 +354,7 @@ async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fet
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
     graph.ingest(fixture(3).0, Instant::now()).unwrap();
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Waiting
@@ -392,7 +392,7 @@ async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fet
     ));
     assert!(
         questions.available(),
-        "expired queued work must not construct interest"
+        "expired queued work must not construct selection"
     );
 }
 
@@ -409,7 +409,7 @@ async fn declined_metadata_does_not_poison_new_source_or_peer_for_same_proof() {
     let mut intake = Intake::default();
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Skipped(..)
@@ -446,7 +446,7 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
     let mut intake = Intake::default();
     intake.enqueue(peer, wrong, &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Skipped(..)
@@ -457,7 +457,7 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
     let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.payload(peer, root, root, object, &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Accepted(_)
@@ -517,7 +517,7 @@ async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closu
         "math checking stages no stored local knowledge"
     );
     assert_eq!(registered(&mut questions, &graph), 0);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
@@ -566,7 +566,7 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
         .payload(peer, root, helper_id, helper, &graph)
         .unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
@@ -636,14 +636,14 @@ async fn necessary_helper_outside_question_codec_is_checked_without_own_question
         .payload(peer, root, helper_id, helper, &graph)
         .unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "only the root has initial and final interest assessment"
+        "only the root has initial and final selection assessment"
     );
     assert_eq!(registered(&mut questions, &graph), 1);
 }
@@ -688,7 +688,7 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
                 &graph,
             );
         }
-        interest(&mut questions, &graph).await;
+        selection(&mut questions, &graph).await;
         assert!(matches!(
             intake.advance(&mut graph, &mut questions),
             Progress::Skipped(..)
@@ -751,7 +751,7 @@ async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_d
     let mut questions = new_questions();
     let (sender, receiver) = oneshot::channel();
     questions.process(Command::Admit(original.clone(), sender), &graph);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     let AdmissionOutcome::Admitted(receipt) = receiver.await.unwrap().outcome else {
         panic!("actual local admission required")
     };
@@ -775,7 +775,7 @@ async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_d
     let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.payload(peer, root, root, object, &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Accepted(_)
@@ -839,7 +839,7 @@ async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_cata
             .unwrap();
         intake.advance(&mut graph, &mut questions);
         graph.test_batch_cut(cut);
-        interest(&mut questions, &graph).await;
+        selection(&mut questions, &graph).await;
         assert!(matches!(
             intake.advance(&mut graph, &mut questions),
             Progress::Skipped(..)
@@ -861,7 +861,7 @@ async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_cata
 }
 
 #[tokio::test]
-async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persistence() {
+async fn final_selection_batch_prepared_before_copy_attach_never_reaches_persistence() {
     let mut graph = Graph::default();
     graph.ingest(fixture(7).0, Instant::now()).unwrap();
     let before = graph.content_root();
@@ -886,7 +886,7 @@ async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persiste
     // this real batch alive across attach, with the physical copy unfinished.
     graph.test_batch_cut(BatchCut::BeforeWrite);
     assert!(graph.test_compaction_step(1).unwrap());
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Waiting
@@ -926,7 +926,7 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
         approve(&mut intake, &mut questions, &mut graph).await;
         intake.payload(peer, root, root, object, &graph).unwrap();
         intake.advance(&mut graph, &mut questions);
-        interest(&mut questions, &graph).await;
+        selection(&mut questions, &graph).await;
         assert!(matches!(
             intake.advance(&mut graph, &mut questions),
             Progress::Accepted(_)

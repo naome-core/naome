@@ -262,7 +262,7 @@ class Node:
         self.serial, self.generation = 0, 0
         self.threads = []
 
-    def start(self, producer_sources=(), command_input=True, test_controls=True, network_config=None, interest="all"):
+    def start(self, producer_sources=(), command_input=True, test_controls=True, network_config=None):
         assert self.process is None or self.process.poll() is not None
         self.generation += 1
         event_offset = len(self.events)
@@ -281,15 +281,6 @@ class Node:
         command = [str(self.driver.binary), "run", str(path)]
         if test_controls:
             command.append("--test-controls")
-        selector = {"kind": "absent"}
-        if interest == "all":
-            command.extend(["--question-interest", "all"])
-            selector = {"kind": "all-supported"}
-        elif interest is not None:
-            interest_path = self.driver.output / f"node-{self.index}-{self.generation}.interest.json"
-            interest_path.write_text(json.dumps({"questions": interest}, indent=2) + "\n")
-            command.extend(["--question-interest-file", str(interest_path)])
-            selector = {"kind": "exact-questions", "file_sha256": digest(interest_path), "count": len(interest)}
         env = os.environ.copy()
         if self.resource_config is not None:
             env["NAOME_RESOURCE_CONFIG"] = str(self.resource_config)
@@ -303,7 +294,6 @@ class Node:
                                                "config_bytes": path.stat().st_size,
                                                "config_sha256": digest(path),
                                                "command_input": "pipe" if command_input else "closed",
-                                               "question_interest": selector,
                                                "producer_source_count": len(config["producer_sources"]),
                                                "producer_source_bytes": sum(len(s.encode()) for s in config["producer_sources"])})
         for name, stream in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:

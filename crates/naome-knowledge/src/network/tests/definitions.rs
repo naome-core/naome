@@ -142,14 +142,14 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
         config(sender.0.clone(), sender_port, receiver_id, receiver_port),
         false,
         inbox,
-        crate::mocks::assess_interest,
+        crate::mocks::select_question,
     ));
     let (receiver_handle, receiver_admin, inbox) = crate::question::channel();
     let receiver_task = tokio::spawn(run_with_questions(
         config(receiver.0.clone(), receiver_port, sender_id, sender_port),
         false,
         inbox,
-        crate::mocks::assess_interest,
+        crate::mocks::select_question,
     ));
     let received = tokio::time::timeout(Duration::from_secs(45), async {
         loop {

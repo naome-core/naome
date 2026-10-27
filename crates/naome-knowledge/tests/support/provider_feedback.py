@@ -11,7 +11,7 @@ from proof_network import digest
 from resource_observation import latest
 
 
-ROLES = ("finding", "solving", "local_interest", "peer_interest")
+ROLES = ("finding", "solving", "local_selection", "peer_selection")
 
 
 def observe_budgets(previous, state):
@@ -36,7 +36,7 @@ def run(trial):
     source, receiver = (Node(trial, index) for index in range(2))
     settings = job_settings(**{role: {"steps": 2, "step_ms": 15, "cpu_ms": 10,
                                     "horizon_ms": 60000, "work_units": 64}
-                               for role in ("finding", "solving", "interest")})
+                               for role in ("finding", "solving", "selection")})
     for node in trial.nodes:
         node.config["runtime"]["jobs"] = settings
         node.config["discovery"] = {"mdns": False, "dht": False, "internet": False}

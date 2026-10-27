@@ -138,7 +138,7 @@ fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
         assert!(settings.validate().is_err());
     }
     let mut settings = Settings::default();
-    settings.interest.limits.work_units = 0;
+    settings.selection.limits.work_units = 0;
     assert!(settings.validate().is_err());
 }
 
@@ -171,11 +171,11 @@ fn ordinary_product_rejects_developer_workloads_before_spawning() {
 }
 
 #[test]
-fn explicit_finding_goal_binds_the_returned_question() {
+fn selected_finding_question_binds_the_returned_question() {
     let supplied = "goal=all(x,eq(x,x))".to_owned();
     let input = Input::Find {
         cursor: 1,
-        goal: Some(supplied.clone()),
+        question: supplied.clone(),
     };
     assert!(Output::Question(supplied).validate(&input).is_ok());
     assert!(

@@ -45,7 +45,6 @@ naome --version
 naome --help
 naome start
 naome status
-naome interest 'Your exact interest text'
 naome stop
 
 Run as your own user. Installation does not start the node and needs no root.

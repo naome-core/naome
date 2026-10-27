@@ -55,11 +55,7 @@ fn smaller_restart_keeps_original_results_and_rejects_corruption_before_retireme
     for cursor in 0..6 {
         let (reply, _receipt) = oneshot::channel();
         owner
-            .submit(
-                Input::Find { cursor, goal: None },
-                Binding::new([0; 32], [0; 32]),
-                reply,
-            )
+            .submit(Input::find(cursor), Binding::new([0; 32], [0; 32]), reply)
             .unwrap();
         let id = owner.journal.next_id - 1;
         owner.journal.records.get_mut(&id).unwrap().state = State::Running;

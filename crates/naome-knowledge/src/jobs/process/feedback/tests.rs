@@ -115,7 +115,7 @@ fn phase_times_must_fit_the_same_owned_attempt_without_overlapping_claims() {
 
 #[test]
 fn ending_an_interrupted_admission_wait_reports_it_once_without_advancing_work() {
-    let mut attempt = Attempt::new(Role::LocalInterest);
+    let mut attempt = Attempt::new(Role::LocalSelection);
     attempt.wait();
     assert!(attempt.waiting.is_some());
     attempt.waiting = Some(Instant::now() - Duration::from_secs(1));

@@ -250,65 +250,6 @@ impl State {
             io_operations: 0,
         }
     }
-    pub fn question(&self, cursor: u64) -> String {
-        let cases: Vec<_> = curriculum::learning_cases().collect();
-        let mut families: BTreeMap<&str, Vec<&curriculum::Case>> = BTreeMap::new();
-        for q in cases {
-            families
-                .entry(curriculum::statistics_key(q))
-                .or_default()
-                .push(q);
-        }
-        // Two easy lanes preserve known prerequisites, two frontier lanes
-        // revisit partial success/search exhaustion, two explore unseen work.
-        let lane = cursor % 6;
-        let easy_available = self.statistics.values().any(|s| s.successes > 0);
-        let frontier_available = self
-            .statistics
-            .values()
-            .any(|s| s.attempts > s.successes && (s.successes > 0 || s.failures[0] > 0));
-        let chosen = families
-            .iter()
-            .max_by(|(a, _), (b, _)| {
-                let score = |family: &&str| {
-                    let s = self.statistics.get(*family).cloned().unwrap_or_default();
-                    let opportunity = match lane {
-                        0 | 1 => {
-                            if s.successes > 0 {
-                                2. + f64::from(s.recent) / 1e6
-                            } else {
-                                f64::from(!easy_available)
-                            }
-                        }
-                        2 | 3 => {
-                            if s.attempts > s.successes && (s.successes > 0 || s.failures[0] > 0) {
-                                2. + 1. - f64::from(s.recent) / 1e6
-                            } else {
-                                f64::from(!frontier_available)
-                            }
-                        }
-                        _ => 1.,
-                    };
-                    opportunity / (1. + s.selections as f64).sqrt()
-                };
-                score(a).total_cmp(&score(b)).then_with(|| b.cmp(a))
-            })
-            .expect("learning families");
-        let mut candidates = chosen.1.clone();
-        let statistics = self.statistics.get(*chosen.0).cloned().unwrap_or_default();
-        if statistics.failures[1] + statistics.failures[2] + statistics.failures[4]
-            > statistics.failures[0]
-        {
-            // Representation/certificate pressure calls for smaller formulas,
-            // not a fresh retry allowance for an exhausted original job.
-            candidates.sort_by_key(|c| (c.source.len(), &c.id));
-        } else {
-            candidates.sort_by_key(|c| &c.id);
-        }
-        candidates[statistics.selections as usize % candidates.len()]
-            .source
-            .clone()
-    }
     pub fn eligible(question: &str) -> bool {
         curriculum::owned::case(question).is_some()
     }

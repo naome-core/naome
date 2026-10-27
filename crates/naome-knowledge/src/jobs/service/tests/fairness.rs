@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn peer_interest_waits_for_a_third_slot_behind_pending_finding_and_solving() {
-    const TEST: &str = "jobs::service::tests::fairness::peer_interest_waits_for_a_third_slot_behind_pending_finding_and_solving";
+fn peer_selection_waits_for_a_third_slot_behind_pending_finding_and_solving() {
+    const TEST: &str = "jobs::service::tests::fairness::peer_selection_waits_for_a_third_slot_behind_pending_finding_and_solving";
     if std::env::var_os("NAOME_JOB_CAPACITY_TEST").is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
@@ -19,10 +19,7 @@ fn peer_interest_waits_for_a_third_slot_behind_pending_finding_and_solving() {
     let binding = Binding::new([0; 32], [0; 32]);
     let mut tickets = Vec::new();
     for input in [
-        Input::Find {
-            cursor: 0,
-            goal: None,
-        },
+        Input::find(0),
         Input::Solve {
             question: crate::mocks::create_question(0),
         },
@@ -38,7 +35,7 @@ fn peer_interest_waits_for_a_third_slot_behind_pending_finding_and_solving() {
     let (reply, ticket) = oneshot::channel();
     owner
         .submit(
-            Input::Interest {
+            Input::Select {
                 question: crate::mocks::create_question(1),
                 purpose: Purpose::Admission,
                 root: Some(crate::hex(&[1; 32])),
@@ -88,14 +85,11 @@ fn three_roles_use_three_admitted_slots_and_a_reduction_only_drains_them() {
     let binding = Binding::new([0; 32], [0; 32]);
     let mut tickets = Vec::new();
     for input in [
-        Input::Find {
-            cursor: 0,
-            goal: None,
-        },
+        Input::find(0),
         Input::Solve {
             question: crate::mocks::create_question(0),
         },
-        Input::Interest {
+        Input::Select {
             question: crate::mocks::create_question(1),
             purpose: Purpose::Assessment,
             root: None,
@@ -119,16 +113,7 @@ fn three_roles_use_three_admitted_slots_and_a_reduction_only_drains_them() {
     budget.budget.concurrency = 1;
     crate::resources::adaptive::publish(budget);
     let (reply, ticket) = oneshot::channel();
-    owner
-        .submit(
-            Input::Find {
-                cursor: 99,
-                goal: None,
-            },
-            binding,
-            reply,
-        )
-        .unwrap();
+    owner.submit(Input::find(99), binding, reply).unwrap();
     tickets.push(ticket);
     owner.schedule(&events).unwrap();
     assert_eq!(
@@ -149,9 +134,9 @@ fn three_roles_use_three_admitted_slots_and_a_reduction_only_drains_them() {
             .unwrap()
             .checkpoint = 1;
         let output = match original.input {
-            Input::Find { cursor, .. } => Output::Question(crate::mocks::create_question(cursor)),
+            Input::Find { question, .. } => Output::Question(question),
             Input::Solve { .. } => Output::NoCandidate,
-            Input::Interest { .. } => Output::Interest(true),
+            Input::Select { .. } => Output::Selected(true),
             Input::Peer { .. } | Input::Train { .. } => unreachable!("ordinary-role fixture"),
         };
         owner
@@ -196,19 +181,16 @@ fn busy_events_cannot_steal_single_slot_admission_from_waiting_roles() {
     let binding = Binding::new([0; 32], [0; 32]);
     let mut tickets = Vec::new();
     for input in [
-        Input::Find {
-            cursor: 0,
-            goal: None,
-        },
+        Input::find(0),
         Input::Solve {
             question: crate::mocks::create_question(0),
         },
-        Input::Interest {
+        Input::Select {
             question: crate::mocks::create_question(1),
             purpose: Purpose::Assessment,
             root: None,
         },
-        Input::Interest {
+        Input::Select {
             question: crate::mocks::create_question(2),
             purpose: Purpose::Admission,
             root: Some(crate::hex(&[1; 32])),
@@ -233,14 +215,7 @@ fn busy_events_cannot_steal_single_slot_admission_from_waiting_roles() {
         // passes must not phase-lock the next free slot back to finding.
         let (reply, ticket) = oneshot::channel();
         owner
-            .submit(
-                Input::Find {
-                    cursor: round as u64 + 1,
-                    goal: None,
-                },
-                binding.clone(),
-                reply,
-            )
+            .submit(Input::find(round as u64 + 1), binding.clone(), reply)
             .unwrap();
         tickets.push(ticket);
         for _ in 0..3 {
@@ -253,9 +228,9 @@ fn busy_events_cannot_steal_single_slot_admission_from_waiting_roles() {
         owner.journal.records.get_mut(&id).unwrap().checkpoint = 1;
         owner.tasks.clear();
         let result = match original.input {
-            Input::Find { cursor, .. } => Output::Question(crate::mocks::create_question(cursor)),
+            Input::Find { question, .. } => Output::Question(question),
             Input::Solve { .. } => Output::NoCandidate,
-            Input::Interest { .. } => Output::Interest(true),
+            Input::Select { .. } => Output::Selected(true),
             Input::Peer { .. } | Input::Train { .. } => unreachable!("ordinary-role fixture"),
         };
         owner

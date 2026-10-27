@@ -8,7 +8,7 @@ use std::{
 
 pub(crate) const RESEARCH_MARKER: &[u8] = b"naome-research-jobs\n";
 
-/// Node state contains the identity key and private local owner preferences.
+/// Node state contains the identity key and private local research records.
 /// Tighten only the owned node directory, without changing parent directories.
 pub(crate) fn private_directory(directory: &Path) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;

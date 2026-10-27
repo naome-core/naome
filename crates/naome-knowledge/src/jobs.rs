@@ -108,7 +108,7 @@ pub struct Settings {
     pub native_proof_learning: bool,
     pub finding: RoleSettings,
     pub solving: RoleSettings,
-    pub interest: RoleSettings,
+    pub selection: RoleSettings,
 }
 
 impl RoleSettings {
@@ -151,7 +151,7 @@ impl Settings {
                 );
             }
         }
-        for role in [self.finding, self.solving, self.interest] {
+        for role in [self.finding, self.solving, self.selection] {
             if role.limits.horizon_ms == 0
                 || role.limits.work_units == 0
                 || crate::jobs::wall_ms()?
@@ -185,7 +185,7 @@ impl Settings {
         match input {
             Input::Find { .. } => self.finding,
             Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => self.solving,
-            Input::Interest { .. } => self.interest,
+            Input::Select { .. } => self.selection,
         }
     }
 }
@@ -254,13 +254,12 @@ pub(crate) enum Input {
     },
     Find {
         cursor: u64,
-        /// An explicit owner-supplied formal question, never a proof or teacher.
-        goal: Option<String>,
+        question: String,
     },
     Solve {
         question: String,
     },
-    Interest {
+    Select {
         question: String,
         purpose: Purpose,
         root: Option<String>,
@@ -271,22 +270,27 @@ impl Input {
     fn internal(&self) -> bool {
         matches!(self, Self::Peer { .. } | Self::Train { .. })
     }
+    #[cfg(test)]
+    pub(crate) fn find(cursor: u64) -> Self {
+        Self::Find {
+            cursor,
+            question: crate::mocks::create_question(cursor),
+        }
+    }
+
     fn feedback_role(&self) -> crate::resources::feedback::Role {
         use crate::resources::feedback::Role;
         match self {
             Self::Find { .. } => Role::Finding,
             Self::Solve { .. } | Self::Peer { .. } | Self::Train { .. } => Role::Solving,
-            Self::Interest { root: None, .. } => Role::LocalInterest,
-            Self::Interest { root: Some(_), .. } => Role::PeerInterest,
+            Self::Select { root: None, .. } => Role::LocalSelection,
+            Self::Select { root: Some(_), .. } => Role::PeerSelection,
         }
     }
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Find { goal, .. } => {
-                if let Some(source) = goal {
-                    naome_authoring::CompiledQuestion::compile(source)
-                        .map_err(|e| e.to_string())?;
-                }
+            Self::Find { question, .. } => {
+                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
             }
             Self::Train { epoch } => {
                 if *epoch == 0 {
@@ -310,11 +314,11 @@ impl Input {
                     return Err("native peer origin encoding".into());
                 }
             }
-            Self::Solve { question } | Self::Interest { question, .. } => {
+            Self::Solve { question } | Self::Select { question, .. } => {
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
             }
         }
-        if let Self::Interest {
+        if let Self::Select {
             root: Some(root), ..
         } = self
         {
@@ -352,7 +356,7 @@ pub(crate) enum Output {
     Program {
         units: u32,
     },
-    Interest(bool),
+    Selected(bool),
     NoCandidate,
 }
 
@@ -409,9 +413,9 @@ impl Output {
             {
                 Ok(())
             }
-            (Self::Question(source), Input::Find { goal, .. })
+            (Self::Question(source), Input::Find { question, .. })
                 if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES
-                    && goal.as_ref().is_none_or(|goal| source == goal) =>
+                    && source == question =>
             {
                 Ok(())
             }
@@ -425,7 +429,7 @@ impl Output {
             }
             (Self::Program { units }, Input::Solve { .. }) if *units > 0 => Ok(()),
             (Self::NoCandidate, Input::Solve { .. })
-            | (Self::Interest(_), Input::Interest { .. }) => Ok(()),
+            | (Self::Selected(_), Input::Select { .. }) => Ok(()),
             _ => Err("provider result type or capacity differs".into()),
         }
     }
@@ -700,6 +704,17 @@ impl Client {
             Err("research acknowledgement capacity".into())
         }
     }
+}
+
+pub(crate) fn declared_solver_support(
+    question: &naome_authoring::CompiledQuestion,
+    settings: RoleSettings,
+) -> bool {
+    settings.mock.outcome == MockOutcome::Success && crate::mocks::supports_question(question)
+}
+
+pub(crate) fn solver_identity(settings: RoleSettings) -> String {
+    identity(&(provider::DEFAULT_PROVIDER, settings.mock, settings.recovery))
 }
 
 fn identity(value: &impl Serialize) -> String {

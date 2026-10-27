@@ -431,39 +431,6 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
 }
 
 #[test]
-fn curriculum_distinguishes_easy_frontier_and_representation_failure() {
-    let mut state = State::fresh();
-    let easy = own_question();
-    let easy_case = CompiledQuestion::compile(&easy).unwrap();
-    let easy_group = &curriculum::learning(&crate::hex(easy_case.resolution_id()))
-        .unwrap()
-        .dependency;
-    let frontier = curriculum::CORPUS
-        .cases
-        .iter()
-        .find(|q| !q.development && &q.dependency != easy_group)
-        .unwrap();
-    state.observe_result(&easy, true, "certified_candidate");
-    state.observe_result(&frontier.source, false, "search_budget");
-    let chosen = |cursor| {
-        let source = state.question(cursor);
-        let q = CompiledQuestion::compile(&source).unwrap();
-        assert!(State::eligible(&source));
-        curriculum::learning(&crate::hex(q.resolution_id()))
-            .unwrap()
-            .dependency
-            .clone()
-    };
-    assert_eq!(chosen(0), *easy_group);
-    assert_eq!(chosen(2), frontier.dependency);
-    state.observe_result(&frontier.source, false, "formula_graph_capacity");
-    assert_eq!(state.statistics[&frontier.dependency].failures[..2], [1, 1]);
-    let recovered: State =
-        crate::checkpoint::decode(&crate::checkpoint::encode(&state).unwrap()).unwrap();
-    assert_eq!(state.question(2), recovered.question(2));
-}
-
-#[test]
 fn later_better_proof_advances_replay_revision_without_recounting_the_question() {
     let original = own_example();
     let q = CompiledQuestion::compile(&original.question).unwrap();

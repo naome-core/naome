@@ -9,8 +9,8 @@ use crate::{
 };
 use naome_foundation::Formula;
 use naome_proof::{
-    ArtifactId, DefinitionCertificate, DefinitionId, DefinitionKind, DefinitionResolution,
-    DefinitionResolver, DerivationId, ProofId, ProofStep, StatementId,
+    ArtifactId, DefinitionCertificate, DefinitionId, DefinitionResolution, DefinitionResolver,
+    DerivationId, ProofId, ProofStep, StatementId,
 };
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc};
@@ -209,12 +209,12 @@ impl DiskArtifactState {
         definition: CheckedDefinition,
     ) -> Result<(), ArtifactStateError> {
         super::registration::validate_definition(self, &definition)?;
-        let bytes = definition.certificate().to_canonical_bytes();
-        let address = definition_address(&bytes);
+        let bytes = definition.certificate().canonical_bytes();
+        let address = definition_address(bytes);
         let mut next = self.clone();
         next.definitions
             .storage()
-            .write(address, &bytes)
+            .write(address, bytes)
             .map_err(ArtifactStateError::Context)?;
         let mut record = address.to_vec();
         record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
@@ -233,6 +233,19 @@ impl DiskArtifactState {
         Ok(())
     }
 
+    /// Authenticated encoded size, available before materializing a definition.
+    /// Consumers reserve memory and may decline projections above their budget.
+    pub fn definition_canonical_length(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<usize>, ContextError> {
+        self.report(self.definitions.get(id.as_bytes()).and_then(|record| {
+            record
+                .map(|record| definition_record(&record).map(|(_, length)| length))
+                .transpose()
+        }))
+    }
+
     fn definition(&self, id: DefinitionId) -> Result<Option<DefinitionCertificate>, ContextError> {
         self.report((|| {
             let Some(record) = self.definitions.get(id.as_bytes())? else {
@@ -240,15 +253,15 @@ impl DiskArtifactState {
             };
             let (address, length) = definition_record(&record)?;
             let bytes = self.definitions.storage().read(address, length)?;
+            let definition = DefinitionCertificate::from_canonical_bytes(&bytes)
+                .map_err(|_| ContextError::Corrupt)?;
             if bytes.len() != length
                 || definition_address(&bytes) != address
-                || definition_identity(&bytes)? != *id.as_bytes()
+                || definition.definition_id() != id
             {
                 return Err(ContextError::Corrupt);
             }
-            DefinitionCertificate::from_canonical_bytes(&bytes)
-                .map(Some)
-                .map_err(|_| ContextError::Corrupt)
+            Ok(Some(definition))
         })())
     }
 
@@ -582,9 +595,12 @@ impl ContextView for DiskArtifactState {
             })))
         })())
     }
-    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError> {
+    fn definition_certificate(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<Cow<'_, DefinitionCertificate>>, ContextError> {
         self.definition(id)
-            .map(|definition| definition.map(|definition| definition.kind()))
+            .map(|definition| definition.map(Cow::Owned))
     }
 }
 impl DefinitionResolver for DiskArtifactState {
@@ -593,14 +609,7 @@ impl DefinitionResolver for DiskArtifactState {
         id: DefinitionId,
     ) -> Result<Option<DefinitionResolution<'_>>, naome_proof::DefinitionAccessError> {
         self.definition(id)
-            .map(|definition| {
-                definition.map(|definition| {
-                    DefinitionResolution::owned(
-                        definition.relation_arity(),
-                        definition.body().clone(),
-                    )
-                })
-            })
+            .map(|definition| definition.map(|definition| definition.resolution()))
             .map_err(Into::into)
     }
 }

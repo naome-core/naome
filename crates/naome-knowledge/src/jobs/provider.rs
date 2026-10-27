@@ -112,11 +112,7 @@ pub(super) struct Contract {
 pub(super) fn contract(record: &Record) -> Option<Contract> {
     match record.provider.as_str() {
         crate::learning::PROVIDER => record.native.as_ref().map(|job| Contract {
-            units: if matches!(record.input, Input::Find { .. }) {
-                1
-            } else {
-                job.units()
-            },
+            units: job.units(),
             resumable: true,
         }),
         DEFAULT_PROVIDER => Some(Contract {
@@ -222,9 +218,6 @@ impl Provider for Native {
             .as_ref()
             .ok_or("native model snapshot missing")?;
         Ok(match &self.record.input {
-            Input::Find { cursor, goal } => {
-                Output::Question(goal.clone().unwrap_or_else(|| job.base.question(*cursor)))
-            }
             Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
                 let p = job.progress.as_ref().ok_or("native final state missing")?;
                 Output::Native {
@@ -312,11 +305,11 @@ impl Provider for Mock {
             });
         }
         let output = match &self.input {
-            Input::Find { cursor, .. } => {
+            Input::Find { question, .. } => {
                 Output::Question(if self.work.outcome == MockOutcome::Malformed {
                     "invalid question".into()
                 } else {
-                    crate::mocks::create_question(*cursor)
+                    question.clone()
                 })
             }
             Input::Solve { question } => {
@@ -359,12 +352,12 @@ impl Provider for Mock {
             Input::Peer { .. } | Input::Train { .. } => {
                 return Err("native learning jobs require the native provider".into());
             }
-            Input::Interest { question, .. } => {
+            Input::Select { question, .. } => {
                 let compiled = naome_authoring::CompiledQuestion::compile(question)
                     .map_err(|e| e.to_string())?;
                 let yes =
-                    libp2p::futures::executor::block_on(crate::mocks::assess_interest(compiled))?;
-                Output::Interest(yes && self.work.outcome != MockOutcome::Malformed)
+                    libp2p::futures::executor::block_on(crate::mocks::select_question(compiled))?;
+                Output::Selected(yes && self.work.outcome != MockOutcome::Malformed)
             }
         };
         Ok(output)
