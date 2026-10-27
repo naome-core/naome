@@ -35,6 +35,8 @@ use program_read::ProgramRead;
 mod worker;
 use std::sync::{Arc, atomic::Ordering};
 
+const OWNER_BUSY: &str = "node state owner busy";
+
 // JSON may encode one source byte as six bytes (for example, a control byte).
 // Leave additional bounded space for peer metadata and formatting.
 // Space every automatic read, including metadata and inventory. Separate
@@ -2259,6 +2261,13 @@ impl Node {
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {
                 emit(json!({"event":"offer_result","status":status}))
+            }
+            (Flight::Get { root, .. }, Body::Error { reason }) if reason == OWNER_BUSY => {
+                // Keep the existing approved closure and its original grant.
+                // Automatic request pacing retries without renewing authority.
+                emit(
+                    json!({"event":"proof_deferred", "id":hex(root.as_bytes()),"error":crate::Error::ExecutionLimit}),
+                );
             }
             (Flight::Get { root, .. }, Body::Error { reason }) => {
                 self.intake.abort(root);

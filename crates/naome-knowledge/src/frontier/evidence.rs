@@ -1,6 +1,7 @@
 //! Durable attempt observations, subordinate to the checked graph and job owner.
 use super::*;
 use crate::checkpoint::{Checkpoint, Update};
+use serde::{Deserialize, Serialize};
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
 const MAX_RECORD: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 4096;
@@ -46,6 +47,11 @@ impl Record {
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
             .saturating_sub(u64::from(self.verified.is_some()))
+    }
+    pub(super) fn substantive_attempts(&self) -> u64 {
+        self.outcomes[..=Outcome::Rejected as usize]
+            .iter()
+            .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
     fn validate(&self, key: &str) -> Result<(), String> {
         let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;

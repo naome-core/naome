@@ -27,8 +27,9 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              discovery, checked-artifact serving and lifecycle control remain active.\n\
              No unchecked artifact is admitted. Network allocations retain memory limits.\n\
              \nResearch:\n\
-             Questions follow gaps in checked local knowledge, with randomized\n\
-             exploration within the automatic computation budgets.\n\
+             Questions follow gaps in checked local knowledge and measured solving\n\
+             opportunities, with randomized exploration within the automatic\n\
+             computation budgets.\n\
              \nNative proof learning (opt-in):\n\
              Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
              An optional formal_goal string in config.json selects a native question.\n\

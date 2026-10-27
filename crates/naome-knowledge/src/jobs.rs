@@ -718,14 +718,10 @@ pub(crate) fn solver_identity(settings: Settings) -> String {
         identity(&(
             crate::learning::PROVIDER,
             crate::learning::input_specification(),
-            settings.solving.recovery,
+            settings.solving,
         ))
     } else {
-        identity(&(
-            provider::DEFAULT_PROVIDER,
-            settings.solving.mock,
-            settings.solving.recovery,
-        ))
+        identity(&(provider::DEFAULT_PROVIDER, settings.solving))
     }
 }
 
