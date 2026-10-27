@@ -50,7 +50,7 @@ def checkpoint_identity(record):
     return {key: record[key] for key in ("id", "input", "binding", "settings", "created_ms", "expires_ms")}
 
 
-def verify_blobs(node, record):
+def verify_blobs(node, record, status="candidate_at_resource_pause_not_promoted"):
     candidate = record["native"]["progress"]["candidate"]
     assert candidate and candidate["updates"] >= 10
     result = {}
@@ -65,7 +65,7 @@ def verify_blobs(node, record):
             assert len(payload) == blob["bytes"] and hashlib.sha256(payload).hexdigest() == blob["sha256"]
             (output / f"{name}.bpk").write_bytes(payload)
             result[name] = blob
-    write_receipt(output / "manifest.json", {"status":"candidate_at_resource_pause_not_promoted", "job":checkpoint_identity(record), "checkpoint":candidate, "blobs":result})
+    write_receipt(output / "manifest.json", {"status":status, "job":checkpoint_identity(record), "checkpoint":candidate, "blobs":result})
     return result
 
 
@@ -329,6 +329,9 @@ def run_unseeded(trial):
     first = trial.wait(qualified, maximum=240)
     original = first["record"]
     first_update = verify_meta(node, original)
+    assert original["native"]["progress"]["diagnostic"] == "candidate_promoted", "real warm-parent qualification requires an actual promotion"
+    retained_lower = original["native"]["progress"]["model"]
+    assert retained_lower["updates"] == 250
     write_receipt(trial.output / "first-qualification.json", first)
     node.stop()
     retained_meta = observe(node)["learning"]["meta"]
@@ -337,10 +340,23 @@ def run_unseeded(trial):
     assert restored_meta == retained_meta, "meta weights, Adam, source experiences and RNG must recover exactly"
     assert restored_meta["model"]["updates"] >= first_update["model"]["updates"]
 
+    observed_candidates = {}
+
     def next_closed_loop():
         current = snapshot(node)
         if current is None:
             return None
+        for candidate_record in current["records"].values():
+            if candidate_record["id"] <= original["id"] or candidate_record["input"]["role"] != "train":
+                continue
+            progress = candidate_record["native"]["progress"]
+            if (progress and progress["candidate"] is not None
+                    and progress["unit"] >= 25 and candidate_record["id"] not in observed_candidates):
+                assert candidate_record["native"]["base"]["model"] == retained_lower
+                assert progress["candidate"]["updates"] == 500
+                blobs = verify_blobs(node, candidate_record, "candidate_before_full_continuation_qualification")
+                observed_candidates[candidate_record["id"]] = {"record": candidate_record, "blobs": blobs}
+                write_receipt(trial.output / "continuation-candidate.json", observed_candidates[candidate_record["id"]])
         for record in current["records"].values():
             if record["id"] <= original["id"] or record["input"]["role"] != "solve":
                 continue
@@ -354,7 +370,7 @@ def run_unseeded(trial):
                           and event["feedback_revision"] >= first["learning"]["feedback"]["revision"]]
             next_training = next((candidate for candidate in current["records"].values()
                                   if candidate["id"] > original["id"] and candidate["input"]["role"] == "train"
-                                  and candidate["checkpoint"] > 0
+                                  and candidate["checkpoint"] == 150 and candidate["state"] == "complete"
                                   and candidate["native"]["base"]["feedback"]["development"]["cells"]), None)
             if selections and next_training:
                 assert next_training["native"]["base"]["preparation"] == "Meta"
@@ -362,7 +378,22 @@ def run_unseeded(trial):
                 if meta_base["model"] != retained_meta["model"]:
                     continue
                 progress = next_training["native"]["progress"]
-                assert progress["candidate"]["updates"] >= next_training["native"]["base"]["model"]["updates"] + 10
+                base = next_training["native"]["base"]
+                assert base["model"] == retained_lower, "continue the actual paired lower weights/Adam"
+                assert base["epoch"] - base["attempted"] >= 4
+                assert base["epoch"] > base["trained"]
+                assert progress["unit"] == 150 and progress["candidate"] is None
+                assert progress["trained"] == base["epoch"]
+                if progress["diagnostic"] == "candidate_promoted":
+                    assert progress["model"]["updates"] == 500
+                else:
+                    assert progress["model"] == retained_lower
+                second_update = verify_meta(node, next_training)
+                candidate_observation = observed_candidates.get(next_training["id"])
+                assert candidate_observation, "actual500-update candidate checkpoint must be observed before qualification"
+                observed_candidate = candidate_observation["record"]["native"]["progress"]["candidate"]
+                candidate_digest = hashlib.sha256(json.dumps(observed_candidate, separators=(",", ":")).encode()).hexdigest()
+                assert second_update["experience"]["candidate_model"] == candidate_digest
                 plans = [event for event in node.logs() if event.get("event") == "native_meta_plan"
                          and event["job"] == next_training["id"]
                          and event["meta_updates"] == retained_meta["model"]["updates"]]
@@ -377,18 +408,23 @@ def run_unseeded(trial):
                 assert any(value != 0 for value in progress["plan"]["prediction"])
                 return {"next_job": record, "next_training_job": next_training,
                         "selections": selections, "meta_plans": plans, "recovered_meta": retained_meta,
-                        "learning": current["learning"]}
+                        "learning": current["learning"], "second_meta_update": second_update, "candidate_observation": candidate_observation}
         return None
 
-    next_cycle = trial.wait(next_closed_loop, maximum=60)
+    # The stronger observation waits for full native qualification inside the
+    # unchanged original whole-trial deadline.
+    next_cycle = trial.wait(next_closed_loop, maximum=max(0, trial.deadline-time.monotonic()-5))
     write_receipt(trial.output / "next-feedback-cycle.json", next_cycle)
     assert node.ids() and first["learning"]["local_examples"] >= 8
     assert first["learning"]["peer_examples"] == 0
     trial.summary.update(result="pass", first_training_job=original["id"],
                          qualification=original["native"]["progress"]["diagnostic"],
                          own_examples=first["learning"]["local_examples"],
-                         feedback_revision=next_cycle["learning"]["feedback"]["revision"])
-    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next executed training plan uses those learned weights and model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
+                         feedback_revision=next_cycle["learning"]["feedback"]["revision"],
+                         continuation_base_updates=250, continuation_candidate_updates=500,
+                         continuation_selected_updates=next_cycle["next_training_job"]["native"]["progress"]["model"]["updates"],
+                         continuation_qualification=next_cycle["next_training_job"]["native"]["progress"]["diagnostic"])
+    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next complete250-update candidate starts from the actually promoted250-update lower weights AND Adam, uses the learned neural plan, consumes a genuinely later checked own-source epoch, and completes all native development/transfer gates. A rejection keeps the exact250-update parent; a promotion keeps500. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
 
 
 def main():

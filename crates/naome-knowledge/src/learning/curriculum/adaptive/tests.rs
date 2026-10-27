@@ -10,7 +10,7 @@ fn whole_construction_families_are_frozen_disjoint_and_new_before_any_search() {
         (96, 24, 48)
     );
     assert_eq!(BANK.transfer.len(), super::super::super::transfer::CASES);
-    assert_eq!(BANK.prior_confirmation.len(), 96);
+    assert_eq!(BANK.prior_confirmation.len(), 144);
     assert!(
         BANK.transfer
             .chunks_exact(2)

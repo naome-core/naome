@@ -1,6 +1,7 @@
 //! Finite outer trial learning and independent matched lower-learner controls.
 use super::*;
 mod acquisition;
+mod outer;
 mod storage;
 use crate::frontier::{Frontier, evidence::Outcome};
 use acquisition::Frozen;
@@ -87,6 +88,8 @@ struct Clock {
     cpu: u64,
     charged_cpu: u64,
     charged_wall: u64,
+    cpu_cap: u64,
+    wall_cap: u64,
 }
 impl Clock {
     fn start() -> Self {
@@ -95,14 +98,16 @@ impl Clock {
             cpu: cpu_micros(),
             charged_cpu: 0,
             charged_wall: 0,
+            cpu_cap: 180_000_000,
+            wall_cap: 240_000_000,
         }
     }
     fn elapsed(&self) -> serde_json::Value {
         serde_json::json!({"wall_micros":self.wall.elapsed().as_micros(),"cpu_micros":cpu_micros()-self.cpu})
     }
     fn exhausted(&self) -> bool {
-        self.wall.elapsed().as_micros() as u64 + self.charged_wall >= 240_000_000
-            || cpu_micros() - self.cpu + self.charged_cpu >= 180_000_000
+        self.wall.elapsed().as_micros() as u64 + self.charged_wall >= self.wall_cap
+            || cpu_micros() - self.cpu + self.charged_cpu >= self.cpu_cap
     }
 }
 struct Run {
@@ -124,6 +129,8 @@ struct Common {
 struct Arm {
     name: &'static str,
     preparation: Preparation,
+    cpu_cap: u64,
+    wall_cap: u64,
 }
 struct MetaSeed {
     state: meta::State,
@@ -168,202 +175,6 @@ fn meta_partition(source: &str, training: bool) -> bool {
     }
     let bytes = Sha256::digest(case.dependency.as_bytes());
     (bytes[0] % 3 != 2) == training
-}
-fn prepare_meta_source(seed: u64, context: usize, dir: &Path) -> Common {
-    let mut common = common(seed, &dir.join("common"));
-    let acquisition_clock = Clock::start();
-    let mut engine = Engine::default();
-    let mut graph = crate::Graph::default();
-    for row in &common.rows {
-        if !row["solution"].is_null() {
-            let s: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
-            let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
-            admit_discovery(&mut graph, &q, &s).unwrap();
-        }
-    }
-    let mut cases = curriculum::adaptive::BANK
-        .learning
-        .iter()
-        .filter(|q| meta_partition(&q.source, true))
-        .collect::<Vec<_>>();
-    cases.sort_by_key(|q| Sha256::digest(format!("{seed}:{}", q.id).as_bytes()));
-    // Contexts vary observed source structure without supplying witnesses.
-    if context >= 3 {
-        let wanted = format!("adaptive-operation-{}", 1 + (context - 3) % 3);
-        cases.sort_by_key(|q| q.family != wanted);
-    }
-    for (i, q) in cases.into_iter().take(32).enumerate() {
-        let row = acquire(
-            &mut common.state,
-            &q.source,
-            100 + i as u64,
-            &mut engine,
-            &mut common.store,
-            &mut graph,
-            (&mut common.evidence, false),
-        );
-        common.state.observe_result(
-            &q.source,
-            !row["solution"].is_null(),
-            row["diagnostic"].as_str().unwrap(),
-            row["elapsed_micros"].as_u64().unwrap(),
-            128,
-        );
-        common.rows.push(row);
-    }
-    let metadata_headroom = outer_metadata_headroom(&common.state);
-    common
-        .state
-        .compact_with_meta_headroom(metadata_headroom)
-        .unwrap();
-    write(&dir.join("source-state.json"), &common.state);
-    write(&dir.join("source-evidence.json"), &common.evidence);
-    write(&dir.join("source-acquisitions.json"), &common.rows);
-    write(&dir.join("source-cost.json"), &acquisition_clock.elapsed());
-    write(
-        &dir.join("source-capacity.json"),
-        &serde_json::json!({"meta_bytes":META_HEADROOM,"total_metadata_headroom":metadata_headroom,
-            "state_bytes":crate::checkpoint::encode(&common.state).unwrap().len(),
-            "development_capacity_bytes":crate::checkpoint::encode(&development_capacity_profile(common.state.feedback.checkpoint.clone())).unwrap().len()}),
-    );
-    assert!(
-        common.state.needs_training(),
-        "outer context must have a genuine diverse checked pool"
-    );
-    common
-}
-#[test]
-#[ignore = "Explicit six-context cold capacity qualification; no optimizer or final inference"]
-fn outer_source_layout_preflight() {
-    let output = std::env::var("NAOME_META_SOURCE_OUTPUT").expect("fresh source output");
-    let output = Path::new(&output);
-    assert!(!output.exists(), "preserve prior source qualification");
-    std::fs::create_dir_all(output).unwrap();
-    let clock = Clock::start();
-    for (context, seed) in [4507, 4603, 4703, 4801, 4903, 5003].into_iter().enumerate() {
-        let directory = output.join(format!("context-{context}"));
-        let source = prepare_meta_source(seed, context, &directory);
-        assert!(source.state.needs_training());
-        source.state.validate().unwrap();
-    }
-    write(
-        &output.join("completed.json"),
-        &serde_json::json!({"contexts":6,"elapsed":clock.elapsed(),"optimizer_updates":0,"final_inferences":0}),
-    );
-}
-fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
-    std::fs::create_dir_all(path).unwrap();
-    let all_clock = Clock::start();
-    let contexts = if pilot {
-        vec![3607]
-    } else {
-        vec![4507, 4603, 4703, 4801, 4903, 5003]
-    };
-    let trials = if pilot { 2 } else { 8 };
-    let mut controller = meta::State::fresh();
-    let mut meta_io = MemoryStore::default();
-    let mut summaries = Vec::new();
-    // Validate every fixed source context before spending the first trial.
-    let sources = contexts
-        .into_iter()
-        .enumerate()
-        .map(|(context, seed)| {
-            let dir = path.join(format!("context-{context}"));
-            let common = prepare_meta_source(seed, context, &dir);
-            (context, seed, dir, common)
-        })
-        .collect::<Vec<_>>();
-    write(
-        &path.join("sources-ready.json"),
-        &serde_json::json!({"contexts":sources.len(),"elapsed":all_clock.elapsed()}),
-    );
-    for (context, seed, dir, common) in sources {
-        let mut observed = common.state.feedback.development.clone();
-        for trial in 0..trials {
-            assert!(
-                all_clock.wall.elapsed() < Duration::from_secs(10_800)
-                    && cpu_micros() - all_clock.cpu < 7_200_000_000,
-                "finite outer training resource bound"
-            );
-            let trial_dir = dir.join(format!("trial-{trial}"));
-            std::fs::create_dir_all(&trial_dir).unwrap();
-            let mut state = common.state.clone();
-            state.meta = controller.clone();
-            state.preparation = Preparation::Meta;
-            state.feedback.development = observed.clone();
-            state.validate().unwrap();
-            let initial = state.model.clone();
-            let mut store = fork_store(&common.store);
-            copy_meta(&meta_io, &mut store, &controller);
-            let evidence = evidence_for(&state, &common.evidence);
-            let mut job = state.job();
-            job.training = true;
-            job.evidence = evidence;
-            let clock = Clock::start();
-            let io_start = store.read_bytes + store.written_bytes;
-            let mut engine = Engine::default();
-            for unit in 1..=job.units() {
-                assert!(
-                    clock.wall.elapsed() < Duration::from_secs(120)
-                        && cpu_micros() - clock.cpu < 90_000_000,
-                    "bounded complete outer trial"
-                );
-                job.execute(
-                    unit,
-                    None,
-                    9_000_000 + context as u64 * 100 + trial as u64,
-                    &mut engine,
-                    &mut store,
-                )
-                .unwrap();
-                job.validate().unwrap();
-                if unit == model::TRAINING_UNITS {
-                    export_model(
-                        &trial_dir.join("candidate"),
-                        job.progress.as_ref().unwrap().candidate.as_ref().unwrap(),
-                        &store.inner,
-                    );
-                }
-                collect(&mut store, &initial, Some(&job), &state);
-            }
-            assert!(
-                store.read_bytes + store.written_bytes - io_start
-                    <= model::REQUIREMENTS.io_bytes as u64
-            );
-            observed = job.progress.as_ref().unwrap().development_before.clone();
-            assert!(state.qualify(&job));
-            state.validate().unwrap();
-            controller = state.meta.clone();
-            meta_io.0.clear();
-            for blob in controller.model.blobs() {
-                for index in 0..blob.chunks() {
-                    meta_io.0.insert(
-                        (blob.sha256.clone(), index),
-                        store.inner.0[&(blob.sha256.clone(), index)].clone(),
-                    );
-                }
-            }
-            export_meta(&trial_dir.join("meta"), &controller.model, &meta_io);
-            write(&trial_dir.join("job.json"), &job);
-            write(&trial_dir.join("state.json"), &state);
-            resource_boundary();
-            let summary = serde_json::json!({"context":context,"seed":seed,"trial":trial,"elapsed":clock.elapsed(),"io_bytes":store.read_bytes+store.written_bytes-io_start,"plan":job.progress.as_ref().unwrap().plan,"outcome":job.progress.as_ref().unwrap().meta_update,"meta_state":controller});
-            summaries.push(summary);
-            write(&path.join("trials.json"), &summaries);
-            eprintln!(
-                "{}",
-                serde_json::json!({"event":"outer_meta_trial_completed","context":context,"trial":trial,"meta_updates":controller.model.updates,"elapsed":all_clock.elapsed()})
-            );
-        }
-    }
-    write(
-        &path.join("completed.json"),
-        &serde_json::json!({"experiences":summaries.len(),"elapsed":all_clock.elapsed(),"controller":controller}),
-    );
-    MetaSeed {
-        state: controller,
-        io: meta_io,
-    }
 }
 fn fork_store(source: &Store) -> Store {
     Store {
@@ -432,9 +243,15 @@ fn train(
     let Arm {
         name: arm,
         preparation,
+        cpu_cap,
+        wall_cap,
     } = definition;
-    clock.charged_cpu = frozen.cost["cpu_micros"].as_u64().unwrap();
-    clock.charged_wall = frozen.cost["wall_micros"].as_u64().unwrap();
+    clock.cpu_cap = clock.cpu_cap.min(cpu_cap);
+    clock.wall_cap = clock.wall_cap.min(wall_cap);
+    clock.charged_cpu =
+        frozen.cost["cpu_micros"].as_u64().unwrap() + common.cost["cpu_micros"].as_u64().unwrap();
+    clock.charged_wall =
+        frozen.cost["wall_micros"].as_u64().unwrap() + common.cost["wall_micros"].as_u64().unwrap();
     let mut state = common.state.clone();
     state.preparation = preparation;
     let initial = state.model.clone();
@@ -462,6 +279,10 @@ fn train(
                 "acquisitions_sha256":digest(rows),"producer_model":input.state.model}),
         );
         write(&path.join(format!("round-{round}-acquisitions.json")), rows);
+        if clock.exhausted() {
+            stop = "compute_limit";
+            break;
+        }
         let evidence = evidence_for(&state, all);
         let pool = state.training_pool(&evidence).unwrap();
         let before = decision_metrics(&state.model, pool.graphs(), &mut engine, &mut store.inner);
@@ -550,7 +371,7 @@ fn train(
     storage::spill(&mut store, &path.join("retained-artifacts"));
     let peak_rss_bytes = resource_boundary();
     let summary = serde_json::json!({"seed":seed,"arm":arm,"random_only":true,"preparation":preparation,"stop":stop,"peak_rss_bytes":peak_rss_bytes,"elapsed":clock.elapsed(),"rounds":events,
-        "initial":initial,"selected":state.model,"distinct_questions":rounds*48,"shared_acquisition_cost":frozen.cost,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
+        "initial":initial,"selected":state.model,"distinct_questions":rounds*48,"shared_acquisition_cost":frozen.cost,"shared_prerequisite_cost":common.cost,"charged_cpu_micros":clock.charged_cpu,"charged_wall_micros":clock.charged_wall,"cpu_cap_micros":clock.cpu_cap,"wall_cap_micros":clock.wall_cap,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
     write(&path.join("summary.json"), &summary);
     Run {
         seed,
@@ -650,9 +471,29 @@ fn matched_adaptive_learning_experiment() {
         &output.join("sources-ready.json"),
         &serde_json::json!({"contexts":sources.len(),"rounds":rounds,"optimizer_updates":0,"elapsed":clock.elapsed()}),
     );
-    let trained_meta = train_meta(&output.join("outer-learning"), pilot);
+    let trained_meta = outer::train(&output.join("outer-learning"), pilot);
     let mut runs = Vec::new();
     let mut common_cost = Vec::new();
+    // Adding a causal control cannot enlarge the original seven-arm total.
+    let cpu_total_cap = seeds.len() as u64 * 7 * 180_000_000;
+    let wall_total_cap = seeds.len() as u64 * 7 * 240_000_000;
+    // Reserve every fixed shared charge up front, including not-yet-run arms.
+    let mut total_cpu = sources
+        .iter()
+        .map(|(_, common, frozen)| {
+            8 * (common.cost["cpu_micros"].as_u64().unwrap()
+                + frozen.cost["cpu_micros"].as_u64().unwrap())
+        })
+        .sum::<u64>();
+    let mut total_wall = sources
+        .iter()
+        .map(|(_, common, frozen)| {
+            8 * (common.cost["wall_micros"].as_u64().unwrap()
+                + frozen.cost["wall_micros"].as_u64().unwrap())
+        })
+        .sum::<u64>();
+    let reserved_cpu = total_cpu;
+    let reserved_wall = total_wall;
     for (index, (seed, common, frozen)) in sources.into_iter().enumerate() {
         let path = output.join(format!("seed-{seed}"));
         common_cost.push(serde_json::json!({"seed":seed,"cost":common.cost}));
@@ -664,24 +505,68 @@ fn matched_adaptive_learning_experiment() {
             ("adaptive_fixed_mixture", Preparation::FixedMixture),
             ("adaptive_random_mixture", Preparation::RandomMixture),
             ("adaptive_meta", Preparation::Meta),
+            ("adaptive_meta_fresh", Preparation::Meta),
         ];
         let arm_count = arms.len();
         arms.rotate_left(index % arm_count);
         for (arm, preparation) in arms {
-            runs.push(train(
+            if total_cpu >= cpu_total_cap || total_wall >= wall_total_cap {
+                write(
+                    &output.join("incomplete-aggregate-budget.json"),
+                    &serde_json::json!({
+                    "next_seed":seed,"next_arm":arm,"completed_arms":runs.len(),
+                    "charged_cpu_micros":total_cpu,"charged_wall_micros":total_wall,
+                    "cpu_cap_micros":cpu_total_cap,"wall_cap_micros":wall_total_cap,
+                    "final_inferences":0}),
+                );
+                panic!("original aggregate learning allowance exhausted; comparison incomplete");
+            }
+            let own_cpu = common.cost["cpu_micros"].as_u64().unwrap()
+                + frozen.cost["cpu_micros"].as_u64().unwrap();
+            let own_wall = common.cost["wall_micros"].as_u64().unwrap()
+                + frozen.cost["wall_micros"].as_u64().unwrap();
+            let run = train(
                 seed,
                 Arm {
                     name: arm,
                     preparation,
+                    cpu_cap: own_cpu + cpu_total_cap.saturating_sub(total_cpu),
+                    wall_cap: own_wall + wall_total_cap.saturating_sub(total_wall),
                 },
                 &common,
                 &frozen,
                 rounds,
                 &path.join(arm),
-                Some(&trained_meta),
-            ));
+                Some(if arm == "adaptive_meta_fresh" {
+                    &trained_meta.fresh
+                } else {
+                    &trained_meta.continuation
+                }),
+            );
+            total_cpu += run.summary["elapsed"]["cpu_micros"].as_u64().unwrap();
+            total_wall += run.summary["elapsed"]["wall_micros"].as_u64().unwrap();
+            runs.push(run);
         }
     }
+    write(
+        &output.join("aggregate-learning-budget.json"),
+        &serde_json::json!({
+        "cpu_cap_micros":cpu_total_cap,"wall_cap_micros":wall_total_cap,
+        "charged_cpu_micros":total_cpu,"charged_wall_micros":total_wall,
+        "reserved_shared_cpu_micros":reserved_cpu,"reserved_shared_wall_micros":reserved_wall,
+        "original_arms":7,"actual_arms":8,"seeds":seeds.len(),
+        "boundary":"before next indivisible unit; any last-unit overrun remains measured"}),
+    );
+    assert!(
+        runs.iter()
+            .all(|r| r.summary["rounds"].as_array().unwrap().len() == 2
+                && r.summary["rounds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|round| round["qualification"]["completed"] == true)),
+        "incomplete learning coverage; no independent final inference permitted"
+    );
     for seed in &seeds {
         let plain = runs
             .iter()

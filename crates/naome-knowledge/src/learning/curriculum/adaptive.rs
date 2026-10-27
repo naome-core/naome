@@ -288,8 +288,24 @@ fn build() -> Bank {
     {
         bank.excluded_roots = roots.clone();
     }
-    let confirmation = heldout(
+    let retired = heldout(
         1_100_017,
+        [5, 8, 7, 4],
+        3,
+        &mut bank,
+        &mut roots,
+        &mut families,
+        &mut ids,
+    );
+    #[cfg(test)]
+    {
+        bank.prior_confirmation.extend(retired);
+        bank.excluded_roots = roots.clone();
+    }
+    #[cfg(not(test))]
+    drop(retired);
+    let confirmation = heldout(
+        1_400_023,
         [5, 8, 7, 4],
         3,
         &mut bank,
