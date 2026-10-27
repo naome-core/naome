@@ -196,6 +196,7 @@ fn question(graph: &Graph, root: &str) -> Result<CompiledQuestion, Error> {
 }
 
 struct Observation {
+    input: [u8; 32],
     features: Features,
     solved: Option<bool>,
 }
@@ -245,6 +246,7 @@ fn probes(
             .insert(
                 *target.resolution_id(),
                 Observation {
+                    input: *target.source_hash(),
                     features: Features::of(&target),
                     solved,
                 },

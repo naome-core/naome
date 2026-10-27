@@ -233,6 +233,13 @@ fn progress_requires_the_same_development_tasks_and_budgets() {
     r.development = Some(report(&graph, &roots, 1));
     r.previous_development = Some(before.clone());
     assert!(select(&graph, &r).is_ok());
+    let mut changed_input = before.clone();
+    changed_input.probes[0].question.push(' ');
+    r.previous_development = Some(changed_input);
+    assert!(
+        select(&graph, &r).is_err(),
+        "paired progress must use identical model inputs"
+    );
     before.probes.pop();
     r.previous_development = Some(before);
     assert!(select(&graph, &r).is_err());
@@ -283,6 +290,12 @@ fn paired_evaluation_counts_errors_and_enforces_equal_total_budget() {
     targeted.total_budget_micros = 1000;
     targeted.compute.training_micros = 1000;
     assert!(compare(&graph, &baseline, &targeted).is_err());
+    targeted.compute.training_micros = 500;
+    targeted.probes[0].question.push(' ');
+    assert!(
+        compare(&graph, &baseline, &targeted).is_err(),
+        "equivalent wording is a different paired input"
+    );
 }
 
 #[test]

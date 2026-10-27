@@ -113,7 +113,11 @@ impl Signals {
                 &previous.probes,
                 Partition::Development,
             )?;
-            if !previous.keys().eq(current.keys()) {
+            if !previous.keys().eq(current.keys())
+                || current
+                    .iter()
+                    .any(|(id, observed)| previous[id].input != observed.input)
+            {
                 return Err("development progress questions differ".into());
             }
             Some(previous)

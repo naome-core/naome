@@ -93,7 +93,12 @@ pub fn compare(
         &targeted.probes,
         Partition::Reserved,
     )?;
-    if before.is_empty() || !before.keys().eq(after.keys()) {
+    if before.is_empty()
+        || !before.keys().eq(after.keys())
+        || before
+            .iter()
+            .any(|(id, observed)| after[id].input != observed.input)
+    {
         return Err("training comparison reserved questions differ".into());
     }
     let summarize = |report: &Evaluation| -> Result<Results, Error> {
