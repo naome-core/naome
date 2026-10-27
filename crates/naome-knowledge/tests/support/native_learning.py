@@ -305,13 +305,15 @@ def run_unseeded(trial):
     assert not node.ids()
     node.start()
 
+    completed_before_parent = {}
+
     def qualified():
         fatal = [event for event in node.logs() if event.get("event") == "fatal_error"]
         assert not fatal, fatal
         current = snapshot(node)
         if current is None:
             return None
-        for record in current["records"].values():
+        for record in sorted(current["records"].values(), key=lambda item: item["id"]):
             if record["input"]["role"] == "train" and record["state"] == "complete":
                 progress = record["native"]["progress"]
                 assert record["checkpoint"] == progress["unit"] == 150
@@ -319,17 +321,21 @@ def run_unseeded(trial):
                 assert record["native"]["base"]["preparation"] == "Meta"
                 assert record["native"]["base"]["local_examples"] >= 8
                 assert not record["native"]["base"]["peer_examples"]
+                if record["id"] not in completed_before_parent:
+                    completed_before_parent[record["id"]] = {
+                        "record": record, "meta_update": verify_meta(node, record)}
+                    write_receipt(trial.output / "pre-continuation-trials.json", list(completed_before_parent.values()))
                 if progress["diagnostic"] != "candidate_promoted":
                     assert progress["model"] == record["native"]["base"]["model"]
-                else:
-                    assert progress["model"]["updates"] == record["native"]["base"]["model"]["updates"] + 250
-                return {"record": record, "learning": current["learning"]}
+                    continue
+                assert progress["model"]["updates"] == record["native"]["base"]["model"]["updates"] + 250
+                return {"record": record, "learning": current["learning"],
+                        "meta_update": completed_before_parent[record["id"]]["meta_update"]}
         return None
 
     first = trial.wait(qualified, maximum=240)
     original = first["record"]
-    first_update = verify_meta(node, original)
-    assert original["native"]["progress"]["diagnostic"] == "candidate_promoted", "real warm-parent qualification requires an actual promotion"
+    first_update = first["meta_update"]
     retained_lower = original["native"]["progress"]["model"]
     assert retained_lower["updates"] == 250
     write_receipt(trial.output / "first-qualification.json", first)
@@ -419,6 +425,8 @@ def run_unseeded(trial):
     assert first["learning"]["peer_examples"] == 0
     trial.summary.update(result="pass", first_training_job=original["id"],
                          qualification=original["native"]["progress"]["diagnostic"],
+                         completed_trials_before_warm_parent=len(completed_before_parent),
+                         rejected_before_warm_parent=sum(item["record"]["native"]["progress"]["diagnostic"] != "candidate_promoted" for item in completed_before_parent.values()),
                          own_examples=first["learning"]["local_examples"],
                          feedback_revision=next_cycle["learning"]["feedback"]["revision"],
                          continuation_base_updates=250, continuation_candidate_updates=500,
