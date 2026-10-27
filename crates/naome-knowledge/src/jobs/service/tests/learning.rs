@@ -56,7 +56,7 @@ fn learning(owner: &Owner) -> serde_json::Value {
     serde_json::to_value(owner.journal.learning.as_ref().unwrap()).unwrap()
 }
 #[test]
-fn native_mode_forwards_frontier_find_without_a_neural_snapshot() {
+fn native_mode_finalizes_structural_finding_without_a_solver_snapshot() {
     let (directory, mut owner) = native();
     let source = crate::learning::tests::own_question();
     let (id, _receive) = submit_native(
@@ -67,8 +67,11 @@ fn native_mode_forwards_frontier_find_without_a_neural_snapshot() {
         },
     );
     let record = owner.journal.records.get(&id).unwrap();
-    assert_eq!(record.provider, crate::jobs::provider::DEFAULT_PROVIDER);
+    assert_eq!(record.provider, crate::frontier::PROVIDER);
     assert!(record.native.is_none());
+    let contract = crate::jobs::provider::contract(record).unwrap();
+    assert_eq!(contract.units, 1);
+    assert!(contract.resumable);
     assert_eq!(
         record.input,
         Input::Find {
@@ -80,7 +83,9 @@ fn native_mode_forwards_frontier_find_without_a_neural_snapshot() {
     let settings = owner.settings;
     drop(owner);
     let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    assert!(journal.records.get(&id).unwrap().native.is_none());
+    let restored = journal.records.get(&id).unwrap();
+    assert!(restored.native.is_none());
+    assert_eq!(restored.provider, crate::frontier::PROVIDER);
 }
 fn accepted(owner: &mut Owner) -> u64 {
     let solution = checked_solution();

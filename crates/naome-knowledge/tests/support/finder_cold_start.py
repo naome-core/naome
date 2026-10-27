@@ -113,8 +113,14 @@ def run(trial, seconds, attempts, minimum):
             (proofs / f"job-{identity}.nao").write_text(solution["source"] + "\n")
             for index, helper in enumerate(solution["helpers"]):
                 (proofs / f"job-{identity}-helper-{index}.nao").write_text(helper + "\n")
-        else:
+        elif solution is not None and record["state"] == "complete":
+            entry["outcome"] = "unaccepted_candidate"
+        elif record["state"] == "complete":
             entry["outcome"] = "unresolved"
+        elif record["state"] in {"queued", "running", "suspended"}:
+            entry["outcome"] = "unfinished"
+        else:
+            entry["outcome"] = "unavailable"
         results.append(entry)
     write_receipt(trial.output / "questions-and-proofs.json", results)
     trial.summary["attempts"] = len(results)
@@ -123,6 +129,9 @@ def run(trial, seconds, attempts, minimum):
     trial.summary["proved"] = sum(row["outcome"] == "proved" for row in results)
     trial.summary["refuted"] = sum(row["outcome"] == "refuted" for row in results)
     trial.summary["unresolved"] = sum(row["outcome"] == "unresolved" for row in results)
+    trial.summary["unfinished"] = sum(row["outcome"] == "unfinished" for row in results)
+    trial.summary["unavailable"] = sum(row["outcome"] == "unavailable" for row in results)
+    trial.summary["unaccepted_candidates"] = sum(row["outcome"] == "unaccepted_candidate" for row in results)
     assert trial.summary["live_status"]["artifact_verification"] == "checked"
     assert trial.summary["accepted_resolutions"] >= minimum, "insufficient checked cold-start resolutions"
     assert trial.summary["final_finder"]["model"]["updates"] > 0
@@ -151,7 +160,7 @@ def main():
     finally:
         trial.close()
         write_receipt(trial.output / "summary.json", trial.summary)
-    print(json.dumps({key: trial.summary.get(key) for key in ["result", "attempts", "accepted_resolutions", "proved", "refuted", "unresolved", "stopping_reason", "error"]}))
+    print(json.dumps({key: trial.summary.get(key) for key in ["result", "attempts", "completed_attempts", "accepted_resolutions", "proved", "refuted", "unresolved", "unfinished", "unavailable", "unaccepted_candidates", "stopping_reason", "error"]}))
     return 0 if trial.summary["result"] == "pass" else 1
 
 
