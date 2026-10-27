@@ -8,7 +8,10 @@ impl Disk {
         state: &crate::learning::State,
     ) -> Result<Vec<crate::learning::Evidence>, String> {
         let mut result = std::collections::BTreeMap::new();
-        for example in state.replay_sources() {
+        for example in state
+            .training_sources()
+            .filter(|e| e.evidence_job().is_some())
+        {
             let source: Record = self
                 .checkpoint
                 .get(

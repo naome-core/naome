@@ -87,7 +87,7 @@ pub(crate) struct Checkpoint {
     pub model: Option<Blob>,
     pub optimizer: Option<Blob>,
 }
-fn specification() -> String {
+pub(super) fn specification() -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
@@ -98,6 +98,9 @@ fn specification() -> String {
     hash.update(include_str!("search.rs"));
     hash.update(include_str!("search/core.rs"));
     hash.update(include_str!("pool.rs"));
+    hash.update(include_str!("meta.rs"));
+    hash.update(include_str!("meta/model.rs"));
+    hash.update(include_str!("meta/plan.rs"));
     hash.update(include_str!("../training/ability.rs"));
     hash.update(include_str!("../training/planning.rs"));
     hash.update(include_str!("peer.rs"));
@@ -274,7 +277,17 @@ impl Runtime {
             optimizer: Some(artifact::save(io, &optimizer[..])?),
         })
     }
+    #[cfg(test)]
     fn train(&mut self, graphs: &Pool, rng: &mut u64, updates: u64) -> Result<(f32, f32), String> {
+        self.train_using(graphs, rng, updates, super::meta::Plan::balanced().phase(0))
+    }
+    fn train_using(
+        &mut self,
+        graphs: &Pool,
+        rng: &mut u64,
+        updates: u64,
+        phase: super::meta::Phase,
+    ) -> Result<(f32, f32), String> {
         if graphs.is_empty() {
             return Err("training requires own accepted proof decisions".into());
         }
@@ -284,12 +297,29 @@ impl Runtime {
             let sample = graphs.batch(rng);
             let batch = Batch::from_graphs(&sample, &self.device)?;
             let logits = self.policy.forward(&batch);
-            let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
-            let loss = -(probability * batch.successes)
+            let probability = burn::tensor::activation::log_softmax(logits.clone(), 1).exp();
+            let marginal = -(probability * batch.successes.clone())
                 .sum_dim(1)
                 .clamp_min(1e-12)
                 .log()
                 .mean();
+            // This is preference between witnessed successful search actions
+            // and unobserved alternatives, never mathematical false labels.
+            let loss = if phase.ranking_quarters == 0 {
+                marginal
+            } else {
+                let good = logits
+                    .clone()
+                    .mask_fill(batch.successes.clone().equal_elem(0.), -10000.)
+                    .max_dim(1);
+                let other = logits
+                    .mask_fill(batch.successes.clone().greater_elem(0.), -10000.)
+                    .mask_fill(batch.invalid.clone(), -10000.)
+                    .max_dim(1);
+                let ranking = (other - good + 0.2).clamp_min(0.).mean();
+                let weight = f32::from(phase.ranking_quarters) / 4.;
+                marginal * (1. - weight) + ranking * weight
+            };
             let value = loss
                 .clone()
                 .into_data()
@@ -299,7 +329,11 @@ impl Runtime {
                 return Err("non-finite native training loss".into());
             }
             let gradients = GradientsParams::from_grads(loss.backward(), &self.policy);
-            self.policy = self.optimizer.step(0.001, self.policy.clone(), gradients);
+            self.policy = self.optimizer.step(
+                if phase.gentle_rate { 0.0005 } else { 0.001 },
+                self.policy.clone(),
+                gradients,
+            );
             if update == 0 {
                 first = value;
             }
@@ -344,6 +378,7 @@ pub(crate) struct Engine {
     pub cost: TrainingCost,
     cache: Vec<(Checkpoint, Runtime)>,
     pool: Option<(String, Pool)>,
+    pub meta: super::meta::Engine,
 }
 impl Engine {
     #[cfg(test)]
@@ -384,12 +419,13 @@ impl Engine {
         self.retain(c.clone(), runtime);
         result
     }
-    pub fn train_replay<I: ArtifactIo + ?Sized>(
+    pub fn train_replay_using<I: ArtifactIo + ?Sized>(
         &mut self,
         c: &Checkpoint,
         state: &super::State,
         evidence: &[super::Evidence],
         cursor: &mut u64,
+        phase: super::meta::Phase,
         io: &mut I,
     ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
         self.cost = TrainingCost::default();
@@ -399,32 +435,57 @@ impl Engine {
             &state.feedback,
             &state.preparation,
             &state.replay,
+            &state.anchors,
+            phase.rehearsal,
             evidence,
         ));
-        let pool = match self.pool.take() {
+        let mut pool = match self.pool.take() {
             Some((previous, pool)) if previous == key => pool,
             _ => {
-                let mut pool = state.training_pool(evidence)?;
-                if state.preparation == super::Preparation::Targeted && !pool.is_empty() {
+                let pool = state.training_pool_for(evidence, phase.rehearsal)?;
+                #[cfg(test)]
+                let mut pool = pool;
+                #[cfg(test)]
+                if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
                     self.with(&state.model, io, |runtime| {
-                        pool.focus(&state.feedback, |g| runtime.scores_graph(g))
+                        pool.reference_focus(&state.feedback, |g| runtime.scores_graph(g))
                     })?;
                     self.cost.preparation_micros = micros(preparation);
                 }
                 pool
             }
         };
+        let current_focus = phase.focused && {
+            #[cfg(test)]
+            {
+                state.preparation != super::Preparation::ReferenceTargeted
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        };
+        if current_focus && !pool.is_empty() {
+            let preparation = std::time::Instant::now();
+            self.with(c, io, |runtime| {
+                pool.focus(&state.feedback, |g| runtime.scores_graph(g))
+            })?;
+            self.cost.preparation_micros = micros(preparation);
+        } else if !phase.focused {
+            pool.unfocus();
+        }
         self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         self.cost.states = pool.graphs().len();
         let result = if pool.is_empty() {
             Ok(None)
         } else {
-            self.train(c, &pool, cursor, io).map(Some)
+            self.train_using(c, &pool, cursor, phase, io).map(Some)
         };
         self.pool = Some((key, pool));
         result
     }
+    #[cfg(test)]
     pub fn train<I: ArtifactIo + ?Sized>(
         &mut self,
         c: &Checkpoint,
@@ -432,11 +493,21 @@ impl Engine {
         rng: &mut u64,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
+        self.train_using(c, graphs, rng, super::meta::Plan::balanced().phase(0), io)
+    }
+    fn train_using<I: ArtifactIo + ?Sized>(
+        &mut self,
+        c: &Checkpoint,
+        graphs: &Pool,
+        rng: &mut u64,
+        phase: super::meta::Phase,
+        io: &mut I,
+    ) -> Result<(Checkpoint, f32, f32), String> {
         let started = std::time::Instant::now();
         let mut runtime = self.take(c, io)?;
         self.cost.load_micros = micros(started);
         let started = std::time::Instant::now();
-        let (first, last) = runtime.train(graphs, rng, UPDATES_PER_UNIT)?;
+        let (first, last) = runtime.train_using(graphs, rng, UPDATES_PER_UNIT, phase)?;
         self.cost.update_micros = micros(started);
         let started = std::time::Instant::now();
         let checkpoint = runtime.checkpoint(c, UPDATES_PER_UNIT, io)?;
@@ -600,7 +671,17 @@ mod tests {
         let trained = runtime.checkpoint(&fresh, 1, &mut io).unwrap();
         let mut candidate = Runtime::load(&trained, &mut io).unwrap();
         candidate
-            .train(&Pool::from_graphs(&[graph]), &mut rng, 1)
+            .train_using(
+                &Pool::from_graphs(&[graph]),
+                &mut rng,
+                1,
+                super::super::meta::Phase {
+                    focused: true,
+                    rehearsal: true,
+                    ranking_quarters: 2,
+                    gentle_rate: true,
+                },
+            )
             .unwrap();
         candidate.checkpoint(&trained, 1, &mut io).unwrap();
         let sample = meter.finish(0, true);

@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import struct
 import time
 
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
@@ -66,6 +67,31 @@ def verify_blobs(node, record):
             result[name] = blob
     write_receipt(output / "manifest.json", {"status":"candidate_at_resource_pause_not_promoted", "job":checkpoint_identity(record), "checkpoint":candidate, "blobs":result})
     return result
+
+
+def verify_meta(node, record):
+    native = record["native"]
+    progress = native["progress"]
+    update = progress["meta_update"]
+    assert native["base"]["preparation"] == "Meta"
+    assert update["experience"]["job"] == record["id"]
+    assert update["experience"]["plan"] == progress["plan"]["plan"]
+    assert update["experience"]["context"] == progress["plan"]["context"]
+    assert update["model"]["updates"] == native["base"]["meta"]["model"]["updates"] + 8
+    assert 0 <= progress["meta_cpu_micros"] <= progress["cpu_micros"]
+    assert 0 <= progress["meta_wall_micros"] <= progress["wall_micros"]
+    output = node.trial.output / "meta-checkpoints" / f"node-{node.index}-job-{record['id']}"
+    output.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
+        db.execute("BEGIN")
+        for name in ("weights", "optimizer"):
+            blob = update["model"][name]
+            rows = db.execute("SELECT payload FROM entries WHERE kind='model' AND key LIKE ? ORDER BY key", (blob["sha256"] + ":%",)).fetchall()
+            payload = b"".join(row[0] for row in rows)
+            assert len(payload) == blob["bytes"] and hashlib.sha256(payload).hexdigest() == blob["sha256"]
+            (output / f"{name}.bin").write_bytes(payload)
+    write_receipt(output / "manifest.json", {"record": record, "update": update})
+    return update
 
 
 def owner_question_bootstrap():
@@ -222,6 +248,7 @@ def run(trial):
         completed = trial.wait(lambda: next((r for r in training(node) if r["id"] == original["id"] and r["state"] == "complete"), None), maximum=180)
         assert completed["checkpoint"] == 150 and completed["native"]["progress"]["unit"] == 150
         progress = completed["native"]["progress"]
+        meta_update = verify_meta(node, completed)
         assert progress["candidate"] is None
         assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected", "development_regression_rejected"}
         assert observe(node)["learning"]["accepted"] > 0
@@ -230,7 +257,7 @@ def run(trial):
             assert progress["model"] == completed["native"]["base"]["model"], "rejection must restore the exact model AND Adam pair"
         else:
             assert progress["model"]["updates"] == completed["native"]["base"]["model"]["updates"] + 250
-        qualifications[node.index] = {"job": original["id"], "diagnostic": progress["diagnostic"], "incumbent_score": progress["incumbent_score"], "candidate_score": progress["candidate_score"], "anchor_regression": progress["anchor_regression"], "model": progress["model"], "io_bytes": completed["native"]["io_bytes"]}
+        qualifications[node.index] = {"job": original["id"], "diagnostic": progress["diagnostic"], "incumbent_score": progress["incumbent_score"], "candidate_score": progress["candidate_score"], "anchor_regression": progress["anchor_regression"], "model": progress["model"], "meta_update": meta_update, "io_bytes": completed["native"]["io_bytes"]}
     trial.summary["qualifications"] = qualifications
     trial.summary["restart_and_pause"] = {"result": "pass", "retained_training_jobs": [r["record"]["id"] for r in retained.values()]}
     trial.summary["claim"] = "Two ordinary loopback nodes, actual fresh 1,004,001-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; selection follows the current research policy."
@@ -259,7 +286,7 @@ def run_unseeded(trial):
                 progress = record["native"]["progress"]
                 assert record["checkpoint"] == progress["unit"] == 150
                 assert progress["candidate"] is None
-                assert record["native"]["base"]["preparation"] == "Targeted"
+                assert record["native"]["base"]["preparation"] == "Meta"
                 assert record["native"]["base"]["local_examples"] >= 8
                 assert not record["native"]["base"]["peer_examples"]
                 if progress["diagnostic"] != "candidate_promoted":
@@ -271,7 +298,14 @@ def run_unseeded(trial):
 
     first = trial.wait(qualified, maximum=240)
     original = first["record"]
+    first_update = verify_meta(node, original)
     write_receipt(trial.output / "first-qualification.json", first)
+    node.stop()
+    retained_meta = observe(node)["learning"]["meta"]
+    node.start()
+    restored_meta = observe(node)["learning"]["meta"]
+    assert restored_meta == retained_meta, "meta weights, Adam, source experiences and RNG must recover exactly"
+    assert restored_meta["model"]["updates"] >= first_update["model"]["updates"]
 
     def next_closed_loop():
         current = snapshot(node)
@@ -293,10 +327,27 @@ def run_unseeded(trial):
                                   and candidate["checkpoint"] > 0
                                   and candidate["native"]["base"]["feedback"]["development"]["cells"]), None)
             if selections and next_training:
-                assert next_training["native"]["base"]["preparation"] == "Targeted"
-                assert next_training["native"]["progress"]["training_cost"]["preparation_micros"] > 0
+                assert next_training["native"]["base"]["preparation"] == "Meta"
+                meta_base = next_training["native"]["base"]["meta"]
+                if meta_base["model"] != retained_meta["model"]:
+                    continue
+                progress = next_training["native"]["progress"]
+                assert progress["candidate"]["updates"] >= next_training["native"]["base"]["model"]["updates"] + 10
+                plans = [event for event in node.logs() if event.get("event") == "native_meta_plan"
+                         and event["job"] == next_training["id"]
+                         and event["meta_updates"] == retained_meta["model"]["updates"]]
+                if not plans:
+                    return None
+                actual, expected = plans[-1]["selection"], progress["plan"]
+                assert all(actual[key] == expected[key] for key in ("context", "plan", "exploration", "draw"))
+                # Direct serde f32 and serde_json::Value use different decimal
+                # spellings. Require the exact declared float32 bits.
+                assert struct.pack("<3f", *actual["prediction"]) == struct.pack("<3f", *expected["prediction"])
+                assert not expected["exploration"], "the warmed fixed-seed fixture must execute a neural-ranked next plan"
+                assert any(value != 0 for value in progress["plan"]["prediction"])
                 return {"next_job": record, "next_training_job": next_training,
-                        "selections": selections, "learning": current["learning"]}
+                        "selections": selections, "meta_plans": plans, "recovered_meta": retained_meta,
+                        "learning": current["learning"]}
         return None
 
     next_cycle = trial.wait(next_closed_loop, maximum=60)
@@ -307,7 +358,7 @@ def run_unseeded(trial):
                          qualification=original["native"]["progress"]["diagnostic"],
                          own_examples=first["learning"]["local_examples"],
                          feedback_revision=next_cycle["learning"]["feedback"]["revision"])
-    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates, complete native qualification, then the actual next solver input and next executed targeted training batch carry the resulting model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
+    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next executed training plan uses those learned weights and model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
 
 
 def main():

@@ -370,7 +370,12 @@ impl Owner {
                                     return Err("provider checkpoint differs from its durable reservation".into());
                                 }
                                 let native=record.native.is_some();record.checkpoint=checkpoint;
-                                self.save()?;if native {self.disk.collect_models(&mut self.journal)}else{Ok(())}
+                                self.save()?;
+                                if checkpoint==1 && let Some(n)=self.journal.records[&id].native.as_ref()
+                                    && let Some(selection)=n.progress.as_ref().and_then(|p|p.plan.as_ref()) {
+                                    crate::network::emit(serde_json::json!({"event":"native_meta_plan","job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection}));
+                                }
+                                if native {self.disk.collect_models(&mut self.journal)}else{Ok(())}
                             })();
                             let failure=result.as_ref().err().cloned();
                             let _=reply.send(result.map_err(String::from));
@@ -624,8 +629,7 @@ impl Owner {
                     .native
                     .as_mut()
                     .ok_or("learning checkpoint lacks snapshot")?;
-                native.progress = Some((*pending.progress).clone());
-                native.validate()?;
+                native.retain_progress(id, (*pending.progress).clone())?;
                 self.disk.verify_models(native)?;
                 self.save()
             })();
@@ -829,6 +833,16 @@ impl Owner {
         // Keep the completing job protected from terminal-history compaction
         // until its persisted outcome can be delivered, even if abandoned.
         self.save_extra(updates)?;
+        if let Some(progress) = self.journal.records[&id]
+            .native
+            .as_ref()
+            .and_then(|n| n.progress.as_ref())
+            && let Some(update) = &progress.meta_update
+        {
+            crate::network::emit(
+                serde_json::json!({"event":"native_meta_updated","job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.diagnostic}),
+            );
+        }
         self.running.remove(&id);
         self.clocks.remove(&id);
         self.deliver(id);

@@ -11,6 +11,12 @@ pub struct Bank {
     pub development: Vec<Case>,
     #[cfg(test)]
     pub confirmation: Vec<Case>,
+    #[cfg(test)]
+    pub prior_confirmation: Vec<Case>,
+    #[cfg(test)]
+    pub excluded_roots: BTreeSet<String>,
+    #[cfg(test)]
+    pub confirmation_roots: BTreeSet<String>,
     pub reserved: BTreeSet<String>,
     pub reserved_families: BTreeSet<String>,
 }
@@ -51,8 +57,15 @@ fn root_identity(premises: &[Formula], target: &Formula) -> String {
     crate::hex(&Sha256::digest(normalized.into_iter().min().unwrap()))
 }
 fn question(seed: u64, variant: usize) -> Option<(CompiledQuestion, String)> {
+    question_with_steps(seed, variant, 0)
+}
+fn question_with_steps(
+    seed: u64,
+    variant: usize,
+    extra: usize,
+) -> Option<(CompiledQuestion, String)> {
     let mut rng = crate::sampling::Random::new(seed.wrapping_mul(0x9e3779b97f4a7c15));
-    let steps = 2 + (seed as usize / 4 % 6);
+    let steps = 2 + (seed as usize / 4 % 6) + extra;
     let a = FreeVariable::new(variant as u32);
     let b = FreeVariable::new(((variant + 1) % 4) as u32);
     let c = FreeVariable::new(((variant + 2) % 4) as u32);
@@ -157,6 +170,12 @@ fn build() -> Bank {
         development: Vec::new(),
         #[cfg(test)]
         confirmation: Vec::new(),
+        #[cfg(test)]
+        prior_confirmation: Vec::new(),
+        #[cfg(test)]
+        excluded_roots: BTreeSet::new(),
+        #[cfg(test)]
+        confirmation_roots: BTreeSet::new(),
         reserved: BTreeSet::new(),
         reserved_families: BTreeSet::new(),
     };
@@ -210,7 +229,7 @@ fn build() -> Bank {
                 development: part != 0,
             });
         }
-        if cases.len() != 2 {
+        if cases.len() != 2 || cases[0].id == cases[1].id {
             continue;
         }
         counts[part] += 1;
@@ -233,6 +252,72 @@ fn build() -> Bank {
         }
     }
     assert_eq!(counts, [48, 12, 24], "question-only adaptive family supply");
+    // The prior confirmation families stay reserved. Learning and all existing
+    // development cases remain exactly the same; only independent final roots
+    // are replenished. Selection uses syntax/identity only, never solve results.
+    #[cfg(test)]
+    {
+        bank.prior_confirmation = std::mem::take(&mut bank.confirmation);
+        bank.excluded_roots = roots.clone();
+    }
+    let targets = [5usize, 8, 7, 4];
+    let mut fresh = [0usize; 4];
+    for seed in 500_009..700_009 {
+        let kind = (seed % 4) as usize;
+        if fresh[kind] == targets[kind] {
+            continue;
+        }
+        let Some((first, root)) = question_with_steps(seed, 0, 3) else {
+            continue;
+        };
+        if roots.contains(&root) {
+            continue;
+        }
+        let family = super::owned::family(first.proved_target());
+        if families.contains(&family)
+            || super::owned::sealed_family(&family)
+            || super::composition::BANK.reserved_families.contains(&family)
+        {
+            continue;
+        }
+        let cases = (0..2)
+            .filter_map(|variant| {
+                let (q, _) = question_with_steps(seed, variant, 3)?;
+                if super::owned::family(q.proved_target()) != family {
+                    return None;
+                }
+                let id = crate::hex(q.resolution_id());
+                if ids.contains(&id) || super::CORPUS.reserved_ids.contains(&id) {
+                    return None;
+                }
+                Some(Case {
+                    id,
+                    source: q.source().into(),
+                    family: format!("adaptive-operation-{kind}"),
+                    dependency: format!("adaptive/{family}"),
+                    development: true,
+                })
+            })
+            .collect::<Vec<_>>();
+        if cases.len() != 2 || cases[0].id == cases[1].id {
+            continue;
+        }
+        roots.insert(root.clone());
+        families.insert(family.clone());
+        bank.reserved_families.insert(family);
+        bank.reserved.extend(cases.iter().map(|q| q.id.clone()));
+        ids.extend(cases.iter().map(|q| q.id.clone()));
+        #[cfg(test)]
+        {
+            bank.confirmation_roots.insert(root);
+            bank.confirmation.extend(cases);
+        }
+        fresh[kind] += 1;
+        if fresh == targets {
+            break;
+        }
+    }
+    assert_eq!(fresh, targets, "fresh confirmation root supply");
     bank
 }
 
@@ -263,5 +348,23 @@ mod tests {
         for q in BANK.development.iter().chain(&BANK.confirmation) {
             assert!(super::super::owned::case(&q.source).is_none());
         }
+        assert!(BANK.confirmation_roots.is_disjoint(&BANK.excluded_roots));
+        let previous = BANK
+            .learning
+            .iter()
+            .chain(&BANK.development)
+            .chain(&BANK.prior_confirmation)
+            .map(|q| &q.dependency)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            BANK.confirmation
+                .iter()
+                .all(|q| !previous.contains(&q.dependency))
+        );
+        assert!(
+            BANK.prior_confirmation
+                .iter()
+                .all(|q| super::super::owned::case(&q.source).is_none())
+        );
     }
 }

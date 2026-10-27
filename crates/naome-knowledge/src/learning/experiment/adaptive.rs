@@ -1,4 +1,4 @@
-//! A finite factorial consumer of the actual frontier, checked replay and gate.
+//! Finite outer trial learning and independent matched lower-learner controls.
 use super::*;
 use crate::frontier::{Frontier, evidence::Outcome};
 use knowledge::{Store, acquire, admit_discovery, evidence_for};
@@ -6,6 +6,7 @@ use nix::sys::{
     resource::{UsageWho, getrusage},
     time::TimeValLike,
 };
+const META_HEADROOM: usize = meta::STATE_BYTES;
 
 fn cpu_micros() -> u64 {
     let usage = getrusage(UsageWho::RUSAGE_SELF).expect("process CPU accounting");
@@ -14,19 +15,24 @@ fn cpu_micros() -> u64 {
 struct Clock {
     wall: Instant,
     cpu: u64,
+    charged_cpu: u64,
+    charged_wall: u64,
 }
 impl Clock {
     fn start() -> Self {
         Self {
             wall: Instant::now(),
             cpu: cpu_micros(),
+            charged_cpu: 0,
+            charged_wall: 0,
         }
     }
     fn elapsed(&self) -> serde_json::Value {
         serde_json::json!({"wall_micros":self.wall.elapsed().as_micros(),"cpu_micros":cpu_micros()-self.cpu})
     }
     fn exhausted(&self) -> bool {
-        self.wall.elapsed() >= Duration::from_secs(240) || cpu_micros() - self.cpu >= 180_000_000
+        self.wall.elapsed().as_micros() as u64 + self.charged_wall >= 240_000_000
+            || cpu_micros() - self.cpu + self.charged_cpu >= 180_000_000
     }
 }
 struct Run {
@@ -36,6 +42,7 @@ struct Run {
     initial: Checkpoint,
     store: Store,
     summary: serde_json::Value,
+    bootstrap: Option<(Vec<Evidence>, Vec<serde_json::Value>)>,
 }
 struct Common {
     state: State,
@@ -43,12 +50,211 @@ struct Common {
     evidence: Vec<Evidence>,
     rows: Vec<serde_json::Value>,
     cost: serde_json::Value,
+    bootstrap: Vec<serde_json::Value>,
+    bootstrap_cost: serde_json::Value,
 }
 #[derive(Clone, Copy)]
 struct Arm {
     name: &'static str,
     random_only: bool,
     preparation: Preparation,
+    acquisition_only: bool,
+}
+struct MetaSeed {
+    state: meta::State,
+    io: MemoryStore,
+}
+fn export_meta(path: &Path, c: &meta::Checkpoint, io: &MemoryStore) {
+    std::fs::create_dir_all(path).unwrap();
+    write(&path.join("checkpoint.json"), c);
+    for (name, blob) in [("weights", &c.weights), ("optimizer", &c.optimizer)] {
+        if let Some(blob) = blob {
+            let mut bytes = Vec::new();
+            for index in 0..blob.chunks() {
+                bytes.extend_from_slice(&io.0[&(blob.sha256.clone(), index)]);
+            }
+            assert_eq!(Blob::of(&bytes), *blob);
+            std::fs::write(path.join(format!("{name}.bin")), bytes).unwrap();
+        }
+    }
+}
+fn copy_meta(from: &MemoryStore, to: &mut Store, state: &meta::State) {
+    for blob in state.model.blobs() {
+        let mut io = MemoryStore(from.0.clone());
+        let bytes = artifact::load(&mut io, blob).unwrap();
+        assert_eq!(*blob, artifact::save(to, &bytes).unwrap());
+    }
+}
+fn meta_partition(source: &str, training: bool) -> bool {
+    static PREREQUISITES: std::sync::LazyLock<BTreeSet<String>> = std::sync::LazyLock::new(|| {
+        curriculum::composition::BANK
+            .helpers
+            .iter()
+            .filter_map(|q| curriculum::owned::case(&q.source).map(|c| c.dependency))
+            .collect()
+    });
+    let Some(case) = curriculum::owned::case(source) else {
+        return false;
+    };
+    // Both stages declare the same seven checked prerequisites. Their derived
+    // continuations cannot be counted as novel outer-test data.
+    if PREREQUISITES.contains(&case.dependency) {
+        return false;
+    }
+    let bytes = Sha256::digest(case.dependency.as_bytes());
+    (bytes[0] % 3 != 2) == training
+}
+fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
+    std::fs::create_dir_all(path).unwrap();
+    let all_clock = Clock::start();
+    let contexts = if pilot {
+        vec![3607]
+    } else {
+        vec![4507, 4603, 4703, 4801, 4903, 5003]
+    };
+    let trials = if pilot { 2 } else { 8 };
+    let mut controller = meta::State::fresh();
+    let mut meta_io = MemoryStore::default();
+    let mut summaries = Vec::new();
+    for (context, seed) in contexts.into_iter().enumerate() {
+        let dir = path.join(format!("context-{context}"));
+        let mut common = common(seed, &dir.join("common"));
+        let acquisition_clock = Clock::start();
+        let mut engine = Engine::default();
+        let mut graph = crate::Graph::default();
+        for row in &common.rows {
+            if !row["solution"].is_null() {
+                let s: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
+                let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
+                admit_discovery(&mut graph, &q, &s).unwrap();
+            }
+        }
+        let mut cases = curriculum::adaptive::BANK
+            .learning
+            .iter()
+            .filter(|q| meta_partition(&q.source, true))
+            .collect::<Vec<_>>();
+        cases.sort_by_key(|q| Sha256::digest(format!("{seed}:{}", q.id).as_bytes()));
+        // Contexts vary observed source structure without supplying witnesses.
+        if context >= 3 {
+            let wanted = format!("adaptive-operation-{}", 1 + (context - 3) % 3);
+            cases.sort_by_key(|q| q.family != wanted);
+        }
+        for (i, q) in cases.into_iter().take(32).enumerate() {
+            let row = acquire(
+                &mut common.state,
+                &q.source,
+                100 + i as u64,
+                &mut engine,
+                &mut common.store,
+                &mut graph,
+                (&mut common.evidence, false),
+            );
+            common.state.observe_result(
+                &q.source,
+                !row["solution"].is_null(),
+                row["diagnostic"].as_str().unwrap(),
+                row["elapsed_micros"].as_u64().unwrap(),
+                128,
+            );
+            common.rows.push(row);
+        }
+        common
+            .state
+            .compact_with_meta_headroom(META_HEADROOM)
+            .unwrap();
+        assert!(
+            common.state.needs_training(),
+            "outer context must have a genuine diverse checked pool"
+        );
+        write(&dir.join("source-state.json"), &common.state);
+        write(&dir.join("source-evidence.json"), &common.evidence);
+        write(&dir.join("source-acquisitions.json"), &common.rows);
+        write(&dir.join("source-cost.json"), &acquisition_clock.elapsed());
+        let mut observed = common.state.feedback.development.clone();
+        for trial in 0..trials {
+            assert!(
+                all_clock.wall.elapsed() < Duration::from_secs(10_800)
+                    && cpu_micros() - all_clock.cpu < 7_200_000_000,
+                "finite outer training resource bound"
+            );
+            let trial_dir = dir.join(format!("trial-{trial}"));
+            std::fs::create_dir_all(&trial_dir).unwrap();
+            let mut state = common.state.clone();
+            state.meta = controller.clone();
+            state.preparation = Preparation::Meta;
+            state.feedback.development = observed.clone();
+            let initial = state.model.clone();
+            let mut store = fork_store(&common.store);
+            copy_meta(&meta_io, &mut store, &controller);
+            let evidence = evidence_for(&state, &common.evidence);
+            let mut job = state.job();
+            job.training = true;
+            job.evidence = evidence;
+            let clock = Clock::start();
+            let io_start = store.read_bytes + store.written_bytes;
+            let mut engine = Engine::default();
+            for unit in 1..=job.units() {
+                assert!(
+                    clock.wall.elapsed() < Duration::from_secs(120)
+                        && cpu_micros() - clock.cpu < 90_000_000,
+                    "bounded complete outer trial"
+                );
+                job.execute(
+                    unit,
+                    None,
+                    9_000_000 + context as u64 * 100 + trial as u64,
+                    &mut engine,
+                    &mut store,
+                )
+                .unwrap();
+                job.validate().unwrap();
+                if unit == model::TRAINING_UNITS {
+                    export_model(
+                        &trial_dir.join("candidate"),
+                        job.progress.as_ref().unwrap().candidate.as_ref().unwrap(),
+                        &store.inner,
+                    );
+                }
+                collect(&mut store, &initial, Some(&job), &state);
+            }
+            assert!(
+                store.read_bytes + store.written_bytes - io_start
+                    <= model::REQUIREMENTS.io_bytes as u64
+            );
+            observed = job.progress.as_ref().unwrap().development_before.clone();
+            assert!(state.qualify(&job));
+            state.validate().unwrap();
+            controller = state.meta.clone();
+            meta_io.0.clear();
+            for blob in controller.model.blobs() {
+                for index in 0..blob.chunks() {
+                    meta_io.0.insert(
+                        (blob.sha256.clone(), index),
+                        store.inner.0[&(blob.sha256.clone(), index)].clone(),
+                    );
+                }
+            }
+            export_meta(&trial_dir.join("meta"), &controller.model, &meta_io);
+            write(&trial_dir.join("job.json"), &job);
+            write(&trial_dir.join("state.json"), &state);
+            let summary = serde_json::json!({"context":context,"seed":seed,"trial":trial,"elapsed":clock.elapsed(),"io_bytes":store.read_bytes+store.written_bytes-io_start,"plan":job.progress.as_ref().unwrap().plan,"outcome":job.progress.as_ref().unwrap().meta_update,"meta_state":controller});
+            summaries.push(summary);
+            write(&path.join("trials.json"), &summaries);
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"outer_meta_trial_completed","context":context,"trial":trial,"meta_updates":controller.model.updates,"elapsed":all_clock.elapsed()})
+            );
+        }
+    }
+    write(
+        &path.join("completed.json"),
+        &serde_json::json!({"experiences":summaries.len(),"elapsed":all_clock.elapsed(),"controller":controller}),
+    );
+    MetaSeed {
+        state: controller,
+        io: meta_io,
+    }
 }
 fn fork_store(source: &Store) -> Store {
     Store {
@@ -56,7 +262,7 @@ fn fork_store(source: &Store) -> Store {
         ..Store::default()
     }
 }
-fn collect(store: &mut Store, initial: &Checkpoint, job: Option<&Job>, selected: &Checkpoint) {
+fn collect(store: &mut Store, initial: &Checkpoint, job: Option<&Job>, selected: &State) {
     let keep = initial
         .blobs()
         .chain(selected.blobs())
@@ -101,20 +307,40 @@ fn common(seed: u64, path: &Path) -> Common {
         evidence,
         rows,
         cost,
+        bootstrap: Vec::new(),
+        bootstrap_cost: serde_json::json!({"cpu_micros":0,"wall_micros":0}),
     }
 }
-fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path) -> Run {
+fn train(
+    seed: u64,
+    definition: Arm,
+    common: &Common,
+    rounds: usize,
+    path: &Path,
+    meta_seed: Option<&MetaSeed>,
+) -> Run {
     std::fs::create_dir_all(path).unwrap();
-    let clock = Clock::start();
+    let mut clock = Clock::start();
     let Arm {
         name: arm,
         random_only,
         preparation,
+        acquisition_only,
     } = definition;
+    clock.charged_cpu = common.bootstrap_cost["cpu_micros"].as_u64().unwrap();
+    clock.charged_wall = common.bootstrap_cost["wall_micros"].as_u64().unwrap();
     let mut state = common.state.clone();
     state.preparation = preparation;
     let initial = state.model.clone();
     let mut store = fork_store(&common.store);
+    state.meta.draw ^= seed;
+    if preparation == Preparation::Meta {
+        let trained = meta_seed.expect("frozen outer learner");
+        state.meta = trained.state.clone();
+        state.meta.draw ^= seed;
+        copy_meta(&trained.io, &mut store, &state.meta);
+    }
+    state.validate().unwrap();
     let mut engine = Engine::default();
     let mut graph = crate::Graph::default();
     for row in &common.rows {
@@ -136,12 +362,21 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
     let dictionary = digest(&state.knowledge);
     let meanings = digest(&state.definitions);
     let mut all = common.evidence.clone();
-    let mut seen = BTreeSet::new();
+    let mut seen = common
+        .bootstrap
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
     let mut events = Vec::new();
     let mut stop = "round_limit";
     for round in 0..rounds {
-        let mut rows = Vec::new();
-        for index in 0..48 {
+        let shared = round == 0 && !common.bootstrap.is_empty();
+        let mut rows = if shared {
+            common.bootstrap.clone()
+        } else {
+            Vec::new()
+        };
+        for index in 0..if shared { 0 } else { 48 } {
             if clock.exhausted() {
                 stop = "compute_limit";
                 break;
@@ -149,6 +384,7 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
             frontier.feedback(Some(state.feedback()));
             let mut eligible = |q: &CompiledQuestion| {
                 !seen.contains(&crate::hex(q.resolution_id()))
+                    && meta_partition(q.source(), false)
                     && State::eligible(q.source())
                     && formal.assess(&graph, q).passed()
             };
@@ -244,8 +480,27 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
                 &rows,
             );
         }
+        write(
+            &path.join(format!("round-{round}-acquisitions.json")),
+            &rows,
+        );
         assert_eq!(dictionary, digest(&state.knowledge));
         assert_eq!(meanings, digest(&state.definitions));
+        if acquisition_only {
+            let summary = serde_json::json!({"seed":seed,"distinct_questions":seen.len(),"elapsed":clock.elapsed(),"optimizer_updates":0});
+            write(&path.join("summary.json"), &summary);
+            write(&path.join("state.json"), &state);
+            write(&path.join("evidence.json"), &all);
+            return Run {
+                seed,
+                arm,
+                state,
+                initial,
+                store,
+                summary,
+                bootstrap: Some((all, rows)),
+            };
+        }
         let evidence = evidence_for(&state, &all);
         let pool = state.training_pool(&evidence).unwrap();
         let before = decision_metrics(&state.model, pool.graphs(), &mut engine, &mut store.inner);
@@ -266,8 +521,14 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
                     stop = "compute_limit";
                     break;
                 }
-                job.execute(unit, None, 700_000 + seed, &mut engine, &mut store)
-                    .unwrap();
+                job.execute(
+                    unit,
+                    None,
+                    700_000 + seed * 10 + round as u64,
+                    &mut engine,
+                    &mut store,
+                )
+                .unwrap();
                 job.validate().unwrap();
                 performed = unit;
                 if unit == model::TRAINING_UNITS {
@@ -280,7 +541,7 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
                         &store.inner,
                     );
                 }
-                collect(&mut store, &initial, Some(&job), &state.model);
+                collect(&mut store, &initial, Some(&job), &state);
             }
             assert!(
                 store.read_bytes + store.written_bytes - io_before
@@ -295,6 +556,13 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
             gate = serde_json::json!({"completed":completed,"performed_units":performed,"required_units":job.units(),"elapsed":training_clock.elapsed(),
                 "progress":p,"input_evidence_sha256":digest(&evidence),"base_hash":job.base_hash,"io_bytes":job.io_bytes});
             write(&path.join(format!("round-{round}-job.json")), &job);
+            if let Some(update) = job.progress.as_ref().and_then(|p| p.meta_update.as_ref()) {
+                export_meta(
+                    &path.join(format!("round-{round}-meta")),
+                    &update.model,
+                    &store.inner,
+                );
+            }
         }
         frontier.feedback(Some(state.feedback()));
         let next_page=frontier.candidates().into_iter().filter(|q|!seen.contains(&crate::hex(q.resolution_id()))&&State::eligible(q.source())&&formal.assess(&graph,q).passed()).map(|q|serde_json::json!({"id":crate::hex(q.resolution_id()),"priority":state.feedback.priority(&q,128)})).collect::<Vec<_>>();
@@ -314,14 +582,14 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
         );
         write(&path.join(format!("round-{round}-state.json")), &state);
         write(&path.join(format!("round-{round}-evidence.json")), &all);
-        collect(&mut store, &initial, None, &state.model);
+        collect(&mut store, &initial, None, &state);
         if clock.exhausted() {
             stop = "compute_limit";
             break;
         }
     }
     let summary = serde_json::json!({"seed":seed,"arm":arm,"random_only":random_only,"preparation":preparation,"stop":stop,"elapsed":clock.elapsed(),"rounds":events,
-        "initial":initial,"selected":state.model,"distinct_questions":seen.len(),"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
+        "initial":initial,"selected":state.model,"distinct_questions":seen.len(),"shared_acquisition_cost":common.bootstrap_cost,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
     write(&path.join("summary.json"), &summary);
     Run {
         seed,
@@ -330,6 +598,7 @@ fn train(seed: u64, definition: Arm, common: &Common, rounds: usize, path: &Path
         initial,
         store,
         summary,
+        bootstrap: None,
     }
 }
 fn evaluate(
@@ -386,9 +655,9 @@ fn matched_adaptive_learning_experiment() {
     std::fs::create_dir_all(output).unwrap();
     let pilot = std::env::var_os("NAOME_ADAPTIVE_PILOT").is_some();
     let seeds = if pilot {
-        vec![2089]
+        vec![3511]
     } else {
-        vec![2203, 2309, 2411]
+        vec![2411, 3203, 3301]
     };
     let rounds = if pilot { 1 } else { 2 };
     let clock = Clock::start();
@@ -401,24 +670,68 @@ fn matched_adaptive_learning_experiment() {
     let protocol: serde_json::Value =
         serde_json::from_str(include_str!("../adaptive-protocol.json")).unwrap();
     write(&output.join("protocol.json"), &protocol);
-    let mut runs = Vec::new();
-    let mut common_cost = Vec::new();
+    write(
+        &output.join("split-audit.json"),
+        &serde_json::json!({"old_confirmation":bank.prior_confirmation,"excluded_roots":bank.excluded_roots,"confirmation_roots":bank.confirmation_roots,"new_core_extra_steps":3,"outer_split":"novel acquisition dependency SHA-256 byte0 modulo3: 0/1 meta-train,2 final; shared seven prerequisites excluded from novel acquisitions"}),
+    );
     write(
         &output.join("run-source.json"),
         &serde_json::json!({"source_commit":std::env::var("NAOME_ADAPTIVE_COMMIT").unwrap_or_else(|_|"unfrozen-engineering-pilot".into()),
-        "specification":Checkpoint::fresh().specification,"bank_sha256":digest(&(&bank.learning,&bank.development,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../adaptive-protocol.json"))),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS}),
+        "specification":Checkpoint::fresh().specification,"bank_sha256":digest(&(&bank.learning,&bank.development,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../adaptive-protocol.json"))),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"meta_parameters":meta::PARAMETERS,"meta_specification":meta::Checkpoint::fresh().specification}),
     );
+    let trained_meta = train_meta(&output.join("outer-learning"), pilot);
+    let mut runs = Vec::new();
+    let mut common_cost = Vec::new();
     for (index, seed) in seeds.iter().enumerate() {
         let path = output.join(format!("seed-{seed}"));
         let common = common(*seed, &path.join("common"));
         common_cost.push(serde_json::json!({"seed":seed,"cost":common.cost}));
+        let shared_clock = Clock::start();
+        let mut shared = train(
+            *seed,
+            Arm {
+                name: "shared_acquisition",
+                random_only: false,
+                preparation: Preparation::Targeted,
+                acquisition_only: true,
+            },
+            &common,
+            1,
+            &path.join("shared-acquisition"),
+            None,
+        );
+        let (evidence, bootstrap) = shared.bootstrap.take().unwrap();
+        let mut shared_rows = common.rows.clone();
+        shared_rows.extend(bootstrap.clone());
+        shared
+            .state
+            .compact_with_meta_headroom(META_HEADROOM)
+            .unwrap();
+        let shared_cost = shared_clock.elapsed();
+        write(
+            &path.join("shared-acquisition/matched-input.json"),
+            &serde_json::json!({"state":shared.state,"meta_headroom_bytes":META_HEADROOM,"charged_cost":shared_cost}),
+        );
+        let adaptive_common = Common {
+            state: shared.state,
+            store: shared.store,
+            evidence,
+            rows: shared_rows,
+            cost: common.cost.clone(),
+            bootstrap,
+            bootstrap_cost: shared_cost,
+        };
         let mut arms = vec![
             ("random_balanced", true, Preparation::Balanced),
             ("adaptive_balanced", false, Preparation::Balanced),
-            ("random_targeted", true, Preparation::Targeted),
+            ("adaptive_reference", false, Preparation::ReferenceTargeted),
             ("adaptive_targeted", false, Preparation::Targeted),
+            ("adaptive_fixed_mixture", false, Preparation::FixedMixture),
+            ("adaptive_random_mixture", false, Preparation::RandomMixture),
+            ("adaptive_meta", false, Preparation::Meta),
         ];
-        arms.rotate_left(index % 4);
+        let arm_count = arms.len();
+        arms.rotate_left(index % arm_count);
         for (arm, random, preparation) in arms {
             runs.push(train(
                 *seed,
@@ -426,10 +739,12 @@ fn matched_adaptive_learning_experiment() {
                     name: arm,
                     random_only: random,
                     preparation,
+                    acquisition_only: false,
                 },
-                &common,
+                if random { &common } else { &adaptive_common },
                 rounds,
                 &path.join(arm),
+                Some(&trained_meta),
             ));
         }
     }

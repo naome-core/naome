@@ -108,6 +108,16 @@ impl Profile {
     pub(crate) fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
+    pub(crate) fn summary(&self) -> [(u64, u64, u64); SKILLS] {
+        let mut out = [(0u64, 0u64, 0u64); SKILLS];
+        for (key, c) in &self.cells {
+            let skill = ((*key % (SKILLS as u32 * LEVELS)) / LEVELS) as usize;
+            out[skill].0 = out[skill].0.saturating_add(c[0]);
+            out[skill].1 = out[skill].1.saturating_add(c[1]);
+            out[skill].2 = out[skill].2.saturating_add(c[3]);
+        }
+        out
+    }
     fn key(budget: u32, skill: usize, level: u32) -> u32 {
         budget * (SKILLS as u32 * LEVELS) + skill as u32 * LEVELS + level
     }

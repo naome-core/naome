@@ -32,8 +32,7 @@ struct Run {
 }
 pub(super) fn evidence_for(state: &State, source: &[Evidence]) -> Vec<Evidence> {
     let mut needed = state
-        .replay
-        .iter()
+        .training_sources()
         .filter_map(Example::evidence_job)
         .collect::<BTreeSet<_>>()
         .into_iter()

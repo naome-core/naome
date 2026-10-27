@@ -954,6 +954,14 @@ fn validate_record(
             return Err("native learning epoch differs".into());
         }
         native.validate()?;
+        if native
+            .progress
+            .as_ref()
+            .and_then(|p| p.meta_update.as_ref())
+            .is_some_and(|u| u.experience.job != id)
+        {
+            return Err("meta experience source job identity differs".into());
+        }
         match &r.input {
             Input::Solve { .. } => native.validate_generated_trace()?,
             Input::Peer {

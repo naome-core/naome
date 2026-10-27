@@ -7,6 +7,7 @@ pub(crate) mod definitions;
 pub(crate) mod evidence;
 mod graph;
 pub(crate) mod knowledge;
+pub(crate) mod meta;
 mod model;
 pub(crate) mod peer;
 mod pool;
@@ -45,6 +46,13 @@ const EVALUATIONS: u32 = curriculum::DEVELOPMENT as u32 + 4;
 pub(crate) enum Preparation {
     Balanced,
     Targeted,
+    Meta,
+    #[cfg(test)]
+    FixedMixture,
+    #[cfg(test)]
+    RandomMixture,
+    #[cfg(test)]
+    ReferenceTargeted,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +145,7 @@ pub(crate) struct State {
     rejections: u64,
     feedback: crate::training::ability::Feedback,
     preparation: Preparation,
+    meta: meta::State,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +170,12 @@ pub(crate) struct Progress {
     development_after: crate::training::ability::Profile,
     regressions: [u16; crate::training::ability::SKILLS],
     gains: [u16; crate::training::ability::SKILLS],
+    pub plan: Option<meta::Selection>,
+    pub meta_update: Option<meta::Update>,
+    pub cpu_micros: u64,
+    pub wall_micros: u64,
+    pub meta_cpu_micros: u64,
+    pub meta_wall_micros: u64,
     pub result: Option<Solution>,
     pub diagnostic: String,
 }
@@ -228,12 +243,63 @@ pub(crate) fn digest(value: &impl Serialize) -> String {
     ))
 }
 impl Job {
+    /// Bind worker reports to the plan and candidate already retained by this
+    /// job owner. Re-delivery of a persisted unit is exactly idempotent.
+    pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), String> {
+        if next
+            .meta_update
+            .as_ref()
+            .is_some_and(|u| u.experience.job != job)
+        {
+            return Err("meta experience source job differs".into());
+        }
+        if let Some(previous) = &self.progress {
+            if next.unit == previous.unit {
+                return if digest(&next) == digest(previous) {
+                    Ok(())
+                } else {
+                    Err("repeated learning checkpoint differs".into())
+                };
+            }
+            if next.unit != previous.unit + 1
+                || next.plan != previous.plan
+                || next.cpu_micros < previous.cpu_micros
+                || next.wall_micros < previous.wall_micros
+                || next.meta_cpu_micros < previous.meta_cpu_micros
+                || next.meta_wall_micros < previous.meta_wall_micros
+            {
+                return Err("learning plan or measured continuation differs".into());
+            }
+            if let Some(update) = &next.meta_update
+                && (update.experience.candidate_model != previous.candidate.as_ref().map(digest)
+                    || update.experience.lower_cpu_micros
+                        != previous.cpu_micros.saturating_sub(previous.meta_cpu_micros)
+                    || update.experience.lower_wall_micros
+                        != previous
+                            .wall_micros
+                            .saturating_sub(previous.meta_wall_micros))
+            {
+                return Err("meta outcome differs from its retained trial".into());
+            }
+        } else if next.unit != 1 {
+            return Err("learning checkpoint lacks its first unit".into());
+        }
+        let previous = self.progress.replace(next);
+        if let Err(error) = self.validate() {
+            self.progress = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
     pub fn blobs(&self) -> Vec<&Blob> {
-        let mut blobs: Vec<_> = self.base.model.blobs().collect();
+        let mut blobs: Vec<_> = self.base.blobs().collect();
         if let Some(p) = &self.progress {
             blobs.extend(p.model.blobs());
             if let Some(candidate) = &p.candidate {
                 blobs.extend(candidate.blobs());
+            }
+            if let Some(update) = &p.meta_update {
+                blobs.extend(update.model.blobs());
             }
         }
         blobs
@@ -280,8 +346,7 @@ impl Job {
         self.base.validate()?;
         let mut expected = if self.training {
             self.base
-                .replay
-                .iter()
+                .training_sources()
                 .filter_map(Example::evidence_job)
                 .collect::<Vec<_>>()
         } else {
@@ -296,7 +361,7 @@ impl Job {
                 .len()
                 > REPLAY * 8 * 1024 + 4096
             || self.evidence.iter().any(|e| {
-                !self.base.replay.iter().any(|r| {
+                !self.base.examples().any(|r| {
                     r.job == e.job
                         && r.proof_id == e.proof_id
                         && matches!(&r.tree,
@@ -325,6 +390,52 @@ impl Job {
             blob.validate()?;
         }
         if let Some(p) = &self.progress {
+            if let Some(selection) = &p.plan {
+                selection.validate()?;
+                if selection.context != meta::context(&self.base) {
+                    return Err("meta plan context differs from its parent".into());
+                }
+            } else if self.units() > 1 && self.base.preparation == Preparation::Meta {
+                return Err("native meta trial lacks its selected plan".into());
+            }
+            if p.meta_cpu_micros > p.cpu_micros || p.meta_wall_micros > p.wall_micros {
+                return Err("meta cost exceeds actual job cost".into());
+            }
+            if let Some(update) = &p.meta_update {
+                update.model.validate()?;
+                update.experience.validate()?;
+                let selected = p.plan.as_ref().ok_or("meta update without selected plan")?;
+                if self.units() == 1
+                    || p.unit != self.units()
+                    || self.base.preparation != Preparation::Meta
+                    || update.model.updates
+                        != self.base.meta.model.updates.saturating_add(meta::UPDATES)
+                    || update.experience.context != selected.context
+                    || update.experience.plan != selected.plan
+                    || update.experience.source_model != digest(&self.base.model)
+                    || update.experience.selected_model != digest(&p.model)
+                    || update.experience.source_epoch != self.base.epoch
+                    || update.experience.job == 0
+                    || u32::from(update.experience.before) != p.incumbent_score
+                    || u32::from(update.experience.after) != p.candidate_score
+                    || update.experience.protected_loss != p.development_regression
+                    || update.experience.anchor_loss != p.anchor_regression
+                    || update.experience.lower_cpu_micros > p.cpu_micros
+                    || update.experience.lower_wall_micros > p.wall_micros
+                    || !update.first_loss.is_finite()
+                    || !update.last_loss.is_finite()
+                {
+                    return Err(
+                        "meta experience or optimizer is not bound to the actual completed trial"
+                            .into(),
+                    );
+                }
+            } else if self.units() > 1
+                && p.unit == self.units()
+                && self.base.preparation == Preparation::Meta
+            {
+                return Err("completed meta trial lacks its real update".into());
+            }
             if serde_json::to_vec(p)
                 .map_err(|e| e.to_string())?
                 .len()
@@ -397,6 +508,8 @@ impl Job {
         if unit != self.progress.as_ref().map_or(1, |p| p.unit + 1) {
             return Err("learning checkpoint sequence differs".into());
         }
+        let wall_started = std::time::Instant::now();
+        let cpu_started = meta::cpu_micros()?;
         let mut p = self.progress.clone().unwrap_or(Progress {
             cost: None,
             training_cost: model::TrainingCost::default(),
@@ -418,14 +531,39 @@ impl Job {
             development_after: crate::training::ability::Profile::new(digest(&self.base.model)),
             regressions: [0; crate::training::ability::SKILLS],
             gains: [0; crate::training::ability::SKILLS],
+            plan: None,
+            meta_update: None,
+            cpu_micros: 0,
+            wall_micros: 0,
+            meta_cpu_micros: 0,
+            meta_wall_micros: 0,
             result: None,
             diagnostic: "no_new_accepted_solutions".into(),
         });
+        if self.units() > 1 && unit == 1 {
+            let wall = std::time::Instant::now();
+            let cpu = meta::cpu_micros()?;
+            let selection = engine.meta.select(&self.base, io)?;
+            p.plan = Some(selection);
+            p.meta_cpu_micros += meta::cpu_micros()?.saturating_sub(cpu);
+            p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        }
         if self.units() > 1 && unit <= model::TRAINING_UNITS {
             let parent = p.candidate.as_ref().unwrap_or(&self.base.model);
-            if let Some((candidate, first, last)) =
-                engine.train_replay(parent, &self.base, &self.evidence, &mut p.rng, io)?
-            {
+            let phase = p
+                .plan
+                .as_ref()
+                .ok_or("training plan absent")?
+                .plan
+                .phase(unit - 1);
+            if let Some((candidate, first, last)) = engine.train_replay_using(
+                parent,
+                &self.base,
+                &self.evidence,
+                &mut p.rng,
+                phase,
+                io,
+            )? {
                 p.training_cost.preparation_micros = p
                     .training_cost
                     .preparation_micros
@@ -545,6 +683,7 @@ impl Job {
                 }
             }
         } else {
+            let candidate_model = p.candidate.as_ref().map(digest);
             if let Some(candidate) = p.candidate.take() {
                 if p.candidate_score > p.incumbent_score
                     && !p.anchor_regression
@@ -564,6 +703,32 @@ impl Job {
                     }
                     .into();
                 }
+            }
+            if self.units() > 1 && self.base.preparation == Preparation::Meta {
+                let selection = p.plan.as_ref().ok_or("meta trial plan absent")?;
+                let experience = meta::Experience {
+                    job,
+                    context: selection.context,
+                    plan: selection.plan.clone(),
+                    source_model: digest(&self.base.model),
+                    selected_model: digest(&p.model),
+                    candidate_model,
+                    source_epoch: self.base.epoch,
+                    before: p.incumbent_score as u16,
+                    after: p.candidate_score as u16,
+                    protected_loss: p.development_regression,
+                    anchor_loss: p.anchor_regression,
+                    lower_cpu_micros: p.cpu_micros.saturating_sub(p.meta_cpu_micros),
+                    lower_wall_micros: p.wall_micros.saturating_sub(p.meta_wall_micros),
+                };
+                let wall = std::time::Instant::now();
+                let cpu = meta::cpu_micros()?;
+                let update = engine
+                    .meta
+                    .learn(&self.base, experience, selection.draw, io)?;
+                p.meta_update = Some(update);
+                p.meta_cpu_micros += meta::cpu_micros()?.saturating_sub(cpu);
+                p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
             }
             if let Some(question) = question {
                 let q = CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
@@ -589,6 +754,12 @@ impl Job {
                 }
             }
         }
+        p.cpu_micros = p
+            .cpu_micros
+            .saturating_add(meta::cpu_micros()?.saturating_sub(cpu_started));
+        p.wall_micros = p
+            .wall_micros
+            .saturating_add(wall_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
         p.unit = unit;
         self.progress = Some(p);
         Ok(())

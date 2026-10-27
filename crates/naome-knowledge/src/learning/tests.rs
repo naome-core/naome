@@ -1,3 +1,8 @@
+fn fixed_state() -> State {
+    let mut state = State::fresh();
+    state.preparation = Preparation::Targeted;
+    state
+}
 use super::*;
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 pub(crate) fn own_question() -> String {
@@ -61,7 +66,7 @@ fn question_seed_preserves_dependency_partitions_and_native_identities() {
 #[test]
 fn progress_statistics_remain_canonical_through_repeated_observation_and_reload() {
     let question = own_question();
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     for attempt in 0..200 {
         state.observe(&question, Some(attempt % 3 != 0));
         let bytes = crate::checkpoint::encode(&state).unwrap();
@@ -129,7 +134,7 @@ fn action_graph_preserves_transition_information_and_keeps_labels_out_of_feature
 }
 #[test]
 fn a_single_new_proof_does_not_trigger_repeated_full_training() {
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     assert!(!state.needs_training());
     state.attempted(state.accepted);
@@ -170,7 +175,7 @@ fn native_search_reconstructs_classical_quantifier_equality_and_zfc_proofs() {
 }
 #[test]
 fn learning_replays_only_checked_owned_eligible_solutions_and_is_atomic_on_forgery() {
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     let e = own_example();
     assert!(state.accept(e.clone()).unwrap());
     assert!(!state.accept(e.clone()).unwrap());
@@ -187,7 +192,7 @@ fn learning_replays_only_checked_owned_eligible_solutions_and_is_atomic_on_forge
 }
 #[test]
 fn checkpoint_after_work_before_acknowledgement_is_idempotent() {
-    let mut job = State::fresh().job();
+    let mut job = fixed_state().job();
     let mut engine = Engine::default();
     let mut io = MemoryStore::default();
     let source = curriculum::CORPUS
@@ -213,8 +218,204 @@ fn checkpoint_after_work_before_acknowledgement_is_idempotent() {
     );
 }
 #[test]
-fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuation() {
+fn retained_training_plan_and_measured_cost_cannot_change_between_units() {
     let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    let mut io = MemoryStore::default();
+    let selection = meta::Engine::default().select(&state, &mut io).unwrap();
+    let mut progress = finished_progress(&state);
+    progress.unit = 1;
+    progress.trained = state.trained;
+    progress.plan = Some(selection);
+    progress.cpu_micros = 10;
+    progress.wall_micros = 20;
+    job.retain_progress(51, progress.clone()).unwrap();
+    let before = digest(&job);
+    job.retain_progress(51, progress.clone()).unwrap();
+    assert_eq!(before, digest(&job));
+    let mut altered = progress.clone();
+    altered.plan.as_mut().unwrap().plan.phases[0].focused ^= true;
+    assert!(job.retain_progress(51, altered.clone()).is_err());
+    altered.unit = 2;
+    assert!(job.retain_progress(51, altered).is_err());
+    progress.unit = 2;
+    progress.cpu_micros = 9;
+    assert!(job.retain_progress(51, progress.clone()).is_err());
+    assert_eq!(before, digest(&job));
+    progress.cpu_micros = 11;
+    job.retain_progress(51, progress).unwrap();
+}
+#[test]
+fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let lower = state.model.clone();
+    let mut job = state.job();
+    job.training = true;
+    let mut io = MemoryStore::default();
+    let mut meta = meta::Engine::default();
+    let selection = meta.select(&state, &mut io).unwrap();
+    // This typed owner fixture isolates the receipt boundary. Actual lower
+    // updates and the full independent gate run in the ordinary node fixture.
+    let mut candidate = lower.clone();
+    candidate.updates = 250;
+    candidate.model = Some(Blob::of(&[1; 32]));
+    candidate.optimizer = Some(Blob::of(&[2; 32]));
+    let mut previous = finished_progress(&state);
+    previous.unit = job.units() - 1;
+    previous.plan = Some(selection.clone());
+    previous.candidate = Some(candidate.clone());
+    previous.cpu_micros = 10;
+    previous.wall_micros = 20;
+    previous.meta_cpu_micros = 1;
+    previous.meta_wall_micros = 1;
+    job.progress = Some(previous.clone());
+    let update = meta
+        .learn(
+            &state,
+            meta::Experience {
+                job: 61,
+                context: selection.context,
+                plan: selection.plan,
+                source_model: digest(&lower),
+                selected_model: digest(&lower),
+                candidate_model: Some(digest(&candidate)),
+                source_epoch: state.epoch,
+                before: 0,
+                after: 0,
+                protected_loss: false,
+                anchor_loss: false,
+                lower_cpu_micros: 9,
+                lower_wall_micros: 19,
+            },
+            selection.draw,
+            &mut io,
+        )
+        .unwrap();
+    let mut progress = previous;
+    progress.unit = job.units();
+    progress.candidate = None;
+    progress.rejections += 1;
+    progress.meta_update = Some(update);
+    progress.cpu_micros = 13;
+    progress.wall_micros = 23;
+    progress.meta_cpu_micros = 2;
+    progress.meta_wall_micros = 2;
+    let retained = digest(&job);
+    let mut forged = progress.clone();
+    forged
+        .meta_update
+        .as_mut()
+        .unwrap()
+        .experience
+        .candidate_model = None;
+    assert!(job.retain_progress(61, forged).is_err());
+    assert!(job.retain_progress(62, progress.clone()).is_err());
+    assert_eq!(retained, digest(&job));
+    job.retain_progress(61, progress.clone()).unwrap();
+    job.retain_progress(61, progress).unwrap();
+    assert!(state.qualify(&job));
+    assert_eq!(state.model, lower);
+    assert_eq!(state.meta.trials, 1);
+    assert_eq!(state.meta.model.updates, 8);
+    assert!(!state.qualify(&job));
+}
+#[test]
+fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
+    struct Interrupted {
+        store: MemoryStore,
+        writes: usize,
+    }
+    impl ArtifactIo for Interrupted {
+        fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+            self.store.read(blob, range)
+        }
+        fn write(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+            bytes: Vec<u8>,
+        ) -> Result<(), String> {
+            self.writes += 1;
+            if self.writes == 2 {
+                return Err("injected partial meta pair write".into());
+            }
+            self.store.write(blob, range, bytes)
+        }
+    }
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    let plan = meta::Engine::default()
+        .select(&state, &mut MemoryStore::default())
+        .unwrap();
+    let mut prior = finished_progress(&state);
+    prior.unit = job.units() - 1;
+    prior.plan = Some(plan);
+    prior.cpu_micros = 123456;
+    prior.wall_micros = 234567;
+    prior.meta_cpu_micros = 23;
+    prior.meta_wall_micros = 45;
+    prior.diagnostic = "no_ambiguous_training_decisions".into();
+    job.progress = Some(prior);
+    let original = digest(&job);
+    let mut control = job.clone();
+    let mut uninterrupted = MemoryStore::default();
+    control
+        .execute(
+            control.units(),
+            None,
+            71,
+            &mut Engine::default(),
+            &mut uninterrupted,
+        )
+        .unwrap();
+    let mut interrupted = Interrupted {
+        store: MemoryStore::default(),
+        writes: 0,
+    };
+    assert!(
+        job.execute(
+            job.units(),
+            None,
+            71,
+            &mut Engine::default(),
+            &mut interrupted
+        )
+        .is_err()
+    );
+    assert_eq!(digest(&job), original);
+    assert_eq!(interrupted.store.0.len(), 1);
+    // A new Engine models the lost worker. The prior durable cost, plan and
+    // candidate define this same trial; retry wall/CPU cannot change its label.
+    job.execute(
+        job.units(),
+        None,
+        71,
+        &mut Engine::default(),
+        &mut interrupted,
+    )
+    .unwrap();
+    job.validate().unwrap();
+    let retried = job.progress.as_ref().unwrap().meta_update.as_ref().unwrap();
+    let expected = control
+        .progress
+        .as_ref()
+        .unwrap()
+        .meta_update
+        .as_ref()
+        .unwrap();
+    assert_eq!(retried.model, expected.model);
+    assert_eq!(digest(&retried.experience), digest(&expected.experience));
+    assert_eq!(retried.draw, expected.draw);
+    assert_eq!(interrupted.store.0, uninterrupted.0);
+}
+#[test]
+fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuation() {
+    let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut io = MemoryStore::default();
     let mut engine = Engine::default();
@@ -295,6 +496,12 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 }
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        plan: None,
+        meta_update: None,
+        cpu_micros: 0,
+        wall_micros: 0,
+        meta_cpu_micros: 0,
+        meta_wall_micros: 0,
         cost: None,
         training_cost: model::TrainingCost::default(),
         unit: 0,
@@ -320,7 +527,7 @@ fn finished_progress(state: &State) -> Progress {
     }
 }
 pub(crate) fn measured_progress() -> Progress {
-    let mut progress = finished_progress(&State::fresh());
+    let mut progress = finished_progress(&fixed_state());
     let question = CompiledQuestion::compile(&own_question()).unwrap();
     progress
         .development_before
@@ -373,6 +580,100 @@ pub(crate) fn own_solution() -> Solution {
         .0
         .unwrap()
 }
+#[test]
+fn targeted_preparation_rehearses_owned_anchors_without_duplicate_source_weight() {
+    let solution = own_solution();
+    let mut state = fixed_state();
+    assert!(
+        state
+            .accept(Example {
+                origin: Origin::Local,
+                job: 1,
+                question: own_question(),
+                proof_id: solution.proof_id,
+                refuted: solution.refuted,
+                tree: solution.tree
+            })
+            .unwrap()
+    );
+    let original = state
+        .training_pool(&[])
+        .unwrap()
+        .graphs()
+        .iter()
+        .map(graph::Graph::key)
+        .collect::<Vec<_>>();
+    assert!(!original.is_empty());
+    assert_eq!(state.training_sources().count(), 1);
+    state.replay.clear();
+    state.validate().unwrap();
+    assert_eq!(
+        original,
+        state
+            .training_pool(&[])
+            .unwrap()
+            .graphs()
+            .iter()
+            .map(graph::Graph::key)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(state.local_examples, 1);
+    state.preparation = Preparation::Balanced;
+    assert!(state.training_pool(&[]).unwrap().is_empty());
+}
+#[test]
+fn evicted_stored_anchor_uses_its_original_owned_evidence_and_existing_source_cap() {
+    let solution = own_solution();
+    let mut state = fixed_state();
+    let trace = solution.tree.clone();
+    assert!(
+        state
+            .accept(Example {
+                origin: Origin::Local,
+                job: 1,
+                question: own_question(),
+                proof_id: solution.proof_id.clone(),
+                refuted: solution.refuted,
+                tree: trace.clone()
+            })
+            .unwrap()
+    );
+    state.replay.clear();
+    state.anchors[0].tree = search::Tree::Stored {
+        steps: 1,
+        bytes: serde_json::to_vec(&trace).unwrap().len(),
+        binding: digest(&trace),
+    };
+    state.validate().unwrap();
+    let mut job = state.job();
+    job.training = true;
+    assert!(
+        job.validate().is_err(),
+        "stored rehearsal cannot invent a source trace"
+    );
+    job.evidence.push(Evidence {
+        job: 1,
+        proof_id: solution.proof_id,
+        trace,
+    });
+    job.validate().unwrap();
+    assert!(!state.training_pool(&job.evidence).unwrap().is_empty());
+    job.evidence[0].job = 2;
+    assert!(job.validate().is_err());
+    let mut other = state.anchors[0].clone();
+    other.job = 2;
+    for entry in [&mut state.anchors[0], &mut other] {
+        let search::Tree::Stored { bytes, .. } = &mut entry.tree else {
+            unreachable!()
+        };
+        *bytes = REPLAY * 8 * 1024 / 2 + 1;
+    }
+    state.anchors.push(other);
+    assert!(
+        state.validate().is_err(),
+        "retained anchors share the original trace-byte allowance"
+    );
+}
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
         cost: None,
@@ -403,6 +704,9 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
     candidate.model = Some(model);
     candidate.optimizer = Some(optimizer);
     candidate.updates += model::UPDATES_PER_UNIT;
+    let plan = super::meta::Engine::default()
+        .select(&job.base, &mut MemoryStore::default())
+        .unwrap();
     job.progress = Some(Progress {
         cost: None,
         training_cost: model::TrainingCost::default(),
@@ -422,13 +726,14 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         original_score: [0, 0],
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
+        plan: Some(plan),
         ..finished_progress(&job.base)
     });
 }
 
 #[test]
 fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified_model() {
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut job = state.job();
     job.training = true;
@@ -473,7 +778,7 @@ fn later_better_proof_advances_replay_revision_without_recounting_the_question()
     );
     earlier.job = 40;
     assert_ne!(earlier.proof_id, original.proof_id);
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     assert!(state.consider(earlier, true).unwrap());
     let unique = state.sample_counts();
     assert!(state.consider(original.clone(), false).unwrap());
@@ -544,7 +849,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
         e
     }
     let equality = meaning("def equality=relation(x,y): eq(x,y)");
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     assert!(state.remember_definition(equality.clone()).unwrap());
     let id = crate::hex(equality.address().unwrap().as_bytes());
     assert_eq!(state.definition_uses[&id], 0);
@@ -572,7 +877,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
     restored.validate().unwrap();
     assert_eq!(restored.definition_uses[&id], 1);
     let unused = meaning("def unused=relation(x,y): mem(x,y)");
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     state.remember_definition(unused.clone()).unwrap();
     let mut unsupported = own_example();
     unsupported.tree = search::Tree::Definitions {
@@ -600,7 +905,7 @@ fn a_peer_certificate_cannot_be_reclassified_as_a_local_discovery_trace() {
     let verified = search::core::checked(q.proved_target(), &solution.tree)
         .unwrap()
         .2;
-    let mut job = State::fresh().job();
+    let mut job = fixed_state().job();
     completed(&mut job, solution.clone());
     job.validate_generated_trace().unwrap();
     solution.tree = search::Tree::Certificate(evidence::pack(&verified).unwrap());
@@ -628,7 +933,7 @@ fn valid_stored_theorems_beyond_question_capacity_do_not_halt_learning() {
     let entry = knowledge::Entry {
         packet: evidence::pack(&verified).unwrap(),
     };
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     let before = digest(&state);
     assert!(!state.remember_theorem(entry).unwrap());
     assert_eq!(digest(&state), before);
@@ -636,7 +941,7 @@ fn valid_stored_theorems_beyond_question_capacity_do_not_halt_learning() {
 
 #[test]
 fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pair() {
-    let mut state = State::fresh();
+    let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let anchors = digest(&state.anchors);
     let accepted = state.accepted;

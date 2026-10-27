@@ -77,14 +77,48 @@ impl State {
     pub fn sample_counts(&self) -> (u64, u64) {
         (self.local_examples, self.peer_examples)
     }
-    pub fn replay_sources(&self) -> impl Iterator<Item = &Example> {
-        self.replay.iter().filter(|e| e.evidence_job().is_some())
+    /// Exact owned inputs used by preparation. Rehearsal adds only existing
+    /// own/peer anchor proofs, never development outcomes or new truth labels.
+    pub fn training_sources(&self) -> impl Iterator<Item = &Example> {
+        let mut jobs = std::collections::BTreeSet::new();
+        self.replay
+            .iter()
+            .chain(self.anchors.iter().filter(|_| {
+                !matches!(self.preparation, Preparation::Balanced) && {
+                    #[cfg(test)]
+                    {
+                        self.preparation != Preparation::ReferenceTargeted
+                    }
+                    #[cfg(not(test))]
+                    {
+                        true
+                    }
+                }
+            }))
+            .filter(move |e| jobs.insert(e.job))
+    }
+    fn training_trace_bytes(&self) -> usize {
+        self.training_sources()
+            .filter_map(|e| {
+                if let search::Tree::Stored { bytes, .. } = e.tree {
+                    Some(bytes)
+                } else {
+                    None
+                }
+            })
+            .sum()
     }
     pub fn examples(&self) -> impl Iterator<Item = &Example> {
         self.replay.iter().chain(&self.anchors)
     }
+    pub fn meta_experiences(&self) -> impl Iterator<Item = &meta::Experience> {
+        self.meta.memory.iter()
+    }
+    pub fn meta_updates(&self) -> u64 {
+        self.meta.model.updates
+    }
     pub fn blobs(&self) -> impl Iterator<Item = &Blob> {
-        self.model.blobs()
+        self.model.blobs().chain(self.meta.model.blobs())
     }
     pub fn fresh() -> Self {
         let model = Checkpoint::fresh();
@@ -107,11 +141,13 @@ impl State {
             promotions: 0,
             rejections: 0,
             feedback,
-            preparation: Preparation::Targeted,
+            preparation: Preparation::Meta,
+            meta: meta::State::fresh(),
         }
     }
     pub fn validate(&self) -> Result<(), String> {
         self.model.validate()?;
+        self.meta.validate()?;
         knowledge::validate(&self.knowledge)?;
         let _ = definitions::context(&self.definitions)?;
         if self.definition_uses.keys().any(|id| {
@@ -128,18 +164,7 @@ impl State {
             || self.trained > self.epoch
             || self.attempted > self.epoch
             || self.local_examples.checked_add(self.peer_examples) != Some(self.accepted)
-            || self
-                .replay
-                .iter()
-                .filter_map(|e| {
-                    if let search::Tree::Stored { bytes, .. } = e.tree {
-                        Some(bytes)
-                    } else {
-                        None
-                    }
-                })
-                .sum::<usize>()
-                > REPLAY * 8 * 1024
+            || self.training_trace_bytes() > REPLAY * 8 * 1024
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
                 > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
         {
@@ -332,10 +357,24 @@ impl State {
             || native.units() == 1
             || self.model != native.base.model
             || self.trained != native.base.trained
+            || self.meta.model != native.base.meta.model
+            || self.meta.draw != native.base.meta.draw
         {
             return false;
         }
         let mut next = self.clone();
+        if let Some(plan) = &p.plan {
+            next.meta.draw = plan.draw;
+        }
+        if let Some(update) = &p.meta_update {
+            next.meta.model = update.model.clone();
+            next.meta.draw = update.draw;
+            next.meta.trials = next.meta.trials.saturating_add(1);
+            next.meta.memory.push(update.experience.clone());
+            if next.meta.memory.len() > meta::MEMORY {
+                next.meta.memory.remove(0);
+            }
+        }
         next.draws = next.draws.max(p.rng);
         next.model = p.model.clone();
         let key = digest(&next.model);
@@ -376,13 +415,32 @@ impl State {
     /// records, rather than the replay working set, own proof history.
     pub(crate) fn compact(&mut self) -> Result<(), String> {
         let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
-        while crate::checkpoint::encode(self)?.len() > capacity {
+        while crate::checkpoint::encode(self)?.len() > capacity
+            || self.training_trace_bytes() > REPLAY * 8 * 1024
+        {
             if self.replay.is_empty() {
                 return Err("fixed learning snapshot exceeds working byte capacity".into());
             }
             self.remove_replay();
         }
         Ok(())
+    }
+    /// A matched research context reserves the same upper-state headroom in
+    /// every arm before any lower update. The ordinary State cap still applies.
+    #[cfg(test)]
+    pub(super) fn compact_with_meta_headroom(&mut self, bytes: usize) -> Result<(), String> {
+        let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
+        let current = crate::checkpoint::encode(&self.meta)?.len();
+        if current > bytes {
+            return Err("meta context exceeds the frozen matched headroom".into());
+        }
+        while crate::checkpoint::encode(self)?.len() + bytes - current > capacity {
+            if self.replay.is_empty() {
+                return Err("matched meta context cannot retain a learning batch".into());
+            }
+            self.remove_replay();
+        }
+        self.validate()
     }
     fn remove_replay(&mut self) {
         let mut counts = BTreeMap::new();
@@ -415,9 +473,32 @@ impl State {
             .map_or(0, |(index, _)| index);
         self.replay.remove(index);
     }
+    #[cfg(test)]
     pub(super) fn training_pool(&self, evidence: &[Evidence]) -> Result<pool::Pool, String> {
+        self.training_pool_for(
+            evidence,
+            !matches!(self.preparation, Preparation::Balanced) && {
+                #[cfg(test)]
+                {
+                    self.preparation != Preparation::ReferenceTargeted
+                }
+                #[cfg(not(test))]
+                {
+                    true
+                }
+            },
+        )
+    }
+    pub(super) fn training_pool_for(
+        &self,
+        evidence: &[Evidence],
+        rehearsal: bool,
+    ) -> Result<pool::Pool, String> {
         let mut pool = pool::Pool::default();
-        for e in &self.replay {
+        for e in self
+            .training_sources()
+            .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job))
+        {
             let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
             let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
             let target = if e.refuted {
@@ -612,20 +693,10 @@ impl State {
             next.anchors.push(example.clone());
         }
         next.replay.push(example);
-        while next.replay.len() > REPLAY
-            || next
-                .replay
-                .iter()
-                .filter_map(|e| {
-                    if let search::Tree::Stored { bytes, .. } = e.tree {
-                        Some(bytes)
-                    } else {
-                        None
-                    }
-                })
-                .sum::<usize>()
-                > REPLAY * 8 * 1024
-        {
+        while next.replay.len() > REPLAY || next.training_trace_bytes() > REPLAY * 8 * 1024 {
+            if next.replay.is_empty() {
+                return Ok(false);
+            }
             next.remove_replay();
         }
         while crate::checkpoint::encode(&next)?.len()

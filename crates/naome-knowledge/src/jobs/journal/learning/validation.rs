@@ -106,6 +106,21 @@ fn validate_sources(
             _ => return Err("native replay source provenance differs".into()),
         }
     }
+    for experience in state.meta_experiences() {
+        let source = record(c, experience.job)?;
+        let update = source
+            .native
+            .as_ref()
+            .and_then(|n| n.progress.as_ref())
+            .and_then(|p| p.meta_update.as_ref())
+            .ok_or("meta trial source update absent")?;
+        if !matches!(source.input, Input::Train { .. })
+            || source.state != State::Complete
+            || crate::learning::digest(&update.experience) != crate::learning::digest(experience)
+        {
+            return Err("meta trial experience differs from its original owned job".into());
+        }
+    }
     Ok(())
 }
 pub(in crate::jobs::journal) fn validate_rows(
