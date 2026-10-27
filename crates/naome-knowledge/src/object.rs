@@ -127,6 +127,20 @@ impl ProgramMetadata {
 }
 
 impl Metadata {
+    /// Restore the described statement's sign. This establishes an identity
+    /// binding only; callers still require the canonical checked graph.
+    pub(crate) fn statement_question(
+        &self,
+    ) -> Result<naome_authoring::CompiledQuestion, crate::Error> {
+        let (_, statement, question) = self.compile()?;
+        let target = if target_id(question.positive_target())? == statement {
+            question.positive_target()
+        } else {
+            question.negative_target()
+        };
+        naome_authoring::CompiledQuestion::from_formula(target.clone())
+            .map_err(|e| crate::Error::from(e.to_string()))
+    }
     pub(crate) fn compile(
         &self,
     ) -> Result<(ArtifactId, StatementId, naome_authoring::CompiledQuestion), crate::Error> {

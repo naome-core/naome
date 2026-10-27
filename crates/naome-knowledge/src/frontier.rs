@@ -873,10 +873,10 @@ impl Frontier {
             self.learning_event(question, before, true);
         }
         if self.native {
-            let (_, _, actual_goal) = graph
+            let actual_goal = graph
                 .describe(root)?
                 .ok_or("checked goal disappeared")?
-                .compile()?;
+                .statement_question()?;
             for dependency in graph.direct_dependencies(root)? {
                 if let Some(lemma) = self.evidence.support(
                     question,
@@ -890,7 +890,7 @@ impl Frontier {
                         }
                         graph
                             .describe(dependency)?
-                            .map(|metadata| metadata.compile().map(|(_, _, q)| q))
+                            .map(|metadata| metadata.statement_question())
                             .transpose()
                     },
                 )? {
