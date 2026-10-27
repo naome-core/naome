@@ -8,6 +8,111 @@ use nix::sys::{
 };
 const META_HEADROOM: usize = meta::STATE_BYTES;
 
+// Reserve structural metadata before fixing the shared lower source pool. This
+// envelope is never inserted as observed ability or supplied to a learner.
+fn development_capacity_profile(checkpoint: String) -> crate::training::ability::Profile {
+    let mut profile = crate::training::ability::Profile::new(checkpoint);
+    for case in curriculum::development() {
+        let question = CompiledQuestion::compile(&case.source).unwrap();
+        // Every actual cell has at most one observation per question. These
+        // three passes bound all outcome counters and saturate measured cost,
+        // while preserving the exact syntax cells and coverage sketches.
+        for solved in [Some(true), Some(false), None] {
+            profile.observe(&question, 32, solved, u64::MAX);
+        }
+    }
+    profile
+}
+fn outer_metadata_headroom(state: &State) -> usize {
+    let maximum = development_capacity_profile(state.feedback.checkpoint.clone());
+    META_HEADROOM
+        + crate::checkpoint::encode(&maximum)
+            .unwrap()
+            .len()
+            .saturating_sub(
+                crate::checkpoint::encode(&state.feedback.development)
+                    .unwrap()
+                    .len(),
+            )
+}
+#[test]
+fn prospective_outer_profile_reserve_bounds_actual_qualification_outcomes() {
+    let checkpoint = digest(&Checkpoint::fresh());
+    let maximum = development_capacity_profile(checkpoint.clone());
+    maximum.validate().unwrap();
+    let capacity = crate::checkpoint::encode(&maximum).unwrap().len();
+    for mode in 0..4 {
+        let mut actual = crate::training::ability::Profile::new(checkpoint.clone());
+        for (index, case) in curriculum::development().into_iter().enumerate() {
+            let question = CompiledQuestion::compile(&case.source).unwrap();
+            let outcome = match mode {
+                0 => Some(true),
+                1 => Some(false),
+                2 => None,
+                _ => [Some(true), Some(false), None][index % 3],
+            };
+            actual.observe(&question, 32, outcome, u64::MAX);
+        }
+        actual.validate().unwrap();
+        assert!(crate::checkpoint::encode(&actual).unwrap().len() <= capacity);
+    }
+}
+#[test]
+#[ignore = "Explicit preserved outer-context capacity replay; no optimizer or final inference"]
+fn preserved_outer_context_capacity_replay() {
+    let root = std::env::var("NAOME_META_LAYOUT_PROBE").expect("explicit preserved results");
+    let mut checked = 0;
+    let mut overflowed = 0;
+    for entry in std::fs::read_dir(Path::new(&root).join("outer-learning")).unwrap() {
+        let directory = entry.unwrap().path();
+        if !directory.join("source-state.json").exists() {
+            continue;
+        }
+        let source: State =
+            serde_json::from_slice(&std::fs::read(directory.join("source-state.json")).unwrap())
+                .unwrap();
+        let mut shared = source.clone();
+        let headroom = outer_metadata_headroom(&shared);
+        shared.compact_with_meta_headroom(headroom).unwrap();
+        let replay = digest(&shared.replay);
+        let anchors = digest(&shared.anchors);
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let trial = entry.unwrap().path();
+            if !trial.join("state.json").exists() || !trial.join("job.json").exists() {
+                continue;
+            }
+            let selected: State =
+                serde_json::from_slice(&std::fs::read(trial.join("state.json")).unwrap()).unwrap();
+            let job: Job =
+                serde_json::from_slice(&std::fs::read(trial.join("job.json")).unwrap()).unwrap();
+            let observed = job.progress.unwrap().development_before;
+            let mut unreserved = source.clone();
+            unreserved.meta = selected.meta.clone();
+            unreserved.feedback.development = observed.clone();
+            overflowed += usize::from(unreserved.validate().is_err());
+            let mut next = shared.clone();
+            next.meta = selected.meta;
+            next.feedback.development = observed;
+            next.validate().unwrap();
+            assert_eq!(digest(&next.replay), replay);
+            assert_eq!(digest(&next.anchors), anchors);
+            assert_eq!(next.model, source.model);
+            checked += 1;
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"outer_capacity_replayed","directory":directory,
+                "headroom":headroom,"source_bytes":crate::checkpoint::encode(&source).unwrap().len(),
+                "shared_bytes":crate::checkpoint::encode(&shared).unwrap().len()}),
+        );
+    }
+    assert!(checked > 0 && overflowed > 0);
+    eprintln!(
+        "{}",
+        serde_json::json!({"checked":checked,"original_overflows_reproduced":overflowed})
+    );
+}
+
 fn cpu_micros() -> u64 {
     let usage = getrusage(UsageWho::RUSAGE_SELF).expect("process CPU accounting");
     (usage.user_time().num_microseconds() + usage.system_time().num_microseconds()) as u64
@@ -159,9 +264,10 @@ fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
             );
             common.rows.push(row);
         }
+        let metadata_headroom = outer_metadata_headroom(&common.state);
         common
             .state
-            .compact_with_meta_headroom(META_HEADROOM)
+            .compact_with_meta_headroom(metadata_headroom)
             .unwrap();
         assert!(
             common.state.needs_training(),
@@ -171,6 +277,12 @@ fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
         write(&dir.join("source-evidence.json"), &common.evidence);
         write(&dir.join("source-acquisitions.json"), &common.rows);
         write(&dir.join("source-cost.json"), &acquisition_clock.elapsed());
+        write(
+            &dir.join("source-capacity.json"),
+            &serde_json::json!({"meta_bytes":META_HEADROOM,"total_metadata_headroom":metadata_headroom,
+                "state_bytes":crate::checkpoint::encode(&common.state).unwrap().len(),
+                "development_capacity_bytes":crate::checkpoint::encode(&development_capacity_profile(common.state.feedback.checkpoint.clone())).unwrap().len()}),
+        );
         let mut observed = common.state.feedback.development.clone();
         for trial in 0..trials {
             assert!(
@@ -184,6 +296,7 @@ fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
             state.meta = controller.clone();
             state.preparation = Preparation::Meta;
             state.feedback.development = observed.clone();
+            state.validate().unwrap();
             let initial = state.model.clone();
             let mut store = fork_store(&common.store);
             copy_meta(&meta_io, &mut store, &controller);

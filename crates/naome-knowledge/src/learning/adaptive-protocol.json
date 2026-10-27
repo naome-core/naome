@@ -87,7 +87,8 @@
       "cpu_seconds_outer_stage": 7200,
       "wall_seconds_outer_stage": 10800
     },
-    "pilot": "Seed3607 one context, two real trials; development only. Pilot weights/experiences never initialize main."
+    "pilot": "Seed3607 one context, two real trials; development only. Pilot weights/experiences never initialize main.",
+    "source_capacity": "Before fixing each common lower pool, reserve the bounded4KiB meta metadata plus a prospective full development-profile encoding envelope inside the original32KiB State. The envelope derives only syntax cells, maximum serialized counters/cost and coverage; no hypothetical outcome is supplied as observed ability. Every trial in a context then uses the identical fixed lower sources. Validate the actual reconstructed base before any optimizer update. The incomplete first main attempt is preserved; it revealed missing profile growth reservation after17 complete outer trials and before all final inference. No threshold or question changes."
   },
   "neural_meta_model": {
     "parameters": 759,
