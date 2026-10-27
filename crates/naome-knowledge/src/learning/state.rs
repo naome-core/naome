@@ -334,16 +334,48 @@ impl State {
         {
             return false;
         }
-        self.draws = self.draws.max(p.rng);
-        self.model = p.model.clone();
-        self.trained = p.trained;
-        self.promotions = self
+        let mut next = self.clone();
+        next.draws = next.draws.max(p.rng);
+        next.model = p.model.clone();
+        next.trained = p.trained;
+        next.promotions = next
             .promotions
             .saturating_add(p.promotions - native.base.promotions);
-        self.rejections = self
+        next.rejections = next
             .rejections
             .saturating_add(p.rejections - native.base.rejections);
+        if next.compact().is_err() {
+            return false;
+        }
+        *self = next;
         true
+    }
+    /// Keep bounded working data within the installed byte budget after parent
+    /// metadata grows. Earlier anchors, checked meanings, knowledge, lifetime
+    /// counts and the selected model/Adam pair remain intact. Durable source
+    /// records, rather than the replay working set, own proof history.
+    pub(crate) fn compact(&mut self) -> Result<(), String> {
+        let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
+        while self.statistics.len() > 64 || crate::checkpoint::encode(self)?.len() > capacity {
+            if self.statistics.len() <= 64 && !self.replay.is_empty() {
+                self.remove_replay();
+            } else if let Some(key) = self
+                .statistics
+                .iter()
+                .min_by_key(|(key, statistics)| {
+                    (
+                        statistics.selections.saturating_add(statistics.attempts),
+                        *key,
+                    )
+                })
+                .map(|(key, _)| key.clone())
+            {
+                self.statistics.remove(&key);
+            } else {
+                return Err("fixed learning snapshot exceeds working byte capacity".into());
+            }
+        }
+        Ok(())
     }
     fn remove_replay(&mut self) {
         let mut counts = BTreeMap::new();

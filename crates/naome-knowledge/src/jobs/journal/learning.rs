@@ -663,6 +663,7 @@ impl Disk {
             .get::<u64>("replay_seen", &solution.proof_id, 64)?
             .is_none();
         let sampled = unseen && learning.consider(example, unique)?;
+        learning.compact()?;
         record.acknowledged = true;
         let request = super::request_key(&record.input, &record.binding, record.settings);
         let mut updates = vec![

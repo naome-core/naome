@@ -614,3 +614,44 @@ fn valid_stored_theorems_beyond_question_capacity_do_not_halt_learning() {
     assert!(!state.remember_theorem(entry).unwrap());
     assert_eq!(digest(&state), before);
 }
+
+#[test]
+fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pair() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let anchors = digest(&state.anchors);
+    let accepted = state.accepted;
+    let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
+    // Fill valid diagnostic working data to the real installed boundary.
+    state
+        .statistics
+        .insert("boundary".into(), Statistics::default());
+    let slack = capacity - crate::checkpoint::encode(&state).unwrap().len();
+    let statistics = state.statistics.remove("boundary").unwrap();
+    state
+        .statistics
+        .insert(format!("boundary{}", "x".repeat(slack - 1)), statistics);
+    state.validate().unwrap();
+    let before_bytes = crate::checkpoint::encode(&state).unwrap().len();
+    let mut job = state.job();
+    job.training = true;
+    let mut progress = finished_progress(&state);
+    progress.unit = job.units();
+    progress.rng += u64::from(model::TRAINING_UNITS) * model::UPDATES_PER_UNIT * 16;
+    progress.model.updates = 250;
+    progress.model.model = Some(Blob::of(&[1; 32]));
+    progress.model.optimizer = Some(Blob::of(&[2; 32]));
+    progress.promotions += 1;
+    let selected = progress.model.clone();
+    let expanded = crate::checkpoint::encode(&selected).unwrap().len()
+        - crate::checkpoint::encode(&state.model).unwrap().len();
+    assert!(before_bytes + expanded > capacity);
+    job.progress = Some(progress);
+    assert!(state.qualify(&job));
+    state.validate().unwrap();
+    assert!(crate::checkpoint::encode(&state).unwrap().len() <= capacity);
+    assert_eq!(state.model, selected);
+    assert_eq!(digest(&state.anchors), anchors);
+    assert_eq!(state.accepted, accepted);
+    assert!(state.replay.len() < job.base.replay.len());
+}

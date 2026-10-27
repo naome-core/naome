@@ -145,6 +145,46 @@ fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
         before
     );
 }
+
+#[test]
+fn growing_learning_metadata_keeps_the_disk_working_set_bounded_and_its_source_owned() {
+    let (directory, mut owner) = native();
+    let id = accepted(&mut owner);
+    let mut snapshot = learning(&owner);
+    let anchors = snapshot["anchors"].clone();
+    let model = snapshot["model"].clone();
+    let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
+    snapshot["statistics"]["boundary"] =
+        serde_json::to_value(crate::learning::Statistics::default()).unwrap();
+    let slack = capacity - crate::checkpoint::encode(&snapshot).unwrap().len();
+    let value = snapshot["statistics"]
+        .as_object_mut()
+        .unwrap()
+        .remove("boundary")
+        .unwrap();
+    snapshot["statistics"][format!("boundary{}", "x".repeat(slack - 1))] = value;
+    owner.journal.learning = Some(serde_json::from_value(snapshot).unwrap());
+    owner.journal.learning.as_ref().unwrap().validate().unwrap();
+    owner.save().unwrap();
+    let mut snapshot = learning(&owner);
+    snapshot["draws"] = serde_json::json!(4000);
+    owner.journal.learning = Some(serde_json::from_value(snapshot).unwrap());
+    owner.save().unwrap();
+    let current = learning(&owner);
+    assert!(crate::checkpoint::encode(&current).unwrap().len() <= capacity);
+    assert_eq!(current["anchors"], anchors);
+    assert_eq!(current["accepted"], 1);
+    assert_eq!(current["model"], model);
+    let settings = owner.settings;
+    drop(owner);
+    let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let restored = journal.learning.as_ref().unwrap();
+    restored.validate().unwrap();
+    let restored = serde_json::to_value(restored).unwrap();
+    assert_eq!(restored["accepted"], 1);
+    assert_eq!(restored["anchors"], anchors);
+    assert!(journal.records.get(&id).unwrap().result.is_some());
+}
 #[test]
 fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
     let (directory, mut owner) = native();

@@ -307,6 +307,8 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
             gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"original_scores":p.original_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"first_loss":p.first_loss,"last_loss":p.last_loss,"training_cost":p.training_cost});
             assert!(state.qualify(&job));
             state.validate().unwrap();
+            assert_eq!(digest(&dictionary), digest(&state.knowledge));
+            assert_eq!(digest(&meanings), digest(&state.definitions));
         }
         let event = serde_json::json!({"round":round,"accepted":state.accepted,"replay":state.replay.len(),"pool_graphs":pool.graphs().len(),"decision_before":before,"decision_candidate":after,"qualification":gate,"retained_updates":state.model.updates,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
         eprintln!("{event}");

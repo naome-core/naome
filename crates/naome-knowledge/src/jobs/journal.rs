@@ -521,6 +521,9 @@ impl Disk {
         journal: &mut Journal,
         extra: Vec<crate::checkpoint::Update>,
     ) -> Result<(), crate::Error> {
+        if let Some(learning) = &mut journal.learning {
+            learning.compact().map_err(crate::Error::CorruptStorage)?;
+        }
         journal
             .remember_holds()
             .map_err(crate::Error::CorruptStorage)?;
