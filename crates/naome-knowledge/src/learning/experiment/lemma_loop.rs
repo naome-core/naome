@@ -294,6 +294,8 @@ fn matched_closed_lemma_loop() {
     common.model = Engine::default()
         .snapshot(&common.model, &mut common_io)
         .unwrap();
+    common.feedback = crate::training::ability::Feedback::fresh(digest(&common.model));
+    common.validate().unwrap();
     export_model(&path.join("common-model"), &common.model, &common_io);
     let manifest = json!({"questions":questions.iter().map(|q|json!({"source":q.source(),"resolution_id":crate::hex(q.resolution_id()),"eligible":State::eligible(q.source())})).collect::<Vec<_>>(),"initial_admission_gates":gates,"model":digest(&common.model),"seed":41,"arms":["direct","restart","loop"],"aggregate_limits":{"search_expansions":EXPANSIONS,"cpu_micros":CPU_MICROS,"wall_micros":WALL_MICROS,"checker_calls":CHECKER_CALLS,"submitted_checker_steps":CHECKER_STEPS,"model_io_bytes":IO_BYTES,"model_io_operations":IO_OPERATIONS},"shared_live_resource_limits":format!("{:?}",crate::resources::active_limits()),"job_seeds":{"initial":1,"helpers_start":10,"retry":100},"first_slice":SLICE,"helper_slice":SLICE,"max_helpers":4,"stopping_rule":"one pass over all frozen questions; no case replacement or parameter search","success_criterion":"loop initial failure, both full-budget controls unsolved, checked goal within aggregate ceilings, actual generated-helper dependency and failure on helper removal at the identical retry seed and allowance","limitations":"one fresh native checkpoint and one seed; local in-process owner cycle; no learning-weight or general mathematical novelty claim"});
     write(&path.join("frozen-manifest.json"), &manifest);
