@@ -171,11 +171,11 @@ def run(trial):
 
     trial.summary["own_and_peer"] = trial.wait(own_and_peer, maximum=120)
     retained = {}
-    # The receiver needs a diverse batch of checked reconstructions. Keep the
-    # sender producing until that batch is ready, then pause the receiver first.
-    # Pausing the sender at its first batch would starve the receiver below its
-    # unchanged readiness threshold. Both waits retain the original trial end.
-    for node in (b, a):
+    # Observe the sender first: its smaller own-proof batch can finish while
+    # the receiver is still reconstructing enough peer trajectories. Resume it
+    # immediately after its own pause/recovery check so ordinary discovery and
+    # publication can continue supplying the receiver's unchanged quorum.
+    for node in (a, b):
         record = trial.wait(lambda: next((r for r in training(node) if r["state"] == "running" and 0 < r["checkpoint"] < 25), None), maximum=180)
         pressure(node, True)
         trial.wait(lambda: state(trial, node, "paused"), maximum=8)
@@ -202,12 +202,10 @@ def run(trial):
             assert node.ids() == accepted
         retained[node.index] = {"record": current, "blobs": blobs, "accepted": sorted(accepted)}
         node.stop()
-        node.config["runtime"]["question_interval_ms"] = 3600000
-        node.write_config()
+        if node is b:
+            node.config["runtime"]["question_interval_ms"] = 3600000
+            node.write_config()
         pressure(node, False)
-    write_receipt(trial.output / "retained-checkpoints.json", retained)
-
-    for node in trial.nodes:
         node.start()
         original = retained[node.index]["record"]
         restored = observe(node)["records"][original["id"]]
@@ -216,6 +214,7 @@ def run(trial):
         assert restored["reserved_units"] >= original["reserved_units"]
         assert restored["spent_ms"] >= original["spent_ms"]
         assert restored["native"]["base_hash"] == original["native"]["base_hash"]
+    write_receipt(trial.output / "retained-checkpoints.json", retained)
 
     qualifications = {}
     for node in trial.nodes:
