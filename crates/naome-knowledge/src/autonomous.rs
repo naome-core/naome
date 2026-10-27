@@ -289,6 +289,20 @@ impl Autonomous {
         }
     }
 
+    fn retry<F, Fut>(
+        &mut self,
+        question: CompiledQuestion,
+        questions: &mut question::LocalQuestions<F>,
+    ) where
+        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    {
+        // Rotate durable unresolved work before retrying a completed attempt.
+        // Its original admission remains in the backlog even when the parsed
+        // working page has room for only one question.
+        self.retain(questions.next_backlog().unwrap_or(question));
+    }
+
     fn defer_recovery(&mut self, record: jobs::Record, seen: question::Revision, now: Instant) {
         self.recovery_retry.get_or_insert(RecoveryRetry {
             seen,
@@ -652,7 +666,7 @@ impl Autonomous {
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
-                                self.retain(solving.question);
+                                self.retry(solving.question, questions);
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
@@ -682,13 +696,13 @@ impl Autonomous {
                         });
                     }
                     Ok(jobs::Output::NoCandidate) => {
-                        self.retain(solving.question);
+                        self.retry(solving.question, questions);
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
                     }
                     _ => {
-                        self.retain(solving.question);
+                        self.retry(solving.question, questions);
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
@@ -1041,9 +1055,10 @@ impl Autonomous {
         if now >= self.next_question
             && self.finding.is_none()
             && self.admissions.len() < crate::resources::active_limits().finding_admissions
-            && self.unanswered.len() < crate::resources::active_limits().question_page
             && questions.available_local()
         {
+            // Admissions have their own bounded queue and durable backlog.
+            // A full parsed solve page must not stop independent discovery.
             self.next_question = now + Duration::from_millis(self.intervals.finding_ms());
             let (input, binding) = if let Some(record) = self.recovered_finding.pop_front() {
                 (record.input, record.binding)

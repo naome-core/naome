@@ -124,6 +124,8 @@ def run(trial, seconds, attempts, minimum):
         results.append(entry)
     write_receipt(trial.output / "questions-and-proofs.json", results)
     trial.summary["attempts"] = len(results)
+    trial.summary["unique_attempted_questions"] = len({row["question"] for row in results})
+    trial.summary["generated_questions"] = sum(record["input"]["role"] == "find" for record in records.values())
     trial.summary["completed_attempts"] = sum(row["state"] == "complete" for row in results)
     trial.summary["accepted_resolutions"] = sum(row["accepted"] for row in results)
     trial.summary["proved"] = sum(row["outcome"] == "proved" for row in results)
