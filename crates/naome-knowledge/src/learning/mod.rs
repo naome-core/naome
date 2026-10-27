@@ -15,6 +15,7 @@ pub(crate) mod program;
 pub(crate) mod proof;
 mod search;
 mod state;
+mod transfer;
 pub(crate) use artifact::{ArtifactIo, Blob};
 use model::Checkpoint;
 
@@ -166,6 +167,7 @@ pub(crate) struct Progress {
     anchor_regression: bool,
     development_regression: bool,
     original_score: [u32; 2],
+    transfer: transfer::Summary,
     development_before: crate::training::ability::Profile,
     development_after: crate::training::ability::Profile,
     regressions: [u16; crate::training::ability::SKILLS],
@@ -178,6 +180,37 @@ pub(crate) struct Progress {
     pub meta_wall_micros: u64,
     pub result: Option<Solution>,
     pub diagnostic: String,
+}
+impl Progress {
+    fn observe_qualification(
+        &mut self,
+        source: &str,
+        candidate: &Checkpoint,
+        result: &transfer::Evaluation,
+    ) -> Result<(), String> {
+        let target = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+        self.development_before.observe(
+            &target,
+            32,
+            crate::training::ability::completion(result.before.solved, &result.before.diagnostic),
+            result.before.micros,
+        );
+        self.development_after.checkpoint = digest(candidate);
+        self.development_after.observe(
+            &target,
+            32,
+            crate::training::ability::completion(result.after.solved, &result.after.diagnostic),
+            result.after.micros,
+        );
+        let (skills, _) = crate::training::ability::signature(&target);
+        for (skill, present) in skills.into_iter().enumerate() {
+            if present {
+                self.regressions[skill] += u16::from(result.before.solved && !result.after.solved);
+                self.gains[skill] += u16::from(!result.before.solved && result.after.solved);
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -267,6 +300,10 @@ impl Job {
                 || next.wall_micros < previous.wall_micros
                 || next.meta_cpu_micros < previous.meta_cpu_micros
                 || next.meta_wall_micros < previous.meta_wall_micros
+                || previous.transfer.observed & next.transfer.observed != previous.transfer.observed
+                || (previous.transfer.before ^ next.transfer.before) & previous.transfer.observed
+                    != 0
+                || (previous.transfer.after ^ next.transfer.after) & previous.transfer.observed != 0
             {
                 return Err("learning plan or measured continuation differs".into());
             }
@@ -420,6 +457,7 @@ impl Job {
                     || u32::from(update.experience.after) != p.candidate_score
                     || update.experience.protected_loss != p.development_regression
                     || update.experience.anchor_loss != p.anchor_regression
+                    || update.experience.transfer != p.transfer
                     || update.experience.lower_cpu_micros > p.cpu_micros
                     || update.experience.lower_wall_micros > p.wall_micros
                     || !update.first_loss.is_finite()
@@ -446,6 +484,23 @@ impl Job {
             }
 
             p.model.validate()?;
+            if p.promotions > self.base.promotions
+                && (p.candidate_score <= p.incumbent_score
+                    || p.anchor_regression
+                    || p.development_regression
+                    || !p.transfer.accepts())
+            {
+                return Err("retained promotion lacks complete protected transfer gain".into());
+            }
+            p.transfer.validate()?;
+            let expected_transfer = transfer::Summary::prefix(
+                p.unit
+                    .saturating_sub(model::TRAINING_UNITS)
+                    .min(transfer::CASES as u32) as usize,
+            );
+            if p.first_loss.is_some() && p.transfer.observed != expected_transfer {
+                return Err("transfer coverage differs from the retained unit".into());
+            }
             p.development_before.validate()?;
             p.development_after.validate()?;
             if p.development_before.checkpoint != digest(&self.base.model) {
@@ -527,6 +582,7 @@ impl Job {
             anchor_regression: false,
             development_regression: false,
             original_score: [0, 0],
+            transfer: transfer::Summary::default(),
             development_before: crate::training::ability::Profile::new(digest(&self.base.model)),
             development_after: crate::training::ability::Profile::new(digest(&self.base.model)),
             regressions: [0; crate::training::ability::SKILLS],
@@ -601,7 +657,7 @@ impl Job {
                 p.trained = self.base.epoch;
             }
         } else if self.units() > 1 && unit <= model::TRAINING_UNITS + EVALUATIONS {
-            if let Some(candidate) = &p.candidate {
+            if let Some(candidate) = p.candidate.clone() {
                 let index = (unit - model::TRAINING_UNITS - 1) as usize;
                 let source = if index < curriculum::DEVELOPMENT {
                     curriculum::development()
@@ -614,62 +670,11 @@ impl Job {
                         .map(|e| e.question.clone())
                 };
                 if let Some(source) = source {
-                    let before_started = std::time::Instant::now();
-                    let (before_result, before_diagnostic, _) =
-                        engine.with(&self.base.model, io, |runtime| {
-                            solve_with_definitions(
-                                &source,
-                                runtime,
-                                32,
-                                job,
-                                &self.base.definitions,
-                                &self.base.knowledge,
-                            )
-                        })?;
-                    let before = before_result.is_some();
-                    let before_micros = before_started
-                        .elapsed()
-                        .as_micros()
-                        .min(u128::from(u64::MAX)) as u64;
-                    let after_started = std::time::Instant::now();
-                    let (after_result, after_diagnostic, _) =
-                        engine.with(candidate, io, |runtime| {
-                            solve_with_definitions(
-                                &source,
-                                runtime,
-                                32,
-                                job,
-                                &self.base.definitions,
-                                &self.base.knowledge,
-                            )
-                        })?;
-                    let after = after_result.is_some();
+                    let result =
+                        transfer::evaluate(&source, &self.base, &candidate, engine, io, job)?;
+                    let (before, after) = (result.before.solved, result.after.solved);
                     if index < curriculum::DEVELOPMENT {
-                        let target =
-                            CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
-                        p.development_before.observe(
-                            &target,
-                            32,
-                            crate::training::ability::completion(before, &before_diagnostic),
-                            before_micros,
-                        );
-                        p.development_after.checkpoint = digest(candidate);
-                        p.development_after.observe(
-                            &target,
-                            32,
-                            crate::training::ability::completion(after, &after_diagnostic),
-                            after_started
-                                .elapsed()
-                                .as_micros()
-                                .min(u128::from(u64::MAX)) as u64,
-                        );
-                        let (skills, _) = crate::training::ability::signature(&target);
-                        for (skill, present) in skills.into_iter().enumerate() {
-                            if present {
-                                p.regressions[skill] += u16::from(before && !after);
-                                p.gains[skill] += u16::from(!before && after);
-                            }
-                        }
+                        p.observe_qualification(&source, &candidate, &result)?;
                         p.incumbent_score += u32::from(before);
                         p.candidate_score += u32::from(after);
                         if index < curriculum::CORPUS_DEVELOPMENT {
@@ -681,6 +686,13 @@ impl Job {
                         p.anchor_regression = true;
                     }
                 }
+                if let Some(case) = curriculum::adaptive::BANK.transfer.get(index) {
+                    let result =
+                        transfer::evaluate(&case.source, &self.base, &candidate, engine, io, job)?;
+                    p.transfer
+                        .record(index, result.before.solved, result.after.solved)?;
+                    p.observe_qualification(&case.source, &candidate, &result)?;
+                }
             }
         } else {
             let candidate_model = p.candidate.as_ref().map(digest);
@@ -688,6 +700,7 @@ impl Job {
                 if p.candidate_score > p.incumbent_score
                     && !p.anchor_regression
                     && !p.development_regression
+                    && p.transfer.accepts()
                 {
                     p.model = candidate;
                     p.promotions += 1;
@@ -698,8 +711,14 @@ impl Job {
                         "development_regression_rejected"
                     } else if p.anchor_regression {
                         "forgetting_rejected"
-                    } else {
+                    } else if p.candidate_score <= p.incumbent_score {
                         "no_development_gain_rejected"
+                    } else if !p.transfer.complete() {
+                        "incomplete_transfer_rejected"
+                    } else if p.transfer.loss() > 0. {
+                        "transfer_regression_rejected"
+                    } else {
+                        "no_transfer_gain_rejected"
                     }
                     .into();
                 }
@@ -718,6 +737,7 @@ impl Job {
                     after: p.candidate_score as u16,
                     protected_loss: p.development_regression,
                     anchor_loss: p.anchor_regression,
+                    transfer: p.transfer,
                     lower_cpu_micros: p.cpu_micros.saturating_sub(p.meta_cpu_micros),
                     lower_wall_micros: p.wall_micros.saturating_sub(p.meta_wall_micros),
                 };

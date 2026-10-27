@@ -7,13 +7,18 @@ fn experience(context: u16, plan: Plan, before: u16, after: u16) -> Experience {
         context: features,
         plan,
         source_model: "11".repeat(32),
-        selected_model: "22".repeat(32),
-        candidate_model: Some("33".repeat(32)),
+        selected_model: if after > before { "22" } else { "11" }.repeat(32),
+        candidate_model: Some("22".repeat(32)),
         source_epoch: 8,
         before,
         after,
         protected_loss: false,
         anchor_loss: false,
+        transfer: super::super::transfer::Summary {
+            before: super::super::transfer::Summary::prefix(before as usize / 5),
+            after: super::super::transfer::Summary::prefix(after as usize / 5),
+            observed: super::super::transfer::Summary::prefix(super::super::transfer::CASES),
+        },
         lower_cpu_micros: 18_000_000,
         lower_wall_micros: 20_000_000,
     }
@@ -56,7 +61,7 @@ fn real_neural_updates_learn_opposite_plan_effects_in_different_contexts() {
     }
     let predicted = data
         .iter()
-        .map(|e| n.forward(&e.features()).1[0])
+        .map(|e| utility(n.forward(&e.features()).1))
         .collect::<Vec<_>>();
     assert!(
         predicted[0] > 0.25 && predicted[1] < -0.25 && predicted[2] < -0.25 && predicted[3] > 0.25,
@@ -159,4 +164,23 @@ fn meta_checkpoint_update_restores_and_scores_the_following_generated_plan() {
         ids.len() > 48,
         "grammar explores compositions, not only a fixed strategy table"
     );
+}
+
+#[test]
+fn improving_development_proxy_does_not_replace_transfer_targets() {
+    let mut e = experience(500, Plan::targeted(), 45, 49);
+    e.transfer = super::super::transfer::Summary {
+        before: 3,
+        after: 12,
+        observed: super::super::transfer::Summary::prefix(super::super::transfer::CASES),
+    };
+    assert_eq!(e.targets()[0], 0.);
+    assert!(e.targets()[1] > 0.);
+    assert!(!e.transfer.accepts());
+    let input = e.features();
+    e.transfer.after = 7;
+    e.selected_model = e.candidate_model.clone().unwrap();
+    assert_eq!(input, e.features());
+    assert!(e.targets()[0] > 0.);
+    assert_eq!(e.targets()[1], 0.);
 }

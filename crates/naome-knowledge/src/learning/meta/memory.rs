@@ -14,6 +14,7 @@ struct Packed(
     [u16; 2],
     [bool; 2],
     [u64; 2],
+    [u32; 3],
 );
 impl From<&Experience> for Packed {
     fn from(e: &Experience) -> Self {
@@ -33,6 +34,7 @@ impl From<&Experience> for Packed {
             [e.before, e.after],
             [e.protected_loss, e.anchor_loss],
             [e.lower_cpu_micros, e.lower_wall_micros],
+            [e.transfer.before, e.transfer.after, e.transfer.observed],
         )
     }
 }
@@ -63,6 +65,11 @@ impl TryFrom<Packed> for Experience {
             anchor_loss: p.8[1],
             lower_cpu_micros: p.9[0],
             lower_wall_micros: p.9[1],
+            transfer: super::super::transfer::Summary {
+                before: p.10[0],
+                after: p.10[1],
+                observed: p.10[2],
+            },
         };
         experience.validate()?;
         Ok(experience)
@@ -92,52 +99,4 @@ pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn complete_experience_roundtrips_and_noncanonical_phases_fail_closed() {
-        for value in 0..32u8 {
-            let p = Packed(
-                u64::MAX,
-                [1000; CONTEXT],
-                [value; 3],
-                "11".repeat(32),
-                "22".repeat(32),
-                Some("33".repeat(32)),
-                u64::MAX,
-                [120, 0],
-                [true, false],
-                [u64::MAX, u64::MAX],
-            );
-            let bytes = serde_json::to_vec(&p).unwrap();
-            let decoded = Experience::try_from(p);
-            if (value >> 2) & 3 == 3 {
-                assert!(decoded.is_err());
-            } else {
-                let experience = decoded.unwrap();
-                assert_eq!(
-                    serde_json::to_vec(&Packed::from(&experience)).unwrap(),
-                    bytes
-                );
-                let named = serde_json::to_vec(&experience).unwrap();
-                let restored: Experience = serde_json::from_slice(&named).unwrap();
-                assert_eq!(serde_json::to_vec(&restored).unwrap(), named);
-            }
-        }
-        let mut invalid = serde_json::to_value(Packed(
-            1,
-            [0; CONTEXT],
-            [0; 3],
-            "11".repeat(32),
-            "22".repeat(32),
-            None,
-            0,
-            [0, 0],
-            [false, false],
-            [0, 0],
-        ))
-        .unwrap();
-        invalid[2][0] = 32.into();
-        assert!(Experience::try_from(serde_json::from_value::<Packed>(invalid).unwrap()).is_err());
-    }
-}
+mod tests;

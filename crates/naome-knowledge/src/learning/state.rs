@@ -77,24 +77,13 @@ impl State {
     pub fn sample_counts(&self) -> (u64, u64) {
         (self.local_examples, self.peer_examples)
     }
-    /// Exact owned inputs used by preparation. Rehearsal adds only existing
+    /// Complete owned inputs available to every method. Rehearsal selects existing
     /// own/peer anchor proofs, never development outcomes or new truth labels.
     pub fn training_sources(&self) -> impl Iterator<Item = &Example> {
         let mut jobs = std::collections::BTreeSet::new();
         self.replay
             .iter()
-            .chain(self.anchors.iter().filter(|_| {
-                !matches!(self.preparation, Preparation::Balanced) && {
-                    #[cfg(test)]
-                    {
-                        self.preparation != Preparation::ReferenceTargeted
-                    }
-                    #[cfg(not(test))]
-                    {
-                        true
-                    }
-                }
-            }))
+            .chain(self.anchors.iter())
             .filter(move |e| jobs.insert(e.job))
     }
     fn training_trace_bytes(&self) -> usize {

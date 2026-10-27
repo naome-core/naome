@@ -1,6 +1,9 @@
 //! Finite outer trial learning and independent matched lower-learner controls.
 use super::*;
+mod acquisition;
+mod storage;
 use crate::frontier::{Frontier, evidence::Outcome};
+use acquisition::Frozen;
 use knowledge::{Store, acquire, admit_discovery, evidence_for};
 use nix::sys::{
     resource::{UsageWho, getrusage},
@@ -12,7 +15,10 @@ const META_HEADROOM: usize = meta::STATE_BYTES;
 // envelope is never inserted as observed ability or supplied to a learner.
 fn development_capacity_profile(checkpoint: String) -> crate::training::ability::Profile {
     let mut profile = crate::training::ability::Profile::new(checkpoint);
-    for case in curriculum::development() {
+    for case in curriculum::development()
+        .into_iter()
+        .chain(&curriculum::adaptive::BANK.transfer)
+    {
         let question = CompiledQuestion::compile(&case.source).unwrap();
         // Every actual cell has at most one observation per question. These
         // three passes bound all outcome counters and saturate measured cost,
@@ -43,7 +49,11 @@ fn prospective_outer_profile_reserve_bounds_actual_qualification_outcomes() {
     let capacity = crate::checkpoint::encode(&maximum).unwrap().len();
     for mode in 0..4 {
         let mut actual = crate::training::ability::Profile::new(checkpoint.clone());
-        for (index, case) in curriculum::development().into_iter().enumerate() {
+        for (index, case) in curriculum::development()
+            .into_iter()
+            .chain(&curriculum::adaptive::BANK.transfer)
+            .enumerate()
+        {
             let question = CompiledQuestion::compile(&case.source).unwrap();
             let outcome = match mode {
                 0 => Some(true),
@@ -56,6 +66,16 @@ fn prospective_outer_profile_reserve_bounds_actual_qualification_outcomes() {
         actual.validate().unwrap();
         assert!(crate::checkpoint::encode(&actual).unwrap().len() <= capacity);
     }
+}
+
+fn resource_boundary() -> u64 {
+    let sample = crate::resources::feedback::Meter::start().finish(0, true);
+    let peak = sample.peak_rss_bytes.expect("native peak RSS observation");
+    assert!(
+        peak <= model::REQUIREMENTS.work_bytes as u64,
+        "whole experiment RSS {peak} exceeds unchanged native work reservation"
+    );
+    peak
 }
 
 fn cpu_micros() -> u64 {
@@ -92,7 +112,6 @@ struct Run {
     initial: Checkpoint,
     store: Store,
     summary: serde_json::Value,
-    bootstrap: Option<(Vec<Evidence>, Vec<serde_json::Value>)>,
 }
 struct Common {
     state: State,
@@ -100,15 +119,11 @@ struct Common {
     evidence: Vec<Evidence>,
     rows: Vec<serde_json::Value>,
     cost: serde_json::Value,
-    bootstrap: Vec<serde_json::Value>,
-    bootstrap_cost: serde_json::Value,
 }
 #[derive(Clone, Copy)]
 struct Arm {
     name: &'static str,
-    random_only: bool,
     preparation: Preparation,
-    acquisition_only: bool,
 }
 struct MetaSeed {
     state: meta::State,
@@ -331,6 +346,7 @@ fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
             export_meta(&trial_dir.join("meta"), &controller.model, &meta_io);
             write(&trial_dir.join("job.json"), &job);
             write(&trial_dir.join("state.json"), &state);
+            resource_boundary();
             let summary = serde_json::json!({"context":context,"seed":seed,"trial":trial,"elapsed":clock.elapsed(),"io_bytes":store.read_bytes+store.written_bytes-io_start,"plan":job.progress.as_ref().unwrap().plan,"outcome":job.progress.as_ref().unwrap().meta_update,"meta_state":controller});
             summaries.push(summary);
             write(&path.join("trials.json"), &summaries);
@@ -400,14 +416,13 @@ fn common(seed: u64, path: &Path) -> Common {
         evidence,
         rows,
         cost,
-        bootstrap: Vec::new(),
-        bootstrap_cost: serde_json::json!({"cpu_micros":0,"wall_micros":0}),
     }
 }
 fn train(
     seed: u64,
     definition: Arm,
     common: &Common,
+    frozen: &Frozen,
     rounds: usize,
     path: &Path,
     meta_seed: Option<&MetaSeed>,
@@ -416,16 +431,14 @@ fn train(
     let mut clock = Clock::start();
     let Arm {
         name: arm,
-        random_only,
         preparation,
-        acquisition_only,
     } = definition;
-    clock.charged_cpu = common.bootstrap_cost["cpu_micros"].as_u64().unwrap();
-    clock.charged_wall = common.bootstrap_cost["wall_micros"].as_u64().unwrap();
+    clock.charged_cpu = frozen.cost["cpu_micros"].as_u64().unwrap();
+    clock.charged_wall = frozen.cost["wall_micros"].as_u64().unwrap();
     let mut state = common.state.clone();
     state.preparation = preparation;
     let initial = state.model.clone();
-    let mut store = fork_store(&common.store);
+    let mut store = fork_store(&frozen.store);
     state.meta.draw ^= seed;
     if preparation == Preparation::Meta {
         let trained = meta_seed.expect("frozen outer learner");
@@ -435,166 +448,21 @@ fn train(
     }
     state.validate().unwrap();
     let mut engine = Engine::default();
-    let mut graph = crate::Graph::default();
-    for row in &common.rows {
-        if !row["solution"].is_null() {
-            let solution: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
-            let question = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
-            admit_discovery(&mut graph, &question, &solution).unwrap();
-        }
-    }
-    let directory = path.join("frontier");
-    std::fs::create_dir_all(&directory).unwrap();
-    let settings = crate::jobs::Settings {
-        native_proof_learning: true,
-        ..crate::jobs::Settings::default()
-    };
-    let mut frontier = Frontier::open(&directory, &graph, seed, settings).unwrap();
-    let mut formal =
-        crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
-    let dictionary = digest(&state.knowledge);
-    let meanings = digest(&state.definitions);
-    let mut all = common.evidence.clone();
-    let mut seen = common
-        .bootstrap
-        .iter()
-        .map(|r| r["id"].as_str().unwrap().to_owned())
-        .collect::<BTreeSet<_>>();
     let mut events = Vec::new();
     let mut stop = "round_limit";
-    for round in 0..rounds {
-        let shared = round == 0 && !common.bootstrap.is_empty();
-        let mut rows = if shared {
-            common.bootstrap.clone()
-        } else {
-            Vec::new()
-        };
-        for index in 0..if shared { 0 } else { 48 } {
-            if clock.exhausted() {
-                stop = "compute_limit";
-                break;
-            }
-            frontier.feedback(Some(state.feedback()));
-            let mut eligible = |q: &CompiledQuestion| {
-                !seen.contains(&crate::hex(q.resolution_id()))
-                    && meta_partition(q.source(), false)
-                    && State::eligible(q.source())
-                    && formal.assess(&graph, q).passed()
-            };
-            frontier.refresh(&graph, &mut eligible).unwrap();
-            let candidates = frontier
-                .candidates()
-                .into_iter()
-                .filter(&mut eligible)
-                .collect::<Vec<_>>();
-            let references = candidates.iter().collect::<Vec<_>>();
-            let Some(selected) = frontier
-                .choose(&references, &graph, settings.solving, random_only)
-                .unwrap()
-            else {
-                stop = "no_eligible_candidate";
-                break;
-            };
-            let q = &candidates[selected];
-            let id = crate::hex(q.resolution_id());
-            assert!(seen.insert(id.clone()));
-            let feedback_before = state.feedback();
-            let job = 10_000 + round as u64 * 48 + index as u64;
-            let mut row = acquire(
-                &mut state,
-                q.source(),
-                job,
-                &mut engine,
-                &mut store,
-                &mut graph,
-                (&mut all, false),
-            );
-            let solution: Option<Solution> =
-                serde_json::from_value(row["solution"].clone()).unwrap();
-            let output = solution
-                .as_ref()
-                .map_or(crate::jobs::Output::NoCandidate, |s| {
-                    crate::jobs::Output::Native {
-                        solution: Some(s.clone()),
-                        diagnostic: "certified_candidate".into(),
-                    }
-                });
-            let completion = crate::jobs::Completion {
-                id: job,
-                binding: crate::jobs::Binding::new([0; 32], [0; 32]),
-                spent_ms: row["elapsed_micros"].as_u64().unwrap() / 1000,
-                reserved_units: 1,
-                state: crate::jobs::State::Complete,
-                result: Ok(output),
-            };
-            frontier
-                .attempted(
-                    q,
-                    &graph,
-                    &completion,
-                    if solution.is_some() {
-                        Outcome::Candidate
-                    } else {
-                        Outcome::NoCandidate
-                    },
-                )
-                .unwrap();
-            if let Some(solution) = &solution {
-                let root = crate::object::proof_address(&solution.proof_id).unwrap();
-                // The shared acquisition helper already committed the checked
-                // artifact; acknowledge that exact candidate through both
-                // canonical frontier receipts before selecting more work.
-                frontier.prepared(q, job, root).unwrap();
-                frontier.verified(q, &graph, job, root).unwrap();
-            }
-            state.observe_result(
-                q.source(),
-                solution.is_some(),
-                row["diagnostic"].as_str().unwrap(),
-                row["elapsed_micros"].as_u64().unwrap(),
-                128,
-            );
-            state.compact().unwrap();
-            state.validate().unwrap();
-            let case = curriculum::owned::case(q.source()).unwrap();
-            row["id"] = serde_json::json!(id);
-            row["family"] = serde_json::json!(case.family);
-            row["dependency"] = serde_json::json!(case.dependency);
-            row["candidate_page"] = serde_json::json!(
-                candidates
-                    .iter()
-                    .map(|q| crate::hex(q.resolution_id()))
-                    .collect::<Vec<_>>()
-            );
-            row["feedback_before"] = serde_json::to_value(feedback_before).unwrap();
-            rows.push(row);
-            write(
-                &path.join(format!("round-{round}-acquisitions.json")),
-                &rows,
-            );
-        }
+    for (round, input) in frozen.rounds.iter().take(rounds).enumerate() {
+        state = acquisition::bind(input, &state);
+        state.validate().unwrap();
+        let all = &input.evidence;
+        let rows = &input.rows;
+        let manifest = digest(&(&state.replay, &state.anchors, all));
         write(
-            &path.join(format!("round-{round}-acquisitions.json")),
-            &rows,
+            &path.join(format!("round-{round}-matched-input.json")),
+            &serde_json::json!({"source_sha256":manifest,"state":state,"evidence":all,
+                "acquisitions_sha256":digest(rows),"producer_model":input.state.model}),
         );
-        assert_eq!(dictionary, digest(&state.knowledge));
-        assert_eq!(meanings, digest(&state.definitions));
-        if acquisition_only {
-            let summary = serde_json::json!({"seed":seed,"distinct_questions":seen.len(),"elapsed":clock.elapsed(),"optimizer_updates":0});
-            write(&path.join("summary.json"), &summary);
-            write(&path.join("state.json"), &state);
-            write(&path.join("evidence.json"), &all);
-            return Run {
-                seed,
-                arm,
-                state,
-                initial,
-                store,
-                summary,
-                bootstrap: Some((all, rows)),
-            };
-        }
-        let evidence = evidence_for(&state, &all);
+        write(&path.join(format!("round-{round}-acquisitions.json")), rows);
+        let evidence = evidence_for(&state, all);
         let pool = state.training_pool(&evidence).unwrap();
         let before = decision_metrics(&state.model, pool.graphs(), &mut engine, &mut store.inner);
         let mut gate = serde_json::Value::Null;
@@ -657,11 +525,9 @@ fn train(
                 );
             }
         }
-        frontier.feedback(Some(state.feedback()));
-        let next_page=frontier.candidates().into_iter().filter(|q|!seen.contains(&crate::hex(q.resolution_id()))&&State::eligible(q.source())&&formal.assess(&graph,q).passed()).map(|q|serde_json::json!({"id":crate::hex(q.resolution_id()),"priority":state.feedback.priority(&q,128)})).collect::<Vec<_>>();
         let event = serde_json::json!({"round":round,"attempts":rows.len(),"accepted":state.accepted,"replay":state.replay.len(),"pool_graphs":pool.graphs().len(),
             "decision_before":before,"decision_candidate":metrics,"qualification":gate,"retained_updates":state.model.updates,"feedback_after":state.feedback,
-            "next_page":next_page,"elapsed":clock.elapsed()});
+            "matched_input_sha256":manifest,"elapsed":clock.elapsed()});
         eprintln!(
             "{}",
             serde_json::json!({"event":"adaptive_round_completed","seed":seed,"arm":arm,"round":round,"accepted":state.accepted,"completed":completed,"units":performed,"updates":state.model.updates,"elapsed":clock.elapsed()})
@@ -674,15 +540,17 @@ fn train(
             &store.inner,
         );
         write(&path.join(format!("round-{round}-state.json")), &state);
-        write(&path.join(format!("round-{round}-evidence.json")), &all);
+        write(&path.join(format!("round-{round}-evidence.json")), all);
         collect(&mut store, &initial, None, &state);
         if clock.exhausted() {
             stop = "compute_limit";
             break;
         }
     }
-    let summary = serde_json::json!({"seed":seed,"arm":arm,"random_only":random_only,"preparation":preparation,"stop":stop,"elapsed":clock.elapsed(),"rounds":events,
-        "initial":initial,"selected":state.model,"distinct_questions":seen.len(),"shared_acquisition_cost":common.bootstrap_cost,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
+    storage::spill(&mut store, &path.join("retained-artifacts"));
+    let peak_rss_bytes = resource_boundary();
+    let summary = serde_json::json!({"seed":seed,"arm":arm,"random_only":true,"preparation":preparation,"stop":stop,"peak_rss_bytes":peak_rss_bytes,"elapsed":clock.elapsed(),"rounds":events,
+        "initial":initial,"selected":state.model,"distinct_questions":rounds*48,"shared_acquisition_cost":frozen.cost,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,"read_operations":store.reads,"write_operations":store.writes});
     write(&path.join("summary.json"), &summary);
     Run {
         seed,
@@ -691,7 +559,6 @@ fn train(
         initial,
         store,
         summary,
-        bootstrap: None,
     }
 }
 fn evaluate(
@@ -752,13 +619,13 @@ fn matched_adaptive_learning_experiment() {
     } else {
         vec![2411, 3203, 3301]
     };
-    let rounds = if pilot { 1 } else { 2 };
+    let rounds = 2;
     let clock = Clock::start();
     let bank = &*curriculum::adaptive::BANK;
     let bank_cost = clock.elapsed();
     write(
         &output.join("bank.json"),
-        &serde_json::json!({"learning":bank.learning,"development":bank.development,"confirmation":bank.confirmation}),
+        &serde_json::json!({"learning":bank.learning,"development":bank.development,"transfer":bank.transfer,"confirmation":bank.confirmation}),
     );
     let protocol: serde_json::Value =
         serde_json::from_str(include_str!("../adaptive-protocol.json")).unwrap();
@@ -770,76 +637,64 @@ fn matched_adaptive_learning_experiment() {
     write(
         &output.join("run-source.json"),
         &serde_json::json!({"source_commit":std::env::var("NAOME_ADAPTIVE_COMMIT").unwrap_or_else(|_|"unfrozen-engineering-pilot".into()),
-        "specification":Checkpoint::fresh().specification,"bank_sha256":digest(&(&bank.learning,&bank.development,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../adaptive-protocol.json"))),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"meta_parameters":meta::PARAMETERS,"meta_specification":meta::Checkpoint::fresh().specification}),
+        "specification":Checkpoint::fresh().specification,"bank_sha256":digest(&(&bank.learning,&bank.development,&bank.transfer,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../adaptive-protocol.json"))),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"meta_parameters":meta::PARAMETERS,"meta_specification":meta::Checkpoint::fresh().specification}),
+    );
+    let mut sources = Vec::new();
+    for seed in &seeds {
+        let path = output.join(format!("seed-{seed}"));
+        let common = common(*seed, &path.join("common"));
+        let frozen = acquisition::freeze(*seed, &common, rounds, &path.join("shared-acquisition"));
+        sources.push((*seed, common, frozen));
+    }
+    write(
+        &output.join("sources-ready.json"),
+        &serde_json::json!({"contexts":sources.len(),"rounds":rounds,"optimizer_updates":0,"elapsed":clock.elapsed()}),
     );
     let trained_meta = train_meta(&output.join("outer-learning"), pilot);
     let mut runs = Vec::new();
     let mut common_cost = Vec::new();
-    for (index, seed) in seeds.iter().enumerate() {
+    for (index, (seed, common, frozen)) in sources.into_iter().enumerate() {
         let path = output.join(format!("seed-{seed}"));
-        let common = common(*seed, &path.join("common"));
         common_cost.push(serde_json::json!({"seed":seed,"cost":common.cost}));
-        let shared_clock = Clock::start();
-        let mut shared = train(
-            *seed,
-            Arm {
-                name: "shared_acquisition",
-                random_only: false,
-                preparation: Preparation::Targeted,
-                acquisition_only: true,
-            },
-            &common,
-            1,
-            &path.join("shared-acquisition"),
-            None,
-        );
-        let (evidence, bootstrap) = shared.bootstrap.take().unwrap();
-        let mut shared_rows = common.rows.clone();
-        shared_rows.extend(bootstrap.clone());
-        shared
-            .state
-            .compact_with_meta_headroom(META_HEADROOM)
-            .unwrap();
-        let shared_cost = shared_clock.elapsed();
-        write(
-            &path.join("shared-acquisition/matched-input.json"),
-            &serde_json::json!({"state":shared.state,"meta_headroom_bytes":META_HEADROOM,"charged_cost":shared_cost}),
-        );
-        let adaptive_common = Common {
-            state: shared.state,
-            store: shared.store,
-            evidence,
-            rows: shared_rows,
-            cost: common.cost.clone(),
-            bootstrap,
-            bootstrap_cost: shared_cost,
-        };
         let mut arms = vec![
-            ("random_balanced", true, Preparation::Balanced),
-            ("adaptive_balanced", false, Preparation::Balanced),
-            ("adaptive_reference", false, Preparation::ReferenceTargeted),
-            ("adaptive_targeted", false, Preparation::Targeted),
-            ("adaptive_fixed_mixture", false, Preparation::FixedMixture),
-            ("adaptive_random_mixture", false, Preparation::RandomMixture),
-            ("adaptive_meta", false, Preparation::Meta),
+            ("random_balanced", Preparation::Balanced),
+            ("adaptive_balanced", Preparation::Balanced),
+            ("adaptive_reference", Preparation::ReferenceTargeted),
+            ("adaptive_targeted", Preparation::Targeted),
+            ("adaptive_fixed_mixture", Preparation::FixedMixture),
+            ("adaptive_random_mixture", Preparation::RandomMixture),
+            ("adaptive_meta", Preparation::Meta),
         ];
         let arm_count = arms.len();
         arms.rotate_left(index % arm_count);
-        for (arm, random, preparation) in arms {
+        for (arm, preparation) in arms {
             runs.push(train(
-                *seed,
+                seed,
                 Arm {
                     name: arm,
-                    random_only: random,
                     preparation,
-                    acquisition_only: false,
                 },
-                if random { &common } else { &adaptive_common },
+                &common,
+                &frozen,
                 rounds,
                 &path.join(arm),
                 Some(&trained_meta),
             ));
         }
+    }
+    for seed in &seeds {
+        let plain = runs
+            .iter()
+            .find(|r| r.seed == *seed && r.arm == "random_balanced")
+            .unwrap();
+        let adaptive = runs
+            .iter()
+            .find(|r| r.seed == *seed && r.arm == "adaptive_balanced")
+            .unwrap();
+        assert_eq!(
+            plain.state.model, adaptive.state.model,
+            "identical balanced methods and complete matched data must retain identical weights/Adam"
+        );
     }
     let learning_finished = clock.elapsed();
     let mut results = Vec::new();
@@ -850,6 +705,7 @@ fn matched_adaptive_learning_experiment() {
             &bank.confirmation
         };
         let path = output.join(format!("seed-{}", run.seed)).join(run.arm);
+        storage::restore(&mut run.store, &path.join("retained-artifacts"));
         let initial = run.initial.clone();
         let selected = run.state.model.clone();
         let mut evaluations = Vec::new();
@@ -875,11 +731,13 @@ fn matched_adaptive_learning_experiment() {
             );
             evaluations.push(serde_json::json!({"model":name,"budget":budget,"rows":rows}));
         }
+        run.store.inner.0.clear();
+        resource_boundary();
         results.push(serde_json::json!({"seed":run.seed,"arm":run.arm,"training":run.summary,"evaluations":evaluations}));
         write(&output.join("results.json"), &results);
     }
     write(
         &output.join("completed.json"),
-        &serde_json::json!({"all_training_finished_before_confirmation":true,"learning_finished":learning_finished,"elapsed":clock.elapsed(),"bank_cost":bank_cost,"common_cost":common_cost,"runs":results.len()}),
+        &serde_json::json!({"all_training_finished_before_confirmation":true,"learning_finished":learning_finished,"elapsed":clock.elapsed(),"bank_cost":bank_cost,"common_cost":common_cost,"peak_rss_bytes":resource_boundary(),"runs":results.len()}),
     );
 }

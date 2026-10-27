@@ -77,6 +77,16 @@ def verify_meta(node, record):
     assert update["experience"]["job"] == record["id"]
     assert update["experience"]["plan"] == progress["plan"]["plan"]
     assert update["experience"]["context"] == progress["plan"]["context"]
+    transfer = progress["transfer"]
+    assert update["experience"]["transfer"] == transfer
+    assert transfer["observed"] == (1 << 24) - 1
+    before = [bin(transfer["before"] >> (2 * i) & 3).count("1") for i in range(12)]
+    after = [bin(transfer["after"] >> (2 * i) & 3).count("1") for i in range(12)]
+    if progress["diagnostic"] == "candidate_promoted":
+        assert sum(after) > sum(before) and all(a >= b for a, b in zip(after, before))
+        assert progress["candidate_score"] > progress["incumbent_score"]
+        assert not progress["anchor_regression"] and not progress["development_regression"]
+
     assert update["model"]["updates"] == native["base"]["meta"]["model"]["updates"] + 8
     assert 0 <= progress["meta_cpu_micros"] <= progress["cpu_micros"]
     assert 0 <= progress["meta_wall_micros"] <= progress["wall_micros"]
@@ -250,7 +260,7 @@ def run(trial):
         progress = completed["native"]["progress"]
         meta_update = verify_meta(node, completed)
         assert progress["candidate"] is None
-        assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected", "development_regression_rejected"}
+        assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected", "development_regression_rejected", "incomplete_transfer_rejected", "transfer_regression_rejected", "no_transfer_gain_rejected"}
         assert observe(node)["learning"]["accepted"] > 0
         assert checkpoint_identity(completed) == checkpoint_identity(original)
         if progress["diagnostic"] != "candidate_promoted":
@@ -358,7 +368,7 @@ def run_unseeded(trial):
                          qualification=original["native"]["progress"]["diagnostic"],
                          own_examples=first["learning"]["local_examples"],
                          feedback_revision=next_cycle["learning"]["feedback"]["revision"])
-    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next executed training plan uses those learned weights and model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
+    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next executed training plan uses those learned weights and model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
 
 
 def main():

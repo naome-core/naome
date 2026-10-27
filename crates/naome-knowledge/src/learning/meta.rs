@@ -93,6 +93,7 @@ pub struct Experience {
     pub after: u16,
     pub protected_loss: bool,
     pub anchor_loss: bool,
+    pub transfer: super::transfer::Summary,
     /// Measured lower units through the last persisted qualification checkpoint.
     /// Final gate/meta CPU remains in Progress and whole-job totals. Freezing this
     /// target makes a partial paired write replay exactly, not a new experiment.
@@ -102,6 +103,19 @@ pub struct Experience {
 impl Experience {
     pub fn validate(&self) -> Result<(), String> {
         self.plan.validate()?;
+        self.transfer.validate()?;
+        if self.candidate_model.is_some() != self.transfer.complete() {
+            return Err("meta transfer outcome is not a complete owned trial".into());
+        }
+        if self.selected_model != self.source_model
+            && (self.candidate_model.as_ref() != Some(&self.selected_model)
+                || self.after <= self.before
+                || self.protected_loss
+                || self.anchor_loss
+                || !self.transfer.accepts())
+        {
+            return Err("meta retained model lacks protected family transfer gain".into());
+        }
         crate::object::id_bytes(&self.source_model)?;
         crate::object::id_bytes(&self.selected_model)?;
         if let Some(id) = &self.candidate_model {
@@ -121,9 +135,16 @@ impl Experience {
     }
     fn targets(&self) -> [f32; 3] {
         [
-            (f32::from(self.after) - f32::from(self.before))
-                / super::curriculum::DEVELOPMENT as f32,
-            (u8::from(self.protected_loss) + u8::from(self.anchor_loss)) as f32 / 2.,
+            if self.selected_model == self.source_model {
+                0.
+            } else {
+                self.transfer.gain()
+            },
+            if self.protected_loss || self.anchor_loss {
+                1.
+            } else {
+                self.transfer.loss()
+            },
             (self.lower_cpu_micros as f32 / 180_000_000.).min(2.),
         ]
     }

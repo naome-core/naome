@@ -99,6 +99,7 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("search/core.rs"));
     hash.update(include_str!("pool.rs"));
     hash.update(include_str!("meta.rs"));
+    hash.update(include_str!("transfer.rs"));
     hash.update(include_str!("meta/model.rs"));
     hash.update(include_str!("meta/plan.rs"));
     hash.update(include_str!("meta/memory.rs"));
