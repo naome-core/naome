@@ -285,3 +285,41 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     assert!(frontier.successes.iter().any(|count| *count > 0));
     assert_eq!(frontier.evidence.get(&target).unwrap().unwrap().units, 2);
 }
+
+#[test]
+fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_bound_counts() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let target = CompiledQuestion::compile("goal=all(x,imp(mem(x,x),eq(x,x)))").unwrap();
+    let mut frontier =
+        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    frontier
+        .attempted(&target, &graph, &result, Outcome::NoCandidate)
+        .unwrap();
+    frontier
+        .attempted(&target, &graph, &result, Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
+    let helper = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    assert!(
+        frontier
+            .candidates()
+            .iter()
+            .any(|q| q.resolution_id() == helper.resolution_id())
+    );
+    drop(frontier);
+    let mut frontier =
+        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
+    let result = completion(2, jobs::Output::NoCandidate, jobs::State::Failed);
+    frontier
+        .attempted(&target, &graph, &result, Outcome::Failed)
+        .unwrap();
+    assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
+    drop(frontier);
+    let mut changed = jobs::RoleSettings::default();
+    changed.limits.work_units += 1;
+    let frontier = Frontier::open(&directory.0, &graph, 11, changed).unwrap();
+    assert_eq!(frontier.attempts, [0; SIGNALS]);
+}

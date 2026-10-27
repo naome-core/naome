@@ -31,8 +31,12 @@ pub mod relay;
 pub mod resources;
 #[cfg(unix)]
 pub mod runtime;
+mod sampling;
 mod storage;
 mod store;
+mod structure;
+/// Checked proof curricula and model-bound development feedback.
+pub mod training;
 mod wire;
 
 pub use corpus::ROOT_FORMAT as CORPUS_ROOT_FORMAT;

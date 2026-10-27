@@ -7,6 +7,7 @@ use nix::sys::{
     resource::{UsageWho, getrusage},
     time::TimeValLike,
 };
+use serde::Serialize;
 use serde_json::json;
 use std::{
     collections::BTreeSet,

@@ -3,15 +3,10 @@
 use crate::{Graph, jobs};
 use naome_authoring::CompiledQuestion;
 use naome_checker::ContextView;
-use naome_foundation::{Formula, FreeVariable, Separation, graph::Node};
+use naome_foundation::{Formula, FreeVariable, Separation};
 use naome_proof::ArtifactId;
-use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::{
-    collections::{BTreeMap, VecDeque},
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
 use evidence::{Evidence, Outcome};
@@ -20,98 +15,9 @@ mod comparison;
 #[cfg(test)]
 mod tests;
 
-const SIGNALS: usize = 32;
-const SCALE: u64 = 65_536;
+use crate::structure::{Features, SCALE, SIGNALS};
 
-/// Primitive syntax and parent/child relationships, independent of spelling,
-/// source names and variable names. Similarity never establishes equivalence.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Features {
-    counts: [u16; SIGNALS],
-    nodes: u16,
-    depth: u16,
-    family: u16,
-}
-impl Features {
-    pub(crate) fn of(question: &CompiledQuestion) -> Self {
-        let mut counts = [0u16; SIGNALS];
-        let _: Result<u8, std::convert::Infallible> = question.core().fold_graph(|node| {
-            let tag = match node {
-                Node::Equal(a, b) => {
-                    counts[25 + usize::from(a != b)] += 1;
-                    0
-                }
-                Node::Member(a, b) => {
-                    counts[27 + usize::from(a != b)] += 1;
-                    1
-                }
-                Node::Not(_) => 2,
-                Node::Implies(..) => 3,
-                Node::ForAll(_) => 4,
-            };
-            for child in node.children().into_iter().flatten() {
-                counts[usize::from(tag) * 5 + usize::from(child)] += 1;
-            }
-            if tag == 4 {
-                counts[29] += 1;
-            }
-            if tag == 3 {
-                counts[30] += 1;
-            }
-            if tag == 2 {
-                counts[31] += 1;
-            }
-            Ok(tag)
-        });
-        let (nodes, depth) = question.core().view().node_count_and_depth();
-        let atoms =
-            u16::from(counts[25] + counts[26] > 0) + 2 * u16::from(counts[27] + counts[28] > 0);
-        let family = atoms * 16
-            + counts[29].min(3) * 4
-            + u16::from(counts[30] > 0)
-            + 2 * u16::from(counts[31] > 0);
-        Self {
-            counts,
-            nodes: nodes as u16,
-            depth: depth as u16,
-            family,
-        }
-    }
-    fn similarity(&self, other: &Self) -> u64 {
-        let (intersection, union) = self
-            .counts
-            .iter()
-            .zip(other.counts)
-            .fold((0u64, 0u64), |(a, b), (&x, y)| {
-                (a + u64::from(x.min(y)), b + u64::from(x.max(y)))
-            });
-        intersection * SCALE / union.max(1)
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct Random(u64);
-impl Random {
-    pub(crate) fn new(seed: u64) -> Self {
-        Self(seed.max(1))
-    }
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn below(&mut self, limit: u64) -> u64 {
-        let threshold = limit.wrapping_neg() % limit;
-        loop {
-            let value = self.next();
-            if value >= threshold {
-                return value % limit;
-            }
-        }
-    }
-}
+pub(crate) use crate::sampling::Random;
 
 #[derive(Clone, Copy)]
 struct AttemptHint {
@@ -130,6 +36,7 @@ pub(crate) struct Frontier {
     coverage: [u64; SIGNALS],
     building: [u64; SIGNALS],
     successes: [u64; SIGNALS],
+    attempts: [u64; SIGNALS],
     success_units: [u64; SIGNALS],
     success_millis: [u64; SIGNALS],
     knowledge: VecDeque<Features>,
@@ -154,6 +61,7 @@ impl Frontier {
             coverage: [0; SIGNALS],
             building: [0; SIGNALS],
             successes: [0; SIGNALS],
+            attempts: [0; SIGNALS],
             success_units: [0; SIGNALS],
             success_millis: [0; SIGNALS],
             knowledge: VecDeque::new(),
@@ -167,9 +75,17 @@ impl Frontier {
         };
         // A durable success flag alone cannot restore demonstrated ability.
         let mut successes = [0u64; SIGNALS];
+        let mut attempts = [0u64; SIGNALS];
         let mut success_units = [0u64; SIGNALS];
         let mut success_millis = [0u64; SIGNALS];
         local.evidence.replay(|record| {
+            let question =
+                CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
+            for (total, count) in attempts.iter_mut().zip(Features::of(&question).counts) {
+                if count > 0 {
+                    *total = total.saturating_add(record.substantive_attempts());
+                }
+            }
             if let Some(root) = record.verified.as_ref().or(record.prepared.as_ref()) {
                 let question =
                     CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
@@ -191,6 +107,7 @@ impl Frontier {
             Ok(false)
         })?;
         local.successes = successes;
+        local.attempts = attempts;
         local.success_units = success_units;
         local.success_millis = success_millis;
         Ok(local)
@@ -454,9 +371,10 @@ impl Frontier {
             }
             signals += 1;
             novelty += SCALE / self.coverage[index].saturating_add(1);
-            ability += SCALE;
+            ability += crate::training::opportunity(self.successes[index], self.attempts[index]);
             if let Some(units) = self.success_units[index].checked_div(self.successes[index]) {
-                ability += SCALE;
+                ability +=
+                    crate::training::opportunity(self.successes[index], self.attempts[index]);
                 cost = cost.max(units);
                 millis = millis.max(
                     self.success_millis[index]
@@ -514,31 +432,16 @@ impl Frontier {
             self.evidence.selected(self.random.0)?;
             return Ok(Some(index));
         }
-        let mut groups: BTreeMap<u16, Vec<(usize, u64)>> = BTreeMap::new();
-        for (index, question) in candidates.iter().enumerate() {
-            groups
-                .entry(Features::of(question).family)
-                .or_default()
-                .push((index, self.weight(question, graph, settings)?));
-        }
-        let explore = self.random.below(5) == 0;
-        let family_weights = groups
-            .values()
-            .map(|group| {
-                if explore {
-                    1
-                } else {
-                    group.iter().map(|(_, w)| w).sum::<u64>() / group.len() as u64
-                }
-            })
-            .collect::<Vec<_>>();
-        let group_index = draw(&mut self.random, &family_weights);
-        let group = groups.values().nth(group_index).expect("drawn family");
-        let weights = group
+        let weighted = candidates
             .iter()
-            .map(|(_, w)| if explore { 1 } else { *w })
-            .collect::<Vec<_>>();
-        let index = group[draw(&mut self.random, &weights)].0;
+            .map(|question| {
+                Ok((
+                    Features::of(question).family,
+                    self.weight(question, graph, settings)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, crate::Error>>()?;
+        let index = crate::sampling::choose(&mut self.random, &weighted, random_only);
         self.evidence.selected(self.random.0)?;
         Ok(Some(index))
     }
@@ -566,8 +469,37 @@ impl Frontier {
         completion: &jobs::Completion,
         outcome: Outcome,
     ) -> Result<(), crate::Error> {
+        let new = completion.id != 0
+            && self
+                .evidence
+                .get(question)?
+                .is_none_or(|record| completion.id > record.last_job);
         self.evidence
             .attempted(question, graph.content_root(), completion, outcome)?;
+        if new
+            && matches!(
+                outcome,
+                Outcome::Candidate | Outcome::NoCandidate | Outcome::Rejected
+            )
+        {
+            for (total, count) in self.attempts.iter_mut().zip(Features::of(question).counts) {
+                *total = total.saturating_add(u64::from(count > 0));
+            }
+            if outcome == Outcome::NoCandidate {
+                let mut open = question.core().clone();
+                for index in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+                    let Some(body) = open.open_outer_universal(FreeVariable::new(index as u32))
+                    else {
+                        break;
+                    };
+                    open = body;
+                }
+                if let Some((left, right)) = open.implication_parts() {
+                    self.conjecture(left);
+                    self.conjecture(right);
+                }
+            }
+        }
         self.forget_hint(question);
         Ok(())
     }
@@ -589,14 +521,4 @@ impl Frontier {
         self.forget_hint(question);
         Ok(())
     }
-}
-fn draw(random: &mut Random, weights: &[u64]) -> usize {
-    let mut selected = random.below(weights.iter().sum());
-    for (index, weight) in weights.iter().enumerate() {
-        if selected < *weight {
-            return index;
-        }
-        selected -= weight;
-    }
-    unreachable!("draw lies in total weight")
 }

@@ -27,8 +27,9 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              discovery, checked-artifact serving and lifecycle control remain active.\n\
              No unchecked artifact is admitted. Network allocations retain memory limits.\n\
              \nResearch:\n\
-             Questions follow gaps in checked local knowledge, with randomized\n\
-             exploration within the automatic computation budgets.\n\
+             Questions follow gaps in checked local knowledge and measured solving\n\
+             opportunities, with randomized exploration within the automatic\n\
+             computation budgets.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\
              mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\
