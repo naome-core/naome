@@ -1,0 +1,166 @@
+use super::*;
+use crate::checkpoint::tests::Directory;
+use std::time::{Duration, Instant};
+
+fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64) {
+    let completion = jobs::Completion {
+        id: job,
+        binding: jobs::Binding::new([0; 32], [0; 32]),
+        spent_ms: 1,
+        reserved_units: 1,
+        state: jobs::State::Complete,
+        result: Ok(jobs::Output::Native {
+            solution: None,
+            diagnostic: "search_budget".into(),
+            frontier: Some(crate::learning::tests::stalled_frontier(q)),
+        }),
+    };
+    frontier
+        .attempted(q, graph, &completion, Outcome::NoCandidate)
+        .unwrap();
+}
+fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &CompiledQuestion, job: u64) -> String {
+    let solution = crate::learning::tests::symbolic_solution(q);
+    let completion = jobs::Completion {
+        id: job,
+        binding: jobs::Binding::new([0; 32], [0; 32]),
+        spent_ms: 1,
+        reserved_units: 1,
+        state: jobs::State::Complete,
+        result: Ok(jobs::Output::Native {
+            solution: Some(solution.clone()),
+            diagnostic: "certified_candidate".into(),
+            frontier: None,
+        }),
+    };
+    frontier
+        .attempted(q, graph, &completion, Outcome::Candidate)
+        .unwrap();
+    let (root, batch) = graph
+        .prepare_generated(&solution.source, &solution.helpers, q)
+        .unwrap();
+    graph
+        .commit_batch(root, batch, Instant::now() + Duration::from_secs(10))
+        .unwrap();
+    frontier.prepared(q, job, root).unwrap();
+    frontier.verified(q, graph, job, root).unwrap();
+    solution.proof_id
+}
+fn fixture() -> (CompiledQuestion, CompiledQuestion, [CompiledQuestion; 2]) {
+    let (parent, leaves) = crate::learning::tests::helper_goal();
+    let other =
+        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c))))))")
+            .unwrap();
+    let root = CompiledQuestion::from_formula(Formula::conjunction(
+        other.formula().clone(),
+        parent.formula().clone(),
+    ))
+    .unwrap();
+    (root, parent, leaves)
+}
+#[test]
+fn failed_helper_descends_and_checked_children_release_its_original_parent_once() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let (root, parent, leaves) = fixture();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    failed(&mut frontier, &graph, &root, 1);
+    failed(&mut frontier, &graph, &parent, 9);
+    let flat = frontier.flat_loop_work(&root, &graph).unwrap();
+    assert!(
+        !flat.pending.iter().any(|q| leaves
+            .iter()
+            .any(|p| p.resolution_id() == q.resolution_id())),
+        "the frozen flat control does not descend"
+    );
+    let work = frontier.loop_work(&root, &graph).unwrap();
+    assert_eq!(work.target.resolution_id(), parent.resolution_id());
+    assert_eq!(work.pending.len(), 2);
+    for leaf in &leaves {
+        assert!(
+            work.pending
+                .iter()
+                .any(|q| q.resolution_id() == leaf.resolution_id())
+        );
+    }
+    assert_eq!(work.planned.len(), 4);
+    drop(work);
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert_eq!(frontier.loop_work(&root, &graph).unwrap().pending.len(), 2);
+    let first = resolve(&mut frontier, &mut graph, &leaves[0], 3);
+    let work = frontier.loop_work(&root, &graph).unwrap();
+    assert_eq!(work.pending.len(), 1);
+    assert_eq!(work.required, vec![first.clone()]);
+    let second = resolve(&mut frontier, &mut graph, &leaves[1], 4);
+    let work = frontier.loop_work(&root, &graph).unwrap();
+    assert_eq!(work.pending.len(), 1);
+    assert_eq!(work.pending[0].resolution_id(), parent.resolution_id());
+    assert_eq!(work.required, vec![first, second]);
+    failed(&mut frontier, &graph, &parent, 10);
+    assert!(
+        !frontier
+            .loop_work(&root, &graph)
+            .unwrap()
+            .pending
+            .iter()
+            .any(|q| q.resolution_id() == parent.resolution_id()),
+        "unchanged child proofs cannot grant another parent attempt"
+    );
+    assert_eq!(frontier.evidence.plan_members(&root).unwrap().len(), 4);
+    let fifth =
+        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))")
+            .unwrap();
+    assert!(!frontier.evidence.admit_loop_member(&root, &fifth).unwrap());
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert!(!frontier.evidence.admit_loop_member(&root, &fifth).unwrap());
+    assert!(!frontier.evidence.admit_loop_member(&root, &root).unwrap());
+    frontier.evidence.bind_solver("44".repeat(32));
+    failed(&mut frontier, &graph, &root, 11);
+    assert!(
+        !frontier.evidence.admit_loop_member(&root, &fifth).unwrap(),
+        "a lower model checkpoint cannot refill the root plan"
+    );
+}
+
+#[test]
+fn admission_failure_does_not_spend_a_member_and_depth_two_leaves_do_not_expand() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let (leaf, _) = crate::learning::tests::helper_goal();
+    let parent = CompiledQuestion::from_formula(Formula::conjunction(
+        leaf.formula().clone(),
+        leaf.formula().clone(),
+    ))
+    .unwrap();
+    let root = CompiledQuestion::from_formula(Formula::conjunction(
+        parent.formula().clone(),
+        parent.formula().clone(),
+    ))
+    .unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    failed(&mut frontier, &graph, &root, 1);
+    crate::checkpoint::fail_next_commit();
+    assert!(frontier.loop_work(&root, &graph).is_err());
+    assert!(frontier.evidence.plan_members(&root).unwrap().is_empty());
+    failed(&mut frontier, &graph, &parent, 2);
+    failed(&mut frontier, &graph, &leaf, 3);
+    let work = frontier.loop_work(&root, &graph).unwrap();
+    assert_eq!(
+        work.planned.len(),
+        2,
+        "a third level must not consume the spare member slots"
+    );
+    assert_eq!(work.planned[0].resolution_id(), parent.resolution_id());
+    assert_eq!(work.planned[1].resolution_id(), leaf.resolution_id());
+    assert!(work.pending.is_empty());
+}

@@ -1053,9 +1053,12 @@ impl Autonomous {
             None
         };
         let mut goal_requirements = Vec::new();
-        if let (Some(goal), Some(frontier)) = (&loop_goal, &self.frontier) {
+        let mut required_goal = loop_goal.clone();
+        let mut loop_candidates = None;
+        if let (Some(goal), Some(frontier)) = (&loop_goal, &mut self.frontier) {
             match frontier.loop_work(goal, graph) {
                 Ok(work) => {
+                    required_goal = Some(work.target);
                     let planned = work.planned;
                     let pending = work
                         .pending
@@ -1067,6 +1070,13 @@ impl Autonomous {
                             .then_some(q)
                         })
                         .collect::<Vec<_>>();
+                    if !planned.is_empty() {
+                        loop_candidates = Some(if pending.is_empty() {
+                            vec![goal.clone()]
+                        } else {
+                            pending.clone()
+                        });
+                    }
                     self.unanswered.retain(|q| {
                         if q.resolution_id() == goal.resolution_id() {
                             return pending.is_empty();
@@ -1128,7 +1138,7 @@ impl Autonomous {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
                     let context = questions.formal_context(graph);
-                    let required = if loop_goal
+                    let required = if required_goal
                         .as_ref()
                         .is_some_and(|g| g.resolution_id() == question.resolution_id())
                     {
@@ -1205,7 +1215,9 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let mut candidates = if let Some(goal) = &loop_goal {
+                    let mut candidates = if let Some(pending) = &loop_candidates {
+                        pending.clone()
+                    } else if let Some(goal) = &loop_goal {
                         match frontier.helpers_needed(goal) {
                             Ok(false) => vec![goal.clone()],
                             Ok(true) => frontier.goal_candidates(cursor, goal),

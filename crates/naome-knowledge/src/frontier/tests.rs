@@ -1126,7 +1126,7 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
     assert_eq!(frontier.evidence.model().supports, 0);
     frontier.exhaust_helpers(&goal).unwrap();
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     let work = frontier.loop_work(&goal, &graph).unwrap();
     assert!(work.planned.is_empty() && work.required.is_empty());
 }
@@ -1177,7 +1177,7 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
     assert_eq!(frontier.evidence.model().resolved, 0);
     assert_eq!(frontier.evidence.model().unresolved, 1);
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     assert!(
         frontier
             .loop_work(&goal, &graph)

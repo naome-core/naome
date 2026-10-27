@@ -1,10 +1,101 @@
 //! Recoverable finite prerequisite plans, subordinate to checker and job owners.
 use super::*;
 pub(crate) struct Work {
+    pub target: CompiledQuestion,
     pub planned: Vec<CompiledQuestion>,
     pub pending: Vec<CompiledQuestion>,
     pub required: Vec<String>,
-    _memory: Option<Arc<crate::resources::MemoryLease>>,
+    _memory: Vec<Arc<crate::resources::MemoryLease>>,
+}
+const DEPTH: usize = 2;
+struct Node {
+    question: CompiledQuestion,
+    record: Option<evidence::Record>,
+    children: Vec<usize>,
+    checked: Option<(String, u64)>,
+    depth: usize,
+}
+impl Node {
+    fn load(
+        frontier: &Frontier,
+        question: CompiledQuestion,
+        graph: &Graph,
+        depth: usize,
+        memory: &mut Vec<Arc<crate::resources::MemoryLease>>,
+    ) -> Result<Self, crate::Error> {
+        let record = frontier.evidence.get(&question)?;
+        let bytes = question.source().len().saturating_mul(24)
+            + record.as_ref().map_or(0, |r| {
+                r.helpers.iter().map(|s| s.len() * 24 + 768).sum::<usize>()
+            })
+            + 8192;
+        memory.push(crate::resources::MemoryLease::acquire(bytes)?);
+        let checked = if let Some(record) = &record
+            && let Some(root) = &record.verified
+        {
+            let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
+            if Frontier::checked_target(graph, root, &question)? {
+                graph
+                    .describe(root)?
+                    .map(|m| (m.proof_id, record.verified_at))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            question,
+            record,
+            children: vec![],
+            checked,
+            depth,
+        })
+    }
+}
+struct Choice {
+    target: usize,
+    pending: Vec<usize>,
+    required: Vec<(String, u64)>,
+}
+fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
+    let mut work = Choice {
+        target: index,
+        pending: vec![],
+        required: vec![],
+    };
+    for &child in &nodes[index].children {
+        let node = &nodes[child];
+        if let Some(proof) = &node.checked {
+            work.required.push(proof.clone());
+        } else if node
+            .record
+            .as_ref()
+            .is_none_or(|r| r.last_outcome == Outcome::Candidate && !r.publication_abandoned)
+        {
+            work.pending.push(child);
+        } else if depth + 1 < DEPTH
+            && let Some(record) = &node.record
+            && record.last_outcome == Outcome::NoCandidate
+            && !record.loop_disabled
+        {
+            let mut nested = next(nodes, child, depth + 1);
+            if !nested.pending.is_empty() {
+                // Only one failed subtree is active. Its original siblings
+                // remain durable, rather than multiplying in-flight plans.
+                return nested;
+            }
+            if nested
+                .required
+                .iter()
+                .any(|(_, at)| *at > record.last_attempt_at)
+            {
+                nested.pending.push(child);
+                return nested;
+            }
+        }
+    }
+    work
 }
 impl Frontier {
     #[cfg(test)]
@@ -46,60 +137,72 @@ impl Frontier {
     ) -> Result<(), crate::Error> {
         self.evidence.exhaust_helpers(question)
     }
-    /// A finite plan is recovered from the same atomic failed-attempt record.
+    /// Recover a depth-two plan with at most four durably admitted helper
+    /// identities per root. Checked descendants release their original parent
+    /// once; failed leaves never become mathematical negative evidence.
     pub(crate) fn loop_work(
-        &self,
+        &mut self,
         goal: &CompiledQuestion,
         graph: &Graph,
     ) -> Result<Work, crate::Error> {
-        let Some(record) = self.evidence.get(goal)? else {
-            return Ok(Work {
-                planned: vec![],
-                pending: vec![],
-                required: vec![],
-                _memory: None,
-            });
-        };
-        if record.loop_disabled {
-            return Ok(Work {
-                planned: vec![],
-                pending: vec![],
-                required: vec![],
-                _memory: None,
-            });
-        }
-        let bytes = record
-            .helpers
-            .iter()
-            .map(|s| s.len().saturating_mul(24).saturating_add(768))
-            .sum::<usize>();
-        let memory = crate::resources::MemoryLease::acquire(bytes)?;
-        let mut planned = Vec::new();
-        let mut pending = Vec::new();
-        let mut required = Vec::new();
-        for source in record.helpers {
-            let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
-            let outcome = self.evidence.get(&helper)?;
-            if let Some(verified) = outcome.as_ref().and_then(|r| r.verified.as_ref()) {
-                let root = ArtifactId::from_bytes(crate::object::id_bytes(verified)?);
-                if Self::checked_target(graph, root, &helper)?
-                    && let Some(metadata) = graph.describe(root)?
-                {
-                    required.push(metadata.proof_id);
-                }
-            } else if outcome
-                .as_ref()
-                .is_none_or(|r| r.last_outcome == Outcome::Candidate && !r.publication_abandoned)
+        let mut memory = Vec::new();
+        let mut nodes = Vec::<Node>::new();
+        nodes.push(Node::load(self, goal.clone(), graph, 0, &mut memory)?);
+        let mut index = 0;
+        while index < nodes.len() {
+            if nodes[index].depth < DEPTH
+                && nodes[index].checked.is_none()
+                && let Some(record) = &nodes[index].record
+                && !record.loop_disabled
+                && (index == 0 || record.last_outcome == Outcome::NoCandidate)
             {
-                pending.push(helper.clone());
+                let sources = record.helpers.clone();
+                for source in sources {
+                    let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                    if helper.formula().view().node_count_and_depth().0
+                        >= nodes[index]
+                            .question
+                            .formula()
+                            .view()
+                            .node_count_and_depth()
+                            .0
+                        || !self.evidence.admit_loop_member(goal, &helper)?
+                    {
+                        continue;
+                    }
+                    let child = if let Some(i) = nodes
+                        .iter()
+                        .position(|n| n.question.resolution_id() == helper.resolution_id())
+                    {
+                        i
+                    } else {
+                        let i = nodes.len();
+                        let depth = nodes[index].depth + 1;
+                        nodes.push(Node::load(self, helper, graph, depth, &mut memory)?);
+                        i
+                    };
+                    nodes[index].children.push(child);
+                }
             }
-            planned.push(helper);
+            index += 1;
         }
+        let choice = next(&nodes, 0, 0);
         Ok(Work {
-            planned,
-            pending,
-            required,
-            _memory: Some(memory),
+            target: nodes[choice.target].question.clone(),
+            planned: nodes.iter().skip(1).map(|n| n.question.clone()).collect(),
+            pending: choice
+                .pending
+                .iter()
+                .map(|i| nodes[*i].question.clone())
+                .collect(),
+            required: choice.required.into_iter().map(|(id, _)| id).collect(),
+            _memory: memory,
         })
     }
 }
+
+#[cfg(test)]
+mod flat;
+
+#[cfg(test)]
+mod tests;

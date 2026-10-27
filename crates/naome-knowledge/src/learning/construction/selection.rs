@@ -47,6 +47,21 @@ pub fn offers(target: &Formula, known: &[knowledge::Entry]) -> Result<Vec<Offer>
         .iter()
         .map(knowledge::Entry::term)
         .collect::<Result<Vec<_>, _>>()?;
+    // A closed conjunction can require more than one independently checked
+    // source. Offer their bounded joint context to the existing constructor;
+    // source identities, primitive checking and work accounting are unchanged.
+    if let Some((a, b)) = super::logic::conjunction(target)
+        && a != b
+        && let Some(left) = sources.iter().find(|t| t.formula() == a)
+        && let Some(right) = sources.iter().find(|t| t.formula() == b)
+    {
+        offers.push(Offer {
+            priority: usize::MAX,
+            context: vec![left.clone(), right.clone()],
+            schema_only: false,
+            group: usize::MAX,
+        });
+    }
     if proposals.is_empty() {
         for (group, source) in sources.into_iter().enumerate() {
             offers.push(Offer {
@@ -236,3 +251,6 @@ pub fn graph(
     ));
     Ok(Some(graph))
 }
+
+#[cfg(test)]
+mod tests;

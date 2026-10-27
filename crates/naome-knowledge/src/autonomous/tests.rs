@@ -598,3 +598,81 @@ async fn stalled_owner_goal_waits_for_each_planned_helper_and_then_retries_once(
     assert!(graph.ids().is_empty());
     assert!(autonomous.error.is_none());
 }
+
+#[tokio::test]
+async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    let (parent, leaves) = crate::learning::tests::helper_goal();
+    let other =
+        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c))))))")
+            .unwrap();
+    let root = CompiledQuestion::from_formula(naome_foundation::Formula::conjunction(
+        other.formula().clone(),
+        parent.formula().clone(),
+    ))
+    .unwrap();
+    admitted(&mut questions, &graph, &root).await;
+    admitted(&mut questions, &graph, &parent).await;
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = crate::frontier::Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    for (i, q) in [&root, &parent].into_iter().enumerate() {
+        frontier
+            .attempted(
+                q,
+                &graph,
+                &jobs::Completion {
+                    id: i as u64 + 1,
+                    binding: jobs::Binding::new([0; 32], [0; 32]),
+                    spent_ms: 1,
+                    reserved_units: 1,
+                    state: jobs::State::Complete,
+                    result: Ok(jobs::Output::Native {
+                        solution: None,
+                        diagnostic: "search_budget".into(),
+                        frontier: Some(crate::learning::tests::stalled_frontier(q)),
+                    }),
+                },
+                crate::frontier::evidence::Outcome::NoCandidate,
+            )
+            .unwrap();
+    }
+    let mut owner = jobs::tests::Manual::new();
+    let mut autonomous = Autonomous::new(
+        intervals(1),
+        owner.client.clone(),
+        owner.recovery(),
+        vec![root.clone()],
+    );
+    autonomous.frontier = Some(frontier);
+    autonomous.formal_goal(Some(root.clone()));
+    autonomous.next_question = Instant::now();
+    autonomous.advance(&mut graph, &mut questions);
+    let requests = owner.requests();
+    let found = requests
+        .iter()
+        .filter_map(|(_, input)| {
+            if let jobs::Input::Find { question, .. } = input {
+                Some(CompiledQuestion::compile(question).unwrap())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 1);
+    assert!(
+        leaves
+            .iter()
+            .any(|q| q.resolution_id() == found[0].resolution_id())
+    );
+    assert_eq!(
+        autonomous.formal_goal.as_ref().unwrap().resolution_id(),
+        root.resolution_id()
+    );
+    assert!(graph.ids().is_empty());
+    assert!(autonomous.error().is_none());
+}

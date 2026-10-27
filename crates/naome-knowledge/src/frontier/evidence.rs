@@ -37,6 +37,13 @@ struct Support {
     lemma_at: u64,
     goal_at: u64,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Plan {
+    goal: String,
+    contract: String,
+    members: Vec<String>,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
@@ -57,7 +64,8 @@ pub(super) struct Record {
     pub first_unresolved_job: u64,
     pub verified_job: u64,
     first_unresolved_at: u64,
-    verified_at: u64,
+    pub(super) verified_at: u64,
+    pub(super) last_attempt_at: u64,
     pub supports: u64,
     pub frontier: Option<crate::learning::SearchFrontier>,
     pub helpers: Vec<String>,
@@ -113,6 +121,7 @@ impl Record {
             || self.verified.is_some() != (self.verified_at > 0)
             || self.first_unresolved_at > observations
             || self.verified_at > observations
+            || self.last_attempt_at > observations
             || self.prepared.is_some() && self.last_outcome != Outcome::Candidate
             || self.verified_units as u64 > self.units
             || self.last_units as u64 > self.units
@@ -175,7 +184,7 @@ impl Evidence {
             header.model_contract = solver.clone();
             header.model = finder::Model::fresh();
         }
-        checkpoint.require_kinds(&["question", "proved", "support"])?;
+        checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
             crate::storage::write_marker(&marker, MARKER)?;
         }
@@ -354,6 +363,7 @@ impl Evidence {
             verified_job: 0,
             first_unresolved_at: 0,
             verified_at: 0,
+            last_attempt_at: 0,
             supports: 0,
             frontier: None,
             helpers: Vec::new(),
@@ -389,6 +399,11 @@ impl Evidence {
         let observation = (completion.state == jobs::State::Complete
             && outcome == Outcome::NoCandidate)
             .then_some((false, completion.spent_ms));
+        record.last_attempt_at = self
+            .header
+            .observations
+            .checked_add(u64::from(observation.is_some()))
+            .ok_or("finder observation overflow")?;
         if observation.is_some()
             && (record.frontier.is_none() || knowledge_changed)
             && let Ok(jobs::Output::Native {
@@ -434,6 +449,65 @@ impl Evidence {
             self.put(question, &record)?;
         }
         Ok(())
+    }
+    /// Admission is durable before scheduling, so reopening cannot replenish a
+    /// root's four-question allowance or replace previously attempted members.
+    pub(super) fn admit_loop_member(
+        &mut self,
+        goal: &CompiledQuestion,
+        helper: &CompiledQuestion,
+    ) -> Result<bool, crate::Error> {
+        let Some(record) = self.get(goal)? else {
+            return Ok(false);
+        };
+        if record.loop_disabled || helper.resolution_id() == goal.resolution_id() {
+            return Ok(false);
+        }
+        let mut members = self.plan_members(goal)?;
+        let id = crate::hex(helper.resolution_id());
+        if members.contains(&id) {
+            return Ok(true);
+        }
+        if members.len() == 4 {
+            return Ok(false);
+        }
+        members.push(id);
+        let key = record_key(&self.header.model_contract, goal);
+        let plan = Plan {
+            goal: crate::hex(goal.resolution_id()),
+            contract: self.header.model_contract.clone(),
+            members,
+        };
+        let header = self.header.clone();
+        self.commit(&header, vec![Update::put("plan", &key, &plan)?])?;
+        Ok(true)
+    }
+    pub(super) fn plan_members(
+        &self,
+        goal: &CompiledQuestion,
+    ) -> Result<Vec<String>, crate::Error> {
+        let key = record_key(&self.header.model_contract, goal);
+        let Some(plan): Option<Plan> = self.checkpoint.get("plan", &key, 1024)? else {
+            return Ok(Vec::new());
+        };
+        if plan.goal != crate::hex(goal.resolution_id())
+            || plan.contract != self.header.model_contract
+            || plan.members.len() > 4
+            || plan
+                .members
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != plan.members.len()
+        {
+            return Err("research recursive plan binding or capacity".into());
+        }
+        for id in &plan.members {
+            if crate::object::id_bytes(id)? == *goal.resolution_id() {
+                return Err("research recursive plan cycle".into());
+            }
+        }
+        Ok(plan.members)
     }
     pub(super) fn exhaust_helpers(
         &mut self,
