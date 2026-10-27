@@ -575,7 +575,7 @@ impl Owner {
             .ok_or("research horizon overflow")?;
         let mut spent_ms = 0;
         let mut reserved_units = 0;
-        if let Input::Find { cursor } = input {
+        if let Input::Find { cursor, .. } = input {
             if cursor < self.journal.next_cursor {
                 reject(reply, binding, "research finding cursor already consumed");
                 return Ok(());
@@ -1082,7 +1082,7 @@ fn output_reservation(input: &Input) -> usize {
     match input {
         Input::Solve { .. } => 6 * crate::resources::limits().closure_bytes + 1024,
         Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
-        Input::Interest { .. } => 64,
+        Input::Select { .. } => 64,
     }
 }
 fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {

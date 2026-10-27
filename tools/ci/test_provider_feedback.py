@@ -13,7 +13,7 @@ from resource_observation import latest
 
 def record():
     return {
-        "id": 4, "input": {"role": "interest"}, "binding": {"snapshot": "fixed"},
+        "id": 4, "input": {"role": "select"}, "binding": {"snapshot": "fixed"},
         "provider": "naome-deterministic-mocks-v1", "configuration": "fixed",
         "settings": {"limits": {"horizon_ms": 60000, "work_units": 64}, "mock": {"steps": 2}},
         "created_ms": 1000, "expires_ms": 61000,

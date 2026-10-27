@@ -99,7 +99,7 @@ pub(super) fn derive_with_statistics(
     macro_rules! concurrency { ($($field:ident),+ $(,)?) => { $(work.$field = capacity.$field.min(slots);)+ }; }
     concurrency!(
         finding_admissions,
-        interest_decisions,
+        selection_decisions,
         solving_jobs,
         publications,
         application_queries,

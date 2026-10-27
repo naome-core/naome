@@ -233,6 +233,19 @@ impl DiskArtifactState {
         Ok(())
     }
 
+    /// Authenticated encoded size, available before materializing a definition.
+    /// Consumers reserve memory and may decline projections above their budget.
+    pub fn definition_canonical_length(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<usize>, ContextError> {
+        self.report(self.definitions.get(id.as_bytes()).and_then(|record| {
+            record
+                .map(|record| definition_record(&record).map(|(_, length)| length))
+                .transpose()
+        }))
+    }
+
     fn definition(&self, id: DefinitionId) -> Result<Option<DefinitionCertificate>, ContextError> {
         self.report((|| {
             let Some(record) = self.definitions.get(id.as_bytes())? else {

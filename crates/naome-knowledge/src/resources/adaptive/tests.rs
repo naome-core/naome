@@ -123,7 +123,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     let target = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
     let source = crate::mocks::create_proof(&target).unwrap();
     let (prepared, batch) = graph.prepare_generated(&source, &[], &target).unwrap();
-    let mut questions = LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _));
+    let mut questions = LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
     let unanswered = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
     assert!(questions.generation_decision(&graph, &unanswered).passed());
     let (_, selected) = questions.begin_exchange(
@@ -131,8 +131,8 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
         unanswered.clone(),
         Instant::now() + Duration::from_secs(30),
     );
-    let interest = questions.completed().await;
-    questions.finish(&graph, interest);
+    let selection = questions.completed().await;
+    questions.finish(&graph, selection);
     let selected = selected.await.unwrap();
     let computations = questions.computation_count();
     let checks = graph.checker_calls();

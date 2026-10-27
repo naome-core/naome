@@ -71,8 +71,7 @@ jobs:
         run: |
           cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --lib --locked --no-fail-fast jobs::tests::
           cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --lib --locked --no-fail-fast resources::tests::
-          cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --test processes --locked ordinary_owner_interest_is_exact_durable_and_serialized -- --exact
-          cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --test processes --locked ordinary_lifecycle_generates_exchanges_and_recovers_checked_proofs -- --exact
+          cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --test processes --locked ordinary_lifecycle_generates_exchanges_and_recovers_checked_artifacts -- --exact
           cargo test -p naome-authoring --profile "$NAOME_TEST_PROFILE" --test cli --locked --no-fail-fast
 
       - name: Restore all-feature process binaries

@@ -9,7 +9,7 @@ sys.path.insert(0, str(SUPPORT))
 from autonomous_lifecycle import Trial
 from automatic_computation import memory_recovery
 from long_jobs import observe_work
-from owner_interest import assert_owner_status
+from autonomous_lifecycle import assert_node_status
 from proof_network_discovery import contact_retired
 
 
@@ -125,12 +125,12 @@ class WorkWindowTests(unittest.TestCase):
 
 class OwnerStatusTests(unittest.TestCase):
     def status(self, **changes):
-        return {"running": True, "accepted_artifacts": 0, "interest": "exact owner text",
+        return {"running": True, "accepted_artifacts": 0,
                 "artifact_verification": "checked", "computation": "running",
                 "computation_reason": None, **changes}
 
     def check(self, value):
-        assert_owner_status(value, running=True, interest="exact owner text", accepted_artifacts=0)
+        assert_node_status(value, running=True, accepted_artifacts=0)
 
     def test_pressure_transitions_preserve_the_owner_contract(self):
         for computation in ("running", "pausing", "paused"):
@@ -138,7 +138,7 @@ class OwnerStatusTests(unittest.TestCase):
                 computation_reason=None if computation == "running" else "sustained external CPU pressure"))
 
     def test_pressure_cannot_excuse_an_owner_or_proof_state_change(self):
-        for change in ({"interest": "changed"}, {"running": False}, {"accepted_artifacts": 1},
+        for change in ({"running": False}, {"accepted_artifacts": 1},
                        {"artifact_verification": "not_run"}, {"unknown": 1}):
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 self.check(self.status(computation="paused", computation_reason="memory pressure", **change))

@@ -156,7 +156,7 @@ impl Intake {
         let (context, _) = self.managed_context.expect("current managed context");
         self.declined
             .retain(|_, declined| declined.formal == context && declined.until > now);
-        if self.waiting.len() < crate::resources::active_limits().interest_decisions
+        if self.waiting.len() < crate::resources::active_limits().selection_decisions
             && questions.available_peer()
             && let Some(description) = self.queue.pop_front()
         {
@@ -167,7 +167,7 @@ impl Intake {
                     "queued metadata expired before research admission".into(),
                 );
             }
-            let until = questions.interest_deadline(now);
+            let until = questions.selection_deadline(now);
             let mut selection = Selection::new(id, description.question.clone());
             if let Err(error) = selection.begin(SelectionStage::Initial, graph, questions, until) {
                 return Progress::Skipped(id, error);
@@ -248,7 +248,7 @@ impl Intake {
                     *batch = None;
                 }
             }
-            let until = questions.interest_deadline(Instant::now());
+            let until = questions.selection_deadline(Instant::now());
             if !root
                 .selection
                 .begin(SelectionStage::Final, graph, questions, until)?

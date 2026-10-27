@@ -13,10 +13,6 @@ async fn offline_controls_do_not_read_payloads_or_rebuild_checked_indexes() {
     let recorded = status(&directory.0).await.unwrap();
     assert_eq!(recorded.accepted_artifacts, 1);
     assert_eq!(recorded.artifact_verification, ArtifactVerification::NotRun);
-    let saved = interest(&directory.0, "set theory").await.unwrap();
-    assert_eq!(saved.interest, "set theory");
-    assert_eq!(saved.accepted_artifacts, 1);
-    assert_eq!(saved.artifact_verification, ArtifactVerification::NotRun);
     assert_eq!(crate::store::payload_reads(), reads);
     assert_eq!(
         fs::read(&sentinel).unwrap(),
@@ -35,7 +31,5 @@ async fn offline_controls_keep_exclusive_directory_custody() {
     let directory = Directory::new();
     let graph = Graph::open(&directory.0).unwrap();
     assert!(status(&directory.0).await.is_err());
-    assert!(interest(&directory.0, "must not save").await.is_err());
     drop(graph);
-    assert_eq!(owner::load(&directory.0).unwrap(), "");
 }

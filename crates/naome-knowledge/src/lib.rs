@@ -1,7 +1,7 @@
 //! Economy-free replication of immutable, checker-validated mathematical artifacts.
 //!
 //! Peers exchange hints and derived questions before full certificates. Each
-//! receiver requires fresh formal approval and positive local interest, then
+//! receiver requires fresh formal approval and positive local selection, then
 //! checks the complete necessary artifact closure before atomic publication.
 //! Union convergence requires every relevant question to be selected, compatible
 //! honest peers to reconnect, and data to fit the explicit local resource limits.
@@ -12,6 +12,7 @@ mod checkpoint;
 mod corpus;
 mod discovery;
 mod error;
+mod frontier;
 pub use error::{CertificateFormatError, Error};
 mod graph;
 mod index_storage;

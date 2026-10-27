@@ -292,7 +292,7 @@ def main():
         node = PublicNode(driver, 0, directory, driver.init_identity(directory), reservation.getsockname()[1])
         driver.nodes = [node]
         reservation.close()
-        node.start(interest=None, test_controls=False)
+        node.start(selection=None, test_controls=False)
         previous = generations(directory)
         assert previous is not None and len(previous) == 1
         compatibility = driver.summary["contract"]["compatibility"]

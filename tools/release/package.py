@@ -58,15 +58,13 @@ def lifecycle(run, directory):
                              or (computation in ("pausing", "paused") and isinstance(reason, str) and bool(reason.strip())))
         if status.get("running") is not True or status.get("artifact_verification") != "checked" or not valid_computation:
             raise ValueError("extracted node is not ready with a valid computation state")
-        if command("interest", "Release smoke test")["interest"] != "Release smoke test":
-            raise ValueError("extracted node did not persist owner interest")
     finally:
         stopped = command("stop")
         if stopped["running"] or stopped["computation"] != "stopped":
             raise ValueError("extracted node shutdown was not confirmed")
     persisted = command("status")
-    if persisted["running"] or persisted["artifact_verification"] != "not_run" or persisted["interest"] != "Release smoke test":
-        raise ValueError("extracted node did not retain interest across daemon shutdown")
+    if persisted["running"] or persisted["artifact_verification"] != "not_run":
+        raise ValueError("extracted node did not report stopped state after daemon shutdown")
 
 
 def smoke(binary, version, *, start=False):
@@ -77,7 +75,7 @@ def smoke(binary, version, *, start=False):
             return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=60).strip()
         if run("--version") != f"naome {version}" or "naome start" not in run("--help"):
             raise ValueError("packaged executable has incorrect version/help")
-        expected = {"running": False, "computation": "stopped", "artifact_verification": "not_run", "accepted_artifacts": 0, "interest": ""}
+        expected = {"running": False, "computation": "stopped", "artifact_verification": "not_run", "accepted_artifacts": 0}
         status = json.loads(run("--json", "status"))
         if any(status.get(key) != value for key, value in expected.items()) or node.exists():
             raise ValueError("packaged status must not create state or start a node")

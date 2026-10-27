@@ -15,12 +15,11 @@ fn current_lifecycle_surface_and_automatic_pause_reason_are_explicit() {
         computation_reason: Some("operating system power saving".into()),
         accepted_artifacts: 3,
         artifact_verification: crate::runtime::ArtifactVerification::Checked,
-        interest: String::new(),
     };
     let rendered = human("status", &status, false);
     assert!(rendered.contains("● Running"));
     assert!(rendered.contains("Paused automatically (network remains available)"));
-    assert!(rendered.find("power saving").unwrap() < rendered.find("Interest").unwrap());
+    assert!(rendered.contains("power saving"));
 }
 
 #[test]
@@ -31,7 +30,6 @@ fn pause_guidance_uses_only_reported_conditions_and_preserves_terminal_safety() 
         computation_reason: None,
         accepted_artifacts: 0,
         artifact_verification: crate::runtime::ArtifactVerification::Checked,
-        interest: String::new(),
     };
     for (reason, guidance) in [
         ("disk pressure", "Free disk space"),

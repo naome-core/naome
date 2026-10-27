@@ -49,8 +49,8 @@ async fn finding_feedback_tracks_admitted_questions_instead_of_raw_provider_outp
                 1,
                 "raw provider output cannot reset unproductive-finding backoff"
             );
-            let interest = questions.completed().await;
-            questions.finish(&graph, interest);
+            let selection = questions.completed().await;
+            questions.finish(&graph, selection);
         }
         autonomous.advance(&mut graph, &mut questions);
         assert_eq!(

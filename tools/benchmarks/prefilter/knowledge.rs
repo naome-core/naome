@@ -104,7 +104,7 @@ async fn measure_prefilter_node_api() {
                 .await
                 .unwrap();
             assert!(result.prefilter.passed());
-            assert_eq!(result.interest, InterestAssessment::Assessed(true));
+            assert_eq!(result.selection_result, SelectionAssessment::Assessed(true));
             black_box(result);
         }
     })
@@ -122,6 +122,6 @@ async fn measure_prefilter_node_api() {
         .unwrap();
     println!(
         "PREFILTER_MEASUREMENT {}",
-        serde_json::json!({"group":"node_api_alternating","unique_cases":inputs.len(),"evaluations":evaluations,"interest_assessments":evaluations,"elapsed_ns":elapsed_ns})
+        serde_json::json!({"group":"node_api_alternating","unique_cases":inputs.len(),"evaluations":evaluations,"selection_assessments":evaluations,"elapsed_ns":elapsed_ns})
     );
 }

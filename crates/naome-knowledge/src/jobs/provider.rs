@@ -202,11 +202,11 @@ impl Provider for Mock {
             });
         }
         let output = match &self.input {
-            Input::Find { cursor } => {
+            Input::Find { question, .. } => {
                 Output::Question(if self.work.outcome == MockOutcome::Malformed {
                     "invalid question".into()
                 } else {
-                    crate::mocks::create_question(*cursor)
+                    question.clone()
                 })
             }
             Input::Solve { question } => {
@@ -246,12 +246,12 @@ impl Provider for Mock {
                     })
                     .unwrap_or(Output::NoCandidate)
             }
-            Input::Interest { question, .. } => {
+            Input::Select { question, .. } => {
                 let compiled = naome_authoring::CompiledQuestion::compile(question)
                     .map_err(|e| e.to_string())?;
                 let yes =
-                    libp2p::futures::executor::block_on(crate::mocks::assess_interest(compiled))?;
-                Output::Interest(yes && self.work.outcome != MockOutcome::Malformed)
+                    libp2p::futures::executor::block_on(crate::mocks::select_question(compiled))?;
+                Output::Selected(yes && self.work.outcome != MockOutcome::Malformed)
             }
         };
         Ok(output)

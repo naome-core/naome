@@ -14,17 +14,17 @@ async fn decision(
     if managed {
         let requests = owner.requests();
         assert_eq!(requests.len(), 1);
-        owner.complete(requests[0].0, Ok(crate::jobs::Output::Interest(true)));
+        owner.complete(requests[0].0, Ok(crate::jobs::Output::Selected(true)));
         let result = questions.completed().await;
         questions.finish(graph, result);
     } else {
-        interest(questions, graph).await;
+        selection(questions, graph).await;
     }
 }
 
 #[tokio::test]
-async fn temporary_overload_retains_final_selection_without_declining_or_repeating_interest() {
-    const CASE: &str = "intake::tests::retry::temporary_overload_retains_final_selection_without_declining_or_repeating_interest";
+async fn temporary_overload_retains_final_selection_without_declining_or_repeating_selection() {
+    const CASE: &str = "intake::tests::retry::temporary_overload_retains_final_selection_without_declining_or_repeating_selection";
     // Adaptive budgets belong to a process, so the resource transition is isolated.
     if std::env::var("NAOME_INTAKE_RETRY_CASE").as_deref() != Ok(CASE) {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -140,7 +140,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
     let mut budget = crate::resources::tests::snapshot(false);
     budget.budget.concurrency = 2;
     crate::resources::adaptive::publish(budget.clone());
-    assert_eq!(crate::resources::active_limits().interest_decisions, 2);
+    assert_eq!(crate::resources::active_limits().selection_decisions, 2);
     let fixtures: Vec<_> = (79..82).map(fixture).collect();
     let ids: Vec<_> = fixtures
         .iter()
@@ -174,7 +174,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
         .deadline();
     budget.budget.concurrency = 1;
     crate::resources::adaptive::publish(budget);
-    assert_eq!(crate::resources::active_limits().interest_decisions, 1);
+    assert_eq!(crate::resources::active_limits().selection_decisions, 1);
     intake.enqueue(peer, fixtures[2].1.clone(), &graph).unwrap();
     intake
         .payload(peer, ids[0], ids[0], fixtures[0].0.clone(), &graph)
@@ -187,7 +187,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
         "the active root must reach final selection while another selected root waits"
     );
     assert!(
-        matches!(&pending[0].1, crate::jobs::Input::Interest { purpose: crate::jobs::Purpose::Final, root: Some(root), .. } if root == &hex(ids[0].as_bytes()))
+        matches!(&pending[0].1, crate::jobs::Input::Select { purpose: crate::jobs::Purpose::Final, root: Some(root), .. } if root == &hex(ids[0].as_bytes()))
     );
     assert_eq!(
         intake.queue.len(),
@@ -215,7 +215,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
             );
             for (job, input) in std::mem::take(&mut pending) {
                 decisions.push(input);
-                owner.complete(job, Ok(crate::jobs::Output::Interest(true)));
+                owner.complete(job, Ok(crate::jobs::Output::Selected(true)));
             }
             let completed = questions.completed().await;
             questions.finish(&graph, completed);
@@ -253,7 +253,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
         "retain both initial decisions across the capacity reduction"
     );
     for id in &ids {
-        assert_eq!(decisions.iter().filter(|input| matches!(input, crate::jobs::Input::Interest { purpose: crate::jobs::Purpose::Final, root: Some(root), .. } if root == &hex(id.as_bytes()))).count(), 1);
+        assert_eq!(decisions.iter().filter(|input| matches!(input, crate::jobs::Input::Select { purpose: crate::jobs::Purpose::Final, root: Some(root), .. } if root == &hex(id.as_bytes()))).count(), 1);
     }
 }
 
@@ -305,7 +305,7 @@ async fn allocation_backpressure_preserves_payload_frontier_and_prepared_inputs(
             intake.advance(&mut graph, &mut questions),
             Progress::Waiting
         ));
-        interest(&mut questions, &graph).await;
+        selection(&mut questions, &graph).await;
         assert!(
             matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids == [id])
         );
@@ -329,7 +329,7 @@ async fn sealed_selection_cannot_publish_through_a_different_root_grant() {
     approve(&mut intake, &mut questions, &mut graph).await;
     intake.payload(peer, id, id, object, &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
-    interest(&mut questions, &graph).await;
+    selection(&mut questions, &graph).await;
     let mut root = intake.active.take().unwrap();
     root.selection.poll(&graph, &mut questions).unwrap();
     let Phase::Final(batch) = root.phase else {

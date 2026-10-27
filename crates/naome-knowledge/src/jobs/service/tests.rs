@@ -379,11 +379,7 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
         for cursor in 0..=crate::resources::limits().terminal_job_page as u64 {
             let (reply, mut receipt) = oneshot::channel();
             owner
-                .submit(
-                    Input::Find { cursor },
-                    Binding::new([0; 32], [0; 32]),
-                    reply,
-                )
+                .submit(Input::find(cursor), Binding::new([0; 32], [0; 32]), reply)
                 .unwrap();
             let id = owner.journal.next_id - 1;
             owner.journal.records.get_mut(&id).unwrap().state = State::Running;
@@ -645,11 +641,7 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
     }));
     let (reply, _receipt) = oneshot::channel();
     owner
-        .submit(
-            Input::Find { cursor: 0 },
-            Binding::new([0; 32], [0; 32]),
-            reply,
-        )
+        .submit(Input::find(0), Binding::new([0; 32], [0; 32]), reply)
         .unwrap();
     assert!(
         owner
@@ -886,11 +878,7 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
         let (reply, _receive) = oneshot::channel();
         // Retain the request receiver until submission has durably accepted it.
         owner
-            .submit(
-                Input::Find { cursor },
-                Binding::new([0; 32], [0; 32]),
-                reply,
-            )
+            .submit(Input::find(cursor), Binding::new([0; 32], [0; 32]), reply)
             .unwrap();
         owner.journal.next_id - 1
     }
@@ -938,7 +926,7 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
     assert_eq!(recovered, expected);
     assert_eq!(
         disk.request(
-            &Input::Find { cursor: 0 },
+            &Input::find(0),
             &Binding::new([0; 32], [0; 32]),
             settings.finding
         )

@@ -72,7 +72,7 @@ impl Programs {
             self.active = None;
         }
     }
-    pub(super) fn invalidate_interest(&mut self) {
+    pub(super) fn invalidate_selection(&mut self) {
         self.declined.clear();
     }
     pub(super) fn queued(&self) -> usize {
@@ -86,11 +86,6 @@ impl Programs {
                 .queue
                 .iter()
                 .any(|offer| offer.metadata.manifest.artifact_id() == id)
-    }
-    pub(super) fn selection_boundary_ready(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|root| root.authority.boundary_ready())
     }
     fn busy(&self) -> bool {
         self.active.as_ref().is_some_and(|root| {
@@ -243,7 +238,7 @@ impl Programs {
                 let question = offer
                     .metadata
                     .question()?
-                    .ok_or("program has no supported interest question")?;
+                    .ok_or("program has no supported selection question")?;
                 Ok(Selection::new(id, question))
             })();
             match authority {

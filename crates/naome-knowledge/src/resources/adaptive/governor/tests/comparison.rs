@@ -52,8 +52,8 @@ fn calibrated(cpu_percent: u64) -> Statistics {
     for provider in [
         &mut stats.providers.finding,
         &mut stats.providers.solving,
-        &mut stats.providers.local_interest,
-        &mut stats.providers.peer_interest,
+        &mut stats.providers.local_selection,
+        &mut stats.providers.peer_selection,
     ] {
         provider.completed = 1;
         provider.service_nanos = 200_000_000;
@@ -140,8 +140,8 @@ fn replay(profile: Profile, cpu_millis: u64, cpu_percent: u64, feedback: bool) -
         for (role, provider) in [
             &mut stats.providers.finding,
             &mut stats.providers.solving,
-            &mut stats.providers.local_interest,
-            &mut stats.providers.peer_interest,
+            &mut stats.providers.local_selection,
+            &mut stats.providers.peer_selection,
         ]
         .into_iter()
         .enumerate()
@@ -392,8 +392,8 @@ fn known_running_io_work_does_not_flap_back_to_cpu_only_concurrency_between_arri
             )
             .unwrap();
         assert!(running.budget.concurrency >= last);
-        stats.providers.peer_interest.cpu_nanos = None;
-        stats.providers.peer_interest.queued = 1;
+        stats.providers.peer_selection.cpu_nanos = None;
+        stats.providers.peer_selection.queued = 1;
         stats.queued_jobs = 1;
         let unknown = governor
             .update(

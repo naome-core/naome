@@ -62,7 +62,7 @@ pub fn routing_contract() -> Value {
         "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
             "protocol":crate::wire::PROTOCOL.as_ref(), "topic":crate::wire::TOPIC,
-            "interest":"Explicit local positive selection before root fetch and before commit",
+            "selection":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::active_limits().queued_metadata,
                 "closure_objects":crate::resources::limits().closure_objects,"closure_bytes":crate::resources::limits().closure_bytes,
@@ -73,7 +73,7 @@ pub fn routing_contract() -> Value {
         "dht_protocol":discovery::internet::dht_protocol(true),
         "public_bootstrap":discovery::internet::bootstrap(),
         "participation_key":hex(discovery::provider_key().as_ref()),
-        "privacy":{"proof_graph":"Public to compatible peers", "owner_interest":"Local only; never a wire field",
+        "privacy":{"proof_graph":"Public to compatible peers",
             "discovery":"Public IP/peer identity/participation metadata; mDNS is unencrypted LAN discovery",
             "transport":"Noise authenticated encryption, including relay circuits"},
         "defaults":DiscoveryConfig::default(),
@@ -197,11 +197,7 @@ struct Node {
     next_production: Instant,
 }
 
-pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
-    run_with_interest(config, test_controls, None).await
-}
-
-/// Autonomous ordinary operation owns its control, schedule and interest future.
+/// Autonomous ordinary operation owns its control, schedule and selection future.
 /// It accepts no manual developer operations. Runtime owns the transient
 /// startup stdin lifeline and releases it only after checked readiness.
 #[cfg(unix)]
@@ -226,43 +222,18 @@ pub(crate) async fn run_autonomous(
     .await
 }
 
-/// Explicit local mathematical interest policy for the CLI. Neither selection
-/// nor a peer's metadata makes an obligation valid or novel.
-pub enum InterestSelection {
-    AllSupported,
-    Questions(Vec<naome_authoring::CompiledQuestion>),
-}
-
-impl InterestSelection {
-    fn accepts(&self, question: &naome_authoring::CompiledQuestion) -> bool {
-        match self {
-            Self::AllSupported => true,
-            Self::Questions(questions) => questions.iter().any(|selected| {
-                selected.resolution_id() == question.resolution_id()
-                    && selected.canonical_core() == question.canonical_core()
-                    && selected.core() == question.core()
-            }),
-        }
-    }
-}
-
-pub async fn run_with_interest(
-    config: Config,
-    test_controls: bool,
-    selection: Option<InterestSelection>,
-) -> Result<(), String> {
+/// Ordinary peers use the node's automatic research selection.
+pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
-    // Preserve the existing CLI input reader only for the CLI-oriented wrapper.
     std::thread::spawn(move || read_commands(sender));
     run_inner(
         config,
         test_controls,
         inbox,
-        selection
-            .map(|selection| move |question| std::future::ready(Ok(selection.accepts(&question)))),
+        Some(crate::mocks::select_question as fn(_) -> _),
         commands,
         None,
     )
@@ -270,16 +241,16 @@ pub async fn run_with_interest(
 }
 
 /// Runs the existing Gossip node with a bounded Rust-only local question inbox.
-/// The separately supplied interest future must be nonblocking and own all its
+/// The separately supplied selection future must be nonblocking and own all its
 /// effects without detaching work. It is polled inside this node's lifetime;
 /// shutdown, cancellation or the fixed deadline drops it. No proof-validity
-/// condition depends on interest. Peer proof exchange always requires positive
+/// condition depends on selection. Peer proof exchange always requires positive
 /// question selection before full certificate retrieval.
 pub async fn run_with_questions<F, Fut>(
     config: Config,
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
-    interest: F,
+    selection: F,
 ) -> Result<(), String>
 where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
@@ -287,13 +258,21 @@ where
 {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
-    run_inner(config, test_controls, inbox, Some(interest), commands, None).await
+    run_inner(
+        config,
+        test_controls,
+        inbox,
+        Some(selection),
+        commands,
+        None,
+    )
+    .await
 }
 
-/// Runs local question intake without an interest provider. The formal result
+/// Runs local question intake without a selection provider. The formal result
 /// remains available to assessment; admission reports NotInserted/NotRun.
 /// Embeddings must explicitly supply positive selection to admit a question.
-pub async fn run_with_questions_without_interest(
+pub async fn run_with_questions_without_selection(
     config: Config,
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
@@ -315,7 +294,7 @@ pub(crate) async fn run_inner<F, Fut>(
     config: Config,
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
-    interest: Option<F>,
+    selection: Option<F>,
     commands: mpsc::Receiver<Result<QueuedCommand, String>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
 ) -> Result<(), String>
@@ -340,7 +319,7 @@ where
                     config,
                     test_controls,
                     inbox,
-                    interest,
+                    selection,
                     commands,
                     autonomy,
                     cancel,
@@ -364,7 +343,7 @@ pub(crate) async fn run_owner<F, Fut>(
     config: Config,
     test_controls: bool,
     mut inbox: crate::question::QuestionInbox,
-    interest: Option<F>,
+    selection: Option<F>,
     mut commands: mpsc::Receiver<Result<QueuedCommand, String>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
     mut cancel: tokio::sync::oneshot::Receiver<()>,
@@ -609,7 +588,9 @@ where
     let mut question_input_open = true;
     let (mut research, mut autonomous, mut questions) = if let Some(intervals) = autonomy {
         use sha2::Digest;
-        let cursor = sha2::Sha256::digest(own_id.to_bytes())[0] as u64;
+        let entropy = sha2::Sha256::digest(own_id.to_bytes());
+        let cursor = entropy[0] as u64;
+        let seed = u64::from_be_bytes(entropy[..8].try_into().expect("digest seed width"));
         let (service, client, recovery) = crate::jobs::Service::open(
             &directory,
             intervals.jobs,
@@ -619,14 +600,15 @@ where
         let questions = crate::question::LocalQuestions::<F>::managed(
             client.clone(),
             &directory,
-            Duration::from_millis(intervals.jobs.interest.limits.horizon_ms),
+            Duration::from_millis(intervals.jobs.selection.limits.horizon_ms),
         )?;
         let unanswered = questions.restored_unanswered(&node.graph);
-        let autonomous =
+        let mut autonomous =
             crate::autonomous::Autonomous::new(intervals, client, recovery, unanswered);
+        autonomous.attach_frontier(&directory, &node.graph, seed)?;
         (Some(service), Some(autonomous), questions)
     } else {
-        let mut questions = crate::question::LocalQuestions::new(interest);
+        let mut questions = crate::question::LocalQuestions::new(selection);
         questions.attach_persistence(&directory)?;
         (None, None, questions)
     };
@@ -640,7 +622,6 @@ where
         .clone()
         .map(|control| control as Arc<dyn crate::publication::LocalAuthority>);
     let mut stopping = false;
-    let mut next_profile_check = Instant::now();
     if let Some(control) = &control {
         control.publish()?;
     }
@@ -658,15 +639,11 @@ where
         let period = crate::resources::active_limits().tick_interval;
         if tick.period() != period { tick = tokio::time::interval(period); tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
         let work = node.computation.try_enter();
-        // Read the validated owner epoch before polling any final admission.
-        // An error invalidates old selection; stop remains available.
-        if let Some(control)=&control
-            && (control.selection_changed() || Instant::now()>=next_profile_check) {
-                next_profile_check=Instant::now()+crate::resources::limits().profile_poll_interval;
-                if questions.select(control.selection().ok()) {
-                node.intake.invalidate_interest(); node.inventory_summaries.clear();
-                }
-            }
+        if let Some(control) = &control
+            && questions.select(control.selection().ok()) {
+            node.intake.invalidate_selection();
+            node.inventory_summaries.clear();
+        }
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));
@@ -724,10 +701,10 @@ where
                     None => question_input_open = false,
                 }
             },
-            interest = questions.completed(),if work.is_some() && !stopping => {
+            selection = questions.completed(),if work.is_some() && !stopping => {
                 if let Some(control)=&control
-                    && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
-                questions.finish(&node.graph, interest);
+                    && questions.select(control.selection().ok()){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
+                questions.finish(&node.graph, selection);
             },
             _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
                 stopping=true;
@@ -752,9 +729,7 @@ where
             continue;
         }
         if let Some(control)=&control
-            && (control.selection_changed() || node.intake.selection_boundary_ready()
-                || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
-                && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
+                && questions.select(control.selection().ok()){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));

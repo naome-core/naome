@@ -130,21 +130,21 @@ fn oversized_configuration_still_rejects_before_decoding() {
 }
 
 #[tokio::test]
-async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
+async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize},
     };
     use tokio::sync::Notify;
-    struct FinalInterest {
+    struct FinalSelection {
         dropped: Arc<AtomicBool>,
         notify: Arc<Notify>,
         peer: PeerId,
     }
-    impl Drop for FinalInterest {
+    impl Drop for FinalSelection {
         fn drop(&mut self) {
             self.dropped.store(true, Ordering::SeqCst);
-            println!("test_final_interest_dropped peer={}", self.peer);
+            println!("test_final_selection_dropped peer={}", self.peer);
             self.notify.notify_one();
         }
     }
@@ -248,7 +248,7 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
                 if first {
                     return Ok(true);
                 }
-                let _owned = FinalInterest {
+                let _owned = FinalSelection {
                     dropped,
                     notify,
                     peer: sender_peer,
@@ -633,19 +633,6 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     .unwrap();
 
     let measure = Instant::now();
-    let changed = tokio::time::timeout(
-        Duration::from_secs(2),
-        request(&endpoint, json!({"interest":"revoked during slow commit"})),
-    )
-    .await
-    .unwrap();
-    let interest_seconds = measure.elapsed().as_secs_f64();
-    assert_eq!(changed["report"]["kind"], "status");
-    assert_eq!(
-        changed["report"]["status"]["interest"],
-        "revoked during slow commit"
-    );
-    let measure = Instant::now();
     let _ = tokio::time::timeout(Duration::from_secs(2), request(&endpoint, json!("stop")))
         .await
         .unwrap();
@@ -673,7 +660,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     assert_eq!(Graph::open(&directory.0).unwrap().accepted_count(), 0);
     println!(
         "OWNER_LATENCY_METRICS {}",
-        json!({"status_seconds":status_seconds,"network_seconds":network_seconds,"interest_seconds":interest_seconds,"stop_seconds":stop_seconds,"stalled_write_seconds":stalled_seconds,"published_proofs":count,"proof_bytes":proof_bytes})
+        json!({"status_seconds":status_seconds,"network_seconds":network_seconds,"stop_seconds":stop_seconds,"stalled_write_seconds":stalled_seconds,"published_proofs":count,"proof_bytes":proof_bytes})
     );
 }
 
