@@ -199,10 +199,15 @@ pub(super) fn arm(
                 let root = crate::object::proof_address(&id).unwrap();
                 finder.prepared(&helper, job, root).unwrap();
                 finder.verified(&helper, &graph, job, root).unwrap();
-                let entry = super::super::super::knowledge::Entry {
-                    packet: graph.learning_certificate(root).unwrap().unwrap(),
+                let retained = if let Some(packet) = graph.learning_certificate(root).unwrap() {
+                    state
+                        .remember_theorem(super::super::super::knowledge::Entry { packet })
+                        .unwrap()
+                } else {
+                    // A checked graph artifact need not fit the bounded neural
+                    // view. Preserve its proof and cost without enlarging it.
+                    false
                 };
-                let retained = state.remember_theorem(entry).unwrap();
                 events.push(json!({"role":"retention","proof_id":id,"retained":retained}));
                 acquired.push(id);
             }
