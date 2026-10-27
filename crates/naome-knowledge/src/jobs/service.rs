@@ -763,9 +763,7 @@ impl Owner {
                 }
             }
             match (&record.input, &record.result) {
-                (Input::Find { .. }, Some(Output::Question(source)))
-                    if record.provider == crate::learning::PROVIDER =>
-                {
+                (Input::Find { .. }, Some(Output::Question(source))) => {
                     learning.observe(source, None)
                 }
                 (
@@ -1043,9 +1041,7 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
-                provider: if self.settings.native_proof_learning
-                    && !matches!(input, Input::Select { .. })
-                {
+                provider: if native.is_some() {
                     crate::learning::PROVIDER
                 } else {
                     super::provider::DEFAULT_PROVIDER

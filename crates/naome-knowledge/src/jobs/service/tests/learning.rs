@@ -55,6 +55,33 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
 fn learning(owner: &Owner) -> serde_json::Value {
     serde_json::to_value(owner.journal.learning.as_ref().unwrap()).unwrap()
 }
+#[test]
+fn native_mode_forwards_frontier_find_without_a_neural_snapshot() {
+    let (directory, mut owner) = native();
+    let source = crate::learning::tests::own_question();
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Find {
+            cursor: 0,
+            question: source.clone(),
+        },
+    );
+    let record = owner.journal.records.get(&id).unwrap();
+    assert_eq!(record.provider, crate::jobs::provider::DEFAULT_PROVIDER);
+    assert!(record.native.is_none());
+    assert_eq!(
+        record.input,
+        Input::Find {
+            cursor: 0,
+            question: source
+        }
+    );
+    assert!(crate::jobs::provider::valid_checkpoint(record));
+    let settings = owner.settings;
+    drop(owner);
+    let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    assert!(journal.records.get(&id).unwrap().native.is_none());
+}
 fn accepted(owner: &mut Owner) -> u64 {
     let solution = checked_solution();
     let source = crate::learning::tests::own_question();
