@@ -1,5 +1,6 @@
 //! Neural trial-level operational learning. Native proof validity, admission and
 //! immutable resource grants remain outside this controller's authority.
+mod memory;
 mod model;
 mod plan;
 #[cfg(test)]
@@ -12,7 +13,7 @@ pub const CONTEXT: usize = 32;
 pub const FEATURES: usize = CONTEXT + 27;
 pub const MEMORY: usize = 4;
 /// Upper metadata is contained in the existing whole-learning State allowance.
-pub const STATE_BYTES: usize = 4 * 1024;
+pub const STATE_BYTES: usize = 5 * 512;
 pub const UPDATES: u64 = 8;
 pub const PARAMETERS: usize = model::PARAMETERS;
 pub fn cpu_micros() -> Result<u64, String> {
@@ -146,6 +147,7 @@ fn features(context: &[u16; CONTEXT], plan: &Plan) -> [f32; FEATURES] {
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub model: Checkpoint,
+    #[serde(with = "memory")]
     pub memory: Vec<Experience>,
     pub trials: u64,
     pub draw: u64,

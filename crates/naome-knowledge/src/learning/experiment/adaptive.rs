@@ -57,61 +57,6 @@ fn prospective_outer_profile_reserve_bounds_actual_qualification_outcomes() {
         assert!(crate::checkpoint::encode(&actual).unwrap().len() <= capacity);
     }
 }
-#[test]
-#[ignore = "Explicit preserved outer-context capacity replay; no optimizer or final inference"]
-fn preserved_outer_context_capacity_replay() {
-    let root = std::env::var("NAOME_META_LAYOUT_PROBE").expect("explicit preserved results");
-    let mut checked = 0;
-    let mut overflowed = 0;
-    for entry in std::fs::read_dir(Path::new(&root).join("outer-learning")).unwrap() {
-        let directory = entry.unwrap().path();
-        if !directory.join("source-state.json").exists() {
-            continue;
-        }
-        let source: State =
-            serde_json::from_slice(&std::fs::read(directory.join("source-state.json")).unwrap())
-                .unwrap();
-        let mut shared = source.clone();
-        let headroom = outer_metadata_headroom(&shared);
-        shared.compact_with_meta_headroom(headroom).unwrap();
-        let replay = digest(&shared.replay);
-        let anchors = digest(&shared.anchors);
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let trial = entry.unwrap().path();
-            if !trial.join("state.json").exists() || !trial.join("job.json").exists() {
-                continue;
-            }
-            let selected: State =
-                serde_json::from_slice(&std::fs::read(trial.join("state.json")).unwrap()).unwrap();
-            let job: Job =
-                serde_json::from_slice(&std::fs::read(trial.join("job.json")).unwrap()).unwrap();
-            let observed = job.progress.unwrap().development_before;
-            let mut unreserved = source.clone();
-            unreserved.meta = selected.meta.clone();
-            unreserved.feedback.development = observed.clone();
-            overflowed += usize::from(unreserved.validate().is_err());
-            let mut next = shared.clone();
-            next.meta = selected.meta;
-            next.feedback.development = observed;
-            next.validate().unwrap();
-            assert_eq!(digest(&next.replay), replay);
-            assert_eq!(digest(&next.anchors), anchors);
-            assert_eq!(next.model, source.model);
-            checked += 1;
-        }
-        eprintln!(
-            "{}",
-            serde_json::json!({"event":"outer_capacity_replayed","directory":directory,
-                "headroom":headroom,"source_bytes":crate::checkpoint::encode(&source).unwrap().len(),
-                "shared_bytes":crate::checkpoint::encode(&shared).unwrap().len()}),
-        );
-    }
-    assert!(checked > 0 && overflowed > 0);
-    eprintln!(
-        "{}",
-        serde_json::json!({"checked":checked,"original_overflows_reproduced":overflowed})
-    );
-}
 
 fn cpu_micros() -> u64 {
     let usage = getrusage(UsageWho::RUSAGE_SELF).expect("process CPU accounting");
@@ -209,6 +154,88 @@ fn meta_partition(source: &str, training: bool) -> bool {
     let bytes = Sha256::digest(case.dependency.as_bytes());
     (bytes[0] % 3 != 2) == training
 }
+fn prepare_meta_source(seed: u64, context: usize, dir: &Path) -> Common {
+    let mut common = common(seed, &dir.join("common"));
+    let acquisition_clock = Clock::start();
+    let mut engine = Engine::default();
+    let mut graph = crate::Graph::default();
+    for row in &common.rows {
+        if !row["solution"].is_null() {
+            let s: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
+            let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
+            admit_discovery(&mut graph, &q, &s).unwrap();
+        }
+    }
+    let mut cases = curriculum::adaptive::BANK
+        .learning
+        .iter()
+        .filter(|q| meta_partition(&q.source, true))
+        .collect::<Vec<_>>();
+    cases.sort_by_key(|q| Sha256::digest(format!("{seed}:{}", q.id).as_bytes()));
+    // Contexts vary observed source structure without supplying witnesses.
+    if context >= 3 {
+        let wanted = format!("adaptive-operation-{}", 1 + (context - 3) % 3);
+        cases.sort_by_key(|q| q.family != wanted);
+    }
+    for (i, q) in cases.into_iter().take(32).enumerate() {
+        let row = acquire(
+            &mut common.state,
+            &q.source,
+            100 + i as u64,
+            &mut engine,
+            &mut common.store,
+            &mut graph,
+            (&mut common.evidence, false),
+        );
+        common.state.observe_result(
+            &q.source,
+            !row["solution"].is_null(),
+            row["diagnostic"].as_str().unwrap(),
+            row["elapsed_micros"].as_u64().unwrap(),
+            128,
+        );
+        common.rows.push(row);
+    }
+    let metadata_headroom = outer_metadata_headroom(&common.state);
+    common
+        .state
+        .compact_with_meta_headroom(metadata_headroom)
+        .unwrap();
+    write(&dir.join("source-state.json"), &common.state);
+    write(&dir.join("source-evidence.json"), &common.evidence);
+    write(&dir.join("source-acquisitions.json"), &common.rows);
+    write(&dir.join("source-cost.json"), &acquisition_clock.elapsed());
+    write(
+        &dir.join("source-capacity.json"),
+        &serde_json::json!({"meta_bytes":META_HEADROOM,"total_metadata_headroom":metadata_headroom,
+            "state_bytes":crate::checkpoint::encode(&common.state).unwrap().len(),
+            "development_capacity_bytes":crate::checkpoint::encode(&development_capacity_profile(common.state.feedback.checkpoint.clone())).unwrap().len()}),
+    );
+    assert!(
+        common.state.needs_training(),
+        "outer context must have a genuine diverse checked pool"
+    );
+    common
+}
+#[test]
+#[ignore = "Explicit six-context cold capacity qualification; no optimizer or final inference"]
+fn outer_source_layout_preflight() {
+    let output = std::env::var("NAOME_META_SOURCE_OUTPUT").expect("fresh source output");
+    let output = Path::new(&output);
+    assert!(!output.exists(), "preserve prior source qualification");
+    std::fs::create_dir_all(output).unwrap();
+    let clock = Clock::start();
+    for (context, seed) in [4507, 4603, 4703, 4801, 4903, 5003].into_iter().enumerate() {
+        let directory = output.join(format!("context-{context}"));
+        let source = prepare_meta_source(seed, context, &directory);
+        assert!(source.state.needs_training());
+        source.state.validate().unwrap();
+    }
+    write(
+        &output.join("completed.json"),
+        &serde_json::json!({"contexts":6,"elapsed":clock.elapsed(),"optimizer_updates":0,"final_inferences":0}),
+    );
+}
 fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
     std::fs::create_dir_all(path).unwrap();
     let all_clock = Clock::start();
@@ -221,68 +248,21 @@ fn train_meta(path: &Path, pilot: bool) -> MetaSeed {
     let mut controller = meta::State::fresh();
     let mut meta_io = MemoryStore::default();
     let mut summaries = Vec::new();
-    for (context, seed) in contexts.into_iter().enumerate() {
-        let dir = path.join(format!("context-{context}"));
-        let mut common = common(seed, &dir.join("common"));
-        let acquisition_clock = Clock::start();
-        let mut engine = Engine::default();
-        let mut graph = crate::Graph::default();
-        for row in &common.rows {
-            if !row["solution"].is_null() {
-                let s: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
-                let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
-                admit_discovery(&mut graph, &q, &s).unwrap();
-            }
-        }
-        let mut cases = curriculum::adaptive::BANK
-            .learning
-            .iter()
-            .filter(|q| meta_partition(&q.source, true))
-            .collect::<Vec<_>>();
-        cases.sort_by_key(|q| Sha256::digest(format!("{seed}:{}", q.id).as_bytes()));
-        // Contexts vary observed source structure without supplying witnesses.
-        if context >= 3 {
-            let wanted = format!("adaptive-operation-{}", 1 + (context - 3) % 3);
-            cases.sort_by_key(|q| q.family != wanted);
-        }
-        for (i, q) in cases.into_iter().take(32).enumerate() {
-            let row = acquire(
-                &mut common.state,
-                &q.source,
-                100 + i as u64,
-                &mut engine,
-                &mut common.store,
-                &mut graph,
-                (&mut common.evidence, false),
-            );
-            common.state.observe_result(
-                &q.source,
-                !row["solution"].is_null(),
-                row["diagnostic"].as_str().unwrap(),
-                row["elapsed_micros"].as_u64().unwrap(),
-                128,
-            );
-            common.rows.push(row);
-        }
-        let metadata_headroom = outer_metadata_headroom(&common.state);
-        common
-            .state
-            .compact_with_meta_headroom(metadata_headroom)
-            .unwrap();
-        assert!(
-            common.state.needs_training(),
-            "outer context must have a genuine diverse checked pool"
-        );
-        write(&dir.join("source-state.json"), &common.state);
-        write(&dir.join("source-evidence.json"), &common.evidence);
-        write(&dir.join("source-acquisitions.json"), &common.rows);
-        write(&dir.join("source-cost.json"), &acquisition_clock.elapsed());
-        write(
-            &dir.join("source-capacity.json"),
-            &serde_json::json!({"meta_bytes":META_HEADROOM,"total_metadata_headroom":metadata_headroom,
-                "state_bytes":crate::checkpoint::encode(&common.state).unwrap().len(),
-                "development_capacity_bytes":crate::checkpoint::encode(&development_capacity_profile(common.state.feedback.checkpoint.clone())).unwrap().len()}),
-        );
+    // Validate every fixed source context before spending the first trial.
+    let sources = contexts
+        .into_iter()
+        .enumerate()
+        .map(|(context, seed)| {
+            let dir = path.join(format!("context-{context}"));
+            let common = prepare_meta_source(seed, context, &dir);
+            (context, seed, dir, common)
+        })
+        .collect::<Vec<_>>();
+    write(
+        &path.join("sources-ready.json"),
+        &serde_json::json!({"contexts":sources.len(),"elapsed":all_clock.elapsed()}),
+    );
+    for (context, seed, dir, common) in sources {
         let mut observed = common.state.feedback.development.clone();
         for trial in 0..trials {
             assert!(

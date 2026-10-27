@@ -104,7 +104,21 @@ fn maximum_typed_meta_memory_fits_its_existing_state_headroom() {
         state.memory.push(e);
     }
     state.validate().unwrap();
-    assert!(serde_json::to_vec(&state).unwrap().len() <= STATE_BYTES);
+    let bytes = serde_json::to_vec(&state).unwrap();
+    assert!(bytes.len() <= STATE_BYTES);
+    let restored: State = serde_json::from_slice(&bytes).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(serde_json::to_vec(&restored).unwrap(), bytes);
+    for (actual, expected) in restored.memory.iter().zip(&state.memory) {
+        assert_eq!(
+            serde_json::to_vec(actual).unwrap(),
+            serde_json::to_vec(expected).unwrap()
+        );
+    }
+    eprintln!(
+        "maximum complete upper metadata: {} bytes, allowance {STATE_BYTES}",
+        bytes.len()
+    );
     let mut lower = super::super::State::fresh();
     lower.meta = state;
     assert_eq!(context(&lower)[31], 1000);
