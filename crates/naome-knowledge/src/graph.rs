@@ -996,6 +996,16 @@ impl Graph {
         self.binary_object(id)
             .map(|object| object.map(|object| object.envelope()))
     }
+    /// Canonical edges of an already admitted certificate. Reading them grants
+    /// no admission, reservation or checkpoint authority to a scheduling model.
+    pub(crate) fn direct_dependencies(
+        &self,
+        id: ArtifactId,
+    ) -> Result<Box<[ArtifactId]>, crate::Error> {
+        self.binary_object(id)?
+            .map(|object| object.dependencies.iter().copied().collect())
+            .ok_or_else(|| "checked dependency root is missing".into())
+    }
     pub fn ids_page(
         &self,
         after: Option<ArtifactId>,

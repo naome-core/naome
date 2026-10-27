@@ -5,6 +5,7 @@ use naome_foundation::{Formula, FreeVariable};
 
 /// Propose a use of a checked, closed source as a subgoal. The result is an
 /// unproved obligation; construction and lineage recovery share this shape.
+#[cfg(test)]
 pub(crate) fn continuation(source: Formula) -> Option<Formula> {
     if !source.free_variables().is_empty() || source.view().node_count_and_depth().0 > 64 {
         return None;

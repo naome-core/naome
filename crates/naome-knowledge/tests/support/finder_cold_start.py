@@ -23,8 +23,8 @@ def finder_state(node):
 def source_identity():
     root = Path(__file__).resolve().parents[4]
     paths = ["src/autonomous.rs", "src/frontier.rs", "src/frontier/evidence.rs", "src/frontier/finder.rs",
-             "src/frontier/finder/model.rs", "src/jobs/provider.rs", "src/jobs/service.rs",
-             "src/learning/mod.rs", "src/runtime/cli.rs", "tests/support/finder_cold_start.py"]
+             "src/frontier/finder/model.rs", "src/frontier/finder/semantics.rs", "src/jobs/provider.rs", "src/jobs/service.rs",
+             "src/learning/mod.rs", "src/graph.rs", "src/training.rs", "src/training/planning.rs", "src/runtime/cli.rs", "tests/support/finder_cold_start.py"]
     crate = Path(__file__).resolve().parents[2]
     return {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
             "files": {str(Path("crates/naome-knowledge") / path):

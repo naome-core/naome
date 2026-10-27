@@ -1075,6 +1075,12 @@ impl Autonomous {
                     }) {
                         return accepted;
                     }
+                    frontier.retain_goals(|question| {
+                        !questions.generation_decision(graph, question).has_answer()
+                    });
+                    if let Some(question) = &self.formal_goal {
+                        frontier.focus(question.clone());
+                    }
                     let mut eligible = |question: &CompiledQuestion| {
                         !self.admissions.iter().any(|pending| {
                             pending.question.resolution_id() == question.resolution_id()
@@ -1088,11 +1094,7 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let candidates = if let Some(question) = &self.formal_goal {
-                        vec![question.clone()]
-                    } else {
-                        frontier.candidates(cursor)
-                    };
+                    let candidates = frontier.candidates(cursor);
                     let candidates = candidates
                         .into_iter()
                         .filter(&mut eligible)

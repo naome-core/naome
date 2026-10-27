@@ -20,8 +20,22 @@ pub(crate) enum Outcome {
 struct Header {
     random: u64,
     draws: u64,
+    observations: u64,
     model_contract: String,
     model: finder::Model,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Support {
+    lemma: String,
+    goal: String,
+    resolution: String,
+    first_unresolved_job: u64,
+    lemma_job: u64,
+    goal_job: u64,
+    first_unresolved_at: u64,
+    lemma_at: u64,
+    goal_at: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +54,11 @@ pub(super) struct Record {
     pub verified_units: u32,
     pub verified_ms: u64,
     last_units: u32,
+    pub first_unresolved_job: u64,
+    pub verified_job: u64,
+    first_unresolved_at: u64,
+    verified_at: u64,
+    pub supports: u64,
 }
 impl Record {
     /// A returned candidate remains unverified until its exact checked solution
@@ -55,7 +74,7 @@ impl Record {
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
-    fn validate(&self, key: &str) -> Result<(), String> {
+    fn validate(&self, key: &str, observations: u64) -> Result<(), String> {
         let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err("research evidence identity differs".into());
@@ -65,7 +84,14 @@ impl Record {
         for root in [&self.verified, &self.prepared].into_iter().flatten() {
             crate::object::id_bytes(root)?;
         }
-        if self.prepared.is_some() && self.last_outcome != Outcome::Candidate
+        if self.first_unresolved_job > self.last_job
+            || self.verified_job > self.last_job
+            || self.verified.is_some() != (self.verified_job > 0)
+            || (self.first_unresolved_job > 0) != (self.first_unresolved_at > 0)
+            || self.verified.is_some() != (self.verified_at > 0)
+            || self.first_unresolved_at > observations
+            || self.verified_at > observations
+            || self.prepared.is_some() && self.last_outcome != Outcome::Candidate
             || self.verified_units as u64 > self.units
             || self.last_units as u64 > self.units
         {
@@ -107,6 +133,7 @@ impl Evidence {
                 &Header {
                     random: seed.max(1),
                     draws: 0,
+                    observations: 0,
                     model_contract: solver.clone(),
                     model: finder::Model::fresh(),
                 },
@@ -119,11 +146,14 @@ impl Evidence {
         }
         crate::object::id_bytes(&header.model_contract)?;
         header.model.validate()?;
+        if header.observations < header.model.updates {
+            return Err("finder observation sequence differs".into());
+        }
         if header.model_contract != solver {
             header.model_contract = solver.clone();
             header.model = finder::Model::fresh();
         }
-        checkpoint.require_kinds(&["question"])?;
+        checkpoint.require_kinds(&["question", "proved", "support"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
             crate::storage::write_marker(&marker, MARKER)?;
         }
@@ -168,9 +198,10 @@ impl Evidence {
             }
             for (key, bytes) in page {
                 let mut record: Record = crate::checkpoint::decode(&bytes)?;
-                record.validate(&key)?;
+                record.validate(&key, self.header.observations)?;
                 if record.solver == self.solver && visit(&record)? && record.verified.is_none() {
                     record.verified = record.prepared.clone();
+                    record.verified_job = record.last_job;
                     let question =
                         CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
                     self.put_observation(&question, &record, Some((true, record.verified_ms)))
@@ -181,9 +212,28 @@ impl Evidence {
         }
     }
     pub(super) fn get(&self, question: &CompiledQuestion) -> Result<Option<Record>, crate::Error> {
+        let key = record_key(&self.solver, question);
+        let record: Option<Record> = self.checkpoint.get("question", &key, MAX_RECORD)?;
+        if let Some(record) = &record {
+            record.validate(&key, self.header.observations)?;
+        }
+        Ok(record)
+    }
+    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, String> {
         self.checkpoint
-            .get("question", &record_key(&self.solver, question), MAX_RECORD)
-            .map_err(crate::Error::CorruptStorage)
+            .page(
+                "question",
+                after,
+                16,
+                crate::resources::active_limits().question_cache_bytes,
+            )?
+            .into_iter()
+            .map(|(key, bytes)| {
+                let record: Record = crate::checkpoint::decode(&bytes)?;
+                record.validate(&key, self.header.observations)?;
+                Ok((key, record))
+            })
+            .collect()
     }
     pub(super) fn selected(&mut self, random: u64) -> Result<(), crate::Error> {
         let next = Header {
@@ -224,19 +274,32 @@ impl Evidence {
         observation: Option<(bool, u64)>,
     ) -> Result<(), crate::Error> {
         let mut header = self.header.clone();
-        if let Some((resolved, millis)) = observation
-            && crate::learning::State::eligible(question.source())
-        {
-            header.model.observe(question, resolved, millis)?;
+        let mut record = record.clone();
+        if let Some((resolved, millis)) = observation {
+            header.observations = header
+                .observations
+                .checked_add(1)
+                .ok_or("finder observation overflow")?;
+            if resolved && record.verified_at == 0 {
+                record.verified_at = header.observations;
+            } else if !resolved && record.first_unresolved_at == 0 {
+                record.first_unresolved_at = header.observations;
+            }
+            if crate::learning::State::eligible(question.source()) {
+                header.model.observe(question, resolved, millis)?;
+            }
         }
-        self.commit(
-            &header,
-            vec![Update::put(
-                "question",
-                record_key(&self.solver, question),
-                record,
-            )?],
-        )?;
+        let key = record_key(&self.solver, question);
+        let mut updates = vec![Update::put("question", &key, &record)?];
+        if let Some(root) = &record.verified
+            && self
+                .checkpoint
+                .get::<String>("proved", root, 128)?
+                .is_none()
+        {
+            updates.push(Update::put("proved", root, &key)?);
+        }
+        self.commit(&header, updates)?;
         self.header = header;
         Ok(())
     }
@@ -265,6 +328,11 @@ impl Evidence {
             verified_units: 0,
             verified_ms: 0,
             last_units: 0,
+            first_unresolved_job: 0,
+            verified_job: 0,
+            first_unresolved_at: 0,
+            verified_at: 0,
+            supports: 0,
         });
         if completion.id <= record.last_job {
             return Ok(());
@@ -293,6 +361,9 @@ impl Evidence {
         let observation = (completion.state == jobs::State::Complete
             && outcome == Outcome::NoCandidate)
             .then_some((false, completion.spent_ms));
+        if observation.is_some() && record.first_unresolved_job == 0 {
+            record.first_unresolved_job = completion.id;
+        }
         self.put_observation(question, &record, observation)
     }
     pub(super) fn prepared(
@@ -352,8 +423,115 @@ impl Evidence {
             );
         }
         record.verified = Some(crate::hex(root.as_bytes()));
+        record.verified_job = job;
         record.verified_units = record.last_units;
         self.put_observation(question, &record, Some((true, record.verified_ms)))?;
         Ok(Some((record.verified_units, record.verified_ms)))
+    }
+
+    /// Credit a distinct earlier unresolved goal once, after both exact
+    /// checked targets and their actual dependency edge have been established.
+    pub(super) fn support(
+        &mut self,
+        goal: &CompiledQuestion,
+        actual_goal: &CompiledQuestion,
+        job: u64,
+        root: ArtifactId,
+        dependency: ArtifactId,
+        mut checked: impl FnMut(&CompiledQuestion) -> Result<Option<CompiledQuestion>, crate::Error>,
+    ) -> Result<Option<CompiledQuestion>, crate::Error> {
+        if !crate::learning::State::eligible(goal.source()) {
+            return Ok(None);
+        }
+        let Some(consumer) = self.get(goal)? else {
+            return Ok(None);
+        };
+        if consumer.last_job != job
+            || consumer.verified.as_deref() != Some(crate::hex(root.as_bytes()).as_str())
+            || consumer.first_unresolved_job == 0
+        {
+            return Ok(None);
+        }
+        let lemma = crate::hex(dependency.as_bytes());
+        let Some(key) = self.checkpoint.get::<String>("proved", &lemma, 128)? else {
+            return Ok(None);
+        };
+        let mut producer = self
+            .checkpoint
+            .get::<Record>("question", &key, MAX_RECORD)?
+            .ok_or("finder proof index source is missing")?;
+        producer.validate(&key, self.header.observations)?;
+        if producer.verified.as_deref() != Some(lemma.as_str()) {
+            return Err("finder proof index identity differs".into());
+        }
+        // Job IDs are allocated before execution; concurrent completions may
+        // arrive in another order. Only durable observations establish timing.
+        if consumer.first_unresolved_at >= producer.verified_at
+            || producer.verified_at >= consumer.verified_at
+        {
+            return Ok(None);
+        }
+        let question = CompiledQuestion::compile(&producer.question).map_err(|e| e.to_string())?;
+        let Some(actual_lemma) = checked(&question)? else {
+            return Ok(None);
+        };
+        if !finder::independent_goal(&actual_lemma, actual_goal) {
+            return Ok(None);
+        }
+        let resolution = crate::hex(goal.resolution_id());
+        let receipt_key = crate::hex(&sha2::Sha256::digest(
+            [dependency.as_bytes().as_slice(), goal.resolution_id()].concat(),
+        ));
+        if let Some(receipt) = self
+            .checkpoint
+            .get::<Support>("support", &receipt_key, 4096)?
+        {
+            crate::object::id_bytes(&receipt.goal)?;
+            if receipt.lemma != lemma
+                || receipt.resolution != resolution
+                || receipt.first_unresolved_job == 0
+                || receipt.lemma_job == 0
+                || receipt.goal_job == 0
+                || receipt.first_unresolved_at == 0
+                || receipt.first_unresolved_at >= receipt.lemma_at
+                || receipt.lemma_at >= receipt.goal_at
+                || receipt.goal_at > self.header.observations
+            {
+                return Err("finder support receipt identity differs".into());
+            }
+            return Ok(None);
+        }
+        let mut header = self.header.clone();
+        header.observations = header
+            .observations
+            .checked_add(1)
+            .ok_or("finder observation overflow")?;
+        if crate::learning::State::eligible(question.source()) {
+            header.model.support(&question)?;
+        }
+        producer.supports = producer
+            .supports
+            .checked_add(1)
+            .ok_or("finder support count overflow")?;
+        let receipt = Support {
+            lemma,
+            goal: crate::hex(root.as_bytes()),
+            resolution,
+            first_unresolved_job: consumer.first_unresolved_job,
+            lemma_job: producer.verified_job,
+            goal_job: job,
+            first_unresolved_at: consumer.first_unresolved_at,
+            lemma_at: producer.verified_at,
+            goal_at: consumer.verified_at,
+        };
+        self.commit(
+            &header,
+            vec![
+                Update::put("question", key, &producer)?,
+                Update::put("support", receipt_key, &receipt)?,
+            ],
+        )?;
+        self.header = header;
+        Ok(Some(question))
     }
 }

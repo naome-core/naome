@@ -84,7 +84,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
         (2, 1)
     );
     let model = frontier.evidence.model().clone();
-    let generated = finder::questions(17, &frontier.predicates, &model, 12, 64 * 1024);
+    let generated = finder::questions(17, &frontier.predicates, &frontier.goals, 12, 64 * 1024);
     let identities = |questions: Vec<CompiledQuestion>| {
         questions
             .into_iter()
@@ -647,4 +647,260 @@ async fn backlog_ranking_checks_only_the_selected_target_before_provider_work() 
     assert_eq!(requests.len(), 1);
     assert!(matches!(requests[0].1, jobs::Input::Solve { .. }));
     assert!(autonomous.error().is_none());
+}
+
+fn helper_use_fixture() -> (
+    Graph,
+    CompiledQuestion,
+    ArtifactId,
+    CompiledQuestion,
+    String,
+) {
+    let mut graph = Graph::default();
+    let lemma =
+        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))")
+            .unwrap();
+    let source = format!(
+        "{} proof: p0=subst(a,b,mem(a,c)) p1=gen(p0,c) p2=gen(p1,b) p3=gen(p2,a) return p3",
+        lemma.source()
+    );
+    let (artifact, admitted) = graph.produce(&source).unwrap();
+    let proof = crate::hex(artifact.proof_id().unwrap().unwrap().as_bytes());
+    let goal = CompiledQuestion::compile("goal=all(a,all(b,imp(eq(a,b),imp(mem(a,a),mem(b,a)))))")
+        .unwrap();
+    let consumer = format!(
+        r#"{} proof:
+        p0=cite("{}")
+        p1=inst(a,a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))
+        p2=mp(p0,p1)
+        p3=inst(b,b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c)))))
+        p4=mp(p2,p3)
+        p5=inst(c,a,imp(eq(a,b),imp(mem(a,c),mem(b,c))))
+        p6=mp(p4,p5) p7=gen(p6,b) p8=gen(p7,a) return p8"#,
+        goal.source(),
+        proof
+    );
+    assert!(
+        crate::learning::State::eligible(lemma.source()),
+        "lemma must be eligible"
+    );
+    assert!(
+        crate::learning::State::eligible(goal.source()),
+        "goal must be eligible"
+    );
+    (graph, lemma, admitted.id, goal, consumer)
+}
+fn record_checked(
+    frontier: &mut Frontier,
+    graph: &Graph,
+    question: &CompiledQuestion,
+    job: u64,
+    root: ArtifactId,
+) {
+    let result = completion(
+        job,
+        jobs::Output::Proof {
+            source: String::new(),
+            helpers: vec![],
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(question, graph, &result, Outcome::Candidate)
+        .unwrap();
+    frontier.prepared(question, job, root).unwrap();
+    frontier.verified(question, graph, job, root).unwrap();
+}
+#[test]
+fn checked_helper_support_is_durable_atomic_and_requires_an_earlier_unsolved_goal() {
+    let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let missed = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    frontier
+        .attempted(&goal, &graph, &missed, Outcome::NoCandidate)
+        .unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+    let root = graph.produce(&consumer).unwrap().1.id;
+    assert_eq!(
+        graph.direct_dependencies(root).unwrap().as_ref(),
+        &[lemma_root]
+    );
+    let result = completion(
+        3,
+        jobs::Output::Proof {
+            source: consumer,
+            helpers: vec![],
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(&goal, &graph, &result, Outcome::Candidate)
+        .unwrap();
+    frontier.prepared(&goal, 3, root).unwrap();
+    // Commit the checked resolution first to isolate the utility transaction.
+    frontier.evidence.verified(&goal, 3, root).unwrap();
+    let before = frontier.evidence.model().clone();
+    crate::checkpoint::fail_next_commit();
+    assert!(frontier.verified(&goal, &graph, 3, root).is_err());
+    assert_eq!(frontier.evidence.model(), &before);
+    assert_eq!(frontier.evidence.get(&lemma).unwrap().unwrap().supports, 0);
+    frontier.verified(&goal, &graph, 3, root).unwrap();
+    frontier.verified(&goal, &graph, 3, root).unwrap();
+    assert_eq!(frontier.evidence.model().supports, 1);
+    assert_eq!(frontier.evidence.get(&lemma).unwrap().unwrap().supports, 1);
+    let model = frontier.evidence.model().clone();
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    frontier.verified(&goal, &graph, 3, root).unwrap();
+    assert_eq!(frontier.evidence.model(), &model);
+}
+#[test]
+fn expiry_or_posthoc_helper_use_never_earns_support() {
+    let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+    let root = graph.produce(&consumer).unwrap().1.id;
+    for (state, outcome) in [
+        (jobs::State::Expired, Outcome::Expired),
+        (jobs::State::Failed, Outcome::Failed),
+    ] {
+        let directory = Directory::new();
+        let settings = jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        };
+        let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        frontier
+            .attempted(
+                &goal,
+                &graph,
+                &completion(1, jobs::Output::NoCandidate, state),
+                outcome,
+            )
+            .unwrap();
+        record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+        record_checked(&mut frontier, &graph, &goal, 3, root);
+        assert_eq!(frontier.evidence.model().supports, 0);
+    }
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 1, lemma_root);
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &completion(2, jobs::Output::NoCandidate, jobs::State::Complete),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    record_checked(&mut frontier, &graph, &goal, 3, root);
+    assert_eq!(frontier.evidence.model().supports, 0);
+}
+#[test]
+fn support_replay_recovers_a_missing_or_uncertain_credit_without_duplication() {
+    for uncertain in [false, true] {
+        let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+        let directory = Directory::new();
+        let settings = jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        };
+        let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        frontier
+            .attempted(
+                &goal,
+                &graph,
+                &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+                Outcome::NoCandidate,
+            )
+            .unwrap();
+        record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+        let root = graph.produce(&consumer).unwrap().1.id;
+        frontier
+            .attempted(
+                &goal,
+                &graph,
+                &completion(
+                    3,
+                    jobs::Output::Proof {
+                        source: consumer,
+                        helpers: vec![],
+                    },
+                    jobs::State::Complete,
+                ),
+                Outcome::Candidate,
+            )
+            .unwrap();
+        frontier.prepared(&goal, 3, root).unwrap();
+        frontier.evidence.verified(&goal, 3, root).unwrap();
+        if uncertain {
+            crate::checkpoint::fail_after_commit();
+            assert!(frontier.verified(&goal, &graph, 3, root).is_err());
+        }
+        assert_eq!(frontier.evidence.model().supports, 0);
+        drop(frontier);
+        let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+        assert_eq!(frontier.evidence.model().supports, 1);
+        let model = frontier.evidence.model().clone();
+        drop(frontier);
+        let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+        assert_eq!(frontier.evidence.model(), &model);
+    }
+}
+#[test]
+fn solving_a_goal_without_using_its_helper_cannot_earn_support() {
+    let (mut graph, lemma, lemma_root, goal, _) = helper_use_fixture();
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+    let source = format!(
+        "{} proof: p0=subst(a,b,mem(a,c)) p1=gen(p0,c) p2=inst(c,a,imp(eq(a,b),imp(mem(a,c),mem(b,c)))) p3=mp(p1,p2) p4=gen(p3,b) p5=gen(p4,a) return p5",
+        goal.source()
+    );
+    let root = graph.produce(&source).unwrap().1.id;
+    assert!(graph.direct_dependencies(root).unwrap().is_empty());
+    record_checked(&mut frontier, &graph, &goal, 3, root);
+    assert_eq!(frontier.evidence.model().supports, 0);
+}
+#[test]
+fn completion_observations_not_job_allocation_order_establish_helper_timing() {
+    let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+    let root = graph.produce(&consumer).unwrap().1.id;
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+    // This lower-ID job finishes only after the lemma was already checked.
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    record_checked(&mut frontier, &graph, &goal, 3, root);
+    assert_eq!(frontier.evidence.model().supports, 0);
 }

@@ -35,10 +35,11 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              An optional formal_goal string in config.json selects a native question.\n\
              Checked lemmas and meanings support bounded ZFC construction and reuse.\n\
              A fresh 1,004,001-parameter CPU graph policy learns from admitted traces.\n\
-             The finder composes new questions from primitive formulas and checked\n\
-             fragments, starting with an empty graph. Its separate small predictor\n\
-             learns checked resolutions and completed unresolved searches; these\n\
-             observations guide generation and never establish mathematical truth.\n\
+             The finder proposes relation properties and helpers for unresolved\n\
+             goals, screens simple Boolean variants, and starts with an empty graph.\n\
+             Its small predictor learns search outcomes, cost and checked reuse\n\
+             in earlier unresolved goals. These observations guide exploration\n\
+             and never establish mathematical truth or research novelty.\n\
              Model, optimizer and replay remain local. Only checked mathematics is shared.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\

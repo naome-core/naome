@@ -518,4 +518,89 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn finder_helpers_enable_a_composite_goal_with_the_same_total_search_allowance() {
+        use naome_authoring::CompiledQuestion;
+        use naome_foundation::ZfcAxiom;
+        let axioms = [
+            ZfcAxiom::Extensionality,
+            ZfcAxiom::Pairing,
+            ZfcAxiom::Union,
+            ZfcAxiom::PowerSet,
+            ZfcAxiom::Infinity,
+            ZfcAxiom::Foundation,
+            ZfcAxiom::Choice,
+        ];
+        let helpers = axioms
+            .into_iter()
+            .map(|a| CompiledQuestion::from_formula(a.formula()).unwrap())
+            .filter(|q| super::super::State::eligible(q.source()))
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            helpers.len(),
+            2,
+            "two current theory goals must be eligible"
+        );
+        let goal = CompiledQuestion::from_formula(Formula::conjunction(
+            helpers[0].formula().clone(),
+            helpers[1].formula().clone(),
+        ))
+        .unwrap();
+        assert!(super::super::State::eligible(goal.source()));
+        let directory = crate::checkpoint::tests::Directory::new();
+        let graph = crate::Graph::default();
+        let settings = crate::jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        };
+        let mut finder =
+            crate::frontier::Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        finder.focus(goal.clone());
+        let emitted = (0..16)
+            .flat_map(|cursor| finder.candidates(cursor))
+            .collect::<Vec<_>>();
+        let before = search::solve(goal.proved_target(), &mut Ordered, 128).unwrap();
+        assert!(
+            before.tree.is_none(),
+            "the composite target must need unavailable set-theory facts"
+        );
+        let mut spent = 0;
+        let mut entries = Vec::new();
+        for helper in &helpers {
+            assert!(
+                emitted.iter().any(|q| q.core() == helper.core()),
+                "finder must emit the actual prerequisite"
+            );
+            let result = search::solve(helper.proved_target(), &mut Ordered, 128 - spent).unwrap();
+            spent += result.expansions;
+            let (_, _, checked) =
+                search::core::checked(helper.proved_target(), &result.tree.unwrap()).unwrap();
+            entries.push(Entry {
+                packet: evidence::pack(&checked).unwrap(),
+            });
+        }
+        let offered = retrieve(goal.proved_target(), &entries).unwrap();
+        assert_eq!(offered.len(), 2);
+        let after = search::solve_with_knowledge(
+            goal.proved_target(),
+            &mut Ordered,
+            128 - spent,
+            std::time::Instant::now(),
+            &offered,
+        )
+        .unwrap();
+        assert!(spent + after.expansions <= 128);
+        let (_, _, checked) =
+            search::core::checked(goal.proved_target(), &after.tree.unwrap()).unwrap();
+        assert_eq!(checked.target, *goal.proved_target());
+        assert_eq!(checked.lemmas.len(), 2);
+        assert!(
+            checked
+                .certificate
+                .steps()
+                .iter()
+                .any(|s| matches!(s, naome_proof::ProofStep::ProofReference { .. }))
+        );
+    }
 }

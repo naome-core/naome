@@ -1,15 +1,14 @@
-//! Question-only compositional construction guided by observed solver outcomes.
-//! It never imports a question bank, constructs a proof or assigns truth labels.
-use super::{CompiledQuestion, Formula, FreeVariable, Random};
-use std::collections::VecDeque;
-
+//! Goal-directed helper construction and generic relation exploration.
+//! Questions contain no proofs or truth labels. The formal owner still checks
+//! every admission and every resulting proof independently.
+use super::{CompiledQuestion, Formula, FreeVariable};
+use std::collections::{BTreeSet, VecDeque};
 mod model;
 pub(super) use model::Model;
+mod semantics;
+pub(super) use semantics::{independent_goal, key, meaningful, relevance};
 #[cfg(test)]
 mod tests;
-
-const PREDICATE_NODES: usize = 24;
-const PREDICATE_DEPTH: usize = 8;
 
 fn close(mut formula: Formula) -> Formula {
     for variable in formula.free_variables().into_iter().rev() {
@@ -17,118 +16,151 @@ fn close(mut formula: Formula) -> Formula {
     }
     formula
 }
-
-fn small(formula: &Formula) -> bool {
-    let (nodes, depth) = formula.view().node_count_and_depth();
-    nodes <= PREDICATE_NODES && depth <= PREDICATE_DEPTH
+fn open(formula: &Formula) -> Option<Formula> {
+    let fresh = formula
+        .free_variables()
+        .last()
+        .map_or(Some(0), |v| v.identifier().checked_add(1))?;
+    formula.open_outer_universal(FreeVariable::new(fresh))
 }
-
-fn atom(random: &mut Random) -> Formula {
-    let a = FreeVariable::new(random.below(3) as u32);
-    let b = FreeVariable::new(random.below(3) as u32);
-    if random.below(4) == 0 {
-        Formula::equal(a, b)
-    } else {
-        Formula::member(a, b)
+fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {
+    let free = formula.free_variables().into_iter().collect::<Vec<_>>();
+    if free.len() != 2 {
+        return None;
     }
+    Some(
+        formula
+            .clone()
+            .map_free_variables(|v| if v == free[0] { a } else { b }),
+    )
 }
-
-fn predicate(random: &mut Random, seeds: &VecDeque<Formula>) -> Formula {
-    let mut pool = (0..4).map(|_| atom(random)).collect::<Vec<_>>();
-    pool.extend(seeds.iter().filter(|f| small(f)).take(4).cloned());
-    for _ in 0..1 + random.below(5) {
-        let left = pool[random.below(pool.len() as u64) as usize].clone();
-        let right = pool[random.below(pool.len() as u64) as usize].clone();
-        let variable = FreeVariable::new(random.below(3) as u32);
-        let formula = match random.below(7) {
-            0 => Formula::negate(left),
-            1 => Formula::implies(left, right),
-            2 => Formula::conjunction(left, right),
-            3 => Formula::disjunction(left, right),
-            4 => Formula::for_all(variable, left),
-            5 => Formula::exists(variable, left),
-            _ => Formula::biconditional(left, right),
-        };
-        if small(&formula) {
-            pool.push(formula);
-        }
-    }
-    pool.pop().expect("primitive predicate pool is nonempty")
-}
-
-fn conjecture(random: &mut Random, seeds: &VecDeque<Formula>) -> Option<CompiledQuestion> {
-    let left = predicate(random, seeds);
-    let right = predicate(random, seeds);
-    let formula = match random.below(5) {
-        0 => left,
-        1 => Formula::implies(left, right),
-        2 => {
-            let consequence = match random.below(4) {
-                0 => Formula::conjunction(left.clone(), right.clone()),
-                1 => Formula::disjunction(left.clone(), right.clone()),
-                2 => Formula::implies(right.clone(), left.clone()),
-                _ => Formula::negate(Formula::negate(left.clone())),
-            };
-            Formula::implies(left, Formula::implies(right, consequence))
-        }
-        // The schema is used as a construction of questions only. The solver
-        // must independently derive an exact target and the checker must accept it.
-        _ => comprehension(left),
+fn property(seed: &Formula, operator: u64) -> Option<Formula> {
+    let a = FreeVariable::new(0);
+    let b = FreeVariable::new(1);
+    let c = FreeVariable::new(2);
+    let r = |x, y| relation(seed, x, y);
+    let body = match operator % 10 {
+        0 => r(a, a)?,
+        1 => Formula::negate(r(a, a)?),
+        2 => Formula::implies(r(a, b)?, r(b, a)?),
+        3 => Formula::implies(
+            Formula::conjunction(r(a, b)?, r(b, a)?),
+            Formula::equal(a, b),
+        ),
+        4 => Formula::implies(Formula::conjunction(r(a, b)?, r(b, c)?), r(a, c)?),
+        5 => Formula::disjunction(r(a, b)?, r(b, a)?),
+        6 => Formula::exists(b, r(a, b)?),
+        7 => Formula::exists(a, r(a, b)?),
+        8 => Formula::exists(a, Formula::for_all(b, r(a, b)?)),
+        _ => Formula::implies(
+            Formula::for_all(c, Formula::biconditional(r(c, a)?, r(c, b)?)),
+            Formula::equal(a, b),
+        ),
     };
-    CompiledQuestion::from_formula(close(formula)).ok()
+    Some(close(body))
 }
-
-fn comprehension(predicate: Formula) -> Formula {
-    let x = FreeVariable::new(0);
-    let mut used = predicate.free_variables();
-    used.insert(x);
-    let mut fresh = (0..=u32::MAX)
-        .map(FreeVariable::new)
-        .filter(|v| !used.contains(v));
-    let source = fresh.next().expect("bounded predicate leaves fresh source");
-    let result = fresh.next().expect("bounded predicate leaves fresh result");
-    let body = Formula::biconditional(
-        Formula::member(x, result),
-        Formula::conjunction(Formula::member(x, source), predicate),
-    );
-    Formula::for_all(source, Formula::exists(result, Formula::for_all(x, body)))
+fn inclusion(seed: &Formula) -> Option<Formula> {
+    let a = FreeVariable::new(0);
+    let b = FreeVariable::new(1);
+    let x = FreeVariable::new(2);
+    Some(Formula::for_all(
+        x,
+        Formula::implies(relation(seed, x, a)?, relation(seed, x, b)?),
+    ))
 }
-
-/// Generate a bounded page from primitives and checked local fragments. The
-/// cursor, context and persisted predictor determine the page across restart.
+/// Proper subgoals are generalized with their original variable relationships.
+/// A helper may be stronger than the goal; no inference is claimed by proposing it.
+fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
+    let mut pending = vec![goal.formula().clone()];
+    let mut found = Vec::new();
+    for _ in 0..32 {
+        let Some(part) = pending.pop() else {
+            break;
+        };
+        if let Some(body) = open(&part) {
+            pending.push(body);
+            continue;
+        }
+        if let Some((a, b)) = part.implication_parts() {
+            for child in [a.clone(), b.clone(), Formula::negate(a.clone())] {
+                if let Ok(question) = CompiledQuestion::from_formula(close(child))
+                    && meaningful(&question)
+                    && key(&question) != key(goal)
+                {
+                    found.push(question);
+                }
+            }
+            pending.push(a);
+            pending.push(b);
+        } else if let Some(body) = part.view().negated() {
+            pending.push(body.to_owned());
+        }
+    }
+    if !found.is_empty() {
+        let length = found.len();
+        found.rotate_left(cursor as usize % length);
+    }
+    found
+}
+/// The cursor rotates construction operators, not a bank of theorem strings.
+/// Checked fragments and earlier unresolved goals supply the changing context.
 pub(super) fn questions(
     cursor: u64,
     seeds: &VecDeque<Formula>,
-    model: &Model,
+    goals: &VecDeque<CompiledQuestion>,
     maximum: usize,
     bytes: usize,
 ) -> Vec<CompiledQuestion> {
-    let mut random = Random::new(cursor.wrapping_add(1).wrapping_mul(0x9e3779b97f4a7c15));
-    let mut questions: Vec<CompiledQuestion> = Vec::new();
-    let mut retained = 0;
-    for _ in 0..maximum.min(12) {
-        let alternatives = (0..4)
-            .filter_map(|_| conjecture(&mut random, seeds))
-            .filter(|q| crate::learning::State::eligible(q.source()))
-            .collect::<Vec<_>>();
-        if alternatives.is_empty() {
-            continue;
-        }
-        let explore = random.below(5) == 0;
-        let weights = alternatives
+    let mut all = Vec::new();
+    for goal in goals.iter().rev().take(4) {
+        all.extend(helpers(goal, cursor));
+    }
+    let a = FreeVariable::new(0);
+    let b = FreeVariable::new(1);
+    let mut relations = vec![Formula::member(a, b), Formula::equal(a, b)];
+    relations.extend(
+        seeds
             .iter()
-            .map(|q| if explore { 1024 } else { model.weight(q) })
-            .collect::<Vec<_>>();
-        let question = &alternatives[crate::sampling::draw(&mut random, &weights)];
-        let cost = question.source().len() * 8 + 256;
-        if retained + cost <= bytes
-            && questions
-                .iter()
-                .all(|q| q.resolution_id() != question.resolution_id())
+            .filter(|f| f.free_variables().len() == 2 && f.view().node_count_and_depth().0 <= 24)
+            .take(4)
+            .cloned(),
+    );
+    let primitive = relations.clone();
+    relations.extend(primitive.iter().filter_map(inclusion));
+    for offset in 0..20 {
+        let seed = &relations[(cursor as usize + offset) % relations.len()];
+        if let Some(formula) = property(seed, cursor / relations.len() as u64 + offset as u64)
+            && let Ok(question) = CompiledQuestion::from_formula(formula)
         {
-            retained += cost;
-            questions.push(question.clone());
+            all.push(question);
         }
     }
-    questions
+    // Reserve a rotating opportunity even when the candidate page is small.
+    // These are question-only access to the canonical theory, never proofs.
+    if let Some(question) = crate::learning::basis_question(cursor) {
+        let index = if cursor.is_multiple_of(4) {
+            0
+        } else {
+            all.len()
+        };
+        all.insert(index, question);
+    }
+    let mut seen = BTreeSet::new();
+    let mut retained = 0;
+    let mut result = Vec::new();
+    for question in all {
+        let cost = question.source().len() * 8 + 256;
+        if result.len() >= maximum.min(12) {
+            break;
+        }
+        if meaningful(&question)
+            && crate::learning::State::eligible(question.source())
+            && retained + cost <= bytes
+            && seen.insert(key(&question))
+        {
+            retained += cost;
+            result.push(question);
+        }
+    }
+    result
 }
