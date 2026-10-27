@@ -149,27 +149,38 @@ pub fn pack_with_program(
     let _ = decode(&packed)?;
     Ok(packed)
 }
-pub fn compile(target: &Formula, bytes: &[u8]) -> Result<Term, String> {
+pub fn checked(bytes: &[u8]) -> Result<proof::Verified, String> {
     let evidence = decode(bytes)?;
-    let term = Term::Native {
-        certificate: ProofCertificate::from_canonical_bytes(&evidence.certificate)
-            .map_err(|e| e.to_string())?,
-        lemmas: evidence
-            .lemmas
-            .iter()
-            .map(|b| ProofCertificate::from_canonical_bytes(b).map_err(|e| e.to_string()))
-            .collect::<Result<_, _>>()?,
-        definitions: evidence.definitions,
-        target: target.clone(),
-    };
-    if steps(bytes)? + selected(bytes)?.len() > crate::resources::limits().closure_steps {
+    let certificate =
+        ProofCertificate::from_canonical_bytes(&evidence.certificate).map_err(|e| e.to_string())?;
+    let lemmas = evidence
+        .lemmas
+        .iter()
+        .map(|b| ProofCertificate::from_canonical_bytes(b).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let work = certificate.steps().len()
+        + lemmas.iter().map(|c| c.steps().len()).sum::<usize>()
+        + evidence.definitions.len();
+    if work > crate::resources::limits().closure_steps {
         return Err("construction checker work capacity".into());
     }
-    let checked = proof::verify(&term, target)?;
+    let checked = proof::verify_native(certificate, evidence.definitions, lemmas, None)?;
     if pack_with_program(&checked, evidence.program)? != bytes {
         return Err("construction evidence canonical binding".into());
     }
-    Ok(term)
+    Ok(checked)
+}
+pub fn compile(target: &Formula, bytes: &[u8]) -> Result<Term, String> {
+    let checked = checked(bytes)?;
+    if checked.target != *target {
+        return Err("construction evidence target differs".into());
+    }
+    Ok(Term::Native {
+        certificate: checked.certificate,
+        lemmas: checked.lemmas,
+        definitions: checked.definitions,
+        target: checked.target,
+    })
 }
 pub fn selected(bytes: &[u8]) -> Result<Vec<definitions::Entry>, String> {
     Ok(decode(bytes)?.definitions)
@@ -204,14 +215,7 @@ pub fn steps(bytes: &[u8]) -> Result<usize, String> {
     )
 }
 pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, String> {
-    let evidence = decode(bytes)?;
-    let context = context(bytes)?;
-    let certificate =
-        ProofCertificate::from_canonical_bytes(&evidence.certificate).map_err(|e| e.to_string())?;
-    let checked =
-        crate::learning::proof::check(certificate, &context).map_err(|e| e.to_string())?;
-    let target = checked.conclusion();
-    let verified = proof::verify(&compile(target, bytes)?, target)?;
+    let verified = checked(bytes)?;
     let mut sources = verified
         .definitions
         .iter()

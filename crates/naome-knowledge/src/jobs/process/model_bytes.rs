@@ -44,6 +44,23 @@ mod tests {
     use super::super::*;
 
     #[test]
+    fn measured_development_profiles_roundtrip_through_the_real_supervisor_frame() {
+        let progress = crate::learning::tests::measured_progress();
+        let expected = serde_json::to_value(&progress).unwrap();
+        let encoded = serde_json::to_vec(&Frame::Learning {
+            id: 1,
+            unit: 26,
+            progress: Box::new(progress),
+        })
+        .unwrap();
+        let Frame::Learning { progress, .. } = serde_json::from_slice::<Frame>(&encoded).unwrap()
+        else {
+            panic!("learning frame")
+        };
+        assert_eq!(serde_json::to_value(progress).unwrap(), expected);
+    }
+
+    #[test]
     fn full_model_pair_fits_the_original_frame_and_parent_response_bounds() {
         let bytes = vec![255; 2 * crate::resources::limits().native_model_chunk_bytes];
         let frame = Frame::Model {

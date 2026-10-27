@@ -67,6 +67,51 @@ fn received_knowledge_changes_coverage_without_claiming_local_ability() {
 }
 
 #[test]
+fn current_development_feedback_changes_the_actual_next_frontier_draw() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..jobs::Settings::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
+    let easy = CompiledQuestion::compile("goal=all(a,imp(mem(a,a),mem(a,a)))").unwrap();
+    let hard = CompiledQuestion::compile(
+        "goal=all(x,all(y,imp(mem(x,y),imp(mem(y,x),and(mem(x,y),mem(y,x))))))",
+    )
+    .unwrap();
+    let mut feedback = crate::training::ability::Feedback::fresh("11".repeat(32));
+    frontier.feedback(Some(feedback.clone()));
+    let before = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    for _ in 0..64 {
+        feedback.development.observe(&easy, 32, Some(true), 1_000);
+    }
+    feedback.revision += 1;
+    frontier.feedback(Some(feedback.clone()));
+    let after = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    assert_ne!(before, after);
+    let candidates = [&easy, &hard];
+    let index = frontier
+        .choose(&candidates, &graph, settings.solving, false)
+        .unwrap()
+        .unwrap();
+    let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    frontier
+        .attempted(candidates[index], &graph, &result, Outcome::NoCandidate)
+        .unwrap();
+    assert!(frontier.evidence.get(candidates[index]).unwrap().is_some());
+    feedback.checkpoint = "22".repeat(32);
+    feedback.attempts = crate::training::ability::Profile::new(feedback.checkpoint.clone());
+    feedback.development = crate::training::ability::Profile::new(feedback.checkpoint.clone());
+    frontier.feedback(Some(feedback));
+    assert!(frontier.recent.is_empty());
+    assert!(
+        frontier.evidence.get(candidates[index]).unwrap().is_none(),
+        "old-model failures cannot cool down a new checkpoint"
+    );
+}
+
+#[test]
 fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     let directory = Directory::new();
     let graph = Graph::default();

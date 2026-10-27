@@ -61,8 +61,25 @@ pub fn case(question: &str) -> Option<Case> {
     if super::reserved(&id) {
         return None;
     }
+    // A continuation of a checked closed source retains its source lineage.
+    // Opening outer goal binders does not expose a closed source's bound names.
+    if let Some(parent) = crate::training::continuation_parent(q.proved_target())
+        && let Ok(source) = CompiledQuestion::from_formula(parent)
+    {
+        let inherited = case(source.source())?;
+        return Some(Case {
+            id,
+            source: q.source().into(),
+            family: inherited.family,
+            dependency: inherited.dependency,
+            development: false,
+        });
+    }
     let family = family(q.proved_target());
-    if sealed_family(&family) || super::composition::BANK.reserved_families.contains(&family) {
+    if sealed_family(&family)
+        || super::composition::BANK.reserved_families.contains(&family)
+        || super::adaptive::BANK.reserved_families.contains(&family)
+    {
         return None;
     }
     // Novel owner goals may teach the node. Held-out families are explicitly
@@ -113,5 +130,30 @@ mod tests {
                 .iter()
                 .all(|q| case(&q.source).is_none())
         );
+    }
+    #[test]
+    fn proof_continuations_inherit_source_lineage_and_cannot_promote_reserved_parents() {
+        fn continuation(source: &str) -> String {
+            let q = CompiledQuestion::compile(source).unwrap();
+            let mut formula = crate::training::continuation(q.proved_target().clone()).unwrap();
+            for v in formula.free_variables().into_iter().rev() {
+                formula = Formula::for_all(v, formula);
+            }
+            CompiledQuestion::from_formula(formula)
+                .unwrap()
+                .source()
+                .to_owned()
+        }
+        let parent = super::super::CORPUS
+            .cases
+            .iter()
+            .find(|c| !c.development)
+            .unwrap();
+        let child = case(&continuation(&parent.source)).unwrap();
+        assert_eq!(child.dependency, parent.dependency);
+        assert_eq!(child.family, parent.family);
+        assert_ne!(child.id, parent.id);
+        let reserved = super::super::development()[0];
+        assert!(case(&continuation(&reserved.source)).is_none());
     }
 }

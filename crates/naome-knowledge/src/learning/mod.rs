@@ -26,17 +26,25 @@ use naome_authoring::CompiledQuestion;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// One bounded page from the canonical question-only construction corpus.
+/// The caller still applies formal admission, family exploration and its
+/// checkpoint-bound ability feedback before reserving actual solver work.
+pub(crate) fn research_questions(draw: u64) -> Vec<CompiledQuestion> {
+    let cases = &curriculum::adaptive::BANK.learning;
+    (0..12)
+        .filter_map(|offset| {
+            let index = (draw as usize * 11 + offset) % cases.len();
+            CompiledQuestion::compile(&cases[index].source).ok()
+        })
+        .collect()
+}
 pub(crate) const PROVIDER: &str = "naome-native-proof-learning";
 const REPLAY: usize = 32;
 const EVALUATIONS: u32 = curriculum::DEVELOPMENT as u32 + 4;
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Statistics {
-    selections: u64,
-    attempts: u64,
-    successes: u64,
-    recent: u32,
-    failures: [u64; 6],
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Preparation {
+    Balanced,
+    Targeted,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +70,27 @@ pub(crate) struct Evidence {
     pub trace: search::Tree,
 }
 impl Example {
+    fn trajectory<'a>(&'a self, evidence: &'a [Evidence]) -> Result<&'a search::Tree, String> {
+        let search::Tree::Stored {
+            bytes, ref binding, ..
+        } = self.tree
+        else {
+            return Ok(&self.tree);
+        };
+        let source = evidence
+            .iter()
+            .find(|e| e.job == self.job && e.proof_id == self.proof_id)
+            .ok_or("owned replay snapshot missing")?;
+        if serde_json::to_vec(&source.trace)
+            .map_err(|e| e.to_string())?
+            .len()
+            != bytes
+            || digest(&source.trace) != *binding
+        {
+            return Err("owned replay snapshot binding differs".into());
+        }
+        Ok(&source.trace)
+    }
     pub fn evidence_job(&self) -> Option<u64> {
         matches!(self.tree, search::Tree::Stored { .. }).then_some(self.job)
     }
@@ -106,7 +135,8 @@ pub(crate) struct State {
     peer_examples: u64,
     promotions: u64,
     rejections: u64,
-    statistics: BTreeMap<String, Statistics>,
+    feedback: crate::training::ability::Feedback,
+    preparation: Preparation,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +157,10 @@ pub(crate) struct Progress {
     anchor_regression: bool,
     development_regression: bool,
     original_score: [u32; 2],
+    development_before: crate::training::ability::Profile,
+    development_after: crate::training::ability::Profile,
+    regressions: [u16; crate::training::ability::SKILLS],
+    gains: [u16; crate::training::ability::SKILLS],
     pub result: Option<Solution>,
     pub diagnostic: String,
 }
@@ -301,6 +335,11 @@ impl Job {
             }
 
             p.model.validate()?;
+            p.development_before.validate()?;
+            p.development_after.validate()?;
+            if p.development_before.checkpoint != digest(&self.base.model) {
+                return Err("development observations differ from their incumbent".into());
+            }
             if let Some(solution) = &p.result {
                 let checked = solution.checked()?.into_checked_proof();
                 knowledge::validate_availability(
@@ -375,6 +414,10 @@ impl Job {
             anchor_regression: false,
             development_regression: false,
             original_score: [0, 0],
+            development_before: crate::training::ability::Profile::new(digest(&self.base.model)),
+            development_after: crate::training::ability::Profile::new(digest(&self.base.model)),
+            regressions: [0; crate::training::ability::SKILLS],
+            gains: [0; crate::training::ability::SKILLS],
             result: None,
             diagnostic: "no_new_accepted_solutions".into(),
         });
@@ -383,6 +426,10 @@ impl Job {
             if let Some((candidate, first, last)) =
                 engine.train_replay(parent, &self.base, &self.evidence, &mut p.rng, io)?
             {
+                p.training_cost.preparation_micros = p
+                    .training_cost
+                    .preparation_micros
+                    .saturating_add(engine.cost.preparation_micros);
                 p.training_cost.replay_micros = p
                     .training_cost
                     .replay_micros
@@ -429,8 +476,9 @@ impl Job {
                         .map(|e| e.question.clone())
                 };
                 if let Some(source) = source {
-                    let before = engine
-                        .with(&self.base.model, io, |runtime| {
+                    let before_started = std::time::Instant::now();
+                    let (before_result, before_diagnostic, _) =
+                        engine.with(&self.base.model, io, |runtime| {
                             solve_with_definitions(
                                 &source,
                                 runtime,
@@ -439,11 +487,15 @@ impl Job {
                                 &self.base.definitions,
                                 &self.base.knowledge,
                             )
-                        })?
-                        .0
-                        .is_some();
-                    let after = engine
-                        .with(candidate, io, |runtime| {
+                        })?;
+                    let before = before_result.is_some();
+                    let before_micros = before_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64;
+                    let after_started = std::time::Instant::now();
+                    let (after_result, after_diagnostic, _) =
+                        engine.with(candidate, io, |runtime| {
                             solve_with_definitions(
                                 &source,
                                 runtime,
@@ -452,10 +504,34 @@ impl Job {
                                 &self.base.definitions,
                                 &self.base.knowledge,
                             )
-                        })?
-                        .0
-                        .is_some();
+                        })?;
+                    let after = after_result.is_some();
                     if index < curriculum::DEVELOPMENT {
+                        let target =
+                            CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                        p.development_before.observe(
+                            &target,
+                            32,
+                            crate::training::ability::completion(before, &before_diagnostic),
+                            before_micros,
+                        );
+                        p.development_after.checkpoint = digest(candidate);
+                        p.development_after.observe(
+                            &target,
+                            32,
+                            crate::training::ability::completion(after, &after_diagnostic),
+                            after_started
+                                .elapsed()
+                                .as_micros()
+                                .min(u128::from(u64::MAX)) as u64,
+                        );
+                        let (skills, _) = crate::training::ability::signature(&target);
+                        for (skill, present) in skills.into_iter().enumerate() {
+                            if present {
+                                p.regressions[skill] += u16::from(before && !after);
+                                p.gains[skill] += u16::from(!before && after);
+                            }
+                        }
                         p.incumbent_score += u32::from(before);
                         p.candidate_score += u32::from(after);
                         if index < curriculum::CORPUS_DEVELOPMENT {

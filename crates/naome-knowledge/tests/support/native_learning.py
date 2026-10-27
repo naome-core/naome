@@ -220,7 +220,7 @@ def run(trial):
     for node in trial.nodes:
         original = retained[node.index]["record"]
         completed = trial.wait(lambda: next((r for r in training(node) if r["id"] == original["id"] and r["state"] == "complete"), None), maximum=180)
-        assert completed["checkpoint"] == 126 and completed["native"]["progress"]["unit"] == 126
+        assert completed["checkpoint"] == 150 and completed["native"]["progress"]["unit"] == 150
         progress = completed["native"]["progress"]
         assert progress["candidate"] is None
         assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected", "development_regression_rejected"}
@@ -237,6 +237,79 @@ def run(trial):
     trial.summary["result"] = "pass"
 
 
+def run_unseeded(trial):
+    node = Node(trial, 0)
+    trial.summary["node_count"] = 1
+    node.config["runtime"]["jobs"] = {"native_proof_learning": True}
+    node.config["runtime"]["question_interval_ms"] = 500
+    node.config["discovery"] = {"mdns": False, "dht": False, "internet": False}
+    assert node.config.get("formal_goal") is None
+    node.write_config()
+    assert not node.ids()
+    node.start()
+
+    def qualified():
+        fatal = [event for event in node.logs() if event.get("event") == "fatal_error"]
+        assert not fatal, fatal
+        current = snapshot(node)
+        if current is None:
+            return None
+        for record in current["records"].values():
+            if record["input"]["role"] == "train" and record["state"] == "complete":
+                progress = record["native"]["progress"]
+                assert record["checkpoint"] == progress["unit"] == 150
+                assert progress["candidate"] is None
+                assert record["native"]["base"]["preparation"] == "Targeted"
+                assert record["native"]["base"]["local_examples"] >= 8
+                assert not record["native"]["base"]["peer_examples"]
+                if progress["diagnostic"] != "candidate_promoted":
+                    assert progress["model"] == record["native"]["base"]["model"]
+                else:
+                    assert progress["model"]["updates"] == record["native"]["base"]["model"]["updates"] + 250
+                return {"record": record, "learning": current["learning"]}
+        return None
+
+    first = trial.wait(qualified, maximum=240)
+    original = first["record"]
+    write_receipt(trial.output / "first-qualification.json", first)
+
+    def next_closed_loop():
+        current = snapshot(node)
+        if current is None:
+            return None
+        for record in current["records"].values():
+            if record["id"] <= original["id"] or record["input"]["role"] != "solve":
+                continue
+            feedback = record["native"]["base"]["feedback"]
+            if not feedback["development"]["cells"]:
+                continue
+            assert feedback["checkpoint"] == feedback["development"]["checkpoint"]
+            assert feedback["revision"] > original["native"]["base"]["feedback"]["revision"]
+            selections = [event for event in node.logs() if event.get("event") == "native_curriculum_selected"
+                          and event["checkpoint"] == feedback["checkpoint"]
+                          and event["feedback_revision"] >= first["learning"]["feedback"]["revision"]]
+            next_training = next((candidate for candidate in current["records"].values()
+                                  if candidate["id"] > original["id"] and candidate["input"]["role"] == "train"
+                                  and candidate["checkpoint"] > 0
+                                  and candidate["native"]["base"]["feedback"]["development"]["cells"]), None)
+            if selections and next_training:
+                assert next_training["native"]["base"]["preparation"] == "Targeted"
+                assert next_training["native"]["progress"]["training_cost"]["preparation_micros"] > 0
+                return {"next_job": record, "next_training_job": next_training,
+                        "selections": selections, "learning": current["learning"]}
+        return None
+
+    next_cycle = trial.wait(next_closed_loop, maximum=60)
+    write_receipt(trial.output / "next-feedback-cycle.json", next_cycle)
+    assert node.ids() and first["learning"]["local_examples"] >= 8
+    assert first["learning"]["peer_examples"] == 0
+    trial.summary.update(result="pass", first_training_job=original["id"],
+                         qualification=original["native"]["progress"]["diagnostic"],
+                         own_examples=first["learning"]["local_examples"],
+                         feedback_revision=next_cycle["learning"]["feedback"]["revision"])
+    trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates, complete native qualification, then the actual next solver input and next executed targeted training batch carry the resulting model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
@@ -245,15 +318,15 @@ def main():
     parser.add_argument("--profile", default="release")
     parser.add_argument("--mode", default="native")
     args = parser.parse_args()
-    trial = Trial(args.binary, args.output, args.timeout, args.profile, "native")
+    trial = Trial(args.binary, args.output, args.timeout, args.profile, args.mode)
     try:
-        run(trial)
+        (run_unseeded if args.mode == "adaptive" else run)(trial)
     except BaseException as error:
         trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
-        retain_evidence(trial.output, trial.summary, "native", args.profile)
+        retain_evidence(trial.output, trial.summary, args.mode, args.profile)
     assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
 
 

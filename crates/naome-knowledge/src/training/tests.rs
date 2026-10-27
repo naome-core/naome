@@ -208,11 +208,19 @@ fn scarcity_and_development_weakness_change_priorities_without_false_labels() {
     d.probes
         .iter_mut()
         .for_each(|p| p.result = Outcome::Unavailable);
-    r.development = Some(d);
+    r.development = Some(d.clone());
     let unavailable = Signals::new(&graph, &r)
         .unwrap()
         .priority(&features, &rules, 1);
-    assert_eq!(unavailable, mastered);
+    d.probes.clear();
+    r.development = Some(d);
+    let unknown = Signals::new(&graph, &r)
+        .unwrap()
+        .priority(&features, &rules, 1);
+    assert_eq!(
+        unavailable, unknown,
+        "technical unavailability is not measured failure or mastery"
+    );
     let mut signals = Signals::default();
     let before = signals.priority(&features, &rules, 1);
     signals.covered(&features, &rules);

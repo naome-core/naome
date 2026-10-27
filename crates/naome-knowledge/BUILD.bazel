@@ -24,6 +24,7 @@ rust_library(
             "src/learning/curriculum/composition-retired.json",
             "src/learning/progress-protocol.json",
             "src/learning/knowledge-protocol.json",
+            "src/learning/adaptive-protocol.json",
             "tests/fixtures/**",
         ],
         allow_empty = True,

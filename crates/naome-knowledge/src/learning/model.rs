@@ -2,7 +2,6 @@
 //! Formula graphs, goal-conditioned context attention and typed proof choices
 //! use Adam, checked-action cross entropy, batch 16 and LR .001. No weights are imported.
 mod policy;
-#[cfg(test)]
 use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},
@@ -99,6 +98,8 @@ fn specification() -> String {
     hash.update(include_str!("search.rs"));
     hash.update(include_str!("search/core.rs"));
     hash.update(include_str!("pool.rs"));
+    hash.update(include_str!("../training/ability.rs"));
+    hash.update(include_str!("../training/planning.rs"));
     hash.update(include_str!("peer.rs"));
     hash.update(include_str!("definitions.rs"));
     hash.update(include_str!("knowledge.rs"));
@@ -115,6 +116,7 @@ fn specification() -> String {
     hash.update(include_str!("curriculum/owned-exclusions.json"));
     hash.update(include_str!("curriculum/composition-retired.json"));
     hash.update(include_str!("curriculum.rs"));
+    hash.update(include_str!("curriculum/adaptive.rs"));
     hash.update(include_str!("curriculum/frontier.rs"));
     hash.update(include_str!("curriculum/composition.rs"));
     hash.update(include_str!("progress-protocol.json"));
@@ -179,9 +181,10 @@ fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     writer.into_bytes().map_err(|e| e.to_string())
 }
 impl Runtime {
-    #[cfg(test)]
     pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, String> {
-        let batch = Batch::from_graphs(std::slice::from_ref(graph), &self.device)?;
+        // Validation weights are detached. Inputs must use the same plain
+        // device, otherwise mixed operations retain needless autodiff state.
+        let batch = Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())?;
         self.policy
             .valid()
             .forward(&batch)
@@ -307,13 +310,7 @@ impl Runtime {
 }
 impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
-        let batch = Batch::new(std::slice::from_ref(d), &self.device)?;
-        self.policy
-            .valid()
-            .forward(&batch)
-            .into_data()
-            .try_to_vec::<f32>()
-            .map_err(|e| e.to_string())
+        self.scores_graph(&Graph::encode(d)?)
     }
 }
 #[cfg(test)]
@@ -333,6 +330,7 @@ pub(super) fn test_update<I: ArtifactIo + ?Sized>(
 #[serde(deny_unknown_fields)]
 pub(crate) struct TrainingCost {
     pub replay_micros: u64,
+    pub preparation_micros: u64,
     pub load_micros: u64,
     pub update_micros: u64,
     pub checkpoint_micros: u64,
@@ -396,12 +394,28 @@ impl Engine {
     ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
         self.cost = TrainingCost::default();
         let started = std::time::Instant::now();
-        let key = super::digest(&(&state.replay, evidence));
+        let key = super::digest(&(
+            &state.model,
+            &state.feedback,
+            &state.preparation,
+            &state.replay,
+            evidence,
+        ));
         let pool = match self.pool.take() {
             Some((previous, pool)) if previous == key => pool,
-            _ => state.training_pool(evidence)?,
+            _ => {
+                let mut pool = state.training_pool(evidence)?;
+                if state.preparation == super::Preparation::Targeted && !pool.is_empty() {
+                    let preparation = std::time::Instant::now();
+                    self.with(&state.model, io, |runtime| {
+                        pool.focus(&state.feedback, |g| runtime.scores_graph(g))
+                    })?;
+                    self.cost.preparation_micros = micros(preparation);
+                }
+                pool
+            }
         };
-        self.cost.replay_micros = micros(started);
+        self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         self.cost.states = pool.graphs().len();
         let result = if pool.is_empty() {
             Ok(None)
@@ -436,6 +450,120 @@ impl Engine {
 mod tests {
     use super::super::tests::MemoryStore;
     use super::*;
+    #[test]
+    fn plain_inference_preserves_parameters_and_stable_float32_choices() {
+        let example = super::super::tests::own_example();
+        let q = naome_authoring::CompiledQuestion::compile(&example.question).unwrap();
+        let graph = super::super::search::compile(q.proved_target(), &example.tree)
+            .unwrap()
+            .1
+            .remove(0);
+        let mut io = MemoryStore::default();
+        let fresh = Checkpoint::fresh();
+        let runtime = Runtime::load(&fresh, &mut io).unwrap();
+        let before = runtime.checkpoint(&fresh, 0, &mut io).unwrap();
+        let batch = Batch::from_graphs(
+            std::slice::from_ref(&graph),
+            &runtime.device.clone().inner(),
+        )
+        .unwrap();
+        let reference = runtime
+            .policy
+            .valid()
+            .forward(&batch)
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap();
+        let actual = runtime.scores_graph(&graph).unwrap();
+        assert_eq!(
+            actual, reference,
+            "canonical inference uses the detached input path"
+        );
+        let batch = Batch::from_graphs(std::slice::from_ref(&graph), &runtime.device).unwrap();
+        let autodiff = runtime
+            .policy
+            .valid()
+            .forward(&batch)
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap();
+        for (a, b) in actual.iter().zip(&autodiff) {
+            assert!((a - b).abs() <= 32.0 * f32::EPSILON * (1.0 + a.abs().max(b.abs())));
+        }
+        let selected = |scores: &[f32]| {
+            (0..scores.len())
+                .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))
+                .unwrap()
+        };
+        assert_eq!(
+            selected(&actual),
+            selected(&autodiff),
+            "well-separated choices are stable; near ties may change with float32 routing"
+        );
+        assert_eq!(runtime.checkpoint(&fresh, 0, &mut io).unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "Finite matched inference lifetime memory screen; run in an isolated process"]
+    fn matched_inference_device_memory_screen() {
+        use super::super::graph::{Graph, Node};
+        let legacy = std::env::var_os("NAOME_INFERENCE_AUTODIFF_INPUTS").is_some();
+        let mut io = MemoryStore::default();
+        let runtime = Runtime::load(&Checkpoint::fresh(), &mut io).unwrap();
+        let meter = crate::resources::feedback::Meter::start();
+        for iteration in 0..4096 {
+            let count = 48 + iteration % 209;
+            let graph = Graph {
+                binding: String::new(),
+                nodes: (0..count)
+                    .map(|i| Node {
+                        kind: if i == 0 { 0 } else { 1 + (i % 7) as i32 },
+                        left: i / 2,
+                        right: i / 3,
+                        role: 2,
+                    })
+                    .collect(),
+                goal: count - 1,
+                context: (1..33).collect(),
+                candidates: (32..48).collect(),
+                expert: 0,
+                successes: vec![0],
+            };
+            let scores = if legacy {
+                let batch =
+                    Batch::from_graphs(std::slice::from_ref(&graph), &runtime.device).unwrap();
+                runtime
+                    .policy
+                    .valid()
+                    .forward(&batch)
+                    .into_data()
+                    .try_to_vec::<f32>()
+                    .unwrap()
+            } else {
+                let batch = Batch::from_graphs(
+                    std::slice::from_ref(&graph),
+                    &runtime.device.clone().inner(),
+                )
+                .unwrap();
+                runtime
+                    .policy
+                    .valid()
+                    .forward(&batch)
+                    .into_data()
+                    .try_to_vec::<f32>()
+                    .unwrap()
+            };
+            assert_eq!(scores.len(), 16);
+            assert!(scores.iter().all(|v| v.is_finite()));
+        }
+        let sample = meter.finish(0, true);
+        eprintln!(
+            "native_inference_lifetime legacy_autodiff_inputs={legacy} calls=4096 sample={sample:?}"
+        );
+        if !legacy {
+            assert!(sample.peak_rss_bytes.unwrap() <= REQUIREMENTS.work_bytes as u64);
+        }
+    }
     #[test]
     #[ignore = "Bounded maximum-shape native model memory measurement"]
     fn maximum_supported_batch_memory_is_bounded() {

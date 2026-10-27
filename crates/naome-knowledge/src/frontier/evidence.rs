@@ -123,6 +123,9 @@ impl Evidence {
             solver,
         })
     }
+    pub(super) fn bind_solver(&mut self, solver: String) {
+        self.solver = solver;
+    }
     pub(super) fn random(&self) -> u64 {
         self.header.random
     }

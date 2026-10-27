@@ -185,6 +185,17 @@ fn native_learning_uses_checked_own_and_peer_solutions_and_resumes_model_and_ada
 
 #[cfg(unix)]
 #[test]
+#[ignore = "Finite empty-node adaptive learning and feedback lifecycle; requires Release"]
+fn native_adaptive_learning_closes_the_unseeded_question_and_feedback_cycle() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "native learning requires Release"
+    );
+    run_autonomous("adaptive");
+}
+
+#[cfg(unix)]
+#[test]
 #[ignore = "Finite ordinary formal-goal ZFC construction, gossip and replay; requires Release"]
 fn native_goal_constructs_natural_number_set_from_zfc_and_rechecks_its_closure() {
     assert!(
@@ -218,6 +229,7 @@ fn run_autonomous(mode: &str) {
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
             "native" => "crates/naome-knowledge/tests/support/native_learning.py",
+            "adaptive" => "crates/naome-knowledge/tests/support/native_learning.py",
             "native-goal" => "crates/naome-knowledge/tests/support/native_goal.py",
             _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
@@ -231,6 +243,7 @@ fn run_autonomous(mode: &str) {
                 "guardian-probe" => "45",
                 "startup" => "50",
                 "native" => "480",
+                "adaptive" => "360",
                 "native-goal" => "120",
                 "pause" => "120",
                 _ => "90",

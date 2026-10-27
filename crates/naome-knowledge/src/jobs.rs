@@ -605,9 +605,17 @@ pub(crate) enum Receipt {
 #[derive(Clone)]
 pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
+    // Derived read-only mirror. The jobs journal remains the sole state owner.
+    feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
 }
 
 impl Client {
+    pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
+        self.feedback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub(crate) fn theorem_verified(
         &self,
         ordinal: u64,

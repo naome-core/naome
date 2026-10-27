@@ -154,15 +154,22 @@ fn growing_learning_metadata_keeps_the_disk_working_set_bounded_and_its_source_o
     let anchors = snapshot["anchors"].clone();
     let model = snapshot["model"].clone();
     let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
-    snapshot["statistics"]["boundary"] =
-        serde_json::to_value(crate::learning::Statistics::default()).unwrap();
-    let slack = capacity - crate::checkpoint::encode(&snapshot).unwrap().len();
-    let value = snapshot["statistics"]
+    // The current bounded numeric diagnostics cannot contain arbitrarily long
+    // map keys. Fill every allowed capability/budget cell instead; the source
+    // proof and immutable originating job remain unchanged.
+    let cells = snapshot["feedback"]["attempts"]["cells"]
         .as_object_mut()
-        .unwrap()
-        .remove("boundary")
         .unwrap();
-    snapshot["statistics"][format!("boundary{}", "x".repeat(slack - 1))] = value;
+    for budget in [32, 128, 256] {
+        for skill in 0..6 {
+            for level in 0..4 {
+                cells.insert(
+                    (budget * 24 + skill * 4 + level).to_string(),
+                    serde_json::json!([12, 5, 1000000, 2, 7]),
+                );
+            }
+        }
+    }
     owner.journal.learning = Some(serde_json::from_value(snapshot).unwrap());
     owner.journal.learning.as_ref().unwrap().validate().unwrap();
     owner.save().unwrap();
@@ -236,7 +243,7 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
         )
     );
     assert_eq!(
-        state["statistics"],
+        state["feedback"]["attempts"]["cells"],
         serde_json::json!({}),
         "received mathematics is not a local search success"
     );

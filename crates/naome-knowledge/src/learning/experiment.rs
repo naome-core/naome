@@ -2,6 +2,7 @@
 //! Only fresh model self-search and checker-admitted native solutions train it.
 use super::tests::MemoryStore;
 use super::*;
+mod adaptive;
 mod knowledge;
 mod lookup;
 use sha2::{Digest, Sha256};
@@ -95,6 +96,7 @@ fn train_seed(
     let mut engine = Engine::default();
     let mut io = MemoryStore::default();
     state.model = engine.snapshot(&state.model, &mut io).unwrap();
+    state.feedback = crate::training::ability::Feedback::fresh(digest(&state.model));
     let initial = state.model.clone();
     export_model(&output.join("initial"), &initial, &io);
     let schedule = shuffled_learning(seed);
@@ -109,6 +111,7 @@ fn train_seed(
     let mut seen = BTreeSet::new();
     let mut graph = crate::Graph::default();
     let mut events = Vec::new();
+    let mut all_evidence = Vec::new();
     for round in 0..rounds {
         let mut acquisitions = Vec::new();
         for (index, q) in schedule.iter().skip(round * 128).take(128).enumerate() {
@@ -129,6 +132,11 @@ fn train_seed(
                 .unwrap();
             let mut accepted = false;
             if let Some(solution) = solution {
+                all_evidence.push(Evidence {
+                    job,
+                    proof_id: solution.proof_id.clone(),
+                    trace: solution.tree.clone(),
+                });
                 let question = CompiledQuestion::compile(&q.source).unwrap();
                 let (root, batch) = graph
                     .prepare_generated(&solution.source, &solution.helpers, &question)
@@ -176,20 +184,23 @@ fn train_seed(
             &output.join(format!("round-{round}-acquisitions.json")),
             &acquisitions,
         );
-        let graphs = state.training_graphs().unwrap();
-        let before = decision_metrics(&state.model, &graphs, &mut engine, &mut io);
+        let evidence = knowledge::evidence_for(&state, &all_evidence);
+        let pool = state.training_pool(&evidence).unwrap();
+        let graphs = pool.graphs();
+        let before = decision_metrics(&state.model, graphs, &mut engine, &mut io);
         let mut candidate_metrics = serde_json::Value::Null;
         let mut gate = serde_json::Value::Null;
         if state.needs_training() {
             let mut job = state.job();
             job.training = true;
-            state.attempted(state.accepted);
+            job.evidence = evidence;
+            state.attempted(state.learning_epoch());
             for unit in 1..=job.units() {
                 job.execute(unit, None, 100_000 + seed, &mut engine, &mut io)
                     .unwrap();
                 if unit == model::TRAINING_UNITS {
                     let candidate = job.progress.as_ref().unwrap().candidate.as_ref().unwrap();
-                    candidate_metrics = decision_metrics(candidate, &graphs, &mut engine, &mut io);
+                    candidate_metrics = decision_metrics(candidate, graphs, &mut engine, &mut io);
                     export_model(
                         &output.join(format!("round-{round}-candidate")),
                         candidate,
@@ -227,10 +238,11 @@ fn train_seed(
                 } else {
                     q.proved_target()
                 };
-                let term = search::compile(target, &e.tree).unwrap().0;
+                let tree=e.trajectory(&all_evidence).unwrap();
+                let term = search::compile(target, tree).unwrap().0;
                 let verified = proof::verify(&term, target).unwrap();
                 assert_eq!(crate::hex(verified.native_id.as_bytes()), e.proof_id);
-                serde_json::json!({"example":e,"source":proof::source(&verified).unwrap(),"helpers":definitions::helpers(&e.tree).unwrap()})
+                serde_json::json!({"example":e,"source":proof::source(&verified).unwrap(),"helpers":definitions::helpers(tree).unwrap()})
             })
             .collect::<Vec<_>>();
         write(

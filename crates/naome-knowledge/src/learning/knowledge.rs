@@ -10,25 +10,36 @@ pub const BYTES: usize = 8 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
+    #[serde(with = "packet")]
     pub packet: Vec<u8>,
+}
+// Snapshot JSON is metered against the existing State byte bound. Encoding
+// the already bounded native packet directly avoids decimal-array overhead
+// evicting the diverse replay needed to start training. Raw proof bytes and
+// the independent native admission/checking boundary remain unchanged.
+mod packet {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        crate::hex(bytes).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if value.len() > 2 * super::BYTES {
+            return Err(serde::de::Error::custom("theorem snapshot capacity"));
+        }
+        crate::object::unhex(&value).map_err(serde::de::Error::custom)
+    }
 }
 impl Entry {
     pub fn verified(&self) -> Result<proof::Verified, String> {
         if self.packet.len() > BYTES {
             return Err("theorem snapshot capacity".into());
         }
-        let context = evidence::context(&self.packet)?;
-        let decoded = evidence::decode(&self.packet)?;
-        let certificate = naome_proof::ProofCertificate::from_canonical_bytes(&decoded.certificate)
-            .map_err(|e| e.to_string())?;
-        let checked =
-            crate::learning::proof::check(certificate, &context).map_err(|e| e.to_string())?;
-        let target = checked.conclusion().clone();
-        if !target.free_variables().is_empty() {
+        let verified = evidence::checked(&self.packet)?;
+        if !verified.target.free_variables().is_empty() {
             return Err("theorem is not closed".into());
         }
-        let term = evidence::compile(&target, &self.packet)?;
-        proof::verify(&term, &target)
+        Ok(verified)
     }
     pub fn term(&self) -> Result<proof::Term, String> {
         let verified = self.verified()?;
@@ -237,6 +248,104 @@ mod tests {
         fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
             Ok(vec![0.; d.candidates.len()])
         }
+    }
+    #[test]
+    fn a_checked_library_does_not_starve_diverse_replay_at_the_existing_state_byte_bound() {
+        use super::super::{Example, Origin, State, curriculum};
+        let mut state = State::fresh();
+        state.model.seed = 2089;
+        let mut engine = super::super::Engine::default();
+        let mut io = super::super::tests::MemoryStore::default();
+        let mut graph = crate::Graph::default();
+        state.model = engine.snapshot(&state.model, &mut io).unwrap();
+        state.feedback =
+            crate::training::ability::Feedback::fresh(super::super::digest(&state.model));
+        let mut questions = curriculum::composition::BANK
+            .helpers
+            .iter()
+            .map(|q| q.source.clone())
+            .collect::<Vec<_>>();
+        // A parser-valid longer owner input must not lose the unchanged quorum
+        // simply because its already checked knowledge uses verbose JSON.
+        questions.push(super::super::tests::own_question() + &" ".repeat(4096));
+        let mut frozen_library = Vec::new();
+        for (i, source) in questions.iter().enumerate() {
+            if i == 7 {
+                frozen_library = state.knowledge.clone();
+            }
+            let (solution, diagnostic, _) = engine
+                .with(&state.model, &mut io, |runtime| {
+                    super::super::solve_with_definitions(
+                        source,
+                        runtime,
+                        128,
+                        1 + i as u64,
+                        &state.definitions,
+                        &state.knowledge,
+                    )
+                })
+                .unwrap();
+            let solution =
+                solution.unwrap_or_else(|| panic!("checked library fixture: {diagnostic}"));
+            let q = naome_authoring::CompiledQuestion::compile(source).unwrap();
+            let (root, batch) = graph
+                .prepare_generated(&solution.source, &solution.helpers, &q)
+                .unwrap();
+            graph
+                .commit_batch(
+                    root,
+                    batch,
+                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                )
+                .unwrap();
+            let selected = super::super::definitions::selected(&solution.tree).unwrap();
+            assert!(
+                state
+                    .accept(Example {
+                        origin: Origin::Local,
+                        job: 1 + i as u64,
+                        question: source.clone(),
+                        proof_id: solution.proof_id,
+                        refuted: solution.refuted,
+                        tree: solution.tree
+                    })
+                    .unwrap()
+            );
+            if i < 7 {
+                assert!(
+                    state
+                        .remember_theorem(Entry {
+                            packet: graph.learning_certificate(root).unwrap().unwrap()
+                        })
+                        .unwrap()
+                );
+                for definition in selected {
+                    state.remember_definition(definition).unwrap();
+                }
+            }
+        }
+        state.validate().unwrap();
+        assert_eq!(state.knowledge, frozen_library);
+        let raw_bytes = state
+            .knowledge
+            .iter()
+            .map(|e| e.packet.len())
+            .sum::<usize>();
+        assert!(
+            raw_bytes > BYTES * 3 / 4,
+            "exercise a nearly full checked byte budget: {raw_bytes}"
+        );
+        assert_eq!(state.replay.len(), 8);
+        assert!(
+            state.needs_training(),
+            "checked knowledge must coexist with the unchanged diverse training quorum"
+        );
+        let bytes = crate::checkpoint::encode(&state).unwrap();
+        assert!(bytes.len() <= crate::resources::limits().closure_bytes.min(128 * 1024) / 4);
+        let restored: State = crate::checkpoint::decode(&bytes).unwrap();
+        restored.validate().unwrap();
+        assert!(restored.needs_training());
+        assert_eq!(restored.knowledge, state.knowledge);
     }
     #[test]
     fn atom_overlap_does_not_offer_an_unrelated_closed_theorem() {

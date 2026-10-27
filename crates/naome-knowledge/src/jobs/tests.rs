@@ -18,7 +18,10 @@ impl Manual {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = mpsc::channel(crate::resources::limits().job_commands);
         Self {
-            client: Client { sender },
+            client: Client {
+                sender,
+                feedback: Default::default(),
+            },
             receiver,
             next: 1,
             waiting: BTreeMap::new(),

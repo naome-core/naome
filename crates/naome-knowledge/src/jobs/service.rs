@@ -52,7 +52,16 @@ impl Service {
                 .collect(),
         };
         let (sender, receiver) = mpsc::channel(crate::resources::active_limits().job_commands);
-        let client = Client { sender };
+        let feedback = Arc::new(Mutex::new(
+            journal
+                .learning
+                .as_ref()
+                .map(crate::learning::State::feedback),
+        ));
+        let client = Client {
+            sender,
+            feedback: feedback.clone(),
+        };
         let (halt, stop) = oneshot::channel();
         let (receipt, stopped) = oneshot::channel();
         let error = Arc::new(Mutex::new(None));
@@ -67,10 +76,9 @@ impl Service {
                         .map_err(|e| e.to_string())?;
                     let (events, progress) =
                         mpsc::channel(crate::resources::active_limits().provider_events);
-                    runtime.block_on(
-                        Owner::new(disk, journal, settings, computation)
-                            .run(receiver, stop, events, progress),
-                    )
+                    let mut owner = Owner::new(disk, journal, settings, computation);
+                    owner.feedback = feedback;
+                    runtime.block_on(owner.run(receiver, stop, events, progress))
                 })();
                 if let Err(failure) = &result {
                     crate::network::emit(
@@ -157,6 +165,7 @@ struct PendingLearning {
     reply: oneshot::Sender<Result<(), String>>,
 }
 struct Owner {
+    feedback: Arc<Mutex<Option<crate::training::ability::Feedback>>>,
     computation: Arc<crate::resources::Computation>,
     disk: Disk,
     journal: Journal,
@@ -189,7 +198,14 @@ impl Owner {
         computation: Arc<crate::resources::Computation>,
     ) -> Self {
         let recovery_skip = journal.records.keys().copied().collect();
+        let feedback = Arc::new(Mutex::new(
+            journal
+                .learning
+                .as_ref()
+                .map(crate::learning::State::feedback),
+        ));
         let mut owner = Self {
+            feedback,
             computation,
             disk,
             journal,
@@ -371,6 +387,16 @@ impl Owner {
             self.persist_programs()?;
             self.fill_internal()?;
             self.schedule(&events)?;
+            if let Some(learning) = &self.journal.learning {
+                let mut cached = self.feedback.lock().unwrap_or_else(|e| e.into_inner());
+                let (checkpoint, revision) = learning.feedback_stamp();
+                if cached
+                    .as_ref()
+                    .is_none_or(|c| c.checkpoint != checkpoint || c.revision != revision)
+                {
+                    *cached = Some(learning.feedback());
+                }
+            }
         }
         Ok(())
     }
@@ -762,18 +788,23 @@ impl Owner {
                     );
                 }
             }
-            match (&record.input, &record.result) {
-                (Input::Find { .. }, Some(Output::Question(source))) => {
-                    learning.observe(source, None)
-                }
-                (
-                    Input::Solve { question },
-                    Some(Output::Native {
-                        solution,
-                        diagnostic,
-                    }),
-                ) => learning.observe_result(question, solution.is_some(), diagnostic),
-                _ => {}
+            if let (
+                Input::Solve { question },
+                Some(Output::Native {
+                    solution,
+                    diagnostic,
+                }),
+            ) = (&record.input, &record.result)
+                && let Some(native) = &record.native
+                && native.base.feedback_stamp().0 == learning.feedback_stamp().0
+            {
+                learning.observe_result(
+                    question,
+                    solution.is_some(),
+                    diagnostic,
+                    record.spent_ms.saturating_mul(1000),
+                    native.base.search_budget(),
+                );
             }
         }
         if let Some(cost) = record

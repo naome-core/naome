@@ -1,12 +1,12 @@
 //! Matched primitive/retrieval/retained-learning experiment on new compositions.
 use super::*;
 #[derive(Default)]
-struct Store {
-    inner: MemoryStore,
-    read_bytes: u64,
-    written_bytes: u64,
-    reads: u64,
-    writes: u64,
+pub(super) struct Store {
+    pub(super) inner: MemoryStore,
+    pub(super) read_bytes: u64,
+    pub(super) written_bytes: u64,
+    pub(super) reads: u64,
+    pub(super) writes: u64,
 }
 impl ArtifactIo for Store {
     fn read(&mut self, b: &Blob, r: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
@@ -30,7 +30,7 @@ struct Run {
     rounds: Vec<serde_json::Value>,
     evidence: Vec<Evidence>,
 }
-fn evidence_for(state: &State, source: &[Evidence]) -> Vec<Evidence> {
+pub(super) fn evidence_for(state: &State, source: &[Evidence]) -> Vec<Evidence> {
     let mut needed = state
         .replay
         .iter()
@@ -48,7 +48,7 @@ fn evidence_for(state: &State, source: &[Evidence]) -> Vec<Evidence> {
     needed.sort_by_key(|e| e.job);
     needed
 }
-fn admit_discovery(
+pub(super) fn admit_discovery(
     graph: &mut crate::Graph,
     q: &CompiledQuestion,
     solution: &Solution,
@@ -73,7 +73,7 @@ fn admit_discovery(
     graph.commit_batch(root, batch, Instant::now() + Duration::from_secs(10))?;
     Ok(true)
 }
-fn acquire(
+pub(super) fn acquire(
     state: &mut State,
     source: &str,
     job: u64,
@@ -150,6 +150,7 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
     let mut store = Store::default();
     let mut engine = Engine::default();
     state.model = engine.snapshot(&state.model, &mut store).unwrap();
+    state.feedback = crate::training::ability::Feedback::fresh(digest(&state.model));
     let initial = state.model.clone();
     export_model(&path.join("initial"), &initial, &store.inner);
     let mut graph = crate::Graph::default();
@@ -350,7 +351,10 @@ fn repeated_own_discovery_reuses_its_already_checked_graph_root() {
     assert!(admit_discovery(&mut graph, &other, &solution).is_err());
     assert_eq!(graph.accepted_count(), accepted);
 }
-fn contains_question(entry: &super::super::knowledge::Entry, q: &CompiledQuestion) -> bool {
+pub(super) fn contains_question(
+    entry: &super::super::knowledge::Entry,
+    q: &CompiledQuestion,
+) -> bool {
     let v = entry.verified().unwrap();
     let matches = |formula: &naome_foundation::Formula| {
         formula == q.proved_target() || formula == q.refuted_target()

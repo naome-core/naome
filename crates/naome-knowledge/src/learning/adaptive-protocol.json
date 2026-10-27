@@ -1,0 +1,58 @@
+{
+  "purpose": "Measure bounded closed-loop task selection and checked decision preparation separately and together.",
+  "seeds": [
+    2203,
+    2309,
+    2411
+  ],
+  "pilot": {
+    "seed": 2089,
+    "rounds": 1,
+    "evaluation": "development only; no final confirmation inference"
+  },
+  "arms": [
+    "random_balanced",
+    "adaptive_balanced",
+    "random_targeted",
+    "adaptive_targeted"
+  ],
+  "common": "Identical actual fresh model and Adam checkpoint per seed; seven question-only helper searches, independently native-checked and admitted, no optimizer updates; no imported proof or trained weights.",
+  "task_owner": "Maintained Frontier::refresh/candidates/choose with ordinary formal prefilter; newly admitted own Graph artifacts may propose bounded continuations. State feedback is updated from each own bounded search and complete development qualification, then used by the next selection. Each arm attempts a native question identity at most once in this finite comparison; this control does not replace production cooldown/retry policy.",
+  "knowledge_control": "Per-seed common definitions and theorem dictionary stay fixed in all arms; new own checked discoveries affect task proposals and replay. This isolates sampling and preparation from dictionary growth; it is not the full production knowledge-growth policy.",
+  "limits": {
+    "rounds": 2,
+    "own_queries_per_round": 48,
+    "candidate_updates_per_round": 250,
+    "cpu_seconds_per_arm": 180,
+    "wall_seconds_per_arm": 240,
+    "stop_boundary": "Before next indivisible existing search/training/evaluation unit; last unit overrun is measured and reported, incomplete candidate never selected",
+    "batch": 16,
+    "learning_rate": 0.001,
+    "acquisition_expansions": 128,
+    "qualification_expansions": 32,
+    "orientation_deadline_ms": 2500
+  },
+  "resource_policy": "Existing 768 MiB work lease, 48 MiB replay graph pool, 32 KiB persistent State, native graph/context/fact/depth/action caps and per-job IO limits remain. Equal ceilings do not imply equal actual compute. Common search and bank construction costs are reported separately; arm CPU includes selection, checking, preparation, training, qualification, serialization and IO bookkeeping. The common implementation uses canonical hex for bounded theorem snapshots, small references to the original owned trace journal, and detached inference inputs. The inference routing preserves model/Adam bytes but may change near-tied float32 rankings; every arm and initial/selected control uses the same frozen routing.",
+  "qualification": "Unchanged positive aggregate development gain, zero original-32 individual solution losses, no earlier anchor loss; all original 96 development cases retained and 24 new development cases appended. Candidate weights AND Adam restored on rejection.",
+  "confirmation": "All training for every seed and arm completes before any of 48 fresh question-only confirmation queries in 24 whole construction families; two argument variants are one group. No final outcome tuning. Prior confirmations remain retired development evidence.",
+  "primary": {
+    "expansions": 32,
+    "exploration": false,
+    "comparison": "adaptive_targeted selected minus random_balanced selected",
+    "success": "Mean gain at least 5 percentage points, no negative seed, paired family-bootstrap 95 percent lower bound greater than zero",
+    "bootstrap": {
+      "groups": "24 whole construction families paired across arms and seeds",
+      "resamples": 20000
+    }
+  },
+  "secondary": [
+    "selection main effect and preparation main effect plus interaction",
+    "selected versus identical own initial checkpoint",
+    "128-expansion matched exploratory search",
+    "empty common dictionary controls",
+    "regressions and operation/family breadth",
+    "actual CPU and wall time per native-checked discovery",
+    "candidate and retained decision accuracy distinguish optimization from solve gain"
+  ],
+  "interpretation": "Source-grammar coverage is limited and syntax capability estimates are hypotheses, not universal mathematical difficulty. A positive finite matched result would not establish unbounded autonomous improvement, new calculus completeness, durable multi-round capacity growth, or physical deployment. Negative and incomplete results remain part of the evidence. Development and exact-ID operating checks are distinct from the fresh family confirmation. The common helper recipes condition this study; the new task grammar is not an external mathematics benchmark."
+}

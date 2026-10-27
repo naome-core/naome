@@ -303,6 +303,30 @@ pub struct Verified {
     pub payload_bytes: usize,
 }
 
+/// The one native-DAG boundary also serves self-contained evidence packets.
+/// Supplying an expected target binds it; otherwise the checker derives it.
+pub(crate) fn verify_native(
+    certificate: ProofCertificate,
+    definitions: Vec<super::definitions::Entry>,
+    lemmas: Vec<ProofCertificate>,
+    expected: Option<&Formula>,
+) -> Result<Verified, String> {
+    let context = lemma_context(&definitions, &lemmas)?;
+    let checked = check(certificate, &context).map_err(|e| e.to_string())?;
+    if expected.is_some_and(|target| checked.conclusion() != target) {
+        return Err("native DAG conclusion differs".into());
+    }
+    let retained = lemmas::retain(&checked, &definitions, &lemmas)?;
+    Ok(Verified {
+        lemmas: retained,
+        definitions,
+        certificate: checked.normal_form().certificate().clone(),
+        target: checked.conclusion().clone(),
+        native_id: checked.proof_id(),
+        payload_bytes: checked.normal_form().canonical_bytes().len(),
+    })
+}
+
 /// No typed term is accepted as evidence until the existing checker accepts it.
 pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     if term.formula() != *expected {
@@ -315,21 +339,12 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         ..
     } = term
     {
-        let context = lemma_context(definitions, lemmas)?;
-        let checked = crate::learning::proof::check(certificate.clone(), &context)
-            .map_err(|e| e.to_string())?;
-        if checked.conclusion() != expected {
-            return Err("native DAG conclusion differs".into());
-        }
-        let lemmas = lemmas::retain(&checked, definitions, lemmas)?;
-        return Ok(Verified {
-            lemmas,
-            definitions: definitions.clone(),
-            certificate: checked.normal_form().certificate().clone(),
-            target: expected.clone(),
-            native_id: checked.proof_id(),
-            payload_bytes: checked.normal_form().canonical_bytes().len(),
-        });
+        return verify_native(
+            certificate.clone(),
+            definitions.clone(),
+            lemmas.clone(),
+            Some(expected),
+        );
     }
     let root = lower(term)?;
     let mut steps = Vec::new();

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) mod ability;
 mod command;
 mod evaluation;
 mod planning;
@@ -29,6 +30,7 @@ pub use crate::jobs::Limits as SearchBudget;
 pub use command::{Command, HELP, QuestionPage, Response, execute, questions, run};
 pub use evaluation::{Comparison, Compute, Evaluation, Results, compare};
 pub use planning::{Plan, PlannedQuestion, plan};
+pub(crate) use planning::{continuation, continuation_parent};
 use signals::Signals;
 pub(crate) use signals::opportunity;
 
@@ -199,6 +201,7 @@ struct Observation {
     input: [u8; 32],
     features: Features,
     solved: Option<bool>,
+    micros: u64,
 }
 type Observations = BTreeMap<[u8; 32], Observation>;
 
@@ -249,6 +252,7 @@ fn probes(
                     input: *target.source_hash(),
                     features: Features::of(&target),
                     solved,
+                    micros: probe.spent_ms.saturating_mul(1000),
                 },
             )
             .is_some()

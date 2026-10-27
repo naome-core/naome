@@ -320,6 +320,11 @@ impl Autonomous {
             return accepted;
         }
         let now = Instant::now();
+        if (now >= self.next_question || now >= self.next_proof)
+            && let Some(frontier) = &mut self.frontier
+        {
+            frontier.feedback(self.client.feedback());
+        }
         while let Some(publication) = self.evidence_publications.pop_front() {
             let result = self
                 .frontier

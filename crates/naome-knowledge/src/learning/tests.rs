@@ -221,6 +221,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     let graphs = state.training_graphs().unwrap();
     let incumbent = model::test_update(&state.model, &graphs, &mut 31, &mut io).unwrap();
     state.model = incumbent.clone();
+    state.feedback = crate::training::ability::Feedback::fresh(digest(&state.model));
     let development_parent = state.clone();
     let mut job = state.job();
     job.training = true;
@@ -256,6 +257,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         original_score: [0, 0],
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
+        ..finished_progress(&job.base)
     });
     job.execute(job.units(), None, 42, &mut engine, &mut io)
         .unwrap();
@@ -309,9 +311,24 @@ fn finished_progress(state: &State) -> Progress {
         anchor_regression: false,
         development_regression: false,
         original_score: [0, 0],
+        development_before: crate::training::ability::Profile::new(digest(&state.model)),
+        development_after: crate::training::ability::Profile::new(digest(&state.model)),
+        regressions: [0; crate::training::ability::SKILLS],
+        gains: [0; crate::training::ability::SKILLS],
         result: None,
         diagnostic: String::new(),
     }
+}
+pub(crate) fn measured_progress() -> Progress {
+    let mut progress = finished_progress(&State::fresh());
+    let question = CompiledQuestion::compile(&own_question()).unwrap();
+    progress
+        .development_before
+        .observe(&question, 32, Some(true), 1234);
+    progress
+        .development_after
+        .observe(&question, 32, Some(false), 5678);
+    progress
 }
 #[derive(Default)]
 pub(crate) struct MemoryStore(pub BTreeMap<(String, usize), Vec<u8>>);
@@ -376,6 +393,7 @@ pub(crate) fn completed(job: &mut Job, solution: Solution) {
         original_score: [0, 0],
         result: Some(solution),
         diagnostic: "certified_candidate".into(),
+        ..finished_progress(&job.base)
     });
 }
 pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
@@ -404,6 +422,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         original_score: [0, 0],
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
+        ..finished_progress(&job.base)
     });
 }
 
@@ -622,15 +641,17 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     let anchors = digest(&state.anchors);
     let accepted = state.accepted;
     let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
-    // Fill valid diagnostic working data to the real installed boundary.
-    state
-        .statistics
-        .insert("boundary".into(), Statistics::default());
-    let slack = capacity - crate::checkpoint::encode(&state).unwrap().len();
-    let statistics = state.statistics.remove("boundary").unwrap();
-    state
-        .statistics
-        .insert(format!("boundary{}", "x".repeat(slack - 1)), statistics);
+    // Valid source spelling can reach the real working-byte boundary. It
+    // preserves the canonical target and its independently checked proof.
+    state.replay.push(state.replay[0].clone());
+    let mut slack = capacity - crate::checkpoint::encode(&state).unwrap().len() - 1;
+    for example in &mut state.replay {
+        let padding =
+            slack.min(naome_authoring::QUESTION_SOURCE_MAX_BYTES - example.question.len());
+        example.question.push_str(&" ".repeat(padding));
+        slack -= padding;
+    }
+    assert_eq!(slack, 0);
     state.validate().unwrap();
     let before_bytes = crate::checkpoint::encode(&state).unwrap().len();
     let mut job = state.job();
@@ -642,6 +663,7 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     progress.model.model = Some(Blob::of(&[1; 32]));
     progress.model.optimizer = Some(Blob::of(&[2; 32]));
     progress.promotions += 1;
+    progress.development_after.checkpoint = digest(&progress.model);
     let selected = progress.model.clone();
     let expanded = crate::checkpoint::encode(&selected).unwrap().len()
         - crate::checkpoint::encode(&state.model).unwrap().len();

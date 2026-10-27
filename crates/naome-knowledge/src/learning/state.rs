@@ -87,8 +87,10 @@ impl State {
         self.model.blobs()
     }
     pub fn fresh() -> Self {
+        let model = Checkpoint::fresh();
+        let feedback = crate::training::ability::Feedback::fresh(digest(&model));
         Self {
-            model: Checkpoint::fresh(),
+            model,
             definitions: Vec::new(),
             definition_uses: BTreeMap::new(),
             knowledge: Vec::new(),
@@ -104,7 +106,8 @@ impl State {
             peer_examples: 0,
             promotions: 0,
             rejections: 0,
-            statistics: BTreeMap::new(),
+            feedback,
+            preparation: Preparation::Targeted,
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -137,7 +140,6 @@ impl State {
                 })
                 .sum::<usize>()
                 > REPLAY * 8 * 1024
-            || self.statistics.len() > 64
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
                 > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
         {
@@ -157,10 +159,9 @@ impl State {
                 return Err("question replay strategy capacity".into());
             }
         }
-        for s in self.statistics.values() {
-            if s.successes > s.attempts || s.recent > 1_000_000 {
-                return Err("learning statistics differ".into());
-            }
+        self.feedback.validate()?;
+        if self.feedback.checkpoint != digest(&self.model) {
+            return Err("learning feedback model differs".into());
         }
         Ok(())
     }
@@ -279,49 +280,49 @@ impl State {
     pub fn attempted(&mut self, epoch: u64) {
         self.attempted = self.attempted.max(epoch.min(self.epoch));
     }
+    pub(crate) fn search_budget(&self) -> u32 {
+        if self.rejections % 3 == 2 { 256 } else { 128 }
+    }
+    pub(crate) fn feedback_stamp(&self) -> (&str, u64) {
+        (&self.feedback.checkpoint, self.feedback.revision)
+    }
+    pub(crate) fn feedback(&self) -> crate::training::ability::Feedback {
+        self.feedback.clone()
+    }
+    #[cfg(test)]
     pub fn observe(&mut self, question: &str, solved: Option<bool>) {
+        self.observe_attempt(question, solved, 0, 128);
+    }
+    pub(crate) fn observe_attempt(
+        &mut self,
+        question: &str,
+        solved: Option<bool>,
+        micros: u64,
+        budget: u32,
+    ) {
+        if !Self::eligible(question) {
+            return;
+        }
         let Ok(q) = CompiledQuestion::compile(question) else {
             return;
         };
-        if let Some(case) = curriculum::learning(&crate::hex(q.resolution_id())) {
-            let s = self
-                .statistics
-                .entry(curriculum::statistics_key(case).to_owned())
-                .or_default();
-            if let Some(success) = solved {
-                s.attempts = s.attempts.saturating_add(1);
-                s.recent = (4 * s.recent + 1_000_000 * u32::from(success)) / 5;
-                s.successes = s.successes.saturating_add(u64::from(success));
-            } else {
-                s.selections = s.selections.saturating_add(1);
-            }
-        }
+        self.feedback.attempts.observe(&q, budget, solved, micros);
+        self.feedback.revision = self.feedback.revision.saturating_add(1);
     }
-    pub fn observe_result(&mut self, question: &str, solved: bool, diagnostic: &str) {
-        self.observe(question, Some(solved));
-        if !solved
-            && let Ok(q) = CompiledQuestion::compile(question)
-            && let Some(case) = curriculum::learning(&crate::hex(q.resolution_id()))
-        {
-            let reason = if diagnostic.contains("search_budget") {
-                0
-            } else if diagnostic.contains("graph") || diagnostic.contains("decision_capacity") {
-                1
-            } else if diagnostic.contains("fact_resource") {
-                2
-            } else if diagnostic.contains("calculus") {
-                3
-            } else if diagnostic.contains("certificate") {
-                4
-            } else {
-                5
-            };
-            let s = self
-                .statistics
-                .entry(curriculum::statistics_key(case).to_owned())
-                .or_default();
-            s.failures[reason] = s.failures[reason].saturating_add(1);
-        }
+    pub fn observe_result(
+        &mut self,
+        question: &str,
+        solved: bool,
+        diagnostic: &str,
+        micros: u64,
+        budget: u32,
+    ) {
+        self.observe_attempt(
+            question,
+            crate::training::ability::completion(solved, diagnostic),
+            micros,
+            budget,
+        );
     }
     pub fn qualify(&mut self, native: &Job) -> bool {
         let Some(p) = &native.progress else {
@@ -337,6 +338,25 @@ impl State {
         let mut next = self.clone();
         next.draws = next.draws.max(p.rng);
         next.model = p.model.clone();
+        let key = digest(&next.model);
+        let observations = if p.promotions > native.base.promotions {
+            &p.development_after
+        } else {
+            &p.development_before
+        };
+        if observations.checkpoint != key {
+            return false;
+        }
+        if key != next.feedback.checkpoint {
+            next.feedback.attempts = crate::training::ability::Profile::new(key.clone());
+        }
+        next.feedback.checkpoint = key.clone();
+        if !observations.is_empty() || next.feedback.development.checkpoint != key {
+            next.feedback.development = observations.clone();
+            next.feedback.regressions = p.regressions;
+            next.feedback.gains = p.gains;
+        }
+        next.feedback.revision = next.feedback.revision.saturating_add(1);
         next.trained = p.trained;
         next.promotions = next
             .promotions
@@ -356,24 +376,11 @@ impl State {
     /// records, rather than the replay working set, own proof history.
     pub(crate) fn compact(&mut self) -> Result<(), String> {
         let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
-        while self.statistics.len() > 64 || crate::checkpoint::encode(self)?.len() > capacity {
-            if self.statistics.len() <= 64 && !self.replay.is_empty() {
-                self.remove_replay();
-            } else if let Some(key) = self
-                .statistics
-                .iter()
-                .min_by_key(|(key, statistics)| {
-                    (
-                        statistics.selections.saturating_add(statistics.attempts),
-                        *key,
-                    )
-                })
-                .map(|(key, _)| key.clone())
-            {
-                self.statistics.remove(&key);
-            } else {
+        while crate::checkpoint::encode(self)?.len() > capacity {
+            if self.replay.is_empty() {
                 return Err("fixed learning snapshot exceeds working byte capacity".into());
             }
+            self.remove_replay();
         }
         Ok(())
     }
@@ -418,16 +425,8 @@ impl State {
             } else {
                 q.proved_target()
             };
-            let tree = if matches!(e.tree, search::Tree::Stored { .. }) {
-                let source = evidence
-                    .iter()
-                    .find(|source| source.job == e.job && source.proof_id == e.proof_id)
-                    .ok_or("peer replay snapshot missing")?;
-                source.trace.clone()
-            } else {
-                e.tree.clone()
-            };
-            let (core, _, verified) = search::core::checked(target, &tree)?;
+            let tree = e.trajectory(evidence)?;
+            let (core, _, verified) = search::core::checked(target, tree)?;
             if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
                 return Err("peer replay snapshot proof differs".into());
             }
@@ -587,7 +586,12 @@ impl State {
         if trace_bytes > REPLAY * 8 * 1024 {
             return Ok(false);
         }
-        if matches!(example.origin, Origin::Peer { .. }) || trace_bytes > 2048 {
+        // The original journal owns complete trajectories. Keep each inline
+        // trace within its share of the existing small working snapshot so
+        // checked knowledge cannot evict the minimum diverse training batch.
+        let inline_bytes =
+            crate::resources::limits().closure_bytes.min(128 * 1024) / 4 / (2 * REPLAY);
+        if matches!(example.origin, Origin::Peer { .. }) || trace_bytes > inline_bytes {
             example.tree = search::Tree::Stored {
                 steps: native_steps,
                 bytes: trace_bytes,

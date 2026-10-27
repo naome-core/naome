@@ -229,18 +229,14 @@ pub struct Batch {
 }
 
 impl Batch {
-    pub fn new(decisions: &[Decision], device: &Device) -> Result<Self, String> {
-        if decisions.is_empty() {
-            return Err("empty model batch".into());
-        }
-        let graphs = decisions
+    pub fn from_graphs<G: std::borrow::Borrow<Graph>>(
+        graphs: &[G],
+        device: &Device,
+    ) -> Result<Self, String> {
+        let graphs = graphs
             .iter()
-            .map(Graph::encode)
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::from_graphs(&graphs, device)
-    }
-
-    pub fn from_graphs(graphs: &[Graph], device: &Device) -> Result<Self, String> {
+            .map(std::borrow::Borrow::borrow)
+            .collect::<Vec<_>>();
         if graphs.is_empty() {
             return Err("empty graph batch".into());
         }

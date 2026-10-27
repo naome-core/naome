@@ -11,6 +11,7 @@ pub struct Pool {
     work_bytes: usize,
     keys: BTreeMap<String, usize>,
     origins: BTreeMap<bool, Families>,
+    priorities: Vec<u64>,
 }
 impl Pool {
     pub fn add(
@@ -81,18 +82,79 @@ impl Pool {
     pub fn is_empty(&self) -> bool {
         self.graphs.is_empty()
     }
+    /// Reweight actual checked decision states. Their features, available
+    /// alternatives and successful-action sets stay byte-for-byte unchanged.
+    /// Unobserved alternatives remain unlabelled, not mathematical negatives.
+    pub fn focus(
+        &mut self,
+        feedback: &crate::training::ability::Feedback,
+        mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, String>,
+    ) -> Result<(), String> {
+        self.priorities.clear();
+        for graph in &self.graphs {
+            let scores = scores(graph)?;
+            if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
+                return Err("preparation prediction shape or value differs".into());
+            }
+            let best = scores
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i)
+                .unwrap();
+            let correction = if graph.successes.contains(&best) {
+                1
+            } else {
+                4
+            };
+            let need = graph
+                .successes
+                .iter()
+                .map(|i| feedback.rule_weight(graph.nodes[graph.candidates[*i]].kind))
+                .max()
+                .unwrap_or(1);
+            self.priorities.push((correction * need).clamp(1, 32));
+        }
+        Ok(())
+    }
+    fn average<'a>(&self, values: impl Iterator<Item = &'a usize>) -> u64 {
+        let (sum, count) = values.fold((0u64, 0u64), |(s, n), i| (s + self.priorities[*i], n + 1));
+        sum / count.max(1)
+    }
     /// A hierarchical cyclic draw balances origins, families, proofs and rule
     /// types. A bijective per-cycle permutation reaches the entire decision
     /// pool; rebuilding an unchanged pool never resets it to a fixed prefix.
-    pub fn batch(&self, cursor: &mut u64) -> Vec<Graph> {
+    pub fn batch(&self, cursor: &mut u64) -> Vec<&Graph> {
         let mut result = Vec::with_capacity(16);
         for _ in 0..16 {
             let mut position = *cursor;
             *cursor = cursor.wrapping_add(1);
+            if !self.priorities.is_empty() && (*cursor).is_multiple_of(5) {
+                position = *cursor / 5;
+            }
+            let focused = !self.priorities.is_empty() && !(*cursor).is_multiple_of(5);
+            let mut random =
+                crate::sampling::Random::new((*cursor).wrapping_mul(0x9e3779b97f4a7c15));
             let family = select(&self.origins, &mut position);
-            let proof = select(family, &mut position);
+            let proof = if focused {
+                weighted(family, &mut position, &mut random, |proofs| {
+                    let values = proofs
+                        .values()
+                        .flat_map(|rules| rules.values())
+                        .flat_map(|cases| cases.iter());
+                    self.average(values)
+                })
+            } else {
+                select(family, &mut position)
+            };
             let rules = select(proof, &mut position);
-            let cases = select(rules, &mut position);
+            let cases = if focused {
+                weighted(rules, &mut position, &mut random, |cases| {
+                    self.average(cases.iter())
+                })
+            } else {
+                select(rules, &mut position)
+            };
             let length = cases.len() as u64;
             let cycle = position / length;
             let index = position % length;
@@ -102,7 +164,25 @@ impl Pool {
             }
             let offset = cycle.wrapping_mul(0xbf58476d1ce4e5b9) % length;
             let index = (index.wrapping_mul(stride) + offset) % length;
-            result.push(self.graphs[cases[index as usize]].clone());
+            let index = if !focused {
+                index as usize
+            } else {
+                let total = cases.iter().map(|i| self.priorities[*i]).sum::<u64>();
+                let mut selected = random.below(total);
+                cases
+                    .iter()
+                    .position(|i| {
+                        let weight = self.priorities[*i];
+                        if selected < weight {
+                            true
+                        } else {
+                            selected -= weight;
+                            false
+                        }
+                    })
+                    .expect("positive preparation weights")
+            };
+            result.push(&self.graphs[cases[index]]);
         }
         result
     }
@@ -113,6 +193,18 @@ fn select<'a, K: Ord, V>(map: &'a BTreeMap<K, V>, position: &mut u64) -> &'a V {
     map.values()
         .nth(index as usize)
         .expect("nonempty proof sampling stratum")
+}
+fn weighted<'a, K: Ord, V>(
+    map: &'a BTreeMap<K, V>,
+    position: &mut u64,
+    random: &mut crate::sampling::Random,
+    weight: impl Fn(&V) -> u64,
+) -> &'a V {
+    *position /= map.len() as u64;
+    let weights = map.values().map(|v| weight(v).max(1)).collect::<Vec<_>>();
+    map.values()
+        .nth(crate::sampling::draw(random, &weights))
+        .unwrap()
 }
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
@@ -192,5 +284,53 @@ mod tests {
         assert_eq!(pool.graphs.len(), 2);
         assert_eq!(pool.graphs[0].successes, vec![0, 1]);
         assert_eq!(pool.graphs[1].successes, vec![1]);
+    }
+    #[test]
+    fn targeting_changes_batches_but_not_states_labels_or_source_coverage() {
+        let mut easy = case(0);
+        easy.nodes.push(Node {
+            kind: 17,
+            left: 0,
+            right: 0,
+            role: 0,
+        });
+        easy.candidates.push(2);
+        let mut hard = easy.clone();
+        hard.goal = 1;
+        let mut pool = Pool::default();
+        pool.add(false, "old", "old", "p0", vec![easy]).unwrap();
+        pool.add(false, "weak", "weak", "p1", vec![hard]).unwrap();
+        let keys = pool.graphs.iter().map(Graph::key).collect::<Vec<_>>();
+        let labels = pool
+            .graphs
+            .iter()
+            .map(|g| g.successes.clone())
+            .collect::<Vec<_>>();
+        let feedback = crate::training::ability::Feedback::fresh("12".repeat(32));
+        pool.focus(&feedback, |g| {
+            Ok(if g.goal == 0 {
+                vec![1., 0.]
+            } else {
+                vec![0., 1.]
+            })
+        })
+        .unwrap();
+        assert_eq!(keys, pool.graphs.iter().map(Graph::key).collect::<Vec<_>>());
+        assert_eq!(
+            labels,
+            pool.graphs
+                .iter()
+                .map(|g| g.successes.clone())
+                .collect::<Vec<_>>()
+        );
+        let mut cursor = 0;
+        let mut hits = [0usize; 2];
+        for _ in 0..256 {
+            for graph in pool.batch(&mut cursor) {
+                hits[graph.goal] += 1;
+            }
+        }
+        assert!(hits[1] > hits[0] * 2, "{hits:?}");
+        assert!(hits[0] > 256, "older source retains exploration and replay");
     }
 }

@@ -29,6 +29,9 @@ struct AttemptHint {
 
 pub(crate) struct Frontier {
     evidence: Evidence,
+    native: bool,
+    feedback: Option<crate::training::ability::Feedback>,
+    solver_contract: String,
     // Bounded scheduling hints. Durable writes evict the affected entry;
     // selection still crosses the generation-checked checkpoint before work.
     recent: VecDeque<([u8; 32], Option<AttemptHint>)>,
@@ -57,6 +60,9 @@ impl Frontier {
         let random = Random::new(evidence.random());
         let mut local = Self {
             evidence,
+            native: settings.native_proof_learning,
+            feedback: None,
+            solver_contract: jobs::solver_identity(settings),
             recent: VecDeque::new(),
             random,
             coverage: [0; SIGNALS],
@@ -113,6 +119,22 @@ impl Frontier {
         local.success_units = success_units;
         local.success_millis = success_millis;
         Ok(local)
+    }
+    pub(crate) fn feedback(&mut self, feedback: Option<crate::training::ability::Feedback>) {
+        if !self.native {
+            return;
+        }
+        if let Some(current) = &feedback
+            && self
+                .feedback
+                .as_ref()
+                .is_none_or(|p| p.checkpoint != current.checkpoint)
+        {
+            let solver = crate::learning::digest(&(&self.solver_contract, &current.checkpoint));
+            self.evidence.bind_solver(solver);
+            self.recent.clear();
+        }
+        self.feedback = feedback;
     }
     fn checked_target(
         graph: &Graph,
@@ -285,6 +307,7 @@ impl Frontier {
         let _memory = crate::resources::MemoryLease::acquire(
             nodes.saturating_mul(64).saturating_mul(PARTS + 1),
         )?;
+        let complete = formula.clone();
         let mut pending = vec![formula];
         for _ in 0..PARTS {
             let Some(part) = pending.pop() else {
@@ -299,6 +322,11 @@ impl Frontier {
                 pending.push(left);
             }
             self.explore(part, eligible);
+        }
+        if self.native
+            && let Some(goal) = crate::training::continuation(complete)
+        {
+            self.conjecture(goal, eligible);
         }
         Ok(())
     }
@@ -360,6 +388,11 @@ impl Frontier {
             };
             if let Some(metadata) = description {
                 let (_, _, question) = metadata.compile()?;
+                // A development/reserved source cannot create trainable
+                // descendants through a newly spelled graph projection.
+                if self.native && !crate::learning::State::eligible(question.source()) {
+                    continue;
+                }
                 let features = Features::of(&question);
                 for (total, count) in self.building.iter_mut().zip(features.counts) {
                     *total = total.saturating_add(u64::from(count > 0));
@@ -395,6 +428,9 @@ impl Frontier {
                 CompiledQuestion::compile(&crate::mocks::create_question(cursor)).ok()
             })
             .collect::<Vec<_>>();
+        if self.native {
+            candidates.extend(crate::learning::research_questions(self.evidence.draws()));
+        }
         for question in &self.proposals {
             if !candidates
                 .iter()
@@ -469,6 +505,17 @@ impl Frontier {
                 );
             }
         }
+        if self.native {
+            ability = self
+                .feedback
+                .as_ref()
+                .map_or(SCALE, |feedback| feedback.priority(question, 128))
+                .saturating_mul(signals.max(1));
+            // Native costs and abilities come from the current checkpoint view,
+            // not the historical non-neural evidence replay above.
+            cost = u64::from(features.nodes).div_ceil(64).max(1);
+            millis = 1;
+        }
         let similarity = self
             .knowledge
             .iter()
@@ -529,6 +576,15 @@ impl Frontier {
             .collect::<Result<Vec<_>, crate::Error>>()?;
         let index = crate::sampling::choose(&mut self.random, &weighted, random_only);
         self.evidence.selected(self.random.0)?;
+        if self.native
+            && let Some(feedback) = &self.feedback
+        {
+            crate::network::emit(
+                serde_json::json!({"event":"native_curriculum_selected", "checkpoint":feedback.checkpoint,
+                "feedback_revision":feedback.revision,"resolution_id":crate::hex(candidates[index].resolution_id()),
+                "priority":weighted[index].1,"candidates":candidates.len(),"structural_group":crate::training::group(candidates[index])}),
+            );
+        }
         Ok(Some(index))
     }
     pub(crate) fn prepared(
