@@ -71,6 +71,26 @@ fn inclusion(seed: &Formula) -> Option<Formula> {
 /// Proper subgoals are generalized with their original variable relationships.
 /// A helper may be stronger than the goal; no inference is claimed by proposing it.
 fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
+    let mut body = goal.formula().clone();
+    while let Some(opened) = open(&body) {
+        body = opened;
+    }
+    if let Some((left, negative_right)) = body.view().negated().and_then(|f| f.implication_parts())
+        && let Some(right) = negative_right.negated()
+    {
+        // Solving the actual conjuncts suffices; unrelated strengthenings or
+        // negated premises add work without supplying these prerequisites.
+        let mut result = [left.to_owned(), right.to_owned()]
+            .into_iter()
+            .filter_map(|f| CompiledQuestion::from_formula(close(f)).ok())
+            .filter(|q| meaningful(q) && q.resolution_id() != goal.resolution_id())
+            .collect::<Vec<_>>();
+        if !result.is_empty() {
+            let len = result.len();
+            result.rotate_left(cursor as usize % len);
+        }
+        return result;
+    }
     let mut pending = vec![goal.formula().clone()];
     let mut found = Vec::new();
     for _ in 0..32 {
@@ -145,6 +165,17 @@ pub(super) fn questions(
             all.push(question);
         }
     }
+    bounded(all, maximum, bytes)
+}
+pub(super) fn for_goal(
+    cursor: u64,
+    goal: &CompiledQuestion,
+    maximum: usize,
+    bytes: usize,
+) -> Vec<CompiledQuestion> {
+    bounded(helpers(goal, cursor), maximum, bytes)
+}
+fn bounded(all: Vec<CompiledQuestion>, maximum: usize, bytes: usize) -> Vec<CompiledQuestion> {
     let mut seen = BTreeSet::new();
     let mut retained = 0;
     let mut result = Vec::new();

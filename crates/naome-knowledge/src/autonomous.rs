@@ -1097,7 +1097,7 @@ impl Autonomous {
                     let mut candidates = if let Some(goal) = &self.formal_goal {
                         match frontier.helpers_needed(goal) {
                             Ok(false) => vec![goal.clone()],
-                            Ok(true) => frontier.candidates(cursor),
+                            Ok(true) => frontier.goal_candidates(cursor, goal),
                             Err(error) => {
                                 self.error = Some(error.to_string());
                                 return accepted;

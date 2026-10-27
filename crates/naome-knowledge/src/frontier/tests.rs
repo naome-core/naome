@@ -991,3 +991,33 @@ fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() 
         assert_ne!(finder::key(&question), finder::key(&lemma));
     }
 }
+#[test]
+fn explicit_goal_exploration_contains_only_the_goal_and_its_conjunct_helpers() {
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier.focus(CompiledQuestion::compile("goal=all(a,mem(a,a))").unwrap());
+    let pool = (0..8)
+        .flat_map(|cursor| frontier.goal_candidates(cursor, &goal))
+        .collect::<Vec<_>>();
+    for question in &pool {
+        assert!(
+            question.resolution_id() == goal.resolution_id()
+                || helpers
+                    .iter()
+                    .any(|q| q.resolution_id() == question.resolution_id()),
+            "unrelated exploration cannot replace an explicit goal"
+        );
+    }
+    assert!(
+        helpers
+            .iter()
+            .all(|h| pool.iter().any(|q| q.core() == h.core()))
+    );
+    assert!(pool.iter().any(|q| q.core() == goal.core()));
+}

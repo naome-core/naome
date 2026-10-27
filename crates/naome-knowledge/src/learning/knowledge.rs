@@ -597,4 +597,21 @@ mod tests {
                 .any(|s| matches!(s, naome_proof::ProofStep::ProofReference { .. }))
         );
     }
+    #[test]
+    fn explicit_reserved_goals_cannot_supply_trainable_helper_descendants() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let graph = crate::Graph::default();
+        let settings = crate::jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        };
+        let finder = crate::frontier::Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        for case in super::super::curriculum::development().into_iter().take(32) {
+            let question = naome_authoring::CompiledQuestion::compile(&case.source).unwrap();
+            assert!(!super::super::State::eligible(question.source()));
+            let page = finder.goal_candidates(0, &question);
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].core(), question.core());
+        }
+    }
 }

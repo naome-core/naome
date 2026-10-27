@@ -532,6 +532,36 @@ impl Frontier {
         }
         Ok(())
     }
+    pub(crate) fn goal_candidates(
+        &self,
+        cursor: u64,
+        goal: &CompiledQuestion,
+    ) -> Vec<CompiledQuestion> {
+        if !crate::learning::State::eligible(goal.source()) {
+            return vec![goal.clone()];
+        }
+        let limits = crate::resources::active_limits();
+        let nodes = goal.formula().view().node_count_and_depth().0;
+        let mut candidates = if let Ok(_scratch) =
+            crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))
+        {
+            finder::for_goal(
+                cursor,
+                goal,
+                limits.question_page,
+                limits.question_cache_bytes / 2,
+            )
+        } else {
+            Vec::new()
+        };
+        if !candidates
+            .iter()
+            .any(|q| q.resolution_id() == goal.resolution_id())
+        {
+            candidates.push(goal.clone());
+        }
+        candidates
+    }
     pub(crate) fn candidates(&self, cursor: u64) -> Vec<CompiledQuestion> {
         let mut candidates = if self.native {
             let limits = crate::resources::active_limits();
