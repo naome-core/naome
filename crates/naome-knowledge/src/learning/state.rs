@@ -494,11 +494,35 @@ impl State {
         evidence: &[Evidence],
         rehearsal: bool,
     ) -> Result<pool::Pool, String> {
-        let mut pool = pool::Pool::default();
-        for e in self
-            .training_sources()
-            .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job))
-        {
+        self.checked_pool(
+            self.training_sources()
+                .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job)),
+            evidence,
+            pool::Pool::default(),
+        )
+    }
+    /// These anchors are ordinary eligible training proofs, never the separate
+    /// development, protected-sentinel, transfer or confirmation panels.
+    pub(super) fn preservation_pool(
+        &self,
+        evidence: &[Evidence],
+        training: &pool::Pool,
+    ) -> Result<pool::Pool, String> {
+        self.checked_pool(
+            self.anchors
+                .iter()
+                .filter(|e| matches!(e.origin, Origin::Local)),
+            evidence,
+            training.remaining(),
+        )
+    }
+    fn checked_pool<'a>(
+        &self,
+        sources: impl Iterator<Item = &'a Example>,
+        evidence: &[Evidence],
+        mut pool: pool::Pool,
+    ) -> Result<pool::Pool, String> {
+        for e in sources {
             let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
             let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
             let target = if e.refuted {

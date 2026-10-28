@@ -1,5 +1,6 @@
 //! Matched initial and genuinely retained lower-state meta-training trials.
 use super::*;
+mod preservation;
 
 pub(super) struct Controllers {
     pub(super) fresh: MetaSeed,
@@ -181,6 +182,7 @@ fn trial(
     controller: &mut MetaSeed,
     coordinates: (usize, u64, usize, usize, usize),
     path: &Path,
+    preservation_mode: model::PreservationMode,
 ) -> (Parent, serde_json::Value) {
     let (context, seed, mode, stage, fork) = coordinates;
     let clock = Clock::start();
@@ -220,6 +222,7 @@ fn trial(
     let job_id =
         9_000_000 + context as u64 * 100 + mode as u64 * 10 + stage as u64 * 2 + fork as u64;
     let mut engine = Engine::default();
+    engine.preservation_mode = preservation_mode;
     for unit in 1..=job.units() {
         assert!(
             clock.wall.elapsed() < Duration::from_secs(120)
@@ -354,6 +357,7 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
                         controller,
                         (context, seed, mode, stage, fork),
                         &trial_path,
+                        model::PreservationMode::default(),
                     );
                     retained = Some(retain_parent(retained, next));
                     summaries.push(summary);

@@ -636,6 +636,11 @@ impl Job {
                     .training_cost
                     .update_micros
                     .saturating_add(engine.cost.update_micros);
+                p.training_cost.preservation_micros = p
+                    .training_cost
+                    .preservation_micros
+                    .saturating_add(engine.cost.preservation_micros);
+                p.training_cost.preservation_states = engine.cost.preservation_states;
                 p.training_cost.checkpoint_micros = p
                     .training_cost
                     .checkpoint_micros
