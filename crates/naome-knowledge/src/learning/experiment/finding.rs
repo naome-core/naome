@@ -193,6 +193,7 @@ fn label(t: Treatment) -> &'static str {
         Treatment::FamilyReplay => "family_replay",
         Treatment::FamilyReplayNoUtility => "family_replay_without_utility",
         Treatment::OutcomeReplay => "outcome_replay",
+        Treatment::CensoredReplay => "censored_replay",
         Treatment::Full => "full",
     }
 }
@@ -631,8 +632,9 @@ fn matched_continual_finder_study() {
     let phase = std::env::var("NAOME_FINDER_NATIVE_PHASE").unwrap();
     let repair = matches!(
         phase.as_str(),
-        "repair" | "repair_support" | "confirmation_models"
+        "repair" | "repair_support" | "repair_yield" | "confirmation_models"
     );
+    let paired = matches!(phase.as_str(), "repair_support" | "repair_yield");
     let coupled = phase == "coupled" || repair;
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(&output).unwrap().clone();
@@ -645,7 +647,11 @@ fn matched_continual_finder_study() {
     let arms = if repair {
         vec![
             Treatment::Previous,
-            Treatment::OutcomeReplay,
+            if matches!(phase.as_str(), "repair_yield" | "confirmation_models") {
+                Treatment::CensoredReplay
+            } else {
+                Treatment::OutcomeReplay
+            },
             Treatment::Full,
         ]
     } else if coupled {
@@ -687,7 +693,7 @@ fn matched_continual_finder_study() {
         let (mut common, blobs, initial, preparation) =
             prepare(seed, &seed_path.join("preparation"));
         let mut clock = Clock::new();
-        if phase == "repair" || phase == "repair_support" {
+        if phase == "repair" || paired {
             let reference =
                 std::path::PathBuf::from(std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap())
                     .join(seed.to_string());
@@ -708,7 +714,7 @@ fn matched_continual_finder_study() {
                     .collect::<BTreeSet<_>>()
             );
             common = original;
-            if phase == "repair_support" {
+            if paired {
                 clock = frozen_clock(&reference.join("reference-costs.json"));
             } else {
                 let original: Value = serde_json::from_slice(
@@ -724,7 +730,7 @@ fn matched_continual_finder_study() {
         }
         for offset in 0..arms.len() {
             let treatment = arms[(seed_index + offset) % arms.len()];
-            let feedback_reference = if phase == "repair_support" {
+            let feedback_reference = if paired {
                 let reference = std::path::PathBuf::from(
                     std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
                 );
@@ -762,14 +768,14 @@ fn matched_continual_finder_study() {
                 &seed_path.join(label(treatment)),
                 repair.then_some(&mut clock),
             );
-            if phase == "repair_support" && treatment != Treatment::Full {
+            if paired && treatment != Treatment::Full {
                 let reference = std::path::PathBuf::from(
                     std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
                 );
-                let original_arm = if treatment == Treatment::OutcomeReplay {
-                    "full"
-                } else {
+                let original_arm = if treatment == Treatment::Previous {
                     label(treatment)
+                } else {
+                    "full"
                 };
                 let expected: Value = serde_json::from_slice(
                     &std::fs::read(

@@ -249,10 +249,25 @@ impl Learning {
         let cell = &self.cells[index];
         let n = cell.attempts as f64;
         let p = (cell.solved as f64 + 1.) / (n + 2.);
-        let regret = if cell.solved == 0 && cell.attempts >= 4 {
-            0.05
+        // A recipe earns exploitation mass from checked completions. Difficulty
+        // alone supplies no usable training source; uncertainty and staleness
+        // retain exploration of recipes with sparse or missing observations.
+        let yield_estimate = p;
+        #[cfg(test)]
+        let yield_estimate = if matches!(
+            self.treatment,
+            crate::frontier::Treatment::FamilyReplay
+                | crate::frontier::Treatment::FamilyReplayNoUtility
+                | crate::frontier::Treatment::OutcomeReplay
+                | crate::frontier::Treatment::CensoredReplay
+        ) {
+            if cell.solved == 0 && cell.attempts >= 4 {
+                0.05
+            } else {
+                1. - p
+            }
         } else {
-            1. - p
+            yield_estimate
         };
         let uncertainty = 1. / (n + 1.).sqrt();
         let utility = if cell.utility_count == 0 {
@@ -262,7 +277,8 @@ impl Learning {
         };
         let cost = cell.millis as f64 / (n + 1.);
         let stale = draw.saturating_sub(cell.last).min(64) as f64 / 64.;
-        1 + ((regret + uncertainty / 2. + stale / 4.) * (0.5 + utility) / (1. + cost.ln_1p() / 16.)
+        1 + ((yield_estimate + uncertainty / 2. + stale / 4.) * (0.5 + utility)
+            / (1. + cost.ln_1p() / 16.)
             * 65536.) as u64
     }
     pub fn selected(&mut self, q: &CompiledQuestion, recipe: Option<Recipe>) {

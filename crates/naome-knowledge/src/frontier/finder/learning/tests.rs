@@ -101,7 +101,7 @@ fn recent_misses_in_one_formula_family_do_not_evict_its_checked_success() {
 }
 
 #[test]
-fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
+fn checked_recipe_completions_increase_selection_without_eliminating_exploration() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
     let recipes = [
@@ -143,8 +143,22 @@ fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
                 .unwrap();
         }
     }
-    assert!(learning.priority(1, 32) > learning.priority(0, 32));
+    assert!(learning.priority(0, 32) > learning.priority(1, 32));
     assert!(learning.priority(1, 32) > learning.priority(2, 32));
+    let mut selected = [0; 3];
+    for draw in 32..232 {
+        for recipe in learning.recipes(draw, draw) {
+            if recipe.level == 0 && recipe.operator < 3 {
+                selected[recipe.operator as usize] += 1;
+            }
+        }
+    }
+    assert!(selected[0] > selected[1]);
+    assert!(selected[1] > selected[2]);
+    assert!(
+        selected[2] > 0,
+        "failed recipes keep bounded exploration mass"
+    );
     let before = learning.cells[1].solved;
     learning.bind(&"22".repeat(32));
     assert!(before > 0);
