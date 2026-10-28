@@ -63,6 +63,11 @@ fn frozen_clock(path: &Path) -> Clock {
 }
 
 fn assert_control_reproduced(expected: &Value, actual: &Value) {
+    // Both sides must cross the same JSON parser. In-memory f32 values widened
+    // into JSON numbers otherwise differ from the identical persisted decimal
+    // value read through serde_json's default floating-point parser.
+    let persisted: Value = serde_json::from_slice(&serde_json::to_vec(actual).unwrap()).unwrap();
+    let actual = &persisted;
     assert_eq!(expected["initial_model"], actual["initial_model"]);
     assert_eq!(expected["final_model"], actual["final_model"]);
     let expected = expected["rounds"].as_array().unwrap();
