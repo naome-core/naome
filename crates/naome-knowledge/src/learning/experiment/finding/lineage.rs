@@ -108,6 +108,25 @@ impl Ledger {
         })
     }
 
+    pub(super) fn matches_original(
+        &self,
+        key: &str,
+        question: &CompiledQuestion,
+        lineage: &str,
+        experience: &experience::ExperienceSummary,
+    ) -> bool {
+        self.materials.get(key).is_some_and(|material| {
+            material.parents.is_empty()
+                && material.question == question.source()
+                && material.lineage.as_deref() == Some(lineage)
+                && material
+                    .experience
+                    .as_ref()
+                    .is_some_and(|stored| digest(stored) == digest(experience))
+                && digest(material) == key
+        })
+    }
+
     pub(super) fn derived(
         &mut self,
         question: &CompiledQuestion,

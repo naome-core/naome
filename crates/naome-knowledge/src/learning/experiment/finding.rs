@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 mod confirmation;
 mod diagnosis;
 mod lineage;
+mod sources;
 
 const SEEDS: [u64; 3] = [41, 73, 101];
 const ARMS: [Treatment; 6] = [
