@@ -1,6 +1,7 @@
 //! Restore one completed Records-lane trial for a model-free sampler audit.
 use super::*;
 use std::{io::Read, path::PathBuf};
+mod carry;
 
 fn read_bytes(path: &Path, bytes: &mut u64, bindings: &mut Vec<Value>) -> Result<Vec<u8>, String> {
     let mut data = Vec::new();
@@ -115,6 +116,7 @@ fn reconstruct_sequence_consumption() {
         }
         let arm = ARMS
             .into_iter()
+            .chain(PRESERVATION_ARMS)
             .find(|arm| source["arm"] == arm.name())
             .ok_or("sequence audit arm is unknown")?;
         let (targets, recurrence) = match arm {
@@ -123,6 +125,9 @@ fn reconstruct_sequence_consumption() {
             Arm::Latent => (model::Targets::Actions, model::Recurrence::Carry),
             Arm::Combined => (model::Targets::Rich, model::Recurrence::Carry),
             Arm::ComputeControl => (model::Targets::Rich, model::Recurrence::Reset),
+            Arm::IndependentPreservation | Arm::ContextualPreservation => {
+                (model::Targets::Rich, model::Recurrence::Carry)
+            }
         };
         let previous: State = read(
             &original.join("epoch-0/selected-state.json"),
@@ -203,6 +208,7 @@ fn reconstruct_sequence_consumption() {
             &expected,
             targets,
             recurrence,
+            matches!(arm, Arm::IndependentPreservation),
             &mut io,
             || available(&mut observer, started, cpu, &output),
         )?;

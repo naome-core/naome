@@ -3,6 +3,46 @@ use super::*;
 use burn::tensor::{Int, TensorData};
 
 impl Runtime {
+    pub(super) fn preservation_scores(
+        &mut self,
+        pool: &Pool,
+        cursor: &mut u64,
+    ) -> Result<(Batch, Tensor<2>), String> {
+        let contextual = self.recurrence == Recurrence::Carry && {
+            #[cfg(test)]
+            {
+                !self.independent_preservation
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        };
+        if contextual {
+            let references = pool.preservation_batch(cursor)?;
+            let graphs: Vec<_> = references.samples.iter().map(|s| s.graph).collect();
+            let batch = Batch::from_graphs(&graphs, &self.device)?;
+            if self.observe_batches() {
+                self.measurements
+                    .reference_prefixes(&references, self.recurrence);
+            }
+            let scores = self.sequence_scores(&batch, &references.samples)?;
+            Ok((batch, scores))
+        } else {
+            // Keep the independent-graph control's original numerical path.
+            let references = pool.batch(cursor);
+            let batch = Batch::from_graphs(&references, &self.device)?;
+            if self.observe_batches() {
+                self.measurements.reference(&references, self.recurrence);
+            }
+            let memory = self
+                .recurrent()
+                .then(|| Tensor::zeros([batch.goal.dims()[0], policy::WIDTH], &self.device));
+            let scores = self.policy.readout(self.policy.encode(&batch), memory).0;
+            Ok((batch, scores))
+        }
+    }
+
     pub(super) fn sequence_scores(
         &self,
         batch: &Batch,
@@ -28,7 +68,8 @@ impl Runtime {
         }
         // Disjoint adjacency and attention masks prevent one encoded example
         // from observing another. Only checked chronological edges below carry
-        // gradients across examples. Truncated prefixes start from zero.
+        // gradients across examples. For preservation these are reconstructed
+        // checked-proof edges, not observed chronology. Truncation starts at zero.
         let encoded = self.policy.encode(batch);
         let mut scores: Vec<Option<Tensor<2>>> = vec![None; sample.len()];
         let mut memories: Vec<Option<Tensor<2>>> = vec![None; sample.len()];

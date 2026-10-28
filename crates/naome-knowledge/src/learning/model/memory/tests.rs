@@ -11,7 +11,9 @@ fn observed() -> (search::derivation::Derivation, search::trace::Trace) {
                 .collect())
         }
     }
-    let question = naome_authoring::CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),mem(c,c)))))))").unwrap();
+    // Keep an unused double-negation choice at the descendant. Its checked
+    // action label is then an actual reference state, not a single-choice tail.
+    let question = naome_authoring::CompiledQuestion::compile("goal=all(a,all(b,all(c,all(d,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),imp(not(not(mem(d,d))),mem(c,c)))))))))").unwrap();
     let found = search::solve(question.proved_target(), &mut Ordered, 128).unwrap();
     let tree = found.tree.unwrap();
     let (term, _) = search::compile(question.proved_target(), &tree).unwrap();
@@ -256,4 +258,84 @@ fn batch_observation_preserves_actual_model_adam_loss_and_cursor() {
     );
     assert_eq!(total.slots, 32);
     assert_ne!(total.input_digest, observed.measurements.input_digest);
+}
+
+#[test]
+fn preservation_uses_current_checked_context_and_keeps_the_flat_control_exact() {
+    let (derived, _) = observed();
+    let mut pool = Pool::default();
+    pool.add(
+        false,
+        "own",
+        "own",
+        derived.source_proof.as_ref().unwrap(),
+        derived
+            .steps
+            .iter()
+            .filter(|s| s.graph.candidates.len() > 1)
+            .map(|s| s.graph.clone())
+            .collect(),
+    )
+    .unwrap();
+    pool.add_derivation(derived, true).unwrap();
+    let fresh = Checkpoint::fresh();
+    let mut io = native::tests::MemoryStore::default();
+    let mut original = Runtime::load(&fresh, &mut io).unwrap();
+    let mut flat = Runtime::load(&fresh, &mut io).unwrap();
+    flat.independent_preservation = true;
+    let mut contextual = Runtime::load(&fresh, &mut io).unwrap();
+    let mut old_cursor = 71;
+    let graphs = pool.batch(&mut old_cursor);
+    let original_batch = Batch::from_graphs(&graphs, &original.device).unwrap();
+    let memory = Some(Tensor::zeros([16, policy::WIDTH], &original.device));
+    let original_scores = original
+        .policy
+        .readout(original.policy.encode(&original_batch), memory)
+        .0;
+    let mut flat_cursor = 71;
+    let (flat_batch, flat_scores) = flat.preservation_scores(&pool, &mut flat_cursor).unwrap();
+    assert_eq!(flat_cursor, old_cursor);
+    assert_eq!(
+        original_scores.clone().into_data(),
+        flat_scores.clone().into_data()
+    );
+    let mut context_cursor = 71;
+    let (context_batch, context_scores) = contextual
+        .preservation_scores(&pool, &mut context_cursor)
+        .unwrap();
+    assert_eq!(context_cursor, old_cursor);
+    assert_eq!(contextual.measurements.reference_slots, 16);
+    assert!(contextual.measurements.reference_replayed_edges > 0);
+    assert!((2..=4).contains(&contextual.measurements.reference_max_depth));
+    assert_eq!(flat.measurements.reference_replayed_edges, 0);
+    assert_eq!(contextual.measurements.slots, 0);
+    assert_eq!(contextual.sampled_sequence_edges, 0);
+    assert_ne!(
+        contextual.measurements.reference_digest,
+        flat.measurements.reference_digest
+    );
+    let update = |runtime: &mut Runtime, batch, scores| {
+        let gradient = GradientsParams::from_grads(
+            checked_marginal(scores, &batch).backward(),
+            &runtime.policy,
+        );
+        runtime.policy = runtime
+            .optimizer
+            .step(0.001, runtime.policy.clone(), gradient);
+    };
+    update(&mut original, original_batch, original_scores);
+    update(&mut flat, flat_batch, flat_scores);
+    update(&mut contextual, context_batch, context_scores);
+    let original = original.checkpoint(&fresh, 1, &mut io).unwrap();
+    let flat = flat.checkpoint(&fresh, 1, &mut io).unwrap();
+    let contextual = contextual.checkpoint(&fresh, 1, &mut io).unwrap();
+    assert_eq!(
+        flat, original,
+        "the control reproduces the original full Adam update"
+    );
+    assert_ne!(
+        contextual.model, flat.model,
+        "checked reference context changes actual gradients"
+    );
+    assert_ne!(contextual.optimizer, flat.optimizer);
 }

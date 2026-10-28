@@ -12,6 +12,8 @@ enum Arm {
     Latent,
     Combined,
     ComputeControl,
+    IndependentPreservation,
+    ContextualPreservation,
 }
 const ARMS: [Arm; 5] = [
     Arm::Baseline,
@@ -20,6 +22,7 @@ const ARMS: [Arm; 5] = [
     Arm::Combined,
     Arm::ComputeControl,
 ];
+const PRESERVATION_ARMS: [Arm; 2] = [Arm::IndependentPreservation, Arm::ContextualPreservation];
 impl Arm {
     fn name(self) -> &'static str {
         match self {
@@ -28,6 +31,8 @@ impl Arm {
             Self::Latent => "latent",
             Self::Combined => "combined",
             Self::ComputeControl => "compute_control",
+            Self::IndependentPreservation => "independent_preservation",
+            Self::ContextualPreservation => "contextual_preservation",
         }
     }
     fn engine(self) -> Engine {
@@ -37,12 +42,16 @@ impl Arm {
         };
         let recurrence = match self {
             Self::Baseline | Self::Experience => model::Recurrence::Disabled,
-            Self::Latent | Self::Combined => model::Recurrence::Carry,
+            Self::Latent
+            | Self::Combined
+            | Self::IndependentPreservation
+            | Self::ContextualPreservation => model::Recurrence::Carry,
             Self::ComputeControl => model::Recurrence::Reset,
         };
         Engine::default()
             .with_targets(targets)
             .with_recurrence(recurrence)
+            .with_independent_preservation(matches!(self, Self::IndependentPreservation))
     }
 }
 
@@ -231,6 +240,16 @@ fn execute(
 #[test]
 #[ignore = "finite matched experience/recurrence comparison; requires frozen native sources"]
 fn matched_experience_and_recurrence() {
+    matched(&ARMS);
+}
+
+#[test]
+#[ignore = "finite matched preservation-context comparison; requires fresh frozen native sources"]
+fn matched_contextual_preservation() {
+    matched(&PRESERVATION_ARMS);
+}
+
+fn matched(arms: &[Arm]) {
     let bank = std::fs::read(std::env::var("NAOME_FINDER_CONFIRMATION_INPUTS").unwrap()).unwrap();
     let holdout = lineage::Holdout::read(
         &bank,
@@ -253,7 +272,7 @@ fn matched_experience_and_recurrence() {
     assert!(
         selected
             .as_ref()
-            .is_none_or(|name| ARMS.iter().any(|arm| arm.name() == name))
+            .is_none_or(|name| arms.iter().any(|arm| arm.name() == name))
     );
     assert!(!output.exists());
     std::fs::create_dir_all(&output).unwrap();
@@ -263,10 +282,10 @@ fn matched_experience_and_recurrence() {
         .unwrap();
     write(
         &output.join("manifest.json"),
-        &json!({"seed":seed,"epochs":epochs,"input":input,"source_commit":std::env::var("NAOME_EXPERIENCE_COMMIT").unwrap(),"specification":input_specification(),"parameters":model::PARAMETERS,"arms":ARMS.iter().map(|a|a.name()).collect::<Vec<_>>(),"selected_arm":selected,"rotation":rotation,"total_cpu_micros":180_000_000,"total_wall_micros":240_000_000,"total_io_bytes":2u64*1024*1024*1024,"job_cpu_micros":TRAIN_CPU,"job_wall_micros":TRAIN_WALL,"initial_source_inference_uses_treatments":false,"holdout_inference":false,"scope":"Known development mechanism and outcome comparison; does not itself establish independent quality qualification."}),
+        &json!({"seed":seed,"epochs":epochs,"input":input,"source_commit":std::env::var("NAOME_EXPERIENCE_COMMIT").unwrap(),"specification":input_specification(),"parameters":model::PARAMETERS,"arms":arms.iter().map(|a|a.name()).collect::<Vec<_>>(),"selected_arm":selected,"rotation":rotation,"total_cpu_micros":180_000_000,"total_wall_micros":240_000_000,"total_io_bytes":2u64*1024*1024*1024,"job_cpu_micros":TRAIN_CPU,"job_wall_micros":TRAIN_WALL,"initial_source_inference_uses_treatments":false,"holdout_inference":false,"scope":"Known development mechanism and outcome comparison; does not itself establish independent quality qualification."}),
     );
-    for offset in 0..ARMS.len() {
-        let arm = ARMS[(rotation + offset) % ARMS.len()];
+    for offset in 0..arms.len() {
+        let arm = arms[(rotation + offset) % arms.len()];
         if selected.as_ref().is_some_and(|name| name != arm.name()) {
             continue;
         }

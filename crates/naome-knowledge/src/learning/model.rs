@@ -145,6 +145,7 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("search/core.rs"));
     hash.update(include_str!("search/derivation.rs"));
     hash.update(include_str!("pool.rs"));
+    hash.update(include_str!("pool/preservation.rs"));
     hash.update(include_str!("meta.rs"));
     hash.update(include_str!("transfer.rs"));
     hash.update(include_str!("meta/model.rs"));
@@ -228,6 +229,8 @@ pub struct Runtime {
     measurements: TrainingMeasurements,
     #[cfg(test)]
     observe_batches: bool,
+    #[cfg(test)]
+    independent_preservation: bool,
 }
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -333,6 +336,8 @@ impl Runtime {
             measurements: TrainingMeasurements::default(),
             #[cfg(test)]
             observe_batches: true,
+            #[cfg(test)]
+            independent_preservation: false,
         })
     }
     fn checkpoint<I: ArtifactIo + ?Sized>(
@@ -394,15 +399,7 @@ impl Runtime {
         {
             // Separate, reproducible sampling: this never advances the training
             // cursor or consumes a development/transfer prediction as a label.
-            let references = pool.batch(&mut cursor);
-            let batch = Batch::from_graphs(&references, &self.device)?;
-            if self.observe_batches() {
-                self.measurements.reference(&references, self.recurrence);
-            }
-            let memory = self
-                .recurrent()
-                .then(|| Tensor::zeros([batch.goal.dims()[0], policy::WIDTH], &self.device));
-            let logits = self.policy.readout(self.policy.encode(&batch), memory).0;
+            let (batch, logits) = self.preservation_scores(pool, &mut cursor)?;
             let loss = checked_marginal(logits, &batch);
             loss_value(&loss)?;
             Some(GradientsParams::from_grads(loss.backward(), &self.policy))
@@ -545,6 +542,8 @@ pub(crate) struct Engine {
     pub(super) targets: Targets,
     #[cfg(test)]
     pub(super) recurrence: Recurrence,
+    #[cfg(test)]
+    independent_preservation: bool,
     pub meta: super::meta::Engine,
 }
 #[cfg(test)]
@@ -563,6 +562,11 @@ impl Engine {
     #[cfg(test)]
     pub(super) fn with_recurrence(mut self, recurrence: Recurrence) -> Self {
         self.recurrence = recurrence;
+        self
+    }
+    #[cfg(test)]
+    pub(super) fn with_independent_preservation(mut self, independent: bool) -> Self {
+        self.independent_preservation = independent;
         self
     }
     fn recurrence(&self) -> Recurrence {
@@ -618,6 +622,10 @@ impl Engine {
         };
         runtime.recurrence = self.recurrence();
         runtime.rich_targets = self.rich_targets();
+        #[cfg(test)]
+        {
+            runtime.independent_preservation = self.independent_preservation;
+        }
         Ok(runtime)
     }
     fn retain(&mut self, c: Checkpoint, mut r: Runtime) {

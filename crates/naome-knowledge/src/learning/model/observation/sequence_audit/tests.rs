@@ -50,6 +50,7 @@ fn an_unstarted_job_and_closed_resource_gate_cannot_produce_an_audit() {
             &progress,
             Targets::Actions,
             Recurrence::Carry,
+            false,
             &mut io,
             || Err("resource owner paused".into())
         )
@@ -62,6 +63,7 @@ fn an_unstarted_job_and_closed_resource_gate_cannot_produce_an_audit() {
             &progress,
             Targets::Actions,
             Recurrence::Carry,
+            false,
             &mut io,
             || Ok(())
         )

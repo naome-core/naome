@@ -155,6 +155,7 @@ pub(in crate::learning) fn audit<I: ArtifactIo + ?Sized>(
     expected: &Progress,
     targets: Targets,
     recurrence: Recurrence,
+    independent_preservation: bool,
     io: &mut I,
     mut available: impl FnMut() -> Result<(), String>,
 ) -> Result<serde_json::Value, String> {
@@ -244,7 +245,14 @@ pub(in crate::learning) fn audit<I: ArtifactIo + ?Sized>(
             // alter the primary sampler or require loading any parameters.
             let updates = original.base.model.updates + u64::from(unit) * UPDATES_PER_UNIT;
             let mut reference_cursor = (updates / UPDATES_PER_UNIT).wrapping_mul(16);
-            observed.reference(&references.batch(&mut reference_cursor), recurrence);
+            if recurrence == Recurrence::Carry && !independent_preservation {
+                observed.reference_prefixes(
+                    &references.preservation_batch(&mut reference_cursor)?,
+                    recurrence,
+                );
+            } else {
+                observed.reference(&references.batch(&mut reference_cursor), recurrence);
+            }
         }
         for update in 0..UPDATES_PER_UNIT {
             let before = cursor;

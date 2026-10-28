@@ -18,6 +18,10 @@ pub(crate) struct TrainingMeasurements {
     pub candidate_transitions: usize,
     pub reference_slots: usize,
     pub reference_digest: String,
+    /// Sampled reconstructed proof edges, not observed chronology or evidence
+    /// that a loss has a nonzero gradient along every edge.
+    pub reference_replayed_edges: usize,
+    pub reference_max_depth: usize,
 }
 impl Default for TrainingMeasurements {
     fn default() -> Self {
@@ -37,6 +41,8 @@ impl Default for TrainingMeasurements {
             internal_steps: 0,
             candidate_transitions: 0,
             reference_slots: 0,
+            reference_replayed_edges: 0,
+            reference_max_depth: 0,
         }
     }
 }
@@ -60,8 +66,10 @@ impl TrainingMeasurements {
             preference_targets,
             internal_steps,
             candidate_transitions,
-            reference_slots
+            reference_slots,
+            reference_replayed_edges
         );
+        self.reference_max_depth = self.reference_max_depth.max(unit.reference_max_depth);
         Ok(())
     }
 
@@ -146,6 +154,33 @@ impl TrainingMeasurements {
             self.internal_steps += 2 * graphs.len();
             self.candidate_transitions +=
                 graphs.len() * graphs.iter().map(|g| g.candidates.len()).max().unwrap_or(0);
+        }
+    }
+    pub(super) fn reference_prefixes(
+        &mut self,
+        references: &super::super::pool::References<'_>,
+        recurrence: Recurrence,
+    ) {
+        let samples = &references.samples;
+        self.reference(
+            &samples.iter().map(|s| s.graph).collect::<Vec<_>>(),
+            recurrence,
+        );
+        self.reference_digest = super::super::digest(&(
+            &self.reference_digest,
+            "reconstructed-checked-proof-prefixes",
+            samples
+                .iter()
+                .map(|s| (s.graph.key(), s.selected, s.parent))
+                .collect::<Vec<_>>(),
+            &references.sources,
+        ));
+        let mut depths = Vec::with_capacity(samples.len());
+        for sample in samples {
+            let depth = sample.parent.map_or(1, |parent| depths[parent] + 1);
+            self.reference_replayed_edges += usize::from(sample.parent.is_some());
+            self.reference_max_depth = self.reference_max_depth.max(depth);
+            depths.push(depth);
         }
     }
 }

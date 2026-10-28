@@ -2,8 +2,10 @@
 use super::graph::Graph;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod preservation;
 #[cfg(test)]
 mod reference;
+pub(super) use preservation::References;
 
 type Rules = BTreeMap<i32, Vec<usize>>;
 type Proofs = BTreeMap<String, Rules>;
