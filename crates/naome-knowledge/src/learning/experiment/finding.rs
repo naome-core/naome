@@ -7,6 +7,7 @@ use crate::{
     jobs,
 };
 use serde_json::{Value, json};
+mod diagnosis;
 
 const SEEDS: [u64; 3] = [41, 73, 101];
 const ARMS: [Treatment; 6] = [
