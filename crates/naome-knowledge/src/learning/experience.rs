@@ -100,6 +100,7 @@ impl TerminalEvidence {
 pub(crate) struct TraceBinding {
     pub checked_trajectory: Option<String>,
     pub observed_branches: Option<String>,
+    pub observed_execution: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,6 +186,11 @@ impl ExperienceSummary {
             _ => unreachable!("nonterminal records returned above"),
         };
         let q = naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+        if let Some(progress) = progress {
+            for execution in &progress.executions {
+                execution.validate_context(&q, &native.base.knowledge)?;
+            }
+        }
         let mut summary = Self {
             job: record.id,
             question: crate::hex(q.resolution_id()),
@@ -202,6 +208,9 @@ impl ExperienceSummary {
                     .and_then(|p| p.result.as_ref())
                     .map(|s| digest(&s.tree)),
                 observed_branches: progress.and_then(|p| p.frontier.as_ref()).map(digest),
+                observed_execution: progress
+                    .filter(|p| !p.executions.is_empty())
+                    .map(|p| digest(&p.executions)),
             },
             cost: progress.and_then(|p| p.cost.clone()),
             search_limit: native.base.search_budget(),
@@ -232,6 +241,7 @@ impl ExperienceSummary {
         .into_iter()
         .chain(self.trace.checked_trajectory.iter())
         .chain(self.trace.observed_branches.iter())
+        .chain(self.trace.observed_execution.iter())
         {
             crate::object::id_bytes(id)?;
         }
@@ -273,6 +283,7 @@ pub(crate) struct Observation {
     pub question: String,
     pub summary: ExperienceSummary,
     pub frontier: Option<super::SearchFrontier>,
+    pub executions: Vec<super::SearchTrace>,
 }
 impl Observation {
     pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, String> {
@@ -295,6 +306,11 @@ impl Observation {
                 .as_ref()
                 .and_then(|n| n.progress.as_ref())
                 .and_then(|p| p.frontier.clone()),
+            executions: record
+                .native
+                .as_ref()
+                .and_then(|n| n.progress.as_ref())
+                .map_or_else(Vec::new, |p| p.executions.clone()),
         };
         observation.validate()?;
         Ok(Some(observation))
@@ -308,11 +324,17 @@ impl Observation {
             .map_err(|e| e.to_string())?;
         if self.summary.question != crate::hex(question.resolution_id())
             || self.summary.trace.observed_branches != self.frontier.as_ref().map(digest)
+            || self.summary.trace.observed_execution
+                != (!self.executions.is_empty()).then(|| digest(&self.executions))
+            || self.executions.len() > 2
         {
             return Err("history observation question or frontier binding differs".into());
         }
         if let Some(frontier) = &self.frontier {
             frontier.validate(&question)?;
+        }
+        for execution in &self.executions {
+            execution.validate_question(&question)?;
         }
         Ok(())
     }

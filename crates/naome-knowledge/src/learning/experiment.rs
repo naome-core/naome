@@ -42,6 +42,7 @@ fn completed_search(
         origin: Origin::Local,
         terminal: result.terminal.clone(),
         trace: experience::TraceBinding {
+            observed_execution: (!result.executions.is_empty()).then(|| digest(&result.executions)),
             checked_trajectory: result.solution.as_ref().map(|s| digest(&s.tree)),
             observed_branches: result.frontier.as_ref().map(digest),
         },

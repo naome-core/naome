@@ -1,6 +1,7 @@
 //! Bounded classical tableau with checked, replayable proof reconstruction.
 pub mod core;
 pub(crate) mod frontier;
+pub(crate) mod trace;
 use super::calculus::{self as c, Names};
 use super::{
     experience::{Budget, Capacity, TerminalEvidence},
@@ -447,6 +448,7 @@ pub struct ResultTree {
     pub failure: Option<String>,
     pub frontier: Option<frontier::Frontier>,
     pub terminal: TerminalEvidence,
+    pub execution: Option<trace::Trace>,
 }
 struct Search<'a> {
     ranker: &'a mut dyn Ranker,
@@ -458,9 +460,18 @@ struct Search<'a> {
     exhausted: BTreeSet<String>,
     frontier: Option<frontier::Frontier>,
     terminal: TerminalEvidence,
+    recorder: Option<trace::Recorder>,
 }
 impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
+        self.branch(state, depth, None)
+    }
+    fn branch(
+        &mut self,
+        state: &State,
+        depth: usize,
+        parent: Option<trace::Branch>,
+    ) -> Result<Option<Tree>, String> {
         if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
@@ -547,16 +558,50 @@ impl Search<'_> {
                     .include(TerminalEvidence::Budget(Budget::Expansions));
                 break;
             }
+            let event_started = Instant::now();
+            let event = self
+                .recorder
+                .as_mut()
+                .map(|recorder| {
+                    recorder.begin(
+                        state,
+                        &actions,
+                        selected,
+                        (actions.len() > 1).then_some(scores.as_slice()),
+                        parent,
+                        self.expansions,
+                    )
+                })
+                .transpose()?
+                .flatten();
             self.expansions += 1;
             let mut children = Vec::new();
             let mut success = true;
-            for child in next(state, &actions[selected])? {
-                if let Some(tree) = self.prove(&child, depth + 1)? {
+            let mut attempted = 0;
+            for (index, child) in next(state, &actions[selected])?.into_iter().enumerate() {
+                attempted += 1;
+                if let Some(tree) = self.branch(
+                    &child,
+                    depth + 1,
+                    event.map(|event| trace::Branch {
+                        event,
+                        child: index,
+                    }),
+                )? {
                     children.push(tree)
                 } else {
                     success = false;
                     break;
                 }
+            }
+            if let Some(recorder) = &mut self.recorder {
+                recorder.finish(
+                    event,
+                    attempted,
+                    self.expansions,
+                    success,
+                    event_started.elapsed(),
+                );
             }
             if success {
                 return Ok(Some(Tree::Step {
@@ -602,8 +647,19 @@ pub fn solve_with_knowledge(
     started: Instant,
     knowledge: &[super::knowledge::Entry],
 ) -> Result<ResultTree, String> {
+    solve_recording(target, ranker, maximum, started, knowledge, true)
+}
+fn solve_recording(
+    target: &Formula,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+    started: Instant,
+    knowledge: &[super::knowledge::Entry],
+    capture: bool,
+) -> Result<ResultTree, String> {
     if maximum == 0 {
         return Ok(ResultTree {
+            execution: None,
             tree: None,
             expansions: 0,
             failure: Some("search_budget".into()),
@@ -617,6 +673,7 @@ pub fn solve_with_knowledge(
         .find(|(_, axiom)| axiom.formula() == *target)
     {
         return Ok(ResultTree {
+            execution: None,
             tree: Some(Tree::Axiom(index as u8)),
             expansions: 1,
             failure: None,
@@ -631,6 +688,9 @@ pub fn solve_with_knowledge(
         .map(|e| Ok(e.verified()?.target))
         .collect::<Result<_, String>>()?;
     let mut s = Search {
+        recorder: capture
+            .then(|| trace::Recorder::new(target, &p.state.knowledge))
+            .transpose()?,
         ranker,
         goal: p.body,
         started,
@@ -653,6 +713,7 @@ pub fn solve_with_knowledge(
         });
     }
     Ok(ResultTree {
+        execution: s.recorder.map(trace::Recorder::into_trace),
         frontier: if tree.is_none() {
             s.frontier.filter(|f| !f.empty())
         } else {
@@ -705,21 +766,7 @@ fn replay(
         .ok_or("replay action not offered")?;
     if offered.len() > 1 {
         let mut graph = Graph::encode(&decision(goal, state, &offered, expert)?)?;
-        graph.binding = super::digest(&(
-            goal.encode_canonical().map_err(|e| e.to_string())?,
-            state
-                .facts
-                .iter()
-                .map(Formula::encode_canonical)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?,
-            &state.used,
-            state
-                .domain
-                .iter()
-                .map(|v| v.identifier())
-                .collect::<Vec<_>>(),
-        ));
+        graph.binding = trace::binding(state)?;
         graphs.push(graph);
     }
     let states = next(state, action)?;
@@ -1165,6 +1212,7 @@ mod transposition_tests {
             domain: vec![x, y],
         };
         let mut search = Search {
+            recorder: None,
             terminal: TerminalEvidence::Unknown,
             ranker: &mut Ordered,
             goal: q,

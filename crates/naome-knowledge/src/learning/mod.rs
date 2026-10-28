@@ -21,6 +21,7 @@ pub(crate) mod program;
 pub(crate) mod proof;
 mod search;
 pub(crate) use search::frontier::Frontier as SearchFrontier;
+pub(crate) use search::trace::Trace as SearchTrace;
 mod state;
 mod transfer;
 pub(crate) use artifact::{ArtifactIo, Blob};
@@ -199,6 +200,7 @@ pub(crate) struct Progress {
     pub result: Option<Solution>,
     pub diagnostic: String,
     pub frontier: Option<SearchFrontier>,
+    pub executions: Vec<SearchTrace>,
     pub terminal: experience::TerminalEvidence,
 }
 impl Progress {
@@ -524,6 +526,23 @@ impl Job {
                 return Err("training progress lacks its frozen replay preparation".into());
             }
             p.terminal.validate(p.result.as_ref())?;
+            if p.executions.len() > 2
+                || matches!(p.terminal, experience::TerminalEvidence::NoSearch(_))
+                    && !p.executions.is_empty()
+                || p.executions
+                    .iter()
+                    .map(|t| &t.target)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != p.executions.len()
+                || p.executions.iter().try_fold(0usize, |n, trace| {
+                    trace.validate()?;
+                    n.checked_add(trace.attempts)
+                        .ok_or_else(|| "search observation work overflow".to_owned())
+                })? > p.cost.as_ref().map_or(0, |cost| cost.search_expansions)
+            {
+                return Err("search observations exceed the actual bounded execution".into());
+            }
             if let Some(selection) = &p.plan {
                 selection.validate()?;
                 if selection.context
@@ -683,6 +702,7 @@ impl Job {
             prepared: None,
             cost: None,
             frontier: None,
+            executions: Vec::new(),
             terminal: experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly),
             training_cost: model::TrainingCost::default(),
             unit: 0,
@@ -906,6 +926,7 @@ impl Job {
                     })?;
                     p.cost = Some(generated.cost);
                     p.frontier = generated.frontier;
+                    p.executions = generated.executions;
                     p.terminal = generated.terminal;
                     if generated.solution.is_none() {
                         p.diagnostic = generated.diagnostic;
@@ -941,6 +962,7 @@ struct Generation {
     diagnostic: String,
     cost: GenerationCost,
     frontier: Option<SearchFrontier>,
+    executions: Vec<SearchTrace>,
     terminal: experience::TerminalEvidence,
 }
 struct Exploring<'a> {
@@ -991,6 +1013,7 @@ fn solve_with_report(
         diagnostic,
         mut cost,
         frontier,
+        executions,
         mut terminal,
     } = search_question_report(source, &mut ranker, budget, &context)?;
     if let Some(solution) = &mut solution {
@@ -1003,6 +1026,7 @@ fn solve_with_report(
                 diagnostic,
                 cost,
                 frontier,
+                executions,
                 terminal,
             });
         }
@@ -1073,6 +1097,7 @@ fn solve_with_report(
         diagnostic,
         cost,
         frontier,
+        executions,
         terminal,
     })
 }
@@ -1154,6 +1179,7 @@ fn search_question_report(
     };
     let mut remaining = budget;
     let mut frontier = None;
+    let mut executions = Vec::new();
     let mut certificate_failures = 0;
     let retrieval_started = std::time::Instant::now();
     let dependency_checking = proof::checking_work().steps;
@@ -1211,6 +1237,7 @@ fn search_question_report(
         };
         let found = if let Some((verified, inputs, work)) = composed {
             search::ResultTree {
+                execution: None,
                 tree: Some(search::Tree::Composed {
                     packet: match evidence::pack(&verified) {
                         Ok(packet) => packet,
@@ -1274,6 +1301,7 @@ fn search_question_report(
             remaining = remaining.saturating_sub(work);
             if let Some(verified) = constructed {
                 search::ResultTree {
+                    execution: None,
                     tree: Some(search::Tree::Constructed {
                         packet: match evidence::pack(&verified) {
                             Ok(bytes) => bytes,
@@ -1304,6 +1332,9 @@ fn search_question_report(
             }
         };
         remaining = remaining.saturating_sub(found.expansions);
+        if let Some(execution) = found.execution {
+            executions.push(execution);
+        }
         if frontier.is_none() {
             frontier = found.frontier;
         }
@@ -1386,6 +1417,7 @@ fn search_question_report(
                         ..GenerationCost::default()
                     };
                     return Ok(Generation {
+                        executions,
                         terminal: experience::TerminalEvidence::CertifiedCandidate {
                             proof_id: proof_id.clone(),
                             refuted,
@@ -1429,6 +1461,7 @@ fn search_question_report(
         terminal = experience::TerminalEvidence::Budget(experience::Budget::Expansions);
     }
     Ok(Generation {
+        executions,
         solution: None,
         terminal,
         diagnostic: failure,

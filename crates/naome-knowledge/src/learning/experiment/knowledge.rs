@@ -124,6 +124,7 @@ pub(super) fn acquire(
         cost,
         frontier,
         terminal,
+        ..
     } = generated;
     let mut retained = false;
     let mut lemma = false;

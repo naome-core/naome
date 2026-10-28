@@ -38,6 +38,7 @@ pub(crate) fn observed_completion(
         origin: crate::learning::Origin::Local,
         terminal: terminal.clone(),
         trace: TraceBinding {
+            observed_execution: None,
             checked_trajectory: None,
             observed_branches: frontier.as_ref().map(crate::learning::digest),
         },
