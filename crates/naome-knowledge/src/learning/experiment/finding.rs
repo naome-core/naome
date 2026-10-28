@@ -23,6 +23,37 @@ const ATTEMPTS: usize = 12;
 const SEARCH: usize = 128;
 const TRAIN_CPU: u64 = 90_000_000;
 const TRAIN_WALL: u64 = 120_000_000;
+type Clock = BTreeMap<(String, String, u64), u64>;
+
+fn reference_clock(reference: &Value) -> Clock {
+    let mut model: Checkpoint = serde_json::from_value(reference["initial_model"].clone()).unwrap();
+    let mut occurrences = BTreeMap::new();
+    let mut result = BTreeMap::new();
+    for round in reference["rounds"].as_array().unwrap() {
+        let stamp = digest(&model);
+        for event in round["events"].as_array().unwrap() {
+            if event.get("empty_page").is_some() {
+                continue;
+            }
+            let id = event["resolution"].as_str().unwrap().to_owned();
+            let index = occurrences.entry((stamp.clone(), id.clone())).or_insert(0);
+            result.insert(
+                (stamp.clone(), id, *index),
+                event["cost"]["generation_micros"].as_u64().unwrap(),
+            );
+            *index += 1;
+        }
+        model = serde_json::from_value(round["model"].clone()).unwrap();
+    }
+    result
+}
+
+struct Start<'a> {
+    state: &'a State,
+    blobs: &'a MemoryStore,
+    initial: &'a [(String, Solution, u64)],
+    reserved: &'a BTreeSet<String>,
+}
 
 #[derive(Default)]
 struct Store {
@@ -254,11 +285,16 @@ fn arm(
     seed: u64,
     treatment: Treatment,
     coupled: bool,
-    common: &State,
-    blobs: &MemoryStore,
-    initial: &[(String, Solution, u64)],
+    start_state: Start<'_>,
     path: &Path,
+    mut clock: Option<&mut Clock>,
 ) -> Value {
+    let Start {
+        state: common,
+        blobs,
+        initial,
+        reserved,
+    } = start_state;
     std::fs::create_dir_all(path).unwrap();
     let directory = Directory::new();
     let mut state = common.clone();
@@ -294,6 +330,7 @@ fn arm(
     let mut completed = 0;
     let mut solved = 0;
     let mut expansions = 0;
+    let mut occurrences = BTreeMap::new();
     let rounds = if coupled { 3 } else { 6 };
     let before = evaluation(&state, &mut engine, &mut io, 900_000);
     for round in 0..rounds {
@@ -302,9 +339,15 @@ fn arm(
         for _ in 0..ATTEMPTS {
             finder.feedback(Some(state.feedback()));
             finder
-                .refresh(&graph, |q| owner.assess(&graph, q).passed())
+                .refresh(&graph, |q| {
+                    !reserved.contains(&curriculum::owned::family(q.proved_target()))
+                        && owner.assess(&graph, q).passed()
+                })
                 .unwrap();
-            let candidates = finder.candidate_page(cursor, |q| owner.assess(&graph, q).passed());
+            let candidates = finder.candidate_page(cursor, |q| {
+                !reserved.contains(&curriculum::owned::family(q.proved_target()))
+                    && owner.assess(&graph, q).passed()
+            });
             cursor += 1;
             let refs = candidates.iter().collect::<Vec<_>>();
             let Some(index) = finder
@@ -319,6 +362,16 @@ fn arm(
             job += 1;
             let model = digest(&state.model);
             let result = solve(&state, &mut engine, &mut io, q, job);
+            let id = crate::hex(q.resolution_id());
+            let occurrence = occurrences.entry((model.clone(), id.clone())).or_insert(0);
+            let label_micros = if let Some(clock) = clock.as_deref_mut() {
+                *clock
+                    .entry((model.clone(), id, *occurrence))
+                    .or_insert(result.cost.generation_micros)
+            } else {
+                result.cost.generation_micros
+            };
+            *occurrence += 1;
             completed += 1;
             expansions += result.cost.search_expansions;
             unique.insert(crate::hex(q.resolution_id()));
@@ -335,7 +388,7 @@ fn arm(
                         id: job,
                         model_checkpoint: Some(model),
                         binding: jobs::Binding::new([0; 32], [0; 32]),
-                        spent_ms: result.cost.generation_micros / 1000,
+                        spent_ms: label_micros / 1000,
                         reserved_units: 1,
                         state: jobs::State::Complete,
                         result: Ok(output),
@@ -359,10 +412,10 @@ fn arm(
                 q.source(),
                 result.solution.is_some(),
                 &result.diagnostic,
-                result.cost.generation_micros,
+                label_micros,
                 SEARCH as u32,
             );
-            events.push(json!({"question":q.source(),"resolution":crate::hex(q.resolution_id()),"solved":result.solution.is_some(),"accepted_training":accepted,"cost":result.cost}));
+            events.push(json!({"question":q.source(),"resolution":crate::hex(q.resolution_id()),"solved":result.solution.is_some(),"accepted_training":accepted,"cost":result.cost,"diagnostic":result.diagnostic,"feedback_cost_micros":label_micros}));
         }
         let training = if coupled {
             train(
@@ -399,7 +452,9 @@ fn matched_continual_finder_study() {
     let output = std::path::PathBuf::from(std::env::var("NAOME_FINDER_NATIVE_OUTPUT").unwrap());
     assert!(!output.exists());
     std::fs::create_dir_all(&output).unwrap();
-    let coupled = std::env::var("NAOME_FINDER_NATIVE_PHASE").unwrap() == "coupled";
+    let phase = std::env::var("NAOME_FINDER_NATIVE_PHASE").unwrap();
+    let repair = phase == "repair";
+    let coupled = phase == "coupled" || repair;
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(&output).unwrap().clone();
     write(&output.join("initial-resources.json"), &observed);
@@ -408,19 +463,73 @@ fn matched_continual_finder_study() {
         "native study obeys the installed resource pause: {:?}",
         observed.budget.paused
     );
-    let arms = if coupled {
+    let arms = if repair {
+        vec![
+            Treatment::Previous,
+            Treatment::FamilyReplay,
+            Treatment::Full,
+        ]
+    } else if coupled {
         vec![Treatment::Previous, Treatment::NoUtility, Treatment::Full]
     } else {
         ARMS.to_vec()
     };
+    let reserved = if repair {
+        let path =
+            std::path::PathBuf::from(std::env::var("NAOME_FINDER_CONFIRMATION_INPUTS").unwrap());
+        let bank: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        bank["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|case| {
+                let q = CompiledQuestion::compile(case["source"].as_str().unwrap()).unwrap();
+                let family = curriculum::owned::family(q.proved_target());
+                assert_eq!(case["family"], family);
+                assert!(!curriculum::owned::original_exclusions().contains(&family));
+                family
+            })
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     write(
         &output.join("manifest.json"),
-        &json!({"source_contract":input_specification(),"seeds":SEEDS,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":if coupled{3}else{6},"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"scope":"Known development comparison. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
+        &json!({"source_contract":input_specification(),"seeds":SEEDS,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":if coupled{3}else{6},"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"feedback_clock":if repair{"shared recorded costs by exact checkpoint, question and occurrence; first actual observation fills missing entries"}else{"actual elapsed generation time"},"reserved_confirmation_families":reserved.len(),"scope":"Known development comparison. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
     );
     let mut results = Vec::new();
     for (seed_index, seed) in SEEDS.into_iter().enumerate() {
         let seed_path = output.join(seed.to_string());
-        let (common, blobs, initial, preparation) = prepare(seed, &seed_path.join("preparation"));
+        let (mut common, blobs, initial, preparation) =
+            prepare(seed, &seed_path.join("preparation"));
+        let mut clock = Clock::new();
+        if repair {
+            let reference =
+                std::path::PathBuf::from(std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap())
+                    .join(seed.to_string());
+            let original: State = serde_json::from_slice(
+                &std::fs::read(reference.join("initial-state.json")).unwrap(),
+            )
+            .unwrap();
+            original.validate().unwrap();
+            assert_eq!(common.model, original.model);
+            assert_eq!(
+                initial
+                    .iter()
+                    .map(|(_, s, _)| s.proof_id.clone())
+                    .collect::<BTreeSet<_>>(),
+                original
+                    .examples()
+                    .map(|e| e.proof_id.clone())
+                    .collect::<BTreeSet<_>>()
+            );
+            common = original;
+            let original: Value = serde_json::from_slice(
+                &std::fs::read(reference.join("without_utility/result.json")).unwrap(),
+            )
+            .unwrap();
+            clock = reference_clock(&original);
+        }
         write(&seed_path.join("initial-state.json"), &common);
         for offset in 0..arms.len() {
             let treatment = arms[(seed_index + offset) % arms.len()];
@@ -428,13 +537,20 @@ fn matched_continual_finder_study() {
                 seed,
                 treatment,
                 coupled,
-                &common,
-                &blobs,
-                &initial,
+                Start {
+                    state: &common,
+                    blobs: &blobs,
+                    initial: &initial,
+                    reserved: &reserved,
+                },
                 &seed_path.join(label(treatment)),
+                repair.then_some(&mut clock),
             );
             results.push(json!({"preparation":preparation,"result":result}));
             write(&output.join("results.json"), &results);
+            if repair {
+                write(&seed_path.join("reference-costs.json"), &clock.iter().map(|((model,question,occurrence),micros)|json!({"model":model,"question":question,"occurrence":occurrence,"micros":micros})).collect::<Vec<_>>());
+            }
         }
     }
 }
