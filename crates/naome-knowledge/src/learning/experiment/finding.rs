@@ -128,8 +128,10 @@ struct Start<'a> {
     feedback_reference: Option<&'a Value>,
 }
 
-fn finder_feedback(state: &State, reference: Option<&Value>) -> crate::training::ability::Feedback {
-    let mut actual = state.feedback();
+fn finder_feedback(
+    mut actual: crate::training::ability::Feedback,
+    reference: Option<&Value>,
+) -> crate::training::ability::Feedback {
     let Some(reference) = reference else {
         return actual;
     };
@@ -157,6 +159,59 @@ fn finder_feedback(state: &State, reference: Option<&Value>) -> crate::training:
         break;
     }
     actual
+}
+
+fn assert_feedback_reproduced(expected: &Value, reference: &Value) {
+    for rounds in expected["rounds"].as_array().unwrap().windows(2) {
+        let feedback = finder_feedback(
+            serde_json::from_value(rounds[0]["feedback"].clone()).unwrap(),
+            Some(reference),
+        );
+        let receipt = digest(&(
+            &feedback.checkpoint,
+            &feedback.development,
+            &feedback.gains,
+            &feedback.regressions,
+        ));
+        assert_eq!(
+            rounds[1]["finder_learning"]["curriculum"]["progress_receipt"], receipt,
+            "declared feedback view differs from the recorded control input"
+        );
+    }
+}
+
+#[test]
+fn recorded_finder_cost_view_is_distinct_from_measured_native_feedback() {
+    let q = CompiledQuestion::compile("goal=all(a,eq(a,a))").unwrap();
+    let mut measured = crate::training::ability::Feedback::fresh("11".repeat(32));
+    measured.development.observe(&q, 32, Some(true), 9000);
+    let mut recorded = measured.clone();
+    recorded.development = crate::training::ability::Profile::new(recorded.checkpoint.clone());
+    recorded.development.observe(&q, 32, Some(true), 1000);
+    let reference = json!({"rounds":[{"feedback":recorded}]});
+    let view = finder_feedback(measured.clone(), Some(&reference));
+    assert_eq!(view, recorded);
+    assert_ne!(view.development, measured.development);
+    assert_eq!(finder_feedback(measured.clone(), None), measured);
+    let receipt = digest(&(
+        &view.checkpoint,
+        &view.development,
+        &view.gains,
+        &view.regressions,
+    ));
+    let control = json!({"rounds":[{"feedback":measured},{"finder_learning":{"curriculum":{"progress_receipt":receipt}}}]});
+    assert_feedback_reproduced(&control, &reference);
+    let wrong_reference = json!({"rounds":[{"feedback":measured}]});
+    assert!(
+        std::panic::catch_unwind(|| assert_feedback_reproduced(&control, &wrong_reference))
+            .is_err()
+    );
+    let mut different = measured.clone();
+    different.development.observe(&q, 32, Some(false), 0);
+    assert_eq!(
+        finder_feedback(different.clone(), Some(&reference)),
+        different
+    );
 }
 
 #[derive(Default)]
@@ -499,7 +554,7 @@ fn arm(
         let mut events = Vec::new();
         let round_cpu = meta::cpu_micros().unwrap();
         for _ in 0..ATTEMPTS {
-            finder.feedback(Some(finder_feedback(&state, feedback_reference)));
+            finder.feedback(Some(finder_feedback(state.feedback(), feedback_reference)));
             finder
                 .refresh(&graph, |q| {
                     !reserved.contains(&curriculum::owned::family(q.proved_target()))
@@ -606,7 +661,7 @@ fn arm(
         drop(finder);
         finder = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
         finder.treatment(treatment);
-        let row = json!({"round":round,"events":events,"training":training,"evaluation":after,"round_cpu_micros":meta::cpu_micros().unwrap()-round_cpu,"model":state.model,"finder_learning":finder.learning_snapshot(),"feedback":state.feedback()});
+        let row = json!({"round":round,"events":events,"training":training,"evaluation":after,"round_cpu_micros":meta::cpu_micros().unwrap()-round_cpu,"model":state.model,"finder_learning":finder.learning_snapshot(),"feedback":state.feedback(),"next_finder_feedback":finder_feedback(state.feedback(), feedback_reference)});
         rows.push(row);
         write(&path.join("rounds.json"), &rows);
         eprintln!(
@@ -732,7 +787,7 @@ fn matched_continual_finder_study() {
             let treatment = arms[(seed_index + offset) % arms.len()];
             let feedback_reference = if paired {
                 let reference = std::path::PathBuf::from(
-                    std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
+                    std::env::var("NAOME_FINDER_FEEDBACK_REFERENCE").unwrap(),
                 );
                 let reference_arm = if treatment == Treatment::Previous {
                     "previous"
@@ -754,6 +809,27 @@ fn matched_continual_finder_study() {
             } else {
                 None
             };
+            if paired && treatment != Treatment::Full {
+                let reference = std::path::PathBuf::from(
+                    std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
+                );
+                let name = if treatment == Treatment::Previous {
+                    "previous"
+                } else {
+                    "full"
+                };
+                let expected: Value = serde_json::from_slice(
+                    &std::fs::read(
+                        reference
+                            .join(seed.to_string())
+                            .join(name)
+                            .join("result.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_feedback_reproduced(&expected, feedback_reference.as_ref().unwrap());
+            }
             let result = arm(
                 seed,
                 treatment,
