@@ -13,21 +13,29 @@ pub struct Entry {
     #[serde(with = "packet")]
     pub packet: Vec<u8>,
 }
-// Snapshot JSON is metered against the existing State byte bound. Encoding
-// the already bounded native packet directly avoids decimal-array overhead
-// evicting the diverse replay needed to start training. Raw proof bytes and
-// the independent native admission/checking boundary remain unchanged.
+// Canonical compact packets leave room for replay in the unchanged State byte
+// allowance. Their raw bytes and independent native checking stay authoritative.
 mod packet {
+    use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        crate::hex(bytes).serialize(serializer)
+        if bytes.len() > super::BYTES {
+            return Err(serde::ser::Error::custom("theorem snapshot capacity"));
+        }
+        STANDARD_NO_PAD.encode(bytes).serialize(serializer)
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
         let value = String::deserialize(deserializer)?;
-        if value.len() > 2 * super::BYTES {
+        if value.len() > (4 * super::BYTES).div_ceil(3) {
             return Err(serde::de::Error::custom("theorem snapshot capacity"));
         }
-        crate::object::unhex(&value).map_err(serde::de::Error::custom)
+        let bytes = STANDARD_NO_PAD
+            .decode(value)
+            .map_err(serde::de::Error::custom)?;
+        if bytes.len() > super::BYTES {
+            return Err(serde::de::Error::custom("theorem snapshot capacity"));
+        }
+        Ok(bytes)
     }
 }
 impl Entry {
@@ -288,6 +296,40 @@ mod tests {
         fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
             Ok(vec![0.; d.candidates.len()])
         }
+    }
+    #[test]
+    fn canonical_theorem_packets_preserve_exact_native_bytes_and_identity() {
+        let axiom = naome_foundation::ZfcAxiom::Foundation;
+        let term = calculus::axiom(naome_proof::ProofStep::ZfcAxiom(axiom)).unwrap();
+        let checked = proof::verify(&term, &axiom.formula()).unwrap();
+        let entry = Entry {
+            packet: evidence::pack(&checked).unwrap(),
+        };
+        let bytes = crate::checkpoint::encode(&entry).unwrap();
+        let restored: Entry = crate::checkpoint::decode(&bytes).unwrap();
+        assert_eq!(restored.packet, entry.packet);
+        assert_eq!(restored.verified().unwrap().native_id, checked.native_id);
+        assert_eq!(crate::checkpoint::encode(&restored).unwrap(), bytes);
+        for length in [0, 1, 2, 3, BYTES - 1, BYTES] {
+            let entry = Entry {
+                packet: (0..length).map(|i| i as u8).collect(),
+            };
+            let encoded = crate::checkpoint::encode(&entry).unwrap();
+            let restored: Entry = crate::checkpoint::decode(&encoded).unwrap();
+            assert_eq!(restored, entry);
+        }
+        for packet in ["?", "AQ=", "AQ==", "AB", "AA\n"] {
+            let malformed = serde_json::json!({"packet":packet});
+            assert!(serde_json::from_value::<Entry>(malformed).is_err());
+        }
+        assert!(
+            crate::checkpoint::encode(&Entry {
+                packet: vec![0; BYTES + 1]
+            })
+            .is_err()
+        );
+        let oversized = serde_json::json!({"packet":"A".repeat((4 * BYTES).div_ceil(3) + 1)});
+        assert!(serde_json::from_value::<Entry>(oversized).is_err());
     }
     #[test]
     fn a_checked_library_does_not_starve_diverse_replay_at_the_existing_state_byte_bound() {

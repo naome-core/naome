@@ -4,6 +4,7 @@
 mod policy;
 #[cfg(test)]
 mod routing_tests;
+mod preservation;
 use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},
@@ -18,10 +19,11 @@ use burn::{
 };
 use naome_foundation::Formula;
 pub use policy::Policy;
+#[cfg(test)]
+pub(super) use preservation::Mode as PreservationMode;
 use serde::{Deserialize, Serialize};
-/// CPU Flex, maximum graph batch 16x256 and two model/Adam lifetimes.
-/// A bounded macOS ARM64 screen measured 206 MB RSS; the reservation includes
-/// a substantial buffer. This is a finite admission envelope, not an OS RSS limit.
+/// CPU Flex, maximum graph batch 16x256 and two model/Adam/EMA lifetimes.
+/// This is the unchanged finite admission envelope, not an OS RSS limit.
 #[derive(Clone, Copy)]
 pub(crate) struct Requirements {
     pub chunk_bytes: usize,
@@ -93,6 +95,8 @@ pub(super) fn specification() -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
+    hash.update(include_str!("model/preservation.rs"));
+    hash.update(include_str!("preservation-protocol.json"));
     hash.update(include_str!("mod.rs"));
     hash.update(include_str!("state.rs"));
     hash.update(include_str!("graph.rs"));
@@ -174,6 +178,8 @@ pub fn random(seed: &mut u64) -> u64 {
 pub struct Runtime {
     policy: Policy,
     optimizer: ModuleOptimizer,
+    preservation: preservation::Preservation,
+    preservation_micros: u64,
     device: Device,
 }
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
@@ -242,6 +248,7 @@ impl Runtime {
             return Err("native graph policy parameter count differs".into());
         }
         let mut optimizer = AdamConfig::new().init();
+        let mut preservation = preservation::Preservation::fresh(&policy);
         if let (Some(model), Some(adam)) = (&checkpoint.model, &checkpoint.optimizer) {
             let bytes = artifact::load(io, model)?;
             policy = policy
@@ -252,11 +259,11 @@ impl Runtime {
                 .map_err(|e| e.to_string())?
                 .train();
             let bytes = artifact::load(io, adam)?;
-            optimizer = optimizer
-                .from_bytes(Bytes::from_bytes_vec(bytes.clone()))
-                .map_err(|e| e.to_string())?;
+            let adam =
+                preservation.decode(Bytes::from_bytes_vec(bytes.clone()), checkpoint.updates)?;
+            optimizer = optimizer.from_bytes(adam).map_err(|e| e.to_string())?;
             let restored =
-                canonical_checkpoint(optimizer.into_bytes().map_err(|e| e.to_string())?)?;
+                preservation.encode(optimizer.into_bytes().map_err(|e| e.to_string())?)?;
             if Blob::of(&restored[..]) != Blob::of(&bytes) {
                 return Err("native optimizer did not restore exactly".into());
             }
@@ -264,6 +271,8 @@ impl Runtime {
         Ok(Self {
             policy,
             optimizer,
+            preservation,
+            preservation_micros: 0,
             device,
         })
     }
@@ -280,8 +289,9 @@ impl Runtime {
                 .into_bytes()
                 .map_err(|e| e.to_string())?,
         )?;
-        let optimizer =
-            canonical_checkpoint(self.optimizer.into_bytes().map_err(|e| e.to_string())?)?;
+        let optimizer = self
+            .preservation
+            .encode(self.optimizer.into_bytes().map_err(|e| e.to_string())?)?;
         Ok(Checkpoint {
             specification: parent.specification.clone(),
             seed: parent.seed,
@@ -295,7 +305,14 @@ impl Runtime {
     }
     #[cfg(test)]
     fn train(&mut self, graphs: &Pool, rng: &mut u64, updates: u64) -> Result<(f32, f32), String> {
-        self.train_using(graphs, rng, updates, super::meta::Plan::balanced().phase(0))
+        self.train_using(
+            graphs,
+            rng,
+            updates,
+            super::meta::Plan::balanced().phase(0),
+            None,
+            preservation::Mode::default(),
+        )
     }
     fn train_using(
         &mut self,
@@ -303,22 +320,33 @@ impl Runtime {
         rng: &mut u64,
         updates: u64,
         phase: super::meta::Phase,
+        preservation_pool: Option<(&Pool, u64)>,
+        preservation_mode: preservation::Mode,
     ) -> Result<(f32, f32), String> {
         if graphs.is_empty() {
             return Err("training requires own accepted proof decisions".into());
         }
         let mut first = 0.;
         let mut last = 0.;
+        let preservation_started = std::time::Instant::now();
+        let preservation_gradient = if let Some((pool, mut cursor)) =
+            preservation_pool.filter(|(p, _)| preservation_mode.enabled() && !p.is_empty())
+        {
+            // Separate, reproducible sampling: this never advances the training
+            // cursor or consumes a development/transfer prediction as a label.
+            let batch = Batch::from_graphs(&pool.batch(&mut cursor), &self.device)?;
+            let loss = checked_marginal(self.policy.forward(&batch), &batch);
+            loss_value(&loss)?;
+            Some(GradientsParams::from_grads(loss.backward(), &self.policy))
+        } else {
+            None
+        };
+        self.preservation_micros = micros(preservation_started);
         for update in 0..updates {
             let sample = graphs.batch(rng);
             let batch = Batch::from_graphs(&sample, &self.device)?;
             let logits = self.policy.forward(&batch);
-            let probability = burn::tensor::activation::log_softmax(logits.clone(), 1).exp();
-            let marginal = -(probability * batch.successes.clone())
-                .sum_dim(1)
-                .clamp_min(1e-12)
-                .log()
-                .mean();
+            let marginal = checked_marginal(logits.clone(), &batch);
             // This is preference between witnessed successful search actions
             // and unobserved alternatives, never mathematical false labels.
             let loss = if phase.ranking_quarters == 0 {
@@ -336,20 +364,23 @@ impl Runtime {
                 let weight = f32::from(phase.ranking_quarters) / 4.;
                 marginal * (1. - weight) + ranking * weight
             };
-            let value = loss
-                .clone()
-                .into_data()
-                .try_to_vec::<f32>()
-                .map_err(|e| e.to_string())?[0];
-            if !value.is_finite() {
-                return Err("non-finite native training loss".into());
-            }
+            let value = loss_value(&loss)?;
             let gradients = GradientsParams::from_grads(loss.backward(), &self.policy);
-            self.policy = self.optimizer.step(
+            let proposed = self.optimizer.step(
                 if phase.gentle_rate { 0.0005 } else { 0.001 },
                 self.policy.clone(),
                 gradients,
             );
+            self.policy = if let Some(gradient) = &preservation_gradient {
+                let started = std::time::Instant::now();
+                let policy =
+                    self.preservation
+                        .apply(&self.policy, proposed, gradient, preservation_mode)?;
+                self.preservation_micros = self.preservation_micros.saturating_add(micros(started));
+                policy
+            } else {
+                proposed
+            };
             if update == 0 {
                 first = value;
             }
@@ -357,6 +388,25 @@ impl Runtime {
         }
         Ok((first, last))
     }
+}
+fn checked_marginal(logits: Tensor<2>, batch: &Batch) -> Tensor<1> {
+    let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
+    -(probability * batch.successes.clone())
+        .sum_dim(1)
+        .clamp_min(1e-12)
+        .log()
+        .mean()
+}
+fn loss_value(loss: &Tensor<1>) -> Result<f32, String> {
+    let value = loss
+        .clone()
+        .into_data()
+        .try_to_vec::<f32>()
+        .map_err(|e| e.to_string())?[0];
+    if !value.is_finite() {
+        return Err("non-finite native training loss".into());
+    }
+    Ok(value)
 }
 impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
@@ -383,6 +433,9 @@ pub(crate) struct TrainingCost {
     pub preparation_micros: u64,
     pub load_micros: u64,
     pub update_micros: u64,
+    /// Included in update_micros, never added to it a second time.
+    pub preservation_micros: u64,
+    pub preservation_states: usize,
     pub checkpoint_micros: u64,
     pub states: usize,
 }
@@ -393,10 +446,22 @@ fn micros(started: std::time::Instant) -> u64 {
 pub(crate) struct Engine {
     pub cost: TrainingCost,
     cache: Vec<(Checkpoint, Runtime)>,
-    pool: Option<(String, Pool)>,
+    pool: Option<(String, Pool, Pool)>,
+    #[cfg(test)]
+    pub(super) preservation_mode: PreservationMode,
     pub meta: super::meta::Engine,
 }
 impl Engine {
+    fn preservation_mode(&self) -> preservation::Mode {
+        #[cfg(test)]
+        {
+            self.preservation_mode
+        }
+        #[cfg(not(test))]
+        {
+            preservation::Mode::default()
+        }
+    }
     #[cfg(test)]
     pub(super) fn snapshot<I: ArtifactIo + ?Sized>(
         &mut self,
@@ -453,10 +518,13 @@ impl Engine {
             &state.replay,
             &state.anchors,
             phase.rehearsal,
+            self.preservation_mode().enabled(),
             evidence,
         ));
-        let mut pool = match self.pool.take() {
-            Some((previous, pool)) if previous == key => pool,
+        let (mut pool, preservation_pool) = match self.pool.take() {
+            Some((previous, pool, preservation_pool)) if previous == key => {
+                (pool, preservation_pool)
+            }
             _ => {
                 let pool = state.training_pool_for(evidence, phase.rehearsal)?;
                 #[cfg(test)]
@@ -469,7 +537,13 @@ impl Engine {
                     })?;
                     self.cost.preparation_micros = micros(preparation);
                 }
-                pool
+                let preservation_pool =
+                    if state.model.updates > 0 && self.preservation_mode().enabled() {
+                        state.preservation_pool(evidence, &pool)?
+                    } else {
+                        Pool::default()
+                    };
+                (pool, preservation_pool)
             }
         };
         let current_focus = phase.focused && {
@@ -493,12 +567,14 @@ impl Engine {
         }
         self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         self.cost.states = pool.graphs().len();
+        self.cost.preservation_states = preservation_pool.graphs().len();
         let result = if pool.is_empty() {
             Ok(None)
         } else {
-            self.train_using(c, &pool, cursor, phase, io).map(Some)
+            self.train_using(c, &pool, cursor, phase, Some(&preservation_pool), io)
+                .map(Some)
         };
-        self.pool = Some((key, pool));
+        self.pool = Some((key, pool, preservation_pool));
         result
     }
     #[cfg(test)]
@@ -509,7 +585,14 @@ impl Engine {
         rng: &mut u64,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
-        self.train_using(c, graphs, rng, super::meta::Plan::balanced().phase(0), io)
+        self.train_using(
+            c,
+            graphs,
+            rng,
+            super::meta::Plan::balanced().phase(0),
+            None,
+            io,
+        )
     }
     fn train_using<I: ArtifactIo + ?Sized>(
         &mut self,
@@ -517,14 +600,26 @@ impl Engine {
         graphs: &Pool,
         rng: &mut u64,
         phase: super::meta::Phase,
+        preservation_pool: Option<&Pool>,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
         let started = std::time::Instant::now();
         let mut runtime = self.take(c, io)?;
         self.cost.load_micros = micros(started);
         let started = std::time::Instant::now();
-        let (first, last) = runtime.train_using(graphs, rng, UPDATES_PER_UNIT, phase)?;
+        let mode = self.preservation_mode();
+        let preservation_pool =
+            preservation_pool.map(|p| (p, (c.updates / UPDATES_PER_UNIT).wrapping_mul(16)));
+        let (first, last) = runtime.train_using(
+            graphs,
+            rng,
+            UPDATES_PER_UNIT,
+            phase,
+            preservation_pool,
+            mode,
+        )?;
         self.cost.update_micros = micros(started);
+        self.cost.preservation_micros = runtime.preservation_micros;
         let started = std::time::Instant::now();
         let checkpoint = runtime.checkpoint(c, UPDATES_PER_UNIT, io)?;
         self.cost.checkpoint_micros = micros(started);
@@ -534,338 +629,4 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::MemoryStore;
-    use super::*;
-    #[test]
-    fn plain_inference_preserves_parameters_and_stable_float32_choices() {
-        let example = super::super::tests::own_example();
-        let q = naome_authoring::CompiledQuestion::compile(&example.question).unwrap();
-        let graph = super::super::search::compile(q.proved_target(), &example.tree)
-            .unwrap()
-            .1
-            .remove(0);
-        let mut io = MemoryStore::default();
-        let fresh = Checkpoint::fresh();
-        let runtime = Runtime::load(&fresh, &mut io).unwrap();
-        let before = runtime.checkpoint(&fresh, 0, &mut io).unwrap();
-        let batch = Batch::from_graphs(
-            std::slice::from_ref(&graph),
-            &runtime.device.clone().inner(),
-        )
-        .unwrap();
-        let reference = runtime
-            .policy
-            .valid()
-            .forward(&batch)
-            .into_data()
-            .try_to_vec::<f32>()
-            .unwrap();
-        let actual = runtime.scores_graph(&graph).unwrap();
-        assert_eq!(
-            actual, reference,
-            "canonical inference uses the detached input path"
-        );
-        let batch = Batch::from_graphs(std::slice::from_ref(&graph), &runtime.device).unwrap();
-        let autodiff = runtime
-            .policy
-            .valid()
-            .forward(&batch)
-            .into_data()
-            .try_to_vec::<f32>()
-            .unwrap();
-        for (a, b) in actual.iter().zip(&autodiff) {
-            assert!((a - b).abs() <= 32.0 * f32::EPSILON * (1.0 + a.abs().max(b.abs())));
-        }
-        let selected = |scores: &[f32]| {
-            (0..scores.len())
-                .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))
-                .unwrap()
-        };
-        assert_eq!(
-            selected(&actual),
-            selected(&autodiff),
-            "well-separated choices are stable; near ties may change with float32 routing"
-        );
-        assert_eq!(runtime.checkpoint(&fresh, 0, &mut io).unwrap(), before);
-    }
-
-    #[test]
-    #[ignore = "Finite matched inference lifetime memory screen; run in an isolated process"]
-    fn matched_inference_device_memory_screen() {
-        use super::super::graph::{Graph, Node};
-        let legacy = std::env::var_os("NAOME_INFERENCE_AUTODIFF_INPUTS").is_some();
-        let mut io = MemoryStore::default();
-        let runtime = Runtime::load(&Checkpoint::fresh(), &mut io).unwrap();
-        let meter = crate::resources::feedback::Meter::start();
-        for iteration in 0..4096 {
-            let count = 48 + iteration % 209;
-            let graph = Graph {
-                binding: String::new(),
-                nodes: (0..count)
-                    .map(|i| Node {
-                        kind: if i == 0 { 0 } else { 1 + (i % 7) as i32 },
-                        left: i / 2,
-                        right: i / 3,
-                        role: 2,
-                    })
-                    .collect(),
-                goal: count - 1,
-                context: (1..33).collect(),
-                candidates: (32..48).collect(),
-                expert: 0,
-                successes: vec![0],
-            };
-            let scores = if legacy {
-                let batch =
-                    Batch::from_graphs(std::slice::from_ref(&graph), &runtime.device).unwrap();
-                runtime
-                    .policy
-                    .valid()
-                    .forward(&batch)
-                    .into_data()
-                    .try_to_vec::<f32>()
-                    .unwrap()
-            } else {
-                let batch = Batch::from_graphs(
-                    std::slice::from_ref(&graph),
-                    &runtime.device.clone().inner(),
-                )
-                .unwrap();
-                runtime
-                    .policy
-                    .valid()
-                    .forward(&batch)
-                    .into_data()
-                    .try_to_vec::<f32>()
-                    .unwrap()
-            };
-            assert_eq!(scores.len(), 16);
-            assert!(scores.iter().all(|v| v.is_finite()));
-        }
-        let sample = meter.finish(0, true);
-        eprintln!(
-            "native_inference_lifetime legacy_autodiff_inputs={legacy} calls=4096 sample={sample:?}"
-        );
-        if !legacy {
-            assert!(sample.peak_rss_bytes.unwrap() <= REQUIREMENTS.work_bytes as u64);
-        }
-    }
-    #[test]
-    #[ignore = "Bounded maximum-shape native model memory measurement"]
-    fn maximum_supported_batch_memory_is_bounded() {
-        use super::super::graph::{Graph, Node};
-        let nodes = (0..256)
-            .map(|i| Node {
-                kind: if i == 0 { 0 } else { 1 + (i % 7) as i32 },
-                left: i / 2,
-                right: i / 3,
-                role: if i == 255 { 1 } else { 2 },
-            })
-            .collect();
-        let graph = Graph {
-            binding: String::new(),
-            nodes,
-            goal: 255,
-            context: (1..33).collect(),
-            candidates: (32..48).collect(),
-            expert: 0,
-            successes: vec![0],
-        };
-        let mut io = MemoryStore::default();
-        let fresh = Checkpoint::fresh();
-        let mut rng = 71;
-        let meter = crate::resources::feedback::Meter::start();
-        let mut runtime = Runtime::load(&fresh, &mut io).unwrap();
-        runtime
-            .train(
-                &Pool::from_graphs(std::slice::from_ref(&graph)),
-                &mut rng,
-                1,
-            )
-            .unwrap();
-        let trained = runtime.checkpoint(&fresh, 1, &mut io).unwrap();
-        let mut candidate = Runtime::load(&trained, &mut io).unwrap();
-        candidate
-            .train_using(
-                &Pool::from_graphs(&[graph]),
-                &mut rng,
-                1,
-                super::super::meta::Phase {
-                    focused: true,
-                    rehearsal: true,
-                    ranking_quarters: 2,
-                    gentle_rate: true,
-                },
-            )
-            .unwrap();
-        candidate.checkpoint(&trained, 1, &mut io).unwrap();
-        let sample = meter.finish(0, true);
-        eprintln!(
-            "native_maximum_shape batch=16 nodes=256 candidates=16 parameters={} sample={:?}",
-            PARAMETERS, sample
-        );
-    }
-    #[test]
-    fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
-        let solution = super::super::tests::own_solution();
-        let q = naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question())
-            .unwrap();
-        let graph = super::super::search::compile(q.proved_target(), &solution.tree)
-            .unwrap()
-            .1
-            .remove(0);
-        let mut larger = graph.clone();
-        while larger.nodes.len() < graph.nodes.len().next_power_of_two() + 1 {
-            larger.nodes.push(super::super::graph::Node {
-                kind: 6,
-                left: 0,
-                right: 0,
-                role: 2,
-            });
-            larger.context.push(larger.nodes.len() - 1);
-        }
-        let mut empty_context = graph.clone();
-        empty_context.context.clear();
-        let pool = Pool::from_graphs(&[graph.clone(), larger, empty_context]);
-        let sample = pool.batch(&mut 0);
-        let fresh = Checkpoint::fresh();
-        let mut io = MemoryStore::default();
-        let mut dense = Runtime::load(&fresh, &mut io).unwrap();
-        let mut sparse = Runtime::load(&fresh, &mut io).unwrap();
-        let batch = Batch::from_graphs(&sample, &dense.device).unwrap();
-        let joint = sparse
-            .policy
-            .valid()
-            .forward(&batch)
-            .into_data()
-            .try_to_vec::<f32>()
-            .unwrap();
-        let width = batch.candidates.dims()[1];
-        for (index, graph) in sample.iter().enumerate() {
-            let separate = sparse.scores_graph(graph).unwrap();
-            for (action, value) in separate.iter().enumerate() {
-                assert!(
-                    (joint[index * width + action] - value).abs() < 1e-4,
-                    "an unrelated graph changed this graph's action score"
-                );
-            }
-        }
-        let probability =
-            burn::tensor::activation::log_softmax(dense.policy.forward_dense(&batch), 1).exp();
-        let loss = -(probability * batch.successes)
-            .sum_dim(1)
-            .clamp_min(1e-12)
-            .log()
-            .mean();
-        let expected_loss = loss.clone().into_data().try_to_vec::<f32>().unwrap()[0];
-        let gradients = GradientsParams::from_grads(loss.backward(), &dense.policy);
-        dense.policy = dense.optimizer.step(0.001, dense.policy.clone(), gradients);
-        let (actual_loss, _) = sparse.train(&pool, &mut 0, 1).unwrap();
-        assert!((expected_loss - actual_loss).abs() < 1e-5);
-        let a = dense.scores_graph(&graph).unwrap();
-        let b = sparse.scores_graph(&graph).unwrap();
-        let maximum = a
-            .iter()
-            .zip(b)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0f32, f32::max);
-        assert!(
-            maximum < 1e-4,
-            "sparse parent prediction difference {maximum}"
-        );
-    }
-    #[test]
-    fn zero_update_snapshot_preserves_fresh_predictions_and_optimizer_continuation() {
-        let solution = super::super::tests::own_solution();
-        let q = naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question())
-            .unwrap();
-        let graph = super::super::search::compile(q.proved_target(), &solution.tree)
-            .unwrap()
-            .1
-            .remove(0);
-        let mut io = MemoryStore::default();
-        let fresh = Checkpoint::fresh();
-        let runtime = Runtime::load(&fresh, &mut io).unwrap();
-        let expected = runtime.scores_graph(&graph).unwrap();
-        let saved = Engine::default().snapshot(&fresh, &mut io).unwrap();
-        assert_eq!(saved.updates, 0);
-        assert_eq!(
-            Runtime::load(&saved, &mut io)
-                .unwrap()
-                .scores_graph(&graph)
-                .unwrap(),
-            expected
-        );
-        let from_seed =
-            test_update(&fresh, std::slice::from_ref(&graph), &mut 91, &mut io).unwrap();
-        let from_saved = test_update(&saved, &[graph], &mut 91, &mut io).unwrap();
-        assert_eq!(
-            from_seed, from_saved,
-            "initial binary model and optimizer must reproduce the same first real update"
-        );
-    }
-    #[test]
-    fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
-        let source = super::super::tests::own_question();
-        struct Ordered;
-        impl Ranker for Ordered {
-            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
-                Ok(vec![0.; d.candidates.len()])
-            }
-        }
-        let solution = super::super::search_question(&source, &mut Ordered, 128)
-            .unwrap()
-            .0
-            .expect("own checked trace");
-        let q = naome_authoring::CompiledQuestion::compile(&source).unwrap();
-        let (_, graphs) = super::super::search::compile(q.proved_target(), &solution.tree).unwrap();
-        assert!(!graphs.is_empty());
-        let graphs = vec![graphs.into_iter().min_by_key(|g| g.nodes.len()).unwrap()];
-        let mut io = MemoryStore::default();
-        let fresh = Checkpoint::fresh();
-        let mut rng = 17;
-        let started = std::time::Instant::now();
-        let mut runtime = Runtime::load(&fresh, &mut io).unwrap();
-        let (first, last) = runtime
-            .train(&Pool::from_graphs(&graphs), &mut rng, 1)
-            .unwrap();
-        let trained = runtime.checkpoint(&fresh, 1, &mut io).unwrap();
-        assert_eq!(trained.updates, 1);
-        assert!(first.is_finite() && last.is_finite());
-        assert_ne!(fresh, trained);
-        assert!(trained.model.as_ref().unwrap().bytes >= PARAMETERS * 4);
-        assert!(trained.optimizer.as_ref().unwrap().bytes >= PARAMETERS * 8);
-        assert!(serde_json::to_vec(&trained).unwrap().len() < 1024);
-        let mut resumed = Runtime::load(&trained, &mut io).unwrap();
-        let mut continued_rng = rng;
-        runtime
-            .train(&Pool::from_graphs(&graphs), &mut continued_rng, 1)
-            .unwrap();
-        let continued = runtime.checkpoint(&trained, 1, &mut io).unwrap();
-        resumed
-            .train(&Pool::from_graphs(&graphs), &mut rng, 1)
-            .unwrap();
-        let restored = resumed.checkpoint(&trained, 1, &mut io).unwrap();
-        assert_eq!(
-            continued, restored,
-            "resume must preserve weights and Adam moments exactly"
-        );
-        let blob = trained.model.as_ref().unwrap();
-        io.0.get_mut(&(blob.sha256.clone(), 0)).unwrap()[0] ^= 1;
-        assert!(
-            Engine::default()
-                .with(&trained, &mut io, |_| Ok(()))
-                .is_err(),
-            "corruption cannot silently initialize new weights"
-        );
-        eprintln!(
-            "native_model_operation parameters={} model_bytes={} optimizer_bytes={} updates={} elapsed_seconds={:.3}",
-            PARAMETERS,
-            trained.model.unwrap().bytes,
-            trained.optimizer.unwrap().bytes,
-            continued.updates,
-            started.elapsed().as_secs_f64()
-        );
-    }
-}
+mod tests;

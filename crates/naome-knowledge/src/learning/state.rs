@@ -2,10 +2,18 @@
 use super::*;
 // This process-local cache contains only exact inputs already checked by the
 // unchanged native kernel. It is never serialized; reopening rechecks all data.
-std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::BTreeSet<String>> = const { std::cell::RefCell::new(std::collections::BTreeSet::new()) }; }
+std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::VecDeque<String>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) }; }
 fn validate_example(e: &Example) -> Result<(), String> {
     let key = digest(e);
-    if VERIFIED.with(|known| known.borrow().contains(&key)) {
+    if VERIFIED.with(|known| {
+        let mut known = known.borrow_mut();
+        let Some(index) = known.iter().position(|entry| *entry == key) else {
+            return false;
+        };
+        let key = known.remove(index).expect("located verified input");
+        known.push_back(key);
+        true
+    }) {
         return Ok(());
     }
     if e.job == 0 {
@@ -52,12 +60,15 @@ fn validate_example(e: &Example) -> Result<(), String> {
     VERIFIED.with(|known| {
         let mut known = known.borrow_mut();
         if known.len() >= 64 {
-            known.pop_first();
+            known.pop_front();
         }
-        known.insert(key);
+        known.push_back(key);
     });
     Ok(())
 }
+
+#[cfg(test)]
+mod verification_tests;
 pub(super) fn proof_steps(
     target: &naome_foundation::Formula,
     tree: &search::Tree,
@@ -513,11 +524,35 @@ impl State {
         evidence: &[Evidence],
         rehearsal: bool,
     ) -> Result<pool::Pool, String> {
-        let mut pool = pool::Pool::default();
-        for e in self
-            .training_sources()
-            .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job))
-        {
+        self.checked_pool(
+            self.training_sources()
+                .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job)),
+            evidence,
+            pool::Pool::default(),
+        )
+    }
+    /// These anchors are ordinary eligible training proofs, never the separate
+    /// development, protected-sentinel, transfer or confirmation panels.
+    pub(super) fn preservation_pool(
+        &self,
+        evidence: &[Evidence],
+        training: &pool::Pool,
+    ) -> Result<pool::Pool, String> {
+        self.checked_pool(
+            self.anchors
+                .iter()
+                .filter(|e| matches!(e.origin, Origin::Local)),
+            evidence,
+            training.remaining(),
+        )
+    }
+    fn checked_pool<'a>(
+        &self,
+        sources: impl Iterator<Item = &'a Example>,
+        evidence: &[Evidence],
+        mut pool: pool::Pool,
+    ) -> Result<pool::Pool, String> {
+        for e in sources {
             let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
             let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
             let target = if e.refuted {

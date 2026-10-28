@@ -1,4 +1,6 @@
 use super::*;
+#[path = "tests/feedback.rs"]
+mod feedback;
 fn experience(context: u16, plan: Plan, before: u16, after: u16) -> Experience {
     let mut features = [0; CONTEXT];
     features[0] = context;
@@ -28,7 +30,7 @@ fn neural_gradient_matches_finite_difference_and_outcomes_are_not_features() {
     let e = experience(700, Plan::mixture(), 24, 60);
     let n = model::Network::fresh(31);
     let (_, g) = n.gradient(&e);
-    for i in [0, 19, 58, 708, 719, 720, 755, 756, 758] {
+    for i in [0, 19, 57, 696, 707, 708, 731, 732, 733, 734, 751, 752] {
         let mut plus = n.clone();
         let mut minus = n.clone();
         plus.weights[i] += 0.001;

@@ -1,0 +1,24 @@
+{
+  "purpose": "Finite measured runtime optimization after immutable continuation-meta delivery; no new mathematical quality hypothesis",
+  "baseline_scientific_source": "447fc027caee86dfa74fc8695640509ba7368dc0",
+  "baseline_delivery_head": "07d20d1cd805e67a6039fcad4bf5c8f1a7070731",
+  "baseline_main_wall_seconds": 6210.811266,
+  "baseline_main_cpu_seconds": 5983.642065,
+  "baseline_fixed_input_index_sha256": "48391c76c3d603b37af181660e15b40fff3fbcf5e35040da49efe964287e9480",
+  "profile": "First measure existing exact-input cold and warm owned lower jobs, with phase CPU/wall, qualification incumbent/candidate, owner validation, gradient preparation and artifact IO. Profiling subsets are not runtime acceptance evidence.",
+  "speed_acceptance": {
+    "minimum_full_run_wall_reduction_percent": 20,
+    "minimum_full_run_cpu_reduction_percent": 20,
+    "scope": "Complete existing finite experiment, all six outer contexts/48 outer trials and all eight final methods/three seeds/two rounds plus every existing final condition. Build, CI, pilot and offline audits remain separate.",
+    "fixed_workload_replay": "All 96 exact owned training jobs, the original model/Adam tensors, plans, RNG/batch schedules and final diagnostic queries must also be checked. Report physical and allocated shared work separately; no cache-order advantage in the learned cost label."
+  },
+  "quality_acceptance": {
+    "fixed_inputs": "Exact lower candidate and selected model/Adam bytes, first/last losses, plan predictions, RNG continuation, protected outcomes and native proof identities for unchanged numeric operations",
+    "actual_adaptive_run": "All original >=5pp/no-negative-seed/strict-positive-family-CI criteria remain reported unchanged. Runtime changes do not turn a previously failed quality hypothesis into acceptance. Report every method/seed gain or regression against the baseline; a material loss prevents a same-quality claim.",
+    "data_status": "All 192 prior/current final questions have been revealed. Repeated final evaluation is a labelled diagnostic regression comparison, never fresh held-out generalization.",
+    "operating": "Real ordinary Node execution, pause/recovery, paired checkpoint provenance, resource accounting and independent native verification stay mandatory."
+  },
+  "unchanged": ["question and family membership", "all seeds", "all source questions", "all 250-update lower trials and upper updates", "all search and training budgets", "all selection and quality gates", "768MiB work reservation", "32KiB State", "bounded upper metadata", "2GiB native artifact IO", "native checker authority", "pause and recovery controls", "Draft/unmerged MR332"],
+  "cache_contract": "Use existing owner lifetimes. Bind every semantic input. Never cache unknown, deadline, OS/resource abort as a timeless negative. Every changed input rechecks; no serialized checked flag becomes mathematical authority.",
+  "stop": "One finite profiling, implementation and controlled comparison scope. Preserve failed attempts. No automatic successor or indefinite tuning."
+}

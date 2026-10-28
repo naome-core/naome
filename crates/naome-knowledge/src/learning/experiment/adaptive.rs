@@ -69,6 +69,32 @@ fn prospective_outer_profile_reserve_bounds_actual_qualification_outcomes() {
     }
 }
 
+fn record_inputs(
+    output: &Path,
+    bank: &curriculum::adaptive::Bank,
+    pilot: bool,
+    seeds: &[u64],
+    rounds: usize,
+    scope: &str,
+) {
+    write(
+        &output.join("bank.json"),
+        &serde_json::json!({"learning":bank.learning,"development":bank.development,"transfer":bank.transfer,"confirmation":bank.confirmation}),
+    );
+    let protocol: serde_json::Value =
+        serde_json::from_str(include_str!("../adaptive-protocol.json")).unwrap();
+    write(&output.join("protocol.json"), &protocol);
+    write(
+        &output.join("split-audit.json"),
+        &serde_json::json!({"old_confirmation":bank.prior_confirmation,"excluded_roots":bank.excluded_roots,"confirmation_roots":bank.confirmation_roots,"new_core_extra_steps":3,"outer_split":"novel acquisition dependency SHA-256 byte0 modulo3: 0/1 meta-train,2 final; shared seven prerequisites excluded from novel acquisitions"}),
+    );
+    write(
+        &output.join("run-source.json"),
+        &serde_json::json!({"source_commit":std::env::var("NAOME_ADAPTIVE_COMMIT").unwrap_or_else(|_|"unfrozen-engineering-pilot".into()),
+        "specification":Checkpoint::fresh().specification,"bank_sha256":digest(&(&bank.learning,&bank.development,&bank.transfer,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../adaptive-protocol.json"))),"scope":scope,"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"meta_parameters":meta::PARAMETERS,"meta_specification":meta::Checkpoint::fresh().specification}),
+    );
+}
+
 fn resource_boundary() -> u64 {
     let sample = crate::resources::feedback::Meter::start().finish(0, true);
     let peak = sample.peak_rss_bytes.expect("native peak RSS observation");
@@ -444,21 +470,13 @@ fn matched_adaptive_learning_experiment() {
     let clock = Clock::start();
     let bank = &*curriculum::adaptive::BANK;
     let bank_cost = clock.elapsed();
-    write(
-        &output.join("bank.json"),
-        &serde_json::json!({"learning":bank.learning,"development":bank.development,"transfer":bank.transfer,"confirmation":bank.confirmation}),
-    );
-    let protocol: serde_json::Value =
-        serde_json::from_str(include_str!("../adaptive-protocol.json")).unwrap();
-    write(&output.join("protocol.json"), &protocol);
-    write(
-        &output.join("split-audit.json"),
-        &serde_json::json!({"old_confirmation":bank.prior_confirmation,"excluded_roots":bank.excluded_roots,"confirmation_roots":bank.confirmation_roots,"new_core_extra_steps":3,"outer_split":"novel acquisition dependency SHA-256 byte0 modulo3: 0/1 meta-train,2 final; shared seven prerequisites excluded from novel acquisitions"}),
-    );
-    write(
-        &output.join("run-source.json"),
-        &serde_json::json!({"source_commit":std::env::var("NAOME_ADAPTIVE_COMMIT").unwrap_or_else(|_|"unfrozen-engineering-pilot".into()),
-        "specification":Checkpoint::fresh().specification,"bank_sha256":digest(&(&bank.learning,&bank.development,&bank.transfer,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../adaptive-protocol.json"))),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"meta_parameters":meta::PARAMETERS,"meta_specification":meta::Checkpoint::fresh().specification}),
+    record_inputs(
+        output,
+        bank,
+        pilot,
+        &seeds,
+        rounds,
+        "complete_adaptive_comparison",
     );
     let mut sources = Vec::new();
     for seed in &seeds {

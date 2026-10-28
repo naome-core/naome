@@ -61,6 +61,8 @@ pub(super) struct Outcome {
     pub solved: bool,
     pub diagnostic: String,
     pub micros: u64,
+    #[cfg(test)]
+    pub proof_id: Option<String>,
 }
 pub(super) struct Evaluation {
     pub before: Outcome,
@@ -88,14 +90,21 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
         })?;
         Ok::<_, String>(Outcome {
             solved: solution.is_some(),
+            #[cfg(test)]
+            proof_id: solution.map(|s| s.proof_id),
             diagnostic,
             micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         })
     };
-    Ok(Evaluation {
+    let result = Evaluation {
         before: solve(&base.model)?,
         after: solve(candidate)?,
-    })
+    };
+    #[cfg(test)]
+    observation::record(source, &result)?;
+    Ok(result)
 }
+#[cfg(test)]
+pub(super) mod observation;
 #[cfg(test)]
 mod tests;

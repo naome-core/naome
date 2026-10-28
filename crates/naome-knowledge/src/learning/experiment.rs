@@ -6,6 +6,7 @@ mod adaptive;
 mod knowledge;
 mod lemma_loop;
 mod lookup;
+mod runtime;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,

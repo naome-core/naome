@@ -1,5 +1,6 @@
 //! Matched initial and genuinely retained lower-state meta-training trials.
 use super::*;
+mod preservation;
 
 pub(super) struct Controllers {
     pub(super) fresh: MetaSeed,
@@ -181,6 +182,7 @@ fn trial(
     controller: &mut MetaSeed,
     coordinates: (usize, u64, usize, usize, usize),
     path: &Path,
+    preservation_mode: model::PreservationMode,
 ) -> (Parent, serde_json::Value) {
     let (context, seed, mode, stage, fork) = coordinates;
     let clock = Clock::start();
@@ -220,6 +222,7 @@ fn trial(
     let job_id =
         9_000_000 + context as u64 * 100 + mode as u64 * 10 + stage as u64 * 2 + fork as u64;
     let mut engine = Engine::default();
+    engine.preservation_mode = preservation_mode;
     for unit in 1..=job.units() {
         assert!(
             clock.wall.elapsed() < Duration::from_secs(120)
@@ -354,6 +357,7 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
                         controller,
                         (context, seed, mode, stage, fork),
                         &trial_path,
+                        model::PreservationMode::default(),
                     );
                     retained = Some(retain_parent(retained, next));
                     summaries.push(summary);
@@ -386,6 +390,45 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
         "warm_trials":warm,"warm_contexts":warm_contexts,"coverage_complete":warm_contexts==if pilot {1} else {6}}),
     );
     controllers
+}
+
+#[test]
+#[ignore = "Explicit complete six-context development training; no final training or test queries"]
+fn outer_learning_development() {
+    assert!(!std::hint::black_box(cfg!(debug_assertions)));
+    let output = std::env::var("NAOME_META_DEVELOPMENT_OUTPUT").expect("fresh development output");
+    let output = Path::new(&output);
+    assert!(!output.exists(), "preserve prior development attempts");
+    std::env::var("NAOME_ADAPTIVE_COMMIT").expect("frozen development source");
+    std::fs::create_dir_all(output).unwrap();
+    let clock = Clock::start();
+    record_inputs(
+        output,
+        &curriculum::adaptive::BANK,
+        false,
+        &[2411, 3203, 3301],
+        2,
+        "outer_training_development_only",
+    );
+    let controllers = train(&output.join("outer-learning"), false);
+    for state in [&controllers.fresh.state, &controllers.continuation.state] {
+        state.validate().unwrap();
+        assert_eq!(state.trials, 24);
+        assert_eq!(state.model.updates, 192);
+    }
+    let elapsed = clock.elapsed();
+    assert!(
+        elapsed["cpu_micros"].as_u64().unwrap() <= 7_200_000_000
+            && elapsed["wall_micros"].as_u64().unwrap() <= 10_800_000_000
+    );
+    write(
+        &output.join("completed.json"),
+        &serde_json::json!({
+            "scope":"outer_training_development_only","outer_trials":48,
+            "final_training_rounds":0,"final_case_queries":0,"elapsed":elapsed,
+            "peak_rss_bytes":resource_boundary(),
+        }),
+    );
 }
 
 #[cfg(test)]

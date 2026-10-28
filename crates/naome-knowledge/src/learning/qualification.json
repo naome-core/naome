@@ -1,286 +1,419 @@
 {
+  "aggregate_learning_budget": {
+    "actual_arms": 8,
+    "boundary": "before next indivisible unit; any last-unit overrun remains measured",
+    "charged_cpu_micros": 3053421380,
+    "charged_wall_micros": 3206679583,
+    "cpu_cap_micros": 3780000000,
+    "original_arms": 7,
+    "reserved_shared_cpu_micros": 321162160,
+    "reserved_shared_wall_micros": 415168280,
+    "seeds": 3,
+    "wall_cap_micros": 5040000000
+  },
   "audit": {
-    "bound_real_meta_trials": 54,
-    "checkpoints": 159,
+    "bound_real_meta_trials": 60,
+    "checkpoints": 270,
     "evaluated_groups": 24,
     "frozen_confirmation_families": 24,
     "matched_queries_per_arm": 96,
     "matched_rounds_per_arm": 2,
-    "meta_checkpoints": 54,
-    "states": 42,
+    "meta_checkpoints": 60,
+    "retired_confirmation_questions": 144,
+    "states": 96,
     "status": "pass",
     "transfer_families": 12,
-    "unique_native_source_target_records": 579,
-    "whole_harness_peak_rss_bytes": 396148736
+    "unique_native_source_target_records": 546,
+    "whole_harness_peak_rss_bytes": 378781696
   },
   "base_commit": "3767e2bdbcf919689cbd87ac43c562a8af587dfe",
+  "checkpoint_exports": {
+    "bound_complete_meta_experiences": 60,
+    "lower_checkpoint_pairs": 270,
+    "storage": "Exact exported lower model/Adam and upper weights/Adam bytes are size- and SHA-256-checked; export counts include repeated references and do not assert unique physical archive blob counts.",
+    "upper_checkpoint_pairs": 60
+  },
+  "complete_ordinary_node_continuation": {
+    "ordinary-warm-continuation": {
+      "binary_sha256": "128135ae5f7b976af8eed48ac6c083cea9cdca4e378a02c424cdf291aa1d76bc",
+      "claim": "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next complete250-update candidate starts from the actually promoted250-update lower weights AND Adam, uses the learned neural plan, consumes a genuinely later checked own-source epoch, and completes all native development/transfer gates. A rejection keeps the exact250-update parent; a promotion keeps500. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery.",
+      "cleanup": {
+        "all_owned_groups_empty": true,
+        "errors": []
+      },
+      "continuation_base_updates": 250,
+      "continuation_candidate_updates": 500,
+      "continuation_qualification": "transfer_regression_rejected",
+      "continuation_selected_updates": 250,
+      "path": ".local/proof-network/autonomous-adaptive-51174-1793136755463992000",
+      "result": "pass"
+    }
+  },
   "counts": [
     {
       "arm": "random_balanced",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
       "retained_updates": 250,
       "seed": 2411,
-      "selected_128": 40,
-      "selected_32": 40,
-      "selected_empty_32": 40,
+      "selected_128": 34,
+      "selected_32": 34,
+      "selected_empty_32": 34,
       "total": 48
     },
     {
       "arm": "adaptive_balanced",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
       "retained_updates": 250,
       "seed": 2411,
-      "selected_128": 40,
+      "selected_128": 34,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_reference",
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 30,
+      "selected_32": 28,
+      "selected_empty_32": 28,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_targeted",
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 33,
+      "selected_32": 30,
+      "selected_empty_32": 30,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_fixed_mixture",
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 34,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_random_mixture",
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 30,
+      "selected_32": 31,
+      "selected_empty_32": 31,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta",
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 33,
+      "selected_32": 30,
+      "selected_empty_32": 30,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta_fresh",
+      "initial_128": 27,
+      "initial_32": 26,
+      "initial_empty_32": 26,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 33,
+      "selected_32": 30,
+      "selected_empty_32": 30,
+      "total": 48
+    },
+    {
+      "arm": "random_balanced",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 0,
+      "seed": 3203,
+      "selected_128": 28,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_balanced",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 0,
+      "seed": 3203,
+      "selected_128": 28,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_reference",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 0,
+      "seed": 3203,
+      "selected_128": 28,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_targeted",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 35,
+      "selected_32": 38,
+      "selected_empty_32": 38,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_fixed_mixture",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 33,
       "selected_32": 40,
       "selected_empty_32": 40,
       "total": 48
     },
     {
-      "arm": "adaptive_reference",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
+      "arm": "adaptive_random_mixture",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 0,
+      "seed": 3203,
+      "selected_128": 28,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
       "retained_updates": 250,
-      "seed": 2411,
+      "seed": 3203,
+      "selected_128": 33,
+      "selected_32": 40,
+      "selected_empty_32": 40,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta_fresh",
+      "initial_128": 28,
+      "initial_32": 34,
+      "initial_empty_32": 34,
+      "retained_updates": 0,
+      "seed": 3203,
+      "selected_128": 28,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "random_balanced",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 30,
+      "selected_32": 32,
+      "selected_empty_32": 32,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_balanced",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 30,
+      "selected_32": 32,
+      "selected_empty_32": 32,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_reference",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 0,
+      "seed": 3301,
+      "selected_128": 24,
+      "selected_32": 23,
+      "selected_empty_32": 23,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_targeted",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 36,
+      "selected_32": 35,
+      "selected_empty_32": 35,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_fixed_mixture",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 250,
+      "seed": 3301,
       "selected_128": 37,
       "selected_32": 34,
       "selected_empty_32": 34,
       "total": 48
     },
     {
-      "arm": "adaptive_targeted",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
+      "arm": "adaptive_random_mixture",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
       "retained_updates": 250,
-      "seed": 2411,
-      "selected_128": 41,
+      "seed": 3301,
+      "selected_128": 38,
+      "selected_32": 40,
+      "selected_empty_32": 40,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 26,
+      "selected_32": 26,
+      "selected_empty_32": 26,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta_fresh",
+      "initial_128": 24,
+      "initial_32": 23,
+      "initial_empty_32": 23,
+      "retained_updates": 500,
+      "seed": 3301,
+      "selected_128": 37,
       "selected_32": 36,
       "selected_empty_32": 36,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_fixed_mixture",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 2411,
-      "selected_128": 38,
-      "selected_32": 34,
-      "selected_empty_32": 34,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_random_mixture",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 2411,
-      "selected_128": 41,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_meta",
-      "initial_128": 30,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 2411,
-      "selected_128": 38,
-      "selected_32": 36,
-      "selected_empty_32": 36,
-      "total": 48
-    },
-    {
-      "arm": "random_balanced",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 0,
-      "seed": 3203,
-      "selected_128": 36,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_balanced",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 0,
-      "seed": 3203,
-      "selected_128": 36,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_reference",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 0,
-      "seed": 3203,
-      "selected_128": 36,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_targeted",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 250,
-      "seed": 3203,
-      "selected_128": 43,
-      "selected_32": 44,
-      "selected_empty_32": 44,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_fixed_mixture",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 250,
-      "seed": 3203,
-      "selected_128": 42,
-      "selected_32": 44,
-      "selected_empty_32": 44,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_random_mixture",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 0,
-      "seed": 3203,
-      "selected_128": 36,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_meta",
-      "initial_128": 36,
-      "initial_32": 40,
-      "initial_empty_32": 40,
-      "retained_updates": 250,
-      "seed": 3203,
-      "selected_128": 44,
-      "selected_32": 46,
-      "selected_empty_32": 46,
-      "total": 48
-    },
-    {
-      "arm": "random_balanced",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 3301,
-      "selected_128": 32,
-      "selected_32": 28,
-      "selected_empty_32": 28,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_balanced",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 3301,
-      "selected_128": 32,
-      "selected_32": 28,
-      "selected_empty_32": 28,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_reference",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 0,
-      "seed": 3301,
-      "selected_128": 35,
-      "selected_32": 28,
-      "selected_empty_32": 28,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_targeted",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 3301,
-      "selected_128": 39,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_fixed_mixture",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 3301,
-      "selected_128": 42,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_random_mixture",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 3301,
-      "selected_128": 44,
-      "selected_32": 40,
-      "selected_empty_32": 40,
-      "total": 48
-    },
-    {
-      "arm": "adaptive_meta",
-      "initial_128": 35,
-      "initial_32": 28,
-      "initial_empty_32": 28,
-      "retained_updates": 250,
-      "seed": 3301,
-      "selected_128": 46,
-      "selected_32": 46,
-      "selected_empty_32": 46,
       "total": 48
     }
   ],
   "criteria": {
     "all_quality_criteria_passed": false,
+    "continuation_coverage_complete": true,
     "meta_criterion_passed": false,
-    "preparation_criterion_passed": false,
-    "primary_criterion_passed": false
+    "nominal_resource_caps_met": true,
+    "preparation_criterion_passed": true,
+    "primary_criterion_passed": false,
+    "training_coverage_complete": true
   },
   "delivery": {
     "auto_merge": false,
     "draft": true,
-    "local_evidence_prefix": "native-transfer-learning-",
+    "local_evidence_prefix": "native-continuation-meta-learning-",
     "merged": false,
     "pull_request": "https://github.com/naome-core/naome/pull/332",
-    "release_or_physical_deployment": false
+    "release_or_physical_deployment": false,
+    "scope_ends_after_finite_comparison": true
+  },
+  "direct_continuation_vs_fresh": {
+    "criterion": "Mean gain >=5pp, no negative fixed seed, paired 24-family bootstrap 95 percent lower bound >0; unchanged.",
+    "primary_32": {
+      "delta_pp": -2.7777777777777786,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -8.333333333333332,
+        2.7777777777777777
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -12,
+        4
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 0,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 12.5,
+          "seed": 3203
+        },
+        {
+          "delta_pp": -20.833333333333336,
+          "seed": 3301
+        }
+      ]
+    },
+    "primary_passed": false,
+    "secondary_128": {
+      "delta_pp": -4.166666666666665,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -11.11111111111111,
+        2.083333333333333
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -16,
+        3
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 0,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 10.416666666666668,
+          "seed": 3203
+        },
+        {
+          "delta_pp": -22.916666666666664,
+          "seed": 3301
+        }
+      ]
+    }
   },
   "fixed_lower_seeds": [
     2411,
@@ -290,76 +423,78 @@
   "frozen_source_hosted": {
     "auto_merge": false,
     "base": "3767e2bdbcf919689cbd87ac43c562a8af587dfe",
-    "candidate_run": 40565259177,
+    "candidate_jobs": 4,
+    "candidate_run": 40589469273,
     "candidate_status": "success",
-    "candidate_url": "https://github.com/naome-core/naome/actions/runs/40565259177",
-    "ci_run": 40565259317,
+    "candidate_url": "https://github.com/naome-core/naome/actions/runs/40589469273",
+    "ci_jobs": 6,
+    "ci_run": 40589469221,
     "ci_status": "success",
-    "ci_url": "https://github.com/naome-core/naome/actions/runs/40565259317",
+    "ci_url": "https://github.com/naome-core/naome/actions/runs/40589469221",
     "draft": true,
-    "head": "a5a423635bc2854c54fd32c141f9e47405995ffd",
+    "head": "447fc027caee86dfa74fc8695640509ba7368dc0",
     "merged": false,
     "required": [
       {
         "bucket": "pass",
-        "link": "https://github.com/naome-core/naome/actions/runs/40565259317/job/122415882860",
+        "link": "https://github.com/naome-core/naome/actions/runs/40589469221/job/122496478954",
         "name": "Rust CI",
         "state": "SUCCESS"
       },
       {
         "bucket": "pass",
-        "link": "https://github.com/naome-core/naome/actions/runs/40565259317/job/122415816261",
+        "link": "https://github.com/naome-core/naome/actions/runs/40589469221/job/122496446367",
         "name": "Rust platform (macOS ARM64)",
         "state": "SUCCESS"
       },
       {
         "bucket": "pass",
-        "link": "https://github.com/naome-core/naome/actions/runs/40565259317/job/122411420394",
+        "link": "https://github.com/naome-core/naome/actions/runs/40589469221/job/122493687951",
         "name": "Rust platform (Linux x86_64)",
         "state": "SUCCESS"
       },
       {
         "bucket": "pass",
-        "link": "https://github.com/naome-core/naome/actions/runs/40565259317/job/122407525609",
+        "link": "https://github.com/naome-core/naome/actions/runs/40589469221/job/122490145780",
         "name": "Rust quality",
         "state": "SUCCESS"
       }
     ]
   },
   "independent_native_checker": {
-    "checked_exported_relation_definitions": 850,
-    "checked_source_helper_compilations": 120,
-    "exact_native_ids": 579,
-    "exact_question_matches": 579,
-    "independent_per_record_contexts": 579,
+    "checked_exported_relation_definitions": 800,
+    "checked_source_helper_compilations": 115,
+    "exact_native_ids": 546,
+    "exact_question_matches": 546,
+    "independent_per_record_contexts": 546,
     "result": "pass",
-    "root_dependency_edges": 119,
-    "root_records_with_dependencies": 115,
-    "unique_source_target_records": 579
+    "root_dependency_edges": 114,
+    "root_records_with_dependencies": 110,
+    "unique_source_target_records": 546
   },
   "independent_questions": 48,
   "independent_whole_families": 24,
   "input_exclusions": {
     "operating": {
-      "default-direct": {
+      "checked-peer-recovery": {
+        "confirmation_id_overlap": [],
+        "generated_resolution_ids": 16,
+        "observed_resolution_ids": 16,
+        "selected_resolution_ids": 16,
+        "transfer_training_id_overlap": []
+      },
+      "ordinary-default-direct": {
         "confirmation_id_overlap": [],
         "generated_resolution_ids": 9,
         "observed_resolution_ids": 9,
         "selected_resolution_ids": 0,
         "transfer_training_id_overlap": []
       },
-      "two-node-peer-recovery": {
+      "ordinary-warm-continuation": {
         "confirmation_id_overlap": [],
-        "generated_resolution_ids": 14,
-        "observed_resolution_ids": 14,
-        "selected_resolution_ids": 14,
-        "transfer_training_id_overlap": []
-      },
-      "unseeded-meta-loop": {
-        "confirmation_id_overlap": [],
-        "generated_resolution_ids": 142,
-        "observed_resolution_ids": 142,
-        "selected_resolution_ids": 142,
+        "generated_resolution_ids": 160,
+        "observed_resolution_ids": 161,
+        "selected_resolution_ids": 161,
         "transfer_training_id_overlap": []
       }
     },
@@ -367,257 +502,2030 @@
     "prior_confirmation_overlap": [],
     "prior_learning_96_exact": true,
     "result": "pass",
-    "retired_confirmation_questions": 96,
+    "retired_confirmation_questions": 144,
     "scope": "Read-only resolution IDs in current operating logs, excluding internal qualification panel calls. Construction-family exclusion and renamed variants are separately enforced by the frozen native corpus owner and its whole-family unit regression. No operating model or proof initializes the scientific run."
   },
-  "interpretation": "The 144 seed-question outcomes are paired repetitions of 48 questions, not 144 independent questions; the CI resamples whole families across three fixed seeds.",
+  "interpretation": "The 144 seed-question outcomes repeat 48 questions across three fixed initializations. The bootstrap resamples 24 whole families and is not a confidence interval over arbitrary seeds. The fixed transfer reward panel is shared; final outcomes are never training labels. Actual warm parents, candidate500 and retained500 events are mechanism evidence only.",
   "launch": {
-    "binary_sha256": "153a0290d627f7a697b4013526ef890c6112729c89df1bf0550dac04a8323d4e",
-    "git_head": "a5a423635bc2854c54fd32c141f9e47405995ffd",
+    "binary_sha256": "fec275d3e8890b06bbc73d47718753884b0d4d92f243734ed9858b1c6b17f8f5",
+    "git_head": "447fc027caee86dfa74fc8695640509ba7368dc0",
     "git_status": "",
-    "protocol_sha256": "9f6ba020f043a10b8a041952dce5b264808ed40095201bdc63cb9dddbf30372e",
-    "source_files_sha256": "ba5eff01be1265f66591f1aabc4123c646ea4a6d38d234634c31b16ad18bcb35",
+    "protocol_sha256": "45f993b626e2f4f33af7e86af5e5a6f302f16592c476b8ba2512fab04e3633e2",
+    "source_files_sha256": "9acd95568c1b9391284e2e521d39a9e2838891c5f10fd823d6cf144ec6be406f",
     "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "limits": [
     "Exact retained artifact chunks spill between arms and restore one arm at a time. Sampled whole-harness peak RSS must remain within the unchanged 768 MiB work reservation; this is measured evidence, not an OS hard limit.",
-    "48 questions in 24 whole construction families are repeated for three fixed lower initializations. 144 outcomes are not 144 independent mathematical questions.",
-    "The family bootstrap averages over these three fixed seeds and resamples the 24 declared families. It is not a confidence interval over arbitrary initialization seeds.",
+    "48 questions in 24 whole construction families repeat for three fixed lower initializations. 144 outcomes are not 144 independent mathematical questions.",
+    "The family bootstrap averages over these three fixed seeds and resamples 24 declared families. It is not a confidence interval over arbitrary initialization seeds.",
     "The source grammar has four bounded operation recipes and shared declared helper prerequisites. Added construction steps do not guarantee greater mathematical difficulty in every recipe.",
     "The upper model learns values for bounded compositions of implemented data, objective and step-size choices. It does not invent arbitrary algorithms, modify the calculus or authorize proofs.",
-    "The 48 outer trials have additional full-system cost. Reporting equal final arm ceilings as equal lifetime compute would be incorrect.",
-    "Direct meta comparisons test the complete trained controller against the specified fixed and random controls. They do not separately isolate upper training from an identically structured untrained upper controller.",
+    "The 48 outer trials have additional full-system cost. Equal final arm ceilings, equal 24 outer-trial counts, and equal 192 upper updates do not imply equal actual or lifetime compute.",
+    "The fresh-parent upper controller is a causal control with the same 24 real trials and 192 upper updates as continuation. This differs from the prior study 48 trials for a single controller; cross-study aggregate differences are not causal evidence.",
+    "Continuation source epochs are frozen by the initial source producer before optimizer calls so all fork comparisons share exact checked inputs. This isolates training-state handling and does not measure the production adaptive question selector.",
+    "A warm 250-update parent, a 500-update candidate, two valid promotions or a 500-update retained model establish mechanism events, not independent outcome gain. Missing genuine warm contexts means incomplete intervention coverage.",
+    "The existing checked-anchor rehearsal and pairwise preference objectives remain unchanged. No additional lower stability constraint is included; this trial isolates continuation-state meta-training.",
     "The secondary 128-expansion condition also adds exploration, so it is not a monotonic budget-only comparison.",
     "Ordinary autonomous questions use the maintained bounded grammar and checked graph proposals. This trial does not qualify semantic interest assessment or unrestricted mathematical discovery.",
     "Development promotion, local restart/gossip integration, held-out quality, hosted CI and physical deployment are separate evidence layers.",
-    "Outer novel acquisition families are partitioned from final novel acquisition families; the meta outcomes use the shared development gate. The fixed transfer panel is shared between outer rewards and final lower gates; it is not an unseen reward panel. Independent final families are never meta-training labels.",
-    "Technical operation, held-out learning quality, hosted CI, release-candidate packaging and physical deployment are separate evidence layers.",
-    "The final receipt commit requires its own exact-head hosted checks; this receipt records the immutable scientific source checks without a circular final commit hash.",
-    "Complete Full Cargo matrix and physical multiple-host or production deployment are not qualified."
+    "Outer novel acquisition families are partitioned from final novel acquisition families; meta outcomes use the shared development gate. The fixed transfer panel is shared by outer rewards and final lower gates and is not an unseen reward panel. Independent final outcomes are never meta-training labels.",
+    "All 144 previous final questions remain retired diagnostics and are excluded from new training and final-family selection. No revealed final result authorizes tuning or an automatic successor experiment.",
+    "Standalone learned-system cost allocations each include all shared outer inputs and conservatively all residual orchestration; they cannot be summed to infer physical cost because shared setup physically ran once.",
+    "Local operation, held-out quality, hosted MR CI, release-candidate packaging, complete Full Cargo qualification and physical deployment remain distinct evidence layers.",
+    "The final receipt commit needs its own exact-head hosted checks. This receipt records immutable scientific-source checks and deliberately avoids a circular final commit hash.",
+    "Complete Full Cargo matrix, software release, physical multiple-host operation and production deployment are not qualified."
   ],
   "local_validation": {
     "bazel_ci_clippy_aspect_targets": 35,
     "bazel_mr_build": "pass",
     "bazel_mr_tests": {
+      "final_source_rerun": "pass",
       "knowledge_ignored": 15,
-      "knowledge_passed": 522,
+      "knowledge_passed": 524,
+      "knowledge_wall_seconds": 191.5,
+      "source": "447fc027caee86dfa74fc8695640509ba7368dc0",
       "targets_passed": 14,
       "test_threads": 2
     },
-    "bounded_peer_fixture_followup": {
-      "actual_sender_and_receiver_pause_recovery_passed": true,
-      "quorum_and_budgets_unchanged": true,
-      "same_original_question_list": true
-    },
     "cargo_release_workspace_all_targets_clippy_warnings_denied": "pass",
     "ci_contracts_passed": 62,
-    "doctest_examples": 7,
-    "engineering_cold_source_layout": {
-      "contexts": 3,
-      "elapsed": {
-        "cpu_micros": 38575167,
-        "wall_micros": 50922452
-      },
-      "final_inferences": 0,
-      "optimizer_updates": 0,
-      "peak_rss_bytes": 114606080,
-      "rounds": 2
+    "cold_source_preflight": {
+      "contexts": [
+        {
+          "context": "context-0",
+          "stages": [
+            {
+              "epoch": 19,
+              "families": 10,
+              "queries": 16,
+              "replay": 10
+            },
+            {
+              "epoch": 31,
+              "families": 10,
+              "queries": 32,
+              "replay": 10
+            }
+          ]
+        },
+        {
+          "context": "context-1",
+          "stages": [
+            {
+              "epoch": 23,
+              "families": 10,
+              "queries": 16,
+              "replay": 10
+            },
+            {
+              "epoch": 36,
+              "families": 9,
+              "queries": 32,
+              "replay": 9
+            }
+          ]
+        },
+        {
+          "context": "context-2",
+          "stages": [
+            {
+              "epoch": 23,
+              "families": 11,
+              "queries": 16,
+              "replay": 11
+            },
+            {
+              "epoch": 35,
+              "families": 10,
+              "queries": 32,
+              "replay": 10
+            }
+          ]
+        },
+        {
+          "context": "context-3",
+          "stages": [
+            {
+              "epoch": 21,
+              "families": 10,
+              "queries": 16,
+              "replay": 10
+            },
+            {
+              "epoch": 33,
+              "families": 11,
+              "queries": 32,
+              "replay": 11
+            }
+          ]
+        },
+        {
+          "context": "context-4",
+          "stages": [
+            {
+              "epoch": 11,
+              "families": 6,
+              "queries": 16,
+              "replay": 11
+            },
+            {
+              "epoch": 16,
+              "families": 10,
+              "queries": 32,
+              "replay": 13
+            }
+          ]
+        },
+        {
+          "context": "context-5",
+          "stages": [
+            {
+              "epoch": 16,
+              "families": 10,
+              "queries": 16,
+              "replay": 10
+            },
+            {
+              "epoch": 31,
+              "families": 10,
+              "queries": 32,
+              "replay": 10
+            }
+          ]
+        },
+        {
+          "context": "pilot-context",
+          "stages": [
+            {
+              "epoch": 9,
+              "families": 4,
+              "queries": 8,
+              "replay": 9
+            },
+            {
+              "epoch": 14,
+              "families": 9,
+              "queries": 32,
+              "replay": 14
+            }
+          ]
+        }
+      ],
+      "result": "pass",
+      "summary": {
+        "contexts": 6,
+        "elapsed": {
+          "cpu_micros": 36813172,
+          "wall_micros": 40573276
+        },
+        "final_inferences": 0,
+        "optimizer_updates": 0,
+        "pilot_cumulative_queries": [
+          8,
+          32
+        ],
+        "queries_per_context": 32,
+        "stages": 2
+      }
     },
+    "doctest_examples": 7,
     "engineering_pilot": {
-      "all_seven_methods_both_rounds": true,
+      "actual_outer_warm_trials": 0,
+      "all_eight_methods_both_rounds": true,
       "audit": {
-        "bound_real_meta_trials": 4,
-        "checkpoints": 38,
+        "bound_real_meta_trials": 12,
+        "checkpoints": 65,
         "evaluated_groups": 12,
         "frozen_confirmation_families": 24,
         "matched_queries_per_arm": 96,
         "matched_rounds_per_arm": 2,
-        "meta_checkpoints": 4,
-        "states": 14,
+        "meta_checkpoints": 12,
+        "retired_confirmation_questions": 144,
+        "states": 24,
         "status": "pass",
         "transfer_families": 12,
-        "unique_native_source_target_records": 96,
-        "whole_harness_peak_rss_bytes": 365248512
+        "unique_native_source_target_records": 94,
+        "whole_harness_peak_rss_bytes": 378437632
       },
-      "final_confirmation_inferences": 0,
+      "continuation_coverage_complete": false,
       "independent_checker": {
-        "checked_exported_relation_definitions": 96,
+        "checked_exported_relation_definitions": 94,
         "checked_source_helper_compilations": 27,
-        "exact_native_ids": 96,
-        "exact_question_matches": 96,
-        "independent_per_record_contexts": 96,
+        "exact_native_ids": 94,
+        "exact_question_matches": 94,
+        "independent_per_record_contexts": 94,
         "result": "pass",
         "root_dependency_edges": 27,
         "root_records_with_dependencies": 24,
-        "unique_source_target_records": 96
+        "unique_source_target_records": 94
       },
-      "result": "pass",
-      "rounds": 14,
+      "independent_final_inferences": 0,
+      "process": {
+        "real_seconds": 1054.82,
+        "system_seconds": 9.09,
+        "user_seconds": 1032.68
+      },
+      "result": "technical_integrity_pass; outer_warm_coverage_incomplete",
       "source": {
-        "bank_sha256": "6f18e5aff1320b1fb53296347c186e618677f8225c64a679a48a77a5a535eef0",
+        "bank_sha256": "88b07fa75d5e2ff4fdea349a204288dbb61f131e3e43c4b2c1ba0c2722add339",
         "meta_parameters": 759,
-        "meta_specification": "9f00f9db0119b98bbf8e5f328c2322dfa9a997753736be52e590f6b19b99542a",
+        "meta_specification": "c5b07df855060d95f125f1a15f13d25a7bbc943b876367cf0205fca32a5b96e5",
         "parameters": 1004001,
         "pilot": true,
-        "protocol_sha256": "9f6ba020f043a10b8a041952dce5b264808ed40095201bdc63cb9dddbf30372e",
+        "protocol_sha256": "45f993b626e2f4f33af7e86af5e5a6f302f16592c476b8ba2512fab04e3633e2",
         "rounds": 2,
         "seeds": [
           3511
         ],
-        "source_commit": "a5a423635bc2854c54fd32c141f9e47405995ffd",
-        "specification": "485657f971c3fe0944f70ae40e37128ffc0c24952c9d688131105c76c864890a"
+        "source_commit": "447fc027caee86dfa74fc8695640509ba7368dc0",
+        "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76"
       }
     },
-    "format_file_workflow_policy": "pass",
-    "main_cold_source_preflight": {
-      "contexts": [
-        {
-          "context": "context-0",
-          "replay": 10,
-          "reserved_metadata_bytes": 3575,
-          "state_bytes": 28586
-        },
-        {
-          "context": "context-1",
-          "replay": 9,
-          "reserved_metadata_bytes": 3575,
-          "state_bytes": 28882
-        },
-        {
-          "context": "context-2",
-          "replay": 10,
-          "reserved_metadata_bytes": 3575,
-          "state_bytes": 28871
-        },
-        {
-          "context": "context-3",
-          "replay": 11,
-          "reserved_metadata_bytes": 3575,
-          "state_bytes": 29183
-        },
-        {
-          "context": "context-4",
-          "replay": 13,
-          "reserved_metadata_bytes": 3575,
-          "state_bytes": 29312
-        },
-        {
-          "context": "context-5",
-          "replay": 10,
-          "reserved_metadata_bytes": 3575,
-          "state_bytes": 28936
-        }
-      ],
-      "no_optimizer_before_all_sources_ready": true,
-      "result": "pass"
+    "focused_learning_tests": {
+      "ignored": 9,
+      "passed": 84,
+      "peak_rss_bytes": 192888832
     },
-    "max_shape_mixed_objective_peak_rss_bytes": 214302720,
+    "format_file_workflow_policy": "pass",
+    "main_experiment": {
+      "all_final_condition_events": 144,
+      "all_final_training_rounds": 48,
+      "all_outer_trials": 48,
+      "audit": {
+        "bound_real_meta_trials": 60,
+        "checkpoints": 270,
+        "evaluated_groups": 24,
+        "frozen_confirmation_families": 24,
+        "matched_queries_per_arm": 96,
+        "matched_rounds_per_arm": 2,
+        "meta_checkpoints": 60,
+        "retired_confirmation_questions": 144,
+        "states": 96,
+        "status": "pass",
+        "transfer_families": 12,
+        "unique_native_source_target_records": 546,
+        "whole_harness_peak_rss_bytes": 378781696
+      },
+      "independent_public_checker": {
+        "checked_exported_relation_definitions": 800,
+        "checked_source_helper_compilations": 115,
+        "exact_native_ids": 546,
+        "exact_question_matches": 546,
+        "independent_per_record_contexts": 546,
+        "result": "pass",
+        "root_dependency_edges": 114,
+        "root_records_with_dependencies": 110,
+        "unique_source_target_records": 546
+      },
+      "physical_process": {
+        "native_job_work_reservation_bytes": 805306368,
+        "os_block_input_operations": 0,
+        "os_block_output_operations": 0,
+        "os_hard_rss_limit": false,
+        "os_time": {
+          "real_seconds": 6211.44,
+          "system_cpu_seconds": 112.76,
+          "user_cpu_seconds": 5870.9
+        },
+        "sampled_native_peak_rss_bytes": 378781696,
+        "scope": "Complete finite source-pinned experiment, including six outer contexts, all48outer trials, both matched rounds of all24final arms, spilled exact artifact chunks and all144final condition events. Native Meter and OS high-water RSS remained inside the unchanged work reservation; no OS hard RSS limit is claimed. OS buffered block counters are not protocol IO bytes.",
+        "whole_harness_peak_memory_footprint_bytes": 368755576,
+        "whole_harness_peak_rss_bytes": 378781696,
+        "whole_harness_within_job_work_reservation": true
+      },
+      "result": "complete; prescribed_quality_criteria_not_met",
+      "scientific_source": "447fc027caee86dfa74fc8695640509ba7368dc0"
+    },
     "ordinary_operating_trials_passed": 3,
     "ordinary_product_and_test_build_barrier": "pass",
+    "ordinary_warm_continuation": {
+      "continuation_base_updates": 250,
+      "continuation_candidate_updates": 500,
+      "continuation_qualification": "transfer_regression_rejected",
+      "continuation_selected_updates": 250,
+      "result": "pass"
+    },
     "rustdoc_warnings_denied": "pass",
-    "source_relation": "All Rust and protocol sources are exactly f98de387; a5a42363 changes only the bounded Python peer-readiness process fixture. Its full real operating retry qualifies that change.",
-    "workspace_doctest_targets": 9
+    "source_relation": "The ordinary Node operating trials ran on b077e403 (product Rust/ML code exactly7b07251f). Commit447fc027 changes only the test-only outer acquisition staging and its scientific protocol: pilot8then24 originalqueries; main16then16 unchanged. All public mathematical crates remain byte-identical; new full checks and cold preflight qualify the staged source.",
+    "unchanged_operating_binary_sha256": "128135ae5f7b976af8eed48ac6c083cea9cdca4e378a02c424cdf291aa1d76bc",
+    "workspace_doctest_targets": 10
   },
   "lower_parameters": 1004001,
-  "lower_specification": "485657f971c3fe0944f70ae40e37128ffc0c24952c9d688131105c76c864890a",
-  "matched_arms": 7,
+  "matched_arms": 8,
   "matched_queries_per_arm": 96,
   "matched_rounds": 2,
   "meta_parameters": 759,
-  "meta_specification": "9f00f9db0119b98bbf8e5f328c2322dfa9a997753736be52e590f6b19b99542a",
+  "native_check_scope": "Independent exported acquisition/final proof sources compile with exact targets/proof IDs and complete required helper/definition closures. Transfer outcomes are native-checker-produced and checkpoint-bound; independent source recompile of every transfer proof is not claimed.",
+  "old_receipt": {
+    "artifact": "prior-qualification.json",
+    "interpretation": "The previous transfer-study qualification receipt remains immutable historical evidence and is not used to initialize this experiment.",
+    "preserved": true,
+    "sha256": "f41b8b5b554f0d31405f97c39bb76f2d2969b4cdfcb32a75dd7d7e8eb161afa8"
+  },
   "operating": {
-    "default-direct": {
-      "binary_sha256": "3b87e567eb2a1be89e0db53b3c63956739e9ab790725f31aab56f6d3b9d810b7",
-      "claim": "local process, real checking and libp2p exchange with bounded question/proof providers and structural selection",
-      "cleanup": {
-        "all_owned_groups_empty": true,
-        "errors": []
+    "artifact": "audit/operating.json",
+    "scope": "Complete raw operating summaries remain in the evidence archive; this receipt records their result and custody bindings.",
+    "sha256": "7a1a0402f3167bb434bf6730b7c36e9cde5d4259705fa4ec66a453b3ce51a315",
+    "trials": {
+      "checked-peer-recovery": {
+        "binary_sha256": "128135ae5f7b976af8eed48ac6c083cea9cdca4e378a02c424cdf291aa1d76bc",
+        "claim": "Two ordinary loopback nodes, actual fresh 1,004,001-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; selection follows the current research policy.",
+        "cleanup": {
+          "all_owned_groups_empty": true,
+          "errors": []
+        },
+        "path": ".local/proof-network/autonomous-native-55324-1793137037752370000",
+        "result": "pass"
       },
-      "path": ".local/proof-network/autonomous-direct-90589-1793127807855975000",
-      "result": "pass"
-    },
-    "two-node-peer-recovery": {
-      "binary_sha256": "3b87e567eb2a1be89e0db53b3c63956739e9ab790725f31aab56f6d3b9d810b7",
-      "claim": "Two ordinary loopback nodes, actual fresh 1,004,001-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; selection follows the current research policy.",
-      "cleanup": {
-        "all_owned_groups_empty": true,
-        "errors": []
+      "ordinary-default-direct": {
+        "binary_sha256": "128135ae5f7b976af8eed48ac6c083cea9cdca4e378a02c424cdf291aa1d76bc",
+        "claim": "local process, real checking and libp2p exchange with bounded question/proof providers and structural selection",
+        "cleanup": {
+          "all_owned_groups_empty": true,
+          "errors": []
+        },
+        "path": ".local/proof-network/autonomous-direct-59790-1793137204967665000",
+        "result": "pass"
       },
-      "path": ".local/proof-network/autonomous-native-85379-1793127619571766000",
-      "result": "pass"
-    },
-    "unseeded-meta-loop": {
-      "binary_sha256": "3b87e567eb2a1be89e0db53b3c63956739e9ab790725f31aab56f6d3b9d810b7",
-      "claim": "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next executed training plan uses those learned weights and model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery.",
-      "cleanup": {
-        "all_owned_groups_empty": true,
-        "errors": []
-      },
-      "path": ".local/proof-network/autonomous-adaptive-76784-1793127079966697000",
-      "result": "pass"
+      "ordinary-warm-continuation": {
+        "binary_sha256": "128135ae5f7b976af8eed48ac6c083cea9cdca4e378a02c424cdf291aa1d76bc",
+        "claim": "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next complete250-update candidate starts from the actually promoted250-update lower weights AND Adam, uses the learned neural plan, consumes a genuinely later checked own-source epoch, and completes all native development/transfer gates. A rejection keeps the exact250-update parent; a promotion keeps500. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery.",
+        "cleanup": {
+          "all_owned_groups_empty": true,
+          "errors": []
+        },
+        "path": ".local/proof-network/autonomous-adaptive-51174-1793136755463992000",
+        "result": "pass"
+      }
     }
   },
   "ordering": {
     "all_recorded_learning_before_first_final": true,
     "complete_outer_trials": 48,
-    "completed_round_events": 42,
-    "final_events": 126,
-    "first_final_line": 1177
+    "completed_round_events": 48,
+    "final_events": 144,
+    "first_final_line": 1183
   },
   "outer_learning": {
-    "distinct_composed_plans": 30,
-    "exploratory_selections": 11,
-    "meta_direct_cpu_seconds": 0.047196,
+    "contexts": {
+      "0": {
+        "lower_seed": 4507,
+        "modes": {
+          "continuation": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              17,
+              14,
+              -5,
+              -10
+            ],
+            "candidate_transfer_gains": [
+              0.16666666666666666,
+              0.16666666666666666,
+              -0.3333333333333333,
+              -0.25
+            ],
+            "neural_selections": 3,
+            "protected_losses": 0,
+            "retained_candidates": 2,
+            "retained_transfer_gains": [
+              0.16666666666666666,
+              0.16666666666666666,
+              0,
+              0
+            ]
+          },
+          "fresh": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              17,
+              14,
+              2,
+              2
+            ],
+            "candidate_transfer_gains": [
+              0.16666666666666666,
+              0.16666666666666666,
+              -0.16666666666666666,
+              -0.08333333333333333
+            ],
+            "neural_selections": 3,
+            "protected_losses": 0,
+            "retained_candidates": 2,
+            "retained_transfer_gains": [
+              0.16666666666666666,
+              0.16666666666666666,
+              0,
+              0
+            ]
+          }
+        },
+        "trials": 8
+      },
+      "1": {
+        "lower_seed": 4603,
+        "modes": {
+          "continuation": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              4,
+              11,
+              1,
+              -2
+            ],
+            "candidate_transfer_gains": [
+              0.25,
+              0.16666666666666666,
+              0.0,
+              0.0
+            ],
+            "neural_selections": 2,
+            "protected_losses": 0,
+            "retained_candidates": 1,
+            "retained_transfer_gains": [
+              0.25,
+              0,
+              0,
+              0
+            ]
+          },
+          "fresh": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              4,
+              11,
+              2,
+              2
+            ],
+            "candidate_transfer_gains": [
+              0.25,
+              0.16666666666666666,
+              0.16666666666666666,
+              0.16666666666666666
+            ],
+            "neural_selections": 2,
+            "protected_losses": 0,
+            "retained_candidates": 3,
+            "retained_transfer_gains": [
+              0.25,
+              0,
+              0.16666666666666666,
+              0.16666666666666666
+            ]
+          }
+        },
+        "trials": 8
+      },
+      "2": {
+        "lower_seed": 4703,
+        "modes": {
+          "continuation": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              15,
+              15,
+              -1,
+              -3
+            ],
+            "candidate_transfer_gains": [
+              0.3333333333333333,
+              0.3333333333333333,
+              0.0,
+              0.0
+            ],
+            "neural_selections": 3,
+            "protected_losses": 2,
+            "retained_candidates": 2,
+            "retained_transfer_gains": [
+              0.3333333333333333,
+              0.3333333333333333,
+              0,
+              0
+            ]
+          },
+          "fresh": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              15,
+              15,
+              15,
+              15
+            ],
+            "candidate_transfer_gains": [
+              0.3333333333333333,
+              0.3333333333333333,
+              0.3333333333333333,
+              0.3333333333333333
+            ],
+            "neural_selections": 3,
+            "protected_losses": 0,
+            "retained_candidates": 4,
+            "retained_transfer_gains": [
+              0.3333333333333333,
+              0.3333333333333333,
+              0.3333333333333333,
+              0.3333333333333333
+            ]
+          }
+        },
+        "trials": 8
+      },
+      "3": {
+        "lower_seed": 4801,
+        "modes": {
+          "continuation": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              1,
+              -3,
+              10,
+              11
+            ],
+            "candidate_transfer_gains": [
+              0.25,
+              0.25,
+              0.3333333333333333,
+              0.25
+            ],
+            "neural_selections": 4,
+            "protected_losses": 2,
+            "retained_candidates": 1,
+            "retained_transfer_gains": [
+              0.25,
+              0,
+              0,
+              0
+            ]
+          },
+          "fresh": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              -3,
+              -3,
+              13,
+              13
+            ],
+            "candidate_transfer_gains": [
+              0.25,
+              0.25,
+              0.5,
+              0.5
+            ],
+            "neural_selections": 4,
+            "protected_losses": 0,
+            "retained_candidates": 2,
+            "retained_transfer_gains": [
+              0,
+              0,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "trials": 8
+      },
+      "4": {
+        "lower_seed": 4903,
+        "modes": {
+          "continuation": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              19,
+              23,
+              -3,
+              -5
+            ],
+            "candidate_transfer_gains": [
+              0.5,
+              0.6666666666666666,
+              0.0,
+              0.0
+            ],
+            "neural_selections": 2,
+            "protected_losses": 3,
+            "retained_candidates": 1,
+            "retained_transfer_gains": [
+              0.5,
+              0,
+              0,
+              0
+            ]
+          },
+          "fresh": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              19,
+              23,
+              18,
+              18
+            ],
+            "candidate_transfer_gains": [
+              0.5,
+              0.6666666666666666,
+              0.4166666666666667,
+              0.4166666666666667
+            ],
+            "neural_selections": 2,
+            "protected_losses": 3,
+            "retained_candidates": 1,
+            "retained_transfer_gains": [
+              0.5,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        "trials": 8
+      },
+      "5": {
+        "lower_seed": 5003,
+        "modes": {
+          "continuation": {
+            "anchor_losses": 0,
+            "candidate_development_gains": [
+              2,
+              3,
+              -1,
+              -1
+            ],
+            "candidate_transfer_gains": [
+              0.25,
+              0.25,
+              -0.08333333333333333,
+              -0.08333333333333333
+            ],
+            "neural_selections": 4,
+            "protected_losses": 0,
+            "retained_candidates": 2,
+            "retained_transfer_gains": [
+              0.25,
+              0.25,
+              0,
+              0
+            ]
+          },
+          "fresh": {
+            "anchor_losses": 1,
+            "candidate_development_gains": [
+              2,
+              0,
+              4,
+              -8
+            ],
+            "candidate_transfer_gains": [
+              0.25,
+              0.25,
+              0.16666666666666666,
+              0.0
+            ],
+            "neural_selections": 4,
+            "protected_losses": 0,
+            "retained_candidates": 1,
+            "retained_transfer_gains": [
+              0.25,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        "trials": 8
+      }
+    },
+    "coverage_complete": true,
+    "distinct_composed_plans": 19,
+    "exploratory_selections": 12,
+    "fork_input_equality": [
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 0,
+        "jobs": [
+          9000000,
+          9000001
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 0,
+        "jobs": [
+          9000002,
+          9000003
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 0,
+        "jobs": [
+          9000010,
+          9000011
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 0,
+        "jobs": [
+          9000012,
+          9000013
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 1,
+        "jobs": [
+          9000100,
+          9000101
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 1,
+        "jobs": [
+          9000102,
+          9000103
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 1,
+        "jobs": [
+          9000110,
+          9000111
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 1,
+        "jobs": [
+          9000112,
+          9000113
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 2,
+        "jobs": [
+          9000200,
+          9000201
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 2,
+        "jobs": [
+          9000202,
+          9000203
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 2,
+        "jobs": [
+          9000210,
+          9000211
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 2,
+        "jobs": [
+          9000212,
+          9000213
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 3,
+        "jobs": [
+          9000300,
+          9000301
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 3,
+        "jobs": [
+          9000302,
+          9000303
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 3,
+        "jobs": [
+          9000310,
+          9000311
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 3,
+        "jobs": [
+          9000312,
+          9000313
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 4,
+        "jobs": [
+          9000400,
+          9000401
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 4,
+        "jobs": [
+          9000402,
+          9000403
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 4,
+        "jobs": [
+          9000410,
+          9000411
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 4,
+        "jobs": [
+          9000412,
+          9000413
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 5,
+        "jobs": [
+          9000500,
+          9000501
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 5,
+        "jobs": [
+          9000502,
+          9000503
+        ],
+        "lower_feedback": true,
+        "mode": "fresh",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 5,
+        "jobs": [
+          9000510,
+          9000511
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 0
+      },
+      {
+        "checked_source_hash": true,
+        "complete_nonupper_state": true,
+        "context": 5,
+        "jobs": [
+          9000512,
+          9000513
+        ],
+        "lower_feedback": true,
+        "mode": "continuation",
+        "paired_lower_model_and_adam": true,
+        "stage": 1
+      }
+    ],
+    "mechanism_interpretation": "A genuinely qualified 250-update lower model and Adam parent and a complete candidate at 500 updates continuation show mechanism coverage. A selected 500-update model requires another unchanged promotion. Neither activity, two promotions, nor 500 retained updates establish independent quality.",
+    "meta_direct_cpu_seconds": 0.050936,
     "meta_updates": 384,
-    "neural_selections": 37,
-    "physical_cpu_seconds": 2491.755669,
-    "physical_wall_seconds": 2511.142317,
+    "modes": {
+      "continuation": {
+        "allocation": "Each learned system is charged all measured shared source/prerequisite preparation, its own 24 trials and conservatively the complete residual outer orchestration. Shared inputs occurred physically once in the comparison, but are required by either standalone system. The two standalone allocations must not be summed as physical whole-process cost.",
+        "candidate_updates": {
+          "250": 12,
+          "500": 12
+        },
+        "candidates_at500": 12,
+        "charged_residual_orchestration_cpu_seconds": 0.0705819999998738,
+        "charged_residual_orchestration_wall_seconds": 0.12949900000029402,
+        "charged_shared_source_and_prerequisite_cpu_seconds": 46.113906,
+        "charged_shared_source_and_prerequisite_wall_seconds": 50.469359,
+        "exploratory_selections": 6,
+        "final_upper_checkpoint": {
+          "optimizer": {
+            "bytes": 6080,
+            "sha256": "a30f30aa5c3499b6a74c8a24a768ea012ad0c227f1f0e32d92d8fb4d2ff8be86"
+          },
+          "seed": 22026857038042177,
+          "specification": "c5b07df855060d95f125f1a15f13d25a7bbc943b876367cf0205fca32a5b96e5",
+          "updates": 192,
+          "weights": {
+            "bytes": 3036,
+            "sha256": "2efdec6dda5d2696402eb0c0eb24012e8c050ec973c69ac05289c812ba71b2cf"
+          }
+        },
+        "meta_direct_cpu_seconds": 0.025178,
+        "meta_direct_wall_seconds": 0.027143,
+        "meta_updates": 192,
+        "neural_selections": 18,
+        "parent_updates": {
+          "0": 12,
+          "250": 12
+        },
+        "parents": [
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "fbafa35572fc13ee8dda232aa057621195d190ae05a13f86dd5aad42142f61af"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "25d625129d3213e5dcb0823e845fc7b0b39436e8a942703bb23e473e9af60268"
+              },
+              "seed": 4507,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 0,
+            "fork": 0,
+            "job": 9000012,
+            "new_accepted_epochs": 12,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 61,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 44,
+              "transfer": {
+                "after": 16777203,
+                "before": 16776432,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000010,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 19,
+            "source_epoch": 31,
+            "source_trained": 19
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "fbafa35572fc13ee8dda232aa057621195d190ae05a13f86dd5aad42142f61af"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "25d625129d3213e5dcb0823e845fc7b0b39436e8a942703bb23e473e9af60268"
+              },
+              "seed": 4507,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 0,
+            "fork": 1,
+            "job": 9000013,
+            "new_accepted_epochs": 12,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 61,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 44,
+              "transfer": {
+                "after": 16777203,
+                "before": 16776432,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000010,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 19,
+            "source_epoch": 31,
+            "source_trained": 19
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "553bace416483965cbf14d0d5a2075242a1f4fb3146d3d3939c175880f241689"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "6ab10434f9a3f72d4a1967fbd15fc00c1ed7499b8312c3d3a6d6ea38abc3a2b4"
+              },
+              "seed": 4603,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 1,
+            "fork": 0,
+            "job": 9000112,
+            "new_accepted_epochs": 13,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 56,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 52,
+              "transfer": {
+                "after": 16777203,
+                "before": 16727280,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000110,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 23,
+            "source_epoch": 36,
+            "source_trained": 23
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "553bace416483965cbf14d0d5a2075242a1f4fb3146d3d3939c175880f241689"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "6ab10434f9a3f72d4a1967fbd15fc00c1ed7499b8312c3d3a6d6ea38abc3a2b4"
+              },
+              "seed": 4603,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 1,
+            "fork": 1,
+            "job": 9000113,
+            "new_accepted_epochs": 13,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 56,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 52,
+              "transfer": {
+                "after": 16777203,
+                "before": 16727280,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000110,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 23,
+            "source_epoch": 36,
+            "source_trained": 23
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "5067bee83839ace36c2e1224617635077fe0f905352026e11ce313ac04865f48"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "8c865611cf1bc5b6778ae0164b06ad5160df87d5bf0ddcbbe14c8b50800d2c9a"
+              },
+              "seed": 4703,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 2,
+            "fork": 0,
+            "job": 9000212,
+            "new_accepted_epochs": 12,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 59,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 44,
+              "transfer": {
+                "after": 16777203,
+                "before": 4144368,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000210,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 23,
+            "source_epoch": 35,
+            "source_trained": 23
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "5067bee83839ace36c2e1224617635077fe0f905352026e11ce313ac04865f48"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "8c865611cf1bc5b6778ae0164b06ad5160df87d5bf0ddcbbe14c8b50800d2c9a"
+              },
+              "seed": 4703,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 2,
+            "fork": 1,
+            "job": 9000213,
+            "new_accepted_epochs": 12,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 59,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 44,
+              "transfer": {
+                "after": 16777203,
+                "before": 4144368,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000210,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 23,
+            "source_epoch": 35,
+            "source_trained": 23
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "3913b0b0698127182e254094ad50f3fcbeb177ac06836ccd39a106d0bef195d3"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "91b4fe8c3c1228df504b0d30019401d8ddad70ddf129f68504ab3c757eaac01d"
+              },
+              "seed": 4801,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 3,
+            "fork": 0,
+            "job": 9000312,
+            "new_accepted_epochs": 12,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 50,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 49,
+              "transfer": {
+                "after": 4190448,
+                "before": 3207216,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000310,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 21,
+            "source_epoch": 33,
+            "source_trained": 21
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "3913b0b0698127182e254094ad50f3fcbeb177ac06836ccd39a106d0bef195d3"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "91b4fe8c3c1228df504b0d30019401d8ddad70ddf129f68504ab3c757eaac01d"
+              },
+              "seed": 4801,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 3,
+            "fork": 1,
+            "job": 9000313,
+            "new_accepted_epochs": 12,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 50,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 49,
+              "transfer": {
+                "after": 4190448,
+                "before": 3207216,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000310,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 21,
+            "source_epoch": 33,
+            "source_trained": 21
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "a9408534ecb37e5f7c4111362a180ee955fef2f2b0b2d2c26415ef61c34a0951"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "422094afb44d9f5077e4aea251a420a7c0226c062f011a9dc43b5d231289e688"
+              },
+              "seed": 4903,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 4,
+            "fork": 0,
+            "job": 9000412,
+            "new_accepted_epochs": 5,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 48,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 29,
+              "transfer": {
+                "after": 16773168,
+                "before": 12288,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000410,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 11,
+            "source_epoch": 16,
+            "source_trained": 11
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "a9408534ecb37e5f7c4111362a180ee955fef2f2b0b2d2c26415ef61c34a0951"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "422094afb44d9f5077e4aea251a420a7c0226c062f011a9dc43b5d231289e688"
+              },
+              "seed": 4903,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 4,
+            "fork": 1,
+            "job": 9000413,
+            "new_accepted_epochs": 5,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 48,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 29,
+              "transfer": {
+                "after": 16773168,
+                "before": 12288,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000410,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 11,
+            "source_epoch": 16,
+            "source_trained": 11
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "60d59a85f6e90b42199fdcb2b5de54537072eaf2234b4d7f3483117ccfcbd70e"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "65ed885355bc8d23151794d3799487779743c27640e344e762152ab2e1635c3f"
+              },
+              "seed": 5003,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 5,
+            "fork": 0,
+            "job": 9000512,
+            "new_accepted_epochs": 15,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 61,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 59,
+              "transfer": {
+                "after": 16777203,
+                "before": 4193520,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000510,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 16,
+            "source_epoch": 31,
+            "source_trained": 16
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "60d59a85f6e90b42199fdcb2b5de54537072eaf2234b4d7f3483117ccfcbd70e"
+              },
+              "optimizer": {
+                "bytes": 8038656,
+                "sha256": "65ed885355bc8d23151794d3799487779743c27640e344e762152ab2e1635c3f"
+              },
+              "seed": 5003,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 250
+            },
+            "candidate_updates": 500,
+            "context": 5,
+            "fork": 1,
+            "job": 9000513,
+            "new_accepted_epochs": 15,
+            "parent_gate": {
+              "anchor_regression": false,
+              "candidate_score": 61,
+              "development_regression": false,
+              "diagnostic": "candidate_promoted",
+              "incumbent_score": 59,
+              "transfer": {
+                "after": 16777203,
+                "before": 4193520,
+                "observed": 16777215
+              },
+              "unit": 150
+            },
+            "parent_job": 9000510,
+            "parent_promoted": true,
+            "promoted": false,
+            "selected_updates": 250,
+            "source_attempted": 16,
+            "source_epoch": 31,
+            "source_trained": 16
+          }
+        ],
+        "physical_trial_cpu_seconds": 1380.542244,
+        "physical_trial_wall_seconds": 1443.931238,
+        "qualification_diagnostics": {
+          "candidate_promoted": 9,
+          "development_regression_rejected": 7,
+          "no_development_gain_rejected": 6,
+          "no_transfer_gain_rejected": 1,
+          "transfer_regression_rejected": 1
+        },
+        "real_trials": 24,
+        "retained_candidates": 9,
+        "selected_at500": 0,
+        "selected_updates": {
+          "0": 3,
+          "250": 21
+        },
+        "standalone_outer_system_cpu_seconds": 1426.7267319999999,
+        "standalone_outer_system_wall_seconds": 1494.5300960000002,
+        "warm_contexts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "warm_trials": 12
+      },
+      "fresh": {
+        "allocation": "Each learned system is charged all measured shared source/prerequisite preparation, its own 24 trials and conservatively the complete residual outer orchestration. Shared inputs occurred physically once in the comparison, but are required by either standalone system. The two standalone allocations must not be summed as physical whole-process cost.",
+        "candidate_updates": {
+          "250": 24
+        },
+        "candidates_at500": 0,
+        "charged_residual_orchestration_cpu_seconds": 0.0705819999998738,
+        "charged_residual_orchestration_wall_seconds": 0.12949900000029402,
+        "charged_shared_source_and_prerequisite_cpu_seconds": 46.113906,
+        "charged_shared_source_and_prerequisite_wall_seconds": 50.469359,
+        "exploratory_selections": 6,
+        "final_upper_checkpoint": {
+          "optimizer": {
+            "bytes": 6080,
+            "sha256": "7c1e6b8ba1ee5f1712c169e6dd0a6748c71bd390af354f325eb1838930e0bf7d"
+          },
+          "seed": 22026857038042177,
+          "specification": "c5b07df855060d95f125f1a15f13d25a7bbc943b876367cf0205fca32a5b96e5",
+          "updates": 192,
+          "weights": {
+            "bytes": 3036,
+            "sha256": "b91ced913de5262ac4ffa454a0ecff4d5e96c24c729e6eebb0edccf3291c486f"
+          }
+        },
+        "meta_direct_cpu_seconds": 0.025758,
+        "meta_direct_wall_seconds": 0.026705,
+        "meta_updates": 192,
+        "neural_selections": 18,
+        "parent_updates": {
+          "0": 24
+        },
+        "parents": [
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "b47dcfe4c121f51ab025b13c75a771d53017ffd0f36f1bb7e2112e3ba3dc4b78"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4507,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 0,
+            "fork": 0,
+            "job": 9000002,
+            "new_accepted_epochs": 31,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": false,
+            "selected_updates": 0,
+            "source_attempted": 0,
+            "source_epoch": 31,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "b47dcfe4c121f51ab025b13c75a771d53017ffd0f36f1bb7e2112e3ba3dc4b78"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4507,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 0,
+            "fork": 1,
+            "job": 9000003,
+            "new_accepted_epochs": 31,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": false,
+            "selected_updates": 0,
+            "source_attempted": 0,
+            "source_epoch": 31,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "8946d7528ce92679505fdfc56518e27d7de658444157955080a9c0c763c594de"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4603,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 1,
+            "fork": 0,
+            "job": 9000102,
+            "new_accepted_epochs": 36,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": true,
+            "selected_updates": 250,
+            "source_attempted": 0,
+            "source_epoch": 36,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "8946d7528ce92679505fdfc56518e27d7de658444157955080a9c0c763c594de"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4603,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 1,
+            "fork": 1,
+            "job": 9000103,
+            "new_accepted_epochs": 36,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": true,
+            "selected_updates": 250,
+            "source_attempted": 0,
+            "source_epoch": 36,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "cff5928733e5a03191ee82c809707b9c73b6f7e71815c9b65c9d76d6ea420504"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4703,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 2,
+            "fork": 0,
+            "job": 9000202,
+            "new_accepted_epochs": 35,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": true,
+            "selected_updates": 250,
+            "source_attempted": 0,
+            "source_epoch": 35,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "cff5928733e5a03191ee82c809707b9c73b6f7e71815c9b65c9d76d6ea420504"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4703,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 2,
+            "fork": 1,
+            "job": 9000203,
+            "new_accepted_epochs": 35,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": true,
+            "selected_updates": 250,
+            "source_attempted": 0,
+            "source_epoch": 35,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "9a6e4561320f1be9d1f1a6190205c85b297e1a11395edbc1283547ccc277387c"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4801,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 3,
+            "fork": 0,
+            "job": 9000302,
+            "new_accepted_epochs": 33,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": true,
+            "selected_updates": 250,
+            "source_attempted": 0,
+            "source_epoch": 33,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "9a6e4561320f1be9d1f1a6190205c85b297e1a11395edbc1283547ccc277387c"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4801,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 3,
+            "fork": 1,
+            "job": 9000303,
+            "new_accepted_epochs": 33,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": true,
+            "selected_updates": 250,
+            "source_attempted": 0,
+            "source_epoch": 33,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "c7008c34fb324ef6c86b61e07c17252c2cd08e5c00b740e3e1d7644100945328"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4903,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 4,
+            "fork": 0,
+            "job": 9000402,
+            "new_accepted_epochs": 16,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": false,
+            "selected_updates": 0,
+            "source_attempted": 0,
+            "source_epoch": 16,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "c7008c34fb324ef6c86b61e07c17252c2cd08e5c00b740e3e1d7644100945328"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 4903,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 4,
+            "fork": 1,
+            "job": 9000403,
+            "new_accepted_epochs": 16,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": false,
+            "selected_updates": 0,
+            "source_attempted": 0,
+            "source_epoch": 16,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "3a228106181826108dc9d2b1b7aa47abf85be52911b994f41dceccf7ce68a8ad"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 5003,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 5,
+            "fork": 0,
+            "job": 9000502,
+            "new_accepted_epochs": 31,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": false,
+            "selected_updates": 0,
+            "source_attempted": 0,
+            "source_epoch": 31,
+            "source_trained": 0
+          },
+          {
+            "actual_lower_parent": {
+              "model": {
+                "bytes": 4018944,
+                "sha256": "3a228106181826108dc9d2b1b7aa47abf85be52911b994f41dceccf7ce68a8ad"
+              },
+              "optimizer": {
+                "bytes": 256,
+                "sha256": "d51cafc1a9901c1d26d289a9e29457bb4bb041f704ee783577e890d516927813"
+              },
+              "seed": 5003,
+              "specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+              "updates": 0
+            },
+            "candidate_updates": 250,
+            "context": 5,
+            "fork": 1,
+            "job": 9000503,
+            "new_accepted_epochs": 31,
+            "parent_gate": null,
+            "parent_job": null,
+            "parent_promoted": false,
+            "promoted": false,
+            "selected_updates": 0,
+            "source_attempted": 0,
+            "source_epoch": 31,
+            "source_trained": 0
+          }
+        ],
+        "physical_trial_cpu_seconds": 1390.369565,
+        "physical_trial_wall_seconds": 1470.437733,
+        "qualification_diagnostics": {
+          "candidate_promoted": 13,
+          "development_regression_rejected": 3,
+          "forgetting_rejected": 1,
+          "no_development_gain_rejected": 3,
+          "transfer_regression_rejected": 4
+        },
+        "real_trials": 24,
+        "retained_candidates": 13,
+        "selected_at500": 0,
+        "selected_updates": {
+          "0": 11,
+          "250": 13
+        },
+        "standalone_outer_system_cpu_seconds": 1436.5540529999998,
+        "standalone_outer_system_wall_seconds": 1521.0365910000003,
+        "warm_contexts": [],
+        "warm_trials": 0
+      }
+    },
+    "neural_selections": 36,
+    "physical_cpu_seconds": 2817.096297,
+    "physical_wall_seconds": 2964.967829,
     "real_trials": 48,
-    "sum_trial_cpu_seconds": 2446.443783
+    "residual_orchestration_cpu_seconds": 0.0705819999998738,
+    "residual_orchestration_wall_seconds": 0.12949900000029402,
+    "shared_source_and_prerequisite_cpu_seconds": 46.113906,
+    "shared_source_and_prerequisite_wall_seconds": 50.469359,
+    "sum_trial_cpu_seconds": 2770.911809,
+    "sum_trial_wall_seconds": 2914.368971,
+    "warm_contexts": 6,
+    "warm_trials": 12
   },
   "physical_costs": {
-    "all_learning_cpu_seconds": 4822.376395,
-    "all_learning_wall_seconds": 4875.404569,
-    "interpretation": "Shared acquisition is physically counted once in whole-process totals and charged to every arm ceiling. The learned system additionally pays all outer training; final lower ceilings are matched, lifetime compute is not.",
-    "outer_training_cpu_seconds": 2491.755669,
-    "outer_training_wall_seconds": 2511.142317,
-    "physically_common_prerequisite_cpu_seconds": 2.271475,
-    "physically_common_prerequisite_wall_seconds": 3.100712,
-    "physically_shared_acquisition_cpu_seconds": 36.145028,
-    "physically_shared_acquisition_wall_seconds": 54.113677,
-    "whole_experiment_cpu_seconds": 5172.840387,
-    "whole_experiment_wall_seconds": 5228.97024
+    "all_learning_cpu_seconds": 5589.583542,
+    "all_learning_wall_seconds": 5808.481392,
+    "interpretation": "Physical whole-process cost counts each common source once. Every final arm ceiling charges all its prerequisite and acquisition cost; those charges already appear in charged_cpu/wall and are never added twice. Each learned system additionally pays its allocated outer work. Matched lower ceilings and equal24-trial upper counts do not imply equal actual or lifetime compute.",
+    "outer_training_cpu_seconds": 2817.096297,
+    "outer_training_wall_seconds": 2964.967829,
+    "physically_common_prerequisite_cpu_seconds": 2.232501,
+    "physically_common_prerequisite_wall_seconds": 2.6921850000000003,
+    "physically_shared_acquisition_cpu_seconds": 37.912769,
+    "physically_shared_acquisition_wall_seconds": 49.20385,
+    "whole_experiment_cpu_seconds": 5983.642065,
+    "whole_experiment_wall_seconds": 6210.811266
   },
   "preserved_failures": [
     {
-      "log": "logs/native-transfer-source-layout.txt",
-      "outcome": "Missing Frontier output directory before any optimizer or final inference; fixed ordinary output directory creation.",
-      "stage": "cold-source-layout-01"
+      "log": "logs/ci-contracts-system-python.txt",
+      "outcome": "System Python3.9 lacks tomllib; all62cases passed with installed Python3.14.4. No source change.",
+      "stage": "ci-contracts-system-python"
     },
     {
-      "log": "logs/native-transfer-bazel-tests.txt",
-      "outcome": "Two existing intake tests failed; one recorded OS memory-pressure pause. The complete final bounded two-thread suite passed unchanged.",
-      "stage": "bazel-tests-3-threads"
+      "logs": [
+        "logs/bazel-mr-tests-pressure.txt",
+        "logs/bazel-knowledge-first.txt",
+        "logs/bazel-isolated-reverse-chain.txt",
+        "logs/bazel-isolated-parent-program.txt",
+        "logs/bazel-isolated-program-transfer.txt"
+      ],
+      "outcome": "521passed3failed15ignored. Two failing Intake cases explicitly recorded operating-system memory-pressure pauses. All three exact cases then passed on the same Bazel binary, serially without parallel builds (1.45/6.57/3.17seconds). Full unchanged two-thread suite passed all14targets; Knowledge524passed15ignored in184.8seconds; no assertion, gate, resource or timeout changed.",
+      "stage": "bazel-two-thread-with-concurrent-builds"
     },
     {
-      "log": "logs/native-transfer-bazel-tests-serial.txt",
-      "outcome": "All522 Knowledge cases passed, but whole target exceeded its unchanged300-second timeout by4.7 seconds. The complete two-thread suite passed within the original timeout.",
-      "stage": "bazel-tests-serial"
+      "log": "process-time.txt",
+      "outcome": "Stopped before optimizer updates and before any final inference. The original pilot3607 source32only acquired7new own examples; first16had4andlater16had3, below unchanged4-new-source continuation guard. Preserve its exact raw data. Pilot alone now stages the same32queries/order as8then24; main six16/16contexts and all budgets, controls and success criteria remain unchanged.",
+      "path": ".local/evaluations/native-continuation-meta-learning/pilot-run-02",
+      "stage": "pilot-run-02-cold-source"
+    },
+    {
+      "logs": [
+        "logs/pilot-audit-01.txt",
+        "logs/pilot-audit-02.txt",
+        "logs/pilot-audit-03.txt"
+      ],
+      "outcome": "Audit decoder corrected typed-FP32 decimal spellings by exact declared FP32 bits and current typed Checkpoint/Blob field order for canonical hashes. All other fields remain exact; no raw data, model, criterion or scientific source changed. Corrected audit and independent public native verifier passed.",
+      "stage": "pilot-audit-json-representations"
     }
   ],
   "preserved_operating_failures": [
     {
-      "path": ".local/proof-network/autonomous-native-80313-1793127269903365000",
-      "reason": "The bounded question-only fixture stopped at the sender local minimum, but only7 peer trajectories were reconstructible; receiver never reached its unchanged minimum8/diversity gate. Source pause/recovery passed, source candidate correctly rejected for transfer-family regression; all owned processes cleaned up."
+      "path": ".local/proof-network/autonomous-adaptive-48759-1793136513441365000",
+      "reason": "The first actual250-update candidate correctly rejected: original development41->41 and transfer12->8 with3regressing families. The strengthened fixture incorrectly assumed the first completed trial must promote; corrected fixture waits for the first genuine promotion within the same original240-second phase and360-second whole deadline, preserving every earlier rejection. All owned processes cleaned up; no gate, model, timeout or source input altered.",
+      "source": "7b07251f46c9a0a7c53dc6299bab501b898a1830"
     }
   ],
   "primary_comparisons": {
     "combined_vs_baseline_32": {
-      "delta_pp": 8.333333333333334,
+      "delta_pp": 2.0833333333333335,
       "group_count": 24,
       "paired_family_bootstrap_95_pp": [
-        -1.3888888888888888,
-        18.055555555555554
+        -10.416666666666666,
+        15.972222222222221
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -15,
+        23
       ],
       "per_seed": [
         {
@@ -629,39 +2537,22 @@
           "seed": 3203
         },
         {
-          "delta_pp": 25.0,
+          "delta_pp": 6.25,
           "seed": 3301
         }
       ]
     },
     "meta_vs_adaptive_fixed_mixture_32": {
-      "delta_pp": 6.944444444444444,
+      "delta_pp": -8.333333333333332,
       "group_count": 24,
       "paired_family_bootstrap_95_pp": [
-        1.3888888888888888,
-        13.88888888888889
+        -16.666666666666664,
+        -1.3888888888888888
       ],
-      "per_seed": [
-        {
-          "delta_pp": 4.166666666666666,
-          "seed": 2411
-        },
-        {
-          "delta_pp": 4.166666666666666,
-          "seed": 3203
-        },
-        {
-          "delta_pp": 12.5,
-          "seed": 3301
-        }
-      ]
-    },
-    "meta_vs_adaptive_random_mixture_32": {
-      "delta_pp": 5.555555555555556,
-      "group_count": 24,
-      "paired_family_bootstrap_95_pp": [
-        0.0,
-        12.5
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -24,
+        -2
       ],
       "per_seed": [
         {
@@ -669,21 +2560,80 @@
           "seed": 2411
         },
         {
+          "delta_pp": 0,
+          "seed": 3203
+        },
+        {
+          "delta_pp": -16.666666666666664,
+          "seed": 3301
+        }
+      ]
+    },
+    "meta_vs_adaptive_meta_fresh_32": {
+      "delta_pp": -2.7777777777777786,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -8.333333333333332,
+        2.7777777777777777
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -12,
+        4
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 0,
+          "seed": 2411
+        },
+        {
           "delta_pp": 12.5,
           "seed": 3203
         },
         {
+          "delta_pp": -20.833333333333336,
+          "seed": 3301
+        }
+      ]
+    },
+    "meta_vs_adaptive_random_mixture_32": {
+      "delta_pp": -6.25,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -13.194444444444445,
+        0.0
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -19,
+        0
+      ],
+      "per_seed": [
+        {
+          "delta_pp": -2.083333333333333,
+          "seed": 2411
+        },
+        {
           "delta_pp": 12.5,
+          "seed": 3203
+        },
+        {
+          "delta_pp": -29.166666666666668,
           "seed": 3301
         }
       ]
     },
     "meta_vs_adaptive_targeted_32": {
-      "delta_pp": 5.555555555555555,
+      "delta_pp": -4.861111111111112,
       "group_count": 24,
       "paired_family_bootstrap_95_pp": [
-        -1.3888888888888888,
-        15.277777777777779
+        -13.88888888888889,
+        4.166666666666666
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -20,
+        6
       ],
       "per_seed": [
         {
@@ -695,17 +2645,22 @@
           "seed": 3203
         },
         {
-          "delta_pp": 12.5,
+          "delta_pp": -18.75,
           "seed": 3301
         }
       ]
     },
     "preparation_vs_balanced_32": {
-      "delta_pp": 8.333333333333334,
+      "delta_pp": 2.0833333333333335,
       "group_count": 24,
       "paired_family_bootstrap_95_pp": [
-        -1.3888888888888888,
-        18.055555555555554
+        -10.416666666666666,
+        15.972222222222221
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        -15,
+        23
       ],
       "per_seed": [
         {
@@ -717,7 +2672,7 @@
           "seed": 3203
         },
         {
-          "delta_pp": 25.0,
+          "delta_pp": 6.25,
           "seed": 3301
         }
       ]
@@ -726,8 +2681,13 @@
       "delta_pp": 12.5,
       "group_count": 24,
       "paired_family_bootstrap_95_pp": [
-        -2.777777777777778,
-        26.38888888888889
+        2.7777777777777777,
+        25.0
+      ],
+      "paired_family_bootstrap_denominator": 144,
+      "paired_family_bootstrap_integer_bounds": [
+        4,
+        36
       ],
       "per_seed": [
         {
@@ -745,69 +2705,111 @@
       ]
     }
   },
-  "prior_receipt_sha256": "7ecfffac5a6148241a0da387d2b0d8d9b6a4c799faf5a84d66036a838f4c2369",
   "process_resources": {
-    "isolated_max_shape_job_peak_rss_bytes": 214302720,
     "native_job_work_reservation_bytes": 805306368,
+    "os_block_input_operations": 0,
+    "os_block_output_operations": 0,
     "os_hard_rss_limit": false,
     "os_time": {
-      "real_seconds": 5229.63,
-      "system_cpu_seconds": 38.13,
-      "user_cpu_seconds": 5134.73
+      "real_seconds": 6211.44,
+      "system_cpu_seconds": 112.76,
+      "user_cpu_seconds": 5870.9
     },
-    "sampled_native_peak_rss_bytes": 396148736,
-    "scope": "Complete finite experiment, including all contexts, both matched rounds of every final arm, spilled exact artifact chunks and all final inference. Native Meter boundaries and OS high-water RSS both stayed inside the unchanged work reservation; no OS hard memory limit is claimed.",
-    "whole_harness_peak_memory_footprint_bytes": 372949904,
-    "whole_harness_peak_rss_bytes": 396181504,
+    "sampled_native_peak_rss_bytes": 378781696,
+    "scope": "Complete finite source-pinned experiment, including six outer contexts, all48outer trials, both matched rounds of all24final arms, spilled exact artifact chunks and all144final condition events. Native Meter and OS high-water RSS remained inside the unchanged work reservation; no OS hard RSS limit is claimed. OS buffered block counters are not protocol IO bytes.",
+    "whole_harness_peak_memory_footprint_bytes": 368755576,
+    "whole_harness_peak_rss_bytes": 378781696,
     "whole_harness_within_job_work_reservation": true
   },
-  "scientific_source": "a5a423635bc2854c54fd32c141f9e47405995ffd",
-  "scope": "Native transfer-oriented promotion and meta learning on complete matched two-round own-source journals",
+  "quality_contract": {
+    "additional_lower_stability_constraint": false,
+    "complete_genuine_continuation_coverage_required": true,
+    "minimum_mean_gain_pp": 5,
+    "no_negative_fixed_seed": true,
+    "paired_whole_family_bootstrap_resamples": 20000,
+    "required_95_percent_lower_bound": "strictly_positive",
+    "retained_500_updates_is_quality_evidence": false
+  },
+  "resource_overruns": [],
+  "retired_confirmation_questions": 144,
+  "scientific_source": "447fc027caee86dfa74fc8695640509ba7368dc0",
+  "scope": "Matched meta-training on genuine lower/Adam continuation parents versus equally trained fresh-parent controls, with independent final-family confirmation",
+  "source_pins": {
+    "bank_sha256": "88b07fa75d5e2ff4fdea349a204288dbb61f131e3e43c4b2c1ba0c2722add339",
+    "experiment_binary_sha256": "fec275d3e8890b06bbc73d47718753884b0d4d92f243734ed9858b1c6b17f8f5",
+    "lower_specification": "7d328ded81d21925e47fabe7d8eabb03196b88680eaec202850fc33b1b998f76",
+    "meta_specification": "c5b07df855060d95f125f1a15f13d25a7bbc943b876367cf0205fca32a5b96e5",
+    "protocol_sha256": "45f993b626e2f4f33af7e86af5e5a6f302f16592c476b8ba2512fab04e3633e2",
+    "source_manifest_sha256": "9acd95568c1b9391284e2e521d39a9e2838891c5f10fd823d6cf144ec6be406f",
+    "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
   "system_learning_costs": {
     "adaptive_balanced": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
       "outer_learning_charged_once_cpu_seconds": 0,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 365.24800600000003,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 386.091976
+      "outer_learning_charged_once_wall_seconds": 0,
+      "outer_mode": null,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 378.495886,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 397.08791199999996
     },
     "adaptive_fixed_mixture": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
       "outer_learning_charged_once_cpu_seconds": 0,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 356.14166300000005,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 376.776483
+      "outer_learning_charged_once_wall_seconds": 0,
+      "outer_mode": null,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 366.84475799999996,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 383.516152
     },
     "adaptive_meta": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
-      "outer_learning_charged_once_cpu_seconds": 2491.755669,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 2861.882136,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 2901.485706
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
+      "outer_learning_charged_once_cpu_seconds": 1426.7267319999999,
+      "outer_learning_charged_once_wall_seconds": 1494.5300960000002,
+      "outer_mode": "continuation",
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 1813.3262969999998,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 1900.9746390000003
+    },
+    "adaptive_meta_fresh": {
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
+      "outer_learning_charged_once_cpu_seconds": 1436.5540529999998,
+      "outer_learning_charged_once_wall_seconds": 1521.0365910000003,
+      "outer_mode": "fresh",
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 1817.060223,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 1919.9032640000003
     },
     "adaptive_random_mixture": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
       "outer_learning_charged_once_cpu_seconds": 0,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 363.677316,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 384.523083
+      "outer_learning_charged_once_wall_seconds": 0,
+      "outer_mode": null,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 381.788278,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 400.31287299999997
     },
     "adaptive_reference": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
       "outer_learning_charged_once_cpu_seconds": 0,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 369.429526,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 391.20766699999996
+      "outer_learning_charged_once_wall_seconds": 0,
+      "outer_mode": null,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 392.04409799999996,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 413.39948899999996
     },
     "adaptive_targeted": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
       "outer_learning_charged_once_cpu_seconds": 0,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 366.490964,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 386.210285
+      "outer_learning_charged_once_wall_seconds": 0,
+      "outer_mode": null,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 384.756853,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 402.218684
     },
     "random_balanced": {
-      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; the same complete acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "interpretation": "The three final seeds each pay their own already-accounted prerequisite+acquisition charge exactly once. Learned systems additionally pay all common outer preparation and their own24trial costs plus conservatively the residual orchestration. Final inference and earlier engineering attempts remain separate.",
       "outer_learning_charged_once_cpu_seconds": 0,
-      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 369.93205900000004,
-      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 392.309731
+      "outer_learning_charged_once_wall_seconds": 0,
+      "outer_mode": null,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 382.385772,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 404.833257
     }
   },
   "transfer_questions": 24,
   "transfer_whole_families": 12,
-  "whole_harness_peak_rss_bytes": 396148736
+  "whole_harness_peak_rss_bytes": 378781696
 }
