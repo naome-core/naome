@@ -9,6 +9,7 @@ use crate::{
 use serde_json::{Value, json};
 mod confirmation;
 mod diagnosis;
+mod lineage;
 
 const SEEDS: [u64; 3] = [41, 73, 101];
 const ARMS: [Treatment; 6] = [
