@@ -39,6 +39,7 @@ class BuildContractTests(unittest.TestCase):
     def test_bazel_optimized_ci_retains_debug_and_overflow_checks(self):
         lines = (ROOT / ".bazelrc").read_text().splitlines()
         self.assertIn("build:ci --compilation_mode=opt", lines)
+        self.assertIn("build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Copt-level=1", lines)
         for flag in ("debug-assertions", "overflow-checks"):
             self.assertIn(f"build:ci --@rules_rust//rust/settings:extra_rustc_flag=-C{flag}=yes", lines)
         self.assertIn("test:ci --test_arg=--test-threads=2", lines)
