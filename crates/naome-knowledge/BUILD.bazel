@@ -45,12 +45,30 @@ rust_library(
 rust_test(
     name = "unit_tests",
     size = "medium",
+    args = ["--skip=learning::model::preservation::tests::"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate = ":naome_knowledge",
     compile_data = ["//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex"],
+    env = {"RUST_TEST_THREADS": "2"},
+    lint_config = ":cargo_lints",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "preservation_tests",
+    size = "medium",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = ["learning::model::preservation::tests::"],
+    crate = ":naome_knowledge",
+    compile_data = ["//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex"],
+    env = {"RUST_TEST_THREADS": "1"},
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
