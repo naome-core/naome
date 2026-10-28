@@ -61,6 +61,8 @@ rust_test(
 rust_test(
     name = "preservation_tests",
     size = "medium",
+    # Keep this CPU training process separate from other MR test binaries.
+    tags = ["exclusive"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
