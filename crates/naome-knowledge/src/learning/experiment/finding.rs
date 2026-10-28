@@ -48,6 +48,73 @@ fn reference_clock(reference: &Value) -> Clock {
     result
 }
 
+fn frozen_clock(path: &Path) -> Clock {
+    let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let mut clock = Clock::new();
+    for row in rows {
+        let key = (
+            row["model"].as_str().unwrap().to_owned(),
+            row["question"].as_str().unwrap().to_owned(),
+            row["occurrence"].as_u64().unwrap(),
+        );
+        assert!(clock.insert(key, row["micros"].as_u64().unwrap()).is_none());
+    }
+    clock
+}
+
+fn assert_control_reproduced(expected: &Value, actual: &Value) {
+    assert_eq!(expected["initial_model"], actual["initial_model"]);
+    assert_eq!(expected["final_model"], actual["final_model"]);
+    let expected = expected["rounds"].as_array().unwrap();
+    let actual = actual["rounds"].as_array().unwrap();
+    assert_eq!(expected.len(), actual.len());
+    for (a, b) in expected.iter().zip(actual) {
+        assert_eq!(
+            a["model"], b["model"],
+            "control model/Adam state did not reproduce"
+        );
+        let finder = |round: &Value| {
+            let mut value = round["finder_learning"].clone();
+            // This receipt also binds diagnostic CPU/wall measurements. The
+            // learned labels and complete model state below must still match.
+            value["curriculum"]
+                .as_object_mut()
+                .unwrap()
+                .remove("utility_receipt");
+            value
+        };
+        assert_eq!(
+            finder(a),
+            finder(b),
+            "control finder state did not reproduce"
+        );
+        let events = |r: &Value| {
+            r["events"].as_array().unwrap().iter().map(|e| {
+            json!({"resolution":e["resolution"],"solved":e["solved"],"accepted_training":e["accepted_training"],"feedback_cost_micros":e["feedback_cost_micros"],"empty_page":e["empty_page"]})
+        }).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            events(a),
+            events(b),
+            "recorded control trajectory did not reproduce"
+        );
+        let outcomes = |r: &Value| {
+            r["evaluation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| json!({"id":e["id"],"solved":e["solved"]}))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(outcomes(a), outcomes(b));
+        assert_eq!(a["training"]["status"], b["training"]["status"]);
+        assert_eq!(
+            a["training"]["progress"]["original_score"],
+            b["training"]["progress"]["original_score"]
+        );
+    }
+}
+
 struct Start<'a> {
     state: &'a State,
     blobs: &'a MemoryStore,
@@ -603,11 +670,15 @@ fn matched_continual_finder_study() {
                     .collect::<BTreeSet<_>>()
             );
             common = original;
-            let original: Value = serde_json::from_slice(
-                &std::fs::read(reference.join("without_utility/result.json")).unwrap(),
-            )
-            .unwrap();
-            clock = reference_clock(&original);
+            if phase == "repair_support" {
+                clock = frozen_clock(&reference.join("reference-costs.json"));
+            } else {
+                let original: Value = serde_json::from_slice(
+                    &std::fs::read(reference.join("without_utility/result.json")).unwrap(),
+                )
+                .unwrap();
+                clock = reference_clock(&original);
+            }
         }
         write(&seed_path.join("initial-state.json"), &common);
         if repair {
@@ -628,6 +699,33 @@ fn matched_continual_finder_study() {
                 &seed_path.join(label(treatment)),
                 repair.then_some(&mut clock),
             );
+            if phase == "repair_support" && treatment != Treatment::Full {
+                let reference = std::path::PathBuf::from(
+                    std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
+                );
+                let original_arm = if treatment == Treatment::OutcomeReplay {
+                    "full"
+                } else {
+                    label(treatment)
+                };
+                let expected: Value = serde_json::from_slice(
+                    &std::fs::read(
+                        reference
+                            .join(seed.to_string())
+                            .join(original_arm)
+                            .join("result.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_control_reproduced(&expected, &result);
+                write(
+                    &seed_path
+                        .join(label(treatment))
+                        .join("control-reproduced.json"),
+                    &json!({"reference":reference,"arm":original_arm,"matched":"Every question, feedback cost, outcome, accepted source, finder state, native model/Adam checkpoint and reference score across all rounds."}),
+                );
+            }
             results.push(json!({"preparation":preparation,"result":result}));
             write(&output.join("results.json"), &results);
             if repair {
