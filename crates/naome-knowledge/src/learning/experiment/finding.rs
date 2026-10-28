@@ -311,6 +311,8 @@ fn retained(io: &mut Store, blobs: Vec<&Blob>) {
     io.inner.0.retain(|(id, _), _| keys.contains(id));
 }
 fn prepare(seed: u64, path: &Path) -> (State, MemoryStore, Vec<(String, Solution, u64)>, Value) {
+    let started = Instant::now();
+    let cpu = meta::cpu_micros().unwrap();
     std::fs::create_dir_all(path).unwrap();
     let mut state = State::fresh();
     state.model.seed = seed;
@@ -321,8 +323,6 @@ fn prepare(seed: u64, path: &Path) -> (State, MemoryStore, Vec<(String, Solution
     let mut graph = crate::Graph::default();
     let mut accepted = Vec::new();
     let mut rows = Vec::new();
-    let started = Instant::now();
-    let cpu = meta::cpu_micros().unwrap();
     for (index, case) in shuffled_learning(seed).into_iter().take(64).enumerate() {
         let q = CompiledQuestion::compile(&case.source).unwrap();
         let job = 1 + index as u64;
@@ -497,6 +497,8 @@ fn arm(
     path: &Path,
     mut clock: Option<&mut Clock>,
 ) -> Value {
+    let start = Instant::now();
+    let cpu = meta::cpu_micros().unwrap();
     let Start {
         state: common,
         blobs,
@@ -538,8 +540,7 @@ fn arm(
         ..Default::default()
     };
     let mut engine = Engine::default();
-    let start = Instant::now();
-    let cpu = meta::cpu_micros().unwrap();
+    let mut observer = crate::resources::adaptive::Observer::default();
     let mut job = 10_000;
     let mut cursor = 0;
     let mut rows = Vec::new();
@@ -551,6 +552,16 @@ fn arm(
     let rounds = if coupled { 3 } else { 6 };
     let before = evaluation(&state, &mut engine, &mut io, 900_000);
     for round in 0..rounds {
+        if observer.due(Instant::now()) {
+            let observed = observer.refresh(path).unwrap();
+            if let Some(reason) = &observed.budget.paused {
+                write(
+                    &path.join("interrupted.json"),
+                    &json!({"round":round,"reason":reason,"resources":observed,"cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":start.elapsed().as_micros()}),
+                );
+                panic!("finder study paused by installed resource owner: {reason}");
+            }
+        }
         let mut events = Vec::new();
         let round_cpu = meta::cpu_micros().unwrap();
         for _ in 0..ATTEMPTS {
@@ -656,6 +667,10 @@ fn arm(
         } else {
             json!({"status":"frozen_solver"})
         };
+        assert!(
+            !coupled || training["status"] == "complete" || training["status"] == "not_ready",
+            "native learning stopped; preserve the partial study without qualification"
+        );
         let after = evaluation(&state, &mut engine, &mut io, 910_000 + round as u64 * 100);
         // Reopen the actual durable research state after every round.
         drop(finder);
@@ -687,10 +702,19 @@ fn matched_continual_finder_study() {
     let phase = std::env::var("NAOME_FINDER_NATIVE_PHASE").unwrap();
     let repair = matches!(
         phase.as_str(),
-        "repair" | "repair_support" | "repair_yield" | "confirmation_models"
+        "repair"
+            | "repair_support"
+            | "repair_yield"
+            | "repair_observation"
+            | "repair_screen"
+            | "confirmation_models"
     );
-    let paired = matches!(phase.as_str(), "repair_support" | "repair_yield");
-    let coupled = phase == "coupled" || repair;
+    let screen = phase == "repair_screen";
+    let paired = matches!(
+        phase.as_str(),
+        "repair_support" | "repair_yield" | "repair_observation"
+    );
+    let coupled = phase == "coupled" || repair && !screen;
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(&output).unwrap().clone();
     write(&output.join("initial-resources.json"), &observed);
@@ -699,10 +723,21 @@ fn matched_continual_finder_study() {
         "native study obeys the installed resource pause: {:?}",
         observed.budget.paused
     );
-    let arms = if repair {
+    let arms = if screen {
         vec![
             Treatment::Previous,
-            if matches!(phase.as_str(), "repair_yield" | "confirmation_models") {
+            Treatment::CensoredReplay,
+            Treatment::NoGeneration,
+            Treatment::Uniform,
+            Treatment::Full,
+        ]
+    } else if repair {
+        vec![
+            Treatment::Previous,
+            if matches!(
+                phase.as_str(),
+                "repair_yield" | "repair_observation" | "confirmation_models"
+            ) {
                 Treatment::CensoredReplay
             } else {
                 Treatment::OutcomeReplay
@@ -748,7 +783,7 @@ fn matched_continual_finder_study() {
         let (mut common, blobs, initial, preparation) =
             prepare(seed, &seed_path.join("preparation"));
         let mut clock = Clock::new();
-        if phase == "repair" || paired {
+        if phase == "repair" || paired || screen {
             let reference =
                 std::path::PathBuf::from(std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap())
                     .join(seed.to_string());
@@ -769,7 +804,7 @@ fn matched_continual_finder_study() {
                     .collect::<BTreeSet<_>>()
             );
             common = original;
-            if paired {
+            if paired || screen {
                 clock = frozen_clock(&reference.join("reference-costs.json"));
             } else {
                 let original: Value = serde_json::from_slice(

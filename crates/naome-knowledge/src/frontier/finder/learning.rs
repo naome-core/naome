@@ -247,27 +247,28 @@ impl Learning {
             return 65536;
         }
         let cell = &self.cells[index];
-        let n = cell.attempts as f64;
-        let p = (cell.solved as f64 + 1.) / (n + 2.);
-        // A recipe earns exploitation mass from checked completions. Difficulty
-        // alone supplies no usable training source; uncertainty and staleness
-        // retain exploration of recipes with sparse or missing observations.
-        let yield_estimate = p;
+        #[cfg(not(test))]
+        let wait_for_observations = true;
         #[cfg(test)]
-        let yield_estimate = if matches!(
+        let wait_for_observations = !matches!(
             self.treatment,
             crate::frontier::Treatment::FamilyReplay
                 | crate::frontier::Treatment::FamilyReplayNoUtility
                 | crate::frontier::Treatment::OutcomeReplay
                 | crate::frontier::Treatment::CensoredReplay
-        ) {
-            if cell.solved == 0 && cell.attempts >= 4 {
-                0.05
-            } else {
-                1. - p
-            }
+        );
+        if wait_for_observations && cell.attempts < 4 {
+            // One or two outcomes for a pooled construction recipe provide a
+            // fragile scheduling signal. Keep the original exploration mass
+            // until the current checkpoint has supplied several observations.
+            return 65536;
+        }
+        let n = cell.attempts as f64;
+        let p = (cell.solved as f64 + 1.) / (n + 2.);
+        let regret = if cell.solved == 0 && cell.attempts >= 4 {
+            0.05
         } else {
-            yield_estimate
+            1. - p
         };
         let uncertainty = 1. / (n + 1.).sqrt();
         let utility = if cell.utility_count == 0 {
@@ -277,8 +278,7 @@ impl Learning {
         };
         let cost = cell.millis as f64 / (n + 1.);
         let stale = draw.saturating_sub(cell.last).min(64) as f64 / 64.;
-        1 + ((yield_estimate + uncertainty / 2. + stale / 4.) * (0.5 + utility)
-            / (1. + cost.ln_1p() / 16.)
+        1 + ((regret + uncertainty / 2. + stale / 4.) * (0.5 + utility) / (1. + cost.ln_1p() / 16.)
             * 65536.) as u64
     }
     pub fn selected(&mut self, q: &CompiledQuestion, recipe: Option<Recipe>) {

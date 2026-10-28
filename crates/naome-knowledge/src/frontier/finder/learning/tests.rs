@@ -101,7 +101,7 @@ fn recent_misses_in_one_formula_family_do_not_evict_its_checked_success() {
 }
 
 #[test]
-fn checked_recipe_completions_increase_selection_without_eliminating_exploration() {
+fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
     let recipes = [
@@ -143,7 +143,7 @@ fn checked_recipe_completions_increase_selection_without_eliminating_exploration
                 .unwrap();
         }
     }
-    assert!(learning.priority(0, 32) > learning.priority(1, 32));
+    assert!(learning.priority(1, 32) > learning.priority(0, 32));
     assert!(learning.priority(1, 32) > learning.priority(2, 32));
     let mut selected = [0; 3];
     for draw in 32..232 {
@@ -153,7 +153,7 @@ fn checked_recipe_completions_increase_selection_without_eliminating_exploration
             }
         }
     }
-    assert!(selected[0] > selected[1]);
+    assert!(selected[1] > selected[0]);
     assert!(selected[1] > selected[2]);
     assert!(
         selected[2] > 0,
@@ -164,6 +164,38 @@ fn checked_recipe_completions_increase_selection_without_eliminating_exploration
     assert!(before > 0);
     assert_eq!(learning.cells[1].attempts, 0);
     learning.validate().unwrap();
+}
+
+#[test]
+fn recipe_scheduling_waits_for_current_checkpoint_observations() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
+    let recipe = Recipe {
+        operator: 2,
+        level: 0,
+    };
+    for draw in 0..4 {
+        assert_eq!(learning.priority(recipe.index(), draw), 65536);
+        learning.selected(&question, Some(recipe));
+        learning
+            .remember(
+                &mut model,
+                &question,
+                Some(&checkpoint()),
+                false,
+                1000,
+                draw,
+            )
+            .unwrap();
+    }
+    assert!(learning.priority(recipe.index(), 4) < 65536);
+    learning.bind(&"22".repeat(32));
+    assert_eq!(learning.priority(recipe.index(), 5), 65536);
+    learning
+        .remember(&mut model, &question, Some(&checkpoint()), false, 1000, 6)
+        .unwrap();
+    assert_eq!(learning.priority(recipe.index(), 6), 65536);
 }
 
 #[test]
