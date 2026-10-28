@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn failed_branches_retain_the_target_assumptions_and_bound_witnesses() {
         let q = naome_authoring::CompiledQuestion::compile(
-            "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,mem(x,a)),mem(b,a)))))",
+            "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,all(y,mem(x,y))),mem(b,a)))))",
         )
         .unwrap();
         let result = solve(q.proved_target(), &mut Ordered, 1).unwrap();

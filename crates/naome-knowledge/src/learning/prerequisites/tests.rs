@@ -28,6 +28,70 @@ impl super::super::model::Ranker for NoNeural {
     }
 }
 #[test]
+fn an_answered_internal_obligation_supplies_a_checked_certificate_without_intake() {
+    let (_, graph, required) = inputs();
+    let (_, helpers) = crate::learning::tests::helper_goal();
+    let axiom = naome_foundation::ZfcAxiom::Extensionality.formula();
+    let internal = naome_authoring::CompiledQuestion::from_formula(axiom.clone()).unwrap();
+    let mut owner =
+        crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
+    let decision = owner.assess(&graph, &internal);
+    assert!(decision.has_answer());
+    assert!(!decision.passed());
+    let goal = naome_authoring::CompiledQuestion::from_formula(
+        naome_foundation::Formula::conjunction(helpers[0].formula().clone(), axiom),
+    )
+    .unwrap();
+    let required = &required[..1];
+    let full = graph.prerequisites(required).unwrap().unwrap();
+    let before = graph.content_root();
+    let result = search_question_report(
+        goal.source(),
+        &mut NoNeural,
+        16,
+        &SolveContext {
+            required,
+            prerequisites: Some(&full),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let solution = result
+        .solution
+        .expect("internal checker evidence must complete the parent");
+    let _ = solution.checked().unwrap();
+    assert_eq!(result.cost.search_expansions, 4);
+    assert_eq!(
+        graph.content_root(),
+        before,
+        "worker checking cannot register graph facts or questions"
+    );
+    assert_eq!(owner.assess(&graph, &internal), decision);
+}
+
+#[test]
+fn an_internal_refutation_never_supplies_the_positive_prerequisite() {
+    let (_, graph, required) = inputs();
+    let infinity = naome_foundation::ZfcAxiom::Infinity.formula();
+    let opposite = infinity.view().negated().unwrap().to_owned();
+    let internal = naome_authoring::CompiledQuestion::from_formula(opposite.clone()).unwrap();
+    let mut owner =
+        crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
+    let decision = owner.assess(&graph, &internal);
+    assert_eq!(
+        decision.reason,
+        Some(naome_checker::question::RejectionReason::KnownRefutation)
+    );
+    let full = graph.prerequisites(&required[..1]).unwrap().unwrap();
+    let terms = full.terms(&required[..1]).unwrap();
+    let target = naome_foundation::Formula::conjunction(terms[0].formula(), opposite);
+    let (proof, work) =
+        construction::composition::construct(&target, &terms, 16, std::time::Instant::now())
+            .unwrap();
+    assert!(proof.is_none());
+    assert!(work <= 16);
+}
+#[test]
 fn full_prerequisites_compose_without_populating_the_neural_snapshot() {
     let (goal, mut graph, required) = inputs();
     let full = graph.prerequisites(&required).unwrap().unwrap();

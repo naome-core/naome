@@ -6,6 +6,7 @@ mod adjudicate;
 mod budget;
 mod inputs;
 mod run;
+mod sequential;
 use budget::{EXPANSIONS, Meter, SLICE};
 use inputs::Inputs;
 

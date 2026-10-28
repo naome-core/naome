@@ -1,5 +1,32 @@
 use super::*;
 #[test]
+#[ignore = "explicit observed incomplete-prerequisite regression; not fresh qualification"]
+fn observed_filtered_leaf_completes_its_original_parent_within_the_total_budget() {
+    let path =
+        std::path::PathBuf::from(std::env::var("NAOME_LEMMA_LOOP_REGRESSION_OUTPUT").unwrap());
+    assert!(!path.join("summary.json").exists());
+    let input: Inputs = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/recursive-lemma-loop.json"
+    ))
+    .unwrap();
+    let question = CompiledQuestion::compile(&input.cases[22].source).unwrap();
+    assert_eq!(
+        crate::hex(question.resolution_id()),
+        "9a623c5e1c3837f0900970df0ebb8206b2b9428f31d83fd2a8be977385b40e11"
+    );
+    let (state, io) = inputs::checkpoint(211, &path.join("common-model"));
+    let result = run::arm(
+        &question,
+        "recursive_loop",
+        211,
+        &state,
+        &io,
+        &path.join("recursive_loop"),
+    );
+    write(&path.join("summary.json"), &result);
+    assert_eq!(result["counted_solution"], true);
+}
+#[test]
 #[ignore = "explicit question-only preflight; never executes a model"]
 fn preflight_fresh_composition_questions() {
     fn families(q: &CompiledQuestion, depth: usize, out: &mut BTreeSet<String>) {

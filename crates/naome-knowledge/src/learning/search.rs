@@ -457,10 +457,7 @@ struct Search<'a> {
 }
 impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
-        if self.expansions >= self.maximum
-            || self.started.elapsed() > Duration::from_millis(2500)
-            || depth > 32
-        {
+        if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
@@ -469,6 +466,15 @@ impl Search<'_> {
         }
         if let Some((a, b)) = close(state) {
             return Ok(Some(Tree::Close(a, b)));
+        }
+        // Recognizing the terminal state after the last permitted transition
+        // consumes no additional expansion. Never admit another action here.
+        if self.expansions >= self.maximum {
+            if let Some(report) = &mut self.frontier {
+                report.observe(state, depth);
+            }
+            self.failure = Some("search_budget".into());
+            return Ok(None);
         }
         if state.facts.len() > 32 {
             self.failure = Some("fact_resource".into());
@@ -983,6 +989,48 @@ mod witness_tests {
         fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
             Ok(vec![0.; d.candidates.len()])
         }
+    }
+    #[test]
+    fn the_last_allowed_transition_can_close_without_spending_another_expansion() {
+        let question = naome_authoring::CompiledQuestion::compile(
+            "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,mem(x,a)),mem(b,a)))))",
+        )
+        .unwrap();
+        let result = solve_with_knowledge(
+            question.proved_target(),
+            &mut Ordered,
+            1,
+            Instant::now(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result.expansions, 1);
+        let tree = result
+            .tree
+            .expect("the permitted universal instantiation closes the sequent");
+        let _ = core::checked(question.proved_target(), &tree).unwrap();
+        assert!(
+            solve_with_knowledge(
+                question.proved_target(),
+                &mut Ordered,
+                0,
+                Instant::now(),
+                &[]
+            )
+            .unwrap()
+            .tree
+            .is_none()
+        );
+        let expired = solve_with_knowledge(
+            question.proved_target(),
+            &mut Ordered,
+            1,
+            Instant::now() - Duration::from_millis(2501),
+            &[],
+        )
+        .unwrap();
+        assert!(expired.tree.is_none());
+        assert_eq!(expired.expansions, 0);
     }
     #[test]
     fn existential_transport_discharges_its_fresh_witness_in_the_native_checker() {

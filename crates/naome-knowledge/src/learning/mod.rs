@@ -1063,12 +1063,21 @@ fn search_question_report(
         let composed = if terms.is_empty() || remaining == 0 {
             None
         } else {
-            let (verified, work) = construction::composition::construct(
+            let attempt = construction::composition::construct(
                 &target,
                 &terms,
                 remaining,
                 orientation_started,
-            )?;
+            );
+            let (verified, work) = match attempt {
+                Ok(result) => result,
+                Err(error) => {
+                    certificate_failures += 1;
+                    failure = format!("composition_unresolved: {error}");
+                    // An interrupted generator cannot claim unused allowance.
+                    (None, remaining.min(16))
+                }
+            };
             remaining = remaining.saturating_sub(work);
             verified.and_then(|verified| {
                 let inputs = construction::composition::used(&verified, context.required).ok()?;
@@ -1081,7 +1090,14 @@ fn search_question_report(
         let found = if let Some((verified, inputs, work)) = composed {
             search::ResultTree {
                 tree: Some(search::Tree::Composed {
-                    packet: evidence::pack(&verified)?,
+                    packet: match evidence::pack(&verified) {
+                        Ok(packet) => packet,
+                        Err(error) => {
+                            certificate_failures += 1;
+                            failure = format!("composition_capacity: {error}");
+                            continue;
+                        }
+                    },
                     inputs,
                     work,
                 }),
