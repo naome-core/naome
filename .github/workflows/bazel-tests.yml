@@ -40,7 +40,7 @@ jobs:
           key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml', '.github/workflows/*.yml') }}
 
       - name: Build product and test targets
-        run: bazel build --config=ci //:mr_build
+        run: bazel build --config=ci //:mr_build //:mr_tests
 
       - name: Run fast regression tests
         run: bazel test --config=ci //:mr_tests

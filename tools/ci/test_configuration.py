@@ -119,21 +119,30 @@ class BuildContractTests(unittest.TestCase):
         for digest, _ in entries:
             self.assertEqual(len(bytes.fromhex(digest)), 32)
 
-    def test_optimized_test_kernels_retain_debug_and_overflow_guards(self):
+    def test_shared_numerical_kernels_retain_optimization_and_runtime_guards(self):
         prefix = "--@rules_rust//rust/settings:per_crate_rustc_flag="
         profiles = {}
         for line in (ROOT / ".bazelrc").read_text().splitlines():
             words = line.split()
             if len(words) == 2 and words[1].startswith(prefix):
-                self.assertEqual(words[0], "test", "kernel flags must not alter product builds")
+                self.assertEqual(words[0], "build", "build, test and Clippy must reuse one kernel configuration")
                 selector, flag = words[1].removeprefix(prefix).split("@", 1)
                 profiles.setdefault(selector, []).append(flag)
         self.assertTrue(profiles)
         for selector, flags in profiles.items():
             with self.subTest(selector=selector):
                 self.assertTrue(selector.endswith("crates__gemm"))
+                self.assertEqual([f for f in flags if f.startswith("-Copt-level=")], ["-Copt-level=2"])
                 self.assertEqual([f for f in flags if f.startswith("-Cdebug-assertions=")], ["-Cdebug-assertions=on"])
                 self.assertEqual([f for f in flags if f.startswith("-Coverflow-checks=")], ["-Coverflow-checks=on"])
+
+    def test_ci_builds_both_aggregates_before_running_tests(self):
+        workflow = (ROOT / ".github/workflows/bazel-tests.yml").read_text()
+        build = "run: bazel build --config=ci //:mr_build //:mr_tests"
+        execute = "run: bazel test --config=ci //:mr_tests"
+        self.assertIn(build, workflow)
+        self.assertIn(execute, workflow)
+        self.assertLess(workflow.index(build), workflow.index(execute))
 
 
 class PinnedToolTests(unittest.TestCase):
