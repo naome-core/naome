@@ -2,11 +2,13 @@
 mod artifact;
 mod calculus;
 mod construction;
+mod coverage;
 mod curriculum;
 pub(crate) mod definitions;
 pub(crate) mod evidence;
 pub(crate) mod finder;
 mod graph;
+pub(crate) mod history;
 pub(crate) mod knowledge;
 pub(crate) mod meta;
 mod model;
@@ -73,7 +75,10 @@ pub(crate) struct Evidence {
 impl Example {
     fn trajectory<'a>(&'a self, evidence: &'a [Evidence]) -> Result<&'a search::Tree, String> {
         let search::Tree::Stored {
-            bytes, ref binding, ..
+            bytes,
+            ref binding,
+            ref coverage,
+            ..
         } = self.tree
         else {
             return Ok(&self.tree);
@@ -90,6 +95,13 @@ impl Example {
         {
             return Err("owned replay snapshot binding differs".into());
         }
+        let restored = Self {
+            tree: source.trace.clone(),
+            ..self.clone()
+        };
+        if coverage::Profile::of(&restored)? != *coverage {
+            return Err("owned replay coverage binding differs".into());
+        }
         Ok(&source.trace)
     }
     pub fn evidence_job(&self) -> Option<u64> {
@@ -100,6 +112,7 @@ impl Example {
             steps,
             bytes,
             binding,
+            coverage,
         } = &self.tree
         {
             let Ok(q) = CompiledQuestion::compile(&self.question) else {
@@ -110,11 +123,20 @@ impl Example {
             } else {
                 q.proved_target()
             };
-            return *binding == digest(&solution.tree)
+            let reconstructed = Self {
+                tree: solution.tree.clone(),
+                ..self.clone()
+            };
+            return solution.proof_id == self.proof_id
+                && solution.refuted == self.refuted
+                && coverage::Profile::of(&reconstructed).is_ok_and(|actual| actual == *coverage)
+                && *binding == digest(&solution.tree)
                 && serde_json::to_vec(&solution.tree).is_ok_and(|b| b.len() == *bytes)
                 && state::proof_steps(target, &solution.tree).is_ok_and(|n| n == *steps);
         }
-        digest(&self.tree) == digest(&solution.tree)
+        solution.proof_id == self.proof_id
+            && solution.refuted == self.refuted
+            && digest(&self.tree) == digest(&solution.tree)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -132,6 +154,7 @@ pub(crate) struct State {
     trained: u64,
     attempted: u64,
     pub peer_cursor: u64,
+    history_cursor: Option<String>,
     local_examples: u64,
     peer_examples: u64,
     promotions: u64,
@@ -144,6 +167,7 @@ pub(crate) struct State {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Progress {
     pub finder: Option<finder::Utility>,
+    prepared: Option<history::Prepared>,
     pub cost: Option<GenerationCost>,
     pub training_cost: model::TrainingCost,
     pub unit: u32,
@@ -209,6 +233,8 @@ impl Progress {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Job {
+    pub history_request: Option<history::Request>,
+    pub history: Option<history::Receipt>,
     pub evidence: Vec<Evidence>,
     pub training: bool,
     pub required: Vec<String>,
@@ -314,6 +340,7 @@ impl Job {
             }
             if next.unit != previous.unit + 1
                 || next.plan != previous.plan
+                || next.prepared != previous.prepared
                 || next.cpu_micros < previous.cpu_micros
                 || next.wall_micros < previous.wall_micros
                 || next.meta_cpu_micros < previous.meta_cpu_micros
@@ -348,7 +375,13 @@ impl Job {
     }
     pub fn blobs(&self) -> Vec<&Blob> {
         let mut blobs: Vec<_> = self.base.blobs().collect();
+        if let Some(history) = &self.history {
+            blobs.push(&history.blob);
+        }
         if let Some(p) = &self.progress {
+            if let Some(prepared) = &p.prepared {
+                blobs.push(&prepared.blob);
+            }
             blobs.extend(p.model.blobs());
             if let Some(candidate) = &p.candidate {
                 blobs.extend(candidate.blobs());
@@ -418,6 +451,17 @@ impl Job {
             return Err("required theorem set capacity or duplicate".into());
         }
         self.prerequisites.require(&self.base, &self.required)?;
+        if let Some(request) = &self.history_request {
+            request.validate()?;
+            if !self.training || request.after != self.base.history_cursor {
+                return Err("history request differs from its training parent".into());
+            }
+            if let Some(receipt) = &self.history {
+                receipt.validate(request)?;
+            }
+        } else if self.history.is_some() {
+            return Err("history receipt lacks its original request".into());
+        }
         let mut expected = if self.training {
             self.base
                 .training_sources()
@@ -464,9 +508,26 @@ impl Job {
             blob.validate()?;
         }
         if let Some(p) = &self.progress {
+            if let Some(prepared) = &p.prepared {
+                prepared.blob.validate()?;
+                if self.units() == 1
+                    || Some(&prepared.page) != self.history.as_ref()
+                    || prepared.blob.bytes > history::PAGE_BYTES + 32 * 1024 + 8192
+                    || prepared.available > history::SOURCES
+                    || prepared.retained > prepared.available
+                {
+                    return Err("prepared replay lacks its original history receipt".into());
+                }
+            } else if self.history_request.is_some() && self.units() > 1 {
+                return Err("training progress lacks its frozen replay preparation".into());
+            }
             if let Some(selection) = &p.plan {
                 selection.validate()?;
-                if selection.context != meta::context(&self.base) {
+                if selection.context
+                    != p.prepared
+                        .as_ref()
+                        .map_or_else(|| meta::context(&self.base), |r| r.context)
+                {
                     return Err("meta plan context differs from its parent".into());
                 }
             } else if self.units() > 1 && self.base.preparation == Preparation::Meta {
@@ -616,6 +677,7 @@ impl Job {
         let cpu_started = meta::cpu_micros()?;
         let mut p = self.progress.clone().unwrap_or(Progress {
             finder: None,
+            prepared: None,
             cost: None,
             frontier: None,
             training_cost: model::TrainingCost::default(),
@@ -647,10 +709,19 @@ impl Job {
             result: None,
             diagnostic: "no_new_accepted_solutions".into(),
         });
+        let working = if self.units() > 1 && unit <= model::TRAINING_UNITS {
+            self.prepare_history(&mut p, engine, io)?
+        } else {
+            None
+        };
+        let (training_state, training_evidence) = working.as_ref().map_or(
+            (&self.base, self.evidence.as_slice()),
+            |(state, evidence)| (state, evidence.as_slice()),
+        );
         if self.units() > 1 && unit == 1 {
             let wall = std::time::Instant::now();
             let cpu = meta::cpu_micros()?;
-            let selection = engine.meta.select(&self.base, io)?;
+            let selection = engine.meta.select(training_state, io)?;
             p.plan = Some(selection);
             p.meta_cpu_micros += meta::cpu_micros()?.saturating_sub(cpu);
             p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
@@ -665,8 +736,8 @@ impl Job {
                 .phase(unit - 1);
             if let Some((candidate, first, last)) = engine.train_replay_using(
                 parent,
-                &self.base,
-                &self.evidence,
+                training_state,
+                training_evidence,
                 &mut p.rng,
                 phase,
                 io,
@@ -839,6 +910,12 @@ impl Job {
             p.finder = self
                 .base
                 .finder_utility(&p.model, &self.evidence, engine, io)?;
+        }
+        if unit == 1
+            && io.external_history_cpu()
+            && let Some(receipt) = &self.history
+        {
+            p.cpu_micros = p.cpu_micros.saturating_add(receipt.read_cpu_micros);
         }
         p.cpu_micros = p
             .cpu_micros

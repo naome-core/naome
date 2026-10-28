@@ -30,6 +30,11 @@ struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum Frame {
+    History {
+        id: u64,
+        unit: u32,
+        request: crate::learning::history::Request,
+    },
     Model {
         id: u64,
         unit: u32,
@@ -112,6 +117,12 @@ struct Grant {
 }
 
 pub(super) enum Event {
+    History {
+        id: u64,
+        unit: u32,
+        request: crate::learning::history::Request,
+        reply: oneshot::Sender<Result<crate::learning::history::Receipt, String>>,
+    },
     Model {
         id: u64,
         unit: u32,
@@ -370,6 +381,36 @@ async fn run_owned(
                     input.write_all(&bytes).await.map_err(|e| e.to_string())?;
                     outstanding = Some(next);
                 }
+                Frame::History { id, unit, request }
+                    if ready
+                        && id == record.id
+                        && unit == 1
+                        && outstanding == Some(unit)
+                        && record.provider == crate::learning::PROVIDER =>
+                {
+                    let (reply, receipt) = oneshot::channel();
+                    events
+                        .send(Event::History {
+                            id,
+                            unit,
+                            request,
+                            reply,
+                        })
+                        .await
+                        .map_err(|_| "historical source owner stopped")?;
+                    let receipt = receipt.await.map_err(|_| "history checkpoint stopped")??;
+                    let mut response = serde_json::to_vec(&Grant {
+                        id,
+                        next: unit,
+                        data: Some(serde_json::to_vec(&receipt).map_err(|e| e.to_string())?),
+                    })
+                    .map_err(|e| e.to_string())?;
+                    response.push(b'\n');
+                    input
+                        .write_all(&response)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
                 Frame::Model {
                     id,
                     unit,
@@ -587,6 +628,7 @@ async fn run_owned(
                 | Frame::Reserve { id, .. }
                 | Frame::Progress { id, .. }
                 | Frame::Model { id, .. }
+                | Frame::History { id, .. }
                 | Frame::Learning { id, .. }
                 | Frame::Result { id, .. }
                 | Frame::Failed { id, .. }
@@ -1086,6 +1128,26 @@ impl WorkerControl {
     }
 }
 impl super::provider::Supervisor for WorkerControl {
+    fn external_history_cpu(&self) -> bool {
+        true
+    }
+
+    fn history(
+        &mut self,
+        request: &crate::learning::history::Request,
+    ) -> Result<crate::learning::history::Receipt, String> {
+        emit(&Frame::History {
+            id: self.id,
+            unit: self.current_unit,
+            request: request.clone(),
+        })?;
+        serde_json::from_slice(
+            &self
+                .grant_data(self.current_unit)?
+                .ok_or("history receipt missing")?,
+        )
+        .map_err(|e| e.to_string())
+    }
     fn read_model(
         &mut self,
         blob: crate::learning::Blob,

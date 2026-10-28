@@ -15,6 +15,7 @@ fn compacted_replay_requires_the_original_checked_proof_and_binding() {
             steps,
             bytes: serde_json::to_vec(&example.tree).unwrap().len(),
             binding: digest(&example.tree),
+            coverage: coverage::Profile::of(&example).unwrap(),
         };
     }
     state.validate().unwrap();

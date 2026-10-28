@@ -35,76 +35,79 @@ fn owner(
             .unwrap_or_default(),
     )
 }
+pub(super) fn validate_source(
+    c: &crate::checkpoint::Checkpoint,
+    example: &crate::learning::Example,
+    source: &Record,
+) -> Result<(), String> {
+    let q =
+        naome_authoring::CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+    if c.get::<u64>("sample", &crate::hex(q.resolution_id()), 64)?
+        .is_none()
+        || c.get::<u64>("replay_seen", &example.proof_id, 64)? != Some(example.job)
+    {
+        return Err("native replay sample source differs".into());
+    }
+    let Some(Output::Native {
+        solution: Some(solution),
+        ..
+    }) = &source.result
+    else {
+        return Err("native replay source result absent".into());
+    };
+    if source.id != example.job
+        || source.state != State::Complete
+        || solution.proof_id != example.proof_id
+        || solution.refuted != example.refuted
+        || !example.matches_solution(solution)
+    {
+        return Err("native replay source identity differs".into());
+    }
+    match (&example.origin, &source.input) {
+        (crate::learning::Origin::Local, Input::Solve { question })
+            if question == &example.question =>
+        {
+            if c.get::<String>("learned", &example.job.to_string(), 256)?
+                .as_ref()
+                != Some(&crate::hex(
+                    crate::object::proof_address(&example.proof_id)?.as_bytes(),
+                ))
+            {
+                return Err("native replay lacks admitted own receipt".into());
+            }
+        }
+        (
+            crate::learning::Origin::Peer { artifact, peer },
+            Input::Peer {
+                question,
+                artifact: actual,
+                peer: supplier,
+                certificate,
+            },
+        ) if question == &example.question && artifact == actual && peer == supplier => {
+            crate::learning::peer::validate_solution(question, artifact, certificate, solution)?;
+            let receipt: PeerReceipt = c
+                .get(
+                    "peer_receipt",
+                    artifact,
+                    crate::resources::limits().closure_bytes,
+                )?
+                .ok_or("native peer replay receipt absent")?;
+            if !matches!(receipt.status,PeerStatus::Learned{conversion_job,ref trace_proof} if conversion_job==example.job && trace_proof==&example.proof_id)
+            {
+                return Err("native peer replay receipt differs".into());
+            }
+        }
+        _ => return Err("native replay source provenance differs".into()),
+    }
+    Ok(())
+}
 fn validate_sources(
     c: &crate::checkpoint::Checkpoint,
     state: &crate::learning::State,
 ) -> Result<(), String> {
     for example in state.examples() {
-        let q = naome_authoring::CompiledQuestion::compile(&example.question)
-            .map_err(|e| e.to_string())?;
-        if c.get::<u64>("sample", &crate::hex(q.resolution_id()), 64)?
-            .is_none()
-            || c.get::<u64>("replay_seen", &example.proof_id, 64)? != Some(example.job)
-        {
-            return Err("native replay sample source differs".into());
-        }
-        let source = record(c, example.job)?;
-        let Some(Output::Native {
-            solution: Some(solution),
-            ..
-        }) = &source.result
-        else {
-            return Err("native replay source result absent".into());
-        };
-        if source.state != State::Complete
-            || solution.proof_id != example.proof_id
-            || solution.refuted != example.refuted
-            || !example.matches_solution(solution)
-        {
-            return Err("native replay source identity differs".into());
-        }
-        match (&example.origin, &source.input) {
-            (crate::learning::Origin::Local, Input::Solve { question })
-                if question == &example.question =>
-            {
-                if c.get::<String>("learned", &example.job.to_string(), 256)?
-                    .as_ref()
-                    != Some(&crate::hex(
-                        crate::object::proof_address(&example.proof_id)?.as_bytes(),
-                    ))
-                {
-                    return Err("native replay lacks admitted own receipt".into());
-                }
-            }
-            (
-                crate::learning::Origin::Peer { artifact, peer },
-                Input::Peer {
-                    question,
-                    artifact: actual,
-                    peer: supplier,
-                    certificate,
-                },
-            ) if question == &example.question && artifact == actual && peer == supplier => {
-                crate::learning::peer::validate_solution(
-                    question,
-                    artifact,
-                    certificate,
-                    solution,
-                )?;
-                let receipt: PeerReceipt = c
-                    .get(
-                        "peer_receipt",
-                        artifact,
-                        crate::resources::limits().closure_bytes,
-                    )?
-                    .ok_or("native peer replay receipt absent")?;
-                if !matches!(receipt.status,PeerStatus::Learned{conversion_job,ref trace_proof} if conversion_job==example.job && trace_proof==&example.proof_id)
-                {
-                    return Err("native peer replay receipt differs".into());
-                }
-            }
-            _ => return Err("native replay source provenance differs".into()),
-        }
+        validate_source(c, example, &record(c, example.job)?)?;
     }
     for experience in state.meta_experiences() {
         let source = record(c, experience.job)?;

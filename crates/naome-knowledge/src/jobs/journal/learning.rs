@@ -1,5 +1,6 @@
 //! Native learning rows share the canonical job checkpoint and transactions.
 use super::*;
+mod history;
 mod validation;
 pub(super) use validation::validate_rows;
 impl Disk {
@@ -20,54 +21,15 @@ impl Disk {
                     crate::checkpoint::MAX_ROW,
                 )?
                 .ok_or("peer replay source job absent")?;
+            validation::validate_source(&self.checkpoint, example, &source)?;
             let Some(Output::Native {
                 solution: Some(solution),
                 ..
-            }) = &source.result
+            }) = source.result
             else {
-                return Err("replay source solution missing".into());
+                return Err("checked replay source solution missing".into());
             };
-            if source.state != State::Complete || !example.matches_solution(solution) {
-                return Err("replay source snapshot differs".into());
-            }
-            let trace = match &source.input {
-                Input::Peer {
-                    question,
-                    artifact,
-                    certificate,
-                    ..
-                } => {
-                    if !crate::learning::peer::matches_artifact(
-                        &example.proof_id,
-                        artifact,
-                        certificate,
-                    )? {
-                        return Err("peer snapshot artifact differs".into());
-                    }
-                    crate::learning::peer::validate_solution(
-                        question,
-                        artifact,
-                        certificate,
-                        solution,
-                    )?;
-                    solution.tree.clone()
-                }
-                Input::Solve { .. } => {
-                    if self
-                        .checkpoint
-                        .get::<String>("learned", &source.id.to_string(), 256)?
-                        .as_deref()
-                        != Some(
-                            crate::hex(crate::object::proof_address(&example.proof_id)?.as_bytes())
-                                .as_str(),
-                        )
-                    {
-                        return Err("local replay snapshot lacks admission receipt".into());
-                    }
-                    solution.tree.clone()
-                }
-                _ => return Err("replay source role differs".into()),
-            };
+            let trace = solution.tree;
             result.insert(
                 example.job,
                 crate::learning::Evidence {
@@ -481,7 +443,14 @@ impl Disk {
         native: &crate::learning::Job,
     ) -> Result<(), String> {
         for blob in native.blobs() {
-            let inherited = native.base.blobs().any(|known| known == blob);
+            let inherited = native.base.blobs().any(|known| known == blob)
+                || native.history.as_ref().is_some_and(|receipt| {
+                    &receipt.blob == blob
+                        && native
+                            .written
+                            .iter()
+                            .any(|(unit, known)| *unit == 1 && known == blob)
+                });
             if !inherited
                 && !native.written.iter().any(|(unit, known)| {
                     *unit <= native.progress.as_ref().map_or(0, |p| p.unit) && known == blob

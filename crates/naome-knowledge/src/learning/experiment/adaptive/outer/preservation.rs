@@ -2,7 +2,7 @@
 //! The main independent-family qualification remains a separate experiment.
 use super::*;
 
-fn check_outcomes(job: &Job, rows: &[serde_json::Value]) {
+pub(super) fn check_outcomes(job: &Job, rows: &[serde_json::Value]) {
     let progress = job.progress.as_ref().unwrap();
     let mut position = 0;
     let mut scores = [0_u32; 2];

@@ -1,6 +1,7 @@
 //! Matched initial and genuinely retained lower-state meta-training trials.
 use super::*;
 mod preservation;
+mod recovery;
 
 pub(super) struct Controllers {
     pub(super) fresh: MetaSeed,

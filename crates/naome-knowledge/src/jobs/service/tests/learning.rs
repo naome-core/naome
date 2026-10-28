@@ -272,7 +272,14 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
             .unwrap()
             > 0
     );
-    assert!(serde_json::to_vec(&state["replay"][0]).unwrap().len() < 2048);
+    assert!(
+        serde_json::to_vec(&state["replay"][0]).unwrap().len() < 2048,
+        "stored replay bytes={}, coverage bytes={}",
+        serde_json::to_vec(&state["replay"][0]).unwrap().len(),
+        serde_json::to_vec(&state["replay"][0]["tree"]["Stored"]["coverage"])
+            .unwrap()
+            .len()
+    );
     let epoch = owner.journal.learning.as_ref().unwrap().learning_epoch();
     let (training, _) = submit_native(&mut owner, Input::Train { epoch });
     let native = owner
@@ -929,4 +936,285 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
         serde_json::to_vec(&owner.journal.accounts).unwrap(),
         accounts_before
     );
+}
+
+#[test]
+fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening() {
+    let (directory, mut owner) = native();
+    let source = accepted(&mut owner);
+    let mut state = learning(&owner);
+    state["replay"] = serde_json::json!([]);
+    state["anchors"] = serde_json::json!([]);
+    owner.journal.learning = Some(serde_json::from_value(state.clone()).unwrap());
+    owner.save().unwrap();
+    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let request = owner.journal.records[&id]
+        .native
+        .as_ref()
+        .unwrap()
+        .history_request
+        .clone()
+        .unwrap();
+    assert!(
+        owner
+            .disk
+            .history_page(&mut owner.journal, id, 1, &request)
+            .is_err()
+    );
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    crate::checkpoint::fail_next_commit();
+    assert!(
+        owner
+            .disk
+            .history_page(&mut owner.journal, id, 1, &request)
+            .unwrap_err()
+            .retryable()
+    );
+    assert!(
+        owner.journal.records[&id]
+            .native
+            .as_ref()
+            .unwrap()
+            .history
+            .is_none()
+    );
+    let receipt = owner
+        .disk
+        .history_page(&mut owner.journal, id, 1, &request)
+        .unwrap();
+    let charged = owner.journal.records[&id].native.as_ref().unwrap().io_bytes;
+    assert!(charged >= receipt.read_bytes + receipt.blob.bytes);
+    let repeated = owner
+        .disk
+        .history_page(&mut owner.journal, id, 1, &request)
+        .unwrap();
+    assert_eq!(receipt, repeated);
+    assert_eq!(
+        owner.journal.records[&id].native.as_ref().unwrap().io_bytes,
+        charged
+    );
+    assert_eq!(
+        learning(&owner),
+        state,
+        "history preparation does not mutate the global working state"
+    );
+    let bytes = owner
+        .disk
+        .model_io(
+            &mut owner.journal,
+            id,
+            1,
+            &receipt.blob,
+            0..receipt.blob.chunks(),
+            None,
+        )
+        .unwrap();
+    let job = owner.journal.records[&id].native.as_ref().unwrap();
+    let prepared = crate::learning::history::inspect_reload(job, &receipt, &bytes).unwrap();
+    assert!(prepared.examples().any(|example| example.job == source));
+    assert_eq!(prepared.sample_counts(), job.base.sample_counts());
+    assert_eq!(prepared.learning_epoch(), job.base.learning_epoch());
+    let settings = owner.settings;
+    let reserved = owner.journal.records[&id].reserved_units;
+    drop(owner);
+    let (mut disk, mut journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    assert_eq!(journal.records[&id].reserved_units, reserved);
+    journal.records.get_mut(&id).unwrap().state = State::Running;
+    let restored = disk.history_page(&mut journal, id, 1, &request).unwrap();
+    assert_eq!(restored, receipt);
+    let restored_bytes = disk
+        .model_io(
+            &mut journal,
+            id,
+            1,
+            &restored.blob,
+            0..restored.blob.chunks(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(restored_bytes, bytes);
+    let restored_state = crate::learning::history::inspect_reload(
+        journal.records[&id].native.as_ref().unwrap(),
+        &restored,
+        &restored_bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(prepared).unwrap(),
+        serde_json::to_value(restored_state).unwrap()
+    );
+}
+
+#[test]
+fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples() {
+    let (directory, mut owner) = native();
+    let question = crate::learning::tests::own_question();
+    let solution = checked_solution();
+    let artifact = crate::hex(
+        crate::object::proof_address(&solution.proof_id)
+            .unwrap()
+            .as_bytes(),
+    );
+    let admission = PeerAdmission {
+        certificate: Some(
+            crate::learning::peer::pack(
+                naome_authoring::compile(&solution.source)
+                    .unwrap()
+                    .canonical_proof_bytes(),
+                &[],
+            )
+            .unwrap(),
+        ),
+        ordinal: 1,
+        artifact: artifact.clone(),
+        peer: libp2p::PeerId::random().to_string(),
+        question: Some(question),
+        binding: Binding::new([1; 32], [2; 32]),
+    };
+    owner
+        .disk
+        .enqueue_peer(&mut owner.journal, admission.clone())
+        .unwrap();
+    owner.fill_internal().unwrap();
+    let source = owner
+        .journal
+        .records
+        .values()
+        .find(|record| matches!(record.input, Input::Peer { .. }))
+        .unwrap()
+        .id;
+    finish(&mut owner, source, solution);
+    // The history index records complete checked conversions even when the
+    // bounded working selector declines them. Exercise that terminal receipt
+    // independently of a particular coverage filter or buffer population.
+    owner
+        .disk
+        .peer_status(
+            &mut owner.journal,
+            &admission,
+            PeerStatus::Unsupported {
+                reason: "duplicate or no supported ambiguous decisions".into(),
+            },
+        )
+        .unwrap();
+    let mut state = learning(&owner);
+    state["replay"] = serde_json::json!([]);
+    state["anchors"] = serde_json::json!([]);
+    owner.journal.learning = Some(serde_json::from_value(state).unwrap());
+    owner.save().unwrap();
+    let connection = rusqlite::Connection::open(directory.0.join("research/jobs.sqlite3")).unwrap();
+    let payload: Vec<u8> = connection
+        .query_row(
+            "SELECT payload FROM entries WHERE kind='peer_receipt' AND key=?1",
+            [artifact],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let receipt: PeerReceipt = crate::checkpoint::decode(&payload).unwrap();
+    assert!(matches!(receipt.status, PeerStatus::Unsupported { .. }));
+    let before = learning(&owner);
+    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    let request = owner.journal.records[&id]
+        .native
+        .as_ref()
+        .unwrap()
+        .history_request
+        .clone()
+        .unwrap();
+    owner
+        .disk
+        .peer_status(&mut owner.journal, &admission, PeerStatus::Queued)
+        .unwrap();
+    assert!(
+        owner
+            .disk
+            .history_page(&mut owner.journal, id, 1, &request)
+            .is_err(),
+        "a nonterminal receipt cannot authorize historical replay"
+    );
+    owner
+        .disk
+        .peer_status(
+            &mut owner.journal,
+            &admission,
+            PeerStatus::Unsupported {
+                reason: "duplicate or no supported ambiguous decisions".into(),
+            },
+        )
+        .unwrap();
+    let receipt = owner
+        .disk
+        .history_page(&mut owner.journal, id, 1, &request)
+        .unwrap();
+    let bytes = owner
+        .disk
+        .model_io(
+            &mut owner.journal,
+            id,
+            1,
+            &receipt.blob,
+            0..receipt.blob.chunks(),
+            None,
+        )
+        .unwrap();
+    let job = owner.journal.records[&id].native.as_ref().unwrap();
+    let prepared = crate::learning::history::inspect_reload(job, &receipt, &bytes).unwrap();
+    assert!(prepared.examples().any(|example| example.job == source));
+    assert_eq!(prepared.sample_counts(), job.base.sample_counts());
+    assert_eq!(learning(&owner), before);
+}
+
+#[test]
+fn historical_admission_must_still_exist_and_match_the_original_source_record() {
+    for swapped in [false, true] {
+        let (_directory, mut owner) = native();
+        let source = accepted(&mut owner);
+        let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+        owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+        owner.reserve(id, 1).unwrap();
+        let request = owner.journal.records[&id]
+            .native
+            .as_ref()
+            .unwrap()
+            .history_request
+            .clone()
+            .unwrap();
+        let update = if swapped {
+            crate::checkpoint::Update::put("learned", source, &"f1".repeat(32)).unwrap()
+        } else {
+            crate::checkpoint::Update::Remove {
+                kind: "learned",
+                key: source.to_string(),
+            }
+        };
+        owner
+            .disk
+            .save_with(&mut owner.journal, vec![update])
+            .unwrap();
+        let error = owner
+            .disk
+            .history_page(&mut owner.journal, id, 1, &request)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(if swapped {
+                "identity differs"
+            } else {
+                "receipt missing"
+            }),
+            "{error}"
+        );
+        assert!(
+            owner.journal.records[&id]
+                .native
+                .as_ref()
+                .unwrap()
+                .history
+                .is_none()
+        );
+        assert_eq!(owner.journal.records[&id].reserved_units, 1);
+    }
 }

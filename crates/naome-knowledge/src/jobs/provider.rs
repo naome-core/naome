@@ -27,6 +27,16 @@ impl From<&str> for Failure {
     }
 }
 pub(super) trait Supervisor {
+    fn external_history_cpu(&self) -> bool {
+        false
+    }
+
+    fn history(
+        &mut self,
+        _request: &crate::learning::history::Request,
+    ) -> Result<crate::learning::history::Receipt, String> {
+        Err("provider cannot read admitted history".into())
+    }
     fn program(
         &mut self,
         _unit: u32,
@@ -396,6 +406,16 @@ impl Provider for Mock {
 mod tests;
 
 impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
+    fn external_history_cpu(&self) -> bool {
+        Supervisor::external_history_cpu(self)
+    }
+
+    fn history(
+        &mut self,
+        request: &crate::learning::history::Request,
+    ) -> Result<crate::learning::history::Receipt, String> {
+        Supervisor::history(self, request)
+    }
     fn read(
         &mut self,
         blob: &crate::learning::Blob,

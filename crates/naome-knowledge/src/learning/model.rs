@@ -1,6 +1,8 @@
 //! The research 1M graph policy behind a narrow checkpoint/training boundary.
 //! Formula graphs, goal-conditioned context attention and typed proof choices
 //! use Adam, checked-action cross entropy, batch 16 and LR .001. No weights are imported.
+#[cfg(test)]
+pub(super) mod observation;
 mod policy;
 mod preservation;
 #[cfg(test)]
@@ -102,6 +104,8 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("preservation-protocol.json"));
     hash.update(include_str!("mod.rs"));
     hash.update(include_str!("state.rs"));
+    hash.update(include_str!("coverage.rs"));
+    hash.update(include_str!("history.rs"));
     hash.update(include_str!("graph.rs"));
     hash.update(include_str!("model.rs"));
     hash.update(include_str!("search.rs"));
@@ -447,6 +451,7 @@ fn micros(started: std::time::Instant) -> u64 {
 }
 #[derive(Default)]
 pub(crate) struct Engine {
+    pub(super) prepared: Option<(Blob, super::history::Working)>,
     pub cost: TrainingCost,
     cache: Vec<(Checkpoint, Runtime)>,
     pool: Option<(String, Pool, Pool)>,
