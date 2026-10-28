@@ -3,6 +3,8 @@
 use super::*;
 use knowledge::Store;
 use serde::Deserialize;
+#[path = "runtime/owned.rs"]
+mod owned;
 
 #[derive(Deserialize)]
 struct Input {
