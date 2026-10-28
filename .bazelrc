@@ -17,6 +17,8 @@ build:ci --compilation_mode=opt
 build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Copt-level=1
 build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=yes
 build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Coverflow-checks=yes
+# Keep aspect analysis consistent with the shared build and test configuration.
+build:ci --@rules_rust//rust/settings:clippy_flag=-Dwarnings
 test:ci --flaky_test_attempts=1
 # Keep CPU-heavy native-model tests from flooding timed async fixtures.
 test:ci --test_arg=--test-threads=2

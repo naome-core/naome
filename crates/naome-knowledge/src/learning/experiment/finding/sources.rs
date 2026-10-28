@@ -228,6 +228,9 @@ pub(super) fn freeze(seed: u64, count: usize, holdout: &lineage::Holdout, output
         episodes.push(episode);
         if (index + 1) % QUERIES == 0 {
             state.compact().unwrap();
+            state
+                .compact_with_meta_headroom(super::super::adaptive::outer_metadata_headroom(&state))
+                .unwrap();
             state.validate().unwrap();
             assert_eq!(
                 state.model, initial.model,

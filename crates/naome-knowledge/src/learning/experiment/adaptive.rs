@@ -30,7 +30,7 @@ fn development_capacity_profile(checkpoint: String) -> crate::training::ability:
     }
     profile
 }
-fn outer_metadata_headroom(state: &State) -> usize {
+pub(super) fn outer_metadata_headroom(state: &State) -> usize {
     let maximum = development_capacity_profile(state.feedback.checkpoint.clone());
     META_HEADROOM
         + crate::checkpoint::encode(&maximum)

@@ -7,6 +7,7 @@ use crate::{
     jobs,
 };
 use serde_json::{Value, json};
+mod comparison;
 mod confirmation;
 mod diagnosis;
 mod lineage;

@@ -107,6 +107,9 @@ impl Frozen {
                 }
             }
             reconstructed.compact()?;
+            reconstructed.compact_with_meta_headroom(
+                super::super::super::adaptive::outer_metadata_headroom(&reconstructed),
+            )?;
             let saved: State =
                 reads.json(&output.join(format!("epoch-{epoch}.json")), PAGE_BYTES)?;
             saved.validate()?;

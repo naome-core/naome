@@ -25,12 +25,43 @@ pub(super) fn import_model(path: &Path) -> Result<(Checkpoint, MemoryStore), Str
             if Blob::of(&bytes) != *blob {
                 return Err("frozen model bytes differ from their checkpoint".into());
             }
-            for (index, range) in blob.ranges().enumerate() {
-                io.0.insert((blob.sha256.clone(), index), bytes[range].to_vec());
+            for (index, chunk) in bytes
+                .chunks(crate::resources::limits().native_model_chunk_bytes)
+                .enumerate()
+            {
+                io.0.insert((blob.sha256.clone(), index), chunk.to_vec());
             }
         }
     }
     Ok((model, io))
+}
+
+#[test]
+fn frozen_parameters_and_optimizer_restore_every_exact_chunk() {
+    let directory = Directory::new();
+    let mut engine = Engine::default();
+    let mut source = MemoryStore::default();
+    let model = engine.snapshot(&Checkpoint::fresh(), &mut source).unwrap();
+    assert!(model.model.is_some() && model.optimizer.is_some());
+    export_model(&directory.0, &model, &source);
+    let (restored, mut store) = import_model(&directory.0).unwrap();
+    assert_eq!(restored, model);
+    for blob in [model.model.as_ref(), model.optimizer.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        assert!(blob.chunks() > 1);
+        assert_eq!(
+            artifact::load(&mut store, blob).unwrap(),
+            artifact::load(&mut source, blob).unwrap()
+        );
+    }
+    let path = directory.0.join("model.bpk");
+    let mut bytes = std::fs::read(&path).unwrap();
+    let index = crate::resources::limits().native_model_chunk_bytes;
+    bytes[index] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+    assert!(import_model(&directory.0).err().unwrap().contains("differ"));
 }
 
 #[test]

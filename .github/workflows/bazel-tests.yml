@@ -39,19 +39,15 @@ jobs:
           path: ~/.cache/naome-bazel
           key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml', '.github/workflows/*.yml') }}
 
-      - name: Build product and test targets
-        run: bazel build --config=ci //:mr_build //:mr_tests
-
-      - name: Run fast regression tests
-        run: bazel test --config=ci //:mr_tests
-
-      - name: Run Clippy on product and test targets
+      - name: Build and lint product and test targets
         run: >-
           bazel build --config=ci
           --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
           --output_groups=+clippy_checks
-          --@rules_rust//rust/settings:clippy_flag=-Dwarnings
-          //crates/... //vendor/...
+          //:mr_build //:mr_tests //crates/... //vendor/...
+
+      - name: Run fast regression tests
+        run: bazel test --config=ci //:mr_tests
 
       - name: Verify tracked sources are unchanged
         run: git diff --exit-code HEAD

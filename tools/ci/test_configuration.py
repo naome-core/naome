@@ -137,12 +137,19 @@ class BuildContractTests(unittest.TestCase):
                 self.assertEqual([f for f in flags if f.startswith("-Coverflow-checks=")], ["-Coverflow-checks=on"])
 
     def test_ci_builds_both_aggregates_before_running_tests(self):
-        workflow = (ROOT / ".github/workflows/bazel-tests.yml").read_text()
-        build = "run: bazel build --config=ci //:mr_build //:mr_tests"
+        workflow = " ".join((ROOT / ".github/workflows/bazel-tests.yml").read_text().split())
+        build = ("run: >- bazel build --config=ci "
+                 "--aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect "
+                 "--output_groups=+clippy_checks //:mr_build //:mr_tests //crates/... //vendor/...")
         execute = "run: bazel test --config=ci //:mr_tests"
         self.assertIn(build, workflow)
         self.assertIn(execute, workflow)
         self.assertLess(workflow.index(build), workflow.index(execute))
+        self.assertEqual(workflow.count("bazel build --config=ci"), 1)
+        self.assertIn("timeout-minutes: 20", workflow)
+        self.assertIn("build --jobs=4", (ROOT / ".bazelrc").read_text().splitlines())
+        self.assertIn("build:ci --@rules_rust//rust/settings:clippy_flag=-Dwarnings",
+                      (ROOT / ".bazelrc").read_text().splitlines())
 
 
 class PinnedToolTests(unittest.TestCase):
