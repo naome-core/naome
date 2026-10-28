@@ -120,6 +120,38 @@ struct Start<'a> {
     blobs: &'a MemoryStore,
     initial: &'a [(String, Solution, u64)],
     reserved: &'a BTreeSet<String>,
+    feedback_reference: Option<&'a Value>,
+}
+
+fn finder_feedback(state: &State, reference: Option<&Value>) -> crate::training::ability::Feedback {
+    let mut actual = state.feedback();
+    let Some(reference) = reference else {
+        return actual;
+    };
+    for round in reference["rounds"].as_array().unwrap() {
+        let expected: crate::training::ability::Feedback =
+            serde_json::from_value(round["feedback"].clone()).unwrap();
+        if actual.checkpoint != expected.checkpoint {
+            continue;
+        }
+        let without_costs = |profile: &crate::training::ability::Profile| {
+            let mut value = serde_json::to_value(profile).unwrap();
+            for cell in value["cells"].as_object_mut().unwrap().values_mut() {
+                cell.as_array_mut().unwrap()[2] = json!(0);
+            }
+            value
+        };
+        if without_costs(&actual.development) != without_costs(&expected.development) {
+            continue;
+        }
+        // Only the read-only finder scheduling view receives recorded costs.
+        // State, native qualification, labels, weights and actual resource
+        // accounting retain their real values from this execution.
+        actual.development = expected.development;
+        actual.validate().unwrap();
+        break;
+    }
+    actual
 }
 
 #[derive(Default)]
@@ -409,6 +441,7 @@ fn arm(
         blobs,
         initial,
         reserved,
+        feedback_reference,
     } = start_state;
     std::fs::create_dir_all(path).unwrap();
     let directory = Directory::new();
@@ -460,7 +493,7 @@ fn arm(
         let mut events = Vec::new();
         let round_cpu = meta::cpu_micros().unwrap();
         for _ in 0..ATTEMPTS {
-            finder.feedback(Some(state.feedback()));
+            finder.feedback(Some(finder_feedback(&state, feedback_reference)));
             finder
                 .refresh(&graph, |q| {
                     !reserved.contains(&curriculum::owned::family(q.proved_target()))
@@ -686,6 +719,30 @@ fn matched_continual_finder_study() {
         }
         for offset in 0..arms.len() {
             let treatment = arms[(seed_index + offset) % arms.len()];
+            let feedback_reference = if phase == "repair_support" {
+                let reference = std::path::PathBuf::from(
+                    std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
+                );
+                let reference_arm = if treatment == Treatment::Previous {
+                    "previous"
+                } else {
+                    "full"
+                };
+                Some(
+                    serde_json::from_slice::<Value>(
+                        &std::fs::read(
+                            reference
+                                .join(seed.to_string())
+                                .join(reference_arm)
+                                .join("result.json"),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                )
+            } else {
+                None
+            };
             let result = arm(
                 seed,
                 treatment,
@@ -695,6 +752,7 @@ fn matched_continual_finder_study() {
                     blobs: &blobs,
                     initial: &initial,
                     reserved: &reserved,
+                    feedback_reference: feedback_reference.as_ref(),
                 },
                 &seed_path.join(label(treatment)),
                 repair.then_some(&mut clock),
