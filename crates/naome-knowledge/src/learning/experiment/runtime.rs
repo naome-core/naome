@@ -3,6 +3,8 @@
 use super::*;
 use knowledge::Store;
 use serde::Deserialize;
+#[path = "runtime/midpoint.rs"]
+mod midpoint;
 #[path = "runtime/objective.rs"]
 mod objective;
 #[path = "runtime/owned.rs"]
