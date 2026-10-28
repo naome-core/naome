@@ -1,12 +1,14 @@
 //! Compile typed implication search into the existing primitive Hilbert calculus.
 
 use naome_checker::ArtifactState;
-use naome_foundation::{Formula, FreeVariable, Logic};
+use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
 
+mod combinator;
+use combinator::{Combinator, Kind};
 mod kernel;
 mod lemmas;
 pub use kernel::Kernel;
@@ -119,45 +121,6 @@ impl Term {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Combinator {
-    Lemma(
-        Vec<Vec<u8>>,
-        Vec<u8>,
-        Formula,
-        ProofId,
-        Vec<super::definitions::Entry>,
-    ),
-    Variable(usize, Formula),
-    Kernel(Kernel),
-    Generalize(FreeVariable, Arc<Self>),
-    K(Formula, Formula),
-    S(Formula, Formula, Formula),
-    Apply(Arc<Self>, Arc<Self>, Formula),
-}
-
-impl Combinator {
-    fn formula(&self) -> Formula {
-        match self {
-            Self::Lemma(_, _, formula, _, _) => formula.clone(),
-            Self::Variable(_, formula) | Self::Apply(_, _, formula) => formula.clone(),
-            Self::Kernel(k) => k.formula(),
-            Self::Generalize(v, b) => Formula::for_all(*v, b.formula()),
-            Self::K(a, b) => Logic::simplification(a.clone(), b.clone()),
-            Self::S(a, b, c) => Logic::frege(a.clone(), b.clone(), c.clone()),
-        }
-    }
-
-    fn contains(&self, variable: usize) -> bool {
-        match self {
-            Self::Variable(id, _) => *id == variable,
-            Self::Apply(a, b, _) => a.contains(variable) || b.contains(variable),
-            Self::Generalize(_, body) => body.contains(variable),
-            _ => false,
-        }
-    }
-}
-
 fn apply(function: Arc<Combinator>, argument: Arc<Combinator>) -> Result<Arc<Combinator>, String> {
     let formula = function.formula();
     let Some((expected, result)) = formula.view().implication_parts() else {
@@ -166,7 +129,7 @@ fn apply(function: Arc<Combinator>, argument: Arc<Combinator>) -> Result<Arc<Com
     if expected != argument.formula() {
         return Err("combinator application antecedent differs".into());
     }
-    Ok(Arc::new(Combinator::Apply(
+    Ok(Combinator::new(Kind::Apply(
         function,
         argument,
         result.to_owned(),
@@ -180,19 +143,19 @@ fn abstract_variable(
 ) -> Result<Arc<Combinator>, String> {
     if !body.contains(id) {
         return apply(
-            Arc::new(Combinator::K(body.formula(), argument.clone())),
+            Combinator::new(Kind::K(body.formula(), argument.clone())),
             body,
         );
     }
-    match body.as_ref() {
-        Combinator::Generalize(variable, inner) => {
+    match body.kind() {
+        Kind::Generalize(variable, inner) => {
             if argument.free_variables().contains(variable) {
                 return Err("generalization eigenvariable occurs in an assumption".into());
             }
             let inner_formula = inner.formula();
             let abstracted = abstract_variable(id, argument, inner.clone())?;
-            let quantified = Arc::new(Combinator::Generalize(*variable, abstracted));
-            let distribution = Arc::new(Combinator::Kernel(Kernel::new(
+            let quantified = Combinator::new(Kind::Generalize(*variable, abstracted));
+            let distribution = Combinator::new(Kind::Kernel(Kernel::new(
                 ProofStep::UniversalDistribution {
                     variable: *variable,
                     antecedent: argument.clone().into(),
@@ -200,39 +163,30 @@ fn abstract_variable(
                 },
             )?));
             let lifted = apply(distribution, quantified)?;
-            let vacuous = Arc::new(Combinator::Kernel(Kernel::new(
-                ProofStep::VacuousUniversal {
+            let vacuous =
+                Combinator::new(Kind::Kernel(Kernel::new(ProofStep::VacuousUniversal {
                     formula: argument.clone().into(),
-                },
-            )?));
+                })?));
             let value = apply(
                 vacuous,
-                Arc::new(Combinator::Variable(id, argument.clone())),
+                Combinator::new(Kind::Variable(id, argument.clone())),
             )?;
             abstract_variable(id, argument, apply(lifted, value)?)
         }
-        Combinator::Variable(other, _) if *other == id => {
+        Kind::Variable(other, _) if *other == id => {
             let aa = Formula::implies(argument.clone(), argument.clone());
-            let s = Arc::new(Combinator::S(
-                argument.clone(),
-                aa.clone(),
-                argument.clone(),
-            ));
-            let first = Arc::new(Combinator::K(argument.clone(), aa));
-            let second = Arc::new(Combinator::K(argument.clone(), argument.clone()));
+            let s = Combinator::new(Kind::S(argument.clone(), aa.clone(), argument.clone()));
+            let first = Combinator::new(Kind::K(argument.clone(), aa));
+            let second = Combinator::new(Kind::K(argument.clone(), argument.clone()));
             apply(apply(s, first)?, second)
         }
-        Combinator::Apply(function, value, result) => {
-            if matches!(value.as_ref(), Combinator::Variable(other, _) if *other == id)
+        Kind::Apply(function, value, result) => {
+            if matches!(value.kind(), Kind::Variable(other, _) if *other == id)
                 && !function.contains(id)
             {
                 return Ok(function.clone());
             }
-            let s = Arc::new(Combinator::S(
-                argument.clone(),
-                value.formula(),
-                result.clone(),
-            ));
+            let s = Combinator::new(Kind::S(argument.clone(), value.formula(), result.clone()));
             let function = abstract_variable(id, argument, function.clone())?;
             let value = abstract_variable(id, argument, value.clone())?;
             apply(apply(s, function)?, value)
@@ -254,7 +208,7 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
             if checked.conclusion() != target {
                 return Err("construction lemma target differs".into());
             }
-            Ok(Arc::new(Combinator::Lemma(
+            Ok(Combinator::new(Kind::Lemma(
                 dependencies
                     .iter()
                     .map(ProofCertificate::to_canonical_bytes)
@@ -267,7 +221,7 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
         }
         Term::Native { target, .. } => {
             let verified = verify(term, target)?;
-            Ok(Arc::new(Combinator::Lemma(
+            Ok(Combinator::new(Kind::Lemma(
                 verified
                     .lemmas
                     .iter()
@@ -279,9 +233,9 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
                 verified.definitions,
             )))
         }
-        Term::Variable(id, formula) => Ok(Arc::new(Combinator::Variable(*id, formula.clone()))),
-        Term::Kernel(k) => Ok(Arc::new(Combinator::Kernel(k.clone()))),
-        Term::Generalize(v, body) => Ok(Arc::new(Combinator::Generalize(*v, lower(body)?))),
+        Term::Variable(id, formula) => Ok(Combinator::new(Kind::Variable(*id, formula.clone()))),
+        Term::Kernel(k) => Ok(Combinator::new(Kind::Kernel(k.clone()))),
+        Term::Generalize(v, body) => Ok(Combinator::new(Kind::Generalize(*v, lower(body)?))),
         Term::Apply(function, argument, _) => apply(lower(function)?, lower(argument)?),
         Term::Lambda(id, formula, body) => abstract_variable(*id, formula, lower(body)?),
     }
@@ -363,8 +317,8 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         if let Some(index) = cache.get(term) {
             return Ok(*index);
         }
-        let step = match term.as_ref() {
-            Combinator::Lemma(dependencies, bytes, _, id, selected) => {
+        let step = match term.kind() {
+            Kind::Lemma(dependencies, bytes, _, id, selected) => {
                 for entry in selected {
                     if !definitions.contains(entry) {
                         definitions.push(entry.clone());
@@ -380,22 +334,22 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
                 }
                 ProofStep::ProofReference { proof_id: *id }
             }
-            Combinator::Variable(_, _) => return Err("certificate still has an assumption".into()),
-            Combinator::Kernel(k) => k.step(),
-            Combinator::Generalize(variable, body) => ProofStep::Generalization {
+            Kind::Variable(_, _) => return Err("certificate still has an assumption".into()),
+            Kind::Kernel(k) => k.step(),
+            Kind::Generalize(variable, body) => ProofStep::Generalization {
                 premise: emit(body, steps, cache, formula_nodes, lemmas, definitions)?,
                 variable: *variable,
             },
-            Combinator::K(a, b) => ProofStep::Simplification {
+            Kind::K(a, b) => ProofStep::Simplification {
                 antecedent: a.clone().into(),
                 consequent: b.clone().into(),
             },
-            Combinator::S(a, b, c) => ProofStep::Frege {
+            Kind::S(a, b, c) => ProofStep::Frege {
                 first: a.clone().into(),
                 second: b.clone().into(),
                 third: c.clone().into(),
             },
-            Combinator::Apply(function, argument, _) => {
+            Kind::Apply(function, argument, _) => {
                 let implication = emit(function, steps, cache, formula_nodes, lemmas, definitions)?;
                 let premise = emit(argument, steps, cache, formula_nodes, lemmas, definitions)?;
                 ProofStep::ModusPonens {

@@ -819,12 +819,18 @@ struct Exploring<'a> {
 }
 impl model::Ranker for Exploring<'_> {
     fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
-        let mut scores = self.model.scores(d)?;
-        if self.explore && model::random(&mut self.seed).is_multiple_of(5) {
-            for s in &mut scores {
-                *s = (model::random(&mut self.seed) >> 11) as f32 / 9007199254740992.;
-            }
-        }
+        // Inference is deterministic and does not consume the exploration RNG.
+        // Commit the draw only after validation, preserving error-path state.
+        let mut next = self.seed;
+        let scores = if self.explore && model::random(&mut next).is_multiple_of(5) {
+            self.model.validate_decision(d)?;
+            (0..d.candidates.len())
+                .map(|_| (model::random(&mut next) >> 11) as f32 / 9007199254740992.)
+                .collect()
+        } else {
+            self.model.scores(d)?
+        };
+        self.seed = next;
         Ok(scores)
     }
 }
@@ -1170,3 +1176,6 @@ fn search_question_report(
 mod experiment;
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod exploration_tests;

@@ -117,6 +117,7 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("construction/representation.rs"));
     hash.update(include_str!("proof.rs"));
     hash.update(include_str!("proof/kernel.rs"));
+    hash.update(include_str!("proof/combinator.rs"));
     hash.update(include_str!("proof/lemmas.rs"));
     hash.update(include_str!("curriculum/owned.rs"));
     hash.update(include_str!("curriculum/owned-exclusions.json"));
@@ -190,13 +191,21 @@ impl Runtime {
     pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, String> {
         // Validation weights are detached. Inputs must use the same plain
         // device, otherwise mixed operations retain needless autodiff state.
-        let batch = Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())?;
+        let batch = self.scoring_batch(graph)?;
         self.policy
             .valid()
             .forward(&batch)
             .into_data()
             .try_to_vec::<f32>()
             .map_err(|e| e.to_string())
+    }
+    fn scoring_batch(&self, graph: &Graph) -> Result<Batch, String> {
+        Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())
+    }
+    /// Uniform exploration has the same graph/tensor input gates as inference.
+    /// Only the unused neural forward pass is omitted.
+    pub(super) fn validate_decision(&self, decision: &Decision) -> Result<(), String> {
+        self.scoring_batch(&Graph::encode(decision)?).map(drop)
     }
     fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
         checkpoint.validate()?;
