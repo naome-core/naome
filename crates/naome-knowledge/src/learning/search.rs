@@ -690,7 +690,7 @@ fn solve_recording(
         .collect::<Result<_, String>>()?;
     let mut s = Search {
         recorder: capture
-            .then(|| trace::Recorder::new(target, &p.state.knowledge))
+            .then(|| trace::Recorder::new(target, knowledge))
             .transpose()?,
         ranker,
         goal: p.body,

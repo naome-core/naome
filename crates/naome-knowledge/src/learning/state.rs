@@ -598,7 +598,7 @@ impl State {
                 &proof,
                 graphs,
             )?;
-            pool.add_derivation(search::derivation::checked(target, &core, &proof)?)?;
+            pool.add_derivation(search::derivation::checked(target, &core, &proof)?, true)?;
         }
         Ok(pool)
     }

@@ -466,9 +466,33 @@ pub(crate) struct Engine {
     pool: Option<(String, Pool, Pool)>,
     #[cfg(test)]
     pub(super) preservation_mode: PreservationMode,
+    #[cfg(test)]
+    pub(super) targets: Targets,
     pub meta: super::meta::Engine,
 }
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Targets {
+    Actions,
+    #[default]
+    Rich,
+}
 impl Engine {
+    #[cfg(test)]
+    pub(super) fn with_targets(mut self, targets: Targets) -> Self {
+        self.targets = targets;
+        self
+    }
+    pub(super) fn rich_targets(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.targets == Targets::Rich
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    }
     fn preservation_mode(&self) -> preservation::Mode {
         #[cfg(test)]
         {
@@ -528,6 +552,7 @@ impl Engine {
     ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
         self.cost = TrainingCost::default();
         let (evidence, observations) = material;
+        let rich_targets = self.rich_targets();
         let started = std::time::Instant::now();
         let key = super::digest(&(
             &state.model,
@@ -539,6 +564,7 @@ impl Engine {
             self.preservation_mode().enabled(),
             evidence,
             observations,
+            rich_targets,
         ));
         let (mut pool, preservation_pool) = match self.pool.take() {
             Some((previous, pool, preservation_pool)) if previous == key => {
@@ -546,7 +572,7 @@ impl Engine {
             }
             _ => {
                 let mut pool = state.training_pool_for(evidence, phase.rehearsal)?;
-                pool.reconcile(observations)?;
+                pool.reconcile(observations, rich_targets)?;
                 #[cfg(test)]
                 if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
@@ -583,7 +609,6 @@ impl Engine {
         } else if !phase.focused {
             pool.unfocus();
         }
-        self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         self.cost.states = pool.graphs().len();
         let derived = pool.derived_counts();
         self.cost.checked_transitions = derived.transitions;
@@ -593,6 +618,7 @@ impl Engine {
         self.cost.witnessed_preferences = derived.preferences;
         self.cost.hindsight_matches = derived.hindsight;
         self.cost.preservation_states = preservation_pool.graphs().len();
+        self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         let result = if pool.is_empty() {
             Ok(None)
         } else {

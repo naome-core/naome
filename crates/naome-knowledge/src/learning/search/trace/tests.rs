@@ -111,3 +111,60 @@ fn truncated_observations_keep_a_replayable_prefix_and_count_omitted_work() {
     assert!(crate::checkpoint::encode(&trace).unwrap().len() <= BYTES);
     assert!(trace.events.iter().all(|event| !event.closed));
 }
+
+#[test]
+fn a_closed_flag_cannot_replace_an_unrecorded_required_transition() {
+    let q = naome_authoring::CompiledQuestion::compile(
+        "goal=all(a,all(b,all(c,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),mem(c,c)))))))",
+    ).unwrap();
+    let found = solve(q.proved_target(), &mut Ordered, 128).unwrap();
+    assert!(found.tree.is_some());
+    let mut trace = found.execution.unwrap();
+    assert!(trace.events.len() > 1);
+    assert!(!trace.closed_subtrees().unwrap().is_empty());
+    assert!(trace.events[0].closed);
+    trace.events.truncate(1);
+    trace.omitted = trace.attempts - trace.events.len();
+    trace.validate_context(&q, &[]).unwrap();
+    assert!(
+        trace.closed_subtrees().unwrap().is_empty(),
+        "missing checked transitions cannot be filled in"
+    );
+}
+
+#[test]
+fn theorem_context_binds_the_original_checked_packet_not_just_an_allowed_formula() {
+    let axiom = naome_foundation::ZfcAxiom::Pairing;
+    let term = native::calculus::axiom(naome_proof::ProofStep::ZfcAxiom(axiom)).unwrap();
+    let checked = native::proof::verify(&term, &axiom.formula()).unwrap();
+    let entry = native::knowledge::Entry {
+        packet: native::evidence::pack(&checked).unwrap(),
+    };
+    let variable = FreeVariable::new(0);
+    let target = Formula::implies(
+        Formula::for_all(variable, Formula::equal(variable, variable)),
+        axiom.formula(),
+    );
+    let q = naome_authoring::CompiledQuestion::from_formula(target.clone()).unwrap();
+    let found = solve_with_knowledge(
+        &target,
+        &mut Ordered,
+        128,
+        Instant::now(),
+        std::slice::from_ref(&entry),
+    )
+    .unwrap();
+    assert!(found.tree.is_some());
+    let trace = found.execution.unwrap();
+    trace
+        .validate_context(&q, std::slice::from_ref(&entry))
+        .unwrap();
+    assert!(trace.validate_context(&q, &[]).is_err());
+    let mut substituted = trace.clone();
+    substituted.root.as_mut().unwrap().knowledge[0].packet = "ff".repeat(32);
+    assert!(
+        substituted
+            .validate_context(&q, std::slice::from_ref(&entry))
+            .is_err()
+    );
+}

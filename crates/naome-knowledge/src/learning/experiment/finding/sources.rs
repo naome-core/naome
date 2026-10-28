@@ -199,6 +199,7 @@ pub(super) fn freeze(seed: u64, count: usize, holdout: &lineage::Holdout, output
             summary: completion.experience.unwrap(),
             frontier: generation.frontier,
             executions: generation.executions,
+            knowledge: initial.knowledge.clone(),
         };
         let lineage = ledger
             .original(&q, &case.dependency, &observation.summary)
@@ -330,6 +331,7 @@ fn another_allowed_receipt_cannot_replace_an_episodes_original_source() {
                 summary,
                 frontier: None,
                 executions: Vec::new(),
+                knowledge: Vec::new(),
             },
             solution: None,
         }

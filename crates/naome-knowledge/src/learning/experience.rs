@@ -284,6 +284,7 @@ pub(crate) struct Observation {
     pub summary: ExperienceSummary,
     pub frontier: Option<super::SearchFrontier>,
     pub executions: Vec<super::SearchTrace>,
+    pub knowledge: Vec<super::knowledge::Entry>,
 }
 impl Observation {
     pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, String> {
@@ -311,12 +312,17 @@ impl Observation {
                 .as_ref()
                 .and_then(|n| n.progress.as_ref())
                 .map_or_else(Vec::new, |p| p.executions.clone()),
+            knowledge: record
+                .native
+                .as_ref()
+                .map_or_else(Vec::new, |n| n.base.knowledge.clone()),
         };
         observation.validate()?;
         Ok(Some(observation))
     }
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.summary.validate()?;
+        super::knowledge::validate(&self.knowledge)?;
         if !super::State::eligible(&self.question) {
             return Err("history observation is outside the eligible training lineage".into());
         }
@@ -334,7 +340,7 @@ impl Observation {
             frontier.validate(&question)?;
         }
         for execution in &self.executions {
-            execution.validate_question(&question)?;
+            execution.validate_context(&question, &self.knowledge)?;
         }
         Ok(())
     }

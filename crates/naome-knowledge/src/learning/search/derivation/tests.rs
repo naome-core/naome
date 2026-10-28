@@ -64,7 +64,12 @@ fn contextual_fragments_recheck_all_premises_scope_and_original_branch() {
                 changed.variables.pop();
             }
             2 => changed.branch = vec![1],
-            3 => changed.source_tree = "ff".repeat(32),
+            3 => {
+                changed.parent = Parent::Admitted {
+                    proof: id.clone(),
+                    tree: "ff".repeat(32),
+                }
+            }
             _ => changed.state = "ff".repeat(32),
         }
         assert!(
@@ -101,7 +106,7 @@ fn symbolic_preferences_require_two_checked_completions_of_the_same_state() {
         roots.push(graphs[0].clone());
         pool.add(false, "dependency", "family", &id, graphs)
             .unwrap();
-        pool.add_derivation(checked(target, &tree, &id).unwrap())
+        pool.add_derivation(checked(target, &tree, &id).unwrap(), true)
             .unwrap();
     }
     assert_eq!(roots[0].key(), roots[1].key());
@@ -201,4 +206,113 @@ fn hindsight_does_not_invent_observation_of_a_rebased_checked_path() {
             .iter()
             .all(|(_, witness)| pruned.steps.iter().any(|s| &s.witness == witness))
     );
+}
+
+fn unresolved_observation() -> super::super::super::experience::Observation {
+    use crate::learning::{GenerationCost, Origin, digest, experience};
+    struct BranchFirst;
+    impl Ranker for BranchFirst {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+            Ok(d.candidates
+                .iter()
+                .map(|c| {
+                    if c.rule == Rule::ImplicationBranch {
+                        1.
+                    } else {
+                        0.
+                    }
+                })
+                .collect())
+        }
+    }
+    let q = CompiledQuestion::compile(
+        "goal=all(a,all(b,all(c,all(d,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(d,d),mem(a,a)),imp(mem(d,d),imp(not(not(mem(b,b))),mem(c,c)))))))))",
+    ).unwrap();
+    assert!(crate::learning::State::eligible(q.source()));
+    let started = Instant::now();
+    let found = solve(q.proved_target(), &mut BranchFirst, 128).unwrap();
+    assert!(
+        found.tree.is_none(),
+        "the root question is not solved by the recorded search"
+    );
+    let executions = vec![found.execution.unwrap()];
+    let mut summary = experience::ExperienceSummary {
+        job: 7,
+        question: crate::hex(q.resolution_id()),
+        // Explicit symbolic test policy: no fabricated neural execution.
+        checkpoint: digest(&"no neural model used"),
+        policy: digest(&"branch-first symbolic fixture"),
+        request_binding: digest(&q.source()),
+        native_context: digest(&Vec::<String>::new()),
+        origin: Origin::Local,
+        terminal: found.terminal,
+        trace: experience::TraceBinding {
+            checked_trajectory: None,
+            observed_branches: found.frontier.as_ref().map(digest),
+            observed_execution: Some(digest(&executions)),
+        },
+        cost: Some(GenerationCost {
+            search_expansions: found.expansions,
+            ..GenerationCost::default()
+        }),
+        search_limit: 128,
+        spent_ms: started.elapsed().as_millis() as u64,
+        reserved_units: 1,
+        receipt: String::new(),
+    };
+    summary.receipt = digest(&summary);
+    let observation = experience::Observation {
+        question: q.source().into(),
+        summary,
+        frontier: found.frontier,
+        executions,
+        knowledge: Vec::new(),
+    };
+    observation.validate().unwrap();
+    observation
+}
+
+#[test]
+fn an_unresolved_search_contributes_only_independently_checked_conditional_branches() {
+    let observation = unresolved_observation();
+    let partials = observed(&observation).unwrap();
+    assert!(!partials.is_empty());
+    assert!(partials.iter().all(|d| d.source_proof.is_none()));
+    let fragments: Vec<_> = partials.iter().flat_map(|d| &d.fragments).collect();
+    assert!(
+        !fragments.is_empty(),
+        "closed observed branch must have its own native proof"
+    );
+    let question = CompiledQuestion::compile(&observation.question).unwrap();
+    for fragment in fragments {
+        fragment.validate_observation(&observation).unwrap();
+        let proof = fragment.verify().unwrap();
+        assert_ne!(&proof.target, question.proved_target());
+        assert!(matches!(fragment.parent, Parent::Observed { job: 7, .. }));
+        let mut substituted = observation.clone();
+        substituted.summary.job += 1;
+        substituted.summary.receipt.clear();
+        substituted.summary.receipt = crate::learning::digest(&substituted.summary);
+        assert!(fragment.validate_observation(&substituted).is_err());
+    }
+    let mut actions = crate::learning::pool::Pool::default();
+    let engine =
+        crate::learning::Engine::default().with_targets(crate::learning::model::Targets::Actions);
+    actions
+        .reconcile(std::slice::from_ref(&observation), engine.rich_targets())
+        .unwrap();
+    let mut rich = crate::learning::pool::Pool::default();
+    rich.reconcile(
+        std::slice::from_ref(&observation),
+        crate::learning::Engine::default().rich_targets(),
+    )
+    .unwrap();
+    assert!(actions.is_empty());
+    assert!(!rich.is_empty());
+    assert_eq!(
+        actions.derived_counts().fragments,
+        rich.derived_counts().fragments,
+        "both treatments check the same source; the action mask excludes its auxiliary targets"
+    );
+    assert!(rich.graphs().iter().all(|g| !g.successes.is_empty()));
 }

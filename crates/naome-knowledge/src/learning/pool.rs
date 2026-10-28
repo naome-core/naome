@@ -44,6 +44,7 @@ impl Pool {
     pub(super) fn reconcile(
         &mut self,
         observations: &[super::experience::Observation],
+        contextual: bool,
     ) -> Result<(), String> {
         if observations.len() > super::history::SOURCES {
             return Err("native hindsight source capacity".into());
@@ -51,36 +52,55 @@ impl Pool {
         self.hindsight.clear();
         for observation in observations {
             observation.validate()?;
-            let super::experience::TerminalEvidence::CertifiedCandidate { proof_id, .. } =
+            if let super::experience::TerminalEvidence::CertifiedCandidate { proof_id, .. } =
                 &observation.summary.terminal
-            else {
-                continue;
-            };
-            for derivation in &self.derivations {
-                if &derivation.source_proof != proof_id
-                    || observation.summary.trace.checked_trajectory.as_ref()
-                        != Some(&derivation.source_tree)
-                {
-                    continue;
-                }
-                for execution in &observation.executions {
-                    for (event, witness) in execution.reconcile(derivation)? {
-                        if self.hindsight.insert((
-                            observation.summary.job,
-                            execution.target.clone(),
-                            event,
-                            witness,
-                        )) {
-                            self.work_bytes = self
-                                .work_bytes
-                                .checked_add(512)
-                                .ok_or("native hindsight work overflow")?;
-                            if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
-                                return Err("native hindsight work capacity".into());
+            {
+                for derivation in &self.derivations {
+                    if derivation.source_proof.as_ref() != Some(proof_id)
+                        || observation.summary.trace.checked_trajectory.as_ref()
+                            != Some(&derivation.source_tree)
+                    {
+                        continue;
+                    }
+                    for execution in &observation.executions {
+                        for (event, witness) in execution.reconcile(derivation)? {
+                            if self.hindsight.insert((
+                                observation.summary.job,
+                                execution.target.clone(),
+                                event,
+                                witness,
+                            )) {
+                                self.work_bytes = self
+                                    .work_bytes
+                                    .checked_add(512)
+                                    .ok_or("native hindsight work overflow")?;
+                                if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
+                                    return Err("native hindsight work capacity".into());
+                                }
                             }
                         }
                     }
                 }
+            }
+            let case = super::curriculum::owned::case(&observation.question)
+                .ok_or("observed training lineage differs")?;
+            for derivation in super::search::derivation::observed(observation)? {
+                if contextual && let Some(fragment) = derivation.fragments.first() {
+                    let graphs = derivation
+                        .steps
+                        .iter()
+                        .filter(|step| step.graph.candidates.len() > 1)
+                        .map(|step| step.graph.clone())
+                        .collect();
+                    self.add(
+                        matches!(observation.summary.origin, super::Origin::Peer { .. }),
+                        &case.dependency,
+                        &case.family,
+                        &fragment.proof_id,
+                        graphs,
+                    )?;
+                }
+                self.add_derivation(derivation, contextual)?;
             }
         }
         Ok(())
@@ -88,12 +108,16 @@ impl Pool {
     pub fn add_derivation(
         &mut self,
         derivation: super::search::derivation::Derivation,
+        active: bool,
     ) -> Result<(), String> {
         for step in &derivation.steps {
             // Single-choice transitions carry sequence state, not a missing
             // competing-action label. Ambiguous states must be the same ones
             // produced by the ordinary native checked proof replay.
-            if step.graph.candidates.len() > 1 && !self.keys.contains_key(&step.graph.key()) {
+            if active
+                && step.graph.candidates.len() > 1
+                && !self.keys.contains_key(&step.graph.key())
+            {
                 return Err("checked sequence differs from its admitted replay".into());
             }
             let key = step.graph.key();

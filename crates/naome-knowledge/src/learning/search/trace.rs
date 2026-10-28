@@ -44,7 +44,14 @@ pub(super) fn binding(state: &State) -> Result<String, String> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Root {
     target: String,
-    knowledge: Vec<String>,
+    knowledge: Vec<Reference>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reference {
+    formula: String,
+    proof: String,
+    packet: String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -110,6 +117,10 @@ impl Trace {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
+        self.states().map(drop)
+    }
+
+    fn states(&self) -> Result<Vec<State>, String> {
         crate::object::id_bytes(&self.target)?;
         if crate::checkpoint::encode(self)?.len() > BYTES
             || self.events.len() > self.attempts
@@ -119,7 +130,7 @@ impl Trace {
         }
         let Some(root) = &self.root else {
             return if self.events.is_empty() {
-                Ok(())
+                Ok(Vec::new())
             } else {
                 Err("search events lack their original context".into())
             };
@@ -129,10 +140,17 @@ impl Trace {
             return Err("search observation target differs".into());
         }
         let mut initial = prepare(&target)?.state;
+        for reference in &root.knowledge {
+            crate::object::id_bytes(&reference.proof)?;
+            crate::object::id_bytes(&reference.packet)?;
+        }
+        if root.knowledge.len() > super::super::knowledge::CAPACITY {
+            return Err("search observation theorem capacity differs".into());
+        }
         initial.knowledge = root
             .knowledge
             .iter()
-            .map(|s| decode(s))
+            .map(|reference| decode(&reference.formula))
             .collect::<Result<_, _>>()?;
         let mut states: Vec<State> = Vec::new();
         let mut visits =
@@ -198,7 +216,7 @@ impl Trace {
             }
             states.push(state);
         }
-        Ok(())
+        Ok(states)
     }
 
     pub(crate) fn validate_question(
@@ -225,16 +243,100 @@ impl Trace {
         knowledge: &[super::super::knowledge::Entry],
     ) -> Result<(), String> {
         self.validate_question(question)?;
-        if let Some(root) = &self.root {
-            let allowed = knowledge
+        self.context(knowledge)?;
+        Ok(())
+    }
+
+    pub(super) fn context(
+        &self,
+        knowledge: &[super::super::knowledge::Entry],
+    ) -> Result<Vec<Term>, String> {
+        let Some(root) = &self.root else {
+            return Ok(Vec::new());
+        };
+        let mut terms = Vec::new();
+        for reference in &root.knowledge {
+            let entry = knowledge
                 .iter()
-                .map(|entry| encode(&entry.verified()?.target))
-                .collect::<Result<BTreeSet<_>, String>>()?;
-            if root.knowledge.iter().any(|f| !allowed.contains(f)) {
-                return Err("search observation uses an unowned theorem context".into());
+                .find(|entry| super::super::digest(entry) == reference.packet)
+                .ok_or("search observation lacks its exact theorem snapshot")?;
+            let checked = entry.verified()?;
+            if encode(&checked.target)? != reference.formula
+                || crate::hex(checked.native_id.as_bytes()) != reference.proof
+            {
+                return Err("search observation theorem identity differs".into());
+            }
+            terms.push(Term::Native {
+                certificate: checked.certificate,
+                lemmas: checked.lemmas,
+                definitions: checked.definitions,
+                target: checked.target,
+            });
+        }
+        Ok(terms)
+    }
+
+    /// Reconstruct only closed subtrees whose actual required transitions all
+    /// fit in the stored prefix. The caller must independently check each one.
+    pub(super) fn closed_subtrees(&self) -> Result<Vec<(usize, State, Tree)>, String> {
+        let states = self.states()?;
+        fn rebuild(
+            trace: &Trace,
+            states: &[State],
+            index: usize,
+            depth: usize,
+        ) -> Result<Option<Tree>, String> {
+            if depth > 40 {
+                return Err("observed closed branch depth differs".into());
+            }
+            let event = &trace.events[index];
+            if !event.closed {
+                return Ok(None);
+            }
+            let state = &states[index];
+            let action = actions(state)[event.selected].clone();
+            let mut children = Vec::new();
+            for (child, next) in next(state, &action)?.into_iter().enumerate() {
+                if let Some((a, b)) = close(&next) {
+                    children.push(Tree::Close(a, b));
+                    continue;
+                }
+                let matching: Vec<_> = trace
+                    .events
+                    .iter()
+                    .enumerate()
+                    .skip(index + 1)
+                    .take_while(|(i, _)| *i < event.end)
+                    .filter(|(_, e)| {
+                        e.closed
+                            && e.parent
+                                == Some(Branch {
+                                    event: index,
+                                    child,
+                                })
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if matching.len() > 1 {
+                    return Err("observed branch has multiple terminal completions".into());
+                }
+                let Some(index) = matching.first() else {
+                    return Ok(None);
+                };
+                let Some(tree) = rebuild(trace, states, *index, depth + 1)? else {
+                    return Ok(None);
+                };
+                children.push(tree);
+            }
+            Ok(Some(Tree::Step { action, children }))
+        }
+        let mut result = Vec::new();
+        for (index, state) in states.iter().enumerate() {
+            if let Some(tree) = rebuild(self, &states, index, 0)? {
+                result.push((index, state.clone(), tree));
             }
         }
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -246,10 +348,23 @@ pub(super) struct Recorder {
     stopped: bool,
 }
 impl Recorder {
-    pub fn new(target: &Formula, knowledge: &[Formula]) -> Result<Self, String> {
+    pub fn new(
+        target: &Formula,
+        knowledge: &[super::super::knowledge::Entry],
+    ) -> Result<Self, String> {
         let root = Root {
             target: encode(target)?,
-            knowledge: knowledge.iter().map(encode).collect::<Result<_, _>>()?,
+            knowledge: knowledge
+                .iter()
+                .map(|entry| {
+                    let checked = entry.verified()?;
+                    Ok(Reference {
+                        formula: encode(&checked.target)?,
+                        proof: crate::hex(checked.native_id.as_bytes()),
+                        packet: super::super::digest(entry),
+                    })
+                })
+                .collect::<Result<_, String>>()?,
         };
         let mut trace = Trace {
             target: super::super::digest(&root.target),
