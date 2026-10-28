@@ -3,8 +3,71 @@
 use super::*;
 use knowledge::Store;
 use serde::Deserialize;
+#[path = "runtime/objective.rs"]
+mod objective;
 #[path = "runtime/owned.rs"]
 mod owned;
+
+fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+fn limits(started: Instant, cpu: u64) {
+    assert!(started.elapsed() < Duration::from_secs(120));
+    assert!(meta::cpu_micros().unwrap() - cpu < 90_000_000);
+}
+
+fn qualification_screen(
+    state: &State,
+    candidate: &Checkpoint,
+    engine: &mut Engine,
+    store: &mut Store,
+    job: u64,
+    clock: (Instant, u64),
+) -> serde_json::Value {
+    let mut before = 0u32;
+    let mut after = 0u32;
+    let mut protected = false;
+    let mut anchor_loss = false;
+    let mut transfer = transfer::Summary::default();
+    let mut rows = Vec::new();
+    for (index, source) in curriculum::development()
+        .iter()
+        .map(|q| &q.source)
+        .chain(state.anchors.iter().map(|e| &e.question))
+        .enumerate()
+    {
+        limits(clock.0, clock.1);
+        let result = transfer::evaluate(source, state, candidate, engine, store, job).unwrap();
+        if index < curriculum::DEVELOPMENT {
+            before += u32::from(result.before.solved);
+            after += u32::from(result.after.solved);
+            if index < curriculum::CORPUS_DEVELOPMENT {
+                protected |= result.before.solved && !result.after.solved;
+            }
+        } else {
+            anchor_loss |= result.before.solved && !result.after.solved;
+        }
+        rows.push(
+            serde_json::json!({"group":"development_and_anchors","index":index,
+            "before":result.before.solved,"after":result.after.solved}),
+        );
+    }
+    for (index, q) in curriculum::adaptive::BANK.transfer.iter().enumerate() {
+        limits(clock.0, clock.1);
+        let result = transfer::evaluate(&q.source, state, candidate, engine, store, job).unwrap();
+        transfer
+            .record(index, result.before.solved, result.after.solved)
+            .unwrap();
+        rows.push(serde_json::json!({"group":"transfer","index":index,
+            "before":result.before.solved,"after":result.after.solved}));
+    }
+    assert!(transfer.complete());
+    serde_json::json!({"before":before,"after":after,"protected_loss":protected,
+        "anchor_loss":anchor_loss,"transfer":transfer,"transfer_families":transfer.families(),
+        "unchanged_screen_passes":after>before && !protected && !anchor_loss && transfer.accepts(),
+        "installed_or_promoted":false,"native_evaluations":rows})
+}
 
 #[derive(Deserialize)]
 struct Input {

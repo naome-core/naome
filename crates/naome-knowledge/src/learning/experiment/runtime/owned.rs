@@ -22,10 +22,6 @@ struct Diagnosis {
     cases: Vec<Case>,
 }
 
-fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
-}
-
 fn checkpoint(path: &str, store: &mut Store) -> Checkpoint {
     let path = Path::new(path);
     let checkpoint: Checkpoint = read(path.join("checkpoint.json").to_str().unwrap());
@@ -61,11 +57,6 @@ fn proof_graphs(state: &State, evidence: &[Evidence], proof: &str) -> Vec<graph:
     let pool = selected.training_pool_for(evidence, true).unwrap();
     assert!(!pool.is_empty());
     pool.graphs().to_vec()
-}
-
-fn limits(started: Instant, cpu: u64) {
-    assert!(started.elapsed() < Duration::from_secs(120));
-    assert!(meta::cpu_micros().unwrap() - cpu < 90_000_000);
 }
 
 #[test]
