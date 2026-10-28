@@ -3,12 +3,16 @@
 use super::*;
 use knowledge::Store;
 use serde::Deserialize;
+#[path = "runtime/gentle.rs"]
+mod gentle;
 #[path = "runtime/midpoint.rs"]
 mod midpoint;
 #[path = "runtime/objective.rs"]
 mod objective;
 #[path = "runtime/owned.rs"]
 mod owned;
+#[path = "runtime/warm.rs"]
+mod warm;
 
 fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()

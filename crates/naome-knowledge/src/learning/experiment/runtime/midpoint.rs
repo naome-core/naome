@@ -1,58 +1,6 @@
 //! Fixed inference-only displacement probe; never a trained or installed state.
+use super::warm::inputs;
 use super::*;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Case {
-    name: String,
-    job: u64,
-    original_job: String,
-    parent_checkpoint: String,
-    candidate_checkpoint: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Inputs {
-    original_sha256: BTreeMap<String, String>,
-    cases: Vec<Case>,
-}
-
-fn inputs() -> Inputs {
-    let path = std::env::var("NAOME_MIDPOINT_INPUT").expect("frozen twelve warm cases");
-    let inputs: Inputs = read(&path);
-    assert_eq!(inputs.cases.len(), 12);
-    for (path, hash) in &inputs.original_sha256 {
-        assert_eq!(
-            crate::hex(&Sha256::digest(std::fs::read(path).unwrap())),
-            *hash
-        );
-    }
-    for case in &inputs.cases {
-        let job: Job = read(&case.original_job);
-        job.validate().unwrap();
-        assert_eq!(job.base.model.updates, 250);
-        let mut store = Store::default();
-        assert_eq!(
-            checkpoint(&case.parent_checkpoint, &mut store),
-            job.base.model
-        );
-        let candidate = checkpoint(&case.candidate_checkpoint, &mut store);
-        assert_eq!(candidate.updates, 500);
-        assert_eq!(candidate.seed, job.base.model.seed);
-        let experience = &job
-            .progress
-            .as_ref()
-            .unwrap()
-            .meta_update
-            .as_ref()
-            .unwrap()
-            .experience;
-        assert_eq!(experience.job, case.job);
-        assert_eq!(experience.source_model, digest(&job.base.model));
-        assert_eq!(experience.candidate_model, Some(digest(&candidate)));
-    }
-    inputs
-}
 
 fn midpoint(parent: &Path, candidate: &Path) -> Vec<u8> {
     let a = burn_pack::Reader::from_file_exact(parent).unwrap();
@@ -110,7 +58,7 @@ fn midpoint(parent: &Path, candidate: &Path) -> Vec<u8> {
 #[test]
 #[ignore = "Twelve-source midpoint format preflight; no inference or updates"]
 fn warm_midpoint_preflight() {
-    for case in inputs().cases {
+    for case in inputs("NAOME_MIDPOINT_INPUT").cases {
         for directory in [case.parent_checkpoint, case.candidate_checkpoint] {
             let path = Path::new(&directory).join("model.bpk");
             assert_eq!(midpoint(&path, &path), std::fs::read(path).unwrap());
@@ -128,7 +76,7 @@ fn warm_midpoint_diagnosis() {
     let output = std::env::var("NAOME_MIDPOINT_OUTPUT").expect("fresh midpoint output");
     let output = Path::new(&output);
     assert!(!output.exists(), "preserve prior probes");
-    let inputs = inputs();
+    let inputs = inputs("NAOME_MIDPOINT_INPUT");
     let meter = crate::resources::feedback::Meter::start();
     let started = Instant::now();
     let cpu = meta::cpu_micros().unwrap();
