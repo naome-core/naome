@@ -46,7 +46,10 @@ fn observation_micros(profile: &crate::training::ability::Profile) -> u64 {
 #[test]
 #[ignore = "Explicit finite exact-input Release runtime profile; revealed diagnostic corpus"]
 fn exact_owned_trial_runtime_profile() {
-    assert!(!cfg!(debug_assertions), "Release measurement only");
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "Release measurement only"
+    );
     let input = std::env::var("NAOME_RUNTIME_INPUT").expect("frozen runtime inputs");
     let output = std::env::var("NAOME_RUNTIME_OUTPUT").expect("fresh runtime output");
     let output = Path::new(&output);
@@ -188,6 +191,10 @@ fn exact_owned_trial_runtime_profile() {
 #[test]
 #[ignore = "Finite owner-validation profile on frozen owned replay; no model inference or updates"]
 fn owned_replay_working_set_profile() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "Release measurement only"
+    );
     let input = std::env::var("NAOME_RUNTIME_INPUT").expect("frozen runtime inputs");
     let output = std::env::var("NAOME_RUNTIME_OUTPUT").expect("fresh runtime output");
     let output = Path::new(&output);
