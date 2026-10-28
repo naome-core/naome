@@ -107,6 +107,53 @@ fn cold_objective_input_preflight() {
 }
 
 #[test]
+#[ignore = "Read-only native source coverage; no inference, search or optimizer updates"]
+fn cold_objective_source_coverage() {
+    let output = std::env::var("NAOME_OBJECTIVE_OUTPUT").expect("fresh coverage output");
+    let output = Path::new(&output);
+    assert!(!output.exists(), "preserve previous coverage exports");
+    let diagnosis = inputs();
+    let mut rows = Vec::new();
+    for case in &diagnosis.cases {
+        let job: Job = read(&case.original_job);
+        let directory = output.join(&case.name);
+        std::fs::create_dir_all(&directory).unwrap();
+        for rehearsal in [false, true] {
+            let pool = job
+                .base
+                .training_pool_for(&job.evidence, rehearsal)
+                .unwrap();
+            let graphs = pool.graphs();
+            assert!(!graphs.is_empty());
+            let mut rules = BTreeMap::<i32, usize>::new();
+            for graph in graphs {
+                for selected in &graph.successes {
+                    *rules
+                        .entry(graph.nodes[graph.candidates[*selected]].kind)
+                        .or_default() += 1;
+                }
+            }
+            let filename = if rehearsal {
+                "rehearsal.json"
+            } else {
+                "replay.json"
+            };
+            write(&directory.join(filename), &graphs);
+            rows.push(serde_json::json!({"case":case.name,"rehearsal":rehearsal,
+                "graphs":graphs.len(),"native_checked_sources":job.base.training_sources().count(),
+                "known_successes_by_rule":rules,"base_binding":digest(&job.base),
+                "pool_binding":digest(&graphs)}));
+        }
+    }
+    write(
+        &output.join("completed.json"),
+        &serde_json::json!({"cases":rows,
+        "inference_calls":0,"native_searches":0,"optimizer_updates":0,
+        "unknown_actions_are_not_negative_labels":true}),
+    );
+}
+
+#[test]
 #[ignore = "Six fixed objective branches; no upper updates, final queries or installation"]
 fn cold_objective_intervention() {
     assert!(
