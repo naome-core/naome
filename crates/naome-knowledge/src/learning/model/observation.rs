@@ -3,6 +3,7 @@ use super::{Engine, Graph, UPDATES_PER_UNIT};
 use crate::learning::{Job, Origin, curriculum, digest, search};
 use serde::Serialize;
 use std::collections::BTreeMap;
+pub(in crate::learning) mod activation;
 
 pub(in crate::learning) struct Source {
     job: u64,

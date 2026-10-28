@@ -1,6 +1,7 @@
 //! Frozen pre-optimization routing, including its exact autodiff graph.
 //! Differential tests compare full model and optimizer bytes.
 use super::*;
+mod activation;
 
 impl Policy {
     pub(in crate::learning::model) fn forward_reference(&self, batch: &Batch) -> Tensor<2> {
