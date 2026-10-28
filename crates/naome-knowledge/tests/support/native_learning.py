@@ -305,6 +305,15 @@ def run(trial):
     trial.summary["result"] = "pass"
 
 
+def newer_development_feedback(feedback, original):
+    if not feedback["development"]["cells"]:
+        return False
+    assert feedback["checkpoint"] == feedback["development"]["checkpoint"]
+    # Later job IDs may still carry feedback from an earlier cold rejection.
+    # Wait for a genuinely newer revision inside the original trial deadline.
+    return feedback["revision"] > original["native"]["base"]["feedback"]["revision"]
+
+
 def run_unseeded(trial):
     node = Node(trial, 0)
     trial.summary["node_count"] = 1
@@ -384,10 +393,8 @@ def run_unseeded(trial):
             if record["id"] <= original["id"] or record["input"]["role"] != "solve":
                 continue
             feedback = record["native"]["base"]["feedback"]
-            if not feedback["development"]["cells"]:
+            if not newer_development_feedback(feedback, original):
                 continue
-            assert feedback["checkpoint"] == feedback["development"]["checkpoint"]
-            assert feedback["revision"] > original["native"]["base"]["feedback"]["revision"]
             selections = [event for event in node.logs() if event.get("event") == "native_curriculum_selected"
                           and event["checkpoint"] == feedback["checkpoint"]
                           and event["feedback_revision"] >= first["learning"]["feedback"]["revision"]]

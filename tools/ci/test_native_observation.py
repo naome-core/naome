@@ -102,6 +102,24 @@ class NativeObservationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             NATIVE.verify_meta(node, altered)
 
+    def test_continuation_waits_past_feedback_from_an_earlier_rejected_trial(self):
+        # A second cold trial can promote while solve records still carry the
+        # first trial's development feedback. Job ordering alone is insufficient.
+        original = {'native': {'base': {'feedback': {'revision': 1}}}}
+        feedback = {'revision': 1, 'checkpoint': 'first-rejected',
+                    'development': {'checkpoint': 'first-rejected', 'cells': [1]}}
+        self.assertFalse(NATIVE.newer_development_feedback(feedback, original))
+        feedback = {'revision': 2, 'checkpoint': 'second-promoted',
+                    'development': {'checkpoint': 'second-promoted', 'cells': [1]}}
+        self.assertTrue(NATIVE.newer_development_feedback(feedback, original))
+
+    def test_continuation_feedback_still_requires_its_actual_checkpoint_binding(self):
+        original = {'native': {'base': {'feedback': {'revision': 1}}}}
+        feedback = {'revision': 2, 'checkpoint': 'second-promoted',
+                    'development': {'checkpoint': 'unrelated', 'cells': [1]}}
+        with self.assertRaises(AssertionError):
+            NATIVE.newer_development_feedback(feedback, original)
+
 
 if __name__ == '__main__':
     unittest.main()
