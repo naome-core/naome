@@ -5,6 +5,7 @@ use super::*;
 mod adaptive;
 mod knowledge;
 mod lookup;
+mod runtime;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
