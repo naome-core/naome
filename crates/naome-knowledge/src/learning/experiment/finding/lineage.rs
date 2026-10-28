@@ -9,6 +9,25 @@ pub(super) struct Holdout {
     lineages: BTreeSet<String>,
 }
 impl Holdout {
+    /// Check source-only inputs before invoking any model or proof search.
+    pub(super) fn question(
+        &self,
+        question: &CompiledQuestion,
+        authored_lineage: Option<&str>,
+    ) -> Result<(), String> {
+        if self
+            .families
+            .contains(&curriculum::owned::family(question.proved_target()))
+            || self
+                .resolutions
+                .contains(&crate::hex(question.resolution_id()))
+            || authored_lineage.is_some_and(|lineage| self.lineages.contains(lineage))
+        {
+            return Err("held-out source or ancestor entered experiment material".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn read(bytes: &[u8], expected: &str) -> Result<Self, String> {
         if crate::hex(&Sha256::digest(bytes)) != expected {
             return Err("confirmation source bytes differ from the frozen bank".into());
@@ -151,19 +170,7 @@ impl Ledger {
             }
             let question =
                 CompiledQuestion::compile(&material.question).map_err(|e| e.to_string())?;
-            if holdout
-                .families
-                .contains(&curriculum::owned::family(question.proved_target()))
-                || holdout
-                    .resolutions
-                    .contains(&crate::hex(question.resolution_id()))
-                || material
-                    .lineage
-                    .as_ref()
-                    .is_some_and(|l| holdout.lineages.contains(l))
-            {
-                return Err("held-out source or ancestor entered experiment material".into());
-            }
+            holdout.question(&question, material.lineage.as_deref())?;
             match (
                 &material.experience,
                 &material.lineage,
@@ -221,6 +228,9 @@ mod tests {
         let held = question("goal=all(x,eq(x,x))");
         let other = question("goal=all(x,imp(eq(x,x),eq(x,x)))");
         let (_, guard) = bank(&held);
+        assert!(guard.question(&held, None).is_err());
+        assert!(guard.question(&other, Some("reserved-family")).is_err());
+        assert!(guard.question(&other, Some("training-family")).is_ok());
         assert!(
             !guard
                 .families
