@@ -68,7 +68,7 @@ rust_test(
     args = ["learning::model::preservation::tests::"],
     crate = ":naome_knowledge",
     compile_data = ["//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex"],
-    env = {"RUST_TEST_THREADS": "1"},
+    env = {"RUST_TEST_THREADS": "2"},
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
