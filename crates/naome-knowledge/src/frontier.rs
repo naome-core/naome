@@ -484,6 +484,9 @@ impl Frontier {
     ) -> Result<(), crate::Error> {
         self.analyses.trim();
         crate::resources::require_work_admission()?;
+        if let Some(feedback) = &self.feedback {
+            self.evidence.feedback(feedback)?;
+        }
         self.proposals.retain(|question| eligible(question));
         let root = graph.content_root();
         if self.observed_root == Some(root) && !self.proposals.is_empty() {

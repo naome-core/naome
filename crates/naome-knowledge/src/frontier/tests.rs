@@ -284,6 +284,12 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
         frontier.evidence.get(candidates[index]).unwrap().is_none(),
         "old-model failures cannot cool down a new checkpoint"
     );
+    frontier.refresh(&graph, |_| true).unwrap();
+    assert_eq!(
+        frontier.learning_snapshot()["curriculum"]["checkpoint"],
+        "22".repeat(32),
+        "construction must use the current checkpoint before generating its page"
+    );
 }
 
 #[test]
