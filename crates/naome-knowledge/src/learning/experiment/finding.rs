@@ -723,7 +723,7 @@ fn matched_continual_finder_study() {
         "native study obeys the installed resource pause: {:?}",
         observed.budget.paused
     );
-    let arms = if screen {
+    let mut arms = if screen {
         vec![
             Treatment::Previous,
             Treatment::CensoredReplay,
@@ -749,6 +749,9 @@ fn matched_continual_finder_study() {
     } else {
         ARMS.to_vec()
     };
+    if matches!(phase.as_str(), "repair_observation" | "confirmation_models") {
+        arms.insert(2, Treatment::Uniform);
+    }
     let reserved = if repair {
         let path =
             std::path::PathBuf::from(std::env::var("NAOME_FINDER_CONFIRMATION_INPUTS").unwrap());
@@ -820,6 +823,11 @@ fn matched_continual_finder_study() {
         }
         for offset in 0..arms.len() {
             let treatment = arms[(seed_index + offset) % arms.len()];
+            let historical = paired
+                && matches!(
+                    treatment,
+                    Treatment::Previous | Treatment::CensoredReplay | Treatment::OutcomeReplay
+                );
             let feedback_reference = if paired {
                 let reference = std::path::PathBuf::from(
                     std::env::var("NAOME_FINDER_FEEDBACK_REFERENCE").unwrap(),
@@ -844,7 +852,7 @@ fn matched_continual_finder_study() {
             } else {
                 None
             };
-            if paired && treatment != Treatment::Full {
+            if historical {
                 let reference = std::path::PathBuf::from(
                     std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
                 );
@@ -879,7 +887,7 @@ fn matched_continual_finder_study() {
                 &seed_path.join(label(treatment)),
                 repair.then_some(&mut clock),
             );
-            if paired && treatment != Treatment::Full {
+            if historical {
                 let reference = std::path::PathBuf::from(
                     std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap(),
                 );

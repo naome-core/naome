@@ -44,7 +44,7 @@ fn evaluate_frozen_confirmation_models() {
         &output.join("manifest.json"),
         &json!({"bank":bank_path,"bank_sha256":crate::hex(&Sha256::digest(&bank_bytes)),"models":models,"model_source_contract":input_specification(),"case_count":bank["cases"].as_array().unwrap().len(),"seeds":bank["seeds"],"search_expansions":128,"case_cpu_limit_micros":2_500_000,"case_wall_limit_micros":5_000_000,"scope":"First confirmation inference on frozen source-only questions. No examples, gradients, training, promotion, feedback or theorem hints are produced from these outcomes. Actual CPU, IO, checking and late proofs are retained separately.","initial_resources":resource}),
     );
-    let arms = ["initial", "previous", "censored_replay", "full"];
+    let arms = ["initial", "previous", "censored_replay", "uniform", "full"];
     let mut results = Vec::new();
     for (seed_index, seed) in bank["seeds"].as_array().unwrap().iter().enumerate() {
         let seed = seed.as_u64().unwrap();
