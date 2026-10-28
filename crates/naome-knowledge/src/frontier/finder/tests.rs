@@ -2,6 +2,59 @@ use super::*;
 fn q(source: &str) -> CompiledQuestion {
     CompiledQuestion::compile(source).unwrap()
 }
+
+#[test]
+fn relation_rotation_uses_the_whole_retained_context() {
+    let seeds = [
+        "mem(a,b)",
+        "not(mem(a,b))",
+        "imp(mem(a,b),eq(a,b))",
+        "and(mem(a,b),mem(b,a))",
+        "or(mem(a,b),mem(b,a))",
+        "imp(mem(a,b),mem(b,a))",
+        "imp(eq(a,b),mem(a,b))",
+        "iff(mem(a,b),mem(b,a))",
+    ]
+    .into_iter()
+    .map(|s| {
+        let question = q(&format!("goal=all(a,all(b,{s}))"));
+        open(&open(question.formula()).unwrap()).unwrap()
+    })
+    .collect::<VecDeque<_>>();
+    let first = seeds.iter().take(4).cloned().collect();
+    let collect = |seeds: &VecDeque<Formula>| {
+        (0..96)
+            .flat_map(|cursor| questions(cursor, seeds, &VecDeque::new(), 12, 64 * 1024))
+            .map(|q| key(&q))
+            .collect::<BTreeSet<_>>()
+    };
+    assert_ne!(
+        collect(&seeds),
+        collect(&first),
+        "later checked relations must change exploration without another graph insertion"
+    );
+}
+
+#[test]
+fn predictor_learns_variable_wiring_cost_without_using_variable_names() {
+    let a = q("goal=all(a,all(b,all(c,imp(mem(a,b),imp(mem(b,c),mem(a,c))))))");
+    let b = q("goal=all(a,all(b,all(c,imp(mem(a,b),imp(mem(b,c),mem(c,a))))))");
+    let renamed = q("goal=all(x,all(y,all(z,imp(mem(x,y),imp(mem(y,z),mem(x,z))))))");
+    assert_eq!(
+        super::super::Features::of(&a),
+        super::super::Features::of(&b)
+    );
+    let mut model = Model::fresh();
+    for _ in 0..96 {
+        model.observe(&a, false, 1).unwrap();
+        model.observe(&b, false, 65_535).unwrap();
+    }
+    assert!(
+        model.predictions(&a)[1] < model.predictions(&b)[1],
+        "identical syntax counts cannot erase differing variable-role observations"
+    );
+    assert_eq!(model.predictions(&a), model.predictions(&renamed));
+}
 #[test]
 fn research_screen_rejects_boolean_padding_without_rejecting_relation_properties() {
     for source in [

@@ -16,6 +16,8 @@ pub(crate) const PROVIDER: &str = "naome-structural-finder";
 #[cfg(test)]
 mod comparison;
 #[cfg(test)]
+mod experiment;
+#[cfg(test)]
 mod tests;
 
 use crate::structure::{Features, SCALE, SIGNALS};

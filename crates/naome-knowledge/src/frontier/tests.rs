@@ -17,6 +17,56 @@ fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Comple
 }
 
 #[test]
+fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let target = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    frontier
+        .attempted(
+            &target,
+            &graph,
+            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    let candidates = [&target];
+    let random = frontier.random.0;
+    assert_eq!(
+        frontier
+            .choose(&candidates, &graph, settings.solving, false)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        frontier.random.0, random,
+        "abstention must not consume a random choice"
+    );
+    graph
+        .produce(&mocks::create_proof(&question(0)).unwrap())
+        .unwrap();
+    assert_eq!(
+        frontier
+            .choose(&candidates, &graph, settings.solving, false)
+            .unwrap(),
+        None
+    );
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert_eq!(
+        frontier
+            .choose(&candidates, &graph, settings.solving, false)
+            .unwrap(),
+        Some(0),
+        "bounded backoff must eventually release even a sole candidate after reopen"
+    );
+}
+
+#[test]
 fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_success() {
     let directory = Directory::new();
     let mut graph = Graph::default();

@@ -66,6 +66,69 @@ fn recovered(id: u64, input: jobs::Input) -> jobs::Record {
 }
 
 #[tokio::test]
+async fn exhausted_free_research_plan_releases_independent_finding() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    for q in std::iter::once(&goal).chain(helpers.iter()) {
+        admitted(&mut questions, &graph, q).await;
+    }
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = crate::frontier::Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    for (index, q) in std::iter::once(&goal).chain(helpers.iter()).enumerate() {
+        frontier
+            .attempted(
+                q,
+                &graph,
+                &jobs::Completion {
+                    id: index as u64 + 1,
+                    binding: jobs::Binding::new([0; 32], [0; 32]),
+                    spent_ms: 1,
+                    reserved_units: 1,
+                    state: jobs::State::Complete,
+                    result: Ok(jobs::Output::Native {
+                        solution: None,
+                        diagnostic: "search_budget".into(),
+                        frontier: (index == 0).then(|| crate::learning::tests::stalled_frontier(q)),
+                    }),
+                },
+                crate::frontier::evidence::Outcome::NoCandidate,
+            )
+            .unwrap();
+    }
+    let mut owner = jobs::tests::Manual::new();
+    let mut autonomous = Autonomous::new(
+        intervals(500),
+        owner.client.clone(),
+        owner.recovery(),
+        vec![goal.clone()],
+    );
+    autonomous.frontier = Some(frontier);
+    autonomous.next_proof = Instant::now() + Duration::from_secs(3600);
+    autonomous.next_question = Instant::now();
+    autonomous.advance(&mut graph, &mut questions);
+    let requests = owner.requests();
+    assert!(
+        requests.iter().any(
+            |(_, input)| matches!(input,jobs::Input::Find{question,..} if question!=goal.source())
+        ),
+        "an exhausted optional plan cannot suppress all new finding"
+    );
+    assert!(
+        autonomous
+            .unanswered
+            .iter()
+            .any(|q| q.resolution_id() == goal.resolution_id()),
+        "parking must preserve the unanswered original"
+    );
+    assert!(autonomous.error().is_none());
+}
+
+#[tokio::test]
 async fn inconclusive_recovery_does_not_starve_later_records_or_archive_pages() {
     let mut graph = Graph::default();
     let mut questions = questions();
