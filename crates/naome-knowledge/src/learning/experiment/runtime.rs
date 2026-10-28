@@ -11,6 +11,8 @@ mod midpoint;
 mod objective;
 #[path = "runtime/owned.rs"]
 mod owned;
+#[path = "runtime/trace.rs"]
+mod trace;
 #[path = "runtime/warm.rs"]
 mod warm;
 
