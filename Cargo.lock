@@ -5398,6 +5398,7 @@ version = "0.1.0-alpha.1"
 name = "naome-knowledge"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "base64 0.23.1",
  "burn",
  "burn-pack",
  "libp2p",
