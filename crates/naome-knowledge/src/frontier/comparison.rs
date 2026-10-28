@@ -190,6 +190,7 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
             })
             .unwrap_or(jobs::Output::NoCandidate);
         let completion = jobs::Completion {
+            experience: None,
             model_checkpoint: None,
             id: attempts,
             binding: jobs::Binding::new([1; 32], [2; 32]),

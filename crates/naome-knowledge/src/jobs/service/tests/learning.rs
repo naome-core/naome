@@ -45,6 +45,8 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
             process::Outcome {
                 state: State::Complete,
                 result: Ok(Output::Native {
+                    terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
+                        .into(),
                     solution: Some(solution),
                     diagnostic: "certified_candidate".into(),
                     frontier: None,
@@ -55,6 +57,155 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
 }
 fn learning(owner: &Owner) -> serde_json::Value {
     serde_json::to_value(owner.journal.learning.as_ref().unwrap()).unwrap()
+}
+
+#[test]
+fn native_completion_binds_its_actual_model_terminal_trace_and_work() {
+    use crate::learning::experience::{ExperienceSummary, TerminalEvidence};
+    let (_directory, mut owner) = native();
+    let question = crate::learning::tests::own_question();
+    let (id, mut receiver) = submit_native(
+        &mut owner,
+        Input::Solve {
+            question: question.clone(),
+        },
+    );
+    finish(&mut owner, id, checked_solution());
+    let completed = receiver.try_recv().unwrap();
+    let summary = completed.experience.unwrap();
+    summary.validate().unwrap();
+    assert_eq!(summary.job, id);
+    assert_eq!(summary.checkpoint, completed.model_checkpoint.unwrap());
+    assert_eq!(
+        summary.request_binding,
+        crate::learning::digest(&completed.binding)
+    );
+    let native = owner.journal.records[&id].native.as_ref().unwrap();
+    assert_eq!(
+        summary.native_context,
+        crate::learning::digest(&(&native.base_hash, &native.required, &native.prerequisites))
+    );
+    assert_eq!(
+        summary.question,
+        crate::hex(
+            naome_authoring::CompiledQuestion::compile(&question)
+                .unwrap()
+                .resolution_id()
+        )
+    );
+    assert!(matches!(
+        summary.terminal,
+        TerminalEvidence::CertifiedCandidate { .. }
+    ));
+    assert!(summary.trace.checked_trajectory.is_some());
+    assert!(summary.trace.observed_branches.is_none());
+    assert_eq!(summary.reserved_units, completed.reserved_units);
+    assert_eq!(summary.spent_ms, completed.spent_ms);
+    for field in [
+        "job",
+        "question",
+        "checkpoint",
+        "policy",
+        "spent_ms",
+        "reserved_units",
+        "search_limit",
+        "request_binding",
+        "native_context",
+    ] {
+        let mut value = serde_json::to_value(&summary).unwrap();
+        value[field] = if value[field].is_number() {
+            serde_json::json!(value[field].as_u64().unwrap() + 1)
+        } else {
+            serde_json::json!("11".repeat(32))
+        };
+        let changed: ExperienceSummary = serde_json::from_value(value).unwrap();
+        assert!(changed.validate().is_err(), "{field}");
+    }
+    let mut record = owner.journal.records[&id].clone();
+    if let Some(Output::Native { terminal, .. }) = &mut record.result {
+        **terminal = TerminalEvidence::Unknown;
+    }
+    assert!(ExperienceSummary::from_record(&record).is_err());
+    record = owner.journal.records[&id].clone();
+    record
+        .native
+        .as_mut()
+        .unwrap()
+        .progress
+        .as_mut()
+        .unwrap()
+        .cost
+        .as_mut()
+        .unwrap()
+        .search_expansions += 1;
+    assert!(ExperienceSummary::from_record(&record).is_err());
+}
+
+#[test]
+fn technical_and_interrupted_records_preserve_uncertainty_without_fake_proofs() {
+    use crate::learning::experience::{ExperienceSummary, TerminalEvidence};
+    let (_directory, mut owner) = native();
+    let (id, _receiver) = submit_native(
+        &mut owner,
+        Input::Solve {
+            question: crate::learning::tests::own_question(),
+        },
+    );
+    for (state, terminal) in [
+        (State::Failed, TerminalEvidence::TechnicalFailure),
+        (State::Expired, TerminalEvidence::Interrupted),
+        (State::Cancelled, TerminalEvidence::Interrupted),
+        (State::InDoubt, TerminalEvidence::Interrupted),
+    ] {
+        let mut record = owner.journal.records[&id].clone();
+        record.state = state;
+        record.failure = Some("worker ended without a retained search unit".into());
+        let summary = ExperienceSummary::from_record(&record).unwrap().unwrap();
+        summary.validate().unwrap();
+        assert_eq!(summary.terminal, terminal);
+        assert!(summary.cost.is_none());
+        assert!(summary.trace.checked_trajectory.is_none());
+        assert!(summary.trace.observed_branches.is_none());
+        assert!(!summary.terminal.observed_search_failure(0));
+    }
+}
+
+#[test]
+fn failed_native_experience_reloads_from_the_existing_job_journal() {
+    let (directory, mut owner) = native();
+    let settings = owner.settings;
+    let input = Input::Solve {
+        question: crate::learning::tests::own_question(),
+    };
+    let (id, mut receiver) = submit_native(&mut owner, input.clone());
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    owner
+        .complete(
+            id,
+            process::Outcome {
+                state: State::Failed,
+                result: Err("worker could not finish its reserved unit".into()),
+            },
+        )
+        .unwrap();
+    let summary = receiver.try_recv().unwrap().experience.unwrap();
+    let binding = owner.journal.records[&id].binding.clone();
+    let role_settings = owner.journal.records[&id].settings;
+    drop(owner);
+    let (disk, _journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let record = disk
+        .request(&input, &binding, role_settings)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.id, id);
+    assert!(record.result.is_none());
+    let restored = crate::learning::experience::ExperienceSummary::from_record(&record)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.receipt, restored.receipt);
+    assert!(restored.cost.is_none());
+    assert!(restored.trace.checked_trajectory.is_none());
 }
 #[test]
 fn native_mode_finalizes_structural_finding_without_a_solver_snapshot() {

@@ -54,6 +54,7 @@ impl Session<'_> {
 }
 fn completion(job: u64, generated: &Generation) -> jobs::Completion {
     jobs::Completion {
+        experience: None,
         model_checkpoint: None,
         id: job,
         binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -61,6 +62,7 @@ fn completion(job: u64, generated: &Generation) -> jobs::Completion {
         reserved_units: 1,
         state: jobs::State::Complete,
         result: Ok(jobs::Output::Native {
+            terminal: generated.terminal.clone().into(),
             solution: generated.solution.clone(),
             diagnostic: generated.diagnostic.clone(),
             frontier: generated.frontier.clone(),

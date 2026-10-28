@@ -3,6 +3,7 @@ pub mod core;
 pub(crate) mod frontier;
 use super::calculus::{self as c, Names};
 use super::{
+    experience::{Budget, Capacity, TerminalEvidence},
     graph::Graph,
     model::{Binding, Candidate, Decision, Ranker, Rule},
     proof::Term,
@@ -445,6 +446,7 @@ pub struct ResultTree {
     pub expansions: usize,
     pub failure: Option<String>,
     pub frontier: Option<frontier::Frontier>,
+    pub terminal: TerminalEvidence,
 }
 struct Search<'a> {
     ranker: &'a mut dyn Ranker,
@@ -455,6 +457,7 @@ struct Search<'a> {
     failure: Option<String>,
     exhausted: BTreeSet<String>,
     frontier: Option<frontier::Frontier>,
+    terminal: TerminalEvidence,
 }
 impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
@@ -463,6 +466,12 @@ impl Search<'_> {
                 report.observe(state, depth);
             }
             self.failure = Some("search_budget".into());
+            self.terminal
+                .include(TerminalEvidence::Budget(if depth > 32 {
+                    Budget::Depth
+                } else {
+                    Budget::Time
+                }));
             return Ok(None);
         }
         if let Some((a, b)) = close(state) {
@@ -475,10 +484,14 @@ impl Search<'_> {
                 report.observe(state, depth);
             }
             self.failure = Some("search_budget".into());
+            self.terminal
+                .include(TerminalEvidence::Budget(Budget::Expansions));
             return Ok(None);
         }
         if state.facts.len() > 32 {
             self.failure = Some("fact_resource".into());
+            self.terminal
+                .include(TerminalEvidence::Unsupported(Capacity::Facts));
             return Ok(None);
         }
         let identities = state
@@ -513,6 +526,8 @@ impl Search<'_> {
                 report.observe(state, depth);
             }
             self.failure = Some(e);
+            self.terminal
+                .include(TerminalEvidence::Unsupported(Capacity::Graph));
             return Ok(None);
         }
         let scores = if actions.len() > 1 {
@@ -528,6 +543,8 @@ impl Search<'_> {
         for selected in order {
             if self.expansions >= self.maximum {
                 self.failure = Some("search_budget".into());
+                self.terminal
+                    .include(TerminalEvidence::Budget(Budget::Expansions));
                 break;
             }
             self.expansions += 1;
@@ -591,6 +608,7 @@ pub fn solve_with_knowledge(
             expansions: 0,
             failure: Some("search_budget".into()),
             frontier: None,
+            terminal: TerminalEvidence::Budget(Budget::Expansions),
         });
     }
     if let Some((index, _)) = AXIOMS
@@ -603,6 +621,7 @@ pub fn solve_with_knowledge(
             expansions: 1,
             failure: None,
             frontier: None,
+            terminal: TerminalEvidence::Unknown,
         });
     }
     super::knowledge::validate(knowledge)?;
@@ -620,8 +639,12 @@ pub fn solve_with_knowledge(
         failure: None,
         exhausted: BTreeSet::new(),
         frontier: frontier::Frontier::new(target),
+        terminal: TerminalEvidence::Unknown,
     };
     let mut tree = s.prove(&p.state, 0)?;
+    if tree.is_none() && s.failure.is_none() && s.expansions > 0 {
+        s.terminal = TerminalEvidence::PolicyExhausted;
+    }
     if !knowledge.is_empty() {
         tree = tree.map(|proof| Tree::Knowledge {
             entries: knowledge.to_vec(),
@@ -638,6 +661,7 @@ pub fn solve_with_knowledge(
         tree,
         expansions: s.expansions,
         failure: s.failure,
+        terminal: s.terminal,
     })
 }
 
@@ -1141,6 +1165,7 @@ mod transposition_tests {
             domain: vec![x, y],
         };
         let mut search = Search {
+            terminal: TerminalEvidence::Unknown,
             ranker: &mut Ordered,
             goal: q,
             started: Instant::now(),

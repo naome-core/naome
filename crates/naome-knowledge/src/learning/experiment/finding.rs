@@ -615,6 +615,7 @@ fn arm(
             expansions += result.cost.search_expansions;
             unique.insert(crate::hex(q.resolution_id()));
             let output = jobs::Output::Native {
+                terminal: result.terminal.clone().into(),
                 solution: result.solution.clone(),
                 diagnostic: result.diagnostic.clone(),
                 frontier: result.frontier.clone(),
@@ -624,6 +625,7 @@ fn arm(
                     q,
                     &graph,
                     &jobs::Completion {
+                        experience: None,
                         id: job,
                         model_checkpoint: Some(model),
                         binding: jobs::Binding::new([0; 32], [0; 32]),

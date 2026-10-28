@@ -107,6 +107,7 @@ fn replay(
                 q,
                 &graph,
                 &jobs::Completion {
+                    experience: None,
                     id: job,
                     model_checkpoint: Some(digest(&state.model)),
                     binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -114,6 +115,7 @@ fn replay(
                     reserved_units: 1,
                     state: jobs::State::Complete,
                     result: Ok(jobs::Output::Native {
+                        terminal: generated.terminal.clone().into(),
                         solution: generated.solution.clone(),
                         diagnostic: generated.diagnostic.clone(),
                         frontier: generated.frontier.clone(),

@@ -348,6 +348,7 @@ pub(crate) enum Output {
         solution: Option<crate::learning::Solution>,
         diagnostic: String,
         frontier: Option<crate::learning::SearchFrontier>,
+        terminal: Box<crate::learning::experience::TerminalEvidence>,
     },
     Question(String),
     Proof {
@@ -403,6 +404,7 @@ impl Output {
                     solution,
                     diagnostic,
                     frontier,
+                    terminal,
                 },
                 Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
             ) if diagnostic.len() <= 4096
@@ -413,6 +415,7 @@ impl Output {
                 })
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
             {
+                terminal.validate(solution.as_ref())?;
                 if let Some(report) = frontier {
                     let Input::Solve { question } = input else {
                         return Err("open branches outside solve".into());
@@ -496,6 +499,7 @@ pub(crate) struct Record {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Completion {
+    pub experience: Option<crate::learning::experience::ExperienceSummary>,
     pub id: u64,
     /// Actual selected native model used by this job, including warm jobs.
     pub model_checkpoint: Option<String>,

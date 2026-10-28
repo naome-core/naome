@@ -587,6 +587,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 }
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        terminal: experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly),
         finder: None,
         frontier: None,
         prepared: None,
@@ -773,8 +774,9 @@ fn evicted_stored_anchor_uses_its_original_owned_evidence_and_existing_source_ca
 }
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
+        terminal: experience::TerminalEvidence::certified(&solution),
         frontier: None,
-        cost: None,
+        cost: Some((*solution.cost).clone()),
         training_cost: model::TrainingCost::default(),
         unit: 1,
         model: job.base.model.clone(),
@@ -843,6 +845,9 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
     job.training = true;
     completed(&mut job, own_solution());
     job.progress.as_mut().unwrap().result = None;
+    job.progress.as_mut().unwrap().terminal =
+        experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly);
+    job.progress.as_mut().unwrap().cost = None;
     job.validate().unwrap();
     let progress = serde_json::to_value(job.progress.as_ref().unwrap()).unwrap();
     assert!(progress.get("state").is_none() && progress.get("replay").is_none());

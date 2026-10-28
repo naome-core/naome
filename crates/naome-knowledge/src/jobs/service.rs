@@ -900,7 +900,7 @@ impl Owner {
         }
         self.running.remove(&id);
         self.clocks.remove(&id);
-        self.deliver(id);
+        self.deliver(id)?;
         if internal {
             self.internal_receivers.remove(&id);
         }
@@ -1052,7 +1052,7 @@ impl Owner {
                 waiters.push(reply);
                 self.clocks.entry(record.id).or_insert_with(Instant::now);
                 if record.state.terminal() {
-                    self.deliver(record.id);
+                    self.deliver(record.id)?;
                 }
             }
             return Ok(());
@@ -1072,7 +1072,7 @@ impl Owner {
                 return Ok(());
             }
             if record.state.terminal() || record.state == State::InDoubt {
-                let completion = completion(&record);
+                let completion = completion(&record)?;
                 let _ = reply.send(completion);
                 return Ok(());
             }
@@ -1371,7 +1371,7 @@ impl Owner {
                 if allowance.time_expired() || allowance.remaining_units == 0 && !finalizing {
                     record.state = State::Expired;
                     self.save()?;
-                    self.deliver(id);
+                    self.deliver(id)?;
                     continue;
                 }
                 record.state = State::Running;
@@ -1465,7 +1465,7 @@ impl Owner {
                             .expect("cancelled job")
                             .acknowledged = true;
                     }
-                    self.deliver(id);
+                    self.deliver(id)?;
                 }
             }
         }
@@ -1475,20 +1475,21 @@ impl Owner {
         Ok(())
     }
 
-    fn deliver(&mut self, id: u64) {
+    fn deliver(&mut self, id: u64) -> Result<(), String> {
         let record = &self.journal.records[&id];
         if !record.state.terminal() {
-            return;
+            return Ok(());
         }
-        let completion = completion(record);
+        let completion = completion(record)?;
         crate::network::emit(serde_json::json!({"event":"research_finished","job":id,
             "state":format!("{:?}",completion.state),"spent_ms":completion.spent_ms,
-            "reserved_units":completion.reserved_units}));
+            "reserved_units":completion.reserved_units,"experience":completion.experience}));
         if let Some(waiters) = self.waiters.remove(&id) {
             for waiter in waiters {
                 let _ = waiter.send(completion.clone());
             }
         }
+        Ok(())
     }
 
     fn compact(&mut self) {
@@ -1657,6 +1658,7 @@ fn reject(reply: oneshot::Sender<Completion>, binding: Binding, error: &str) {
 
 fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: State, error: &str) {
     let _ = reply.send(Completion {
+        experience: None,
         model_checkpoint: None,
         id: 0,
         binding,
@@ -1701,8 +1703,9 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
 fn append_failure(previous: Option<String>, next: &str) -> String {
     previous.map_or_else(|| next.to_owned(), |old| format!("{old}; cleanup: {next}"))
 }
-fn completion(record: &Record) -> Completion {
-    Completion {
+fn completion(record: &Record) -> Result<Completion, String> {
+    Ok(Completion {
+        experience: crate::learning::experience::ExperienceSummary::from_record(record)?,
         model_checkpoint: record.native.as_ref().map(|job| job.model_checkpoint()),
         id: record.id,
         binding: record.binding.clone(),
@@ -1713,7 +1716,7 @@ fn completion(record: &Record) -> Completion {
             .result
             .clone()
             .ok_or_else(|| format!("research job {:?}", record.state)),
-    }
+    })
 }
 
 fn combine_outcomes(result: Result<(), String>, cleanup: Result<(), String>) -> Result<(), String> {

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64) {
     let completion = jobs::Completion {
+        experience: None,
         model_checkpoint: None,
         id: job,
         binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -11,6 +12,10 @@ fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64
         reserved_units: 1,
         state: jobs::State::Complete,
         result: Ok(jobs::Output::Native {
+            terminal: crate::learning::experience::TerminalEvidence::Budget(
+                crate::learning::experience::Budget::Expansions,
+            )
+            .into(),
             solution: None,
             diagnostic: "search_budget".into(),
             frontier: Some(crate::learning::tests::stalled_frontier(q)),
@@ -23,6 +28,7 @@ fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64
 fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &CompiledQuestion, job: u64) -> String {
     let solution = crate::learning::tests::symbolic_solution(q);
     let completion = jobs::Completion {
+        experience: None,
         model_checkpoint: None,
         id: job,
         binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -30,6 +36,7 @@ fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &CompiledQuestion, job
         reserved_units: 1,
         state: jobs::State::Complete,
         result: Ok(jobs::Output::Native {
+            terminal: crate::learning::experience::TerminalEvidence::certified(&solution).into(),
             solution: Some(solution.clone()),
             diagnostic: "certified_candidate".into(),
             frontier: None,
@@ -78,6 +85,7 @@ fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_check
                 helper,
                 &graph,
                 &jobs::Completion {
+                    experience: None,
                     model_checkpoint: None,
                     id: index as u64 + 2,
                     binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -111,6 +119,7 @@ fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_check
             &goal,
             &graph,
             &jobs::Completion {
+                experience: None,
                 model_checkpoint: None,
                 id: 11,
                 binding: jobs::Binding::new([0; 32], [0; 32]),

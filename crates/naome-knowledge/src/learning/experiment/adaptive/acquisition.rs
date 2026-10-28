@@ -110,12 +110,15 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
                 .as_ref()
                 .map_or(crate::jobs::Output::NoCandidate, |s| {
                     crate::jobs::Output::Native {
+                        terminal: crate::learning::experience::TerminalEvidence::certified(s)
+                            .into(),
                         solution: Some(s.clone()),
                         diagnostic: "certified_candidate".into(),
                         frontier: None,
                     }
                 });
             let completion = crate::jobs::Completion {
+                experience: None,
                 model_checkpoint: None,
                 id: job,
                 binding: crate::jobs::Binding::new([0; 32], [0; 32]),

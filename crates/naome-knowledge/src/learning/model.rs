@@ -106,6 +106,7 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("state.rs"));
     hash.update(include_str!("coverage.rs"));
     hash.update(include_str!("history.rs"));
+    hash.update(include_str!("experience.rs"));
     hash.update(include_str!("graph.rs"));
     hash.update(include_str!("model.rs"));
     hash.update(include_str!("search.rs"));

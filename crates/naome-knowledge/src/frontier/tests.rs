@@ -7,6 +7,7 @@ fn question(index: u64) -> CompiledQuestion {
 }
 fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Completion {
     jobs::Completion {
+        experience: None,
         model_checkpoint: None,
         id,
         binding: jobs::Binding::new([1; 32], [2; 32]),
@@ -1101,6 +1102,10 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
     let failed = completion(
         1,
         jobs::Output::Native {
+            terminal: crate::learning::experience::TerminalEvidence::Budget(
+                crate::learning::experience::Budget::Expansions,
+            )
+            .into(),
             solution: None,
             diagnostic: "search_budget".into(),
             frontier: Some(report.clone()),
@@ -1163,6 +1168,8 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
         let result = completion(
             job,
             jobs::Output::Native {
+                terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
+                    .into(),
                 solution: Some(solution.clone()),
                 diagnostic: "certified_candidate".into(),
                 frontier: None,
@@ -1213,6 +1220,10 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
     let failed = completion(
         1,
         jobs::Output::Native {
+            terminal: crate::learning::experience::TerminalEvidence::Budget(
+                crate::learning::experience::Budget::Expansions,
+            )
+            .into(),
             solution: None,
             diagnostic: "search_budget".into(),
             frontier: Some(crate::learning::tests::stalled_frontier(&goal)),

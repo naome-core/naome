@@ -6,6 +6,7 @@ mod coverage;
 mod curriculum;
 pub(crate) mod definitions;
 pub(crate) mod evidence;
+pub(crate) mod experience;
 pub(crate) mod finder;
 mod graph;
 pub(crate) mod history;
@@ -198,6 +199,7 @@ pub(crate) struct Progress {
     pub result: Option<Solution>,
     pub diagnostic: String,
     pub frontier: Option<SearchFrontier>,
+    pub terminal: experience::TerminalEvidence,
 }
 impl Progress {
     fn observe_qualification(
@@ -521,6 +523,7 @@ impl Job {
             } else if self.history_request.is_some() && self.units() > 1 {
                 return Err("training progress lacks its frozen replay preparation".into());
             }
+            p.terminal.validate(p.result.as_ref())?;
             if let Some(selection) = &p.plan {
                 selection.validate()?;
                 if selection.context
@@ -680,6 +683,7 @@ impl Job {
             prepared: None,
             cost: None,
             frontier: None,
+            terminal: experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly),
             training_cost: model::TrainingCost::default(),
             unit: 0,
             model: self.base.model.clone(),
@@ -881,6 +885,9 @@ impl Job {
                 let q = CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
                 if curriculum::reserved(&crate::hex(q.resolution_id())) {
                     p.diagnostic = "reserved_question_excluded".into();
+                    p.terminal = experience::TerminalEvidence::NoSearch(
+                        experience::NoSearch::ReservedQuestion,
+                    );
                 } else {
                     let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
                     let generated = engine.with(&p.model, io, |runtime| {
@@ -899,6 +906,7 @@ impl Job {
                     })?;
                     p.cost = Some(generated.cost);
                     p.frontier = generated.frontier;
+                    p.terminal = generated.terminal;
                     if generated.solution.is_none() {
                         p.diagnostic = generated.diagnostic;
                     }
@@ -933,6 +941,7 @@ struct Generation {
     diagnostic: String,
     cost: GenerationCost,
     frontier: Option<SearchFrontier>,
+    terminal: experience::TerminalEvidence,
 }
 struct Exploring<'a> {
     model: &'a mut model::Runtime,
@@ -982,6 +991,7 @@ fn solve_with_report(
         diagnostic,
         mut cost,
         frontier,
+        mut terminal,
     } = search_question_report(source, &mut ranker, budget, &context)?;
     if let Some(solution) = &mut solution {
         if matches!(
@@ -993,6 +1003,7 @@ fn solve_with_report(
                 diagnostic,
                 cost,
                 frontier,
+                terminal,
             });
         }
         let definition_started = std::time::Instant::now();
@@ -1055,12 +1066,14 @@ fn solve_with_report(
         cost.checker_calls = work.calls.saturating_sub(checking.calls);
         cost.submitted_checker_steps = work.steps.saturating_sub(checking.steps);
         *solution.cost = cost.clone();
+        terminal = experience::TerminalEvidence::certified(solution);
     }
     Ok(Generation {
         solution,
         diagnostic,
         cost,
         frontier,
+        terminal,
     })
 }
 fn solve_with_definitions(
@@ -1134,6 +1147,11 @@ fn search_question_report(
     let mut retrieved = 0;
     let mut dependency_steps = 0;
     let mut failure = "calculus_or_strategy_unresolved".to_owned();
+    let mut terminal = if budget == 0 {
+        experience::TerminalEvidence::Budget(experience::Budget::Expansions)
+    } else {
+        experience::TerminalEvidence::Unknown
+    };
     let mut remaining = budget;
     let mut frontier = None;
     let mut certificate_failures = 0;
@@ -1177,6 +1195,7 @@ fn search_question_report(
                 Err(error) => {
                     certificate_failures += 1;
                     failure = format!("composition_unresolved: {error}");
+                    terminal = experience::TerminalEvidence::TechnicalFailure;
                     // An interrupted generator cannot claim unused allowance.
                     (None, remaining.min(16))
                 }
@@ -1198,6 +1217,9 @@ fn search_question_report(
                         Err(error) => {
                             certificate_failures += 1;
                             failure = format!("composition_capacity: {error}");
+                            terminal = experience::TerminalEvidence::Unsupported(
+                                experience::Capacity::Certificate,
+                            );
                             continue;
                         }
                     },
@@ -1207,12 +1229,16 @@ fn search_question_report(
                 expansions: 0,
                 failure: None,
                 frontier: None,
+                terminal: experience::TerminalEvidence::Unknown,
             }
         } else {
             let selected = match knowledge::offer(&target, context.theorems, context.required) {
                 Ok(selected) => selected,
                 Err(error) if !terms.is_empty() => {
                     failure = format!("temporary_prerequisite_composition_unresolved: {error}");
+                    terminal = experience::TerminalEvidence::Unsupported(
+                        experience::Capacity::Dependencies,
+                    );
                     break;
                 }
                 Err(error) => return Err(error),
@@ -1241,6 +1267,7 @@ fn search_question_report(
                     certificate_failures += 1;
                     remaining = 0;
                     failure = format!("construction_unresolved: {error}");
+                    terminal = experience::TerminalEvidence::TechnicalFailure;
                     break;
                 }
             };
@@ -1253,6 +1280,9 @@ fn search_question_report(
                             Err(error) => {
                                 certificate_failures += 1;
                                 failure = format!("construction_capacity: {error}");
+                                terminal = experience::TerminalEvidence::Unsupported(
+                                    experience::Capacity::Certificate,
+                                );
                                 continue;
                             }
                         },
@@ -1261,6 +1291,7 @@ fn search_question_report(
                     expansions: 0,
                     failure: None,
                     frontier: None,
+                    terminal: experience::TerminalEvidence::Unknown,
                 }
             } else {
                 search::solve_with_knowledge(
@@ -1282,6 +1313,7 @@ fn search_question_report(
                 Err(error) => {
                     certificate_failures += 1;
                     failure = format!("certificate_unresolved: {error}");
+                    terminal = experience::TerminalEvidence::CheckerRejected;
                     continue;
                 }
             };
@@ -1322,6 +1354,9 @@ fn search_question_report(
                             > crate::resources::limits().closure_bytes
                     {
                         failure = "certificate_closure_capacity".into();
+                        terminal = experience::TerminalEvidence::Unsupported(
+                            experience::Capacity::Certificate,
+                        );
                         continue;
                     }
                     let unique_states = search::compile(&target, &tree)?
@@ -1351,6 +1386,10 @@ fn search_question_report(
                         ..GenerationCost::default()
                     };
                     return Ok(Generation {
+                        terminal: experience::TerminalEvidence::CertifiedCandidate {
+                            proof_id: proof_id.clone(),
+                            refuted,
+                        },
                         solution: Some(Solution {
                             helpers,
                             cost: Box::new(measured.clone()),
@@ -1364,15 +1403,34 @@ fn search_question_report(
                         frontier: None,
                     });
                 }
-                Ok(_) => failure = "certificate_capacity".into(),
-                Err(error) => failure = format!("certificate_unresolved: {error}"),
+                Ok(_) => {
+                    failure = "certificate_capacity".into();
+                    terminal = experience::TerminalEvidence::Unsupported(
+                        experience::Capacity::Certificate,
+                    );
+                }
+                Err(error) => {
+                    failure = format!("certificate_unresolved: {error}");
+                    terminal = experience::TerminalEvidence::TechnicalFailure;
+                }
             }
-        } else if let Some(reason) = found.failure {
-            failure = reason;
+        } else {
+            if let Some(reason) = found.failure {
+                failure = reason;
+            }
+            // Unknown is not evidence of exhausted search. Preserve an earlier
+            // explicit limitation if the other orientation never made progress.
+            if !matches!(found.terminal, experience::TerminalEvidence::Unknown) {
+                terminal.include(found.terminal);
+            }
         }
+    }
+    if remaining == 0 && matches!(terminal, experience::TerminalEvidence::Unknown) {
+        terminal = experience::TerminalEvidence::Budget(experience::Budget::Expansions);
     }
     Ok(Generation {
         solution: None,
+        terminal,
         diagnostic: failure,
         cost: GenerationCost {
             checker_calls: proof::checking_work().calls.saturating_sub(checking.calls),

@@ -85,6 +85,7 @@ async fn exhausted_free_research_plan_releases_independent_finding() {
                 q,
                 &graph,
                 &jobs::Completion {
+                    experience: None,
                     model_checkpoint: None,
                     id: index as u64 + 1,
                     binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -92,6 +93,10 @@ async fn exhausted_free_research_plan_releases_independent_finding() {
                     reserved_units: 1,
                     state: jobs::State::Complete,
                     result: Ok(jobs::Output::Native {
+                        terminal: crate::learning::experience::TerminalEvidence::Budget(
+                            crate::learning::experience::Budget::Expansions,
+                        )
+                        .into(),
                         solution: None,
                         diagnostic: "search_budget".into(),
                         frontier: (index == 0).then(|| crate::learning::tests::stalled_frontier(q)),
@@ -604,6 +609,7 @@ async fn stalled_owner_goal_waits_for_each_planned_helper_and_then_retries_once(
             &goal,
             &graph,
             &jobs::Completion {
+                experience: None,
                 model_checkpoint: None,
                 id: 1,
                 binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -611,6 +617,10 @@ async fn stalled_owner_goal_waits_for_each_planned_helper_and_then_retries_once(
                 reserved_units: 1,
                 state: jobs::State::Complete,
                 result: Ok(jobs::Output::Native {
+                    terminal: crate::learning::experience::TerminalEvidence::Budget(
+                        crate::learning::experience::Budget::Expansions,
+                    )
+                    .into(),
                     solution: None,
                     diagnostic: "search_budget".into(),
                     frontier: Some(crate::learning::tests::stalled_frontier(&goal)),
@@ -691,6 +701,7 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
                 q,
                 &graph,
                 &jobs::Completion {
+                    experience: None,
                     model_checkpoint: None,
                     id: i as u64 + 1,
                     binding: jobs::Binding::new([0; 32], [0; 32]),
@@ -698,6 +709,10 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
                     reserved_units: 1,
                     state: jobs::State::Complete,
                     result: Ok(jobs::Output::Native {
+                        terminal: crate::learning::experience::TerminalEvidence::Budget(
+                            crate::learning::experience::Budget::Expansions,
+                        )
+                        .into(),
                         solution: None,
                         diagnostic: "search_budget".into(),
                         frontier: Some(crate::learning::tests::stalled_frontier(q)),
