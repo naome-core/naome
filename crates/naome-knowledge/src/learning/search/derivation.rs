@@ -69,6 +69,14 @@ fn decode(encoded: &str) -> Result<Formula, String> {
 }
 
 impl Fragment {
+    fn within_capacity(&self) -> Result<bool, String> {
+        // The canonical packet serializer enforces its own byte bound. Check
+        // that bound first so an optional oversized derivation is omitted,
+        // rather than aborting training from the valid complete source.
+        Ok(self.packet.len() <= super::super::knowledge::BYTES
+            && crate::checkpoint::encode(self)?.len() <= FRAGMENT_BYTES)
+    }
+
     /// Verify the closed implication, including its complete native closure.
     /// The premises remain part of that implication, not globally true facts.
     pub fn verify(&self) -> Result<super::super::proof::Verified, String> {
@@ -98,7 +106,7 @@ impl Fragment {
         if self.branch.len() > 40
             || self.assumptions.len() > 32
             || !self.variables.windows(2).all(|w| w[0] < w[1])
-            || crate::checkpoint::encode(self)?.len() > FRAGMENT_BYTES
+            || !self.within_capacity()?
         {
             return Err("contextual proof capacity or scope differs".into());
         }
@@ -408,7 +416,7 @@ fn visit(
         // The complete source was checked first. A separately unsupported or
         // oversized contextual reconstruction contributes no fragment label.
         match contextual(source, tree, state, branch) {
-            Ok(fragment) if crate::checkpoint::encode(&fragment)?.len() <= FRAGMENT_BYTES => {
+            Ok(fragment) if fragment.within_capacity()? => {
                 let Parent::Admitted { proof, .. } = &source.parent else {
                     unreachable!("admitted source above");
                 };
@@ -508,7 +516,7 @@ pub(crate) fn observed(
                 ..Derivation::default()
             };
             match contextual(&source, &tree, &state, &[]) {
-                Ok(fragment) if crate::checkpoint::encode(&fragment)?.len() <= FRAGMENT_BYTES => {
+                Ok(fragment) if fragment.within_capacity()? => {
                     fragment.validate_observation(observation)?;
                     derived.fragments.push(fragment);
                     visit(&source, &tree, &state, None, &mut Vec::new(), &mut derived)?;

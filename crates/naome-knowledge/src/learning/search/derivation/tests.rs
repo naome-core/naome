@@ -1,6 +1,107 @@
 use super::*;
 use naome_authoring::CompiledQuestion;
 
+#[test]
+fn oversized_optional_fragments_preserve_checked_parent_training() {
+    #[derive(Deserialize)]
+    struct Fixture {
+        records: Vec<Record>,
+    }
+    #[derive(Deserialize)]
+    struct Record {
+        question: String,
+        solution: crate::learning::Solution,
+        observation: crate::learning::experience::Observation,
+    }
+    let fixture: Fixture = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/native-fragment-capacity.json"
+    ))
+    .unwrap();
+    let mut raw_oversized = 0;
+    let mut omitted_admitted = 0;
+    let mut omitted_observed = 0;
+    for record in fixture.records {
+        let q = CompiledQuestion::compile(&record.question).unwrap();
+        let target = if record.solution.refuted {
+            q.refuted_target()
+        } else {
+            q.proved_target()
+        };
+        let original_id = record.solution.proof_id;
+        let (core, _, verified) = core::checked(target, &record.solution.tree).unwrap();
+        assert_eq!(crate::hex(verified.native_id.as_bytes()), original_id);
+        let (source, tree, state) = source(target, &core, &original_id).unwrap();
+        if let Tree::Step { action, children } = tree {
+            for (index, (tree, state)) in children
+                .iter()
+                .zip(next(&state, action).unwrap())
+                .enumerate()
+            {
+                if !matches!(tree, Tree::Step { .. }) {
+                    continue;
+                }
+                if let Ok(fragment) = contextual(&source, tree, &state, &[index])
+                    && fragment.packet.len() > crate::learning::knowledge::BYTES
+                {
+                    raw_oversized += 1;
+                    assert!(
+                        crate::checkpoint::encode(&fragment).is_err(),
+                        "the native packet serializer keeps its existing bound"
+                    );
+                    assert!(!fragment.within_capacity().unwrap());
+                    assert!(
+                        fragment.verify().is_err(),
+                        "oversized material cannot become an admitted fragment"
+                    );
+                }
+            }
+        }
+        let derived = checked(target, &core, &original_id).unwrap();
+        assert!(!derived.steps.is_empty());
+        assert_eq!(derived.source_proof.as_deref(), Some(original_id.as_str()));
+        omitted_admitted += derived.oversized_fragments;
+        for fragment in &derived.fragments {
+            assert!(fragment.within_capacity().unwrap());
+            fragment
+                .validate_source(target, &core, &original_id)
+                .unwrap();
+        }
+        let mut pool = crate::learning::pool::Pool::default();
+        pool.add(
+            false,
+            "original-source",
+            "original-family",
+            &original_id,
+            compile(target, &core).unwrap().1,
+        )
+        .unwrap();
+        pool.add_derivation(derived, true).unwrap();
+        assert!(
+            !pool.is_empty(),
+            "optional fragment size cannot discard the checked parent's decisions"
+        );
+        for derived in observed(&record.observation).unwrap() {
+            omitted_observed += derived.oversized_fragments;
+            if derived.fragments.is_empty() {
+                assert!(
+                    derived.steps.is_empty(),
+                    "an omitted conditional proof supplies no positive targets"
+                );
+            }
+            for fragment in derived.fragments {
+                assert!(fragment.within_capacity().unwrap());
+                fragment.validate_observation(&record.observation).unwrap();
+            }
+        }
+    }
+    assert!(
+        raw_oversized > 0,
+        "fixture must exercise the original serializer failure"
+    );
+    assert!(omitted_admitted > 0);
+    assert!(omitted_observed > 0);
+}
+
 fn chain(state: &State, path: &[Action]) -> Tree {
     if let Some((action, rest)) = path.split_first() {
         let children = next(state, action).unwrap();
