@@ -120,6 +120,17 @@ fn assert_control_reproduced(expected: &Value, actual: &Value) {
     }
 }
 
+fn assert_control_prefix_reproduced(expected: &Value, actual: &Value) {
+    let mut prefix = actual.clone();
+    let length = expected["rounds"].as_array().unwrap().len();
+    let rounds = prefix["rounds"].as_array_mut().unwrap();
+    assert!(rounds.len() >= length);
+    rounds.truncate(length);
+    let model = rounds.last().unwrap()["model"].clone();
+    prefix["final_model"] = model;
+    assert_control_reproduced(expected, &prefix);
+}
+
 struct Start<'a> {
     state: &'a State,
     blobs: &'a MemoryStore,
@@ -493,6 +504,7 @@ fn arm(
     seed: u64,
     treatment: Treatment,
     coupled: bool,
+    rounds: usize,
     start_state: Start<'_>,
     path: &Path,
     mut clock: Option<&mut Clock>,
@@ -549,7 +561,6 @@ fn arm(
     let mut solved = 0;
     let mut expansions = 0;
     let mut occurrences = BTreeMap::new();
-    let rounds = if coupled { 3 } else { 6 };
     let before = evaluation(&state, &mut engine, &mut io, 900_000);
     for round in 0..rounds {
         if observer.due(Instant::now()) {
@@ -715,6 +726,12 @@ fn matched_continual_finder_study() {
         "repair_support" | "repair_yield" | "repair_observation"
     );
     let coupled = phase == "coupled" || repair && !screen;
+    let rounds = std::env::var("NAOME_FINDER_NATIVE_ROUNDS")
+        .ok()
+        .map_or(if coupled { 3 } else { 6 }, |value| {
+            value.parse::<usize>().unwrap()
+        });
+    assert!(matches!(rounds, 3 | 6));
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(&output).unwrap().clone();
     write(&output.join("initial-resources.json"), &observed);
@@ -788,7 +805,7 @@ fn matched_continual_finder_study() {
     );
     write(
         &output.join("manifest.json"),
-        &json!({"source_contract":input_specification(),"seeds":seeds,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":if coupled{3}else{6},"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"feedback_clock":if repair{"shared recorded costs by exact checkpoint, question and occurrence; first actual observation fills missing entries"}else{"actual elapsed generation time"},"reserved_confirmation_families":reserved.len(),"scope":"Known development acquisition and promotion only. Confirmation outcomes remain unavailable throughout training. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
+        &json!({"source_contract":input_specification(),"seeds":seeds,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":rounds,"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"feedback_clock":if repair{"shared recorded costs by exact checkpoint, question and occurrence; first actual observation fills missing entries"}else{"actual elapsed generation time"},"reserved_confirmation_families":reserved.len(),"scope":"Known development acquisition and promotion only. Confirmation outcomes remain unavailable throughout training. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
     );
     write(
         &output.join("segment.json"),
@@ -900,6 +917,7 @@ fn matched_continual_finder_study() {
                 seed,
                 treatment,
                 coupled,
+                rounds,
                 Start {
                     state: &common,
                     blobs: &blobs,
@@ -929,12 +947,12 @@ fn matched_continual_finder_study() {
                     .unwrap(),
                 )
                 .unwrap();
-                assert_control_reproduced(&expected, &result);
+                assert_control_prefix_reproduced(&expected, &result);
                 write(
                     &seed_path
                         .join(label(treatment))
                         .join("control-reproduced.json"),
-                    &json!({"reference":reference,"arm":original_arm,"matched":"Every question, feedback cost, outcome, accepted source, finder state, native model/Adam checkpoint and reference score across all rounds."}),
+                    &json!({"reference":reference,"arm":original_arm,"matched_rounds":expected["rounds"].as_array().unwrap().len(),"matched":"Every question, feedback cost, outcome, accepted source, finder state, native model/Adam checkpoint and reference score across the complete recorded reference horizon."}),
                 );
             }
             results.push(json!({"preparation":preparation,"result":result}));
