@@ -1,5 +1,6 @@
 //! Matched current-architecture treatments using the ordinary native job owner.
 use super::*;
+mod audit;
 mod meter;
 mod run;
 use meter::Meter;
