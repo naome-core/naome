@@ -388,5 +388,44 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
     controllers
 }
 
+#[test]
+#[ignore = "Explicit complete six-context development training; no final training or test queries"]
+fn outer_learning_development() {
+    assert!(!std::hint::black_box(cfg!(debug_assertions)));
+    let output = std::env::var("NAOME_META_DEVELOPMENT_OUTPUT").expect("fresh development output");
+    let output = Path::new(&output);
+    assert!(!output.exists(), "preserve prior development attempts");
+    std::env::var("NAOME_ADAPTIVE_COMMIT").expect("frozen development source");
+    std::fs::create_dir_all(output).unwrap();
+    let clock = Clock::start();
+    record_inputs(
+        output,
+        &curriculum::adaptive::BANK,
+        false,
+        &[2411, 3203, 3301],
+        2,
+        "outer_training_development_only",
+    );
+    let controllers = train(&output.join("outer-learning"), false);
+    for state in [&controllers.fresh.state, &controllers.continuation.state] {
+        state.validate().unwrap();
+        assert_eq!(state.trials, 24);
+        assert_eq!(state.model.updates, 192);
+    }
+    let elapsed = clock.elapsed();
+    assert!(
+        elapsed["cpu_micros"].as_u64().unwrap() <= 7_200_000_000
+            && elapsed["wall_micros"].as_u64().unwrap() <= 10_800_000_000
+    );
+    write(
+        &output.join("completed.json"),
+        &serde_json::json!({
+            "scope":"outer_training_development_only","outer_trials":48,
+            "final_training_rounds":0,"final_case_queries":0,"elapsed":elapsed,
+            "peak_rss_bytes":resource_boundary(),
+        }),
+    );
+}
+
 #[cfg(test)]
 mod tests;

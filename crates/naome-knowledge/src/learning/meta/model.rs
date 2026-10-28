@@ -1,12 +1,40 @@
-//! A small real neural value model with paired exact Adam state. No tensor RNG
-//! or lower-model weights are shared, and no result field enters its inputs.
-use super::{Experience, FEATURES};
+//! Separate learned value/risk and measured-work paths with paired exact Adam.
+//! Physical CPU observations cannot update or enter the quality representation.
+//! No tensor RNG or lower-model weights are shared; outcome fields are targets.
+use super::{CONTEXT, Experience, FEATURES};
 pub const HIDDEN: usize = 12;
 pub const OUTPUTS: usize = 3;
-pub const PARAMETERS: usize = FEATURES * HIDDEN + HIDDEN + HIDDEN * OUTPUTS + OUTPUTS;
-const B1: usize = FEATURES * HIDDEN;
+const QUALITY_FEATURES: usize = FEATURES - 1;
+const QUALITY_OUTPUTS: usize = 2;
+const COST_FEATURES: usize = 18;
+const B1: usize = QUALITY_FEATURES * HIDDEN;
 const W2: usize = B1 + HIDDEN;
-const B2: usize = W2 + HIDDEN * OUTPUTS;
+const B2: usize = W2 + HIDDEN * QUALITY_OUTPUTS;
+pub(super) const COST: usize = B2 + QUALITY_OUTPUTS;
+pub const PARAMETERS: usize = COST + COST_FEATURES + 1;
+
+fn quality_features(input: &[f32; FEATURES]) -> [f32; QUALITY_FEATURES] {
+    // The final context coordinate is measured CPU history, not solver ability.
+    std::array::from_fn(|i| input[if i < CONTEXT - 1 { i } else { i + 1 }])
+}
+
+fn cost_features(input: &[f32; FEATURES]) -> [f32; COST_FEATURES] {
+    let mut output = [0.; COST_FEATURES];
+    // Prior physical cost, lower updates, source counts and checked knowledge.
+    for (to, from) in [CONTEXT - 1, 15, 12, 13, 28, 29].into_iter().enumerate() {
+        output[to] = input[from];
+    }
+    for phase in 0..3 {
+        let start = CONTEXT + phase * 9;
+        let target = 6 + phase * 4;
+        output[target] = input[start + 1];
+        output[target + 1] = input[start + 3];
+        // Both nonzero ranking weights execute the same additional objective.
+        output[target + 2] = 1. - input[start + 4];
+        output[target + 3] = input[start + 8];
+    }
+    output
+}
 #[derive(Clone)]
 pub struct Network {
     pub weights: Vec<f32>,
@@ -35,18 +63,20 @@ impl Network {
         }
     }
     pub fn forward(&self, input: &[f32; FEATURES]) -> ([f32; HIDDEN], [f32; OUTPUTS]) {
+        let quality = quality_features(input);
+        let cost = cost_features(input);
         let mut hidden = [0.; HIDDEN];
         let mut output = [0.; OUTPUTS];
         for (j, h) in hidden.iter_mut().enumerate() {
             *h = (self.weights[B1 + j]
-                + input
+                + quality
                     .iter()
                     .enumerate()
-                    .map(|(i, x)| x * self.weights[j * FEATURES + i])
+                    .map(|(i, x)| x * self.weights[j * QUALITY_FEATURES + i])
                     .sum::<f32>())
             .tanh();
         }
-        for (k, o) in output.iter_mut().enumerate() {
+        for (k, o) in output.iter_mut().take(QUALITY_OUTPUTS).enumerate() {
             *o = self.weights[B2 + k]
                 + hidden
                     .iter()
@@ -54,10 +84,18 @@ impl Network {
                     .map(|(j, h)| h * self.weights[W2 + k * HIDDEN + j])
                     .sum::<f32>();
         }
+        output[2] = self.weights[COST + COST_FEATURES]
+            + cost
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x * self.weights[COST + i])
+                .sum::<f32>();
         (hidden, output)
     }
     pub fn gradient(&self, experience: &Experience) -> (f32, Vec<f32>) {
         let input = experience.features();
+        let quality = quality_features(&input);
+        let cost = cost_features(&input);
         let (hidden, output) = self.forward(&input);
         let target = experience.targets();
         let mask = experience.mask();
@@ -67,19 +105,25 @@ impl Network {
         for k in 0..OUTPUTS {
             error[k] = mask[k] * 2. * (output[k] - target[k]) / OUTPUTS as f32;
             loss += mask[k] * (output[k] - target[k]).powi(2) / OUTPUTS as f32;
+        }
+        for k in 0..QUALITY_OUTPUTS {
             gradient[B2 + k] = error[k];
             for j in 0..HIDDEN {
                 gradient[W2 + k * HIDDEN + j] = error[k] * hidden[j];
             }
         }
+        gradient[COST + COST_FEATURES] = error[2];
+        for (i, x) in cost.into_iter().enumerate() {
+            gradient[COST + i] = error[2] * x;
+        }
         for j in 0..HIDDEN {
-            let delta = (0..OUTPUTS)
+            let delta = (0..QUALITY_OUTPUTS)
                 .map(|k| error[k] * self.weights[W2 + k * HIDDEN + j])
                 .sum::<f32>()
                 * (1. - hidden[j] * hidden[j]);
             gradient[B1 + j] = delta;
-            for i in 0..FEATURES {
-                gradient[j * FEATURES + i] = delta * input[i];
+            for (i, x) in quality.iter().enumerate() {
+                gradient[j * QUALITY_FEATURES + i] = delta * x;
             }
         }
         (loss, gradient)

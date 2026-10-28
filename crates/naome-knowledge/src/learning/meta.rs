@@ -30,7 +30,7 @@ fn specification() -> String {
     // contract as well as its own features, network and paired optimizer. The
     // lower fingerprint hashes these source bytes without calling this method.
     h.update(super::model::specification());
-    h.update(b"native-trial-value-model;input=59;hidden=12;heads=3;Adam=0.003");
+    h.update(b"native-trial-value-model;quality_input=58;quality_hidden=12;quality_heads=2;cost_input=18;cost_linear;Adam=0.003");
     crate::hex(&h.finalize())
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
