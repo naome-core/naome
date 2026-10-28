@@ -89,6 +89,11 @@ fn exact_owned_trial_runtime_profile() {
         let mut engine = Engine::default();
         let mut units = Vec::new();
         for unit in 1..=job.units() {
+            assert!(
+                started.elapsed() < Duration::from_secs(120)
+                    && meta::cpu_micros().unwrap() - cpu < 90_000_000,
+                "original outer-trial CPU/wall allowance ended; incomplete runtime diagnostic"
+            );
             let before_cpu = meta::cpu_micros().unwrap();
             let before_wall = Instant::now();
             job.execute(unit, None, input.job, &mut engine, &mut store)
@@ -120,6 +125,17 @@ fn exact_owned_trial_runtime_profile() {
                 "incumbent_observation_micros":observation_micros(&p.development_before),
                 "candidate_observation_micros":observation_micros(&p.development_after)}),
             );
+            if unit.is_multiple_of(10) {
+                std::fs::create_dir_all(output.join(&input.name)).unwrap();
+                write(
+                    &output.join(&input.name).join("partial.json"),
+                    &serde_json::json!({
+                    "unit":unit,"elapsed_wall_micros":started.elapsed().as_micros(),
+                    "elapsed_cpu_micros":meta::cpu_micros().unwrap()-cpu,
+                    "progress":p,"resident_inference_counts":engine.inference_counts(),
+                    "units":units}),
+                );
+            }
             let keep = job
                 .blobs()
                 .iter()
@@ -145,7 +161,8 @@ fn exact_owned_trial_runtime_profile() {
         let summary = serde_json::json!({"name":input.name,"job":input.job,"units":job.units(),
             "cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":started.elapsed().as_micros(),
             "progress":p,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,
-            "read_operations":store.reads,"write_operations":store.writes});
+            "read_operations":store.reads,"write_operations":store.writes,
+            "resident_inference_counts":engine.inference_counts()});
         std::fs::create_dir_all(output.join(&input.name)).unwrap();
         write(&output.join(&input.name).join("units.json"), &units);
         write(&output.join(&input.name).join("summary.json"), &summary);
