@@ -1,4 +1,6 @@
 use super::*;
+#[path = "tests/feedback.rs"]
+mod feedback;
 fn experience(context: u16, plan: Plan, before: u16, after: u16) -> Experience {
     let mut features = [0; CONTEXT];
     features[0] = context;
