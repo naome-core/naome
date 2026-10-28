@@ -92,6 +92,17 @@ def verify_meta(node, record):
     assert 0 <= progress["meta_wall_micros"] <= progress["wall_micros"]
     output = node.trial.output / "meta-checkpoints" / f"node-{node.index}-job-{record['id']}"
     output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "manifest.json"
+    if manifest.exists():
+        # The live journal owns only current bounded model lifetimes. Retain
+        # the exact bytes already observed before a later valid update/GC.
+        captured = json.loads(manifest.read_text())
+        assert captured["record"] == record and captured["update"] == update
+        for name in ("weights", "optimizer"):
+            blob = update["model"][name]
+            payload = (output / f"{name}.bin").read_bytes()
+            assert len(payload) == blob["bytes"] and hashlib.sha256(payload).hexdigest() == blob["sha256"]
+        return update
     with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
         db.execute("BEGIN")
         for name in ("weights", "optimizer"):
@@ -363,6 +374,12 @@ def run_unseeded(trial):
                 blobs = verify_blobs(node, candidate_record, "candidate_before_full_continuation_qualification")
                 observed_candidates[candidate_record["id"]] = {"record": candidate_record, "blobs": blobs}
                 write_receipt(trial.output / "continuation-candidate.json", observed_candidates[candidate_record["id"]])
+            if (progress and candidate_record["checkpoint"] == 150
+                    and candidate_record["state"] == "complete"
+                    and candidate_record["native"]["base"]["meta"]["model"] == retained_meta["model"]):
+                # Capture completion independently of the later curriculum
+                # event; further real trials may replace the current blobs.
+                verify_meta(node, candidate_record)
         for record in current["records"].values():
             if record["id"] <= original["id"] or record["input"]["role"] != "solve":
                 continue

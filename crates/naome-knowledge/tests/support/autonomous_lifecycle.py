@@ -16,6 +16,7 @@ import time
 import traceback
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from types import SimpleNamespace
 
 from proof_network import digest, stored_objects, replace_catalog_payload
@@ -832,6 +833,8 @@ class Relay:
 
 class Node:
     def __init__(self, trial, index):
+        self._log_events = []
+        self._log_offsets = {}
         self.trial, self.index = trial, index
         self.directory = trial.output / f"node-{index}"
         self.directory.mkdir()
@@ -867,17 +870,45 @@ class Node:
         (self.directory / "config.json").write_text(json.dumps(self.config, indent=2) + "\n")
 
     def logs(self):
-        path = self.directory / "node.log"
-        if not path.exists():
-            return []
-        events = []
-        for line in path.read_text().splitlines():
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                # A concurrent log append may expose a partial final line.
-                continue
-        return events
+        # Session offsets refer to observed history, not a rotating file's
+        # current line count. File identity and byte offsets avoid duplicates.
+        paths = [self.directory / name for name in ("node.log.previous", "node.log")]
+        identity = lambda stat: (stat.st_dev, stat.st_ino)
+        with ExitStack() as stack:
+            opened = []
+            for path in paths:
+                try:
+                    source = stack.enter_context(path.open("rb"))
+                except FileNotFoundError:
+                    continue
+                opened.append((path, source, identity(os.fstat(source.fileno()))))
+            current = {}
+            for path in paths:
+                try:
+                    current[path] = identity(path.stat())
+                except FileNotFoundError:
+                    pass
+            if current != {path: key for path, _, key in opened}:
+                # Rotation raced opening the pair. Yield to the next existing
+                # poll without extending its deadline or consuming offsets.
+                return self._log_events.copy()
+            for _, source, key in opened:
+                offset = self._log_offsets.get(key, 0)
+                if os.fstat(source.fileno()).st_size < offset:
+                    offset = 0
+                source.seek(offset)
+                for line in source:
+                    if not line.endswith(b"\n"):
+                        break
+                    offset += len(line)
+                    try:
+                        self._log_events.append(json.loads(line))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                self._log_offsets[key] = offset
+            retained = {key for _, _, key in opened}
+            self._log_offsets = {key: value for key, value in self._log_offsets.items() if key in retained}
+        return self._log_events.copy()
 
     def start(self, strict_startup=False):
         # These lifecycle fixtures assert fixed provider/peer latency. Select
