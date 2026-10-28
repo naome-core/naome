@@ -776,12 +776,29 @@ fn matched_continual_finder_study() {
     } else {
         SEEDS.to_vec()
     };
+    let selected_seed = std::env::var("NAOME_FINDER_NATIVE_SEED")
+        .ok()
+        .map(|value| value.parse::<u64>().unwrap());
+    let selected_arm = std::env::var("NAOME_FINDER_NATIVE_ARM").ok();
+    assert!(selected_seed.is_none_or(|seed| seeds.contains(&seed)));
+    assert!(
+        selected_arm
+            .as_ref()
+            .is_none_or(|arm| arms.iter().any(|t| label(*t) == arm))
+    );
     write(
         &output.join("manifest.json"),
         &json!({"source_contract":input_specification(),"seeds":seeds,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":if coupled{3}else{6},"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"feedback_clock":if repair{"shared recorded costs by exact checkpoint, question and occurrence; first actual observation fills missing entries"}else{"actual elapsed generation time"},"reserved_confirmation_families":reserved.len(),"scope":"Known development acquisition and promotion only. Confirmation outcomes remain unavailable throughout training. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
     );
+    write(
+        &output.join("segment.json"),
+        &json!({"seed":selected_seed,"arm":selected_arm,"scope":"Only whole independent seed/arm trials may be selected. Each starts from the same recorded common state and original complete job limits; no partial native job is resumed. Canonical arm rotation is retained. Failed attempts remain separate charged evidence."}),
+    );
     let mut results = Vec::new();
     for (seed_index, seed) in seeds.into_iter().enumerate() {
+        if selected_seed.is_some_and(|selected| selected != seed) {
+            continue;
+        }
         let seed_path = output.join(seed.to_string());
         let (mut common, blobs, initial, preparation) =
             prepare(seed, &seed_path.join("preparation"));
@@ -823,6 +840,12 @@ fn matched_continual_finder_study() {
         }
         for offset in 0..arms.len() {
             let treatment = arms[(seed_index + offset) % arms.len()];
+            if selected_arm
+                .as_ref()
+                .is_some_and(|arm| arm != label(treatment))
+            {
+                continue;
+            }
             let historical = paired
                 && matches!(
                     treatment,
