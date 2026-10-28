@@ -8,6 +8,10 @@ test --test_output=errors
 test --test_summary=detailed
 
 build:ci --keep_going
+# Native-model regressions need optimized code, with all Rust runtime checks.
+build:ci --compilation_mode=opt
+build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=yes
+build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Coverflow-checks=yes
 test:ci --flaky_test_attempts=1
 # Keep CPU-heavy native-model tests from flooding timed async fixtures.
 test:ci --test_arg=--test-threads=2

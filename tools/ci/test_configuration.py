@@ -36,6 +36,14 @@ class ResultGateTests(unittest.TestCase):
 
 
 class BuildContractTests(unittest.TestCase):
+    def test_bazel_optimized_ci_retains_debug_and_overflow_checks(self):
+        lines = (ROOT / ".bazelrc").read_text().splitlines()
+        self.assertIn("build:ci --compilation_mode=opt", lines)
+        for flag in ("debug-assertions", "overflow-checks"):
+            self.assertIn(f"build:ci --@rules_rust//rust/settings:extra_rustc_flag=-C{flag}=yes", lines)
+        self.assertIn("test:ci --test_arg=--test-threads=2", lines)
+        self.assertIn("test:ci --flaky_test_attempts=1", lines)
+
     def test_bazel_crypto_optimization_and_checks_match_the_cargo_test_profile(self):
         profiles = tomllib.loads((ROOT / "Cargo.toml").read_text())["profile"]["test"]["package"]
         module = ast.parse((ROOT / "MODULE.bazel").read_text())
