@@ -75,6 +75,10 @@ pub(crate) struct Frontier {
 }
 impl Frontier {
     #[cfg(test)]
+    pub(crate) fn learning_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"model":self.evidence.model(),"curriculum":self.evidence.learning()})
+    }
+    #[cfg(test)]
     pub(crate) fn treatment(&mut self, treatment: Treatment) {
         self.treatment = treatment;
         self.evidence.treatment(treatment);

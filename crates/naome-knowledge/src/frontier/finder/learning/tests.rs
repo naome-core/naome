@@ -86,15 +86,25 @@ fn replay_preserves_families_and_does_not_relabel_old_solver_outcomes() {
     learning
         .remember(&mut model, &equality, Some(&checkpoint()), true, 1, 1)
         .unwrap();
-    for i in 0..120 {
-        let question = q(&format!(
-            "goal=all(a,all(b,imp(mem(a,b),{})))",
-            if i % 2 == 0 {
-                "mem(b,a)"
-            } else {
-                "not(mem(b,a))"
-            }
-        ));
+    let atoms = [
+        "mem(a,b)", "mem(b,a)", "mem(a,c)", "mem(c,a)", "mem(b,c)", "mem(c,b)", "mem(a,a)",
+    ];
+    let mut distinct = std::collections::BTreeSet::new();
+    for i in 0..120u64 {
+        let body = atoms
+            .iter()
+            .enumerate()
+            .map(|(bit, atom)| {
+                if i & (1 << bit) == 0 {
+                    (*atom).to_owned()
+                } else {
+                    format!("not({atom})")
+                }
+            })
+            .reduce(|a, b| format!("and({a},{b})"))
+            .unwrap();
+        let question = q(&format!("goal=all(a,all(b,all(c,{body})))"));
+        assert!(distinct.insert(*question.resolution_id()));
         learning
             .remember(
                 &mut model,
@@ -106,6 +116,11 @@ fn replay_preserves_families_and_does_not_relabel_old_solver_outcomes() {
             )
             .unwrap();
     }
+    assert_eq!(distinct.len(), 120);
+    assert_eq!(
+        learning.samples.len(),
+        (Learning::budget() / 1024).min(MEMORY)
+    );
     assert!(
         learning
             .samples

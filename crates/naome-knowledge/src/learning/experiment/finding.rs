@@ -376,7 +376,7 @@ fn arm(
         drop(finder);
         finder = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
         finder.treatment(treatment);
-        let row = json!({"round":round,"events":events,"training":training,"evaluation":after,"round_cpu_micros":meta::cpu_micros().unwrap()-round_cpu,"model":state.model});
+        let row = json!({"round":round,"events":events,"training":training,"evaluation":after,"round_cpu_micros":meta::cpu_micros().unwrap()-round_cpu,"model":state.model,"finder_learning":finder.learning_snapshot(),"feedback":state.feedback()});
         rows.push(row);
         write(&path.join("rounds.json"), &rows);
         eprintln!(

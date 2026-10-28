@@ -80,6 +80,17 @@ impl State {
         engine: &mut Engine,
         io: &mut I,
     ) -> Result<Option<Utility>, String> {
+        if !self
+            .anchors
+            .iter()
+            .any(|e| matches!(e.origin, Origin::Local))
+            || !self
+                .replay
+                .iter()
+                .any(|e| matches!(e.origin, Origin::Local))
+        {
+            return Ok(None);
+        }
         let wall = std::time::Instant::now();
         let cpu = meta::cpu_micros()?;
         // This small diagnostic shares the admitted native job's original work
