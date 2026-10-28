@@ -19,6 +19,23 @@ register_toolchains("@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 
+# Mirror Cargo's checked crypto test profile in the Bazel MR graph.
+crate.annotation(
+    crate = "curve25519-dalek",
+    version = "*",
+    rustc_flags = ["-Copt-level=2", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"],
+)
+crate.annotation(
+    crate = "ed25519-dalek",
+    version = "*",
+    rustc_flags = ["-Copt-level=2", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"],
+)
+crate.annotation(
+    crate = "sha2",
+    version = "*",
+    rustc_flags = ["-Copt-level=2", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"],
+)
+
 # Cargo patches are workspace members, so connect their native Bazel targets.
 crate.annotation(
     crate = "libp2p",

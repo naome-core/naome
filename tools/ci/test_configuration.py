@@ -36,6 +36,24 @@ class ResultGateTests(unittest.TestCase):
 
 
 class BuildContractTests(unittest.TestCase):
+    def test_bazel_crypto_optimization_and_checks_match_the_cargo_test_profile(self):
+        profiles = tomllib.loads((ROOT / "Cargo.toml").read_text())["profile"]["test"]["package"]
+        module = ast.parse((ROOT / "MODULE.bazel").read_text())
+        annotations = {}
+        for node in module.body:
+            if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == "annotation"):
+                values = {item.arg: ast.literal_eval(item.value) for item in node.value.keywords}
+                if values.get("version") == "*":
+                    annotations[values["crate"]] = values
+        for package, profile in profiles.items():
+            with self.subTest(package=package):
+                self.assertIn(package, annotations)
+                flags = dict(flag.removeprefix("-C").split("=", 1) for flag in annotations[package]["rustc_flags"])
+                self.assertEqual(flags["opt-level"], str(profile["opt-level"]))
+                for setting in ("debug-assertions", "overflow-checks"):
+                    self.assertEqual(flags[setting], "yes" if profile[setting] else "no")
+
     def test_bazel_node_and_checker_versions_match_the_cargo_release_identity(self):
         version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
         for crate in ("naome-knowledge", "naome-checker"):
