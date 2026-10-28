@@ -1,5 +1,7 @@
 //! Read-only paired diagnosis on owned, independently rechecked proof decisions.
 use super::*;
+#[path = "owned/retention.rs"]
+mod retention;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
