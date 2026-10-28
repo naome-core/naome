@@ -164,8 +164,12 @@ fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit(
     assert_eq!(model.utility_observations, 1);
     assert!(!learning.utility(&mut model, &utility).unwrap());
     assert_eq!(model.utility_observations, 1);
+    learning.cells[0].utility_count = 1;
+    learning.cells[0].utility_sum = 65535;
     learning.bind(&"22".repeat(32));
     assert!(!learning.utility_current());
+    assert_eq!(learning.cells[0].utility_count, 0);
+    assert_eq!(learning.cells[0].utility_sum, 0);
     assert!(!learning.utility(&mut model, &utility).unwrap());
     utility.checkpoint = "22".repeat(32);
     utility.scores[0].novelty = 65535;

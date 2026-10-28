@@ -172,12 +172,14 @@ impl Learning {
     pub fn bind(&mut self, checkpoint: &str) {
         if self.checkpoint != checkpoint {
             self.checkpoint = checkpoint.to_owned();
-            // Current completion/cost evidence cannot be borrowed from an old
-            // solver. Transferable construction utility and replay survive.
+            // Completion, cost and gradient alignment belong to this exact
+            // solver. Checked downstream support and replay survive.
             for cell in &mut self.cells {
                 cell.attempts = 0;
                 cell.solved = 0;
                 cell.millis = 0;
+                cell.utility_count = 0;
+                cell.utility_sum = 0;
             }
             self.rounds = self.rounds.saturating_add(1);
         }
