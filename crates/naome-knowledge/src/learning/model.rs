@@ -2,6 +2,8 @@
 //! Formula graphs, goal-conditioned context attention and typed proof choices
 //! use Adam, checked-action cross entropy, batch 16 and LR .001. No weights are imported.
 mod policy;
+#[cfg(test)]
+mod routing_tests;
 use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},

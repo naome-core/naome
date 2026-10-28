@@ -282,6 +282,10 @@ pub(crate) fn verify_native(
 }
 
 /// No typed term is accepted as evidence until the existing checker accepts it.
+#[expect(
+    clippy::mutable_key_type,
+    reason = "OnceLock memoizes immutable structure; hash and equality never change."
+)]
 pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     if term.formula() != *expected {
         return Err("search term differs from the requested target".into());

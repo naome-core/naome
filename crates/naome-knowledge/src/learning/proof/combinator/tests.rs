@@ -4,6 +4,10 @@ fn atom() -> Formula {
     Formula::equal(FreeVariable::new(0), FreeVariable::new(0))
 }
 #[test]
+#[expect(
+    clippy::mutable_key_type,
+    reason = "OnceLock memoizes immutable structure; hash and equality never change."
+)]
 fn independently_built_equal_dags_keep_one_emitted_identity() {
     let shared = Combinator::new(Kind::Variable(7, atom()));
     let left = Combinator::new(Kind::Apply(shared.clone(), shared, atom()));
@@ -20,10 +24,14 @@ fn independently_built_equal_dags_keep_one_emitted_identity() {
     assert_eq!(emitted.len(), 1);
 }
 #[test]
+#[expect(
+    clippy::mutable_key_type,
+    reason = "OnceLock memoizes immutable structure; hash and equality never change."
+)]
 fn a_fingerprint_collision_never_merges_different_assumptions() {
     let left = Combinator::new(Kind::Variable(1, atom()));
-    let mut right = Combinator::new(Kind::Variable(65, atom()));
-    Arc::get_mut(&mut right).unwrap().fingerprint = left.fingerprint;
+    let right = Combinator::new(Kind::Variable(65, atom()));
+    right.fingerprint.set(left.fingerprint()).unwrap();
     assert_ne!(left, right);
     assert!(left.contains(1));
     assert!(!left.contains(65));
@@ -50,6 +58,10 @@ fn hashing_a_shared_dag_does_constant_work_at_lookup() {
     for _ in 0..100 {
         root = Combinator::new(Kind::Apply(root.clone(), root, atom()));
     }
+    assert!(
+        root.fingerprint.get().is_none(),
+        "discarded intermediate DAGs must not pay for fingerprinting"
+    );
     let mut count = Count::default();
     root.hash(&mut count);
     assert!(

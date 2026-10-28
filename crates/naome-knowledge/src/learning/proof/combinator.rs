@@ -5,7 +5,7 @@ use naome_foundation::Logic;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -28,7 +28,7 @@ pub(super) enum Kind {
 #[derive(Clone, Debug)]
 pub(super) struct Combinator {
     kind: Kind,
-    fingerprint: u64,
+    fingerprint: OnceLock<u64>,
     assumptions: u64,
 }
 impl Combinator {
@@ -36,8 +36,6 @@ impl Combinator {
         &self.kind
     }
     pub(super) fn new(kind: Kind) -> Arc<Self> {
-        let mut hasher = DefaultHasher::new();
-        kind.hash(&mut hasher);
         let assumptions = match &kind {
             Kind::Variable(id, _) => 1u64 << (id % 64),
             Kind::Generalize(_, body) => body.assumptions,
@@ -46,19 +44,26 @@ impl Combinator {
         };
         Arc::new(Self {
             kind,
-            fingerprint: hasher.finish(),
+            fingerprint: OnceLock::new(),
             assumptions,
+        })
+    }
+    fn fingerprint(&self) -> u64 {
+        *self.fingerprint.get_or_init(|| {
+            let mut hasher = DefaultHasher::new();
+            self.kind.hash(&mut hasher);
+            hasher.finish()
         })
     }
 }
 impl Hash for Combinator {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.fingerprint.hash(state);
+        self.fingerprint().hash(state);
     }
 }
 impl PartialEq for Combinator {
     fn eq(&self, other: &Self) -> bool {
-        self.fingerprint == other.fingerprint && self.kind == other.kind
+        self.fingerprint() == other.fingerprint() && self.kind == other.kind
     }
 }
 impl Eq for Combinator {}
