@@ -26,6 +26,7 @@ rust_library(
             "src/learning/knowledge-protocol.json",
             "src/learning/adaptive-protocol.json",
             "src/learning/preservation-protocol.json",
+            "src/learning/recovery-protocol.json",
             "tests/fixtures/**",
         ],
         allow_empty = True,
