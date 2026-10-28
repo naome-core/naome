@@ -1,3 +1,4 @@
+load("@bazel_skylib//rules:native_binary.bzl", "native_test")
 load("@crates//:crates.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
@@ -59,22 +60,14 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
-rust_test(
+native_test(
     name = "preservation_tests",
     size = "medium",
-    # Keep this CPU training process separate from other MR test binaries.
+    # Reuse the compiled crate, keeping this CPU training process exclusive.
     tags = ["exclusive"],
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
     args = ["learning::model::preservation::tests::"],
-    crate = ":naome_knowledge",
-    compile_data = ["//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex"],
     env = {"RUST_TEST_THREADS": "2"},
-    lint_config = ":cargo_lints",
-    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    src = ":unit_tests",
 )
 
 rust_binary(

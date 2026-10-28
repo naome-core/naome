@@ -36,6 +36,36 @@ class ResultGateTests(unittest.TestCase):
 
 
 class BuildContractTests(unittest.TestCase):
+    def test_knowledge_training_group_reuses_the_complete_test_binary(self):
+        module = ast.parse((ROOT / "crates/naome-knowledge/BUILD.bazel").read_text())
+        rules = {}
+        for node in module.body:
+            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)):
+                continue
+            values = {item.arg: item.value for item in node.value.keywords}
+            if "name" in values:
+                rules[ast.literal_eval(values["name"])] = (node.value.func.id, values)
+        self.assertEqual([name for name, (rule, _) in rules.items() if rule == "rust_test"], ["unit_tests"])
+        ordinary = rules["unit_tests"][1]
+        rule, training = rules["preservation_tests"]
+        self.assertEqual(rule, "native_test")
+        self.assertEqual(ast.literal_eval(training["src"]), ":unit_tests")
+        group = "learning::model::preservation::tests::"
+        self.assertEqual(ast.literal_eval(ordinary["args"]), [f"--skip={group}"])
+        self.assertEqual(ast.literal_eval(training["args"]), [group])
+        self.assertEqual(ast.literal_eval(training["tags"]), ["exclusive"])
+        for values in (ordinary, training):
+            self.assertEqual(ast.literal_eval(values["size"]), "medium")
+            self.assertEqual(ast.literal_eval(values["env"]), {"RUST_TEST_THREADS": "2"})
+        suite = ast.parse((ROOT / "BUILD.bazel").read_text())
+        tests = next(node.value for node in suite.body if isinstance(node, ast.Expr)
+                     and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+                     and node.value.func.id == "test_suite")
+        labels = next(ast.literal_eval(item.value) for item in tests.keywords if item.arg == "tests")
+        for name in ("unit_tests", "preservation_tests"):
+            self.assertIn(f"//crates/naome-knowledge:{name}", labels)
+
     def test_bazel_optimized_ci_retains_debug_and_overflow_checks(self):
         lines = (ROOT / ".bazelrc").read_text().splitlines()
         self.assertIn("build:ci --compilation_mode=opt", lines)
