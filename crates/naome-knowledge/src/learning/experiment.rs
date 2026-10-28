@@ -18,6 +18,57 @@ use std::{
 fn write(path: &Path, value: &impl Serialize) {
     std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
+/// Bind a directly executed experimental search to the same consumer contract.
+/// These experiments have no job journal; the actual native result and source
+/// snapshot are retained here rather than inferred from diagnostic text.
+fn completed_search(
+    state: &State,
+    question: &CompiledQuestion,
+    job: u64,
+    result: &Generation,
+    context: SolveContext<'_>,
+    limit: usize,
+    spent_ms: u64,
+) -> crate::jobs::Completion {
+    let checkpoint = digest(&state.model);
+    let binding = crate::jobs::Binding::new([0; 32], [0; 32]);
+    let mut experience = experience::ExperienceSummary {
+        job,
+        question: crate::hex(question.resolution_id()),
+        checkpoint: checkpoint.clone(),
+        policy: input_specification(),
+        request_binding: digest(&binding),
+        native_context: digest(&(&digest(state), context.required, context.prerequisites)),
+        origin: Origin::Local,
+        terminal: result.terminal.clone(),
+        trace: experience::TraceBinding {
+            checked_trajectory: result.solution.as_ref().map(|s| digest(&s.tree)),
+            observed_branches: result.frontier.as_ref().map(digest),
+        },
+        cost: Some(result.cost.clone()),
+        search_limit: limit.try_into().unwrap(),
+        spent_ms,
+        reserved_units: 1,
+        receipt: String::new(),
+    };
+    experience.receipt = digest(&experience);
+    experience.validate().unwrap();
+    crate::jobs::Completion {
+        id: job,
+        experience: Some(experience),
+        model_checkpoint: Some(checkpoint),
+        binding,
+        spent_ms,
+        reserved_units: 1,
+        state: crate::jobs::State::Complete,
+        result: Ok(crate::jobs::Output::Native {
+            terminal: result.terminal.clone().into(),
+            solution: result.solution.clone(),
+            diagnostic: result.diagnostic.clone(),
+            frontier: result.frontier.clone(),
+        }),
+    }
+}
 fn shuffled_learning(seed: u64) -> Vec<&'static curriculum::Case> {
     let mut groups: BTreeMap<&str, Vec<_>> = BTreeMap::new();
     for q in curriculum::learning_cases() {

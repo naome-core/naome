@@ -14,6 +14,16 @@ struct Session<'a> {
     meter: &'a mut Meter,
     graph: Option<&'a crate::Graph>,
 }
+struct Generated {
+    result: Generation,
+    completion: jobs::Completion,
+}
+impl std::ops::Deref for Generated {
+    type Target = Generation;
+    fn deref(&self) -> &Generation {
+        &self.result
+    }
+}
 impl Session<'_> {
     fn generate(
         &mut self,
@@ -21,7 +31,7 @@ impl Session<'_> {
         cap: usize,
         job: u64,
         required: &[String],
-    ) -> Generation {
+    ) -> Generated {
         let allowance = cap.min(self.meter.remaining());
         let full = self.graph.and_then(|g| g.prerequisites(required).unwrap());
         if let Some(full) = &full {
@@ -48,25 +58,25 @@ impl Session<'_> {
                 )
             })
             .unwrap();
+        let completion = completed_search(
+            self.state,
+            q,
+            job,
+            &generated,
+            SolveContext {
+                definitions: &self.state.definitions,
+                theorems: &self.state.knowledge,
+                required,
+                prerequisites: full.as_ref(),
+            },
+            allowance,
+            generated.cost.generation_micros / 1000,
+        );
         self.meter.charge(generated.cost.search_expansions);
-        generated
-    }
-}
-fn completion(job: u64, generated: &Generation) -> jobs::Completion {
-    jobs::Completion {
-        experience: None,
-        model_checkpoint: None,
-        id: job,
-        binding: jobs::Binding::new([0; 32], [0; 32]),
-        spent_ms: generated.cost.generation_micros / 1000,
-        reserved_units: 1,
-        state: jobs::State::Complete,
-        result: Ok(jobs::Output::Native {
-            terminal: generated.terminal.clone().into(),
-            solution: generated.solution.clone(),
-            diagnostic: generated.diagnostic.clone(),
-            frontier: generated.frontier.clone(),
-        }),
+        Generated {
+            result: generated,
+            completion,
+        }
     }
 }
 fn checked(
@@ -144,7 +154,7 @@ pub(super) fn arm(
         };
         let mut finder = crate::frontier::Frontier::open(path, &graph, seed, settings).unwrap();
         finder
-            .attempted(q, &graph, &completion(1, &first), Outcome::NoCandidate)
+            .attempted(q, &graph, &first.completion, Outcome::NoCandidate)
             .unwrap();
         let mut questions =
             crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
@@ -213,12 +223,7 @@ pub(super) fn arm(
             }
             .generate(&helper, SLICE, job, &needed);
             finder
-                .attempted(
-                    &helper,
-                    &graph,
-                    &completion(job, &generated),
-                    outcome(&generated),
-                )
+                .attempted(&helper, &graph, &generated.completion, outcome(&generated))
                 .unwrap();
             if let Some(id) = checked(
                 &helper,
@@ -300,7 +305,7 @@ pub(super) fn arm(
         .generate(q, retry_allowance, job, &required);
         if let Some(finder) = &mut finder_owner {
             finder
-                .attempted(q, &graph, &completion(job, &retry), outcome(&retry))
+                .attempted(q, &graph, &retry.completion, outcome(&retry))
                 .unwrap();
         }
         result = checked(q, &retry, &mut graph, path, &format!("retried-goal-{job}"));

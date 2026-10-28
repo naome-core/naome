@@ -1008,8 +1008,9 @@ impl Frontier {
                 .get(question)?
                 .is_none_or(|record| completion.id > record.last_job);
         let before = self.evidence.model().updates;
-        self.evidence
-            .attempted(question, graph.content_root(), completion, outcome)?;
+        let observed_search =
+            self.evidence
+                .attempted(question, graph.content_root(), completion, outcome)?;
         self.learning_event(question, before, false);
         if new
             && matches!(
@@ -1020,7 +1021,7 @@ impl Frontier {
             for (total, count) in self.attempts.iter_mut().zip(Features::of(question).counts) {
                 *total = total.saturating_add(u64::from(count > 0));
             }
-            if outcome == Outcome::NoCandidate {
+            if outcome == Outcome::NoCandidate && observed_search {
                 if self.native {
                     self.focus(question.clone());
                 } else {

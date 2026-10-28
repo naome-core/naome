@@ -3,24 +3,15 @@ use crate::checkpoint::tests::Directory;
 use std::time::{Duration, Instant};
 
 fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64) {
-    let completion = jobs::Completion {
-        experience: None,
-        model_checkpoint: None,
-        id: job,
-        binding: jobs::Binding::new([0; 32], [0; 32]),
-        spent_ms: 1,
-        reserved_units: 1,
-        state: jobs::State::Complete,
-        result: Ok(jobs::Output::Native {
-            terminal: crate::learning::experience::TerminalEvidence::Budget(
-                crate::learning::experience::Budget::Expansions,
-            )
-            .into(),
-            solution: None,
-            diagnostic: "search_budget".into(),
-            frontier: Some(crate::learning::tests::stalled_frontier(q)),
-        }),
-    };
+    let completion = evidence::observed_completion(
+        q,
+        job,
+        crate::learning::experience::TerminalEvidence::Budget(
+            crate::learning::experience::Budget::Expansions,
+        ),
+        128,
+        Some(crate::learning::tests::stalled_frontier(q)),
+    );
     frontier
         .attempted(q, graph, &completion, Outcome::NoCandidate)
         .unwrap();
@@ -84,16 +75,15 @@ fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_check
             .attempted(
                 helper,
                 &graph,
-                &jobs::Completion {
-                    experience: None,
-                    model_checkpoint: None,
-                    id: index as u64 + 2,
-                    binding: jobs::Binding::new([0; 32], [0; 32]),
-                    spent_ms: 1,
-                    reserved_units: 1,
-                    state: jobs::State::Complete,
-                    result: Ok(jobs::Output::NoCandidate),
-                },
+                &evidence::observed_completion(
+                    helper,
+                    index as u64 + 2,
+                    crate::learning::experience::TerminalEvidence::Budget(
+                        crate::learning::experience::Budget::Expansions,
+                    ),
+                    128,
+                    None,
+                ),
                 Outcome::NoCandidate,
             )
             .unwrap();
@@ -118,16 +108,15 @@ fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_check
         .attempted(
             &goal,
             &graph,
-            &jobs::Completion {
-                experience: None,
-                model_checkpoint: None,
-                id: 11,
-                binding: jobs::Binding::new([0; 32], [0; 32]),
-                spent_ms: 1,
-                reserved_units: 1,
-                state: jobs::State::Complete,
-                result: Ok(jobs::Output::NoCandidate),
-            },
+            &evidence::observed_completion(
+                &goal,
+                11,
+                crate::learning::experience::TerminalEvidence::Budget(
+                    crate::learning::experience::Budget::Expansions,
+                ),
+                128,
+                None,
+            ),
             Outcome::NoCandidate,
         )
         .unwrap();

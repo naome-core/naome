@@ -2,6 +2,9 @@
 use super::*;
 use crate::checkpoint::{Checkpoint, Update};
 use serde::{Deserialize, Serialize};
+mod experience;
+#[cfg(test)]
+pub(crate) use experience::tests::observed_completion;
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
 const MAX_RECORD: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 4096;
@@ -50,6 +53,7 @@ struct Plan {
 pub(super) struct Record {
     pub question: String,
     pub model_checkpoint: Option<String>,
+    pub experience: Option<crate::learning::experience::ExperienceSummary>,
     pub solver: String,
     pub knowledge: String,
     pub last_draw: u64,
@@ -90,6 +94,7 @@ impl Record {
     }
     fn validate(&self, key: &str, observations: u64) -> Result<(), String> {
         let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
+        experience::record(&question, self)?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err("research evidence identity differs".into());
         }
@@ -402,13 +407,15 @@ impl Evidence {
         knowledge: [u8; 32],
         completion: &jobs::Completion,
         outcome: Outcome,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<bool, crate::Error> {
         if completion.id == 0 {
-            return Ok(());
+            return Ok(false);
         }
+        let experience = experience::completion(question, completion, outcome)?;
         let mut record = self.get(question)?.unwrap_or(Record {
             question: question.source().into(),
             model_checkpoint: None,
+            experience: None,
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
             last_draw: 0,
@@ -434,13 +441,20 @@ impl Evidence {
             publication_abandoned: false,
         });
         if completion.id <= record.last_job {
-            return Ok(());
+            if completion.id == record.last_job
+                && let (Some(incoming), Some(stored)) = (experience, &record.experience)
+                && incoming.receipt != stored.receipt
+            {
+                return Err("finder experience substituted a completed receipt".into());
+            }
+            return Ok(false);
         }
         let knowledge_changed = record.knowledge != crate::hex(&knowledge);
         record.knowledge = crate::hex(&knowledge);
         record.last_draw = self.header.draws;
         record.last_job = completion.id;
         record.model_checkpoint = completion.model_checkpoint.clone();
+        record.experience = experience.cloned();
         record.last_outcome = outcome;
         record.outcomes[outcome as usize] = record.outcomes[outcome as usize]
             .checked_add(1)
@@ -460,8 +474,18 @@ impl Evidence {
             record.verified_units = record.last_units;
             record.verified_ms = completion.spent_ms;
         }
+        let observed_search = !self.native
+            || experience.is_some_and(|summary| {
+                summary.terminal.observed_search_failure(
+                    summary
+                        .cost
+                        .as_ref()
+                        .map_or(0, |cost| cost.search_expansions),
+                )
+            });
         let observation = (completion.state == jobs::State::Complete
-            && outcome == Outcome::NoCandidate)
+            && outcome == Outcome::NoCandidate
+            && observed_search)
             .then_some((false, completion.spent_ms));
         record.last_attempt_at = self
             .header
@@ -498,7 +522,8 @@ impl Evidence {
         if observation.is_some() && record.first_unresolved_job == 0 {
             record.first_unresolved_job = completion.id;
         }
-        self.put_observation(question, &record, observation)
+        self.put_observation(question, &record, observation)?;
+        Ok(observation.is_some())
     }
     pub(super) fn abandon_publication(
         &mut self,

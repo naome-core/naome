@@ -614,26 +614,28 @@ fn arm(
             completed += 1;
             expansions += result.cost.search_expansions;
             unique.insert(crate::hex(q.resolution_id()));
-            let output = jobs::Output::Native {
-                terminal: result.terminal.clone().into(),
-                solution: result.solution.clone(),
-                diagnostic: result.diagnostic.clone(),
-                frontier: result.frontier.clone(),
-            };
+            // A recorded clock, when explicitly selected by the experiment,
+            // supplies the scheduling cost view. GenerationCost retains the
+            // independently measured physical execution cost without changes.
+            let completion = completed_search(
+                &state,
+                q,
+                job,
+                &result,
+                SolveContext {
+                    definitions: &state.definitions,
+                    theorems: &state.knowledge,
+                    required: &[],
+                    prerequisites: None,
+                },
+                SEARCH,
+                label_micros / 1000,
+            );
             finder
                 .attempted(
                     q,
                     &graph,
-                    &jobs::Completion {
-                        experience: None,
-                        id: job,
-                        model_checkpoint: Some(model),
-                        binding: jobs::Binding::new([0; 32], [0; 32]),
-                        spent_ms: label_micros / 1000,
-                        reserved_units: 1,
-                        state: jobs::State::Complete,
-                        result: Ok(output),
-                    },
+                    &completion,
                     if result.solution.is_some() {
                         Outcome::Candidate
                     } else {

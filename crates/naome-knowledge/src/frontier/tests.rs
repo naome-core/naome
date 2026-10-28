@@ -18,6 +18,22 @@ fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Comple
     }
 }
 
+fn native_failure(
+    question: &CompiledQuestion,
+    id: u64,
+    frontier: Option<crate::learning::SearchFrontier>,
+) -> jobs::Completion {
+    evidence::observed_completion(
+        question,
+        id,
+        crate::learning::experience::TerminalEvidence::Budget(
+            crate::learning::experience::Budget::Expansions,
+        ),
+        128,
+        frontier,
+    )
+}
+
 #[test]
 fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
     let directory = Directory::new();
@@ -32,7 +48,7 @@ fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
         .attempted(
             &target,
             &graph,
-            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            &native_failure(&target, 1, None),
             Outcome::NoCandidate,
         )
         .unwrap();
@@ -80,7 +96,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     let initial = frontier.evidence.model().clone();
     assert!(!frontier.helpers_needed(&question).unwrap());
-    let unresolved = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    let unresolved = native_failure(&question, 1, None);
     crate::checkpoint::fail_next_commit();
     assert!(
         frontier
@@ -173,7 +189,7 @@ fn finder_reopens_a_durable_observation_once_after_uncertain_acknowledgement() {
     };
     let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
-    let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    let result = native_failure(&question, 1, None);
     crate::checkpoint::fail_after_commit();
     assert!(
         frontier
@@ -271,7 +287,7 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
         .choose(&candidates, &graph, settings.solving, false)
         .unwrap()
         .unwrap();
-    let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    let result = native_failure(candidates[index], 1, None);
     frontier
         .attempted(candidates[index], &graph, &result, Outcome::NoCandidate)
         .unwrap();
@@ -790,7 +806,7 @@ fn checked_helper_support_is_durable_atomic_and_requires_an_earlier_unsolved_goa
         ..Default::default()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
-    let missed = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    let missed = native_failure(&goal, 1, None);
     frontier
         .attempted(&goal, &graph, &missed, Outcome::NoCandidate)
         .unwrap();
@@ -866,7 +882,7 @@ fn expiry_or_posthoc_helper_use_never_earns_support() {
         .attempted(
             &goal,
             &graph,
-            &completion(2, jobs::Output::NoCandidate, jobs::State::Complete),
+            &native_failure(&goal, 2, None),
             Outcome::NoCandidate,
         )
         .unwrap();
@@ -887,7 +903,7 @@ fn support_replay_recovers_a_missing_or_uncertain_credit_without_duplication() {
             .attempted(
                 &goal,
                 &graph,
-                &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+                &native_failure(&goal, 1, None),
                 Outcome::NoCandidate,
             )
             .unwrap();
@@ -937,7 +953,7 @@ fn solving_a_goal_without_using_its_helper_cannot_earn_support() {
         .attempted(
             &goal,
             &graph,
-            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            &native_failure(&goal, 1, None),
             Outcome::NoCandidate,
         )
         .unwrap();
@@ -967,7 +983,7 @@ fn completion_observations_not_job_allocation_order_establish_helper_timing() {
         .attempted(
             &goal,
             &graph,
-            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            &native_failure(&goal, 1, None),
             Outcome::NoCandidate,
         )
         .unwrap();
@@ -1099,19 +1115,7 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
         ..Default::default()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
-    let failed = completion(
-        1,
-        jobs::Output::Native {
-            terminal: crate::learning::experience::TerminalEvidence::Budget(
-                crate::learning::experience::Budget::Expansions,
-            )
-            .into(),
-            solution: None,
-            diagnostic: "search_budget".into(),
-            frontier: Some(report.clone()),
-        },
-        jobs::State::Complete,
-    );
+    let failed = native_failure(&goal, 1, Some(report.clone()));
     crate::checkpoint::fail_next_commit();
     assert!(
         frontier
@@ -1217,18 +1221,10 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
         ..Default::default()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
-    let failed = completion(
+    let failed = native_failure(
+        &goal,
         1,
-        jobs::Output::Native {
-            terminal: crate::learning::experience::TerminalEvidence::Budget(
-                crate::learning::experience::Budget::Expansions,
-            )
-            .into(),
-            solution: None,
-            diagnostic: "search_budget".into(),
-            frontier: Some(crate::learning::tests::stalled_frontier(&goal)),
-        },
-        jobs::State::Complete,
+        Some(crate::learning::tests::stalled_frontier(&goal)),
     );
     frontier
         .attempted(&goal, &graph, &failed, Outcome::NoCandidate)

@@ -106,24 +106,22 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
             );
             let solution: Option<Solution> =
                 serde_json::from_value(row["solution"].clone()).unwrap();
-            let output = solution
-                .as_ref()
-                .map_or(crate::jobs::Output::NoCandidate, |s| {
-                    crate::jobs::Output::Native {
-                        terminal: crate::learning::experience::TerminalEvidence::certified(s)
-                            .into(),
-                        solution: Some(s.clone()),
-                        diagnostic: "certified_candidate".into(),
-                        frontier: None,
-                    }
-                });
+            let experience: experience::ExperienceSummary =
+                serde_json::from_value(row["experience"].clone()).unwrap();
+            experience.validate().unwrap();
+            let output = crate::jobs::Output::Native {
+                terminal: experience.terminal.clone().into(),
+                solution: solution.clone(),
+                diagnostic: row["diagnostic"].as_str().unwrap().into(),
+                frontier: serde_json::from_value(row["frontier"].clone()).unwrap(),
+            };
             let completion = crate::jobs::Completion {
-                experience: None,
-                model_checkpoint: None,
+                model_checkpoint: Some(experience.checkpoint.clone()),
                 id: job,
                 binding: crate::jobs::Binding::new([0; 32], [0; 32]),
-                spent_ms: row["elapsed_micros"].as_u64().unwrap() / 1000,
-                reserved_units: 1,
+                spent_ms: experience.spent_ms,
+                reserved_units: experience.reserved_units,
+                experience: Some(experience),
                 state: crate::jobs::State::Complete,
                 result: Ok(output),
             };

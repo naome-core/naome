@@ -87,23 +87,48 @@ pub(super) fn acquire(
         serde_json::json!({"event":"own_search_started","job":job,"question":source})
     );
     let started = Instant::now();
-    let (solution, diagnostic, cost) = engine
+    let q = CompiledQuestion::compile(source).unwrap();
+    let generated = engine
         .with(&state.model, store, |runtime| {
-            solve_with_definitions(
+            solve_with_report(
                 source,
                 runtime,
                 128,
                 job,
-                &state.definitions,
-                &state.knowledge,
+                SolveContext {
+                    definitions: &state.definitions,
+                    theorems: &state.knowledge,
+                    required: &[],
+                    prerequisites: None,
+                },
             )
         })
         .unwrap();
+    let completion = completed_search(
+        state,
+        &q,
+        job,
+        &generated,
+        SolveContext {
+            definitions: &state.definitions,
+            theorems: &state.knowledge,
+            required: &[],
+            prerequisites: None,
+        },
+        128,
+        started.elapsed().as_millis() as u64,
+    );
+    let Generation {
+        solution,
+        diagnostic,
+        cost,
+        frontier,
+        terminal,
+    } = generated;
     let mut retained = false;
     let mut lemma = false;
     let mut newly_admitted = false;
     if let Some(solution) = &solution {
-        let q = CompiledQuestion::compile(source).unwrap();
         newly_admitted = admit_discovery(graph, &q, solution).unwrap_or_else(|error| {
             eprintln!("{}", serde_json::json!({"event":"own_admission_failed","job":job,"solution":solution,"error":error.to_string()}));
             panic!("own search failed ordinary graph admission: {error}")
@@ -135,7 +160,7 @@ pub(super) fn acquire(
             }
         }
     }
-    let event = serde_json::json!({"job":job,"question":source,"solution":solution,"diagnostic":diagnostic,"cost":cost,"newly_admitted":newly_admitted,"accepted_replay":retained,"accepted_lemma":lemma,"elapsed_micros":started.elapsed().as_micros()});
+    let event = serde_json::json!({"job":job,"question":source,"solution":solution,"diagnostic":diagnostic,"cost":cost,"terminal":terminal,"frontier":frontier,"experience":completion.experience,"newly_admitted":newly_admitted,"accepted_replay":retained,"accepted_lemma":lemma,"elapsed_micros":started.elapsed().as_micros()});
     eprintln!(
         "{}",
         serde_json::json!({"event":"own_search_completed","acquisition":event})
