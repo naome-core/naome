@@ -64,6 +64,7 @@ fn family_held_out_temporal_comparison() {
             for treatment in [
                 Treatment::Previous,
                 Treatment::FamilyReplay,
+                Treatment::OutcomeReplay,
                 Treatment::Full,
             ] {
                 let mut model = finder::Model::fresh();
@@ -113,7 +114,7 @@ fn family_held_out_temporal_comparison() {
                         }
                         predictions.push(json!({"resolution":crate::hex(questions[index].resolution_id()),"family":case.family,"held_out":&case.family==held,"prediction":model.predictions(&questions[index]),"resolved":observation.resolved,"millis":observation.millis,"weight":model.weight(&questions[index])}));
                     }
-                    rows.push(json!({"seed":seed,"held_out_family":held,"arm":match treatment{Treatment::Full=>"rehearsal",Treatment::FamilyReplay=>"family_replay",_=>"previous"},"round":round+1,"fresh_observations":model.updates,"rehearsals":model.rehearsals,"predictions":predictions}));
+                    rows.push(json!({"seed":seed,"held_out_family":held,"arm":match treatment{Treatment::Full=>"rehearsal",Treatment::FamilyReplay=>"family_replay",Treatment::OutcomeReplay=>"outcome_replay",_=>"previous"},"round":round+1,"fresh_observations":model.updates,"rehearsals":model.rehearsals,"predictions":predictions}));
                 }
             }
         }

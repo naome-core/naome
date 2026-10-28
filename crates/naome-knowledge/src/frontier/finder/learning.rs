@@ -371,14 +371,23 @@ impl Learning {
             let utility = (sample.utility_checkpoint == self.checkpoint)
                 .then_some(sample.utility)
                 .flatten();
+            // A newly checked lemma has not yet had a chance to help another
+            // proof. Its pending-use observation must not become a repeated
+            // negative target. Only checked downstream use survives replay.
+            let support = sample.support.filter(|value| *value);
+            #[cfg(test)]
+            let support = if matches!(
+                self.treatment,
+                crate::frontier::Treatment::FamilyReplay
+                    | crate::frontier::Treatment::FamilyReplayNoUtility
+                    | crate::frontier::Treatment::OutcomeReplay
+            ) {
+                sample.support
+            } else {
+                support
+            };
             if resolved.is_some() || sample.support == Some(true) || utility.is_some() {
-                model.rehearse(
-                    &sample.offer.descriptor,
-                    resolved,
-                    millis,
-                    sample.support,
-                    utility,
-                )?;
+                model.rehearse(&sample.offer.descriptor, resolved, millis, support, utility)?;
             }
         }
         Ok(())

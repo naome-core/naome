@@ -88,6 +88,7 @@ fn label(t: Treatment) -> &'static str {
         Treatment::NoReplay => "without_replay",
         Treatment::FamilyReplay => "family_replay",
         Treatment::FamilyReplayNoUtility => "family_replay_without_utility",
+        Treatment::OutcomeReplay => "outcome_replay",
         Treatment::Full => "full",
     }
 }
@@ -523,7 +524,10 @@ fn matched_continual_finder_study() {
     assert!(!output.exists());
     std::fs::create_dir_all(&output).unwrap();
     let phase = std::env::var("NAOME_FINDER_NATIVE_PHASE").unwrap();
-    let repair = phase == "repair" || phase == "confirmation_models";
+    let repair = matches!(
+        phase.as_str(),
+        "repair" | "repair_support" | "confirmation_models"
+    );
     let coupled = phase == "coupled" || repair;
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(&output).unwrap().clone();
@@ -536,7 +540,7 @@ fn matched_continual_finder_study() {
     let arms = if repair {
         vec![
             Treatment::Previous,
-            Treatment::FamilyReplay,
+            Treatment::OutcomeReplay,
             Treatment::Full,
         ]
     } else if coupled {
@@ -578,7 +582,7 @@ fn matched_continual_finder_study() {
         let (mut common, blobs, initial, preparation) =
             prepare(seed, &seed_path.join("preparation"));
         let mut clock = Clock::new();
-        if phase == "repair" {
+        if phase == "repair" || phase == "repair_support" {
             let reference =
                 std::path::PathBuf::from(std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap())
                     .join(seed.to_string());

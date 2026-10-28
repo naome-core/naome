@@ -233,6 +233,37 @@ fn replay_preserves_families_and_does_not_relabel_old_solver_outcomes() {
 }
 
 #[test]
+fn pending_lemma_use_is_not_rehearsed_as_failure() {
+    let question = q("goal=all(a,all(b,imp(eq(a,b),eq(b,a))))");
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    model.observe(&question, true, 1).unwrap();
+    for draw in 1..=128 {
+        learning
+            .remember(&mut model, &question, Some(&checkpoint()), true, 1, draw)
+            .unwrap();
+    }
+    assert_eq!(model.supports, 0);
+    assert!(
+        model.predictions(&question)[2] > 0.35,
+        "rehearsal must not turn pending downstream use into demonstrated failure"
+    );
+    let before = model.predictions(&question)[2];
+    learning.support(&mut model, &question).unwrap();
+    for _ in 0..32 {
+        learning.rehearse(&mut model).unwrap();
+    }
+    assert!(model.predictions(&question)[2] > before);
+    let mut reopened: Learning =
+        serde_json::from_slice(&serde_json::to_vec(&learning).unwrap()).unwrap();
+    assert_eq!(reopened.samples[0].support, Some(true));
+    reopened.bind(&"22".repeat(32));
+    let before = model.rehearsals;
+    reopened.rehearse(&mut model).unwrap();
+    assert_eq!(model.rehearsals, before + 1);
+}
+
+#[test]
 fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
