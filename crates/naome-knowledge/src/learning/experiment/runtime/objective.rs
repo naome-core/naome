@@ -223,7 +223,7 @@ fn cold_objective_intervention() {
                         .train_replay_using(
                             &candidate,
                             base,
-                            &job.evidence,
+                            (&job.evidence, &[]),
                             &mut cursor,
                             plan.phase(unit),
                             &mut store,

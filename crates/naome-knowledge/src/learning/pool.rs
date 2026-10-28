@@ -17,10 +17,149 @@ pub struct Pool {
     keys: BTreeMap<String, usize>,
     origins: BTreeMap<bool, Families>,
     priorities: Vec<u64>,
+    derivations: Vec<super::search::derivation::Derivation>,
+    witnesses: BTreeMap<String, BTreeMap<usize, Witness>>,
+    hindsight: BTreeSet<(u64, String, usize, String)>,
     #[cfg(test)]
     reference: bool,
 }
+
+#[derive(Default)]
+pub(super) struct DerivedCounts {
+    pub transitions: usize,
+    pub fragments: usize,
+    pub omitted: usize,
+    pub unavailable: usize,
+    pub preferences: usize,
+    pub hindsight: usize,
+}
+
+#[derive(Clone)]
+pub(super) struct Witness {
+    pub action: usize,
+    pub remaining_steps: usize,
+    pub source: String,
+}
 impl Pool {
+    pub(super) fn reconcile(
+        &mut self,
+        observations: &[super::experience::Observation],
+    ) -> Result<(), String> {
+        if observations.len() > super::history::SOURCES {
+            return Err("native hindsight source capacity".into());
+        }
+        self.hindsight.clear();
+        for observation in observations {
+            observation.validate()?;
+            let super::experience::TerminalEvidence::CertifiedCandidate { proof_id, .. } =
+                &observation.summary.terminal
+            else {
+                continue;
+            };
+            for derivation in &self.derivations {
+                if &derivation.source_proof != proof_id
+                    || observation.summary.trace.checked_trajectory.as_ref()
+                        != Some(&derivation.source_tree)
+                {
+                    continue;
+                }
+                for execution in &observation.executions {
+                    for (event, witness) in execution.reconcile(derivation)? {
+                        if self.hindsight.insert((
+                            observation.summary.job,
+                            execution.target.clone(),
+                            event,
+                            witness,
+                        )) {
+                            self.work_bytes = self
+                                .work_bytes
+                                .checked_add(512)
+                                .ok_or("native hindsight work overflow")?;
+                            if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
+                                return Err("native hindsight work capacity".into());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn add_derivation(
+        &mut self,
+        derivation: super::search::derivation::Derivation,
+    ) -> Result<(), String> {
+        for step in &derivation.steps {
+            // Single-choice transitions carry sequence state, not a missing
+            // competing-action label. Ambiguous states must be the same ones
+            // produced by the ordinary native checked proof replay.
+            if step.graph.candidates.len() > 1 && !self.keys.contains_key(&step.graph.key()) {
+                return Err("checked sequence differs from its admitted replay".into());
+            }
+            let key = step.graph.key();
+            let candidates = self.witnesses.entry(key).or_default();
+            let next = Witness {
+                action: step.graph.expert,
+                remaining_steps: step.remaining_steps,
+                source: step.witness.clone(),
+            };
+            match candidates.get_mut(&next.action) {
+                Some(previous)
+                    if (next.remaining_steps, &next.source)
+                        < (previous.remaining_steps, &previous.source) =>
+                {
+                    *previous = next
+                }
+                None => {
+                    self.work_bytes = self
+                        .work_bytes
+                        .checked_add(1024 + std::mem::size_of::<Witness>())
+                        .ok_or("native witness pool work overflow")?;
+                    candidates.insert(next.action, next);
+                }
+                _ => {}
+            }
+        }
+        self.work_bytes = self
+            .work_bytes
+            .checked_add(derivation.work_bytes())
+            .ok_or("native derived pool work overflow")?;
+        if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
+            return Err("native derived pool work capacity".into());
+        }
+        self.derivations.push(derivation);
+        Ok(())
+    }
+    /// Compare only different actions with separately checked completions of
+    /// the exact same state. Costs are symbolic suffix lengths, not timings.
+    pub(super) fn witnesses(&self, graph: &Graph) -> Vec<Witness> {
+        self.witnesses
+            .get(&graph.key())
+            .map_or_else(Vec::new, |w| w.values().cloned().collect())
+    }
+    pub(super) fn derived_counts(&self) -> DerivedCounts {
+        let mut counts = DerivedCounts {
+            hindsight: self.hindsight.len(),
+            ..DerivedCounts::default()
+        };
+        for derivation in &self.derivations {
+            counts.transitions += derivation.steps.len();
+            counts.fragments += derivation.fragments.len();
+            counts.omitted += derivation.omitted_steps;
+            counts.unavailable +=
+                derivation.oversized_fragments + derivation.rejected_fragments.len();
+        }
+        for graph in &self.graphs {
+            let witnesses = self.witnesses(graph);
+            for (index, a) in witnesses.iter().enumerate() {
+                counts.preferences += witnesses[index + 1..]
+                    .iter()
+                    .filter(|b| a.remaining_steps != b.remaining_steps && a.source != b.source)
+                    .count();
+            }
+        }
+        counts
+    }
     pub fn add(
         &mut self,
         peer: bool,

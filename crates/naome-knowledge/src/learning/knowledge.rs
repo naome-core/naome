@@ -15,7 +15,7 @@ pub struct Entry {
 }
 // Canonical compact packets leave room for replay in the unchanged State byte
 // allowance. Their raw bytes and independent native checking stay authoritative.
-mod packet {
+pub(super) mod packet {
     use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {

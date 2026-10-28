@@ -113,6 +113,7 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("search/frontier.rs"));
     hash.update(include_str!("search/trace.rs"));
     hash.update(include_str!("search/core.rs"));
+    hash.update(include_str!("search/derivation.rs"));
     hash.update(include_str!("pool.rs"));
     hash.update(include_str!("meta.rs"));
     hash.update(include_str!("transfer.rs"));
@@ -447,6 +448,12 @@ pub(crate) struct TrainingCost {
     pub preservation_states: usize,
     pub checkpoint_micros: u64,
     pub states: usize,
+    pub checked_transitions: usize,
+    pub checked_fragments: usize,
+    pub omitted_transitions: usize,
+    pub unavailable_fragments: usize,
+    pub witnessed_preferences: usize,
+    pub hindsight_matches: usize,
 }
 fn micros(started: std::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
@@ -514,12 +521,13 @@ impl Engine {
         &mut self,
         c: &Checkpoint,
         state: &super::State,
-        evidence: &[super::Evidence],
+        material: (&[super::Evidence], &[super::experience::Observation]),
         cursor: &mut u64,
         phase: super::meta::Phase,
         io: &mut I,
     ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
         self.cost = TrainingCost::default();
+        let (evidence, observations) = material;
         let started = std::time::Instant::now();
         let key = super::digest(&(
             &state.model,
@@ -530,15 +538,15 @@ impl Engine {
             phase.rehearsal,
             self.preservation_mode().enabled(),
             evidence,
+            observations,
         ));
         let (mut pool, preservation_pool) = match self.pool.take() {
             Some((previous, pool, preservation_pool)) if previous == key => {
                 (pool, preservation_pool)
             }
             _ => {
-                let pool = state.training_pool_for(evidence, phase.rehearsal)?;
-                #[cfg(test)]
-                let mut pool = pool;
+                let mut pool = state.training_pool_for(evidence, phase.rehearsal)?;
+                pool.reconcile(observations)?;
                 #[cfg(test)]
                 if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
@@ -577,6 +585,13 @@ impl Engine {
         }
         self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         self.cost.states = pool.graphs().len();
+        let derived = pool.derived_counts();
+        self.cost.checked_transitions = derived.transitions;
+        self.cost.checked_fragments = derived.fragments;
+        self.cost.omitted_transitions = derived.omitted;
+        self.cost.unavailable_fragments = derived.unavailable;
+        self.cost.witnessed_preferences = derived.preferences;
+        self.cost.hindsight_matches = derived.hindsight;
         self.cost.preservation_states = preservation_pool.graphs().len();
         let result = if pool.is_empty() {
             Ok(None)

@@ -200,7 +200,7 @@ fn consumed_decision_coverage_replay() {
                 .train_replay_using(
                     &candidate,
                     &job.base,
-                    &job.evidence,
+                    (&job.evidence, &[]),
                     &mut cursor,
                     plan.phase(unit),
                     &mut store,

@@ -164,7 +164,7 @@ fn checkpoint_boundary_restores_adam_mask_and_cursor_without_mutating_parent() {
         .train_replay_using(
             &parent,
             &state,
-            &[],
+            (&[], &[]),
             &mut cursor,
             learning::meta::Plan::targeted().phase(0),
             &mut io,
@@ -176,7 +176,7 @@ fn checkpoint_boundary_restores_adam_mask_and_cursor_without_mutating_parent() {
         .train_replay_using(
             &middle,
             &state,
-            &[],
+            (&[], &[]),
             &mut cursor,
             learning::meta::Plan::targeted().phase(1),
             &mut io,
@@ -189,7 +189,7 @@ fn checkpoint_boundary_restores_adam_mask_and_cursor_without_mutating_parent() {
         .train_replay_using(
             &middle,
             &state,
-            &[],
+            (&[], &[]),
             &mut resumed_cursor,
             learning::meta::Plan::targeted().phase(1),
             &mut io,
@@ -241,7 +241,7 @@ fn unmasked_control_preserves_actual_adam_weights_and_training_cursor() {
         .train_replay_using(
             &parent,
             &state,
-            &[],
+            (&[], &[]),
             &mut comparison_cursor,
             learning::meta::Plan::balanced().phase(0),
             &mut io,

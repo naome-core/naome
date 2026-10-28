@@ -152,7 +152,7 @@ fn train(
             .train_replay_using(
                 &candidate,
                 state,
-                evidence,
+                (evidence, &[]),
                 &mut cursor,
                 plan.phase(unit),
                 &mut store,

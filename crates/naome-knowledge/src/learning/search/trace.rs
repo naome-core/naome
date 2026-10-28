@@ -80,6 +80,35 @@ pub(crate) struct Trace {
     pub omitted: usize,
 }
 impl Trace {
+    /// Match a separately checked completion to an actually observed state and
+    /// action. This establishes available hindsight, not success of that past
+    /// attempt. Unmatched and omitted events remain explicitly unassigned.
+    pub(crate) fn reconcile(
+        &self,
+        checked: &super::derivation::Derivation,
+    ) -> Result<Vec<(usize, String)>, String> {
+        self.validate()?;
+        if self.target != checked.source_target {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                checked
+                    .steps
+                    .iter()
+                    .find(|step| {
+                        step.graph.binding == event.state
+                            && step.offered == event.offered
+                            && step.graph.expert == event.selected
+                    })
+                    .map(|step| (index, step.witness.clone()))
+            })
+            .collect())
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         crate::object::id_bytes(&self.target)?;
         if crate::checkpoint::encode(self)?.len() > BYTES

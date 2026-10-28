@@ -281,8 +281,14 @@ pub(super) struct Working {
     page: Receipt,
     replay: Vec<Example>,
     evidence: Vec<Evidence>,
+    observations: Vec<experience::Observation>,
     available: usize,
     retained: usize,
+}
+pub(super) struct Sources {
+    pub state: State,
+    pub evidence: Vec<Evidence>,
+    pub observations: Vec<experience::Observation>,
 }
 impl Working {
     fn prepare(job: &Job, page: &Page, receipt: &Receipt) -> Result<Self, String> {
@@ -335,6 +341,11 @@ impl Working {
             page: receipt.clone(),
             replay: state.replay,
             evidence,
+            observations: page
+                .records
+                .iter()
+                .filter_map(|record| record.observation.clone())
+                .collect(),
             available: eligible.len(),
             retained,
         };
@@ -383,7 +394,7 @@ impl Job {
         progress: &mut Progress,
         engine: &mut Engine,
         io: &mut I,
-    ) -> Result<Option<(State, Vec<Evidence>)>, String> {
+    ) -> Result<Option<Sources>, String> {
         let Some(request) = self.history_request.clone() else {
             return Ok(None);
         };
@@ -399,7 +410,11 @@ impl Job {
             && let Some((blob, working)) = &engine.prepared
             && *blob == prepared.blob
         {
-            return Ok(Some((working.state(self)?, working.evidence.clone())));
+            return Ok(Some(Sources {
+                state: working.state(self)?,
+                evidence: working.evidence.clone(),
+                observations: working.observations.clone(),
+            }));
         }
         let page: Page = crate::checkpoint::decode(&artifact::load(io, &receipt.blob)?)?;
         let working = Working::prepare(self, &page, &receipt)?;
@@ -422,8 +437,13 @@ impl Job {
             progress.prepared = Some(prepared);
         }
         let evidence = working.evidence.clone();
+        let observations = working.observations.clone();
         engine.prepared = Some((blob, working));
-        Ok(Some((state, evidence)))
+        Ok(Some(Sources {
+            state,
+            evidence,
+            observations,
+        }))
     }
 }
 

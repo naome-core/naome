@@ -1,5 +1,6 @@
 //! Bounded classical tableau with checked, replayable proof reconstruction.
 pub mod core;
+pub(crate) mod derivation;
 pub(crate) mod frontier;
 pub(crate) mod trace;
 use super::calculus::{self as c, Names};

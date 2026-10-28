@@ -738,9 +738,15 @@ impl Job {
         } else {
             None
         };
-        let (training_state, training_evidence) = working.as_ref().map_or(
-            (&self.base, self.evidence.as_slice()),
-            |(state, evidence)| (state, evidence.as_slice()),
+        let (training_state, training_evidence, observations) = working.as_ref().map_or(
+            (&self.base, self.evidence.as_slice(), [].as_slice()),
+            |sources| {
+                (
+                    &sources.state,
+                    sources.evidence.as_slice(),
+                    sources.observations.as_slice(),
+                )
+            },
         );
         if self.units() > 1 && unit == 1 {
             let wall = std::time::Instant::now();
@@ -761,7 +767,7 @@ impl Job {
             if let Some((candidate, first, last)) = engine.train_replay_using(
                 parent,
                 training_state,
-                training_evidence,
+                (training_evidence, observations),
                 &mut p.rng,
                 phase,
                 io,
@@ -792,6 +798,12 @@ impl Job {
                     .checkpoint_micros
                     .saturating_add(engine.cost.checkpoint_micros);
                 p.training_cost.states = engine.cost.states;
+                p.training_cost.checked_transitions = engine.cost.checked_transitions;
+                p.training_cost.checked_fragments = engine.cost.checked_fragments;
+                p.training_cost.omitted_transitions = engine.cost.omitted_transitions;
+                p.training_cost.unavailable_fragments = engine.cost.unavailable_fragments;
+                p.training_cost.witnessed_preferences = engine.cost.witnessed_preferences;
+                p.training_cost.hindsight_matches = engine.cost.hindsight_matches;
                 p.first_loss.get_or_insert(first);
                 p.last_loss = Some(last);
                 p.candidate = Some(candidate);
