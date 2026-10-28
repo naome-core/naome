@@ -55,6 +55,17 @@ impl Blob {
     }
 }
 pub(crate) trait ArtifactIo {
+    /// Only a separate source-owner process adds CPU beyond this worker's meter.
+    fn external_history_cpu(&self) -> bool {
+        false
+    }
+
+    fn history(
+        &mut self,
+        _request: &super::history::Request,
+    ) -> Result<super::history::Receipt, String> {
+        Err("artifact owner cannot provide admitted history".into())
+    }
     fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String>;
     fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String>;
 }

@@ -3,7 +3,7 @@ use super::*;
 // This process-local cache contains only exact inputs already checked by the
 // unchanged native kernel. It is never serialized; reopening rechecks all data.
 std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::VecDeque<String>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) }; }
-fn validate_example(e: &Example) -> Result<(), String> {
+pub(super) fn validate_example(e: &Example) -> Result<(), String> {
     let key = digest(e);
     if VERIFIED.with(|known| {
         let mut known = known.borrow_mut();
@@ -35,8 +35,10 @@ fn validate_example(e: &Example) -> Result<(), String> {
         steps,
         bytes,
         ref binding,
+        ref coverage,
     } = e.tree
     {
+        coverage.validate()?;
         return if bytes <= REPLAY * 8 * 1024
             && crate::object::id_bytes(binding).is_ok()
             && steps > 0
@@ -136,6 +138,7 @@ impl State {
             trained: 0,
             attempted: 0,
             peer_cursor: 0,
+            history_cursor: None,
             local_examples: 0,
             peer_examples: 0,
             promotions: 0,
@@ -148,6 +151,9 @@ impl State {
     pub fn validate(&self) -> Result<(), String> {
         self.model.validate()?;
         self.meta.validate()?;
+        if let Some(cursor) = &self.history_cursor {
+            crate::object::id_bytes(cursor)?;
+        }
         knowledge::validate(&self.knowledge)?;
         let _ = definitions::context(&self.definitions)?;
         if self.definition_uses.keys().any(|id| {
@@ -231,7 +237,7 @@ impl State {
             if next.replay.is_empty() {
                 return Ok(false);
             }
-            next.remove_replay();
+            next.remove_replay()?;
         }
         next.validate()?;
         *self = next;
@@ -274,6 +280,8 @@ impl State {
     }
     pub fn job(&self) -> Job {
         Job {
+            history_request: None,
+            history: None,
             evidence: Vec::new(),
             training: false,
             base_hash: digest(self),
@@ -362,7 +370,21 @@ impl State {
         {
             return false;
         }
+        if let Some(prepared) = &p.prepared
+            && (Some(&prepared.page) != native.history.as_ref()
+                || native
+                    .history_request
+                    .as_ref()
+                    .is_none_or(|request| prepared.page.validate(request).is_err()))
+        {
+            return false;
+        }
         let mut next = self.clone();
+        if self.history_cursor == native.base.history_cursor
+            && let Some(prepared) = &p.prepared
+        {
+            next.history_cursor.clone_from(&prepared.page.next);
+        }
         if let Some(plan) = &p.plan {
             next.meta.draw = plan.draw;
         }
@@ -421,7 +443,7 @@ impl State {
             if self.replay.is_empty() {
                 return Err("fixed learning snapshot exceeds working byte capacity".into());
             }
-            self.remove_replay();
+            self.remove_replay()?;
         }
         Ok(())
     }
@@ -438,11 +460,12 @@ impl State {
             if self.replay.is_empty() {
                 return Err("matched meta context cannot retain a learning batch".into());
             }
-            self.remove_replay();
+            self.remove_replay()?;
         }
         self.validate()
     }
-    fn remove_replay(&mut self) {
+    pub(super) fn remove_replay(&mut self) -> Result<(), String> {
+        let losses = coverage::losses(&self.replay, &self.anchors)?;
         let mut counts = BTreeMap::new();
         for e in &self.replay {
             let case = curriculum::owned::case(&e.question).expect("eligible replay");
@@ -465,6 +488,7 @@ impl State {
                     .filter(|r| matches!(r.origin, Origin::Peer { .. }) == peer)
                     .count();
                 (
+                    std::cmp::Reverse(losses[*index]),
                     origin_count,
                     counts[&(peer, c.dependency.clone())],
                     std::cmp::Reverse(*index),
@@ -472,6 +496,7 @@ impl State {
             })
             .map_or(0, |(index, _)| index);
         self.replay.remove(index);
+        Ok(())
     }
     #[cfg(test)]
     pub(super) fn training_pool(&self, evidence: &[Evidence]) -> Result<pool::Pool, String> {
@@ -562,7 +587,19 @@ impl State {
     }
     /// The journal supplies lifetime question/proof history. Replay selection
     /// never creates a fresh unique-sample count or resource allowance.
-    pub fn consider(&mut self, mut example: Example, unique: bool) -> Result<bool, String> {
+    pub fn consider(&mut self, example: Example, unique: bool) -> Result<bool, String> {
+        self.consider_source(example, unique, true)
+    }
+    /// Reloading an admitted source changes only the bounded working selection.
+    pub(super) fn reload(&mut self, example: Example) -> Result<bool, String> {
+        self.consider_source(example, false, false)
+    }
+    fn consider_source(
+        &mut self,
+        mut example: Example,
+        unique: bool,
+        discovered: bool,
+    ) -> Result<bool, String> {
         if self.examples().any(|e| e.proof_id == example.proof_id) {
             return Ok(false);
         }
@@ -681,10 +718,12 @@ impl State {
                 .checked_add(1)
                 .ok_or("learning sequence overflow")?;
         }
-        next.epoch = next
-            .epoch
-            .checked_add(1)
-            .ok_or("learning revision overflow")?;
+        if discovered {
+            next.epoch = next
+                .epoch
+                .checked_add(1)
+                .ok_or("learning revision overflow")?;
+        }
         let trace_bytes = serde_json::to_vec(&example.tree)
             .map_err(|e| e.to_string())?
             .len();
@@ -698,12 +737,14 @@ impl State {
             crate::resources::limits().closure_bytes.min(128 * 1024) / 4 / (2 * REPLAY);
         if matches!(example.origin, Origin::Peer { .. }) || trace_bytes > inline_bytes {
             example.tree = search::Tree::Stored {
+                coverage: coverage::Profile::of(&example)?,
                 steps: native_steps,
                 bytes: trace_bytes,
                 binding: digest(&example.tree),
             };
         }
-        if next.anchors.len() < 4
+        if discovered
+            && next.anchors.len() < 4
             && !next.anchors.iter().any(|old| {
                 curriculum::owned::case(&old.question).is_some_and(|old| {
                     curriculum::owned::case(&example.question)
@@ -721,13 +762,13 @@ impl State {
             if next.replay.is_empty() {
                 return Ok(false);
             }
-            next.remove_replay();
+            next.remove_replay()?;
         }
         while crate::checkpoint::encode(&next)?.len()
             > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
             && next.replay.len() > 1
         {
-            next.remove_replay();
+            next.remove_replay()?;
         }
         if crate::checkpoint::encode(&next)?.len()
             > crate::resources::limits().closure_bytes.min(128 * 1024) / 4

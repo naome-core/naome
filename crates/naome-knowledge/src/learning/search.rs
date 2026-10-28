@@ -45,6 +45,7 @@ pub enum Tree {
     Axiom(u8),
     Certificate(Vec<u8>),
     Stored {
+        coverage: super::coverage::Profile,
         steps: usize,
         bytes: usize,
         binding: String,

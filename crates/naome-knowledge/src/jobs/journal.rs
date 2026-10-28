@@ -955,6 +955,13 @@ fn validate_record(
         }
         native.validate()?;
         if native
+            .history_request
+            .as_ref()
+            .is_some_and(|request| request.horizon != r.id)
+        {
+            return Err("history request original job differs".into());
+        }
+        if native
             .progress
             .as_ref()
             .and_then(|p| p.meta_update.as_ref())

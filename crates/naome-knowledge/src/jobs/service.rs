@@ -152,6 +152,11 @@ struct PendingProgram {
     records: Vec<naome_proof::program::Command>,
     reply: oneshot::Sender<Result<(), String>>,
 }
+struct PendingHistory {
+    unit: u32,
+    request: crate::learning::history::Request,
+    reply: oneshot::Sender<Result<crate::learning::history::Receipt, String>>,
+}
 struct PendingModel {
     unit: u32,
     blob: crate::learning::Blob,
@@ -177,6 +182,7 @@ struct Owner {
     programs: BTreeMap<u64, PendingProgram>,
     learning_progress: BTreeMap<u64, PendingLearning>,
     learning_receipts: BTreeMap<u64, String>,
+    history_io: BTreeMap<u64, PendingHistory>,
     model_io: BTreeMap<u64, PendingModel>,
     tasks: FuturesUnordered<BoxFuture<'static, (u64, process::Outcome)>>,
     next_lane: usize,
@@ -218,6 +224,7 @@ impl Owner {
             programs: BTreeMap::new(),
             learning_progress: BTreeMap::new(),
             learning_receipts: BTreeMap::new(),
+            history_io: BTreeMap::new(),
             model_io: BTreeMap::new(),
             tasks: FuturesUnordered::new(),
             next_lane: 0,
@@ -354,6 +361,7 @@ impl Owner {
                                 Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
                             }
                         },
+                        process::Event::History{id,unit,request,reply}=>{if self.history_io.insert(id,PendingHistory{unit,request,reply}).is_some(){return Err("duplicate pending history read".into());}},
                         process::Event::Model{id,unit,blob,range,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,range,bytes,reply}).is_some() {return Err("duplicate pending native model IO".into());}},
                         process::Event::Learning{id,unit,progress,reply}=>{
                             if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err("duplicate pending local checkpoint".into());}
@@ -525,6 +533,52 @@ impl Owner {
     }
 
     fn persist_learning(&mut self) -> Result<(), String> {
+        for id in self.history_io.keys().copied().collect::<Vec<_>>() {
+            let pending = self.history_io.remove(&id).expect("owned history request");
+            if pending.reply.is_closed() {
+                continue;
+            }
+            if self
+                .journal
+                .records
+                .get(&id)
+                .is_some_and(|r| matches!(r.state, State::Cancelled | State::Expired))
+            {
+                let _ = pending
+                    .reply
+                    .send(Err("history job cancelled or expired".into()));
+                continue;
+            }
+            let _disk = match crate::resources::DiskLease::acquire(
+                self.disk.directory(),
+                crate::resources::limits().native_model_chunk_bytes as u64 * 8,
+            ) {
+                Ok(lease) => lease,
+                Err(error) if error.retryable() => {
+                    self.history_io.insert(id, pending);
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            self.charge(id)?;
+            let result =
+                self.disk
+                    .history_page(&mut self.journal, id, pending.unit, &pending.request);
+            self.charge(id)?;
+            match result {
+                Err(error) if error.retryable() => {
+                    self.history_io.insert(id, pending);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = pending.reply.send(Err(message.clone()));
+                    return Err(message);
+                }
+                Ok(receipt) => {
+                    let _ = pending.reply.send(Ok(receipt));
+                }
+            }
+        }
         for id in self.model_io.keys().copied().collect::<Vec<_>>() {
             let pending = self.model_io.remove(&id).expect("owned model IO");
             if pending.reply.is_closed() {
@@ -989,6 +1043,7 @@ impl Owner {
                 .job();
             job.training = matches!(input, Input::Train { .. });
             if job.training {
+                job.request_history(self.journal.next_id);
                 job.evidence = self.disk.replay_evidence(&job.base)?;
             }
             job.validate()?;

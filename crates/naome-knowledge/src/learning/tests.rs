@@ -572,6 +572,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 }
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        prepared: None,
         plan: None,
         meta_update: None,
         cpu_micros: 0,
@@ -657,6 +658,7 @@ pub(crate) fn own_solution() -> Solution {
         .0
         .unwrap()
 }
+
 #[test]
 fn targeted_preparation_rehearses_owned_anchors_without_duplicate_source_weight() {
     let solution = own_solution();
@@ -717,6 +719,7 @@ fn evicted_stored_anchor_uses_its_original_owned_evidence_and_existing_source_ca
     );
     state.replay.clear();
     state.anchors[0].tree = search::Tree::Stored {
+        coverage: coverage::Profile::of(&state.anchors[0]).unwrap(),
         steps: 1,
         bytes: serde_json::to_vec(&trace).unwrap().len(),
         binding: digest(&trace),
@@ -776,6 +779,9 @@ pub(crate) fn completed(job: &mut Job, solution: Solution) {
     });
 }
 pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
+    // This fixture tests model chunk custody independently of history preparation.
+    job.history_request = None;
+    job.history = None;
     let mut state = job.base.clone();
     state.trained = state.accepted;
     let mut candidate = state.model.clone();
@@ -882,6 +888,7 @@ fn proof_strategy_cost_uses_the_same_native_unit_for_local_traces_and_peer_dags(
         "the fixture must distinguish macro actions from native steps"
     );
     let peer = search::Tree::Stored {
+        coverage: coverage::Profile::of(&own).unwrap(),
         steps: native,
         bytes: serde_json::to_vec(&own.tree).unwrap().len(),
         binding: digest(&own.tree),

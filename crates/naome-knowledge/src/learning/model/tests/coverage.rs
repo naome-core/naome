@@ -1,6 +1,7 @@
 //! Exact control replay observes consumed decision graphs without changing training.
+use super::super::observation::{Decisions, consumed, coverage, own_sources};
 use super::*;
-use crate::learning::{Job, Origin, curriculum, digest, meta, search};
+use crate::learning::{Job, digest, meta};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ops::Range, path::Path, time::Instant};
 
@@ -139,71 +140,6 @@ fn inputs() -> Inputs {
     inputs
 }
 
-struct Source {
-    job: u64,
-    proof: String,
-    graphs: Vec<Graph>,
-}
-fn own_sources(job: &Job) -> Vec<Source> {
-    job.base
-        .training_sources()
-        .map(|example| {
-            assert!(matches!(example.origin, Origin::Local));
-            assert!(curriculum::owned::case(&example.question).is_some());
-            let question = naome_authoring::CompiledQuestion::compile(&example.question).unwrap();
-            let target = if example.refuted {
-                question.refuted_target()
-            } else {
-                question.proved_target()
-            };
-            let (core, _, checked) =
-                search::core::checked(target, example.trajectory(&job.evidence).unwrap()).unwrap();
-            assert_eq!(crate::hex(checked.native_id.as_bytes()), example.proof_id);
-            Source {
-                job: example.job,
-                proof: example.proof_id.clone(),
-                graphs: search::compile(target, &core).unwrap().1,
-            }
-        })
-        .collect()
-}
-
-#[derive(Serialize)]
-struct Observed {
-    graph_key: String,
-    successes: Vec<usize>,
-    occurrences: u64,
-}
-type Decisions = BTreeMap<String, Observed>;
-
-fn coverage(sources: &[Source], available: &Decisions, sampled: &Decisions) -> serde_json::Value {
-    let rows = sources.iter().map(|source| {
-        let decisions = source.graphs.iter().map(|graph| {
-            let key = graph.key();
-            let matches = |item: &&Observed| item.graph_key == key && item.successes.contains(&graph.expert);
-            serde_json::json!({"graph_key":key,"original_expert":graph.expert,
-                "available":available.values().any(|item| matches(&item)),
-                "sampled_occurrences":sampled.values().filter(matches).map(|item|item.occurrences).sum::<u64>()})
-        }).collect::<Vec<_>>();
-        serde_json::json!({"job":source.job,"proof_id":source.proof,"decision_occurrences":decisions.len(),
-            "has_decision_states":!decisions.is_empty(),
-            "all_original_actions_available":(!decisions.is_empty()).then(||decisions.iter().all(|d|d["available"].as_bool().unwrap())),
-            "all_original_actions_sampled":(!decisions.is_empty()).then(||decisions.iter().all(|d|d["sampled_occurrences"].as_u64().unwrap()>0)),
-            "decisions":decisions})
-    }).collect::<Vec<_>>();
-    serde_json::json!({"sources":rows,"interpretation":"Decision graphs and witnessed actions can be shared by multiple sources; this is not exclusive sampled-proof attribution or certified search success."})
-}
-fn record(graph: &Graph, catalogue: &mut Decisions, increment: u64) -> String {
-    let graph_key = graph.key();
-    let key = digest(&(&graph_key, &graph.successes));
-    let entry = catalogue.entry(key.clone()).or_insert_with(|| Observed {
-        graph_key,
-        successes: graph.successes.clone(),
-        occurrences: 0,
-    });
-    entry.occurrences += increment;
-    key
-}
 fn limits(started: Instant, cpu: u64) {
     assert!(started.elapsed().as_secs_f64() < 120.0);
     assert!(meta::cpu_micros().unwrap() - cpu < 90_000_000);
@@ -271,23 +207,7 @@ fn consumed_decision_coverage_replay() {
                 )
                 .unwrap()
                 .unwrap();
-            let (_, pool, _) = engine.pool.as_ref().unwrap();
-            for graph in pool.graphs() {
-                record(graph, &mut available, 0);
-            }
-            // Focus is fixed for this existing ten-update call. Replaying the
-            // actual sampler after it returns cannot alter tensors or its cursor.
-            let mut observed_cursor = before;
-            let batches = (0..UPDATES_PER_UNIT)
-                .map(|_| {
-                    pool.batch(&mut observed_cursor)
-                        .into_iter()
-                        .map(|graph| record(graph, &mut sampled, 1))
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(observed_cursor, cursor);
-            assert_eq!(cursor - before, 16 * UPDATES_PER_UNIT);
+            let batches = consumed(&engine, before, cursor, &mut available, &mut sampled);
             if unit == 0 {
                 losses[0] = first;
             }
