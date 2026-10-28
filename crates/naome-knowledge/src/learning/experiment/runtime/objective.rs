@@ -8,6 +8,7 @@ struct Case {
     job: u64,
     original_job: String,
     expected_candidate: Checkpoint,
+    completed_original: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +62,39 @@ fn inputs() -> Diagnosis {
                     .is_empty()
             );
         }
+        if let Some(path) = &case.completed_original {
+            for file in [
+                "units.json",
+                "candidate/checkpoint.json",
+                "candidate/model.bpk",
+                "candidate/optimizer.bpk",
+            ] {
+                assert!(
+                    diagnosis
+                        .original_sha256
+                        .contains_key(&format!("{path}/{file}"))
+                );
+            }
+            let units: Vec<serde_json::Value> = read(&format!("{path}/units.json"));
+            assert_eq!(units.len(), model::TRAINING_UNITS as usize);
+            for (index, unit) in units.iter().enumerate() {
+                assert_eq!(unit["unit"], index + 1);
+                assert_eq!(unit["checkpoint"]["updates"], (index + 1) * 10);
+                assert_eq!(unit["cursor"], base.draws + (index as u64 + 1) * 160);
+                assert_eq!(
+                    unit["phase"],
+                    serde_json::to_value(plan.phase(index as u32)).unwrap()
+                );
+            }
+            assert_eq!(
+                units.last().unwrap()["checkpoint"],
+                serde_json::to_value(&case.expected_candidate).unwrap()
+            );
+            assert_eq!(
+                checkpoint(&format!("{path}/candidate"), &mut Store::default()),
+                case.expected_candidate
+            );
+        }
     }
     diagnosis
 }
@@ -87,6 +121,8 @@ fn cold_objective_intervention() {
     let whole = Instant::now();
     let whole_cpu = meta::cpu_micros().unwrap();
     let mut rows = Vec::new();
+    let mut new_updates = 0u64;
+    let mut recovered_updates = 0u64;
     // Complete all exact controls before the first intervention optimizer call.
     for name in ["original", "marginal_only"] {
         for case in &diagnosis.cases {
@@ -109,37 +145,60 @@ fn cold_objective_intervention() {
             let mut store = Store::default();
             let mut candidate = base.model.clone();
             let mut engine = Engine::default();
+            // Export materializes fresh weights and empty Adam state. Compare
+            // that initialized snapshot, rather than its lazy input descriptor.
+            let parent_snapshot = Engine::default()
+                .snapshot(&base.model, &mut Store::default().inner)
+                .unwrap();
             let mut cursor = base.draws;
             let mut losses = [0f32; 2];
-            let mut units = Vec::new();
+            let mut units: Vec<serde_json::Value> = Vec::new();
             eprintln!("objective_branch_started {} {name}", case.name);
-            for unit in 0..model::TRAINING_UNITS {
-                limits(started, cpu);
-                let (next, first, last) = engine
-                    .train_replay_using(
-                        &candidate,
-                        base,
-                        &job.evidence,
-                        &mut cursor,
-                        plan.phase(unit),
-                        &mut store,
-                    )
-                    .unwrap()
-                    .expect("same genuine checked pool");
-                if unit == 0 {
-                    losses[0] = first;
-                }
-                losses[1] = last;
-                candidate = next;
-                units.push(serde_json::json!({"unit":unit+1,"checkpoint":candidate,
+            let recovered = if name == "original" {
+                case.completed_original.as_ref()
+            } else {
+                None
+            };
+            if let Some(path) = recovered {
+                candidate = checkpoint(&format!("{path}/candidate"), &mut store);
+                units = read(&format!("{path}/units.json"));
+                losses = [
+                    serde_json::from_value(units[0]["first_loss"].clone()).unwrap(),
+                    serde_json::from_value(units.last().unwrap()["last_loss"].clone()).unwrap(),
+                ];
+                cursor = units.last().unwrap()["cursor"].as_u64().unwrap();
+                recovered_updates += candidate.updates;
+                write(&directory.join("units.json"), &units);
+            } else {
+                for unit in 0..model::TRAINING_UNITS {
+                    limits(started, cpu);
+                    let (next, first, last) = engine
+                        .train_replay_using(
+                            &candidate,
+                            base,
+                            &job.evidence,
+                            &mut cursor,
+                            plan.phase(unit),
+                            &mut store,
+                        )
+                        .unwrap()
+                        .expect("same genuine checked pool");
+                    if unit == 0 {
+                        losses[0] = first;
+                    }
+                    losses[1] = last;
+                    candidate = next;
+                    new_updates += 10;
+                    units.push(serde_json::json!({"unit":unit+1,"checkpoint":candidate,
                     "cursor":cursor,"phase":plan.phase(unit),"first_loss":first,
                     "last_loss":last,"training_cost":engine.cost}));
-                let keep = candidate
-                    .blobs()
-                    .map(|b| &b.sha256)
-                    .collect::<BTreeSet<_>>();
-                store.inner.0.retain(|(hash, _), _| keep.contains(hash));
-                write(&directory.join("units.json"), &units);
+                    let keep = candidate
+                        .blobs()
+                        .map(|b| &b.sha256)
+                        .collect::<BTreeSet<_>>();
+                    store.inner.0.retain(|(hash, _), _| keep.contains(hash));
+                    write(&directory.join("units.json"), &units);
+                }
             }
             assert_eq!(candidate.updates, 250);
             assert_eq!(cursor, expected.rng);
@@ -191,7 +250,7 @@ fn cold_objective_intervention() {
             );
             assert_eq!(
                 engine.snapshot(&base.model, &mut store.inner).unwrap(),
-                base.model
+                parent_snapshot
             );
             assert_eq!(digest(base), base_binding);
             assert_eq!(digest(&job.evidence), evidence_binding);
@@ -200,6 +259,7 @@ fn cold_objective_intervention() {
             let result = serde_json::json!({"branch":name,"candidate":candidate,"cursor":cursor,
                 "losses":losses,"loss_bits":losses.map(f32::to_bits),"qualification":qualification,
                 "base_binding":base_binding,"evidence_binding":evidence_binding,"plan":plan,
+                "parent_materialized_snapshot":parent_snapshot,"recovered_original_updates":if recovered.is_some() {250} else {0},
                 "cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":started.elapsed().as_micros(),
                 "read_bytes":store.read_bytes,"written_bytes":store.written_bytes,
                 "original_exact":name=="original","installed_or_promoted":false});
@@ -211,10 +271,12 @@ fn cold_objective_intervention() {
     }
     let resources = meter.finish(0, true);
     assert!(resources.peak_rss_bytes.unwrap() <= model::REQUIREMENTS.work_bytes as u64);
+    assert_eq!(new_updates + recovered_updates, 1500);
     write(
         &output.join("completed.json"),
         &serde_json::json!({"cases":rows,
         "lower_optimizer_updates":1500,"upper_optimizer_updates":0,"new_final_queries":0,
+        "new_lower_optimizer_updates":new_updates,"recovered_lower_optimizer_updates":recovered_updates,
         "cpu_micros":meta::cpu_micros().unwrap()-whole_cpu,"wall_micros":whole.elapsed().as_micros(),
         "peak_rss_bytes":resources.peak_rss_bytes,"diagnostic_only":true}),
     );

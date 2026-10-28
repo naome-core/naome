@@ -22,22 +22,6 @@ struct Diagnosis {
     cases: Vec<Case>,
 }
 
-fn checkpoint(path: &str, store: &mut Store) -> Checkpoint {
-    let path = Path::new(path);
-    let checkpoint: Checkpoint = read(path.join("checkpoint.json").to_str().unwrap());
-    checkpoint.validate().unwrap();
-    for (name, blob) in [
-        ("model", &checkpoint.model),
-        ("optimizer", &checkpoint.optimizer),
-    ] {
-        let blob = blob.as_ref().unwrap();
-        let bytes = std::fs::read(path.join(format!("{name}.bpk"))).unwrap();
-        assert_eq!(Blob::of(&bytes), *blob);
-        assert_eq!(artifact::save(&mut store.inner, &bytes).unwrap(), *blob);
-    }
-    checkpoint
-}
-
 fn records(state: &State) -> BTreeMap<String, &Example> {
     state
         .training_sources()

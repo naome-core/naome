@@ -12,6 +12,22 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+fn checkpoint(path: &str, store: &mut Store) -> Checkpoint {
+    let path = Path::new(path);
+    let checkpoint: Checkpoint = read(path.join("checkpoint.json").to_str().unwrap());
+    checkpoint.validate().unwrap();
+    for (name, blob) in [
+        ("model", &checkpoint.model),
+        ("optimizer", &checkpoint.optimizer),
+    ] {
+        let blob = blob.as_ref().unwrap();
+        let bytes = std::fs::read(path.join(format!("{name}.bpk"))).unwrap();
+        assert_eq!(Blob::of(&bytes), *blob);
+        assert_eq!(artifact::save(&mut store.inner, &bytes).unwrap(), *blob);
+    }
+    checkpoint
+}
+
 fn limits(started: Instant, cpu: u64) {
     assert!(started.elapsed() < Duration::from_secs(120));
     assert!(meta::cpu_micros().unwrap() - cpu < 90_000_000);
