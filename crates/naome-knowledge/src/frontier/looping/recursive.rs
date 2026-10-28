@@ -157,6 +157,7 @@ impl Frontier {
                 .map(|i| nodes[*i].question.clone())
                 .collect(),
             required: choice.required.into_iter().map(|(id, _)| id).collect(),
+            ready: true,
             _memory: memory,
         })
     }

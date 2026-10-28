@@ -1037,11 +1037,21 @@ impl Autonomous {
             self.retain(question);
         }
 
-        let loop_goal = if let Some(goal) = &self.formal_goal {
-            Some(goal.clone())
-        } else if let Some(frontier) = &self.frontier {
-            match frontier.loop_focus() {
-                Ok(goal) => goal,
+        let planned_work = if let Some(frontier) = &mut self.frontier {
+            let mut available = |q: &CompiledQuestion| {
+                let q = questions.owned_question(q).unwrap_or_else(|| q.clone());
+                questions.generation_decision(graph, &q).passed()
+                    || questions.assess(graph, &q).passed()
+            };
+            let result = if let Some(goal) = &self.formal_goal {
+                frontier
+                    .loop_work(goal, graph, &mut available)
+                    .map(|work| Some((goal.clone(), work)))
+            } else {
+                frontier.loop_focus(graph, &mut available)
+            };
+            match result {
+                Ok(work) => work,
                 Err(error) => {
                     if error.fatal() {
                         self.error = Some(error.to_string());
@@ -1052,64 +1062,54 @@ impl Autonomous {
         } else {
             None
         };
+        let loop_goal = planned_work
+            .as_ref()
+            .map(|(goal, _)| goal.clone())
+            .or_else(|| self.formal_goal.clone());
         let mut goal_requirements = Vec::new();
         let mut required_goal = loop_goal.clone();
         let mut loop_candidates = None;
-        if let (Some(goal), Some(frontier)) = (&loop_goal, &mut self.frontier) {
-            match frontier.loop_work(goal, graph, |q| {
-                let q = questions.owned_question(q).unwrap_or_else(|| q.clone());
-                questions.generation_decision(graph, &q).passed()
-                    || questions.assess(graph, &q).passed()
-            }) {
-                Ok(work) => {
-                    required_goal = Some(work.target);
-                    let planned = work.planned;
-                    let pending = work
-                        .pending
-                        .into_iter()
-                        .map(|q| questions.owned_question(&q).unwrap_or(q))
-                        .collect::<Vec<_>>();
-                    if !planned.is_empty() {
-                        loop_candidates = Some(if pending.is_empty() {
-                            vec![goal.clone()]
-                        } else {
-                            pending.clone()
-                        });
-                    }
-                    self.unanswered.retain(|q| {
-                        if q.resolution_id() == goal.resolution_id() {
-                            return pending.is_empty();
-                        }
-                        !planned
-                            .iter()
-                            .any(|p| p.resolution_id() == q.resolution_id())
-                            || pending
-                                .iter()
-                                .any(|p| p.resolution_id() == q.resolution_id())
-                    });
-                    let waiting = !pending.is_empty();
-                    for helper in pending {
-                        if questions.generation_decision(graph, &helper).passed() {
-                            self.retain(helper);
-                        }
-                    }
-                    if !waiting {
-                        let original = questions
-                            .owned_question(goal)
-                            .unwrap_or_else(|| goal.clone());
-                        if questions.generation_decision(graph, &original).passed() {
-                            self.retain(original);
-                        }
-                    }
-                    goal_requirements = work.required;
+        if let Some((goal, work)) = planned_work {
+            required_goal = Some(work.target);
+            let planned = work.planned;
+            let pending = work
+                .pending
+                .into_iter()
+                .map(|q| questions.owned_question(&q).unwrap_or(q))
+                .collect::<Vec<_>>();
+            if !planned.is_empty() {
+                loop_candidates = Some(if pending.is_empty() {
+                    vec![goal.clone()]
+                } else {
+                    pending.clone()
+                });
+            }
+            self.unanswered.retain(|q| {
+                if q.resolution_id() == goal.resolution_id() {
+                    return pending.is_empty();
                 }
-                Err(error) => {
-                    if error.fatal() {
-                        self.error = Some(error.to_string());
-                    }
-                    return accepted;
+                !planned
+                    .iter()
+                    .any(|p| p.resolution_id() == q.resolution_id())
+                    || pending
+                        .iter()
+                        .any(|p| p.resolution_id() == q.resolution_id())
+            });
+            let waiting = !pending.is_empty();
+            for helper in pending {
+                if questions.generation_decision(graph, &helper).passed() {
+                    self.retain(helper);
                 }
             }
+            if !waiting {
+                let original = questions
+                    .owned_question(&goal)
+                    .unwrap_or_else(|| goal.clone());
+                if questions.generation_decision(graph, &original).passed() {
+                    self.retain(original);
+                }
+            }
+            goal_requirements = work.required;
         }
         if now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
@@ -1238,7 +1238,7 @@ impl Autonomous {
                             }
                         }
                     } else {
-                        frontier.candidates(cursor)
+                        frontier.candidate_page(cursor, &mut eligible)
                     };
                     // The explicit owner goal remains admissible even when a
                     // bounded research-context cache cannot retain its copy.

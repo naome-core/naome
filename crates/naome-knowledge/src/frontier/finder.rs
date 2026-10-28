@@ -5,8 +5,12 @@ use super::{CompiledQuestion, Formula, FreeVariable};
 use std::collections::{BTreeSet, VecDeque};
 mod model;
 pub(super) use model::Model;
+mod analysis;
+pub(super) use analysis::Cache;
 mod semantics;
-pub(super) use semantics::{independent_goal, key, meaningful, relevance};
+#[cfg(test)]
+use semantics::relevance;
+pub(super) use semantics::{independent_goal, key, meaningful};
 #[cfg(test)]
 mod tests;
 
@@ -96,6 +100,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
     }
     let mut pending = vec![goal.formula().clone()];
     let mut found = Vec::new();
+    let goal_key = key(goal);
     for _ in 0..32 {
         let Some(part) = pending.pop() else {
             break;
@@ -108,7 +113,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
             for child in [a.clone(), b.clone(), Formula::negate(a.clone())] {
                 if let Ok(question) = CompiledQuestion::from_formula(close(child))
                     && meaningful(&question)
-                    && key(&question) != key(goal)
+                    && key(&question) != goal_key
                     && question.resolution_id() != goal.resolution_id()
                 {
                     found.push(question);
@@ -122,7 +127,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
             if let Ok(question) = CompiledQuestion::from_formula(close(body.to_owned()))
                 && meaningful(&question)
                 && question.resolution_id() != goal.resolution_id()
-                && key(&question) != key(goal)
+                && key(&question) != goal_key
             {
                 found.push(question);
             }
@@ -143,32 +148,63 @@ pub(super) fn questions(
     goals: &VecDeque<CompiledQuestion>,
     maximum: usize,
     bytes: usize,
+    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
 ) -> Vec<CompiledQuestion> {
-    let mut all = Vec::new();
-    for goal in goals.iter().rev().take(4) {
-        all.extend(helpers(goal, cursor));
+    let mut groups = Vec::new();
+    for goal in goals
+        .iter()
+        .rev()
+        .cycle()
+        .skip(cursor as usize % goals.len().max(1))
+        .take(goals.len().min(4))
+    {
+        groups.push(VecDeque::from(helpers(goal, cursor)));
     }
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
     let mut relations = vec![Formula::member(a, b), Formula::equal(a, b)];
+    let checked = seeds
+        .iter()
+        .filter(|f| f.free_variables().len() == 2 && f.view().node_count_and_depth().0 <= 24)
+        .collect::<Vec<_>>();
     relations.extend(
-        seeds
+        checked
             .iter()
-            .filter(|f| f.free_variables().len() == 2 && f.view().node_count_and_depth().0 <= 24)
-            .take(4)
-            .cloned(),
+            .cycle()
+            .skip(cursor as usize % checked.len().max(1))
+            .take(checked.len().min(4))
+            .map(|f| (*f).clone()),
     );
+    let original = relations.len();
     let primitive = relations.clone();
     relations.extend(primitive.iter().filter_map(inclusion));
+    let mut checked_questions = VecDeque::new();
+    let mut free_questions = VecDeque::new();
     for offset in 0..20 {
-        let seed = &relations[(cursor as usize + offset) % relations.len()];
+        let index = (cursor as usize + offset) % relations.len();
+        let seed = &relations[index];
         if let Some(formula) = property(seed, cursor / relations.len() as u64 + offset as u64)
             && let Ok(question) = CompiledQuestion::from_formula(formula)
         {
-            all.push(question);
+            if index % original < 2 {
+                free_questions.push_back(question);
+            } else {
+                checked_questions.push_back(question);
+            }
         }
     }
-    bounded(all, maximum, bytes)
+    groups.extend([checked_questions, free_questions]);
+    let length = groups.len();
+    groups.rotate_left(cursor as usize % length);
+    let mut all = Vec::new();
+    while groups.iter().any(|g| !g.is_empty()) {
+        for group in &mut groups {
+            if let Some(q) = group.pop_front() {
+                all.push(q);
+            }
+        }
+    }
+    bounded_eligible(all, maximum, bytes, eligible)
 }
 pub(super) fn for_goal(
     cursor: u64,
@@ -179,12 +215,21 @@ pub(super) fn for_goal(
     bounded(helpers(goal, cursor), maximum, bytes)
 }
 fn bounded(all: Vec<CompiledQuestion>, maximum: usize, bytes: usize) -> Vec<CompiledQuestion> {
+    bounded_eligible(all, maximum, bytes, &mut |_| true)
+}
+fn bounded_eligible(
+    all: Vec<CompiledQuestion>,
+    maximum: usize,
+    bytes: usize,
+    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+) -> Vec<CompiledQuestion> {
     let mut seen = BTreeSet::new();
     let mut retained = 0;
     let mut result = Vec::new();
+    let mut checks = 0;
     for question in all {
         let cost = question.source().len() * 8 + 256;
-        if result.len() >= maximum.min(12) {
+        if result.len() >= maximum.min(12) || checks >= 20 {
             break;
         }
         if meaningful(&question)
@@ -192,8 +237,11 @@ fn bounded(all: Vec<CompiledQuestion>, maximum: usize, bytes: usize) -> Vec<Comp
             && retained + cost <= bytes
             && seen.insert(key(&question))
         {
-            retained += cost;
-            result.push(question);
+            checks += 1;
+            if eligible(&question) {
+                retained += cost;
+                result.push(question);
+            }
         }
     }
     result

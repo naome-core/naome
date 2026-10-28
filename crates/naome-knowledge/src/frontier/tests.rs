@@ -139,7 +139,14 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
     );
     assert!(!frontier.helpers_needed(&question).unwrap());
     let model = frontier.evidence.model().clone();
-    let generated = finder::questions(17, &frontier.predicates, &frontier.goals, 12, 64 * 1024);
+    let generated = finder::questions(
+        17,
+        &frontier.predicates,
+        &frontier.goals,
+        12,
+        64 * 1024,
+        &mut |_| true,
+    );
     let identities = |questions: Vec<CompiledQuestion>| {
         questions
             .into_iter()
@@ -147,11 +154,11 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
             .map(|q| *q.resolution_id())
             .collect::<Vec<_>>()
     };
-    let page = identities(frontier.candidates(17));
+    let page = identities(frontier.candidate_page(17, |_| true));
     drop(frontier);
     let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     assert_eq!(frontier.evidence.model(), &model);
-    assert_eq!(identities(frontier.candidates(17)), page);
+    assert_eq!(identities(frontier.candidate_page(17, |_| true)), page);
 }
 
 #[test]
@@ -404,7 +411,7 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
     let goal = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
     assert!(
         frontier
-            .candidates(0)
+            .candidate_page(0, |_| true)
             .iter()
             .any(|q| q.resolution_id() == goal.resolution_id())
     );
@@ -515,7 +522,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     let helper = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
     assert!(
         frontier
-            .candidates(0)
+            .candidate_page(0, |_| true)
             .iter()
             .any(|q| q.resolution_id() == helper.resolution_id())
     );
@@ -545,7 +552,7 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
     frontier.refresh(&graph, |_| true).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
-    let candidates = frontier.candidates(0);
+    let candidates = frontier.candidate_page(0, |_| true);
     let eligible = candidates
         .iter()
         .filter(|q| formal.assess(&graph, q).passed())
@@ -580,7 +587,7 @@ fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjecture
     let expected = CompiledQuestion::compile("goal=all(y,all(x,imp(eq(y,x),mem(x,y))))").unwrap();
     assert!(
         frontier
-            .candidates(0)
+            .candidate_page(0, |_| true)
             .iter()
             .any(|q| q.resolution_id() == expected.resolution_id())
     );
@@ -631,7 +638,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
         };
         frontier.refresh(&graph, &mut eligible).unwrap();
         let candidates = frontier
-            .candidates(0)
+            .candidate_page(0, |_| true)
             .into_iter()
             .filter(&mut eligible)
             .collect::<Vec<_>>();
@@ -999,7 +1006,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     frontier.focus(goal.clone());
     assert_eq!(frontier.goals.len(), 1);
     let candidates = (0..32)
-        .flat_map(|cursor| frontier.candidates(cursor))
+        .flat_map(|cursor| frontier.candidate_page(cursor, |_| true))
         .collect::<Vec<_>>();
     assert!(candidates.iter().any(|q| q.core() == goal.core()));
     for helper in &helpers {
@@ -1135,7 +1142,12 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        frontier.loop_focus().unwrap().unwrap().resolution_id(),
+        frontier
+            .loop_focus(&graph, |_| true)
+            .unwrap()
+            .unwrap()
+            .0
+            .resolution_id(),
         goal.resolution_id()
     );
     for (i, helper) in helpers.iter().enumerate() {

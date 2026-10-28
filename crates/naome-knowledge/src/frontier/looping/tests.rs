@@ -58,6 +58,69 @@ fn fixture() -> (CompiledQuestion, CompiledQuestion, [CompiledQuestion; 2]) {
     .unwrap();
     (root, parent, leaves)
 }
+
+#[test]
+fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_checked_help() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    failed(&mut frontier, &graph, &goal, 1);
+    for (index, helper) in helpers.iter().enumerate() {
+        frontier
+            .attempted(
+                helper,
+                &graph,
+                &jobs::Completion {
+                    id: index as u64 + 2,
+                    binding: jobs::Binding::new([0; 32], [0; 32]),
+                    spent_ms: 1,
+                    reserved_units: 1,
+                    state: jobs::State::Complete,
+                    result: Ok(jobs::Output::NoCandidate),
+                },
+                Outcome::NoCandidate,
+            )
+            .unwrap();
+    }
+    assert!(frontier.loop_focus(&graph, |_| true).unwrap().is_none());
+    let members = frontier.evidence.plan_members(&goal).unwrap();
+    assert!(!members.is_empty());
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert!(frontier.loop_focus(&graph, |_| true).unwrap().is_none());
+    resolve(&mut frontier, &mut graph, &helpers[0], 10);
+    let (focused, work) = frontier.loop_focus(&graph, |_| true).unwrap().unwrap();
+    assert_eq!(focused.resolution_id(), goal.resolution_id());
+    assert_eq!(work.required.len(), 1);
+    assert_eq!(
+        frontier
+            .choose(&[&goal], &graph, settings.solving, false)
+            .unwrap(),
+        Some(0)
+    );
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &jobs::Completion {
+                id: 11,
+                binding: jobs::Binding::new([0; 32], [0; 32]),
+                spent_ms: 1,
+                reserved_units: 1,
+                state: jobs::State::Complete,
+                result: Ok(jobs::Output::NoCandidate),
+            },
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    assert!(frontier.loop_focus(&graph, |_| true).unwrap().is_none());
+    assert_eq!(frontier.evidence.plan_members(&goal).unwrap(), members);
+}
 #[test]
 fn exact_conjunction_leaves_precede_an_unattempted_composite_without_inventing_failure() {
     let directory = Directory::new();

@@ -5,6 +5,7 @@ pub(crate) struct Work {
     pub planned: Vec<CompiledQuestion>,
     pub pending: Vec<CompiledQuestion>,
     pub required: Vec<String>,
+    ready: bool,
     _memory: Vec<Arc<crate::resources::MemoryLease>>,
 }
 const DEPTH: usize = 2;
@@ -113,7 +114,11 @@ impl Frontier {
     pub(crate) fn support_updates(&self) -> u64 {
         self.evidence.model().supports
     }
-    pub(crate) fn loop_focus(&self) -> Result<Option<CompiledQuestion>, crate::Error> {
+    pub(crate) fn loop_focus(
+        &mut self,
+        graph: &Graph,
+        mut available: impl FnMut(&CompiledQuestion) -> bool,
+    ) -> Result<Option<(CompiledQuestion, Work)>, crate::Error> {
         let mut sources = Vec::new();
         let mut children = std::collections::BTreeSet::new();
         for goal in &self.goals {
@@ -126,13 +131,20 @@ impl Frontier {
                     let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
                     children.insert(*helper.resolution_id());
                 }
-                sources.push(goal);
+                sources.push(goal.clone());
             }
         }
-        Ok(sources
-            .into_iter()
-            .find(|q| !children.contains(q.resolution_id()))
-            .cloned())
+        for goal in sources {
+            if !children.contains(goal.resolution_id()) {
+                let work = self.loop_work(&goal, graph, &mut available)?;
+                // Exhaustion parks an optional focus without deleting its
+                // evidence, spending a trial or replenishing plan membership.
+                if work.ready {
+                    return Ok(Some((goal, work)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn abandon_publication(
@@ -217,6 +229,13 @@ impl Frontier {
             node.available = node.checked.is_some() || available(&node.question);
         }
         let choice = next(&nodes, 0, 0);
+        let ready = !choice.pending.is_empty()
+            || nodes[choice.target].record.as_ref().is_none_or(|record| {
+                choice
+                    .required
+                    .iter()
+                    .any(|(_, at)| *at > record.last_attempt_at)
+            });
         Ok(Work {
             target: nodes[choice.target].question.clone(),
             planned: nodes.iter().skip(1).map(|n| n.question.clone()).collect(),
@@ -226,6 +245,7 @@ impl Frontier {
                 .map(|i| nodes[*i].question.clone())
                 .collect(),
             required: choice.required.into_iter().map(|(id, _)| id).collect(),
+            ready,
             _memory: memory,
         })
     }

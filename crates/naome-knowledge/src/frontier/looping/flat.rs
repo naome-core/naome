@@ -12,6 +12,7 @@ impl Frontier {
                 planned: vec![],
                 pending: vec![],
                 required: vec![],
+                ready: true,
                 _memory: Vec::new(),
             });
         };
@@ -21,6 +22,7 @@ impl Frontier {
                 planned: vec![],
                 pending: vec![],
                 required: vec![],
+                ready: true,
                 _memory: Vec::new(),
             });
         }
@@ -56,6 +58,7 @@ impl Frontier {
             planned,
             pending,
             required,
+            ready: true,
             _memory: vec![memory],
         })
     }

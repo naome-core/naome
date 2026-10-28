@@ -102,6 +102,13 @@ pub(in crate::frontier) fn meaningful(question: &CompiledQuestion) -> bool {
     shape(question.formula().view(), None).truth.is_none()
         && boolean_constant(question.formula().view()).is_none()
 }
+pub(super) fn screen(question: &CompiledQuestion) -> ([u8; 32], bool) {
+    let reduced = shape(question.formula().view(), None);
+    (
+        Sha256::digest(reduced.bytes()).into(),
+        reduced.truth.is_none() && boolean_constant(question.formula().view()).is_none(),
+    )
+}
 /// A bounded truth table screens propositional padding. Quantified subformulas
 /// are opaque atoms; only the outer universal closure is opened for this test.
 /// Exceeding either bound leaves the question eligible for ordinary research.
@@ -188,7 +195,11 @@ pub(in crate::frontier) fn independent_goal(
 }
 /// Complete non-atomic fragments can motivate a helper; atomic overlap alone
 /// does not establish a proof prerequisite or a useful observation.
+#[cfg(test)]
 pub(in crate::frontier) fn relevance(lemma: &CompiledQuestion, goal: &CompiledQuestion) -> u64 {
+    fragments(lemma).intersection(&fragments(goal)).count() as u64
+}
+pub(super) fn fragments(question: &CompiledQuestion) -> BTreeSet<[u8; 32]> {
     use std::collections::BTreeSet;
     fn collect(f: &Formula, out: &mut BTreeSet<[u8; 32]>, left: &mut usize) {
         if *left == 0 {
@@ -224,9 +235,7 @@ pub(in crate::frontier) fn relevance(lemma: &CompiledQuestion, goal: &CompiledQu
             _ => {}
         }
     }
-    let mut a = BTreeSet::new();
-    let mut b = BTreeSet::new();
-    collect(lemma.formula(), &mut a, &mut 32);
-    collect(goal.formula(), &mut b, &mut 32);
-    a.intersection(&b).count() as u64
+    let mut result = BTreeSet::new();
+    collect(question.formula(), &mut result, &mut 32);
+    result
 }

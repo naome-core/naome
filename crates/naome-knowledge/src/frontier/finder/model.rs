@@ -1,11 +1,13 @@
 //! A bounded prior for solvability, observed cost and demonstrated goal support.
-use super::super::{Features, SIGNALS};
+use super::super::SIGNALS;
+use super::analysis::{BINDINGS, Descriptor};
 use naome_authoring::CompiledQuestion;
 use serde::{Deserialize, Serialize};
 const INPUTS: usize = SIGNALS + 3;
 const HIDDEN: usize = 8;
 const OUTPUTS: usize = 3;
-const PARAMETERS: usize = INPUTS * HIDDEN + HIDDEN + HIDDEN * OUTPUTS + OUTPUTS;
+const ROLE_START: usize = INPUTS * HIDDEN + HIDDEN + HIDDEN * OUTPUTS + OUTPUTS;
+const PARAMETERS: usize = ROLE_START + BINDINGS * OUTPUTS;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::frontier) struct Model {
@@ -15,8 +17,8 @@ pub(in crate::frontier) struct Model {
     pub unresolved: u64,
     pub supports: u64,
 }
-fn input(question: &CompiledQuestion) -> [f32; INPUTS] {
-    let features = Features::of(question);
+fn input(descriptor: &Descriptor) -> [f32; INPUTS] {
+    let features = &descriptor.features;
     let mut input = [0.; INPUTS];
     for (value, count) in input.iter_mut().zip(features.counts) {
         *value = f32::from(count).ln_1p() / 8.;
@@ -35,10 +37,13 @@ impl Model {
     }
     pub fn fresh() -> Self {
         let mut random = crate::sampling::Random::new(0x66696e646572);
+        let mut weights = Vec::with_capacity(PARAMETERS);
+        weights.extend((0..ROLE_START).map(|_| (random.below(2001) as f32 - 1000.) / 20_000.));
+        // Direct role terms begin neutral and learn without a second small
+        // random projection attenuating their already bounded input signal.
+        weights.extend([0.; BINDINGS * OUTPUTS]);
         Self {
-            weights: (0..PARAMETERS)
-                .map(|_| (random.below(2001) as f32 - 1000.) / 20_000.)
-                .collect(),
+            weights,
             updates: 0,
             resolved: 0,
             unresolved: 0,
@@ -58,7 +63,11 @@ impl Model {
         }
         Ok(())
     }
-    fn forward(&self, input: &[f32; INPUTS]) -> ([f32; HIDDEN], [f32; OUTPUTS]) {
+    fn forward(
+        &self,
+        input: &[f32; INPUTS],
+        bindings: &[f32; BINDINGS],
+    ) -> ([f32; HIDDEN], [f32; OUTPUTS]) {
         let mut hidden = [0.; HIDDEN];
         for (h, value) in hidden.iter_mut().enumerate() {
             *value = (input
@@ -78,7 +87,12 @@ impl Model {
                     .enumerate()
                     .map(|(h, x)| x * self.weights[start + o * HIDDEN + h])
                     .sum::<f32>()
-                    + self.weights[start + OUTPUTS * HIDDEN + o],
+                    + self.weights[start + OUTPUTS * HIDDEN + o]
+                    + bindings
+                        .iter()
+                        .enumerate()
+                        .map(|(i, x)| x * self.weights[ROLE_START + o * BINDINGS + i])
+                        .sum::<f32>(),
             );
         }
         (hidden, output)
@@ -86,16 +100,24 @@ impl Model {
     /// Moderate solvability keeps the frontier away from both repeated easy
     /// wins and hopeless work. Actual support outweighs a small cost advantage.
     pub fn weight(&self, question: &CompiledQuestion) -> u64 {
-        let [resolved, cost, useful] = self.predictions(question);
+        self.weight_from(&Descriptor::of(question))
+    }
+    pub fn weight_from(&self, descriptor: &Descriptor) -> u64 {
+        let [resolved, cost, useful] = self.predictions_from(descriptor);
         let frontier = 0.25 + 4. * resolved * (1. - resolved);
         (1024. * (0.05 + 4. * useful * useful) * frontier / (1. + cost)) as u64 + 1
     }
+    #[cfg(test)]
     pub fn predictions(&self, question: &CompiledQuestion) -> [f32; OUTPUTS] {
-        self.forward(&input(question)).1
+        self.predictions_from(&Descriptor::of(question))
+    }
+    pub fn predictions_from(&self, descriptor: &Descriptor) -> [f32; OUTPUTS] {
+        self.forward(&input(descriptor), &descriptor.bindings).1
     }
     fn train(&mut self, question: &CompiledQuestion, labels: [Option<f32>; OUTPUTS]) {
-        let input = input(question);
-        let (hidden, output) = self.forward(&input);
+        let descriptor = Descriptor::of(question);
+        let input = input(&descriptor);
+        let (hidden, output) = self.forward(&input, &descriptor.bindings);
         let errors = std::array::from_fn::<_, OUTPUTS, _>(|o| {
             labels[o].map_or(0., |target| {
                 let error = output[o] - target;
@@ -124,6 +146,12 @@ impl Model {
                 update(&mut self.weights[start + o * HIDDEN + h], error * value);
             }
             update(&mut self.weights[start + OUTPUTS * HIDDEN + o], error);
+            for (i, value) in descriptor.bindings.into_iter().enumerate() {
+                update(
+                    &mut self.weights[ROLE_START + o * BINDINGS + i],
+                    error * value,
+                );
+            }
         }
         for (h, error) in hidden_errors.into_iter().enumerate() {
             for (i, value) in input.into_iter().enumerate() {

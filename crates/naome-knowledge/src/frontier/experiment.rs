@@ -113,7 +113,7 @@ fn fixed_solver_finder_comparison() {
         let mut admitted = BTreeSet::new();
         let mut count = 0;
         for cursor in 0..96 {
-            for q in f.candidates(cursor) {
+            for q in f.candidate_page(cursor, |q| owner.assess(&graph, q).passed()) {
                 count += 1;
                 unique.insert(finder::key(&q));
                 if owner.assess(&graph, &q).passed() {

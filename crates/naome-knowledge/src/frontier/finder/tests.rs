@@ -24,7 +24,11 @@ fn relation_rotation_uses_the_whole_retained_context() {
     let first = seeds.iter().take(4).cloned().collect();
     let collect = |seeds: &VecDeque<Formula>| {
         (0..96)
-            .flat_map(|cursor| questions(cursor, seeds, &VecDeque::new(), 12, 64 * 1024))
+            .flat_map(|cursor| {
+                questions(cursor, seeds, &VecDeque::new(), 12, 64 * 1024, &mut |_| {
+                    true
+                })
+            })
             .map(|q| key(&q))
             .collect::<BTreeSet<_>>()
     };
@@ -55,6 +59,40 @@ fn predictor_learns_variable_wiring_cost_without_using_variable_names() {
     );
     assert_eq!(model.predictions(&a), model.predictions(&renamed));
 }
+
+#[test]
+fn formal_rejections_refill_the_page_within_the_fixed_check_budget() {
+    let mut seen = BTreeSet::new();
+    let candidates = (0..32)
+        .flat_map(|cursor| {
+            questions(
+                cursor,
+                &VecDeque::new(),
+                &VecDeque::new(),
+                12,
+                64 * 1024,
+                &mut |_| true,
+            )
+        })
+        .filter(|q| seen.insert(key(q)))
+        .take(5)
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 5);
+    let expected = candidates[3..]
+        .iter()
+        .map(|q| *q.resolution_id())
+        .collect::<Vec<_>>();
+    let mut calls = 0;
+    let page = bounded_eligible(candidates, 2, 64 * 1024, &mut |_| {
+        calls += 1;
+        calls > 3
+    });
+    assert_eq!(
+        page.iter().map(|q| *q.resolution_id()).collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(calls, 5);
+}
 #[test]
 fn research_screen_rejects_boolean_padding_without_rejecting_relation_properties() {
     for source in [
@@ -78,7 +116,14 @@ fn research_screen_rejects_boolean_padding_without_rejecting_relation_properties
 fn ordinary_exploration_is_closed_bounded_and_not_a_tautology_catalog() {
     let mut unique = BTreeSet::new();
     for cursor in 0..32 {
-        let page = questions(cursor, &VecDeque::new(), &VecDeque::new(), 12, 64 * 1024);
+        let page = questions(
+            cursor,
+            &VecDeque::new(),
+            &VecDeque::new(),
+            12,
+            64 * 1024,
+            &mut |_| true,
+        );
         assert!(
             page.iter()
                 .map(|q| q.source().len() * 8 + 256)
@@ -103,7 +148,7 @@ fn ordinary_exploration_is_closed_bounded_and_not_a_tautology_catalog() {
         "a fresh node needs a useful theory frontier, got {}",
         unique.len()
     );
-    assert!(questions(0, &VecDeque::new(), &VecDeque::new(), 12, 1).is_empty());
+    assert!(questions(0, &VecDeque::new(), &VecDeque::new(), 12, 1, &mut |_| true).is_empty());
 }
 #[test]
 fn helpers_are_proper_goal_parts_with_capture_free_parameter_roles() {
