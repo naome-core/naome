@@ -497,6 +497,8 @@ pub(crate) struct Record {
 #[derive(Clone, Debug)]
 pub(crate) struct Completion {
     pub id: u64,
+    /// Actual selected native model used by this job, including warm jobs.
+    pub model_checkpoint: Option<String>,
     pub binding: Binding,
     pub spent_ms: u64,
     pub reserved_units: u32,

@@ -7,6 +7,7 @@ fn question(index: u64) -> CompiledQuestion {
 }
 fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Completion {
     jobs::Completion {
+        model_checkpoint: None,
         id,
         binding: jobs::Binding::new([1; 32], [2; 32]),
         spent_ms: 7,
@@ -156,7 +157,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
     };
     let page = identities(frontier.candidate_page(17, |_| true));
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     assert_eq!(frontier.evidence.model(), &model);
     assert_eq!(identities(frontier.candidate_page(17, |_| true)), page);
 }

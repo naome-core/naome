@@ -3,6 +3,7 @@
 use super::tests::MemoryStore;
 use super::*;
 mod adaptive;
+mod finding;
 mod knowledge;
 mod lemma_loop;
 mod lookup;

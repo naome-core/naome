@@ -12,6 +12,9 @@ const PARAMETERS: usize = ROLE_START + BINDINGS * OUTPUTS;
 #[serde(deny_unknown_fields)]
 pub(in crate::frontier) struct Model {
     weights: Vec<f32>,
+    utility: Vec<f32>,
+    pub utility_observations: u64,
+    pub rehearsals: u64,
     pub updates: u64,
     pub resolved: u64,
     pub unresolved: u64,
@@ -33,7 +36,7 @@ fn sigmoid(value: f32) -> f32 {
 }
 impl Model {
     pub fn memory_bytes() -> usize {
-        PARAMETERS * std::mem::size_of::<f32>()
+        (PARAMETERS + INPUTS + BINDINGS + 1) * std::mem::size_of::<f32>()
     }
     pub fn fresh() -> Self {
         let mut random = crate::sampling::Random::new(0x66696e646572);
@@ -44,6 +47,9 @@ impl Model {
         weights.extend([0.; BINDINGS * OUTPUTS]);
         Self {
             weights,
+            utility: vec![0.; INPUTS + BINDINGS + 1],
+            utility_observations: 0,
+            rehearsals: 0,
             updates: 0,
             resolved: 0,
             unresolved: 0,
@@ -53,6 +59,8 @@ impl Model {
     pub fn validate(&self) -> Result<(), String> {
         if self.weights.len() != PARAMETERS
             || self.weights.iter().any(|w| !w.is_finite() || w.abs() > 4.)
+            || self.utility.len() != INPUTS + BINDINGS + 1
+            || self.utility.iter().any(|w| !w.is_finite() || w.abs() > 4.)
             || self
                 .resolved
                 .checked_add(self.unresolved)
@@ -115,8 +123,10 @@ impl Model {
         self.forward(&input(descriptor), &descriptor.bindings).1
     }
     fn train(&mut self, question: &CompiledQuestion, labels: [Option<f32>; OUTPUTS]) {
-        let descriptor = Descriptor::of(question);
-        let input = input(&descriptor);
+        self.train_descriptor(&Descriptor::of(question), labels);
+    }
+    fn train_descriptor(&mut self, descriptor: &Descriptor, labels: [Option<f32>; OUTPUTS]) {
+        let input = input(descriptor);
         let (hidden, output) = self.forward(&input, &descriptor.bindings);
         let errors = std::array::from_fn::<_, OUTPUTS, _>(|o| {
             labels[o].map_or(0., |target| {
@@ -159,6 +169,62 @@ impl Model {
             }
             update(&mut self.weights[INPUTS * HIDDEN + h], error);
         }
+    }
+    pub fn utility(&self, descriptor: &Descriptor) -> f32 {
+        let mut features = input(descriptor).to_vec();
+        features.extend(descriptor.bindings);
+        features.push(1.);
+        sigmoid(features.iter().zip(&self.utility).map(|(x, w)| x * w).sum())
+    }
+    fn train_utility(&mut self, descriptor: &Descriptor, target: f32) {
+        let error = self.utility(descriptor) - target;
+        let mut features = input(descriptor).to_vec();
+        features.extend(descriptor.bindings);
+        features.push(1.);
+        for (weight, value) in self.utility.iter_mut().zip(features) {
+            *weight = (*weight - 0.05 * error * value).clamp(-4., 4.);
+        }
+    }
+    pub fn observe_utility(&mut self, descriptor: &Descriptor, target: f32) -> Result<(), String> {
+        if !target.is_finite() || !(0.0..=1.0).contains(&target) {
+            return Err("finder utility label differs".into());
+        }
+        descriptor.validate()?;
+        self.train_utility(descriptor, target);
+        self.utility_observations = self
+            .utility_observations
+            .checked_add(1)
+            .ok_or("finder utility count overflow")?;
+        self.validate()
+    }
+    pub fn rehearse(
+        &mut self,
+        descriptor: &Descriptor,
+        resolved: Option<bool>,
+        millis: Option<u64>,
+        support: Option<bool>,
+        utility: Option<f32>,
+    ) -> Result<(), String> {
+        descriptor.validate()?;
+        self.train_descriptor(
+            descriptor,
+            [
+                resolved.map(f32::from),
+                millis.map(|v| ((v as f32).ln_1p() / 16.).min(1.)),
+                support.map(f32::from),
+            ],
+        );
+        if let Some(target) = utility {
+            if !target.is_finite() || !(0.0..=1.0).contains(&target) {
+                return Err("finder replay utility differs".into());
+            }
+            self.train_utility(descriptor, target);
+        }
+        self.rehearsals = self
+            .rehearsals
+            .checked_add(1)
+            .ok_or("finder rehearsal count overflow")?;
+        self.validate()
     }
     /// A newly proved statement has not yet demonstrated assistance. The zero
     /// support observation is provisional, not a label of mathematical futility.

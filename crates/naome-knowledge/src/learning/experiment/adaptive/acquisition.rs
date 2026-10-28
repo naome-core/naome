@@ -116,6 +116,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
                     }
                 });
             let completion = crate::jobs::Completion {
+                model_checkpoint: None,
                 id: job,
                 binding: crate::jobs::Binding::new([0; 32], [0; 32]),
                 spent_ms: row["elapsed_micros"].as_u64().unwrap() / 1000,

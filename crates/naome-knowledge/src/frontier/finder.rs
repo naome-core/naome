@@ -7,6 +7,10 @@ mod model;
 pub(super) use model::Model;
 mod analysis;
 pub(super) use analysis::Cache;
+mod learning;
+pub(super) use learning::{Learning, Recipe};
+#[cfg(test)]
+pub(in crate::frontier) mod reference;
 mod semantics;
 #[cfg(test)]
 use semantics::relevance;
@@ -140,16 +144,43 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
     }
     found
 }
-/// The cursor rotates construction operators, not a bank of theorem strings.
-/// Checked fragments and earlier unresolved goals supply the changing context.
-pub(super) fn questions(
+/// A recipe changes one bounded structural construction parameter. Formal
+/// admission remains with the supplied owner; rejection never grants more work.
+pub(super) struct Proposal {
+    pub question: CompiledQuestion,
+    pub recipe: Option<Recipe>,
+}
+pub(super) struct PageBudget {
+    pub questions: usize,
+    pub bytes: usize,
+}
+fn varied(seed: &Formula, other: &Formula, recipe: Recipe) -> Option<Formula> {
+    if recipe.level == 0 {
+        return Some(seed.clone());
+    }
+    if recipe.level == 1 {
+        return inclusion(seed);
+    }
+    let a = FreeVariable::new(0);
+    let b = FreeVariable::new(1);
+    let c = FreeVariable::new(2);
+    let left = |x, y| relation(seed, x, y);
+    let right = |x, y| relation(other, x, y);
+    Some(match recipe.operator % 3 {
+        0 => Formula::conjunction(left(a, b)?, right(a, b)?),
+        1 => Formula::exists(c, Formula::conjunction(left(a, c)?, right(c, b)?)),
+        _ => Formula::implies(left(a, b)?, right(b, a)?),
+    })
+}
+pub(super) fn proposals(
     cursor: u64,
     seeds: &VecDeque<Formula>,
     goals: &VecDeque<CompiledQuestion>,
-    maximum: usize,
-    bytes: usize,
+    learning: &Learning,
+    draw: u64,
+    budget: PageBudget,
     eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
-) -> Vec<CompiledQuestion> {
+) -> Vec<Proposal> {
     let mut groups = Vec::new();
     for goal in goals
         .iter()
@@ -175,18 +206,18 @@ pub(super) fn questions(
             .take(checked.len().min(4))
             .map(|f| (*f).clone()),
     );
-    let original = relations.len();
-    let primitive = relations.clone();
-    relations.extend(primitive.iter().filter_map(inclusion));
+    let mut recipes = std::collections::BTreeMap::new();
     let mut checked_questions = VecDeque::new();
     let mut free_questions = VecDeque::new();
-    for offset in 0..20 {
+    for (offset, recipe) in learning.recipes(cursor, draw).into_iter().enumerate() {
         let index = (cursor as usize + offset) % relations.len();
-        let seed = &relations[index];
-        if let Some(formula) = property(seed, cursor / relations.len() as u64 + offset as u64)
+        let other = &relations[(index + 1 + offset % 2) % relations.len()];
+        if let Some(seed) = varied(&relations[index], other, recipe)
+            && let Some(formula) = property(&seed, u64::from(recipe.operator))
             && let Ok(question) = CompiledQuestion::from_formula(formula)
         {
-            if index % original < 2 {
+            recipes.entry(*question.resolution_id()).or_insert(recipe);
+            if index < 2 {
                 free_questions.push_back(question);
             } else {
                 checked_questions.push_back(question);
@@ -204,7 +235,38 @@ pub(super) fn questions(
             }
         }
     }
-    bounded_eligible(all, maximum, bytes, eligible)
+    bounded_eligible(all, budget.questions, budget.bytes, eligible)
+        .into_iter()
+        .map(|question| Proposal {
+            recipe: recipes.get(question.resolution_id()).copied(),
+            question,
+        })
+        .collect()
+}
+#[cfg(test)]
+pub(super) fn questions(
+    cursor: u64,
+    seeds: &VecDeque<Formula>,
+    goals: &VecDeque<CompiledQuestion>,
+    maximum: usize,
+    bytes: usize,
+    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+) -> Vec<CompiledQuestion> {
+    proposals(
+        cursor,
+        seeds,
+        goals,
+        &Learning::fresh("00".repeat(32)),
+        0,
+        PageBudget {
+            questions: maximum,
+            bytes,
+        },
+        eligible,
+    )
+    .into_iter()
+    .map(|p| p.question)
+    .collect()
 }
 pub(super) fn for_goal(
     cursor: u64,

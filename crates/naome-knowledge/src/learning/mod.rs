@@ -5,6 +5,7 @@ mod construction;
 mod curriculum;
 pub(crate) mod definitions;
 pub(crate) mod evidence;
+pub(crate) mod finder;
 mod graph;
 pub(crate) mod knowledge;
 pub(crate) mod meta;
@@ -142,6 +143,7 @@ pub(crate) struct State {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Progress {
+    pub finder: Option<finder::Utility>,
     pub cost: Option<GenerationCost>,
     pub training_cost: model::TrainingCost,
     pub unit: u32,
@@ -285,6 +287,13 @@ pub(crate) fn digest(value: &impl Serialize) -> String {
     ))
 }
 impl Job {
+    pub(crate) fn model_checkpoint(&self) -> String {
+        digest(
+            self.progress
+                .as_ref()
+                .map_or(&self.base.model, |p| &p.model),
+        )
+    }
     /// Bind worker reports to the plan and candidate already retained by this
     /// job owner. Re-delivery of a persisted unit is exactly idempotent.
     pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), String> {
@@ -574,6 +583,12 @@ impl Job {
             {
                 return Err("native qualification sequence differs".into());
             }
+            if let Some(utility) = &p.finder {
+                utility.validate()?;
+                if utility.checkpoint != digest(&p.model) || p.unit != self.units() {
+                    return Err("native finder diagnostic source differs".into());
+                }
+            }
             if p.unit == 0 || p.unit > self.units() {
                 return Err("learning checkpoint unit differs".into());
             }
@@ -600,6 +615,7 @@ impl Job {
         let wall_started = std::time::Instant::now();
         let cpu_started = meta::cpu_micros()?;
         let mut p = self.progress.clone().unwrap_or(Progress {
+            finder: None,
             cost: None,
             frontier: None,
             training_cost: model::TrainingCost::default(),
@@ -818,6 +834,11 @@ impl Job {
                     p.result = generated.solution;
                 }
             }
+        }
+        if self.units() > 1 && unit == self.units() {
+            p.finder = self
+                .base
+                .finder_utility(&p.model, &self.evidence, engine, io)?;
         }
         p.cpu_micros = p
             .cpu_micros

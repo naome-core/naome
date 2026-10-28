@@ -18,7 +18,20 @@ mod comparison;
 #[cfg(test)]
 mod experiment;
 #[cfg(test)]
+mod temporal;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Treatment {
+    Previous,
+    Uniform,
+    NoGeneration,
+    NoUtility,
+    NoReplay,
+    #[default]
+    Full,
+}
 
 use crate::structure::{Features, SCALE, SIGNALS};
 
@@ -42,6 +55,7 @@ pub(crate) struct Frontier {
     // selection still crosses the generation-checked checkpoint before work.
     recent: VecDeque<([u8; 32], Option<AttemptHint>)>,
     analyses: finder::Cache,
+    recipes: VecDeque<([u8; 32], finder::Recipe)>,
     random: Random,
     coverage: [u64; SIGNALS],
     building: [u64; SIGNALS],
@@ -56,8 +70,15 @@ pub(crate) struct Frontier {
     after: Option<ArtifactId>,
     observed_root: Option<[u8; 32]>,
     _memory: Arc<crate::resources::MemoryLease>,
+    #[cfg(test)]
+    treatment: Treatment,
 }
 impl Frontier {
+    #[cfg(test)]
+    pub(crate) fn treatment(&mut self, treatment: Treatment) {
+        self.treatment = treatment;
+        self.evidence.treatment(treatment);
+    }
     pub(crate) fn open(
         directory: &Path,
         graph: &Graph,
@@ -73,6 +94,7 @@ impl Frontier {
             solver_contract: jobs::solver_identity(settings),
             recent: VecDeque::new(),
             analyses: finder::Cache::default(),
+            recipes: VecDeque::new(),
             random,
             coverage: [0; SIGNALS],
             building: [0; SIGNALS],
@@ -85,6 +107,8 @@ impl Frontier {
             predicates: VecDeque::new(),
             goals: VecDeque::new(),
             after: None,
+            #[cfg(test)]
+            treatment: Treatment::Full,
             observed_root: None,
             _memory: crate::resources::MemoryLease::acquire(
                 // Resident goals, proposals and returned candidate copies have
@@ -94,7 +118,8 @@ impl Frontier {
                     .saturating_mul(4)
                     .saturating_add(std::mem::size_of::<Self>())
                     .saturating_add(32 * std::mem::size_of::<Features>())
-                    .saturating_add(finder::Model::memory_bytes()),
+                    .saturating_add(finder::Model::memory_bytes())
+                    .saturating_add(finder::Learning::reservation()),
             )
             .map_err(|e| e.to_string())?,
         };
@@ -581,13 +606,37 @@ impl Frontier {
     }
     #[cfg(test)]
     pub(crate) fn candidates(&self, cursor: u64) -> Vec<CompiledQuestion> {
-        self.candidate_page(cursor, |_| true)
+        self.page(cursor, &mut |_| true)
+            .into_iter()
+            .map(|p| p.question)
+            .collect()
     }
     pub(crate) fn candidate_page(
-        &self,
+        &mut self,
         cursor: u64,
         mut eligible: impl FnMut(&CompiledQuestion) -> bool,
     ) -> Vec<CompiledQuestion> {
+        let page = self.page(cursor, &mut eligible);
+        for proposal in &page {
+            if let Some(recipe) = proposal.recipe {
+                self.recipes
+                    .retain(|(id, _)| id != proposal.question.resolution_id());
+                self.recipes
+                    .push_back((*proposal.question.resolution_id(), recipe));
+            }
+        }
+        while self.recipes.len()
+            > (crate::resources::active_limits().question_cache_bytes / 512).min(128)
+        {
+            self.recipes.pop_front();
+        }
+        page.into_iter().map(|p| p.question).collect()
+    }
+    fn page(
+        &self,
+        cursor: u64,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) -> Vec<finder::Proposal> {
         let mut candidates = if self.native {
             let limits = crate::resources::active_limits();
             let nodes = self
@@ -605,42 +654,73 @@ impl Frontier {
             let Ok(_scratch) =
                 crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))
             else {
-                return self.goals.iter().cloned().collect();
+                return Vec::new();
             };
-            finder::questions(
+            self.generate(
                 cursor,
-                &self.predicates,
-                &self.goals,
-                limits.question_page,
-                limits.question_cache_bytes / 2,
-                &mut eligible,
+                finder::PageBudget {
+                    questions: limits.question_page,
+                    bytes: limits.question_cache_bytes / 2,
+                },
+                eligible,
             )
         } else {
             (0..3)
                 .filter_map(|index| {
                     CompiledQuestion::compile(&crate::mocks::create_question(index)).ok()
                 })
+                .map(|question| finder::Proposal {
+                    question,
+                    recipe: None,
+                })
                 .collect::<Vec<_>>()
         };
-        for goal in &self.goals {
-            if eligible(goal)
-                && !candidates
-                    .iter()
-                    .any(|q| q.resolution_id() == goal.resolution_id())
-            {
-                candidates.push(goal.clone());
-            }
-        }
-        for question in &self.proposals {
+        for question in self.goals.iter().chain(&self.proposals) {
             if eligible(question)
                 && !candidates
                     .iter()
-                    .any(|q| q.resolution_id() == question.resolution_id())
+                    .any(|p| p.question.resolution_id() == question.resolution_id())
             {
-                candidates.push(question.clone());
+                candidates.push(finder::Proposal {
+                    question: question.clone(),
+                    recipe: None,
+                });
             }
         }
         candidates
+    }
+    fn generate(
+        &self,
+        cursor: u64,
+        budget: finder::PageBudget,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) -> Vec<finder::Proposal> {
+        #[cfg(test)]
+        if self.treatment == Treatment::Previous {
+            return finder::reference::questions(
+                cursor,
+                &self.predicates,
+                &self.goals,
+                budget.questions,
+                budget.bytes,
+                eligible,
+            )
+            .into_iter()
+            .map(|question| finder::Proposal {
+                question,
+                recipe: None,
+            })
+            .collect();
+        }
+        finder::proposals(
+            cursor,
+            &self.predicates,
+            &self.goals,
+            self.evidence.learning(),
+            self.evidence.draws(),
+            budget,
+            eligible,
+        )
     }
     fn previous(
         &mut self,
@@ -785,6 +865,10 @@ impl Frontier {
         if self.native {
             weight = weight.saturating_mul(self.evidence.model().weight_from(&analysis.descriptor))
                 / 1024;
+            if self.evidence.learning().utility_current() {
+                let utility = self.evidence.model().utility(&analysis.descriptor);
+                weight = weight.saturating_mul(512 + (utility * 1024.) as u64) / 1024;
+            }
             let mut relevance = 0;
             for goal in &self.goals {
                 if goal.resolution_id() != question.resolution_id() {
@@ -808,8 +892,13 @@ impl Frontier {
         settings: jobs::RoleSettings,
         random_only: bool,
     ) -> Result<Option<usize>, crate::Error> {
+        #[cfg(test)]
+        let random_only = random_only || self.treatment == Treatment::Uniform;
         if candidates.is_empty() {
             return Ok(None);
+        }
+        if let Some(feedback) = &self.feedback {
+            self.evidence.feedback(feedback)?;
         }
         self.analyses.trim();
         let mut indices = Vec::with_capacity(candidates.len());
@@ -826,7 +915,14 @@ impl Frontier {
         }
         if random_only {
             let index = indices[self.random.below(indices.len() as u64) as usize];
-            self.evidence.selected(self.random.0)?;
+            self.evidence.selected_question(
+                self.random.0,
+                candidates[index],
+                self.recipes
+                    .iter()
+                    .find(|(id, _)| id == candidates[index].resolution_id())
+                    .map(|(_, r)| *r),
+            )?;
             return Ok(Some(index));
         }
         let weighted = indices
@@ -841,7 +937,14 @@ impl Frontier {
             .collect::<Result<Vec<_>, crate::Error>>()?;
         let position = crate::sampling::choose(&mut self.random, &weighted, random_only);
         let index = indices[position];
-        self.evidence.selected(self.random.0)?;
+        self.evidence.selected_question(
+            self.random.0,
+            candidates[index],
+            self.recipes
+                .iter()
+                .find(|(id, _)| id == candidates[index].resolution_id())
+                .map(|(_, r)| *r),
+        )?;
         if self.native
             && let Some(feedback) = &self.feedback
         {
@@ -985,7 +1088,7 @@ impl Frontier {
                 "event":"finder_learned", "resolution_id":crate::hex(question.resolution_id()),
                 "outcome":if resolved { "checked_resolution" } else { "unresolved_search" },
                 "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
-                "supports":model.supports,
+                "supports":model.supports,"rehearsals":model.rehearsals,"utility_observations":model.utility_observations,
                 "model_weight":model.weight(question)
             }));
         }

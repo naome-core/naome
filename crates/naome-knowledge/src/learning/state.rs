@@ -420,6 +420,7 @@ impl State {
             next.feedback.attempts = crate::training::ability::Profile::new(key.clone());
         }
         next.feedback.checkpoint = key.clone();
+        next.feedback.utility = p.finder.clone();
         if !observations.is_empty() || next.feedback.development.checkpoint != key {
             next.feedback.development = observations.clone();
             next.feedback.regressions = p.regressions;

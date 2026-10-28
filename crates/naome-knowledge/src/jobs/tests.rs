@@ -88,6 +88,7 @@ impl Manual {
             State::Failed
         };
         let _ = reply.send(Completion {
+            model_checkpoint: None,
             id,
             binding,
             spent_ms: 0,

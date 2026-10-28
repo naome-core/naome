@@ -12,11 +12,26 @@ const VISITS: usize = 128;
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::frontier) struct Descriptor {
     pub features: Features,
     pub bindings: [f32; BINDINGS],
 }
 impl Descriptor {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.features.nodes == 0
+            || self.features.depth == 0
+            || self.features.depth > self.features.nodes
+            || self
+                .bindings
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=2.0).contains(v))
+        {
+            return Err("finder descriptor bounds differ".into());
+        }
+        Ok(())
+    }
     pub fn of(question: &CompiledQuestion) -> Self {
         Self {
             features: Features::of(question),

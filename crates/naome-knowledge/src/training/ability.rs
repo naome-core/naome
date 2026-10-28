@@ -232,6 +232,7 @@ impl Profile {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Feedback {
+    pub utility: Option<crate::learning::finder::Utility>,
     pub checkpoint: String,
     pub revision: u64,
     pub attempts: Profile,
@@ -242,6 +243,7 @@ pub(crate) struct Feedback {
 impl Feedback {
     pub(crate) fn fresh(checkpoint: String) -> Self {
         Self {
+            utility: None,
             attempts: Profile::new(checkpoint.clone()),
             development: Profile::new(checkpoint.clone()),
             checkpoint,
@@ -251,6 +253,12 @@ impl Feedback {
         }
     }
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(utility) = &self.utility {
+            utility.validate()?;
+            if utility.checkpoint != self.checkpoint {
+                return Err("finder utility checkpoint differs".into());
+            }
+        }
         if self.attempts.checkpoint != self.checkpoint
             || self.development.checkpoint != self.checkpoint
         {

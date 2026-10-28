@@ -23,6 +23,7 @@ struct Header {
     observations: u64,
     model_contract: String,
     model: finder::Model,
+    learning: finder::Learning,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +49,7 @@ struct Plan {
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
     pub question: String,
+    pub model_checkpoint: Option<String>,
     pub solver: String,
     pub knowledge: String,
     pub last_draw: u64,
@@ -111,6 +113,9 @@ impl Record {
         }
         crate::object::id_bytes(&self.knowledge)?;
         crate::object::id_bytes(&self.solver)?;
+        if let Some(checkpoint) = &self.model_checkpoint {
+            crate::object::id_bytes(checkpoint)?;
+        }
         for root in [&self.verified, &self.prepared].into_iter().flatten() {
             crate::object::id_bytes(root)?;
         }
@@ -141,6 +146,7 @@ pub(super) struct Evidence {
     checkpoint: Checkpoint,
     header: Header,
     solver: String,
+    native: bool,
 }
 impl Evidence {
     pub(super) fn open(
@@ -167,6 +173,7 @@ impl Evidence {
                     observations: 0,
                     model_contract: solver.clone(),
                     model: finder::Model::fresh(),
+                    learning: finder::Learning::fresh(solver.clone()),
                 },
                 vec![],
             )?
@@ -177,12 +184,14 @@ impl Evidence {
         }
         crate::object::id_bytes(&header.model_contract)?;
         header.model.validate()?;
+        header.learning.validate()?;
         if header.observations < header.model.updates {
             return Err("finder observation sequence differs".into());
         }
         if header.model_contract != solver {
             header.model_contract = solver.clone();
             header.model = finder::Model::fresh();
+            header.learning = finder::Learning::fresh(solver.clone());
         }
         checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
@@ -192,6 +201,7 @@ impl Evidence {
             checkpoint,
             header,
             solver,
+            native: settings.native_proof_learning,
         })
     }
     pub(super) fn bind_solver(&mut self, solver: String) {
@@ -202,6 +212,25 @@ impl Evidence {
     }
     pub(super) fn model(&self) -> &finder::Model {
         &self.header.model
+    }
+    pub(super) fn learning(&self) -> &finder::Learning {
+        &self.header.learning
+    }
+    #[cfg(test)]
+    pub(super) fn treatment(&mut self, treatment: crate::frontier::Treatment) {
+        self.header.learning.treatment = treatment;
+    }
+    pub(super) fn feedback(
+        &mut self,
+        feedback: &crate::training::ability::Feedback,
+    ) -> Result<(), crate::Error> {
+        let mut next = self.header.clone();
+        if next.learning.feedback(&mut next.model, feedback)? {
+            next.learning.validate()?;
+            self.commit(&next, vec![])?;
+            self.header = next;
+        }
+        Ok(())
     }
     pub(super) fn random(&self) -> u64 {
         self.header.random
@@ -267,7 +296,22 @@ impl Evidence {
             .collect()
     }
     pub(super) fn selected(&mut self, random: u64) -> Result<(), crate::Error> {
-        let next = Header {
+        self.select(random, None)
+    }
+    pub(super) fn selected_question(
+        &mut self,
+        random: u64,
+        question: &CompiledQuestion,
+        recipe: Option<finder::Recipe>,
+    ) -> Result<(), crate::Error> {
+        self.select(random, Some((question, recipe)))
+    }
+    fn select(
+        &mut self,
+        random: u64,
+        question: Option<(&CompiledQuestion, Option<finder::Recipe>)>,
+    ) -> Result<(), crate::Error> {
+        let mut next = Header {
             random,
             draws: self
                 .header
@@ -276,6 +320,9 @@ impl Evidence {
                 .ok_or("research draw overflow")?,
             ..self.header.clone()
         };
+        if let Some((question, recipe)) = question {
+            next.learning.selected(question, recipe);
+        }
         self.commit(&next, vec![])?;
         self.header = next;
         Ok(())
@@ -289,7 +336,8 @@ impl Evidence {
             })
             .sum::<u64>()
             .saturating_add(crate::checkpoint::encode(header)?.len() as u64)
-            .saturating_add(8192);
+            .saturating_add(8192)
+            .saturating_add(crate::checkpoint::encode(header)?.len() as u64 * 3);
         let _disk = crate::resources::DiskLease::acquire(self.checkpoint.directory(), needed)?;
         self.checkpoint
             .commit(header, updates)
@@ -318,6 +366,18 @@ impl Evidence {
             }
             if crate::learning::State::eligible(question.source()) {
                 header.model.observe(question, resolved, millis)?;
+                let checkpoint = record
+                    .model_checkpoint
+                    .as_deref()
+                    .or((!self.native).then_some(header.model_contract.as_str()));
+                header.learning.remember(
+                    &mut header.model,
+                    question,
+                    checkpoint,
+                    resolved,
+                    millis,
+                    header.draws,
+                )?;
             }
         }
         let key = record_key(&self.solver, question);
@@ -346,6 +406,7 @@ impl Evidence {
         }
         let mut record = self.get(question)?.unwrap_or(Record {
             question: question.source().into(),
+            model_checkpoint: None,
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
             last_draw: 0,
@@ -377,6 +438,7 @@ impl Evidence {
         record.knowledge = crate::hex(&knowledge);
         record.last_draw = self.header.draws;
         record.last_job = completion.id;
+        record.model_checkpoint = completion.model_checkpoint.clone();
         record.last_outcome = outcome;
         record.outcomes[outcome as usize] = record.outcomes[outcome as usize]
             .checked_add(1)
@@ -661,6 +723,7 @@ impl Evidence {
             .ok_or("finder observation overflow")?;
         if crate::learning::State::eligible(question.source()) {
             header.model.support(&question)?;
+            header.learning.support(&mut header.model, &question)?;
         }
         producer.supports = producer
             .supports

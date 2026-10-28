@@ -54,6 +54,7 @@ impl Session<'_> {
 }
 fn completion(job: u64, generated: &Generation) -> jobs::Completion {
     jobs::Completion {
+        model_checkpoint: None,
         id: job,
         binding: jobs::Binding::new([0; 32], [0; 32]),
         spent_ms: generated.cost.generation_micros / 1000,

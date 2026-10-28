@@ -5,6 +5,7 @@ mod policy;
 mod preservation;
 #[cfg(test)]
 mod routing_tests;
+mod utility;
 use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},
@@ -96,6 +97,8 @@ pub(super) fn specification() -> String {
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
     hash.update(include_str!("model/preservation.rs"));
+    hash.update(include_str!("model/utility.rs"));
+    hash.update(include_str!("finder.rs"));
     hash.update(include_str!("preservation-protocol.json"));
     hash.update(include_str!("mod.rs"));
     hash.update(include_str!("state.rs"));

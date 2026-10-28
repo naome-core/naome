@@ -1,0 +1,183 @@
+use super::*;
+fn q(source: &str) -> CompiledQuestion {
+    CompiledQuestion::compile(source).unwrap()
+}
+fn checkpoint() -> String {
+    "11".repeat(32)
+}
+
+#[test]
+fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let recipes = [
+        Recipe {
+            operator: 0,
+            level: 0,
+        },
+        Recipe {
+            operator: 1,
+            level: 0,
+        },
+        Recipe {
+            operator: 2,
+            level: 0,
+        },
+    ];
+    let sources = [
+        "goal=all(a,all(b,imp(mem(a,b),mem(b,a))))",
+        "goal=all(a,all(b,imp(eq(a,b),mem(a,b))))",
+        "goal=all(a,all(b,not(mem(a,b))))",
+    ];
+    for step in 0..32 {
+        for (index, source) in sources.iter().enumerate() {
+            let question = q(source);
+            learning.selected(&question, Some(recipes[index]));
+            learning
+                .remember(
+                    &mut model,
+                    &question,
+                    Some(&checkpoint()),
+                    match index {
+                        0 => true,
+                        1 => step % 3 == 0,
+                        _ => false,
+                    },
+                    5,
+                    step,
+                )
+                .unwrap();
+        }
+    }
+    assert!(learning.priority(1, 32) > learning.priority(0, 32));
+    assert!(learning.priority(1, 32) > learning.priority(2, 32));
+    let before = learning.cells[1].solved;
+    learning.bind(&"22".repeat(32));
+    assert!(before > 0);
+    assert_eq!(learning.cells[1].attempts, 0);
+    learning.validate().unwrap();
+}
+
+#[test]
+fn late_old_checkpoint_results_do_not_train_current_recipe_ability() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
+    learning.selected(
+        &question,
+        Some(Recipe {
+            operator: 0,
+            level: 0,
+        }),
+    );
+    learning
+        .remember(&mut model, &question, Some(&"22".repeat(32)), false, 123, 5)
+        .unwrap();
+    assert_eq!(learning.cells[0].attempts, 0);
+    assert_eq!(model.rehearsals, 0);
+    assert_eq!(learning.samples.len(), 1);
+}
+
+#[test]
+fn replay_preserves_families_and_does_not_relabel_old_solver_outcomes() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let equality = q("goal=all(a,all(b,imp(eq(a,b),eq(b,a))))");
+    learning
+        .remember(&mut model, &equality, Some(&checkpoint()), true, 1, 1)
+        .unwrap();
+    for i in 0..120 {
+        let question = q(&format!(
+            "goal=all(a,all(b,imp(mem(a,b),{})))",
+            if i % 2 == 0 {
+                "mem(b,a)"
+            } else {
+                "not(mem(b,a))"
+            }
+        ));
+        learning
+            .remember(
+                &mut model,
+                &question,
+                Some(&checkpoint()),
+                false,
+                1000,
+                2 + i,
+            )
+            .unwrap();
+    }
+    assert!(
+        learning
+            .samples
+            .iter()
+            .any(|s| s.offer.id == *equality.resolution_id())
+    );
+    assert!(model.rehearsals > 0);
+    learning.bind(&"22".repeat(32));
+    let before = model.clone();
+    learning.rehearse(&mut model).unwrap();
+    assert_eq!(
+        before, model,
+        "old completion labels have no new-checkpoint authority"
+    );
+    learning.validate().unwrap();
+}
+
+#[test]
+fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let question = q("goal=all(a,all(b,imp(eq(a,b),eq(b,a))))");
+    learning
+        .remember(&mut model, &question, Some(&checkpoint()), true, 5, 1)
+        .unwrap();
+    let mut utility = crate::learning::finder::Utility {
+        checkpoint: checkpoint(),
+        references: vec!["33".repeat(32)],
+        scores: vec![crate::learning::finder::Score {
+            resolution: crate::hex(question.resolution_id()),
+            proof: "44".repeat(32),
+            alignment: 32767,
+            novelty: 0,
+        }],
+        cpu_micros: 1,
+        wall_micros: 1,
+        gradient_passes: 2,
+    };
+    assert!(learning.utility(&mut model, &utility).unwrap());
+    assert_eq!(model.utility(&Descriptor::of(&question)), 0.5);
+    assert_eq!(model.utility_observations, 1);
+    assert!(!learning.utility(&mut model, &utility).unwrap());
+    assert_eq!(model.utility_observations, 1);
+    learning.bind(&"22".repeat(32));
+    assert!(!learning.utility_current());
+    assert!(!learning.utility(&mut model, &utility).unwrap());
+    utility.checkpoint = "22".repeat(32);
+    utility.scores[0].novelty = 65535;
+    assert!(learning.utility(&mut model, &utility).unwrap());
+    assert!(model.utility(&Descriptor::of(&question)) > 0.5);
+    assert!(learning.utility_current());
+    // The old solve label remains attached to its actual old checkpoint.
+    assert_eq!(
+        learning.samples[0].checkpoint.as_deref(),
+        Some(checkpoint().as_str())
+    );
+}
+
+#[test]
+fn current_curriculum_rejects_corrupt_recipes_and_replay_descriptors() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
+    learning
+        .remember(&mut model, &question, Some(&checkpoint()), false, 10, 1)
+        .unwrap();
+    learning.samples[0].offer.recipe = Some(Recipe {
+        operator: 99,
+        level: 0,
+    });
+    assert!(learning.validate().is_err());
+    learning.samples[0].offer.recipe = None;
+    learning.samples[0].offer.descriptor.bindings[0] = f32::NAN;
+    assert!(learning.validate().is_err());
+}

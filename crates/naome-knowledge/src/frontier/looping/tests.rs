@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64) {
     let completion = jobs::Completion {
+        model_checkpoint: None,
         id: job,
         binding: jobs::Binding::new([0; 32], [0; 32]),
         spent_ms: 1,
@@ -22,6 +23,7 @@ fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64
 fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &CompiledQuestion, job: u64) -> String {
     let solution = crate::learning::tests::symbolic_solution(q);
     let completion = jobs::Completion {
+        model_checkpoint: None,
         id: job,
         binding: jobs::Binding::new([0; 32], [0; 32]),
         spent_ms: 1,
@@ -76,6 +78,7 @@ fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_check
                 helper,
                 &graph,
                 &jobs::Completion {
+                    model_checkpoint: None,
                     id: index as u64 + 2,
                     binding: jobs::Binding::new([0; 32], [0; 32]),
                     spent_ms: 1,
@@ -108,6 +111,7 @@ fn exhausted_optional_focus_survives_reopen_and_reactivates_only_for_fresh_check
             &goal,
             &graph,
             &jobs::Completion {
+                model_checkpoint: None,
                 id: 11,
                 binding: jobs::Binding::new([0; 32], [0; 32]),
                 spent_ms: 1,

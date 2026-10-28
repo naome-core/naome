@@ -85,6 +85,7 @@ async fn exhausted_free_research_plan_releases_independent_finding() {
                 q,
                 &graph,
                 &jobs::Completion {
+                    model_checkpoint: None,
                     id: index as u64 + 1,
                     binding: jobs::Binding::new([0; 32], [0; 32]),
                     spent_ms: 1,
@@ -603,6 +604,7 @@ async fn stalled_owner_goal_waits_for_each_planned_helper_and_then_retries_once(
             &goal,
             &graph,
             &jobs::Completion {
+                model_checkpoint: None,
                 id: 1,
                 binding: jobs::Binding::new([0; 32], [0; 32]),
                 spent_ms: 1,
@@ -689,6 +691,7 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
                 q,
                 &graph,
                 &jobs::Completion {
+                    model_checkpoint: None,
                     id: i as u64 + 1,
                     binding: jobs::Binding::new([0; 32], [0; 32]),
                     spent_ms: 1,

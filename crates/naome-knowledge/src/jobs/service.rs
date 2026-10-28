@@ -1602,6 +1602,7 @@ fn reject(reply: oneshot::Sender<Completion>, binding: Binding, error: &str) {
 
 fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: State, error: &str) {
     let _ = reply.send(Completion {
+        model_checkpoint: None,
         id: 0,
         binding,
         spent_ms: 0,
@@ -1647,6 +1648,7 @@ fn append_failure(previous: Option<String>, next: &str) -> String {
 }
 fn completion(record: &Record) -> Completion {
     Completion {
+        model_checkpoint: record.native.as_ref().map(|job| job.model_checkpoint()),
         id: record.id,
         binding: record.binding.clone(),
         spent_ms: record.spent_ms,
