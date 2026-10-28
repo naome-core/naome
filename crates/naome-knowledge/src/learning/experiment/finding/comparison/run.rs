@@ -122,12 +122,52 @@ pub(super) fn train(
         }
     };
     let mut stopped_unit = None;
+    let mut qualification = Vec::new();
+    let development = curriculum::development();
     let outcome = (|| -> Result<(), String> {
         for unit in 1..=native.units() {
             stopped_unit = Some(unit);
             available(meter, io, observer, path)?;
             check(io)?;
+            let before_evaluation = unit
+                .checked_sub(model::TRAINING_UNITS + 1)
+                .and_then(|index| development.get(index as usize).map(|case| (index, case)))
+                .and_then(|(index, case)| {
+                    native.progress.as_ref().and_then(|p| {
+                        p.candidate.as_ref().map(|candidate| {
+                            (
+                                index,
+                                *case,
+                                digest(candidate),
+                                p.incumbent_score,
+                                p.candidate_score,
+                            )
+                        })
+                    })
+                });
             native.execute(unit, None, job, engine, io)?;
+            if let Some((index, case, candidate, before, after)) = before_evaluation {
+                let progress = native
+                    .progress
+                    .as_ref()
+                    .ok_or("qualification progress absent")?;
+                let observed = |previous: u32, current: u32| -> Result<bool, String> {
+                    match current.checked_sub(previous) {
+                        Some(0) => Ok(false),
+                        Some(1) => Ok(true),
+                        _ => Err("qualification case score delta differs".into()),
+                    }
+                };
+                if progress.unit != unit
+                    || index as usize != qualification.len()
+                    || progress.candidate.as_ref().map(digest).as_ref() != Some(&candidate)
+                {
+                    return Err("qualification case sequence or checkpoint differs".into());
+                }
+                // These are the native owner's already executed bounded cases.
+                // Recording their score deltas adds no inference or feedback.
+                qualification.push(json!({"unit":unit,"index":index,"id":case.id,"family":case.family,"dependency":case.dependency,"protected":(index as usize)<curriculum::CORPUS_DEVELOPMENT,"candidate_checkpoint":candidate,"incumbent_solved":observed(before,progress.incumbent_score)?,"candidate_solved":observed(after,progress.candidate_score)?}));
+            }
             retained(&mut io.store, native.blobs());
             if unit == model::TRAINING_UNITS
                 && let Some(candidate) = native.progress.as_ref().and_then(|p| p.candidate.as_ref())
@@ -138,9 +178,26 @@ pub(super) fn train(
             }
             if unit % 10 == 0 || unit == model::TRAINING_UNITS || unit == native.units() {
                 meter.write(&path.join("progress.json"), &native.progress)?;
+                meter.write(&path.join("native-qualification.json"), &qualification)?;
             }
             check(io)?;
             available(meter, io, observer, path)?;
+        }
+        if let Some(progress) = &native.progress
+            && !qualification.is_empty()
+            && (qualification.len() != development.len()
+                || qualification
+                    .iter()
+                    .filter(|r| r["incumbent_solved"] == true)
+                    .count()
+                    != progress.incumbent_score as usize
+                || qualification
+                    .iter()
+                    .filter(|r| r["candidate_solved"] == true)
+                    .count()
+                    != progress.candidate_score as usize)
+        {
+            return Err("recorded qualification differs from the complete native result".into());
         }
         let mut selected = state.clone();
         if !selected.qualify(&native) {
@@ -152,7 +209,7 @@ pub(super) fn train(
         *state = selected;
         Ok(())
     })();
-    let result = json!({"status":if outcome.is_ok(){"complete"}else{"interrupted"},"error":outcome.as_ref().err(),"last_unit":stopped_unit,"source_model":before,"selected_model":state.model,"retained_update":before!=state.model,"cpu_micros":meta::cpu_micros()?.saturating_sub(cpu),"wall_micros":wall.elapsed().as_micros(),"model_and_history_io_bytes":io.store.bytes+io.source_bytes-bytes,"history_request":native.history_request,"history_receipt":native.history,"progress":native.progress});
+    let result = json!({"status":if outcome.is_ok(){"complete"}else{"interrupted"},"error":outcome.as_ref().err(),"last_unit":stopped_unit,"source_model":before,"selected_model":state.model,"retained_update":before!=state.model,"cpu_micros":meta::cpu_micros()?.saturating_sub(cpu),"wall_micros":wall.elapsed().as_micros(),"model_and_history_io_bytes":io.store.bytes+io.source_bytes-bytes,"history_request":native.history_request,"history_receipt":native.history,"qualification":qualification,"progress":native.progress});
     meter.write(&path.join("trial.json"), &result)?;
     outcome?;
     retained(&mut io.store, state.blobs().collect());
