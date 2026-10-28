@@ -224,7 +224,45 @@ fn evaluation(state: &State, engine: &mut Engine, io: &mut Store, job: u64) -> V
     }
     json!(rows)
 }
-fn train(state: &mut State, engine: &mut Engine, io: &mut Store, job: u64, path: &Path) -> Value {
+fn owned_evidence(state: &State, sources: &[Evidence]) -> Result<Vec<Evidence>, String> {
+    let mut result = Vec::new();
+    for example in state
+        .examples()
+        .filter(|e| matches!(e.tree, search::Tree::Stored { .. }))
+    {
+        if result
+            .iter()
+            .any(|e: &Evidence| e.job == example.job && e.proof_id == example.proof_id)
+        {
+            continue;
+        }
+        let source = sources
+            .iter()
+            .find(|e| e.job == example.job && e.proof_id == example.proof_id)
+            .ok_or("harness owned replay source missing")?;
+        let trace = example.trajectory(std::slice::from_ref(source))?;
+        let q = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+        let target = if example.refuted {
+            q.refuted_target()
+        } else {
+            q.proved_target()
+        };
+        let (_, _, verified) = search::core::checked(target, trace)?;
+        if crate::hex(verified.native_id.as_bytes()) != example.proof_id {
+            return Err("harness owned replay proof differs".into());
+        }
+        result.push(source.clone());
+    }
+    Ok(result)
+}
+fn train(
+    state: &mut State,
+    engine: &mut Engine,
+    io: &mut Store,
+    job: u64,
+    path: &Path,
+    sources: &[Evidence],
+) -> Value {
     if !state.needs_training() {
         return json!({"status":"not_ready","selected_model":state.model});
     }
@@ -234,16 +272,25 @@ fn train(state: &mut State, engine: &mut Engine, io: &mut Store, job: u64, path:
         return json!({"status":"paused_by_resource_owner","resources":observed,"selected_model":state.model});
     }
     state.attempted(state.learning_epoch());
-    let mut native = state.job();
-    native.training = true;
     let cpu = meta::cpu_micros().unwrap();
     let wall = Instant::now();
     let bytes = io.bytes;
+    let mut native = state.job();
+    native.training = true;
+    native.evidence = owned_evidence(state, sources).unwrap();
     let before = state.model.clone();
     let mut complete = true;
     let mut stopped = None;
     let mut stopped_reason = None;
     for unit in 1..=native.units() {
+        if meta::cpu_micros().unwrap() - cpu >= TRAIN_CPU
+            || wall.elapsed().as_micros() >= u128::from(TRAIN_WALL)
+            || io.bytes - bytes > 2 * 1024 * 1024 * 1024
+        {
+            complete = false;
+            stopped = Some(unit);
+            break;
+        }
         if observer.due(Instant::now()) {
             let observed = observer.refresh(path).unwrap();
             if let Some(reason) = &observed.budget.paused {
@@ -299,6 +346,14 @@ fn arm(
     let directory = Directory::new();
     let mut state = common.clone();
     let mut graph = crate::Graph::default();
+    let mut sources = initial
+        .iter()
+        .map(|(_, s, job)| Evidence {
+            job: *job,
+            proof_id: s.proof_id.clone(),
+            trace: s.tree.clone(),
+        })
+        .collect::<Vec<_>>();
     for (source, solution, _) in initial {
         let q = CompiledQuestion::compile(source).unwrap();
         let (root, batch) = graph
@@ -403,6 +458,16 @@ fn arm(
             let mut accepted = false;
             if let Some(solution) = &result.solution {
                 accepted = accept(&mut state, &mut graph, q, solution, job, path);
+                sources.push(Evidence {
+                    job,
+                    proof_id: solution.proof_id.clone(),
+                    trace: solution.tree.clone(),
+                });
+                sources.retain(|source| {
+                    state
+                        .examples()
+                        .any(|e| e.job == source.job && e.proof_id == source.proof_id)
+                });
                 let root = crate::object::proof_address(&solution.proof_id).unwrap();
                 finder.prepared(q, job, root).unwrap();
                 finder.verified(q, &graph, job, root).unwrap();
@@ -424,6 +489,7 @@ fn arm(
                 &mut io,
                 100_000 + round as u64,
                 path,
+                &sources,
             )
         } else {
             json!({"status":"frozen_solver"})
@@ -441,6 +507,10 @@ fn arm(
             json!({"event":"finder_study_round","seed":seed,"arm":label(treatment),"round":round+1,"completed":completed,"solved":solved})
         );
     }
+    if clock.is_some() {
+        write(&path.join("state-final.json"), &state);
+        export_model(&path.join("selected-model"), &state.model, &io.inner);
+    }
     let result = json!({"seed":seed,"arm":label(treatment),"coupled":coupled,"initial_model":common.model,"final_model":state.model,"initial_evaluation":before,"rounds":rows,"completed_attempts":completed,"checked_solutions":solved,"distinct_questions":unique.len(),"search_expansions":expansions,"cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":start.elapsed().as_micros(),"model_io_bytes":io.bytes,"model_io_operations":io.operations});
     write(&path.join("result.json"), &result);
     result
@@ -453,7 +523,7 @@ fn matched_continual_finder_study() {
     assert!(!output.exists());
     std::fs::create_dir_all(&output).unwrap();
     let phase = std::env::var("NAOME_FINDER_NATIVE_PHASE").unwrap();
-    let repair = phase == "repair";
+    let repair = phase == "repair" || phase == "confirmation_models";
     let coupled = phase == "coupled" || repair;
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(&output).unwrap().clone();
@@ -493,17 +563,22 @@ fn matched_continual_finder_study() {
     } else {
         BTreeSet::new()
     };
+    let seeds = if phase == "confirmation_models" {
+        vec![173, 251, 389]
+    } else {
+        SEEDS.to_vec()
+    };
     write(
         &output.join("manifest.json"),
-        &json!({"source_contract":input_specification(),"seeds":SEEDS,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":if coupled{3}else{6},"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"feedback_clock":if repair{"shared recorded costs by exact checkpoint, question and occurrence; first actual observation fills missing entries"}else{"actual elapsed generation time"},"reserved_confirmation_families":reserved.len(),"scope":"Known development comparison. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
+        &json!({"source_contract":input_specification(),"seeds":seeds,"arms":arms.iter().map(|t|label(*t)).collect::<Vec<_>>(),"rounds":if coupled{3}else{6},"attempts_per_round":ATTEMPTS,"search_expansions_per_attempt":SEARCH,"native_learning_cpu_limit":TRAIN_CPU,"native_learning_wall_limit":TRAIN_WALL,"feedback_clock":if repair{"shared recorded costs by exact checkpoint, question and occurrence; first actual observation fills missing entries"}else{"actual elapsed generation time"},"reserved_confirmation_families":reserved.len(),"scope":"Known development acquisition and promotion only. Confirmation outcomes remain unavailable throughout training. Same source/model starts and native learning/promotion rules. Actual costs include preparation, generation, checking, replay, utility and full qualification. Equal attempt/search/job ceilings are not a claim of equal realized CPU."}),
     );
     let mut results = Vec::new();
-    for (seed_index, seed) in SEEDS.into_iter().enumerate() {
+    for (seed_index, seed) in seeds.into_iter().enumerate() {
         let seed_path = output.join(seed.to_string());
         let (mut common, blobs, initial, preparation) =
             prepare(seed, &seed_path.join("preparation"));
         let mut clock = Clock::new();
-        if repair {
+        if phase == "repair" {
             let reference =
                 std::path::PathBuf::from(std::env::var("NAOME_FINDER_REPLAY_REFERENCE").unwrap())
                     .join(seed.to_string());
@@ -531,6 +606,9 @@ fn matched_continual_finder_study() {
             clock = reference_clock(&original);
         }
         write(&seed_path.join("initial-state.json"), &common);
+        if repair {
+            export_model(&seed_path.join("initial-model"), &common.model, &blobs);
+        }
         for offset in 0..arms.len() {
             let treatment = arms[(seed_index + offset) % arms.len()];
             let result = arm(

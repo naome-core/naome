@@ -1,6 +1,40 @@
 //! Exact recorded-cost replay before any finder-utility feedback is available.
 use super::*;
 
+#[test]
+fn compacted_replay_requires_the_original_checked_proof_and_binding() {
+    let example = crate::learning::tests::own_example();
+    let mut state = State::fresh();
+    state.accept(example.clone()).unwrap();
+    let q = CompiledQuestion::compile(&example.question).unwrap();
+    let (_, _, proof) = search::core::checked(q.proved_target(), &example.tree).unwrap();
+    let steps = proof.certificate.steps().len()
+        + proof.lemmas.iter().map(|p| p.steps().len()).sum::<usize>();
+    for entry in state.replay.iter_mut().chain(&mut state.anchors) {
+        entry.tree = search::Tree::Stored {
+            steps,
+            bytes: serde_json::to_vec(&example.tree).unwrap().len(),
+            binding: digest(&example.tree),
+        };
+    }
+    state.validate().unwrap();
+    assert!(owned_evidence(&state, &[]).is_err());
+    let source = Evidence {
+        job: example.job,
+        proof_id: example.proof_id,
+        trace: example.tree,
+    };
+    assert_eq!(
+        owned_evidence(&state, std::slice::from_ref(&source))
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut corrupt = source;
+    corrupt.trace = search::Tree::Close(0, 0);
+    assert!(owned_evidence(&state, &[corrupt]).is_err());
+}
+
 fn replay(
     seed: u64,
     treatment: Treatment,
@@ -115,7 +149,22 @@ fn replay(
     );
     write(&path.join("state-before-training.json"), &state);
     export_model(&path.join("initial-model"), &state.model, &io.inner);
-    let training = train(&mut state, &mut engine, &mut io, 100_000, path);
+    let sources = initial
+        .iter()
+        .map(|(_, s, job)| Evidence {
+            job: *job,
+            proof_id: s.proof_id.clone(),
+            trace: s.tree.clone(),
+        })
+        .chain(rows.iter().filter_map(|r| {
+            r["solution"].as_object().map(|_| Evidence {
+                job: 10_001 + r["attempt"].as_u64().unwrap(),
+                proof_id: r["solution"]["proof_id"].as_str().unwrap().into(),
+                trace: serde_json::from_value(r["solution"]["tree"].clone()).unwrap(),
+            })
+        }))
+        .collect::<Vec<_>>();
+    let training = train(&mut state, &mut engine, &mut io, 100_000, path, &sources);
     assert_eq!(training["status"], "complete");
     assert_eq!(
         state.model,
