@@ -155,6 +155,29 @@ impl Graph {
         if decision.context.len() > MAX_CONTEXT || decision.candidates.is_empty() {
             return Err("decision_capacity".into());
         }
+        let witnessed = decision
+            .candidates
+            .get(decision.expert)
+            .ok_or("successful action missing")?;
+        // A vacuous universal can be instantiated with different variables
+        // while retaining the exact premise and conclusion. The checked proof
+        // step is the same observable choice, so share its successful mass.
+        // Distinct conclusions and every other rule keep separate labels.
+        let successes = decision
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(i, candidate)| {
+                *i == decision.expert
+                    || witnessed.rule == super::model::Rule::UniversalInstance
+                        && witnessed.premises.len() == 1
+                        && witnessed.consequences.len() == 1
+                        && candidate.rule == witnessed.rule
+                        && candidate.premises == witnessed.premises
+                        && candidate.consequences == witnessed.consequences
+            })
+            .map(|(i, _)| i)
+            .collect();
         let mut builder = Builder {
             nodes: vec![Node {
                 kind: 0,
@@ -209,7 +232,7 @@ impl Graph {
             context,
             candidates,
             expert: decision.expert,
-            successes: vec![decision.expert],
+            successes,
         })
     }
 }

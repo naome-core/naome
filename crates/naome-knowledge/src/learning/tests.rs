@@ -4,6 +4,79 @@ fn fixed_state() -> State {
     state
 }
 use super::*;
+
+struct UniversalChoice(usize);
+impl model::Ranker for UniversalChoice {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        let offered = d
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.rule == model::Rule::UniversalInstance)
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        let mut scores = vec![0.; d.candidates.len()];
+        if let Some(i) = offered.get(self.0) {
+            scores[*i] = 1.;
+        }
+        Ok(scores)
+    }
+}
+
+#[test]
+fn equivalent_universal_choices_share_the_checked_success_mass() {
+    let q = CompiledQuestion::compile(
+        "goal=all(x,all(y,imp(all(z,imp(mem(x,y),mem(y,x))),imp(mem(x,y),mem(y,x)))))",
+    )
+    .unwrap();
+    let mut graphs = Vec::new();
+    let mut chosen = std::collections::BTreeSet::new();
+    for index in 0..2 {
+        let result = search::solve(q.proved_target(), &mut UniversalChoice(index), 32).unwrap();
+        let tree = result.tree.unwrap();
+        if let search::Tree::Step {
+            action: search::Action::Instantiate(_, v),
+            ..
+        } = &tree
+        {
+            chosen.insert(*v);
+        }
+        let (term, states) = search::compile(q.proved_target(), &tree).unwrap();
+        proof::verify(&term, q.proved_target()).unwrap();
+        assert_eq!(states.len(), 1);
+        graphs.push(states.into_iter().next().unwrap());
+    }
+    assert_eq!(
+        chosen.len(),
+        2,
+        "both native instantiations independently verify"
+    );
+    for graph in graphs {
+        assert_eq!(graph.candidates.len(), 2);
+        assert_eq!(
+            graph.nodes[graph.candidates[0]],
+            graph.nodes[graph.candidates[1]]
+        );
+        assert_eq!(graph.successes, vec![0, 1]);
+    }
+}
+
+#[test]
+fn different_universal_consequences_keep_separate_labels() {
+    let q = CompiledQuestion::compile(
+        "goal=all(x,all(y,imp(all(z,imp(mem(z,y),mem(y,z))),imp(mem(x,y),mem(y,x)))))",
+    )
+    .unwrap();
+    let result = search::solve(q.proved_target(), &mut UniversalChoice(0), 32).unwrap();
+    let (term, states) = search::compile(q.proved_target(), &result.tree.unwrap()).unwrap();
+    proof::verify(&term, q.proved_target()).unwrap();
+    let graph = &states[0];
+    assert_ne!(
+        graph.nodes[graph.candidates[0]].right,
+        graph.nodes[graph.candidates[1]].right
+    );
+    assert_eq!(graph.successes, vec![graph.expert]);
+}
 use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
 pub(crate) fn own_question() -> String {
     curriculum::CORPUS
