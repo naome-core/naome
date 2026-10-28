@@ -148,9 +148,10 @@ fn maximum_supported_batch_memory_is_bounded() {
         .unwrap();
     let trained = runtime.checkpoint(&fresh, 1, &mut io).unwrap();
     let mut candidate = Runtime::load(&trained, &mut io).unwrap();
+    let pool = Pool::from_graphs(&[graph]);
     candidate
         .train_using(
-            &Pool::from_graphs(&[graph]),
+            &pool,
             &mut rng,
             1,
             super::super::meta::Phase {
@@ -159,12 +160,14 @@ fn maximum_supported_batch_memory_is_bounded() {
                 ranking_quarters: 2,
                 gentle_rate: true,
             },
-            None,
+            Some((&pool, 0)),
             preservation::Mode::default(),
         )
         .unwrap();
     candidate.checkpoint(&trained, 1, &mut io).unwrap();
+    assert!(candidate.preservation_micros > 0);
     let sample = meter.finish(0, true);
+    assert!(sample.peak_rss_bytes.unwrap() <= REQUIREMENTS.work_bytes as u64);
     eprintln!(
         "native_maximum_shape batch=16 nodes=256 candidates=16 parameters={} sample={:?}",
         PARAMETERS, sample
