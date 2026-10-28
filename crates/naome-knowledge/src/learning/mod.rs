@@ -804,6 +804,15 @@ impl Job {
                 p.training_cost.unavailable_fragments = engine.cost.unavailable_fragments;
                 p.training_cost.witnessed_preferences = engine.cost.witnessed_preferences;
                 p.training_cost.hindsight_matches = engine.cost.hindsight_matches;
+                p.training_cost.observed_sequences = engine.cost.observed_sequences;
+                p.training_cost.sampled_sequence_edges = p
+                    .training_cost
+                    .sampled_sequence_edges
+                    .checked_add(engine.cost.sampled_sequence_edges)
+                    .ok_or("native sampled sequence count overflow")?;
+                p.training_cost
+                    .measurements
+                    .include(&engine.cost.measurements)?;
                 p.first_loss.get_or_insert(first);
                 p.last_loss = Some(last);
                 p.candidate = Some(candidate);
@@ -997,6 +1006,36 @@ impl model::Ranker for Exploring<'_> {
         };
         self.seed = next;
         Ok(scores)
+    }
+    fn plan(
+        &mut self,
+        d: &model::Decision,
+        state: &str,
+        offered: &str,
+        memory: Option<&model::Memory>,
+    ) -> Result<model::Plan, String> {
+        if !self.model.recurrent() {
+            if memory.is_some() {
+                return Err("stateless exploration received memory".into());
+            }
+            return Ok(model::Plan::scores(if d.candidates.len() == 1 {
+                vec![0.]
+            } else {
+                self.scores(d)?
+            }));
+        }
+        let mut plan = self.model.plan(d, state, offered, memory)?;
+        let mut next = self.seed;
+        if d.candidates.len() > 1 && self.explore && model::random(&mut next).is_multiple_of(5) {
+            plan.scores = (0..d.candidates.len())
+                .map(|_| (model::random(&mut next) >> 11) as f32 / 9007199254740992.)
+                .collect();
+        }
+        self.seed = next;
+        Ok(plan)
+    }
+    fn identity(&self) -> Option<String> {
+        self.model.identity()
     }
 }
 #[derive(Default)]

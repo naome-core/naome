@@ -21,7 +21,7 @@ fn plain_inference_preserves_parameters_and_stable_float32_choices() {
     let reference = runtime
         .policy
         .valid()
-        .forward(&batch)
+        .independent(&batch, runtime.recurrent())
         .into_data()
         .try_to_vec::<f32>()
         .unwrap();
@@ -34,7 +34,7 @@ fn plain_inference_preserves_parameters_and_stable_float32_choices() {
     let autodiff = runtime
         .policy
         .valid()
-        .forward(&batch)
+        .independent(&batch, runtime.recurrent())
         .into_data()
         .try_to_vec::<f32>()
         .unwrap();
@@ -205,7 +205,7 @@ fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
     let joint = sparse
         .policy
         .valid()
-        .forward(&batch)
+        .independent(&batch, sparse.recurrent())
         .into_data()
         .try_to_vec::<f32>()
         .unwrap();
@@ -219,8 +219,11 @@ fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
             );
         }
     }
-    let probability =
-        burn::tensor::activation::log_softmax(dense.policy.forward_dense(&batch), 1).exp();
+    let probability = burn::tensor::activation::log_softmax(
+        dense.policy.forward_dense(&batch, dense.recurrent()),
+        1,
+    )
+    .exp();
     let loss = -(probability * batch.successes)
         .sum_dim(1)
         .clamp_min(1e-12)

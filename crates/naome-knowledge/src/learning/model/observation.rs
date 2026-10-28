@@ -95,9 +95,16 @@ pub(in crate::learning) fn consumed(
     let mut cursor = before;
     let batches = (0..UPDATES_PER_UNIT)
         .map(|_| {
-            pool.batch(&mut cursor)
+            pool.sequence_batch(&mut cursor)
                 .into_iter()
-                .map(|graph| record(graph, sampled, 1))
+                .filter(|sample| !sample.auxiliary || engine.rich_targets())
+                .map(|sample| {
+                    record(
+                        &pool.target_graph(sample.graph, engine.rich_targets()),
+                        sampled,
+                        1,
+                    )
+                })
                 .collect()
         })
         .collect();

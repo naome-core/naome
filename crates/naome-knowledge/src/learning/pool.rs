@@ -20,6 +20,9 @@ pub struct Pool {
     derivations: Vec<super::search::derivation::Derivation>,
     witnesses: BTreeMap<String, BTreeMap<usize, Witness>>,
     hindsight: BTreeSet<(u64, String, usize, String)>,
+    auxiliary: BTreeSet<String>,
+    baseline_successes: BTreeMap<String, Vec<usize>>,
+    sequences: BTreeMap<String, Vec<Vec<(usize, usize)>>>,
     #[cfg(test)]
     reference: bool,
 }
@@ -32,6 +35,7 @@ pub(super) struct DerivedCounts {
     pub unavailable: usize,
     pub preferences: usize,
     pub hindsight: usize,
+    pub sequences: usize,
 }
 
 #[derive(Clone)]
@@ -40,16 +44,35 @@ pub(super) struct Witness {
     pub remaining_steps: usize,
     pub source: String,
 }
+pub(super) struct Sample<'a> {
+    pub graph: &'a Graph,
+    pub selected: usize,
+    pub parent: Option<usize>,
+    pub auxiliary: bool,
+}
 impl Pool {
     pub(super) fn reconcile(
         &mut self,
         observations: &[super::experience::Observation],
-        contextual: bool,
+        _contextual: bool,
     ) -> Result<(), String> {
         if observations.len() > super::history::SOURCES {
             return Err("native hindsight source capacity".into());
         }
         self.hindsight.clear();
+        for graph in &self.graphs {
+            let key = graph.key();
+            if !self.auxiliary.contains(&key) && !self.baseline_successes.contains_key(&key) {
+                self.baseline_successes.insert(key, graph.successes.clone());
+                self.work_bytes = self
+                    .work_bytes
+                    .checked_add(256 + 8 * graph.successes.len())
+                    .ok_or("native target mask work overflow")?;
+            }
+        }
+        if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
+            return Err("native target mask work capacity".into());
+        }
         for observation in observations {
             observation.validate()?;
             if let super::experience::TerminalEvidence::CertifiedCandidate { proof_id, .. } =
@@ -85,13 +108,23 @@ impl Pool {
             let case = super::curriculum::owned::case(&observation.question)
                 .ok_or("observed training lineage differs")?;
             for derivation in super::search::derivation::observed(observation)? {
-                if contextual && let Some(fragment) = derivation.fragments.first() {
-                    let graphs = derivation
+                if let Some(fragment) = derivation.fragments.first() {
+                    let graphs: Vec<_> = derivation
                         .steps
                         .iter()
                         .filter(|step| step.graph.candidates.len() > 1)
                         .map(|step| step.graph.clone())
                         .collect();
+                    for graph in &graphs {
+                        if !self.keys.contains_key(&graph.key())
+                            && self.auxiliary.insert(graph.key())
+                        {
+                            self.work_bytes = self
+                                .work_bytes
+                                .checked_add(256)
+                                .ok_or("native target mask work overflow")?;
+                        }
+                    }
                     self.add(
                         matches!(observation.summary.origin, super::Origin::Peer { .. }),
                         &case.dependency,
@@ -100,7 +133,31 @@ impl Pool {
                         graphs,
                     )?;
                 }
-                self.add_derivation(derivation, contextual)?;
+                self.add_derivation(derivation, true)?;
+            }
+            let checked: Vec<_> = self.derivations.iter().enumerate().filter(|(_, d)| {
+                let admitted = matches!(&observation.summary.terminal,
+                    super::experience::TerminalEvidence::CertifiedCandidate { proof_id, .. }
+                    if d.source_proof.as_ref() == Some(proof_id)
+                        && observation.summary.trace.checked_trajectory.as_ref() == Some(&d.source_tree));
+                let partial = d.fragments.iter().any(|f| matches!(&f.parent,
+                    super::search::derivation::Parent::Observed { receipt, .. }
+                    if receipt == &observation.summary.receipt));
+                admitted || partial
+            }).collect();
+            for execution in &observation.executions {
+                for window in execution.windows(&checked)? {
+                    let (source, step) = *window.last().expect("nonempty observed window");
+                    let key = self.derivations[source].steps[step].graph.key();
+                    self.work_bytes = self
+                        .work_bytes
+                        .checked_add(256 + 32 * window.len())
+                        .ok_or("native sequence work overflow")?;
+                    if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
+                        return Err("native sequence work capacity".into());
+                    }
+                    self.sequences.entry(key).or_default().push(window);
+                }
             }
         }
         Ok(())
@@ -164,6 +221,7 @@ impl Pool {
     pub(super) fn derived_counts(&self) -> DerivedCounts {
         let mut counts = DerivedCounts {
             hindsight: self.hindsight.len(),
+            sequences: self.sequences.values().map(Vec::len).sum(),
             ..DerivedCounts::default()
         };
         for derivation in &self.derivations {
@@ -246,6 +304,13 @@ impl Pool {
             .unwrap();
         pool
     }
+    pub(super) fn target_graph(&self, graph: &Graph, rich: bool) -> Graph {
+        let mut selected = graph.clone();
+        if !rich && let Some(successes) = self.baseline_successes.get(&graph.key()) {
+            selected.successes = successes.clone();
+        }
+        selected
+    }
     pub fn graphs(&self) -> &[Graph] {
         &self.graphs
     }
@@ -321,6 +386,45 @@ impl Pool {
     /// Origins, families, proofs and successful rule types keep the same cyclic
     /// allocation. Three complete decision cycles retain broad coverage; only
     /// the fourth uses bounded current-model priorities within that stratum.
+    /// Every treatment consumes the same 16-slot schedule. Only real observed
+    /// ancestry enables carry; independent graphs remain single-step windows.
+    pub(super) fn sequence_batch(&self, cursor: &mut u64) -> Vec<Sample<'_>> {
+        let seeds = self.batch(cursor);
+        let mut result = Vec::with_capacity(16);
+        while result.len() < seeds.len() {
+            let slot = result.len();
+            let seed = seeds[slot];
+            let window = self.sequences.get(&seed.key()).and_then(|windows| {
+                windows.get(cursor.wrapping_add(slot as u64) as usize % windows.len())
+            });
+            if let Some(window) = window {
+                let first = window.len().saturating_sub(16 - slot);
+                for (offset, (source, index)) in window[first..].iter().enumerate() {
+                    let step = &self.derivations[*source].steps[*index];
+                    let key = step.graph.key();
+                    let graph = self
+                        .keys
+                        .get(&key)
+                        .map_or(&step.graph, |index| &self.graphs[*index]);
+                    result.push(Sample {
+                        graph,
+                        selected: step.graph.expert,
+                        parent: (offset > 0).then(|| result.len() - 1),
+                        auxiliary: self.auxiliary.contains(&key),
+                    });
+                }
+            } else {
+                result.push(Sample {
+                    graph: seed,
+                    selected: seed.expert,
+                    parent: None,
+                    auxiliary: self.auxiliary.contains(&seed.key()),
+                });
+            }
+        }
+        result
+    }
+
     pub fn batch(&self, cursor: &mut u64) -> Vec<&Graph> {
         #[cfg(test)]
         if self.reference {

@@ -70,6 +70,7 @@ struct State {
     facts: Vec<Formula>,
     goal: Formula,
     knowledge: Vec<Formula>,
+    knowledge_context: Vec<String>,
     used: BTreeSet<Action>,
     domain: Vec<FreeVariable>,
 }
@@ -142,6 +143,7 @@ fn prepare(target: &Formula) -> Result<Prepared, String> {
             facts,
             goal: body.clone(),
             knowledge: Vec::new(),
+            knowledge_context: Vec::new(),
             used: BTreeSet::new(),
             domain: domain.into_iter().collect(),
         },
@@ -465,13 +467,14 @@ struct Search<'a> {
 }
 impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
-        self.branch(state, depth, None)
+        self.branch(state, depth, None, None)
     }
     fn branch(
         &mut self,
         state: &State,
         depth: usize,
         parent: Option<trace::Branch>,
+        memory: Option<&super::model::Memory>,
     ) -> Result<Option<Tree>, String> {
         if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
             if let Some(report) = &mut self.frontier {
@@ -506,21 +509,12 @@ impl Search<'_> {
                 .include(TerminalEvidence::Unsupported(Capacity::Facts));
             return Ok(None);
         }
-        let identities = state
-            .facts
-            .iter()
-            .map(Formula::encode_canonical)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
+        let state_binding = trace::binding(state)?;
         let key = super::digest(&(
-            identities,
-            &state.used,
+            &state_binding,
             32usize.saturating_sub(depth),
-            state
-                .domain
-                .iter()
-                .map(|v| v.identifier())
-                .collect::<Vec<_>>(),
+            self.ranker.identity(),
+            memory,
         ));
         if self.exhausted.contains(&key) {
             return Ok(None);
@@ -542,11 +536,10 @@ impl Search<'_> {
                 .include(TerminalEvidence::Unsupported(Capacity::Graph));
             return Ok(None);
         }
-        let scores = if actions.len() > 1 {
-            self.ranker.scores(&d)?
-        } else {
-            vec![0.]
-        };
+        let plan = self
+            .ranker
+            .plan(&d, &state_binding, &super::digest(&actions), memory)?;
+        let scores = &plan.scores;
         if scores.len() != actions.len() || scores.iter().any(|s| !s.is_finite()) {
             return Err("invalid native action scores".into());
         }
@@ -581,6 +574,13 @@ impl Search<'_> {
             let mut attempted = 0;
             for (index, child) in next(state, &actions[selected])?.into_iter().enumerate() {
                 attempted += 1;
+                // Each alternative and sibling starts from the same saved
+                // selected-parent memory, never the preceding failed branch.
+                let child_memory = plan.child(
+                    selected,
+                    trace::binding(&child)?,
+                    super::digest(&self::actions(&child)),
+                )?;
                 if let Some(tree) = self.branch(
                     &child,
                     depth + 1,
@@ -588,6 +588,7 @@ impl Search<'_> {
                         event,
                         child: index,
                     }),
+                    child_memory.as_ref(),
                 )? {
                     children.push(tree)
                 } else {
@@ -684,6 +685,7 @@ fn solve_recording(
     }
     super::knowledge::validate(knowledge)?;
     let mut p = prepare(target)?;
+    p.state.knowledge_context = knowledge.iter().map(super::digest).collect();
     p.state.knowledge = knowledge
         .iter()
         .map(|e| Ok(e.verified()?.target))
@@ -888,11 +890,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
             return Err("theorem trace target binding differs".into());
         }
         super::knowledge::validate(entries)?;
-        let terms = entries
-            .iter()
-            .map(super::knowledge::Entry::term)
-            .collect::<Result<Vec<_>, _>>()?;
-        return compile_tableau(target, proof, &terms);
+        return compile_tableau(target, proof, entries);
     }
     if let Tree::Definitions {
         entries,
@@ -976,9 +974,14 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
 fn compile_tableau(
     target: &Formula,
     tree: &Tree,
-    knowledge: &[Term],
+    entries: &[super::knowledge::Entry],
 ) -> Result<(Term, Vec<Graph>), String> {
+    let knowledge = entries
+        .iter()
+        .map(super::knowledge::Entry::term)
+        .collect::<Result<Vec<_>, _>>()?;
     let mut p = prepare(target)?;
+    p.state.knowledge_context = entries.iter().map(super::digest).collect();
     p.state.knowledge = knowledge.iter().map(Term::formula).collect();
     let mut names = Names::default();
     let mut facts = Vec::new();
@@ -1008,7 +1011,7 @@ fn compile_tableau(
         &facts,
         &mut names,
         &mut graphs,
-        knowledge,
+        &knowledge,
         0,
     )?;
     let mut term = if a.formula() == p.body && !a.free_assumptions().contains_key(&root) {
@@ -1140,6 +1143,7 @@ mod witness_tests {
             goal: universal.clone(),
             facts: vec![universal.clone(), body, c::not(universal)],
             knowledge: Vec::new(),
+            knowledge_context: Vec::new(),
             used: BTreeSet::new(),
             domain: vec![y],
         };
@@ -1175,6 +1179,7 @@ mod frontier_tests {
             facts,
             goal,
             knowledge: vec![],
+            knowledge_context: Vec::new(),
             used: BTreeSet::new(),
             domain: vec![v(0), v(1)],
         };
@@ -1209,6 +1214,7 @@ mod transposition_tests {
             facts: vec![Formula::implies(p.clone(), q.clone()), p, c::not(q.clone())],
             goal: q.clone(),
             knowledge: vec![],
+            knowledge_context: Vec::new(),
             used: BTreeSet::new(),
             domain: vec![x, y],
         };
@@ -1231,3 +1237,6 @@ mod transposition_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod memory_tests;

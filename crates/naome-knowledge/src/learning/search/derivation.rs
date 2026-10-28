@@ -538,16 +538,18 @@ fn source<'a>(
     while let Tree::Definitions { proof, .. } = tree {
         tree = proof;
     }
-    let (tree, knowledge) = if let Tree::Knowledge { proof, entries, .. } = tree {
+    let (tree, knowledge, knowledge_context) = if let Tree::Knowledge { proof, entries, .. } = tree
+    {
         (
             proof.as_ref(),
             entries
                 .iter()
                 .map(super::super::knowledge::Entry::term)
                 .collect::<Result<Vec<_>, _>>()?,
+            entries.iter().map(super::super::digest).collect(),
         )
     } else {
-        (tree, Vec::new())
+        (tree, Vec::new(), Vec::new())
     };
     let citations = knowledge
         .iter()
@@ -568,6 +570,7 @@ fn source<'a>(
     };
     let mut state = prepare(target)?.state;
     state.knowledge = source.knowledge.iter().map(Term::formula).collect();
+    state.knowledge_context = knowledge_context;
     Ok((source, tree, state))
 }
 

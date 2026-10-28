@@ -25,11 +25,14 @@ impl Runtime {
             return Err("native utility reference capacity".into());
         }
         let reference = Batch::from_graphs(reference, &self.device)?;
-        let loss = checked_marginal(self.policy.forward(&reference), &reference);
+        let loss = checked_marginal(
+            self.policy.independent(&reference, self.recurrent()),
+            &reference,
+        );
         loss_value(&loss)?;
         let anchor = GradientsParams::from_grads(loss.backward(), &self.policy);
         let batch = Batch::from_graphs(std::slice::from_ref(candidate), &self.device)?;
-        let loss = checked_marginal(self.policy.forward(&batch), &batch);
+        let loss = checked_marginal(self.policy.independent(&batch, self.recurrent()), &batch);
         loss_value(&loss)?;
         let proposed = GradientsParams::from_grads(loss.backward(), &self.policy);
         struct Alignment<'a> {

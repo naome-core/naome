@@ -27,6 +27,7 @@ pub(super) fn binding(state: &State) -> Result<String, String> {
             .map(encode)
             .collect::<Result<Vec<_>, _>>()?,
         &state.used,
+        &state.knowledge_context,
         state
             .domain
             .iter()
@@ -87,6 +88,57 @@ pub(crate) struct Trace {
     pub omitted: usize,
 }
 impl Trace {
+    /// At most four actual observed transitions, cut at every missing match.
+    /// A reconstructed proof supplies local checked labels, never chronology.
+    pub(crate) fn windows(
+        &self,
+        checked: &[(usize, &super::derivation::Derivation)],
+    ) -> Result<Vec<Vec<(usize, usize)>>, String> {
+        self.validate()?;
+        let matches: Vec<_> = self
+            .events
+            .iter()
+            .map(|event| {
+                checked.iter().find_map(|(source, derivation)| {
+                    if derivation.source_target != self.target {
+                        return None;
+                    }
+                    derivation
+                        .steps
+                        .iter()
+                        .position(|step| {
+                            step.graph.binding == event.state
+                                && step.offered == event.offered
+                                && step.graph.expert == event.selected
+                        })
+                        .map(|step| (*source, step))
+                })
+            })
+            .collect();
+        let mut result = Vec::new();
+        for end in 0..self.events.len() {
+            let mut window = Vec::new();
+            let mut next = Some(end);
+            while let Some(index) = next {
+                let Some(step) = matches[index] else {
+                    break;
+                };
+                window.push(step);
+                if window.len() == 4 {
+                    break;
+                }
+                // states() independently replays this exact parent action and
+                // selected child before this edge is available to training.
+                next = self.events[index].parent.map(|parent| parent.event);
+            }
+            window.reverse();
+            if !window.is_empty() {
+                result.push(window);
+            }
+        }
+        Ok(result)
+    }
+
     /// Match a separately checked completion to an actually observed state and
     /// action. This establishes available hindsight, not success of that past
     /// attempt. Unmatched and omitted events remain explicitly unassigned.
@@ -147,6 +199,11 @@ impl Trace {
         if root.knowledge.len() > super::super::knowledge::CAPACITY {
             return Err("search observation theorem capacity differs".into());
         }
+        initial.knowledge_context = root
+            .knowledge
+            .iter()
+            .map(|reference| reference.packet.clone())
+            .collect();
         initial.knowledge = root
             .knowledge
             .iter()

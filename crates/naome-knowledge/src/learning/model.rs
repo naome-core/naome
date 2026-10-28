@@ -1,9 +1,17 @@
 //! The research 1M graph policy behind a narrow checkpoint/training boundary.
 //! Formula graphs, goal-conditioned context attention and typed proof choices
-//! use Adam, checked-action cross entropy, batch 16 and LR .001. No weights are imported.
+//! use Adam, checked-action objectives and at most 16 graph slots. Real observed
+//! predecessor windows carry bounded working state; the native checker retains
+//! all mathematical authority. No pretrained weights are imported.
+mod measurement;
+mod memory;
+use measurement::TrainingMeasurements;
 #[cfg(test)]
 pub(super) mod observation;
 mod policy;
+mod sequence;
+pub(crate) use memory::Recurrence;
+pub use memory::{Memory, Plan};
 mod preservation;
 #[cfg(test)]
 mod routing_tests;
@@ -84,6 +92,25 @@ pub struct Decision {
 }
 pub trait Ranker {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String>;
+    fn plan(
+        &mut self,
+        d: &Decision,
+        _state: &str,
+        _offered: &str,
+        memory: Option<&Memory>,
+    ) -> Result<Plan, String> {
+        if memory.is_some() {
+            return Err("stateless ranker received working memory".into());
+        }
+        Ok(Plan::scores(if d.candidates.len() == 1 {
+            vec![0.]
+        } else {
+            self.scores(d)?
+        }))
+    }
+    fn identity(&self) -> Option<String> {
+        None
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +125,9 @@ pub(super) fn specification() -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
+    hash.update(include_str!("model/memory.rs"));
+    hash.update(include_str!("model/sequence.rs"));
+    hash.update(include_str!("model/measurement.rs"));
     hash.update(include_str!("model/preservation.rs"));
     hash.update(include_str!("model/utility.rs"));
     hash.update(include_str!("finder.rs"));
@@ -191,6 +221,13 @@ pub struct Runtime {
     preservation: preservation::Preservation,
     preservation_micros: u64,
     device: Device,
+    identity: String,
+    recurrence: Recurrence,
+    rich_targets: bool,
+    sampled_sequence_edges: usize,
+    measurements: TrainingMeasurements,
+    #[cfg(test)]
+    observe_batches: bool,
 }
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -208,16 +245,21 @@ fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     writer.into_bytes().map_err(|e| e.to_string())
 }
 impl Runtime {
+    fn observe_batches(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.observe_batches
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    }
+    pub(super) fn recurrent(&self) -> bool {
+        self.recurrence != Recurrence::Disabled
+    }
     pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, String> {
-        // Validation weights are detached. Inputs must use the same plain
-        // device, otherwise mixed operations retain needless autodiff state.
-        let batch = self.scoring_batch(graph)?;
-        self.policy
-            .valid()
-            .forward(&batch)
-            .into_data()
-            .try_to_vec::<f32>()
-            .map_err(|e| e.to_string())
+        Ok(self.plan_graph(graph, "", None)?.scores)
     }
     fn scoring_batch(&self, graph: &Graph) -> Result<Batch, String> {
         Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())
@@ -284,6 +326,13 @@ impl Runtime {
             preservation,
             preservation_micros: 0,
             device,
+            identity: super::digest(checkpoint),
+            recurrence: Recurrence::default(),
+            rich_targets: true,
+            sampled_sequence_edges: 0,
+            measurements: TrainingMeasurements::default(),
+            #[cfg(test)]
+            observe_batches: true,
         })
     }
     fn checkpoint<I: ArtifactIo + ?Sized>(
@@ -338,42 +387,51 @@ impl Runtime {
         }
         let mut first = 0.;
         let mut last = 0.;
+        self.measurements = TrainingMeasurements::default();
         let preservation_started = std::time::Instant::now();
         let preservation_gradient = if let Some((pool, mut cursor)) =
             preservation_pool.filter(|(p, _)| preservation_mode.enabled() && !p.is_empty())
         {
             // Separate, reproducible sampling: this never advances the training
             // cursor or consumes a development/transfer prediction as a label.
-            let batch = Batch::from_graphs(&pool.batch(&mut cursor), &self.device)?;
-            let loss = checked_marginal(self.policy.forward(&batch), &batch);
+            let references = pool.batch(&mut cursor);
+            let batch = Batch::from_graphs(&references, &self.device)?;
+            if self.observe_batches() {
+                self.measurements.reference(&references, self.recurrence);
+            }
+            let memory = self
+                .recurrent()
+                .then(|| Tensor::zeros([batch.goal.dims()[0], policy::WIDTH], &self.device));
+            let logits = self.policy.readout(self.policy.encode(&batch), memory).0;
+            let loss = checked_marginal(logits, &batch);
             loss_value(&loss)?;
             Some(GradientsParams::from_grads(loss.backward(), &self.policy))
         } else {
             None
         };
         self.preservation_micros = micros(preservation_started);
+        self.sampled_sequence_edges = 0;
         for update in 0..updates {
-            let sample = graphs.batch(rng);
-            let batch = Batch::from_graphs(&sample, &self.device)?;
-            let logits = self.policy.forward(&batch);
-            let marginal = checked_marginal(logits.clone(), &batch);
-            // This is preference between witnessed successful search actions
-            // and unobserved alternatives, never mathematical false labels.
-            let loss = if phase.ranking_quarters == 0 {
-                marginal
-            } else {
-                let good = logits
-                    .clone()
-                    .mask_fill(batch.successes.clone().equal_elem(0.), -10000.)
-                    .max_dim(1);
-                let other = logits
-                    .mask_fill(batch.successes.clone().greater_elem(0.), -10000.)
-                    .mask_fill(batch.invalid.clone(), -10000.)
-                    .max_dim(1);
-                let ranking = (other - good + 0.2).clamp_min(0.).mean();
-                let weight = f32::from(phase.ranking_quarters) / 4.;
-                marginal * (1. - weight) + ranking * weight
-            };
+            let before = *rng;
+            let sample = graphs.sequence_batch(rng);
+            self.sampled_sequence_edges += sample.iter().filter(|s| s.parent.is_some()).count();
+            let inputs = sample
+                .iter()
+                .map(|s| graphs.target_graph(s.graph, self.rich_targets))
+                .collect::<Vec<_>>();
+            let batch = Batch::from_graphs(&inputs, &self.device)?;
+            if self.observe_batches() {
+                self.measurements.observe(
+                    graphs,
+                    &sample,
+                    &inputs,
+                    before,
+                    self.recurrence,
+                    self.rich_targets,
+                );
+            }
+            let logits = self.sequence_scores(&batch, &sample)?;
+            let loss = self.sequence_loss(logits, &batch, &sample, graphs, phase);
             let value = loss_value(&loss)?;
             let gradients = GradientsParams::from_grads(loss.backward(), &self.policy);
             let proposed = self.optimizer.step(
@@ -422,6 +480,20 @@ impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
         self.scores_graph(&Graph::encode(d)?)
     }
+    fn plan(
+        &mut self,
+        d: &Decision,
+        state: &str,
+        offered: &str,
+        memory: Option<&Memory>,
+    ) -> Result<Plan, String> {
+        let mut graph = Graph::encode(d)?;
+        graph.binding = state.into();
+        self.plan_graph(&graph, offered, memory)
+    }
+    fn identity(&self) -> Option<String> {
+        Some(super::digest(&(&self.identity, self.recurrence)))
+    }
 }
 #[cfg(test)]
 pub(super) fn test_update<I: ArtifactIo + ?Sized>(
@@ -454,6 +526,9 @@ pub(crate) struct TrainingCost {
     pub unavailable_fragments: usize,
     pub witnessed_preferences: usize,
     pub hindsight_matches: usize,
+    pub observed_sequences: usize,
+    pub sampled_sequence_edges: usize,
+    pub measurements: TrainingMeasurements,
 }
 fn micros(started: std::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
@@ -468,6 +543,8 @@ pub(crate) struct Engine {
     pub(super) preservation_mode: PreservationMode,
     #[cfg(test)]
     pub(super) targets: Targets,
+    #[cfg(test)]
+    pub(super) recurrence: Recurrence,
     pub meta: super::meta::Engine,
 }
 #[cfg(test)]
@@ -482,6 +559,21 @@ impl Engine {
     pub(super) fn with_targets(mut self, targets: Targets) -> Self {
         self.targets = targets;
         self
+    }
+    #[cfg(test)]
+    pub(super) fn with_recurrence(mut self, recurrence: Recurrence) -> Self {
+        self.recurrence = recurrence;
+        self
+    }
+    fn recurrence(&self) -> Recurrence {
+        #[cfg(test)]
+        {
+            self.recurrence
+        }
+        #[cfg(not(test))]
+        {
+            Recurrence::default()
+        }
     }
     pub(super) fn rich_targets(&self) -> bool {
         #[cfg(test)]
@@ -519,12 +611,17 @@ impl Engine {
         c: &Checkpoint,
         io: &mut I,
     ) -> Result<Runtime, String> {
-        if let Some(index) = self.cache.iter().position(|(key, _)| key == c) {
-            return Ok(self.cache.remove(index).1);
-        }
-        Runtime::load(c, io)
+        let mut runtime = if let Some(index) = self.cache.iter().position(|(key, _)| key == c) {
+            self.cache.remove(index).1
+        } else {
+            Runtime::load(c, io)?
+        };
+        runtime.recurrence = self.recurrence();
+        runtime.rich_targets = self.rich_targets();
+        Ok(runtime)
     }
-    fn retain(&mut self, c: Checkpoint, r: Runtime) {
+    fn retain(&mut self, c: Checkpoint, mut r: Runtime) {
+        r.identity = super::digest(&c);
         if self.cache.len() >= 2 {
             self.cache.remove(0);
         }
@@ -617,6 +714,7 @@ impl Engine {
         self.cost.unavailable_fragments = derived.unavailable;
         self.cost.witnessed_preferences = derived.preferences;
         self.cost.hindsight_matches = derived.hindsight;
+        self.cost.observed_sequences = derived.sequences;
         self.cost.preservation_states = preservation_pool.graphs().len();
         self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
         let result = if pool.is_empty() {
@@ -671,6 +769,8 @@ impl Engine {
         )?;
         self.cost.update_micros = micros(started);
         self.cost.preservation_micros = runtime.preservation_micros;
+        self.cost.sampled_sequence_edges = runtime.sampled_sequence_edges;
+        self.cost.measurements = runtime.measurements.clone();
         let started = std::time::Instant::now();
         let checkpoint = runtime.checkpoint(c, UPDATES_PER_UNIT, io)?;
         self.cost.checkpoint_micros = micros(started);

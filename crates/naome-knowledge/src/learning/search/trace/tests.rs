@@ -160,6 +160,14 @@ fn theorem_context_binds_the_original_checked_packet_not_just_an_allowed_formula
         .validate_context(&q, std::slice::from_ref(&entry))
         .unwrap();
     assert!(trace.validate_context(&q, &[]).is_err());
+    let original_state = trace.states().unwrap().remove(0);
+    let mut changed_state = original_state.clone();
+    changed_state.knowledge_context[0] = "ff".repeat(32);
+    assert_ne!(
+        binding(&original_state).unwrap(),
+        binding(&changed_state).unwrap(),
+        "memory and graph keys bind the exact checked helper packet even when its formula is identical"
+    );
     let mut substituted = trace.clone();
     substituted.root.as_mut().unwrap().knowledge[0].packet = "ff".repeat(32);
     assert!(

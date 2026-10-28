@@ -125,6 +125,46 @@ fn symbolic_preferences_require_two_checked_completions_of_the_same_state() {
         "unvisited alternatives remain unknown"
     );
     assert_eq!(pool.derived_counts().preferences, 1);
+    let mut masked = crate::learning::pool::Pool::default();
+    masked
+        .add(
+            false,
+            "dependency",
+            "family",
+            "first-checked-path",
+            vec![roots[0].clone()],
+        )
+        .unwrap();
+    masked.reconcile(&[], false).unwrap();
+    masked
+        .add(
+            false,
+            "dependency",
+            "family",
+            "second-checked-path",
+            vec![roots[1].clone()],
+        )
+        .unwrap();
+    let merged = masked
+        .graphs()
+        .iter()
+        .find(|g| g.key() == roots[0].key())
+        .unwrap();
+    assert_eq!(
+        masked.target_graph(merged, false).successes,
+        roots[0].successes,
+        "an overlapping auxiliary action cannot enter the original target mask"
+    );
+    assert!(
+        masked
+            .target_graph(merged, true)
+            .successes
+            .contains(&roots[1].expert)
+    );
+    assert_eq!(
+        masked.target_graph(merged, false).key(),
+        masked.target_graph(merged, true).key()
+    );
 }
 
 #[test]
@@ -307,12 +347,50 @@ fn an_unresolved_search_contributes_only_independently_checked_conditional_branc
         crate::learning::Engine::default().rich_targets(),
     )
     .unwrap();
-    assert!(actions.is_empty());
+    assert!(!actions.is_empty());
     assert!(!rich.is_empty());
+    assert_eq!(
+        actions.graphs().iter().map(Graph::key).collect::<Vec<_>>(),
+        rich.graphs().iter().map(Graph::key).collect::<Vec<_>>(),
+        "target masks do not change the observed input schedule"
+    );
     assert_eq!(
         actions.derived_counts().fragments,
         rich.derived_counts().fragments,
         "both treatments check the same source; the action mask excludes its auxiliary targets"
     );
     assert!(rich.graphs().iter().all(|g| !g.successes.is_empty()));
+}
+
+#[test]
+fn matched_observed_inputs_report_active_and_masked_auxiliary_labels() {
+    use crate::learning::{Engine, model, pool::Pool, tests::MemoryStore};
+    let observation = unresolved_observation();
+    let mut pool = Pool::default();
+    pool.reconcile(&[observation], true).unwrap();
+    let fresh = model::Checkpoint::fresh();
+    let mut io = MemoryStore::default();
+    let mut measurements = Vec::new();
+    for target in [model::Targets::Actions, model::Targets::Rich] {
+        let mut engine = Engine::default().with_targets(target);
+        let mut cursor = 71;
+        engine.train(&fresh, &pool, &mut cursor, &mut io).unwrap();
+        assert_eq!(cursor, 71 + 16 * model::UPDATES_PER_UNIT);
+        measurements.push(engine.cost.measurements);
+    }
+    let [actions, rich] = measurements.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(
+        actions.input_digest, rich.input_digest,
+        "the actual graph sequence must match, including predecessor edges"
+    );
+    assert_ne!(actions.target_digest, rich.target_digest);
+    assert_eq!(actions.auxiliary_slots, rich.auxiliary_slots);
+    assert!(actions.masked_auxiliary_slots > 0);
+    assert_eq!(actions.active_auxiliary_slots, 0);
+    assert_eq!(actions.cost_targets, 0);
+    assert_eq!(actions.preference_targets, 0);
+    assert_eq!(rich.masked_auxiliary_slots, 0);
+    assert!(rich.active_auxiliary_slots > 0 && rich.cost_targets > 0);
 }
