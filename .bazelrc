@@ -15,6 +15,8 @@ build:ci --keep_going
 # Native-model regressions need optimized code, with all Rust runtime checks.
 build:ci --compilation_mode=opt
 build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Copt-level=1
+# Compile proc macros and build scripts quickly; product flags stay independent.
+build:ci --@rules_rust//rust/settings:extra_exec_rustc_flag=-Copt-level=1
 build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=yes
 build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Coverflow-checks=yes
 # Keep aspect analysis consistent with the shared build and test configuration.

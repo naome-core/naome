@@ -70,6 +70,7 @@ class BuildContractTests(unittest.TestCase):
         lines = (ROOT / ".bazelrc").read_text().splitlines()
         self.assertIn("build:ci --compilation_mode=opt", lines)
         self.assertIn("build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Copt-level=1", lines)
+        self.assertIn("build:ci --@rules_rust//rust/settings:extra_exec_rustc_flag=-Copt-level=1", lines)
         for flag in ("debug-assertions", "overflow-checks"):
             self.assertIn(f"build:ci --@rules_rust//rust/settings:extra_rustc_flag=-C{flag}=yes", lines)
         self.assertIn("test:ci --test_arg=--test-threads=2", lines)
