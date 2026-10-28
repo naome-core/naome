@@ -1,21 +1,36 @@
 //! Source-only confirmation preparation. No solver, optimizer or model calls.
 use super::*;
 
-fn import_model(path: &Path) -> (Checkpoint, MemoryStore) {
+pub(super) fn import_model(path: &Path) -> Result<(Checkpoint, MemoryStore), String> {
+    use std::io::Read;
+    let read = |path: &Path, cap: usize| -> Result<Vec<u8>, String> {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(cap as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > cap {
+            return Err("frozen model file exceeds its declared bound".into());
+        }
+        Ok(bytes)
+    };
     let model: Checkpoint =
-        serde_json::from_slice(&std::fs::read(path.join("checkpoint.json")).unwrap()).unwrap();
-    model.validate().unwrap();
+        serde_json::from_slice(&read(&path.join("checkpoint.json"), history::PAGE_BYTES)?)
+            .map_err(|e| e.to_string())?;
+    model.validate()?;
     let mut io = MemoryStore::default();
     for (name, blob) in [("model", &model.model), ("optimizer", &model.optimizer)] {
         if let Some(blob) = blob {
-            let bytes = std::fs::read(path.join(format!("{name}.bpk"))).unwrap();
-            assert_eq!(Blob::of(&bytes), *blob);
+            let bytes = read(&path.join(format!("{name}.bpk")), blob.bytes)?;
+            if Blob::of(&bytes) != *blob {
+                return Err("frozen model bytes differ from their checkpoint".into());
+            }
             for (index, range) in blob.ranges().enumerate() {
                 io.0.insert((blob.sha256.clone(), index), bytes[range].to_vec());
             }
         }
     }
-    (model, io)
+    Ok((model, io))
 }
 
 #[test]
@@ -74,7 +89,7 @@ fn evaluate_frozen_confirmation_models() {
             } else {
                 source.join(arm).join("selected-model")
             };
-            let (model, data) = import_model(&model_path);
+            let (model, data) = import_model(&model_path).unwrap();
             assert_eq!(model, state.model);
             let mut io = Store {
                 inner: data,

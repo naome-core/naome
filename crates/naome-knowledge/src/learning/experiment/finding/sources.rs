@@ -1,6 +1,8 @@
 //! One immutable native source collection shared by all treatment arms.
 use super::*;
 use serde::Deserialize;
+pub(super) mod history;
+mod storage;
 
 const MAX_EPOCHS: usize = 3;
 const QUERIES: usize = 48;
@@ -57,6 +59,7 @@ impl Episode {
         };
         if !matches!(summary.origin, Origin::Local)
             || summary.search_limit != SEARCH as u32
+            || digest(&self.observation.knowledge) != digest(&common.knowledge)
             || summary.checkpoint != digest(&common.model)
             || summary.policy != common.model.specification
             || summary.native_context
