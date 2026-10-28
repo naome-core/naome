@@ -6,6 +6,10 @@ build --repository_cache=~/.cache/naome-bazel/repository
 build --verbose_failures
 test --test_output=errors
 test --test_summary=detailed
+# Compile only the numerical test kernels efficiently; retain debug guards.
+test --@rules_rust//rust/settings:per_crate_rustc_flag=external/rules_rust++crate+crates__gemm@-Copt-level=2
+test --@rules_rust//rust/settings:per_crate_rustc_flag=external/rules_rust++crate+crates__gemm@-Cdebug-assertions=on
+test --@rules_rust//rust/settings:per_crate_rustc_flag=external/rules_rust++crate+crates__gemm@-Coverflow-checks=on
 
 build:ci --keep_going
 test:ci --flaky_test_attempts=1
