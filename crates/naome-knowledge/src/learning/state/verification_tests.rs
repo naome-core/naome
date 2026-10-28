@@ -45,3 +45,17 @@ fn changed_provenance_never_inherits_a_verified_neighbour() {
     validate_example(&example).unwrap();
     assert_eq!(proof::checking_work().calls, checked);
 }
+
+#[test]
+fn a_new_worker_rechecks_witnesses_in_its_own_empty_cache() {
+    let example = crate::learning::tests::own_example();
+    validate_example(&example).unwrap();
+    std::thread::spawn(move || {
+        let checked = proof::checking_work().calls;
+        validate_example(&example).unwrap();
+        assert!(proof::checking_work().calls > checked);
+        assert_eq!(VERIFIED.with(|known| known.borrow().len()), 1);
+    })
+    .join()
+    .unwrap();
+}

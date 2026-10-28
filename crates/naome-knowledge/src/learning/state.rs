@@ -2,10 +2,18 @@
 use super::*;
 // This process-local cache contains only exact inputs already checked by the
 // unchanged native kernel. It is never serialized; reopening rechecks all data.
-std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::BTreeSet<String>> = const { std::cell::RefCell::new(std::collections::BTreeSet::new()) }; }
+std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::VecDeque<String>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) }; }
 fn validate_example(e: &Example) -> Result<(), String> {
     let key = digest(e);
-    if VERIFIED.with(|known| known.borrow().contains(&key)) {
+    if VERIFIED.with(|known| {
+        let mut known = known.borrow_mut();
+        let Some(index) = known.iter().position(|entry| *entry == key) else {
+            return false;
+        };
+        let key = known.remove(index).expect("located verified input");
+        known.push_back(key);
+        true
+    }) {
         return Ok(());
     }
     if e.job == 0 {
@@ -52,9 +60,9 @@ fn validate_example(e: &Example) -> Result<(), String> {
     VERIFIED.with(|known| {
         let mut known = known.borrow_mut();
         if known.len() >= 64 {
-            known.pop_first();
+            known.pop_front();
         }
-        known.insert(key);
+        known.push_back(key);
     });
     Ok(())
 }
