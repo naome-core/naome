@@ -98,9 +98,9 @@ pub fn proof_context(tree: &super::search::Tree) -> Result<ArtifactState, String
             let verified = super::knowledge::verified(tree)?;
             super::proof::lemma_context(&verified.definitions, &verified.lemmas)
         }
-        Tree::Constructed { packet, .. } | Tree::Certificate(packet) => {
-            super::evidence::context(packet)
-        }
+        Tree::Constructed { packet, .. }
+        | Tree::Composed { packet, .. }
+        | Tree::Certificate(packet) => super::evidence::context(packet),
         Tree::Definitions {
             entries,
             selected,
@@ -494,6 +494,7 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
         return super::knowledge::helpers(&super::knowledge::verified(tree)?);
     }
     if let super::search::Tree::Constructed { packet: bytes, .. }
+    | super::search::Tree::Composed { packet: bytes, .. }
     | super::search::Tree::Certificate(bytes) = tree
     {
         return super::evidence::helpers(bytes);
@@ -539,7 +540,8 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
 pub fn selected(tree: &super::search::Tree) -> Result<Vec<Entry>, String> {
     match tree {
         super::search::Tree::Knowledge { .. } => Ok(super::knowledge::verified(tree)?.definitions),
-        super::search::Tree::Constructed { packet, .. } => super::evidence::selected(packet),
+        super::search::Tree::Constructed { packet, .. }
+        | super::search::Tree::Composed { packet, .. } => super::evidence::selected(packet),
         super::search::Tree::Definitions {
             entries,
             selected: index,

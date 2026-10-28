@@ -14,7 +14,9 @@ pub fn steps(tree: &Tree) -> usize {
         Tree::Knowledge { proof, .. } | Tree::Definitions { proof, .. } => 1 + steps(proof),
         Tree::Step { children, .. } => 1 + children.iter().map(steps).sum::<usize>(),
         Tree::Certificate(bytes) => super::super::peer::step_count(bytes),
-        Tree::Constructed { packet, .. } => super::super::evidence::steps(packet).unwrap_or(0),
+        Tree::Constructed { packet, .. } | Tree::Composed { packet, .. } => {
+            super::super::evidence::steps(packet).unwrap_or(0)
+        }
         Tree::Stored { steps, .. } => *steps,
         _ => 0,
     }
@@ -68,6 +70,7 @@ fn rebase(
         )),
         Tree::Axiom(_)
         | Tree::Certificate(_)
+        | Tree::Composed { .. }
         | Tree::Constructed { .. }
         | Tree::Stored { .. }
         | Tree::Knowledge { .. }
@@ -160,7 +163,11 @@ pub fn checked(
         }
     } else if matches!(
         tree,
-        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Constructed { .. } | Tree::Knowledge { .. }
+        Tree::Axiom(_)
+            | Tree::Certificate(_)
+            | Tree::Composed { .. }
+            | Tree::Constructed { .. }
+            | Tree::Knowledge { .. }
     ) {
         tree.clone()
     } else {

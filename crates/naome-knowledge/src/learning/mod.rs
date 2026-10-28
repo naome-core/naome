@@ -11,6 +11,8 @@ pub(crate) mod meta;
 mod model;
 pub(crate) mod peer;
 mod pool;
+mod prerequisites;
+pub(crate) use prerequisites::Prerequisites;
 pub(crate) mod program;
 pub(crate) mod proof;
 mod search;
@@ -208,6 +210,7 @@ pub(crate) struct Job {
     pub evidence: Vec<Evidence>,
     pub training: bool,
     pub required: Vec<String>,
+    pub prerequisites: Prerequisites,
     pub base_hash: String,
     pub base: State,
     pub progress: Option<Progress>,
@@ -360,6 +363,11 @@ impl Job {
     pub fn validate_generated_trace(&self) -> Result<(), String> {
         fn generated(tree: &search::Tree) -> bool {
             match tree {
+                search::Tree::Composed {
+                    packet,
+                    inputs,
+                    work,
+                } => construction::composition::validate(packet, inputs, *work).is_ok(),
                 search::Tree::Certificate(_)
                 | search::Tree::Stored { .. }
                 | search::Tree::Constructed {
@@ -387,6 +395,9 @@ impl Job {
             return Err("learning parent snapshot differs".into());
         }
         self.base.validate()?;
+        if !self.prerequisites.is_empty() && (self.required.is_empty() || self.training) {
+            return Err("temporary prerequisites lack a solving role".into());
+        }
         if self.required.len() > knowledge::CAPACITY
             || self
                 .required
@@ -397,7 +408,7 @@ impl Job {
         {
             return Err("required theorem set capacity or duplicate".into());
         }
-        self.base.require_theorems(&self.required)?;
+        self.prerequisites.require(&self.base, &self.required)?;
         let mut expected = if self.training {
             self.base
                 .training_sources()
@@ -525,6 +536,11 @@ impl Job {
             }
             if let Some(solution) = &p.result {
                 let checked = solution.checked()?.into_checked_proof();
+                if let search::Tree::Composed { inputs, .. } = &solution.tree
+                    && inputs.iter().any(|id| !self.required.contains(id))
+                {
+                    return Err("composition differs from requested prerequisites".into());
+                }
                 knowledge::validate_offered(
                     checked.conclusion(),
                     &solution.tree,
@@ -781,9 +797,12 @@ impl Job {
                             runtime,
                             budget,
                             job,
-                            &self.base.definitions,
-                            &self.base.knowledge,
-                            &self.required,
+                            SolveContext {
+                                definitions: &self.base.definitions,
+                                theorems: &self.base.knowledge,
+                                required: &self.required,
+                                prerequisites: Some(&self.prerequisites),
+                            },
                         )
                     })?;
                     p.cost = Some(generated.cost);
@@ -834,14 +853,19 @@ impl model::Ranker for Exploring<'_> {
         Ok(scores)
     }
 }
+#[derive(Default)]
+struct SolveContext<'a> {
+    definitions: &'a [definitions::Entry],
+    theorems: &'a [knowledge::Entry],
+    required: &'a [String],
+    prerequisites: Option<&'a Prerequisites>,
+}
 fn solve_with_report(
     source: &str,
     model: &mut model::Runtime,
     budget: usize,
     job: u64,
-    known: &[definitions::Entry],
-    theorems: &[knowledge::Entry],
-    required: &[String],
+    context: SolveContext<'_>,
 ) -> Result<Generation, String> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
@@ -855,9 +879,12 @@ fn solve_with_report(
         diagnostic,
         mut cost,
         frontier,
-    } = search_question_report(source, &mut ranker, budget, theorems, known, required)?;
+    } = search_question_report(source, &mut ranker, budget, &context)?;
     if let Some(solution) = &mut solution {
-        if matches!(solution.tree, search::Tree::Constructed { .. }) {
+        if matches!(
+            solution.tree,
+            search::Tree::Constructed { .. } | search::Tree::Composed { .. }
+        ) {
             return Ok(Generation {
                 solution: Some(solution.clone()),
                 diagnostic,
@@ -872,11 +899,12 @@ fn solve_with_report(
         } else {
             question.proved_target()
         };
-        if let Some((entries, selected)) = definitions::choose(target, known, model)? {
+        if let Some((entries, selected)) = definitions::choose(target, context.definitions, model)?
+        {
             cost.definition_candidates = entries.len();
             let available = entries
                 .iter()
-                .take_while(|entry| known.contains(entry))
+                .take_while(|entry| context.definitions.contains(entry))
                 .count();
             let tree = search::Tree::Definitions {
                 entries,
@@ -940,8 +968,18 @@ fn solve_with_definitions(
     known: &[definitions::Entry],
     theorems: &[knowledge::Entry],
 ) -> Result<(Option<Solution>, String, GenerationCost), String> {
-    solve_with_report(source, model, budget, job, known, theorems, &[])
-        .map(|g| (g.solution, g.diagnostic, g.cost))
+    solve_with_report(
+        source,
+        model,
+        budget,
+        job,
+        SolveContext {
+            definitions: known,
+            theorems,
+            ..Default::default()
+        },
+    )
+    .map(|g| (g.solution, g.diagnostic, g.cost))
 }
 #[cfg(test)]
 fn search_question_with_knowledge(
@@ -951,8 +989,17 @@ fn search_question_with_knowledge(
     theorems: &[knowledge::Entry],
     definitions: &[definitions::Entry],
 ) -> Result<(Option<Solution>, String, GenerationCost), String> {
-    search_question_report(source, ranker, budget, theorems, definitions, &[])
-        .map(|g| (g.solution, g.diagnostic, g.cost))
+    search_question_report(
+        source,
+        ranker,
+        budget,
+        &SolveContext {
+            theorems,
+            definitions,
+            ..Default::default()
+        },
+    )
+    .map(|g| (g.solution, g.diagnostic, g.cost))
 }
 #[cfg(test)]
 fn search_question(
@@ -975,9 +1022,7 @@ fn search_question_report(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
-    theorems: &[knowledge::Entry],
-    definitions: &[definitions::Entry],
-    required: &[String],
+    context: &SolveContext<'_>,
 ) -> Result<Generation, String> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
@@ -989,6 +1034,21 @@ fn search_question_report(
     let mut remaining = budget;
     let mut frontier = None;
     let mut certificate_failures = 0;
+    let retrieval_started = std::time::Instant::now();
+    let dependency_checking = proof::checking_work().steps;
+    let terms = context
+        .prerequisites
+        .map(|p| p.terms(context.required))
+        .transpose()?
+        .unwrap_or_default();
+    dependency_steps += proof::checking_work()
+        .steps
+        .saturating_sub(dependency_checking) as usize;
+    retrieved += terms.len();
+    retrieval_micros += retrieval_started
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64;
     for refuted in [false, true] {
         if remaining == 0 {
             break;
@@ -1000,60 +1060,98 @@ fn search_question_report(
         };
         let orientation_started = std::time::Instant::now();
         let retrieval_started = std::time::Instant::now();
-        let selected = knowledge::offer(&target, theorems, required)?;
-        retrieved += selected.len();
-        dependency_steps += selected
-            .iter()
-            .map(|e| evidence::steps(&e.packet))
-            .collect::<Result<Vec<_>, _>>()?
-            .iter()
-            .sum::<usize>();
-        retrieval_micros += retrieval_started
-            .elapsed()
-            .as_micros()
-            .min(u128::from(u64::MAX)) as u64;
-        let (constructed, work, selection) = match construction::construct_with(
-            &target,
-            remaining,
-            orientation_started,
-            ranker,
-            &selected,
-            definitions,
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                certificate_failures += 1;
-                remaining = 0;
-                failure = format!("construction_unresolved: {error}");
-                break;
-            }
+        let composed = if terms.is_empty() || remaining == 0 {
+            None
+        } else {
+            let (verified, work) = construction::composition::construct(
+                &target,
+                &terms,
+                remaining,
+                orientation_started,
+            )?;
+            remaining = remaining.saturating_sub(work);
+            verified.and_then(|verified| {
+                let inputs = construction::composition::used(&verified, context.required).ok()?;
+                if inputs.is_empty() {
+                    return None;
+                }
+                Some((verified, inputs, work))
+            })
         };
-        remaining = remaining.saturating_sub(work);
-        let found = if let Some(verified) = constructed {
+        let found = if let Some((verified, inputs, work)) = composed {
             search::ResultTree {
-                tree: Some(search::Tree::Constructed {
-                    packet: match evidence::pack(&verified) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            certificate_failures += 1;
-                            failure = format!("construction_capacity: {error}");
-                            continue;
-                        }
-                    },
-                    selection,
+                tree: Some(search::Tree::Composed {
+                    packet: evidence::pack(&verified)?,
+                    inputs,
+                    work,
                 }),
                 expansions: 0,
                 failure: None,
                 frontier: None,
             }
         } else {
-            search::solve_with_knowledge(
+            let selected = match knowledge::offer(&target, context.theorems, context.required) {
+                Ok(selected) => selected,
+                Err(error) if !terms.is_empty() => {
+                    failure = format!("temporary_prerequisite_composition_unresolved: {error}");
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            retrieved += selected.len();
+            dependency_steps += selected
+                .iter()
+                .map(|e| evidence::steps(&e.packet))
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .sum::<usize>();
+            retrieval_micros += retrieval_started
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
+            let (constructed, work, selection) = match construction::construct_with(
                 &target,
-                ranker,
                 remaining,
                 orientation_started,
+                ranker,
                 &selected,
-            )?
+                context.definitions,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    certificate_failures += 1;
+                    remaining = 0;
+                    failure = format!("construction_unresolved: {error}");
+                    break;
+                }
+            };
+            remaining = remaining.saturating_sub(work);
+            if let Some(verified) = constructed {
+                search::ResultTree {
+                    tree: Some(search::Tree::Constructed {
+                        packet: match evidence::pack(&verified) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                certificate_failures += 1;
+                                failure = format!("construction_capacity: {error}");
+                                continue;
+                            }
+                        },
+                        selection,
+                    }),
+                    expansions: 0,
+                    failure: None,
+                    frontier: None,
+                }
+            } else {
+                search::solve_with_knowledge(
+                    &target,
+                    ranker,
+                    remaining,
+                    orientation_started,
+                    &selected,
+                )?
+            }
         };
         remaining = remaining.saturating_sub(found.expansions);
         if frontier.is_none() {

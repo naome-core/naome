@@ -59,6 +59,43 @@ fn fixture() -> (CompiledQuestion, CompiledQuestion, [CompiledQuestion; 2]) {
     (root, parent, leaves)
 }
 #[test]
+fn exact_conjunction_leaves_precede_an_unattempted_composite_without_inventing_failure() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let (root, parent, leaves) = fixture();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    failed(&mut frontier, &graph, &root, 1);
+    let previous = frontier
+        .previous_loop_work(&root, &graph, |_| true)
+        .unwrap();
+    assert_eq!(previous.target.resolution_id(), root.resolution_id());
+    assert!(
+        previous
+            .pending
+            .iter()
+            .any(|q| q.resolution_id() == parent.resolution_id())
+    );
+    let work = frontier.loop_work(&root, &graph, |_| true).unwrap();
+    assert_eq!(work.target.resolution_id(), parent.resolution_id());
+    assert_eq!(work.pending.len(), 2);
+    assert!(work.pending.iter().all(|q| {
+        leaves
+            .iter()
+            .any(|p| p.resolution_id() == q.resolution_id())
+    }));
+    assert_eq!(work.planned.len(), 4);
+    assert!(frontier.evidence.get(&parent).unwrap().is_none());
+    drop(frontier);
+    let mut restored = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    let work = restored.loop_work(&root, &graph, |_| true).unwrap();
+    assert_eq!(work.target.resolution_id(), parent.resolution_id());
+    assert_eq!(work.planned.len(), 4);
+}
+#[test]
 fn failed_helper_descends_and_checked_children_release_its_original_parent_once() {
     let directory = Directory::new();
     let mut graph = Graph::default();

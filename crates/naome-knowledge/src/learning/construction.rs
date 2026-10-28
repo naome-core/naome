@@ -2,6 +2,7 @@
 //! No theorem name, question identity, or natural-number recipe is recognized.
 #[cfg(test)]
 use super::evidence;
+pub(super) mod composition;
 mod logic;
 mod representation;
 pub(super) mod selection;

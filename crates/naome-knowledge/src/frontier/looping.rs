@@ -73,6 +73,12 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
         }
         if let Some(proof) = &node.checked {
             work.required.push(proof.clone());
+        } else if node.record.is_none() && !node.children.is_empty() && depth + 1 < DEPTH {
+            let mut nested = next(nodes, child, depth + 1);
+            if nested.pending.is_empty() {
+                nested.pending.push(child);
+            }
+            return nested;
         } else if node
             .record
             .as_ref()
@@ -156,13 +162,26 @@ impl Frontier {
         nodes.push(Node::load(self, goal.clone(), graph, 0, &mut memory)?);
         let mut index = 0;
         while index < nodes.len() {
-            if nodes[index].depth < DEPTH
-                && nodes[index].checked.is_none()
-                && let Some(record) = &nodes[index].record
-                && !record.loop_disabled
-                && (index == 0 || record.last_outcome == Outcome::NoCandidate)
-            {
-                let sources = record.helpers.clone();
+            if nodes[index].depth < DEPTH && nodes[index].checked.is_none() {
+                let sources = if let Some(record) = &nodes[index].record {
+                    if record.loop_disabled
+                        || (index > 0 && record.last_outcome != Outcome::NoCandidate)
+                    {
+                        Vec::new()
+                    } else {
+                        record.helpers.clone()
+                    }
+                } else if index > 0 {
+                    // Invertible conjunction structure needs no failed neural
+                    // attempt before exposing its exact closed prerequisites.
+                    finder::conjuncts(&nodes[index].question)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|q| q.source().to_owned())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 for source in sources {
                     let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
                     if helper.formula().view().node_count_and_depth().0
@@ -214,6 +233,8 @@ impl Frontier {
 
 #[cfg(test)]
 mod flat;
+#[cfg(test)]
+mod recursive;
 
 #[cfg(test)]
 mod tests;

@@ -598,7 +598,13 @@ enum Command {
         unit: u32,
         reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, String>>,
     },
-    Submit(Input, Binding, Vec<String>, oneshot::Sender<Completion>),
+    Submit(
+        Input,
+        Binding,
+        Vec<String>,
+        crate::learning::Prerequisites,
+        oneshot::Sender<Completion>,
+    ),
     Acknowledge(u64),
     Discard(Input, Binding),
     Recover {
@@ -690,13 +696,14 @@ impl Client {
         Ok(receive)
     }
     pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
-        self.submit_after(input, binding, Vec::new())
+        self.submit_after(input, binding, Vec::new(), Default::default())
     }
     pub(crate) fn submit_after(
         &self,
         input: Input,
         binding: Binding,
         required: Vec<String>,
+        prerequisites: crate::learning::Prerequisites,
     ) -> Result<Ticket, String> {
         input.validate()?;
         binding.validate()?;
@@ -710,6 +717,10 @@ impl Client {
         {
             return Err("required theorem role or capacity".into());
         }
+        prerequisites.validate()?;
+        if required.is_empty() && !prerequisites.is_empty() {
+            return Err("temporary prerequisites lack required roots".into());
+        }
         for id in &required {
             crate::object::id_bytes(id)?;
         }
@@ -719,6 +730,7 @@ impl Client {
                 input.clone(),
                 binding.clone(),
                 required,
+                prerequisites,
                 sender,
             ))
             .map_err(|_| "research command capacity or stopped service")?;

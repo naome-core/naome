@@ -783,7 +783,13 @@ fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_accoun
     let (reply, mut receive) = oneshot::channel();
     let next = owner.journal.next_id;
     owner
-        .submit_after(input.clone(), binding.clone(), required.clone(), reply)
+        .submit_after(
+            input.clone(),
+            binding.clone(),
+            required.clone(),
+            Default::default(),
+            reply,
+        )
         .unwrap();
     assert!(
         receive
@@ -804,7 +810,13 @@ fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_accoun
         .unwrap();
     let (reply, _receive) = oneshot::channel();
     owner
-        .submit_after(input.clone(), binding, required.clone(), reply)
+        .submit_after(
+            input.clone(),
+            binding,
+            required.clone(),
+            Default::default(),
+            reply,
+        )
         .unwrap();
     let record = owner.journal.records.get(&next).unwrap();
     let native = record.native.as_ref().unwrap();
@@ -812,6 +824,60 @@ fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_accoun
     native.base.require_theorems(&required).unwrap();
     native.validate().unwrap();
     assert_eq!(record.input.account_key(), input.account_key());
+}
+
+#[test]
+fn temporary_canonical_inputs_retry_with_the_original_spent_time_and_reservations() {
+    let (_directory, mut owner) = native();
+    let input = Input::Solve {
+        question: crate::learning::tests::own_question(),
+    };
+    let (id, _receive) = submit_native(&mut owner, input.clone());
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    let record = owner.journal.records.get_mut(&id).unwrap();
+    record.checkpoint = 1;
+    record.state = State::Failed;
+    record.acknowledged = true;
+    record.spent_ms = 25;
+    owner
+        .journal
+        .accounts
+        .get_mut(&input.account_key())
+        .unwrap()
+        .spent_ms = 25;
+    owner.journal.total_spent_ms = 25;
+    owner.save().unwrap();
+    let original = owner.journal.records[&id].clone();
+    let solution = checked_solution();
+    let mut graph = crate::Graph::default();
+    graph.produce(&solution.source).unwrap();
+    let required = vec![solution.proof_id];
+    let full = graph.prerequisites(&required).unwrap().unwrap();
+    let (reply, _receive) = oneshot::channel();
+    owner
+        .submit_after(
+            input.clone(),
+            Binding::new([1; 32], [0; 32]),
+            required.clone(),
+            full,
+            reply,
+        )
+        .unwrap();
+    let retry = &owner.journal.records[&(id + 1)];
+    assert_eq!(retry.created_ms, original.created_ms);
+    assert_eq!(retry.expires_ms, original.expires_ms);
+    assert_eq!(retry.spent_ms, original.spent_ms);
+    assert_eq!(retry.reserved_units, original.reserved_units);
+    assert_eq!(retry.input.account_key(), input.account_key());
+    let native = retry.native.as_ref().unwrap();
+    assert!(native.base.require_theorems(&required).is_err());
+    native
+        .prerequisites
+        .require(&native.base, &required)
+        .unwrap();
+    native.validate().unwrap();
+    assert_eq!(owner.journal.total_reserved_units, 1);
 }
 
 #[test]
@@ -842,6 +908,7 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
             input,
             Binding::new([0; 32], [0; 32]),
             vec![solution.proof_id],
+            Default::default(),
             reply,
         )
         .unwrap();

@@ -37,6 +37,11 @@ pub enum Tree {
         packet: Vec<u8>,
         selection: Option<super::construction::selection::Selection>,
     },
+    Composed {
+        packet: Vec<u8>,
+        inputs: Vec<String>,
+        work: usize,
+    },
     Definitions {
         entries: Vec<super::definitions::Entry>,
         selected: usize,
@@ -854,6 +859,16 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
     }
     if matches!(tree, Tree::Stored { .. }) {
         return Err("peer replay requires its owned journal snapshot".into());
+    }
+    if let Tree::Composed {
+        packet,
+        inputs,
+        work,
+    } = tree
+    {
+        super::construction::composition::validate(packet, inputs, *work)?;
+        // A deterministic composition has no neural action label to invent.
+        return Ok((super::evidence::compile(target, packet)?, Vec::new()));
     }
     if let Tree::Constructed { packet, selection } = tree {
         let (term, mut graphs) = super::peer::compile_dag(target, packet)?;

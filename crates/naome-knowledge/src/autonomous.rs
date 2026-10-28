@@ -1145,12 +1145,24 @@ impl Autonomous {
                     } else {
                         Vec::new()
                     };
+                    let prerequisites = match graph.prerequisites(&required) {
+                        Ok(Some(inputs)) => inputs,
+                        Ok(None) => Default::default(),
+                        Err(error) => {
+                            if error.fatal() {
+                                self.error = Some(error.to_string());
+                            }
+                            self.retain(question);
+                            return accepted;
+                        }
+                    };
                     match self.client.submit_after(
                         jobs::Input::Solve {
                             question: question.source().to_owned(),
                         },
                         context.binding(),
                         required,
+                        prerequisites,
                     ) {
                         Ok(ticket) => {
                             self.solving.insert(

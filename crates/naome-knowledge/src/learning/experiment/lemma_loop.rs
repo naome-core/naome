@@ -2,6 +2,7 @@
 use super::knowledge::{Store, admit_discovery};
 use super::*;
 use serde_json::{Value, json};
+mod adjudicate;
 mod budget;
 mod inputs;
 mod run;
@@ -41,7 +42,7 @@ fn matched_recursive_lemma_loop() {
             json!({"passed":gate.passed(),"rule":gate.rule,"reason":format!("{:?}",gate.reason)})
         })
         .collect::<Vec<_>>();
-    let manifest = json!({"input_sha256":crate::hex(&Sha256::digest(&raw)),"questions":questions.iter().enumerate().map(|(i,q)|json!({"source":q.source(),"resolution_id":crate::hex(q.resolution_id()),"family":input.cases[i].family,"shape":input.cases[i].shape,"eligible":State::eligible(q.source()),"initial_admission":gates[i]})).collect::<Vec<_>>(),"model_seeds":input.model_seeds,"arms":run::ARMS,"aggregate_limits":budget::limits(),"shared_live_resource_limits":format!("{:?}",crate::resources::active_limits()),"job_seeds":{"initial":1,"helpers_start":10,"retry":100,"multi_restart":[1,100,101,102]},"first_slice":SLICE,"helper_slice":SLICE,"max_helpers":4,"max_depth":2,"stopping_rule":"one pass over the frozen cases and seeds, no replacement or parameter search","primary_criterion":"recursive checked wins minus losses against the union of direct/restart/multi-restart; helper-assisted successes audited at identical remaining total budget","controls":"All arms use the same native engine and checked conjunction constructor. Flat control retains the pre-recursion scheduler; only the recursive arm descends.","limitations":"Six grouped synthetic families; five fresh checkpoints, no lower weight training or cross-question knowledge transfer; in-process owner cycle rather than a physical distributed deployment"});
+    let manifest = json!({"input_sha256":crate::hex(&Sha256::digest(&raw)),"questions":questions.iter().enumerate().map(|(i,q)|json!({"source":q.source(),"resolution_id":crate::hex(q.resolution_id()),"family":input.cases[i].family,"shape":input.cases[i].shape,"eligible":State::eligible(q.source()),"initial_admission":gates[i]})).collect::<Vec<_>>(),"model_seeds":input.model_seeds,"arms":run::ARMS,"aggregate_limits":budget::limits(),"shared_live_resource_limits":format!("{:?}",crate::resources::active_limits()),"job_seeds":{"initial":1,"helpers_start":10,"retry":100,"multi_restart":[1,100,101,102]},"first_slice":SLICE,"helper_slice":SLICE,"max_helpers":4,"max_depth":2,"stopping_rule":"one pass over the frozen cases and seeds, no replacement or parameter search","primary_criterion":"recursive checked wins minus losses against the union of direct/restart/multi-restart; helper-assisted successes audited at identical remaining total budget","controls":"All arms use the same native model and independently checked calculus. Flat retains the one-level scheduler. Current recursive planning exposes exact conjunction leaves before a composite neural attempt and composes temporary complete canonical prerequisites within existing caps. The separate test-only recursive control freezes the 441531bc scheduler.","limitations":"Six grouped synthetic families; five fresh checkpoints, no lower weight training or cross-question knowledge transfer; in-process owner cycle rather than a physical distributed deployment"});
     write(&path.join("frozen-manifest.json"), &manifest);
     let mut rows = Vec::new();
     for (seed_index, &seed) in input.model_seeds.iter().enumerate() {

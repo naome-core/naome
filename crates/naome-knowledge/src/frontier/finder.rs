@@ -68,23 +68,26 @@ fn inclusion(seed: &Formula) -> Option<Formula> {
         Formula::implies(relation(seed, x, a)?, relation(seed, x, b)?),
     ))
 }
-/// Proper subgoals are generalized with their original variable relationships.
-/// A helper may be stronger than the goal; no inference is claimed by proposing it.
-fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
+/// Exact invertible AND obligations; proposing them grants no validity.
+pub(super) fn conjuncts(goal: &CompiledQuestion) -> Option<Vec<CompiledQuestion>> {
     let mut body = goal.formula().clone();
     while let Some(opened) = open(&body) {
         body = opened;
     }
-    if let Some((left, negative_right)) = body.view().negated().and_then(|f| f.implication_parts())
-        && let Some(right) = negative_right.negated()
-    {
-        // Solving the actual conjuncts suffices; unrelated strengthenings or
-        // negated premises add work without supplying these prerequisites.
-        let mut result = [left.to_owned(), right.to_owned()]
+    let (left, negative_right) = body.view().negated()?.implication_parts()?;
+    let right = negative_right.negated()?;
+    Some(
+        [left.to_owned(), right.to_owned()]
             .into_iter()
             .filter_map(|f| CompiledQuestion::from_formula(close(f)).ok())
             .filter(|q| meaningful(q) && q.resolution_id() != goal.resolution_id())
-            .collect::<Vec<_>>();
+            .collect(),
+    )
+}
+/// Proper subgoals are generalized with their original variable relationships.
+/// A helper may be stronger than the goal; no inference is claimed by proposing it.
+fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
+    if let Some(mut result) = conjuncts(goal) {
         if !result.is_empty() {
             let len = result.len();
             result.rotate_left(cursor as usize % len);

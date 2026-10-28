@@ -298,7 +298,7 @@ impl Owner {
                         if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err("pending owned learning receipt differs".into());}
                     },
                     Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
-                    Some(Command::Submit(input,binding,required,reply))=>self.submit_after(input,binding,required,reply)?,
+                    Some(Command::Submit(input,binding,required,prerequisites,reply))=>self.submit_after(input,binding,required,prerequisites,reply)?,
                     Some(Command::Recover{after,before,reply})=>{
                         let page=self.disk.recovery_page(after,before,&self.recovery_skip)?;
                         let _=reply.send(Ok(page));
@@ -908,13 +908,14 @@ impl Owner {
         binding: Binding,
         reply: oneshot::Sender<Completion>,
     ) -> Result<(), String> {
-        self.submit_after(input, binding, Vec::new(), reply)
+        self.submit_after(input, binding, Vec::new(), Default::default(), reply)
     }
     fn submit_after(
         &mut self,
         input: Input,
         binding: Binding,
         required: Vec<String>,
+        prerequisites: crate::learning::Prerequisites,
         reply: oneshot::Sender<Completion>,
     ) -> Result<(), String> {
         if reply.is_closed() {
@@ -926,7 +927,7 @@ impl Owner {
                     .journal
                     .learning
                     .as_ref()
-                    .is_none_or(|state| state.require_theorems(&required).is_err())
+                    .is_none_or(|state| prerequisites.require(state, &required).is_err())
             {
                 reject(
                     reply,
@@ -939,7 +940,7 @@ impl Owner {
                 r.input == input
                     && !r.acknowledged
                     && r.native.as_ref().is_none_or(|n| {
-                        n.base.require_theorems(&required).is_err()
+                        n.prerequisites.require(&n.base, &required).is_err()
                             || required.iter().any(|id| !n.required.contains(id))
                     })
             }) {
@@ -1005,7 +1006,7 @@ impl Owner {
         if let Some(record) = self.disk.request(&input, &binding, settings)? {
             if !required.is_empty()
                 && record.native.as_ref().is_none_or(|n| {
-                    n.base.require_theorems(&required).is_err()
+                    n.prerequisites.require(&n.base, &required).is_err()
                         || required.iter().any(|id| !n.required.contains(id))
                 })
             {
@@ -1043,6 +1044,7 @@ impl Owner {
                 .job();
             job.training = matches!(input, Input::Train { .. });
             job.required = required;
+            job.prerequisites = prerequisites;
             if job.training {
                 job.evidence = self.disk.replay_evidence(&job.base)?;
             }

@@ -12,6 +12,7 @@ struct Session<'a> {
     engine: &'a mut Engine,
     io: &'a mut Store,
     meter: &'a mut Meter,
+    graph: Option<&'a crate::Graph>,
 }
 impl Session<'_> {
     fn generate(
@@ -22,6 +23,14 @@ impl Session<'_> {
         required: &[String],
     ) -> Generation {
         let allowance = cap.min(self.meter.remaining());
+        let full = self.graph.and_then(|g| g.prerequisites(required).unwrap());
+        if let Some(full) = &full {
+            let bytes = serde_json::to_vec(full).unwrap().len();
+            if !full.is_empty() {
+                self.io.read_bytes += bytes as u64;
+                self.io.reads += 1;
+            }
+        }
         let generated = self
             .engine
             .with(&self.state.model, self.io, |runtime| {
@@ -30,9 +39,12 @@ impl Session<'_> {
                     runtime,
                     allowance,
                     job,
-                    &self.state.definitions,
-                    &self.state.knowledge,
-                    required,
+                    SolveContext {
+                        definitions: &self.state.definitions,
+                        theorems: &self.state.knowledge,
+                        required,
+                        prerequisites: full.as_ref(),
+                    },
                 )
             })
             .unwrap();
@@ -108,6 +120,7 @@ pub(super) fn arm(
         engine: &mut engine,
         io: &mut io,
         meter: &mut meter,
+        graph: (kind == "recursive_loop").then_some(&graph),
     }
     .generate(q, if kind == "direct" { EXPANSIONS } else { SLICE }, 1, &[]);
     let first_failed = first.solution.is_none();
@@ -118,7 +131,10 @@ pub(super) fn arm(
     let mut acquired = Vec::new();
     let mut retry_allowance = 0;
     let mut audit_debit = Value::Null;
-    if result.is_none() && meter.within(&io) && matches!(kind, "flat_loop" | "recursive_loop") {
+    if result.is_none()
+        && meter.within(&io)
+        && matches!(kind, "flat_loop" | "recursive_loop" | "recursive_control")
+    {
         let settings = jobs::Settings {
             native_proof_learning: true,
             ..Default::default()
@@ -144,6 +160,8 @@ pub(super) fn arm(
             };
             let work = if kind == "flat_loop" {
                 finder.flat_loop_work(q, &graph)
+            } else if kind == "recursive_control" {
+                finder.previous_loop_work(q, &graph, &mut available)
             } else {
                 finder.loop_work(q, &graph, &mut available)
             }
@@ -169,7 +187,16 @@ pub(super) fn arm(
             } else {
                 vec![]
             };
-            if state.require_theorems(&needed).is_err() {
+            let offered = if kind == "recursive_loop" {
+                graph
+                    .prerequisites(&needed)
+                    .unwrap()
+                    .unwrap_or_default()
+                    .require(&state, &needed)
+            } else {
+                state.require_theorems(&needed)
+            };
+            if offered.is_err() {
                 finder.exhaust_helpers(&helper).unwrap();
                 events.push(json!({"role":"required_prerequisites_unavailable","question":helper.source(),"required":needed}));
                 continue;
@@ -179,6 +206,7 @@ pub(super) fn arm(
                 engine: &mut engine,
                 io: &mut io,
                 meter: &mut meter,
+                graph: (kind == "recursive_loop").then_some(&graph),
             }
             .generate(&helper, SLICE, job, &needed);
             finder
@@ -225,9 +253,20 @@ pub(super) fn arm(
                 "a four-member depth-two plan has at most six helper attempts"
             );
         }
-        if state.require_theorems(&required).is_err() {
+        let offered = if kind == "recursive_loop" {
+            graph
+                .prerequisites(&required)
+                .unwrap()
+                .unwrap_or_default()
+                .require(&state, &required)
+        } else {
+            state.require_theorems(&required)
+        };
+        if offered.is_err() {
             events.push(json!({"role":"required_prerequisites_unavailable","required":required}));
-            required.clear();
+            if kind != "recursive_loop" {
+                required.clear();
+            }
         }
         finder_owner = Some(finder);
     }
@@ -253,6 +292,7 @@ pub(super) fn arm(
             engine: &mut engine,
             io: &mut io,
             meter: &mut meter,
+            graph: (kind == "recursive_loop").then_some(&graph),
         }
         .generate(q, retry_allowance, job, &required);
         if let Some(finder) = &mut finder_owner {
@@ -319,6 +359,7 @@ pub(super) fn removal(
         engine: &mut engine,
         io: &mut io,
         meter: &mut meter,
+        graph: None,
     }
     .generate(
         q,

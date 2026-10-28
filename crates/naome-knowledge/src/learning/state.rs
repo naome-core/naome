@@ -294,6 +294,7 @@ impl State {
             evidence: Vec::new(),
             training: false,
             required: Vec::new(),
+            prerequisites: Default::default(),
             base_hash: digest(self),
             base: self.clone(),
             progress: None,

@@ -1,6 +1,73 @@
 //! Bounded learning snapshots derived only from the checked canonical graph.
 use super::*;
 impl Graph {
+    /// Capture exact canonical inputs; mathematical checking belongs to the
+    /// granted worker, rather than this graph/async scheduling path.
+    pub(crate) fn prerequisites(
+        &self,
+        required: &[String],
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        struct Capture<'a> {
+            graph: &'a Graph,
+            active: std::collections::BTreeSet<ArtifactId>,
+            seen: std::collections::BTreeSet<ArtifactId>,
+            artifacts: Vec<Envelope>,
+            bytes: usize,
+        }
+        impl Capture<'_> {
+            fn visit(&mut self, id: ArtifactId) -> Result<bool, crate::Error> {
+                if self.seen.contains(&id) {
+                    return Ok(true);
+                }
+                if !self.active.insert(id) {
+                    return Err("checked prerequisite cycle".into());
+                }
+                if self.active.len() + self.seen.len() >= crate::resources::limits().closure_objects
+                {
+                    return Ok(false);
+                }
+                let Some(object) = self.graph.binary_object(id)? else {
+                    return Ok(false);
+                };
+                self.bytes = self
+                    .bytes
+                    .checked_add(object.bytes.len())
+                    .ok_or("prerequisite closure byte overflow")?;
+                if self.bytes > crate::resources::limits().closure_bytes
+                    || crate::object::program_manifest(&object.bytes)?.is_some()
+                {
+                    return Ok(false);
+                }
+                for dependency in &object.dependencies {
+                    if !self.visit(*dependency)? {
+                        return Ok(false);
+                    }
+                }
+                self.artifacts.push(object.envelope());
+                self.active.remove(&id);
+                self.seen.insert(id);
+                Ok(true)
+            }
+        }
+        if required.len() > crate::learning::knowledge::CAPACITY {
+            return Err("required prerequisite capacity".into());
+        }
+        let mut capture = Capture {
+            graph: self,
+            active: Default::default(),
+            seen: Default::default(),
+            artifacts: Vec::new(),
+            bytes: 0,
+        };
+        for id in required {
+            if !capture.visit(crate::object::proof_address(id)?)? {
+                return Ok(None);
+            }
+        }
+        crate::learning::Prerequisites::new(capture.artifacts)
+            .map(Some)
+            .map_err(Into::into)
+    }
     pub(crate) fn peer_learning_page(
         &self,
         after: u64,
