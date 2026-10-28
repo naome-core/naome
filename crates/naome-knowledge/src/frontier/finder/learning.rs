@@ -247,22 +247,6 @@ impl Learning {
             return 65536;
         }
         let cell = &self.cells[index];
-        #[cfg(not(test))]
-        let wait_for_observations = true;
-        #[cfg(test)]
-        let wait_for_observations = !matches!(
-            self.treatment,
-            crate::frontier::Treatment::FamilyReplay
-                | crate::frontier::Treatment::FamilyReplayNoUtility
-                | crate::frontier::Treatment::OutcomeReplay
-                | crate::frontier::Treatment::CensoredReplay
-        );
-        if wait_for_observations && cell.attempts < 4 {
-            // One or two outcomes for a pooled construction recipe provide a
-            // fragile scheduling signal. Keep the original exploration mass
-            // until the current checkpoint has supplied several observations.
-            return 65536;
-        }
         let n = cell.attempts as f64;
         let p = (cell.solved as f64 + 1.) / (n + 2.);
         let regret = if cell.solved == 0 && cell.attempts >= 4 {
@@ -297,6 +281,27 @@ impl Learning {
             descriptor: Descriptor::of(q),
         });
         self.trim();
+    }
+    pub fn observe(
+        &self,
+        model: &mut Model,
+        question: &CompiledQuestion,
+        resolved: bool,
+        millis: u64,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if matches!(
+            self.treatment,
+            crate::frontier::Treatment::Previous
+                | crate::frontier::Treatment::Uniform
+                | crate::frontier::Treatment::FamilyReplay
+                | crate::frontier::Treatment::FamilyReplayNoUtility
+                | crate::frontier::Treatment::OutcomeReplay
+                | crate::frontier::Treatment::CensoredReplay
+        ) {
+            return model.observe_provisional(question, resolved, millis);
+        }
+        model.observe(question, resolved, millis)
     }
     pub fn remember(
         &mut self,

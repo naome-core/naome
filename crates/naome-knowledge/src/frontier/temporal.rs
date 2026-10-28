@@ -85,8 +85,8 @@ fn family_held_out_temporal_comparison() {
                                 continue;
                             }
                             let q = &questions[*index];
-                            model
-                                .observe(q, observation.resolved, observation.millis)
+                            memory
+                                .observe(&mut model, q, observation.resolved, observation.millis)
                                 .unwrap();
                             memory
                                 .remember(

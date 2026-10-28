@@ -226,21 +226,38 @@ impl Model {
             .ok_or("finder rehearsal count overflow")?;
         self.validate()
     }
-    /// A newly proved statement has not yet demonstrated assistance. The zero
-    /// support observation is provisional, not a label of mathematical futility.
-    /// A later checked use supplies the positive observation through `support`.
+    /// A newly proved statement has not yet had an observed opportunity to help
+    /// another proof. Its support label stays unavailable until a checked use.
     pub fn observe(
         &mut self,
         question: &CompiledQuestion,
         resolved: bool,
         millis: u64,
     ) -> Result<(), String> {
+        self.observe_labels(question, resolved, millis, None)
+    }
+    #[cfg(test)]
+    pub fn observe_provisional(
+        &mut self,
+        question: &CompiledQuestion,
+        resolved: bool,
+        millis: u64,
+    ) -> Result<(), String> {
+        self.observe_labels(question, resolved, millis, resolved.then_some(0.))
+    }
+    fn observe_labels(
+        &mut self,
+        question: &CompiledQuestion,
+        resolved: bool,
+        millis: u64,
+        support: Option<f32>,
+    ) -> Result<(), String> {
         self.train(
             question,
             [
                 Some(f32::from(resolved)),
                 Some(((millis as f32).ln_1p() / 16.).min(1.)),
-                resolved.then_some(0.),
+                support,
             ],
         );
         self.updates = self

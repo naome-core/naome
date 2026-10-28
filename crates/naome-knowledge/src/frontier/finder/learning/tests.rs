@@ -167,35 +167,29 @@ fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
 }
 
 #[test]
-fn recipe_scheduling_waits_for_current_checkpoint_observations() {
+fn fresh_checked_results_do_not_train_negative_support() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
-    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
-    let recipe = Recipe {
-        operator: 2,
-        level: 0,
-    };
-    for draw in 0..4 {
-        assert_eq!(learning.priority(recipe.index(), draw), 65536);
-        learning.selected(&question, Some(recipe));
+    let question = q(&crate::learning::tests::own_question());
+    for draw in 0..64 {
+        learning.observe(&mut model, &question, true, 1).unwrap();
         learning
-            .remember(
-                &mut model,
-                &question,
-                Some(&checkpoint()),
-                false,
-                1000,
-                draw,
-            )
+            .remember(&mut model, &question, Some(&checkpoint()), true, 1, draw)
             .unwrap();
     }
-    assert!(learning.priority(recipe.index(), 4) < 65536);
-    learning.bind(&"22".repeat(32));
-    assert_eq!(learning.priority(recipe.index(), 5), 65536);
-    learning
-        .remember(&mut model, &question, Some(&checkpoint()), false, 1000, 6)
-        .unwrap();
-    assert_eq!(learning.priority(recipe.index(), 6), 65536);
+    let pending = model.predictions(&question)[2];
+    assert!(
+        pending > 0.35,
+        "unobserved downstream use is not failure evidence"
+    );
+    assert_eq!((model.updates, model.resolved, model.supports), (64, 64, 0));
+    assert!(model.rehearsals > 0);
+    model.support(&question).unwrap();
+    learning.support(&mut model, &question).unwrap();
+    assert!(model.predictions(&question)[2] > pending);
+    assert_eq!((model.updates, model.supports), (65, 1));
+    let reopened: Model = serde_json::from_slice(&serde_json::to_vec(&model).unwrap()).unwrap();
+    assert_eq!(model, reopened);
 }
 
 #[test]

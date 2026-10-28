@@ -365,7 +365,9 @@ impl Evidence {
                 record.first_unresolved_at = header.observations;
             }
             if crate::learning::State::eligible(question.source()) {
-                header.model.observe(question, resolved, millis)?;
+                header
+                    .learning
+                    .observe(&mut header.model, question, resolved, millis)?;
                 let checkpoint = record
                     .model_checkpoint
                     .as_deref()
