@@ -61,7 +61,11 @@ fn family_held_out_temporal_comparison() {
                 let j = random.below((i + 1) as u64) as usize;
                 order.swap(i, j);
             }
-            for treatment in [Treatment::Previous, Treatment::Full] {
+            for treatment in [
+                Treatment::Previous,
+                Treatment::FamilyReplay,
+                Treatment::Full,
+            ] {
                 let mut model = finder::Model::fresh();
                 let mut memory = finder::Learning::fresh(checkpoint.clone());
                 memory.treatment = treatment;
@@ -109,7 +113,7 @@ fn family_held_out_temporal_comparison() {
                         }
                         predictions.push(json!({"resolution":crate::hex(questions[index].resolution_id()),"family":case.family,"held_out":&case.family==held,"prediction":model.predictions(&questions[index]),"resolved":observation.resolved,"millis":observation.millis,"weight":model.weight(&questions[index])}));
                     }
-                    rows.push(json!({"seed":seed,"held_out_family":held,"arm":if treatment==Treatment::Full{"rehearsal"}else{"previous"},"round":round+1,"fresh_observations":model.updates,"rehearsals":model.rehearsals,"predictions":predictions}));
+                    rows.push(json!({"seed":seed,"held_out_family":held,"arm":match treatment{Treatment::Full=>"rehearsal",Treatment::FamilyReplay=>"family_replay",_=>"previous"},"round":round+1,"fresh_observations":model.updates,"rehearsals":model.rehearsals,"predictions":predictions}));
                 }
             }
         }

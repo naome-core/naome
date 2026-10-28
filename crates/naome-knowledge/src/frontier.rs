@@ -29,6 +29,8 @@ pub(crate) enum Treatment {
     NoGeneration,
     NoUtility,
     NoReplay,
+    FamilyReplay,
+    FamilyReplayNoUtility,
     #[default]
     Full,
 }

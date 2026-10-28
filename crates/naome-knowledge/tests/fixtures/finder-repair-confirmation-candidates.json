@@ -1,0 +1,170 @@
+{
+  "scope": "Source-only authored composite questions; no model outcomes or truth labels. Select all cases satisfying the frozen structural-family exclusion and formal prefilter rules before any candidate inference.",
+  "seeds": [
+    173,
+    251,
+    389
+  ],
+  "cases": [
+    {
+      "lineage": "guarded_branch_elimination",
+      "variant": 0,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(mem(x,b),mem(x,c)))),imp(all(x,and(imp(mem(x,b),mem(x,a)),imp(mem(x,c),mem(x,a)))),all(x,imp(mem(x,a),mem(x,a))))))))"
+    },
+    {
+      "lineage": "existential_quantifier_exchange",
+      "variant": 0,
+      "source": "goal=all(b,all(c,imp(ex(x,and(mem(x,b),all(y,imp(mem(y,c),mem(x,y))))),all(y,imp(mem(y,c),ex(z,and(mem(z,b),mem(z,y))))))))"
+    },
+    {
+      "lineage": "guarded_partition_witness",
+      "variant": 0,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(mem(x,b),mem(x,c)))),or(all(x,imp(mem(x,a),mem(x,b))),ex(y,and(mem(y,a),mem(y,c))))))))"
+    },
+    {
+      "lineage": "contained_separation_characterization",
+      "variant": 0,
+      "source": "goal=all(a,all(b,ex(s,and(all(x,iff(mem(x,s),and(mem(x,a),mem(x,b)))),all(x,imp(mem(x,s),mem(x,a)))))))"
+    },
+    {
+      "lineage": "guarded_extensional_characterization",
+      "variant": 0,
+      "source": "goal=all(a,all(b,all(c,all(s,all(t,imp(and(all(x,iff(mem(x,s),and(mem(x,a),or(mem(x,b),mem(x,c))))),all(x,iff(mem(x,t),and(mem(x,a),or(mem(x,b),mem(x,c)))))),and(eq(s,t),all(x,imp(mem(x,s),mem(x,a))))))))))"
+    },
+    {
+      "lineage": "incompatible_quantified_witness",
+      "variant": 0,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),and(mem(x,b),not(mem(x,c))))),not(ex(y,and(mem(y,a),or(not(mem(y,b)),mem(y,c)))))))))"
+    },
+    {
+      "lineage": "guarded_relational_witness",
+      "variant": 0,
+      "source": "goal=all(b,all(c,imp(all(x,all(y,imp(and(mem(x,b),mem(y,c)),mem(x,y)))),imp(ex(x,mem(x,b)),all(y,imp(mem(y,c),ex(z,and(mem(z,b),mem(z,y)))))))))"
+    },
+    {
+      "lineage": "guarded_equality_path_witness",
+      "variant": 0,
+      "source": "goal=all(a,all(b,all(c,imp(and(eq(a,b),eq(b,c)),ex(x,and(eq(x,a),and(eq(x,c),iff(mem(a,x),mem(c,x)))))))))"
+    },
+    {
+      "lineage": "guarded_branch_elimination",
+      "variant": 1,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(not(mem(x,b)),mem(c,x)))),imp(all(x,and(imp(not(mem(x,b)),not(mem(x,a))),imp(mem(c,x),not(mem(x,a))))),all(x,imp(mem(x,a),not(mem(x,a)))))))))"
+    },
+    {
+      "lineage": "existential_quantifier_exchange",
+      "variant": 1,
+      "source": "goal=all(b,all(c,imp(ex(x,and(not(mem(x,b)),all(y,imp(mem(c,y),not(mem(x,y)))))),all(y,imp(mem(c,y),ex(z,and(not(mem(z,b)),not(mem(z,y)))))))))"
+    },
+    {
+      "lineage": "guarded_partition_witness",
+      "variant": 1,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(not(mem(x,b)),mem(c,x)))),or(all(x,imp(mem(x,a),not(mem(x,b)))),ex(y,and(mem(y,a),mem(c,y))))))))"
+    },
+    {
+      "lineage": "contained_separation_characterization",
+      "variant": 1,
+      "source": "goal=all(a,all(b,ex(s,and(all(x,iff(mem(x,s),and(mem(x,a),not(mem(x,b))))),all(x,imp(mem(x,s),mem(x,a)))))))"
+    },
+    {
+      "lineage": "guarded_extensional_characterization",
+      "variant": 1,
+      "source": "goal=all(a,all(b,all(c,all(s,all(t,imp(and(all(x,iff(mem(x,s),and(mem(x,a),or(not(mem(x,b)),mem(c,x))))),all(x,iff(mem(x,t),and(mem(x,a),or(not(mem(x,b)),mem(c,x)))))),and(eq(s,t),all(x,imp(mem(x,s),mem(x,a))))))))))"
+    },
+    {
+      "lineage": "incompatible_quantified_witness",
+      "variant": 1,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),and(not(mem(x,b)),not(mem(c,x))))),not(ex(y,and(mem(y,a),or(not(not(mem(y,b))),mem(c,y)))))))))"
+    },
+    {
+      "lineage": "guarded_relational_witness",
+      "variant": 1,
+      "source": "goal=all(b,all(c,imp(all(x,all(y,imp(and(not(mem(x,b)),mem(c,y)),not(mem(x,y))))),imp(ex(x,not(mem(x,b))),all(y,imp(mem(c,y),ex(z,and(not(mem(z,b)),not(mem(z,y))))))))))"
+    },
+    {
+      "lineage": "guarded_equality_path_witness",
+      "variant": 1,
+      "source": "goal=all(a,all(b,all(c,imp(and(eq(a,b),eq(b,c)),ex(x,and(eq(x,a),and(eq(x,c),iff(not(mem(a,x)),not(mem(c,x))))))))))"
+    },
+    {
+      "lineage": "guarded_branch_elimination",
+      "variant": 2,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(eq(x,b),mem(x,c)))),imp(all(x,and(imp(eq(x,b),eq(x,a)),imp(mem(x,c),eq(x,a)))),all(x,imp(mem(x,a),eq(x,a))))))))"
+    },
+    {
+      "lineage": "existential_quantifier_exchange",
+      "variant": 2,
+      "source": "goal=all(b,all(c,imp(ex(x,and(eq(x,b),all(y,imp(mem(y,c),eq(x,y))))),all(y,imp(mem(y,c),ex(z,and(eq(z,b),eq(z,y))))))))"
+    },
+    {
+      "lineage": "guarded_partition_witness",
+      "variant": 2,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(eq(x,b),mem(x,c)))),or(all(x,imp(mem(x,a),eq(x,b))),ex(y,and(mem(y,a),mem(y,c))))))))"
+    },
+    {
+      "lineage": "contained_separation_characterization",
+      "variant": 2,
+      "source": "goal=all(a,all(b,ex(s,and(all(x,iff(mem(x,s),and(mem(x,a),eq(x,b)))),all(x,imp(mem(x,s),mem(x,a)))))))"
+    },
+    {
+      "lineage": "guarded_extensional_characterization",
+      "variant": 2,
+      "source": "goal=all(a,all(b,all(c,all(s,all(t,imp(and(all(x,iff(mem(x,s),and(mem(x,a),or(eq(x,b),mem(x,c))))),all(x,iff(mem(x,t),and(mem(x,a),or(eq(x,b),mem(x,c)))))),and(eq(s,t),all(x,imp(mem(x,s),mem(x,a))))))))))"
+    },
+    {
+      "lineage": "incompatible_quantified_witness",
+      "variant": 2,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),and(eq(x,b),not(mem(x,c))))),not(ex(y,and(mem(y,a),or(not(eq(y,b)),mem(y,c)))))))))"
+    },
+    {
+      "lineage": "guarded_relational_witness",
+      "variant": 2,
+      "source": "goal=all(b,all(c,imp(all(x,all(y,imp(and(eq(x,b),mem(y,c)),eq(x,y)))),imp(ex(x,eq(x,b)),all(y,imp(mem(y,c),ex(z,and(eq(z,b),eq(z,y)))))))))"
+    },
+    {
+      "lineage": "guarded_equality_path_witness",
+      "variant": 2,
+      "source": "goal=all(a,all(b,all(c,imp(and(eq(a,b),eq(b,c)),ex(x,and(eq(x,a),and(eq(x,c),iff(eq(a,x),eq(c,x)))))))))"
+    },
+    {
+      "lineage": "guarded_branch_elimination",
+      "variant": 3,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(not(eq(x,b)),mem(c,x)))),imp(all(x,and(imp(not(eq(x,b)),not(eq(x,a))),imp(mem(c,x),not(eq(x,a))))),all(x,imp(mem(x,a),not(eq(x,a)))))))))"
+    },
+    {
+      "lineage": "existential_quantifier_exchange",
+      "variant": 3,
+      "source": "goal=all(b,all(c,imp(ex(x,and(not(eq(x,b)),all(y,imp(mem(c,y),not(eq(x,y)))))),all(y,imp(mem(c,y),ex(z,and(not(eq(z,b)),not(eq(z,y)))))))))"
+    },
+    {
+      "lineage": "guarded_partition_witness",
+      "variant": 3,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),or(not(eq(x,b)),mem(c,x)))),or(all(x,imp(mem(x,a),not(eq(x,b)))),ex(y,and(mem(y,a),mem(c,y))))))))"
+    },
+    {
+      "lineage": "contained_separation_characterization",
+      "variant": 3,
+      "source": "goal=all(a,all(b,ex(s,and(all(x,iff(mem(x,s),and(mem(x,a),not(eq(x,b))))),all(x,imp(mem(x,s),mem(x,a)))))))"
+    },
+    {
+      "lineage": "guarded_extensional_characterization",
+      "variant": 3,
+      "source": "goal=all(a,all(b,all(c,all(s,all(t,imp(and(all(x,iff(mem(x,s),and(mem(x,a),or(not(eq(x,b)),mem(c,x))))),all(x,iff(mem(x,t),and(mem(x,a),or(not(eq(x,b)),mem(c,x)))))),and(eq(s,t),all(x,imp(mem(x,s),mem(x,a))))))))))"
+    },
+    {
+      "lineage": "incompatible_quantified_witness",
+      "variant": 3,
+      "source": "goal=all(a,all(b,all(c,imp(all(x,imp(mem(x,a),and(not(eq(x,b)),not(mem(c,x))))),not(ex(y,and(mem(y,a),or(not(not(eq(y,b))),mem(c,y)))))))))"
+    },
+    {
+      "lineage": "guarded_relational_witness",
+      "variant": 3,
+      "source": "goal=all(b,all(c,imp(all(x,all(y,imp(and(not(eq(x,b)),mem(c,y)),not(eq(x,y))))),imp(ex(x,not(eq(x,b))),all(y,imp(mem(c,y),ex(z,and(not(eq(z,b)),not(eq(z,y))))))))))"
+    },
+    {
+      "lineage": "guarded_equality_path_witness",
+      "variant": 3,
+      "source": "goal=all(a,all(b,all(c,imp(and(eq(a,b),eq(b,c)),ex(x,and(eq(x,a),and(eq(x,c),iff(not(eq(a,x)),not(eq(c,x))))))))))"
+    }
+  ]
+}

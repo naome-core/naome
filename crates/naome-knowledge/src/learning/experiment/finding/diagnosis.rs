@@ -179,7 +179,7 @@ fn recorded_costs_reproduce_the_first_selected_model() {
                 .collect::<BTreeSet<_>>(),
             originals
         );
-        for treatment in [Treatment::NoUtility, Treatment::Full] {
+        for treatment in [Treatment::FamilyReplayNoUtility, Treatment::FamilyReplay] {
             results.push(replay(
                 seed,
                 treatment,

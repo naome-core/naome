@@ -7,6 +7,100 @@ fn checkpoint() -> String {
 }
 
 #[test]
+fn scarce_checked_completions_keep_half_the_rehearsal_share_without_more_updates() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let sources = [
+        "goal=all(a,all(b,imp(eq(a,b),eq(b,a))))",
+        "goal=all(a,all(b,imp(mem(a,b),mem(b,a))))",
+        "goal=all(a,all(b,not(mem(a,b))))",
+        "goal=all(a,all(b,all(c,imp(mem(a,b),mem(a,c)))))",
+        "goal=all(a,all(b,all(c,not(mem(a,b)))))",
+    ];
+    for (index, source) in sources.iter().enumerate() {
+        learning
+            .remember(
+                &mut model,
+                &q(source),
+                Some(&checkpoint()),
+                index == 0,
+                1,
+                index as u64 + 1,
+            )
+            .unwrap();
+    }
+    let mut positive = 0;
+    let mut total = 0;
+    for cursor in 0..200 {
+        learning.cursor = cursor;
+        let indices = learning.rehearsal_indices();
+        assert!(indices.len() <= 3);
+        for index in indices {
+            positive += usize::from(learning.samples[index].resolved == Some(true));
+            total += 1;
+        }
+    }
+    assert_eq!(positive * 2, total);
+    assert_eq!(total, 600);
+    assert_eq!(
+        model.updates, 0,
+        "rehearsal never creates fresh observation credit"
+    );
+    learning.bind(&"22".repeat(32));
+    let before = model.clone();
+    learning.rehearse(&mut model).unwrap();
+    assert_eq!(
+        model, before,
+        "completion balance cannot reuse stale solver labels"
+    );
+}
+
+#[test]
+fn recent_misses_in_one_formula_family_do_not_evict_its_checked_success() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let success = q("goal=all(a,all(b,all(c,imp(and(mem(a,b),mem(a,c)),and(mem(a,b),mem(a,c))))))");
+    learning
+        .remember(&mut model, &success, Some(&checkpoint()), true, 1, 1)
+        .unwrap();
+    let atoms = [
+        "mem(a,b)", "mem(b,a)", "mem(a,c)", "mem(c,a)", "mem(b,c)", "mem(c,b)", "mem(a,a)",
+    ];
+    for bits in 0..120u64 {
+        let body = atoms
+            .iter()
+            .enumerate()
+            .map(|(bit, atom)| {
+                if bits & (1 << bit) == 0 {
+                    (*atom).to_owned()
+                } else {
+                    format!("not({atom})")
+                }
+            })
+            .reduce(|a, b| format!("and({a},{b})"))
+            .unwrap();
+        let miss = q(&format!("goal=all(a,all(b,all(c,{body})))"));
+        assert_eq!(
+            Descriptor::of(&success).features.family,
+            Descriptor::of(&miss).features.family
+        );
+        learning
+            .remember(&mut model, &miss, Some(&checkpoint()), false, 5, bits + 2)
+            .unwrap();
+    }
+    assert_eq!(
+        learning.samples.len(),
+        (Learning::budget() / 1024).min(MEMORY)
+    );
+    assert!(
+        learning
+            .samples
+            .iter()
+            .any(|s| s.offer.id == *success.resolution_id())
+    );
+}
+
+#[test]
 fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();

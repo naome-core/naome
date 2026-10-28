@@ -7,6 +7,7 @@ use crate::{
     jobs,
 };
 use serde_json::{Value, json};
+mod confirmation;
 mod diagnosis;
 
 const SEEDS: [u64; 3] = [41, 73, 101];
@@ -54,6 +55,8 @@ fn label(t: Treatment) -> &'static str {
         Treatment::NoGeneration => "without_generation",
         Treatment::NoUtility => "without_utility",
         Treatment::NoReplay => "without_replay",
+        Treatment::FamilyReplay => "family_replay",
+        Treatment::FamilyReplayNoUtility => "family_replay_without_utility",
         Treatment::Full => "full",
     }
 }

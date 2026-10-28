@@ -111,7 +111,14 @@ impl Learning {
             let mut counts = BTreeMap::new();
             for sample in &self.samples {
                 *counts
-                    .entry(sample.offer.descriptor.features.family)
+                    .entry((
+                        sample.offer.descriptor.features.family,
+                        if self.family_only() {
+                            None
+                        } else {
+                            sample.resolved
+                        },
+                    ))
                     .or_insert(0usize) += 1;
             }
             let family = counts
@@ -122,10 +129,26 @@ impl Learning {
             let index = self
                 .samples
                 .iter()
-                .position(|s| s.offer.descriptor.features.family == family)
+                .position(|s| {
+                    (
+                        s.offer.descriptor.features.family,
+                        if self.family_only() { None } else { s.resolved },
+                    ) == family
+                })
                 .unwrap();
             self.samples.remove(index);
         }
+    }
+    fn family_only(&self) -> bool {
+        #[cfg(test)]
+        if matches!(
+            self.treatment,
+            crate::frontier::Treatment::FamilyReplay
+                | crate::frontier::Treatment::FamilyReplayNoUtility
+        ) {
+            return true;
+        }
+        false
     }
     pub fn validate(&self) -> Result<(), String> {
         crate::object::id_bytes(&self.checkpoint)?;
@@ -336,19 +359,9 @@ impl Learning {
             return Ok(());
         }
         self.trim();
-        let mut families = BTreeMap::new();
-        for (i, s) in self.samples.iter().enumerate() {
-            families
-                .entry(s.offer.descriptor.features.family)
-                .or_insert_with(Vec::new)
-                .push(i);
-        }
-        // Three small updates, rotating families before examples. A flooded
-        // recent family cannot monopolize the rehearsal budget.
-        let groups = families.values().collect::<Vec<_>>();
-        for offset in 0..groups.len().min(3) {
-            let group = groups[(self.cursor as usize + offset) % groups.len()];
-            let sample = &self.samples[group[(self.cursor as usize / groups.len()) % group.len()]];
+        let choices = self.rehearsal_indices();
+        for index in choices {
+            let sample = &self.samples[index];
             let fresh = sample.checkpoint.as_deref() == Some(self.checkpoint.as_str());
             let (resolved, millis) = if fresh {
                 (sample.resolved, sample.millis)
@@ -370,6 +383,55 @@ impl Learning {
         }
         Ok(())
     }
+    fn rehearsal_indices(&self) -> Vec<usize> {
+        let mut families = BTreeMap::new();
+        for (i, s) in self.samples.iter().enumerate() {
+            families
+                .entry(s.offer.descriptor.features.family)
+                .or_insert_with(Vec::new)
+                .push(i);
+        }
+        // Keep the original update ceiling. Choose observed completion classes
+        // before families, so a flood of misses cannot erase scarce successes.
+        // A late old-checkpoint completion never supplies a current class.
+        let groups = families.values().collect::<Vec<_>>();
+        let mut outcomes = BTreeMap::<Option<bool>, BTreeMap<u16, Vec<usize>>>::new();
+        if !self.family_only() {
+            for (index, sample) in self.samples.iter().enumerate() {
+                let fresh = sample.checkpoint.as_deref() == Some(self.checkpoint.as_str());
+                let class = if fresh { sample.resolved } else { None };
+                if class.is_some()
+                    || sample.support == Some(true)
+                    || sample.utility.is_some() && sample.utility_checkpoint == self.checkpoint
+                {
+                    outcomes
+                        .entry(class)
+                        .or_default()
+                        .entry(sample.offer.descriptor.features.family)
+                        .or_default()
+                        .push(index);
+                }
+            }
+        }
+        let outcomes = outcomes.values().collect::<Vec<_>>();
+        let mut result = Vec::new();
+        for offset in 0..groups.len().min(3) {
+            let index = if outcomes.len() > 1 {
+                let ordinal = self.cursor as usize + offset;
+                let classes = outcomes[ordinal % outcomes.len()]
+                    .values()
+                    .collect::<Vec<_>>();
+                let position = ordinal / outcomes.len();
+                let group = classes[position % classes.len()];
+                group[(position / classes.len()) % group.len()]
+            } else {
+                let group = groups[(self.cursor as usize + offset) % groups.len()];
+                group[(self.cursor as usize / groups.len()) % group.len()]
+            };
+            result.push(index);
+        }
+        result
+    }
     pub fn utility(
         &mut self,
         model: &mut Model,
@@ -381,6 +443,7 @@ impl Learning {
             crate::frontier::Treatment::Previous
                 | crate::frontier::Treatment::Uniform
                 | crate::frontier::Treatment::NoUtility
+                | crate::frontier::Treatment::FamilyReplayNoUtility
         ) {
             return Ok(false);
         }
