@@ -22,6 +22,7 @@ fn fixture() -> (Job, Page, Receipt) {
             solution,
             peer_certificate: None,
         }],
+        records: Vec::new(),
     };
     let receipt = receipt(&page);
     job.history = Some(receipt.clone());
@@ -35,6 +36,40 @@ fn receipt(page: &Page) -> Receipt {
         read_bytes: 0,
         read_operations: 1,
         read_cpu_micros: 0,
+    }
+}
+
+#[test]
+fn journal_views_rotate_with_independent_cursors_and_canonical_keys() {
+    let (mut job, page, mut receipt) = fixture();
+    let source = page.sources[0].solution.proof_id.clone();
+    receipt.next = Some(source.clone());
+    job.base.history_cursor.advance(&receipt);
+    job.request_history(3);
+    let request = job.history_request.as_ref().unwrap();
+    assert_eq!(request.lane, Lane::Records);
+    assert_eq!(request.after, None);
+    receipt.request = request.clone();
+    receipt.next = Some("12".into());
+    receipt.validate(request).unwrap();
+    job.base.history_cursor.advance(&receipt);
+    job.request_history(4);
+    assert_eq!(job.history_request.as_ref().unwrap().lane, Lane::Sources);
+    assert_eq!(job.history_request.as_ref().unwrap().after, Some(source));
+    let restored: Cursor =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&job.base.history_cursor).unwrap())
+            .unwrap();
+    assert_eq!(restored, job.base.history_cursor);
+    for after in ["0", "01", "-1", "not-a-record"] {
+        assert!(
+            Request {
+                lane: Lane::Records,
+                after: Some(after.into()),
+                horizon: 4
+            }
+            .validate()
+            .is_err()
+        );
     }
 }
 

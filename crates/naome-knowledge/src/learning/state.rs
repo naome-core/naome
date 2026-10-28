@@ -138,7 +138,7 @@ impl State {
             trained: 0,
             attempted: 0,
             peer_cursor: 0,
-            history_cursor: None,
+            history_cursor: history::Cursor::default(),
             local_examples: 0,
             peer_examples: 0,
             promotions: 0,
@@ -151,9 +151,7 @@ impl State {
     pub fn validate(&self) -> Result<(), String> {
         self.model.validate()?;
         self.meta.validate()?;
-        if let Some(cursor) = &self.history_cursor {
-            crate::object::id_bytes(cursor)?;
-        }
+        self.history_cursor.validate()?;
         knowledge::validate(&self.knowledge)?;
         let _ = definitions::context(&self.definitions)?;
         if self.definition_uses.keys().any(|id| {
@@ -413,7 +411,7 @@ impl State {
         if self.history_cursor == native.base.history_cursor
             && let Some(prepared) = &p.prepared
         {
-            next.history_cursor.clone_from(&prepared.page.next);
+            next.history_cursor.advance(&prepared.page);
         }
         if let Some(plan) = &p.plan {
             next.meta.draw = plan.draw;

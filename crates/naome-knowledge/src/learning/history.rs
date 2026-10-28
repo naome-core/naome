@@ -1,13 +1,83 @@
-//! Bounded preparation from immutable, admitted source records.
+//! Bounded preparation from admitted sources and terminal job observations.
 //! The job journal owns history; the selected replay is only a working view.
 use super::*;
 
 pub const SOURCES: usize = REPLAY;
 pub const PAGE_BYTES: usize = REPLAY * 8 * 1024;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Lane {
+    #[default]
+    Sources,
+    Records,
+}
+impl Lane {
+    fn key(self, key: &str) -> Result<(), String> {
+        match self {
+            Self::Sources => {
+                crate::object::id_bytes(key)?;
+                Ok(())
+            }
+            Self::Records => {
+                let id = key
+                    .parse::<u64>()
+                    .map_err(|_| "history record key syntax")?;
+                if id == 0 || id.to_string() != key {
+                    return Err("history record key encoding".into());
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The two existing journal views take turns within one original read budget.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cursor {
+    sources: Option<String>,
+    records: Option<String>,
+    lane: Lane,
+}
+impl Cursor {
+    pub(super) fn validate(&self) -> Result<(), String> {
+        for (lane, key) in [
+            (Lane::Sources, &self.sources),
+            (Lane::Records, &self.records),
+        ] {
+            if let Some(key) = key {
+                lane.key(key)?;
+            }
+        }
+        Ok(())
+    }
+    fn after(&self) -> &Option<String> {
+        match self.lane {
+            Lane::Sources => &self.sources,
+            Lane::Records => &self.records,
+        }
+    }
+    pub(super) fn matches(&self, request: &Request) -> bool {
+        self.lane == request.lane && self.after() == &request.after
+    }
+    pub(super) fn advance(&mut self, receipt: &Receipt) {
+        match self.lane {
+            Lane::Sources => {
+                self.sources.clone_from(&receipt.next);
+                self.lane = Lane::Records;
+            }
+            Lane::Records => {
+                self.records.clone_from(&receipt.next);
+                self.lane = Lane::Sources;
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    pub lane: Lane,
     pub after: Option<String>,
     pub horizon: u64,
 }
@@ -17,7 +87,7 @@ impl Request {
             return Err("history request lacks its original job".into());
         }
         if let Some(after) = &self.after {
-            crate::object::id_bytes(after)?;
+            self.lane.key(after)?;
         }
         Ok(())
     }
@@ -45,7 +115,7 @@ impl Receipt {
             return Err("history page differs from its bounded request".into());
         }
         if let Some(next) = &self.next {
-            crate::object::id_bytes(next)?;
+            request.lane.key(next)?;
             if request.after.as_ref().is_some_and(|after| next <= after) {
                 return Err("history cursor did not advance".into());
             }
@@ -107,6 +177,16 @@ pub struct Page {
     pub next: Option<String>,
     pub examined: Vec<(String, u64)>,
     pub sources: Vec<Source>,
+    pub records: Vec<Record>,
+}
+
+/// Every scanned record is represented, including an explicit absence of an
+/// eligible terminal observation. The page hash binds the journal's decision.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Record {
+    pub job: u64,
+    pub observation: Option<experience::Observation>,
 }
 impl Page {
     fn validate(&self, receipt: &Receipt) -> Result<(), String> {
@@ -116,12 +196,13 @@ impl Page {
             || self.next != receipt.next
             || self.examined.len() > SOURCES
             || self.sources.len() > self.examined.len()
+            || self.records.len() > self.examined.len()
             || !self.examined.windows(2).all(|pair| pair[0].0 < pair[1].0)
         {
             return Err("history page identity or sequence differs".into());
         }
         for (proof, job) in &self.examined {
-            crate::object::id_bytes(proof)?;
+            self.request.lane.key(proof)?;
             if *job == 0
                 || self
                     .request
@@ -138,6 +219,32 @@ impl Page {
             .is_some_and(|next| self.examined.last().is_none_or(|(last, _)| next != last))
         {
             return Err("history continuation lacks its last examined source".into());
+        }
+        if self.request.lane == Lane::Records {
+            if !self.sources.is_empty()
+                || self.records.len() != self.examined.len()
+                || self
+                    .records
+                    .iter()
+                    .zip(&self.examined)
+                    .any(|(record, (key, job))| record.job != *job || key != &job.to_string())
+            {
+                return Err("history record page omitted or substituted a scanned job".into());
+            }
+            for record in &self.records {
+                if let Some(observation) = &record.observation {
+                    observation.validate()?;
+                    if observation.summary.job != record.job || record.job >= self.request.horizon {
+                        return Err(
+                            "history observation differs from its original job horizon".into()
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if !self.records.is_empty() {
+            return Err("admitted source page contains a different journal view".into());
         }
         let expected: Vec<_> = self
             .examined
@@ -266,7 +373,8 @@ impl Job {
     }
     pub fn request_history(&mut self, job: u64) {
         self.history_request = Some(Request {
-            after: self.base.history_cursor.clone(),
+            lane: self.base.history_cursor.lane,
+            after: self.base.history_cursor.after().clone(),
             horizon: job,
         });
     }

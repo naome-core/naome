@@ -1,6 +1,6 @@
 //! An immutable bounded page from the existing admitted-source journal.
 use super::*;
-use crate::learning::history::{PAGE_BYTES, Page, Receipt, Request, SOURCES, Source};
+use crate::learning::history::{Lane, PAGE_BYTES, Page, Receipt, Request, SOURCES, Source};
 
 impl Disk {
     pub(in crate::jobs) fn history_page(
@@ -36,6 +36,9 @@ impl Disk {
             return Ok(receipt.clone());
         }
         let started = crate::learning::meta::cpu_micros()?;
+        if request.lane == Lane::Records {
+            return self.experience_page(journal, id, request, started);
+        }
         let mut read_bytes = 0usize;
         let mut read_operations = 1usize;
         let rows = self.checkpoint.page(
@@ -54,6 +57,7 @@ impl Disk {
             next: None,
             examined: Vec::new(),
             sources: Vec::new(),
+            records: Vec::new(),
         };
         for (key, payload) in rows {
             crate::object::id_bytes(&key)?;
@@ -196,6 +200,70 @@ impl Disk {
         }
         if at_end {
             page.next = None;
+        }
+        self.retain_history(journal, id, page, read_bytes, read_operations, started)
+    }
+
+    fn experience_page(
+        &mut self,
+        journal: &mut Journal,
+        id: u64,
+        request: &Request,
+        started: u64,
+    ) -> Result<Receipt, crate::Error> {
+        let mut page = Page {
+            request: request.clone(),
+            next: request.after.clone(),
+            examined: Vec::new(),
+            sources: Vec::new(),
+            records: Vec::new(),
+        };
+        let mut read_bytes = 0usize;
+        let mut read_operations = 0usize;
+        for _ in 0..SOURCES {
+            let remaining = crate::resources::limits()
+                .native_model_blob_bytes
+                .saturating_sub(read_bytes);
+            if remaining == 0 {
+                break;
+            }
+            // Read one owned row at a time. Large historical jobs do not make
+            // the resident page or its lifetime IO allowance unbounded.
+            let mut rows = self
+                .checkpoint
+                .page("record", page.next.as_deref(), 1, remaining)?;
+            read_operations += 1;
+            let Some((key, bytes)) = rows.pop() else {
+                page.next = None;
+                break;
+            };
+            read_bytes = read_bytes
+                .checked_add(key.len())
+                .and_then(|n| n.checked_add(bytes.len()))
+                .ok_or("experience page IO overflow")?;
+            let record: crate::jobs::Record = crate::checkpoint::decode(&bytes)?;
+            if record.id == 0 || record.id.to_string() != key {
+                return Err("experience journal record identity differs".into());
+            }
+            let observation = if record.id < id {
+                crate::learning::experience::Observation::from_record(&record)?
+            } else {
+                None
+            };
+            page.records.push(crate::learning::history::Record {
+                job: record.id,
+                observation,
+            });
+            page.examined.push((key.clone(), record.id));
+            if crate::checkpoint::encode(&page)?.len() > PAGE_BYTES {
+                page.records.pop();
+                page.examined.pop();
+                if page.examined.is_empty() {
+                    return Err("experience record exceeds the working page capacity".into());
+                }
+                break;
+            }
+            page.next = Some(key);
         }
         self.retain_history(journal, id, page, read_bytes, read_operations, started)
     }

@@ -311,6 +311,126 @@ fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
 }
 
 #[test]
+fn bounded_journal_history_includes_terminal_failures_without_invented_training_labels() {
+    use crate::learning::experience::TerminalEvidence;
+    let (directory, mut owner) = native();
+    let (reply, mut receiver) = oneshot::channel();
+    owner
+        .submit(
+            Input::Solve {
+                question: crate::learning::tests::own_question(),
+            },
+            Binding::new([1; 32], [2; 32]),
+            reply,
+        )
+        .unwrap();
+    let failed = owner.journal.next_id - 1;
+    owner.journal.records.get_mut(&failed).unwrap().state = State::Running;
+    owner.reserve(failed, 1).unwrap();
+    owner
+        .complete(
+            failed,
+            process::Outcome {
+                state: State::Failed,
+                result: Err("observed worker interruption".into()),
+            },
+        )
+        .unwrap();
+    let original = receiver.try_recv().unwrap().experience.unwrap();
+    let accepted = accepted(&mut owner);
+    let mut state = learning(&owner);
+    state["history_cursor"]["lane"] = serde_json::json!("Records");
+    owner.journal.learning = Some(serde_json::from_value(state.clone()).unwrap());
+    owner.save().unwrap();
+    let (id, _receiver) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let request = owner.journal.records[&id]
+        .native
+        .as_ref()
+        .unwrap()
+        .history_request
+        .clone()
+        .unwrap();
+    assert_eq!(request.lane, crate::learning::history::Lane::Records);
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    let receipt = owner
+        .disk
+        .history_page(&mut owner.journal, id, 1, &request)
+        .unwrap();
+    assert!(receipt.read_operations <= crate::learning::history::SOURCES);
+    let bytes = owner
+        .disk
+        .model_io(
+            &mut owner.journal,
+            id,
+            1,
+            &receipt.blob,
+            0..receipt.blob.chunks(),
+            None,
+        )
+        .unwrap();
+    let page: crate::learning::history::Page = crate::checkpoint::decode(&bytes).unwrap();
+    assert!(page.sources.is_empty());
+    assert!(page.records.len() <= crate::learning::history::SOURCES);
+    let observed = page
+        .records
+        .iter()
+        .find(|r| r.job == failed)
+        .unwrap()
+        .observation
+        .as_ref()
+        .unwrap();
+    assert_eq!(observed.summary.receipt, original.receipt);
+    assert_eq!(
+        observed.summary.terminal,
+        TerminalEvidence::TechnicalFailure
+    );
+    assert!(observed.summary.cost.is_none());
+    assert!(observed.frontier.is_none());
+    let checked = page
+        .records
+        .iter()
+        .find(|r| r.job == accepted)
+        .unwrap()
+        .observation
+        .as_ref()
+        .unwrap();
+    assert!(matches!(
+        checked.summary.terminal,
+        TerminalEvidence::CertifiedCandidate { .. }
+    ));
+    let native = owner.journal.records[&id].native.as_ref().unwrap();
+    let restored = crate::learning::history::inspect_reload(native, &receipt, &bytes).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        state,
+        "operational observations alone add no proof labels, samples or model updates"
+    );
+    let mut omitted = page.clone();
+    omitted.records.retain(|r| r.job != failed);
+    assert!(
+        crate::learning::history::inspect_reload(
+            native,
+            &receipt,
+            &crate::checkpoint::encode(&omitted).unwrap()
+        )
+        .is_err()
+    );
+    let settings = owner.settings;
+    let io = native.io_bytes;
+    let reserved = owner.journal.records[&id].reserved_units;
+    drop(owner);
+    let (mut disk, mut journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    journal.records.get_mut(&id).unwrap().state = State::Running;
+    assert_eq!(
+        disk.history_page(&mut journal, id, 1, &request).unwrap(),
+        receipt
+    );
+    assert_eq!(journal.records[&id].native.as_ref().unwrap().io_bytes, io);
+    assert_eq!(journal.records[&id].reserved_units, reserved);
+}
+
+#[test]
 fn growing_learning_metadata_keeps_the_disk_working_set_bounded_and_its_source_owned() {
     let (directory, mut owner) = native();
     let id = accepted(&mut owner);

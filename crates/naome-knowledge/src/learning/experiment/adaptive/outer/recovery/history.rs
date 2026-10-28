@@ -47,6 +47,9 @@ pub(super) struct Io {
 impl ArtifactIo for Io {
     fn history(&mut self, request: &Request) -> Result<Receipt, String> {
         request.validate()?;
+        if request.lane != crate::learning::history::Lane::Sources {
+            return Err("admitted-source fixture cannot supply operational job history".into());
+        }
         let cpu = meta::cpu_micros()?;
         let bytes =
             std::fs::read(self.directory.join("manifest.json")).map_err(|e| e.to_string())?;
@@ -67,6 +70,7 @@ impl ArtifactIo for Io {
             next: None,
             examined: Vec::new(),
             sources: Vec::new(),
+            records: Vec::new(),
         };
         let mut truncated = false;
         for entry in entries {

@@ -265,6 +265,59 @@ impl ExperienceSummary {
     }
 }
 
+/// A journal-owned operational observation. It carries no reusable proof;
+/// positive training labels still require the admitted-source reconstruction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Observation {
+    pub question: String,
+    pub summary: ExperienceSummary,
+    pub frontier: Option<super::SearchFrontier>,
+}
+impl Observation {
+    pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, String> {
+        let question = match &record.input {
+            crate::jobs::Input::Solve { question } | crate::jobs::Input::Peer { question, .. }
+                if super::State::eligible(question) =>
+            {
+                question
+            }
+            _ => return Ok(None),
+        };
+        let Some(summary) = ExperienceSummary::from_record(record)? else {
+            return Ok(None);
+        };
+        let observation = Self {
+            question: question.clone(),
+            summary,
+            frontier: record
+                .native
+                .as_ref()
+                .and_then(|n| n.progress.as_ref())
+                .and_then(|p| p.frontier.clone()),
+        };
+        observation.validate()?;
+        Ok(Some(observation))
+    }
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        self.summary.validate()?;
+        if !super::State::eligible(&self.question) {
+            return Err("history observation is outside the eligible training lineage".into());
+        }
+        let question = naome_authoring::CompiledQuestion::compile(&self.question)
+            .map_err(|e| e.to_string())?;
+        if self.summary.question != crate::hex(question.resolution_id())
+            || self.summary.trace.observed_branches != self.frontier.as_ref().map(digest)
+        {
+            return Err("history observation question or frontier binding differs".into());
+        }
+        if let Some(frontier) = &self.frontier {
+            frontier.validate(&question)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

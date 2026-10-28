@@ -155,7 +155,7 @@ pub(crate) struct State {
     trained: u64,
     attempted: u64,
     pub peer_cursor: u64,
-    history_cursor: Option<String>,
+    history_cursor: history::Cursor,
     local_examples: u64,
     peer_examples: u64,
     promotions: u64,
@@ -455,7 +455,7 @@ impl Job {
         self.prerequisites.require(&self.base, &self.required)?;
         if let Some(request) = &self.history_request {
             request.validate()?;
-            if !self.training || request.after != self.base.history_cursor {
+            if !self.training || !self.base.history_cursor.matches(request) {
                 return Err("history request differs from its training parent".into());
             }
             if let Some(receipt) = &self.history {
