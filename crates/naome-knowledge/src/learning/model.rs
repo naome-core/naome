@@ -169,17 +169,6 @@ pub struct Runtime {
     policy: Policy,
     optimizer: ModuleOptimizer,
     device: Device,
-    scores: std::cell::RefCell<Inference>,
-}
-// Derived numbers belong to one exact mutable policy lifetime. They are never
-// serialized or used as proof/checker authority. The existing work reservation
-// contains this bounded map (at most 256 keys and sixteen floats per key).
-const INFERENCE_ENTRIES: usize = 256;
-#[derive(Default)]
-struct Inference {
-    values: std::collections::BTreeMap<String, Vec<f32>>,
-    hits: u64,
-    misses: u64,
 }
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -201,33 +190,12 @@ impl Runtime {
         // Validation weights are detached. Inputs must use the same plain
         // device, otherwise mixed operations retain needless autodiff state.
         let batch = Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())?;
-        // Validate every current graph, including labels and bounds, before a
-        // lookup. The key binds every feature consumed by Batch/Policy; labels
-        // are deliberately absent because they do not affect inference.
-        let key = graph.key();
-        {
-            let mut cache = self.scores.borrow_mut();
-            if let Some(scores) = cache.values.get(&key).cloned() {
-                cache.hits = cache.hits.saturating_add(1);
-                return Ok(scores);
-            }
-            cache.misses = cache.misses.saturating_add(1);
-        }
-        let scores = self
-            .policy
+        self.policy
             .valid()
             .forward(&batch)
             .into_data()
             .try_to_vec::<f32>()
-            .map_err(|e| e.to_string())?;
-        if scores.iter().all(|v| v.is_finite()) {
-            let mut cache = self.scores.borrow_mut();
-            if cache.values.len() >= INFERENCE_ENTRIES {
-                cache.values.pop_first();
-            }
-            cache.values.insert(key, scores.clone());
-        }
-        Ok(scores)
+            .map_err(|e| e.to_string())
     }
     fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
         checkpoint.validate()?;
@@ -283,7 +251,6 @@ impl Runtime {
             policy,
             optimizer,
             device,
-            scores: Default::default(),
         })
     }
     fn checkpoint<I: ArtifactIo + ?Sized>(
@@ -326,9 +293,6 @@ impl Runtime {
         if graphs.is_empty() {
             return Err("training requires own accepted proof decisions".into());
         }
-        // Focus may have scored the parent immediately before these updates.
-        // No derived score survives the first mutation of its parameters.
-        self.scores.borrow_mut().values.clear();
         let mut first = 0.;
         let mut last = 0.;
         for update in 0..updates {
@@ -419,16 +383,6 @@ pub(crate) struct Engine {
     pub meta: super::meta::Engine,
 }
 impl Engine {
-    #[cfg(test)]
-    pub(super) fn inference_counts(&self) -> [u64; 3] {
-        self.cache.iter().fold([0; 3], |mut total, (_, runtime)| {
-            let cache = runtime.scores.borrow();
-            total[0] += cache.hits;
-            total[1] += cache.misses;
-            total[2] += cache.values.len() as u64;
-            total
-        })
-    }
     #[cfg(test)]
     pub(super) fn snapshot<I: ArtifactIo + ?Sized>(
         &mut self,
@@ -564,9 +518,6 @@ impl Engine {
         Ok((checkpoint, first, last))
     }
 }
-
-#[cfg(test)]
-mod inference_tests;
 
 #[cfg(test)]
 mod tests {

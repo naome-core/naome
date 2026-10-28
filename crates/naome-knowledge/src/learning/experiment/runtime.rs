@@ -19,6 +19,17 @@ struct Inputs {
     jobs: Vec<Input>,
 }
 
+fn current_base(expected: &Job) -> State {
+    let mut base = expected.base.clone();
+    base.model.specification = Checkpoint::fresh().specification;
+    base.meta.model.specification = meta::Checkpoint::fresh().specification;
+    let binding = digest(&base.model);
+    base.feedback.checkpoint = binding.clone();
+    base.feedback.attempts.checkpoint = binding.clone();
+    base.feedback.development.checkpoint = binding;
+    base
+}
+
 fn observation_micros(profile: &crate::training::ability::Profile) -> u64 {
     // Logic is present exactly once for every recorded question, so its cells
     // measure actual solve time without summing overlapping syntax families.
@@ -65,13 +76,7 @@ fn exact_owned_trial_runtime_profile() {
         // tensor/Adam bytes. Product loading never accepts a different source
         // fingerprint. Historical evidence stays unchanged and SHA-bound.
         let specification = Checkpoint::fresh().specification;
-        let mut base = expected.base.clone();
-        base.model.specification = specification.clone();
-        base.meta.model.specification = meta::Checkpoint::fresh().specification;
-        let binding = digest(&base.model);
-        base.feedback.checkpoint = binding.clone();
-        base.feedback.attempts.checkpoint = binding.clone();
-        base.feedback.development.checkpoint = binding;
+        let base = current_base(&expected);
         base.validate().unwrap();
         let mut candidate = input.candidate.clone();
         candidate.specification = specification.clone();
@@ -132,7 +137,7 @@ fn exact_owned_trial_runtime_profile() {
                     &serde_json::json!({
                     "unit":unit,"elapsed_wall_micros":started.elapsed().as_micros(),
                     "elapsed_cpu_micros":meta::cpu_micros().unwrap()-cpu,
-                    "progress":p,"resident_inference_counts":engine.inference_counts(),
+                    "progress":p,
                     "units":units}),
                 );
             }
@@ -161,8 +166,7 @@ fn exact_owned_trial_runtime_profile() {
         let summary = serde_json::json!({"name":input.name,"job":input.job,"units":job.units(),
             "cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":started.elapsed().as_micros(),
             "progress":p,"read_bytes":store.read_bytes,"written_bytes":store.written_bytes,
-            "read_operations":store.reads,"write_operations":store.writes,
-            "resident_inference_counts":engine.inference_counts()});
+            "read_operations":store.reads,"write_operations":store.writes});
         std::fs::create_dir_all(output.join(&input.name)).unwrap();
         write(&output.join(&input.name).join("units.json"), &units);
         write(&output.join(&input.name).join("summary.json"), &summary);
@@ -178,5 +182,64 @@ fn exact_owned_trial_runtime_profile() {
         &output.join("completed.json"),
         &serde_json::json!({"trials":summaries,
         "resources":format!("{:?}",meter.finish(0,true))}),
+    );
+}
+
+#[test]
+#[ignore = "Finite owner-validation profile on frozen owned replay; no model inference or updates"]
+fn owned_replay_working_set_profile() {
+    let input = std::env::var("NAOME_RUNTIME_INPUT").expect("frozen runtime inputs");
+    let output = std::env::var("NAOME_RUNTIME_OUTPUT").expect("fresh runtime output");
+    let output = Path::new(&output);
+    assert!(!output.exists(), "preserve earlier measurements");
+    std::fs::create_dir_all(output).unwrap();
+    let inputs: Inputs = serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+    let filter = std::env::var("NAOME_RUNTIME_FILTER").expect("one declared working set");
+    let mut selected = None;
+    let started = Instant::now();
+    let cpu = meta::cpu_micros().unwrap();
+    for input in &inputs.jobs {
+        let source = std::fs::read(&input.source).unwrap();
+        assert_eq!(crate::hex(&Sha256::digest(&source)), input.sha256);
+        let expected: Job = serde_json::from_slice(&source).unwrap();
+        let base = current_base(&expected);
+        base.validate().unwrap();
+        if input.name.contains(&filter) {
+            assert!(selected.is_none());
+            selected = Some(base);
+        }
+    }
+    let priming = serde_json::json!({"cpu_micros":meta::cpu_micros().unwrap()-cpu,
+        "wall_micros":started.elapsed().as_micros(),"other_owned_states":inputs.jobs.len()});
+    let base = selected.expect("exact declared working set");
+    let started = Instant::now();
+    let cpu = meta::cpu_micros().unwrap();
+    let checking = proof::checking_work();
+    let mut rows = Vec::new();
+    for pass in 0..150 {
+        assert!(
+            started.elapsed() < Duration::from_secs(120)
+                && meta::cpu_micros().unwrap() - cpu < 90_000_000
+        );
+        let checked = proof::checking_work();
+        let elapsed = Instant::now();
+        let tick = meta::cpu_micros().unwrap();
+        base.validate().unwrap();
+        rows.push(
+            serde_json::json!({"pass":pass,"cpu_micros":meta::cpu_micros().unwrap()-tick,
+            "wall_micros":elapsed.elapsed().as_micros(),
+            "checker_calls":proof::checking_work().calls-checked.calls,
+            "checker_steps":proof::checking_work().steps-checked.steps}),
+        );
+    }
+    let result = serde_json::json!({"scope":"Existing owner validation only; no model inference, optimizer updates or new quality queries",
+        "priming":priming,"working_set":filter,"repeated_validations":150,
+        "cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":started.elapsed().as_micros(),
+        "checker_calls":proof::checking_work().calls-checking.calls,
+        "checker_steps":proof::checking_work().steps-checking.steps,"passes":rows});
+    write(&output.join("completed.json"), &result);
+    eprintln!(
+        "runtime_replay_validation cpu={} wall={} checks={}",
+        result["cpu_micros"], result["wall_micros"], result["checker_calls"]
     );
 }

@@ -58,6 +58,9 @@ fn validate_example(e: &Example) -> Result<(), String> {
     });
     Ok(())
 }
+
+#[cfg(test)]
+mod verification_tests;
 pub(super) fn proof_steps(
     target: &naome_foundation::Formula,
     tree: &search::Tree,
