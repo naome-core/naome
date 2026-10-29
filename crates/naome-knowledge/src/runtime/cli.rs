@@ -30,6 +30,17 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Questions follow gaps in checked local knowledge and measured solving\n\
              opportunities, with randomized exploration within the automatic\n\
              computation budgets.\n\
+             \nNative proof learning (opt-in):\n\
+             Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
+             An optional formal_goal string in config.json selects a native question.\n\
+             Checked lemmas and meanings support bounded ZFC construction and reuse.\n\
+             A fresh 1,004,001-parameter CPU graph policy learns from admitted traces.\n\
+             The finder proposes relation properties and helpers for unresolved\n\
+             goals, screens simple Boolean variants, and starts with an empty graph.\n\
+             Its small predictor learns search outcomes, cost and checked reuse\n\
+             in earlier unresolved goals. These observations guide exploration\n\
+             and never establish mathematical truth or research novelty.\n\
+             Model, optimizer and replay remain local. Only checked mathematics is shared.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\
              mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\

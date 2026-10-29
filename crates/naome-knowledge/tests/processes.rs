@@ -173,6 +173,39 @@ fn ordinary_driver_loss_guardian_stops_owned_daemon_and_relay() {
 }
 
 #[cfg(unix)]
+#[test]
+#[ignore = "Finite 1M native learning, gossip, resource pause and checkpoint screen; requires Release"]
+fn native_learning_uses_checked_own_and_peer_solutions_and_resumes_model_and_adam() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "native 1M process qualification requires Release"
+    );
+    run_autonomous("native");
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "Finite empty-node adaptive learning and feedback lifecycle; requires Release"]
+fn native_adaptive_learning_closes_the_unseeded_question_and_feedback_cycle() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "native learning requires Release"
+    );
+    run_autonomous("adaptive");
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "Finite ordinary formal-goal ZFC construction, gossip and replay; requires Release"]
+fn native_goal_constructs_natural_number_set_from_zfc_and_rechecks_its_closure() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "native goal process qualification requires Release"
+    );
+    run_autonomous("native-goal");
+}
+
+#[cfg(unix)]
 fn run_autonomous(mode: &str) {
     let _active = ACTIVE
         .lock()
@@ -195,6 +228,9 @@ fn run_autonomous(mode: &str) {
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
+            "native" => "crates/naome-knowledge/tests/support/native_learning.py",
+            "adaptive" => "crates/naome-knowledge/tests/support/native_learning.py",
+            "native-goal" => "crates/naome-knowledge/tests/support/native_goal.py",
             _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
@@ -206,6 +242,9 @@ fn run_autonomous(mode: &str) {
                 "direct" => "60",
                 "guardian-probe" => "45",
                 "startup" => "50",
+                "native" => "480",
+                "adaptive" => "360",
+                "native-goal" => "120",
                 "pause" => "120",
                 _ => "90",
             },

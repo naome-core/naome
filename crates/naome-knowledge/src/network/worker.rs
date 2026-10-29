@@ -138,7 +138,7 @@ impl SharedSwarm {
             .get(&(peer, root))
             .and_then(std::sync::Weak::upgrade)
         {
-            return crate::publication::PeerGrant(lease);
+            return crate::publication::PeerGrant::from_lease(lease);
         }
         let grant = crate::publication::PeerGrant::new();
         grants.roots.insert((peer, root), Arc::downgrade(&grant.0));

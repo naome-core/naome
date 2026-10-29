@@ -196,7 +196,7 @@ def stored_objects(node):
         for id, statement, compatibility, payload, length, checksum, commit, ordinal, obligation in rows:
             assert len(id) == len(compatibility) == len(checksum) == len(commit) == 32
             assert compatibility == format_bytes[8:40]
-            assert 1 <= len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
+            assert 1 <= len(payload) == length <= 4_194_304 and hashlib.sha256(payload).digest() == checksum
             object = {"artifact_id": id.hex(), "statement_id": statement.hex() if statement is not None else None,
                 "obligation_proof": obligation.hex() if obligation is not None else None,
                 "compatibility": compatibility.hex(), "payload": payload.hex()}
@@ -213,11 +213,16 @@ def stored_objects(node):
         assert len(by_id) == count and payload_bytes == total
         assert bytes.fromhex(content_root(format_bytes[8:40].hex(), [object["artifact_id"] for object in objects])) == root
         represented = set()
-        for commit, batch_root, members in catalog.execute("SELECT id,root,member_count FROM commits ORDER BY id"):
+        for commit, batch_root, members, peer in catalog.execute("SELECT id,root,member_count,peer FROM commits ORDER BY id"):
             ids = [row[0] for row in catalog.execute("SELECT artifact_id FROM members WHERE commit_id=? ORDER BY artifact_id", (commit,))]
             assert 1 <= len(ids) == members <= 4096 and batch_root in ids
             assert sum(by_id[id][2] for id in ids) <= 64 * 1024 * 1024, "per-commit payload bound"
             framed = b"naome:knowledge:catalog-commit:v1\0" + batch_root + len(ids).to_bytes(4, "big")
+            framed += bytes([peer is not None])
+            if peer is not None:
+                encoded_peer = peer.encode("ascii")
+                assert 1 <= len(encoded_peer) <= 128
+                framed += len(encoded_peer).to_bytes(4, "big") + encoded_peer
             for id in ids:
                 assert id in by_id and id not in represented
                 represented.add(id)

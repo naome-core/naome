@@ -1,0 +1,122 @@
+{
+  "status": "prospective implementation contract; calibration and feasibility must pass before qualification",
+  "authority": {
+    "user_handoff": "01a1871f-d8e0-7052-aa89-e2247b90839f",
+    "base_commit": "b822dbdfc94975986552d9347bac092887d69539",
+    "version_binding": "Exact source commit, protocol content SHA256 and sealed bank/calibration SHA256; no format generation suffix or historical reinterpretation."
+  },
+  "primary_objective": "Repeated, cumulative capability-frontier expansion under fixed assessment budgets across explicit mathematical-demand tracks; finite evidence is not indefinite or globally novel mathematical progress.",
+  "tracks": [
+    {
+      "name": "lemma_composition",
+      "demand": "Solve new compositions requiring one or more distinct reusable closed logical lemmas plus independently varied conditional dependency graphs. A known lemma may recur as a legitimate subproblem, while complete assessment construction families and variants remain excluded from acquisition."
+    },
+    {
+      "name": "quantified_transport",
+      "demand": "Transport existential or universally scoped relational properties through conditional networks, including richer predicate structure and multiple scoped obligations. This tests a strategy across independently authored dependency structures."
+    },
+    {
+      "name": "equality_congruence",
+      "demand": "Compose equality relations and transport membership or compound predicates through distinct argument positions and logical scopes. This tests substitution/congruence across separately constructed relational settings."
+    }
+  ],
+  "difficulty": {
+    "meaning": "Operational reference-conditional difficulty; not intrinsic mathematical importance. Demands are explicit; formula length, proof depth, model surprise and failure alone are not difficulty labels.",
+    "recipes_per_track": 6,
+    "calibration_families_per_recipe": 6,
+    "variants_per_family": 2,
+    "references": [
+      "fixed zero-update current native checkpoint, seed2903003",
+      "exact historical native250 checkpoint from warm-01, with its existing immutable model/Adam hashes; reference only, never candidate initialization"
+    ],
+    "assessment_search_expansions": 32,
+    "assessment_case_cpu_micros": 2500000,
+    "assessment_case_wall_micros": 5000000,
+    "band_selection": "For each track, enumerate increasing demand-recipe triples lexicographically. Require mean reference success easy in[.65,.95], medium in[.25,.65], hard in[.05,.35], with each adjacent difference at least.15. Choose the first complete triple. No candidate assessment outcomes enter this choice. No valid triple in any track means calibration infeasible and no qualifying main run.",
+    "calibration_cpu_seconds": 90,
+    "calibration_wall_seconds": 120,
+    "unknown": "Budget exhaustion, unsupported/censored search and timeouts remain bounded unresolved outcomes, never mathematical falsehood."
+  },
+  "split": {
+    "root_construction": "Deterministic question-only generator with source-pinned seed; group exact targets, conservative atom/quantifier structural families, construction topology and authored variants before partition. Renaming, premise order and equivalent recipe variants cannot cross groups.",
+    "exclusions": "All historical corpus/reserved/retired families and exact targets; canonical native owner eligibility remains mandatory. Full assessment/pilot/calibration construction families are disjoint from learning and one another. Shared primitive logic and intended checked foundational lemma reuse are permitted and identified.",
+    "learning_access": "Only acquisition question grammar, checked own experience, canonical Finder/Graph, and hashes needed to reject assessment families. No assessment proof, label, score or candidate-specific tuning.",
+    "assessment_families_per_track_band": 12,
+    "assessment_variants_per_family": 2,
+    "independent_family_halves": [
+      6,
+      6
+    ],
+    "assessment_cases": 216,
+    "assessment_timing": "After ALL scientific learning trajectories and their selected whole states have been sealed. Evaluate saved initial/phase1..5 states on identical sealed cases. No inference on assessment during learning."
+  },
+  "trajectory": {
+    "phases": 5,
+    "seeds": [
+      2903101,
+      2903109,
+      2903123
+    ],
+    "pilot_seed": 2903001,
+    "arms": [
+      "adaptive",
+      "frozen_weights",
+      "fixed_choices"
+    ],
+    "bootstrap": "Same48 question-only native-source opportunities per paired seed; no imported teacher or trained candidate. Actual common initial model/Adam and checked common sources must match.",
+    "acquisition": "Current canonical Finder selects among a bounded shared question grammar and its ordinary Graph-derived proposals; every question crosses source/lineage/held-out filters before search. Trajectories may diverge.",
+    "opportunities_per_phase": 12,
+    "training_opportunity_phases": [
+      1,
+      3,
+      5
+    ],
+    "native_training": "Canonical run::train/Job::execute with own accepted sources, existing4-revision trigger,250updates/batch16, strict native protection and paired rollback. Meta chooses the adaptive plan; fixed choices use Balanced. frozen_weights performs zero Solver, Meta AND Finder parameter updates; observed checked knowledge, source history and nonparametric scheduling records can grow.",
+    "fixed_choices": "Predeclared uniform research choice and fixed Balanced native training; Finder parameters are frozen and learned allocation is disabled by the existing Uniform treatment. Same question access and actual resource grant.",
+    "saved_compute": "No-model-update control receives up to19 search opportunities per phase versus12 in learning arms, within the same cumulative180CPU/240wall/2GiB/768MiB grant and existing144-source bound including48common sources. This allows saved training compute to fund more search; unused grant remains explicit and no equal-actual-compute claim is made.",
+    "state": "After each phase export/reimport the entire native and Meta weights ANDAdam, current State, Finder SQLite/state/RNG, checked Graph provenance, source/history/lineage/counters and cumulative budget receipt. Reopen costs charged; clearing runtime caches is not a fresh grant.",
+    "initialization": "Independent native and Meta initial seeds, and independently seeded fresh Finder parameters, paired exactly across all three arms for each seed. Fresh initialization cannot replace any observed/learned Finder state.",
+    "sealing": "Before assessment, every trajectory must have an external process receipt with successful terminal exit/resource checks, source-bound protocol/bank/calibration identities, and a SHA256 manifest of all phase, State, blob, source and Finder files. Assessment reads only a complete3seed x3arm matrix; engineering pilot uses a separate1seed x3arm matrix. Carry measured complete process CPU/wall plus common source charges and counted IO into assessment; no renewed grant."
+  },
+  "selection_contract": {
+    "scope": "The longitudinal experiment changes measurement, not productive admission. Existing120-development and24-transfer native model-selection gates remain active as conservative inner diagnostics and essential-protection checks in this first bounded validation. They may constrain learning and do not define the external frontier.",
+    "no_silent_revision": "Any later replacement of the inner promotion/retention contract requires a new explicit source-pinned prospective contract and fresh unused assessment families before outcomes. No fabricated Progress, descriptor rewrite or installation of a rejected candidate.",
+    "historical": "All earlier failures remain failures under their original criteria; original120/24 results are named diagnostics. Raw task-count monotonicity across the new held-out panel is not required."
+  },
+  "outcomes": {
+    "frontier": "For each track and phase report the highest contiguous calibrated band mastered: >=75percent family-weighted solve rate in EACH disjoint assessment half. A confirmed advance requires new mastery beyond the preceding selected-state frontier in both halves, a strictly positive simultaneous paired family-bootstrap lower bound for that transition, and final-state retention of that mastered band. Plateau phases allowed. Aim >=3 distinct phase transitions with confirmed advances, reproduced in all3 seeds.",
+    "transfer": "All complete assessment constructions are held-out. Report each track/band/half and whole construction family; inherited foundational lemma reuse is disclosed separately from weight-only transfer.",
+    "cumulative_dependence": "At final checkpoint, preregistered ablation removes only currently retained checked lemmas first acquired in phases1..2, keeping final weights/Adam and all other knowledge fixed. Evaluate the first24 eligible higher-band assessment families in deterministic hash order; no favorable-case selection. A causal bounded dependence observation requires an independently checked final solve lost under ablation and a matching native proof dependency. If no early lemma survives, report unavailable. This is not mathematical necessity beyond the fixed budget.",
+    "weight_learning": "On the same first24 higher-band families compare final weights with initial weights using exactly the SAME final checked knowledge/definitions. Preserve whole source checkpoint bindings; inference-only context is explicit, never a resumed State or promoted model.",
+    "self_adaptation": "Compare adaptive with both frozen_weights and fixed_choices on final frontier profile and frontier area over phases. Require >=1 additional calibrated track-band mastered on mean profile, no negative seed, and positive simultaneous seed/family-aware bounds; report uncertainties without treating questions/folds as seeds.",
+    "retention": "Report initial and newly mastered family performance after every later phase, losses and recovery cost. Existing native protected/anchor checks remain mandatory. Final essential/prerequisite retention and confirmed frontier gains must hold; intermediate raw task totals may decrease. Final loss of an attained frontier band disqualifies its claimed advance.",
+    "efficiency": "Report acquisition, checker, training, checkpoint/reopen, assessment, ablations, CPU,wall,RSS,IO and all failures separately. Independently authorized30percentCPU/20percentwall targets without protected-quality loss remain separate unmet requirements unless measured; no aggregate score hides them.",
+    "novelty": "New to the system is distinct from new to mathematics. Global novelty/importance requires appropriate literature/expert assessment."
+  },
+  "analysis": {
+    "family_weight": "Equal whole construction-family weight within track/band; equal track weights. Variants and repeated checkpoints are paired observations, not independent samples.",
+    "uncertainty": "Crossed bootstrap: resample three initialization seeds with replacement, then resample six whole families within each track/band/half, shared across all arms/phases/seeds; 20000 replicates, fixed integer xorshift RNG2901029. Form one simultaneous two-sided95percent max-absolute-centered-deviation critical value across90 adaptive transitions (5 phases x3 tracks x3 bands x2 halves) and36 final adaptive-minus-control comparisons (2 controls x3 tracks x3 bands x2 halves). Fixed denominator36 variant observations per contrast; integer net counts and integer critical value before display. Independent family halves are disjoint families, not independent initialization seeds. Only three initialization seeds limits uncertainty.",
+    "no_positive_relabel": "Feasibility, green software checks, persistence, checkpoint count, a single hard solve, or one favorable aggregate cannot qualify the longitudinal outcome.",
+    "causal_controls": "Final frontier difference >=1 track-band on mean profile and no negative initialization seed are necessary additional conditions; bootstrap rates alone do not establish an integer frontier advantage. Report area over phases descriptively."
+  },
+  "resources": {
+    "native_job_cpu_seconds": 90,
+    "native_job_wall_seconds": 120,
+    "trajectory_cpu_seconds": 180,
+    "trajectory_wall_seconds": 240,
+    "trajectory_counted_io_bytes": 2147483648,
+    "peak_rss_bytes": 805306368,
+    "max_source_executions": 144,
+    "all_scientific_costs_included": true,
+    "historical_R_and_D": "Preserved separately; unmeasured preparation/analysis/packaging overhead stays explicit."
+  },
+  "stopping": "Source-only split/provenance tests first, reference calibration second, one separate-family engineering pilot third. Freeze final source and exact protocol/banks before any main candidate optimizer. Stop on integrity/essential-protection/resource failure; no scientific retry/refill/splicing, outcome tuning, extra arms or harder-task padding. Infeasible calibration/pilot stops qualification and reports concrete missing evidence.",
+  "primary_sources": [
+    "https://proceedings.mlr.press/v267/dong25h.html",
+    "https://arxiv.org/abs/1706.08840",
+    "https://arxiv.org/abs/2606.01861",
+    "https://arxiv.org/html/2610.31401v1"
+  ],
+  "HERD_boundary": "Privileged-teacher distillation has not been implemented or tested by the prior own-proof retention/readout studies. It is neither ruled out nor part of this unchanged-learning-rule validation.",
+  "control_clarification": "Corrected before any pilot/main candidate optimizer: no-model-update means all three parameter owners, not an adapting Finder. Calibration used no Finder/candidate and is unaffected. Calibration remains negative under its original immutable snapshot; its thresholds are not changed."
+}

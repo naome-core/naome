@@ -1,5 +1,6 @@
 module(name = "naome")
 
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
@@ -18,6 +19,23 @@ use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+
+# Mirror Cargo's checked crypto test profile in the Bazel MR graph.
+crate.annotation(
+    crate = "curve25519-dalek",
+    version = "*",
+    rustc_flags = ["-Copt-level=2", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"],
+)
+crate.annotation(
+    crate = "ed25519-dalek",
+    version = "*",
+    rustc_flags = ["-Copt-level=2", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"],
+)
+crate.annotation(
+    crate = "sha2",
+    version = "*",
+    rustc_flags = ["-Copt-level=2", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"],
+)
 
 # Cargo patches are workspace members, so connect their native Bazel targets.
 crate.annotation(
@@ -40,4 +58,35 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
-use_repo(crate, "crates")
+use_repo(
+    crate,
+    "crates",
+    "crates__burn-autodiff-0.22.1",
+    "crates__burn-backend-0.22.1",
+    "crates__burn-backend-extension-0.22.1",
+    "crates__burn-derive-0.22.1",
+    "crates__burn-dispatch-0.22.1",
+    "crates__burn-einsum-0.22.1",
+    "crates__burn-flex-0.22.1",
+    "crates__burn-std-0.22.1",
+    "crates__derive-new-0.7.0",
+    "crates__num-traits-0.2.19",
+    "crates__paste-1.0.15",
+    "crates__serde-1.0.229",
+)
+
+# Cargo's excluded path patch is mirrored from this checkout on every host.
+# Override crate_universe's machine-specific local_crate_mirror path.
+new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+new_local_repository(
+    name = "burn_dispatch_local",
+    build_file = "//vendor/burn-dispatch:BUILD.bazel",
+    path = "vendor/burn-dispatch",
+)
+override_repo(crate, **{"crates__burn-dispatch-0.22.1": "burn_dispatch_local"})
+new_local_repository(
+    name = "burn_tensor_local",
+    build_file = "//vendor/burn-tensor:BUILD.bazel",
+    path = "vendor/burn-tensor",
+)
+override_repo(crate, **{"crates__burn-tensor-0.22.1": "burn_tensor_local"})

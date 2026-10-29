@@ -23,6 +23,9 @@ path = "src/bin/naome-knowledge-dev.rs"
 required-features = ["developer-tools"]
 
 [dependencies]
+base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
+burn-pack = { version = "=0.22.1", default-features = false, features = ["std"] }
+burn = { version = "=0.22.1", default-features = false, features = ["std", "optim", "flex", "simd", "store"] }
 libp2p = { version = "0.57.1", default-features = false, features = ["dcutr", "ed25519", "rsa", "ecdsa", "secp256k1", "gossipsub", "identify", "kad", "macros", "mdns", "noise", "relay", "request-response", "tcp", "tokio", "yamux"] }
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 naome-authoring = { path = "../naome-authoring" }

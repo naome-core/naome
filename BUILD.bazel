@@ -31,6 +31,7 @@ test_suite(
         "//crates/naome-checker:semantic_oracle",
         "//crates/naome-checker:unit_tests",
         "//crates/naome-foundation:unit_tests",
+        "//crates/naome-knowledge:preservation_tests",
         "//crates/naome-knowledge:unit_tests",
         "//crates/naome-proof:unit_tests",
         "//crates/naome-storage:unit_tests",

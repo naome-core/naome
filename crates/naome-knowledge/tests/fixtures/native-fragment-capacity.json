@@ -1,0 +1,1854 @@
+{
+  "provenance": {
+    "source_commit": "e236b260edf1f8b596afff59bef09897360e3a66",
+    "seed": 41,
+    "episodes": [
+      1,
+      17,
+      23
+    ],
+    "purpose": "Native source trajectories for bounded optional contextual-fragment regression; no imported model or expected learning outcome."
+  },
+  "records": [
+    {
+      "question": "goal = all(b0, all(b1, all(b2, all(b3, imp(imp(mem(b2, b1), mem(b2, b2)), imp(not(not(imp(mem(b2, b2), mem(b2, b3)))), imp(eq(b0, b1), imp(mem(b0, b2), imp(mem(b0, b1), imp(imp(mem(b1, b2), imp(mem(b0, b1), mem(b1, b2))), imp(imp(mem(b1, b2), imp(mem(b1, b2), mem(b1, b2))), imp(imp(mem(b1, b2), mem(b1, b2)), imp(all(b4, not(not(imp(mem(b2, b0), mem(b2, b1))))), not(all(b4, not(not(imp(eq(b4, b1), not(mem(b4, b2))))))))))))))))))))",
+      "solution": {
+        "cost": {
+          "search_expansions": 73,
+          "checker_calls": 1,
+          "submitted_checker_steps": 180,
+          "retrieved_lemmas": 0,
+          "retrieval_micros": 82,
+          "dependency_check_steps": 0,
+          "original_steps": 71,
+          "useful_steps": 4,
+          "unique_states": 4,
+          "core_work": 337,
+          "generation_micros": 130945,
+          "definition_candidates": 0,
+          "definition_references": 0,
+          "definition_check_steps": 0,
+          "definition_micros": 85,
+          "definition_failure": null,
+          "certificate_failures": 0
+        },
+        "source": "let:\n    a0 = eq(f0, f0)\n    a1 = all(f0,a0)\n    a2 = mem(f0, f1)\n    a3 = imp(a2,a1)\n    a4 = eq(f0, f2)\n    a5 = not(a2)\n    a6 = imp(a4,a5)\n    a7 = not(a6)\n    a8 = not(a7)\n    a9 = all(f0,a8)\n    a10 = not(a9)\n    a11 = not(a10)\n    a12 = imp(a11,a2)\n    a13 = imp(a2,a12)\n    a14 = not(a1)\n    a15 = not(a14)\n    a16 = imp(a15,a11)\n    a17 = imp(a10,a14)\n    a18 = imp(a16,a17)\n    a19 = imp(a1,a9)\n    a20 = imp(a17,a19)\n    a21 = eq(f3, f2)\n    a22 = mem(f3, f1)\n    a23 = not(a22)\n    a24 = imp(a21,a23)\n    a25 = not(a24)\n    a26 = not(a25)\n    a27 = imp(a9,a8)\n    a28 = imp(a15,a8)\n    a29 = imp(a8,a28)\n    a30 = imp(a7,a14)\n    a31 = imp(a28,a30)\n    a32 = imp(a1,a6)\n    a33 = imp(a30,a32)\n    a34 = imp(a11,a4)\n    a35 = imp(a11,a5)\n    a36 = imp(a34,a35)\n    a37 = imp(a15,a5)\n    a38 = imp(a5,a37)\n    a39 = imp(a11,a37)\n    a40 = imp(a35,a39)\n    a41 = imp(a2,a14)\n    a42 = imp(a37,a41)\n    a43 = imp(a11,a41)\n    a44 = imp(a39,a43)\n    a45 = imp(a11,a14)\n    a46 = imp(a12,a45)\n    a47 = imp(a43,a46)\n    a48 = imp(a2,a46)\n    a49 = imp(a46,a48)\n    a50 = imp(a2,a45)\n    a51 = imp(a13,a50)\n    a52 = imp(a48,a51)\n    a53 = imp(a1,a10)\n    a54 = imp(a45,a53)\n    a55 = imp(a2,a53)\n    a56 = imp(a50,a55)\n    a57 = imp(a2,a10)\n    a58 = imp(a3,a57)\n    a59 = imp(a55,a58)\n    a60 = mem(f1, f0)\n    a61 = mem(f1, f2)\n    a62 = imp(a60,a61)\n    a63 = not(a62)\n    a64 = not(a63)\n    a65 = all(f3,a64)\n    a66 = imp(a65,a10)\n    a67 = imp(a10,a66)\n    a68 = imp(a2,a66)\n    a69 = imp(a57,a68)\n    a70 = mem(f2, f1)\n    a71 = imp(a70,a70)\n    a72 = imp(a71,a66)\n    a73 = imp(a66,a72)\n    a74 = imp(a2,a72)\n    a75 = imp(a68,a74)\n    a76 = imp(a70,a71)\n    a77 = imp(a76,a72)\n    a78 = imp(a72,a77)\n    a79 = imp(a2,a77)\n    a80 = imp(a74,a79)\n    a81 = mem(f0, f2)\n    a82 = imp(a81,a70)\n    a83 = imp(a70,a82)\n    a84 = imp(a83,a77)\n    a85 = imp(a77,a84)\n    a86 = imp(a2,a84)\n    a87 = imp(a79,a86)\n    a88 = imp(a81,a84)\n    a89 = imp(a84,a88)\n    a90 = imp(a2,a88)\n    a91 = imp(a86,a90)\n    a92 = imp(a4,a90)\n    a93 = mem(f1, f1)\n    a94 = mem(f1, f3)\n    a95 = imp(a93,a94)\n    a96 = not(a95)\n    a97 = not(a96)\n    a98 = imp(a97,a92)\n    a99 = imp(a61,a93)\n\n\ngoal = all(b0, all(b1, all(b2, all(b3, imp(imp(mem(b2, b1), mem(b2, b2)), imp(not(not(imp(mem(b2, b2), mem(b2, b3)))), imp(eq(b0, b1), imp(mem(b0, b2), imp(mem(b0, b1), imp(imp(mem(b1, b2), imp(mem(b0, b1), mem(b1, b2))), imp(imp(mem(b1, b2), imp(mem(b1, b2), mem(b1, b2))), imp(imp(mem(b1, b2), mem(b1, b2)), imp(all(b4, not(not(imp(mem(b2, b0), mem(b2, b1))))), not(all(b4, not(not(imp(eq(b4, b1), not(mem(b4, b2))))))))))))))))))))\n\nproof:\n    p0 = refl(f0)\n    p1 = gen(p0, f0)\n    p2 = simp(a1, a2)\n    p3 = mp(p1, p2)\n    p4 = simp(a3, a4)\n    p5 = mp(p3, p4)\n    p6 = simp(a2, a11)\n    p7 = simp(a13, a4)\n    p8 = mp(p6, p7)\n    p9 = simp(a4, a11)\n    p10 = simp(a1, a11)\n    p11 = mp(p1, p10)\n    p12 = simp(a11, a15)\n    p13 = contra(a10, a14)\n    p14 = simp(a18, a11)\n    p15 = mp(p13, p14)\n    p16 = frege(a11, a16, a17)\n    p17 = mp(p15, p16)\n    p18 = mp(p12, p17)\n    p19 = contra(a1, a9)\n    p20 = simp(a20, a11)\n    p21 = mp(p19, p20)\n    p22 = frege(a11, a17, a19)\n    p23 = mp(p21, p22)\n    p24 = mp(p18, p23)\n    p25 = frege(a11, a1, a9)\n    p26 = mp(p24, p25)\n    p27 = mp(p11, p26)\n    p28 = inst(f3, f0, a26)\n    p29 = simp(a27, a11)\n    p30 = mp(p28, p29)\n    p31 = frege(a11, a9, a8)\n    p32 = mp(p30, p31)\n    p33 = mp(p27, p32)\n    p34 = simp(a8, a15)\n    p35 = simp(a29, a11)\n    p36 = mp(p34, p35)\n    p37 = frege(a11, a8, a28)\n    p38 = mp(p36, p37)\n    p39 = mp(p33, p38)\n    p40 = contra(a7, a14)\n    p41 = simp(a31, a11)\n    p42 = mp(p40, p41)\n    p43 = frege(a11, a28, a30)\n    p44 = mp(p42, p43)\n    p45 = mp(p39, p44)\n    p46 = contra(a1, a6)\n    p47 = simp(a33, a11)\n    p48 = mp(p46, p47)\n    p49 = frege(a11, a30, a32)\n    p50 = mp(p48, p49)\n    p51 = mp(p45, p50)\n    p52 = frege(a11, a1, a6)\n    p53 = mp(p51, p52)\n    p54 = mp(p11, p53)\n    p55 = frege(a11, a4, a5)\n    p56 = mp(p54, p55)\n    p57 = simp(a36, a4)\n    p58 = mp(p56, p57)\n    p59 = frege(a4, a34, a35)\n    p60 = mp(p58, p59)\n    p61 = mp(p9, p60)\n    p62 = simp(a5, a15)\n    p63 = simp(a38, a11)\n    p64 = mp(p62, p63)\n    p65 = frege(a11, a5, a37)\n    p66 = mp(p64, p65)\n    p67 = simp(a40, a4)\n    p68 = mp(p66, p67)\n    p69 = frege(a4, a35, a39)\n    p70 = mp(p68, p69)\n    p71 = mp(p61, p70)\n    p72 = contra(a2, a14)\n    p73 = simp(a42, a11)\n    p74 = mp(p72, p73)\n    p75 = frege(a11, a37, a41)\n    p76 = mp(p74, p75)\n    p77 = simp(a44, a4)\n    p78 = mp(p76, p77)\n    p79 = frege(a4, a39, a43)\n    p80 = mp(p78, p79)\n    p81 = mp(p71, p80)\n    p82 = frege(a11, a2, a14)\n    p83 = simp(a47, a4)\n    p84 = mp(p82, p83)\n    p85 = frege(a4, a43, a46)\n    p86 = mp(p84, p85)\n    p87 = mp(p81, p86)\n    p88 = simp(a46, a2)\n    p89 = simp(a49, a4)\n    p90 = mp(p88, p89)\n    p91 = frege(a4, a46, a48)\n    p92 = mp(p90, p91)\n    p93 = mp(p87, p92)\n    p94 = frege(a2, a12, a45)\n    p95 = simp(a52, a4)\n    p96 = mp(p94, p95)\n    p97 = frege(a4, a48, a51)\n    p98 = mp(p96, p97)\n    p99 = mp(p93, p98)\n    p100 = frege(a4, a13, a50)\n    p101 = mp(p99, p100)\n    p102 = mp(p8, p101)\n    p103 = contra(a1, a10)\n    p104 = simp(a54, a2)\n    p105 = mp(p103, p104)\n    p106 = frege(a2, a45, a53)\n    p107 = mp(p105, p106)\n    p108 = simp(a56, a4)\n    p109 = mp(p107, p108)\n    p110 = frege(a4, a50, a55)\n    p111 = mp(p109, p110)\n    p112 = mp(p102, p111)\n    p113 = frege(a2, a1, a10)\n    p114 = simp(a59, a4)\n    p115 = mp(p113, p114)\n    p116 = frege(a4, a55, a58)\n    p117 = mp(p115, p116)\n    p118 = mp(p112, p117)\n    p119 = frege(a4, a3, a57)\n    p120 = mp(p118, p119)\n    p121 = mp(p5, p120)\n    p122 = simp(a10, a65)\n    p123 = simp(a67, a2)\n    p124 = mp(p122, p123)\n    p125 = frege(a2, a10, a66)\n    p126 = mp(p124, p125)\n    p127 = simp(a69, a4)\n    p128 = mp(p126, p127)\n    p129 = frege(a4, a57, a68)\n    p130 = mp(p128, p129)\n    p131 = mp(p121, p130)\n    p132 = simp(a66, a71)\n    p133 = simp(a73, a2)\n    p134 = mp(p132, p133)\n    p135 = frege(a2, a66, a72)\n    p136 = mp(p134, p135)\n    p137 = simp(a75, a4)\n    p138 = mp(p136, p137)\n    p139 = frege(a4, a68, a74)\n    p140 = mp(p138, p139)\n    p141 = mp(p131, p140)\n    p142 = simp(a72, a76)\n    p143 = simp(a78, a2)\n    p144 = mp(p142, p143)\n    p145 = frege(a2, a72, a77)\n    p146 = mp(p144, p145)\n    p147 = simp(a80, a4)\n    p148 = mp(p146, p147)\n    p149 = frege(a4, a74, a79)\n    p150 = mp(p148, p149)\n    p151 = mp(p141, p150)\n    p152 = simp(a77, a83)\n    p153 = simp(a85, a2)\n    p154 = mp(p152, p153)\n    p155 = frege(a2, a77, a84)\n    p156 = mp(p154, p155)\n    p157 = simp(a87, a4)\n    p158 = mp(p156, p157)\n    p159 = frege(a4, a79, a86)\n    p160 = mp(p158, p159)\n    p161 = mp(p151, p160)\n    p162 = simp(a84, a81)\n    p163 = simp(a89, a2)\n    p164 = mp(p162, p163)\n    p165 = frege(a2, a84, a88)\n    p166 = mp(p164, p165)\n    p167 = simp(a91, a4)\n    p168 = mp(p166, p167)\n    p169 = frege(a4, a86, a90)\n    p170 = mp(p168, p169)\n    p171 = mp(p161, p170)\n    p172 = simp(a92, a97)\n    p173 = mp(p171, p172)\n    p174 = simp(a98, a99)\n    p175 = mp(p173, p174)\n    p176 = gen(p175, f3)\n    p177 = gen(p176, f1)\n    p178 = gen(p177, f2)\n    p179 = gen(p178, f0)\n    return p179\n",
+        "helpers": [],
+        "proof_id": "afef70c894c14fbae46de64bd1e242c808119a35c7cde34ba831074e97752451",
+        "refuted": false,
+        "tree": {
+          "Step": {
+            "action": {
+              "Double": 9
+            },
+            "children": [
+              {
+                "Step": {
+                  "action": {
+                    "Instantiate": [
+                      14,
+                      0
+                    ]
+                  },
+                  "children": [
+                    {
+                      "Step": {
+                        "action": {
+                          "Double": 15
+                        },
+                        "children": [
+                          {
+                            "Step": {
+                              "action": {
+                                "Mp": [
+                                  16,
+                                  2
+                                ]
+                              },
+                              "children": [
+                                {
+                                  "Close": [
+                                    3,
+                                    17
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "observation": {
+        "question": "goal = all(b0, all(b1, all(b2, all(b3, imp(imp(mem(b2, b1), mem(b2, b2)), imp(not(not(imp(mem(b2, b2), mem(b2, b3)))), imp(eq(b0, b1), imp(mem(b0, b2), imp(mem(b0, b1), imp(imp(mem(b1, b2), imp(mem(b0, b1), mem(b1, b2))), imp(imp(mem(b1, b2), imp(mem(b1, b2), mem(b1, b2))), imp(imp(mem(b1, b2), mem(b1, b2)), imp(all(b4, not(not(imp(mem(b2, b0), mem(b2, b1))))), not(all(b4, not(not(imp(eq(b4, b1), not(mem(b4, b2))))))))))))))))))))",
+        "summary": {
+          "job": 1,
+          "question": "0a1ea1610fcba773969c5a7d4af45a2706c0efd90e1427cb4c9059e88ad52681",
+          "checkpoint": "08bb1d95ad58b905bedd9e1181b9e6ce38053c8083a5746b304515f851ada2bb",
+          "policy": "72f4e30618d6481891e921116d80e8b5c2ae72c89a6e464c63bc0a6a3404a54d",
+          "request_binding": "a1d660f563eb1d7ec683d16f42ad3e4d4a4a9b9247f08f9bc7b9caec8e167417",
+          "native_context": "8350868f8e6a127524cbe3c78dbc126f1414ba77ed57368a3347ae8ad84a87d5",
+          "origin": "Local",
+          "terminal": {
+            "CertifiedCandidate": {
+              "proof_id": "afef70c894c14fbae46de64bd1e242c808119a35c7cde34ba831074e97752451",
+              "refuted": false
+            }
+          },
+          "trace": {
+            "checked_trajectory": "104dc1d461df7698bb4f5d71fb12224cfbc367628605a4385ec5f199ffcdfdae",
+            "observed_branches": null,
+            "observed_execution": "9b40bcb0f336984fbca9a3d09cb91b5bb1720cdff83a33567203adb7c7473d3b"
+          },
+          "cost": {
+            "search_expansions": 73,
+            "checker_calls": 1,
+            "submitted_checker_steps": 180,
+            "retrieved_lemmas": 0,
+            "retrieval_micros": 82,
+            "dependency_check_steps": 0,
+            "original_steps": 71,
+            "useful_steps": 4,
+            "unique_states": 4,
+            "core_work": 337,
+            "generation_micros": 130945,
+            "definition_candidates": 0,
+            "definition_references": 0,
+            "definition_check_steps": 0,
+            "definition_micros": 85,
+            "definition_failure": null,
+            "certificate_failures": 0
+          },
+          "search_limit": 128,
+          "spent_ms": 130,
+          "reserved_units": 1,
+          "receipt": "4b5de100db161adf17880ba4f24f2f9384c31aaf03e3be045b51d8a092766655"
+        },
+        "frontier": null,
+        "executions": [
+          {
+            "target": "3b3e4cb5941aca83a29977fbb467b6547d7ee31c9bd9032e255e0fc50e11e617",
+            "root": {
+              "target": "04040404030301010000000101000000020101000000010100000001030202030101000000010100000001010100000001010000000003000100000003010000000203010100000003010000000103010100000003010000000203030101000000020100000001030101000000030100000002010100000002010000000103030101000000020100000001030101000000020100000001010100000002010000000103030101000000020100000001010100000002010000000103040202030101000000020100000004010100000002010000000302040202030001000000000100000003020101000000000100000002",
+              "knowledge": []
+            },
+            "events": [
+              {
+                "parent": null,
+                "state": "19d15ce1a444453982e3072cb3d59126bbda95ab64f08dc10204b4683723d326",
+                "offered": "6ed2aea52fd355e5cdcffa799eeafca4ec6107d077a4dac37778f511155fac59",
+                "selected": 1,
+                "ranks": [
+                  1061088142,
+                  1064866723,
+                  1055097613,
+                  1055094442,
+                  1061375244,
+                  1063295468,
+                  1057351611,
+                  1049767474,
+                  1061897053,
+                  1053748153,
+                  1058733268,
+                  1055452575,
+                  1057469250
+                ],
+                "children_attempted": 2,
+                "start": 0,
+                "end": 73,
+                "elapsed_micros": 116186,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 0,
+                  "child": 0
+                },
+                "state": "b4fb41a45f7847e716d28ff82892cdb658a2dfc67dad46be91eafb89486c0d11",
+                "offered": "610eb62ed9ccc87519bdd4fa1201b551ab7899d7ee07070d0da625554ef6da68",
+                "selected": 2,
+                "ranks": [
+                  1015847930,
+                  1036712614,
+                  1037760004,
+                  1011451498,
+                  1028202765,
+                  1028202765,
+                  1028202765,
+                  1028202765,
+                  1033080406,
+                  1033108912,
+                  1036748942,
+                  1033729486
+                ],
+                "children_attempted": 2,
+                "start": 1,
+                "end": 44,
+                "elapsed_micros": 63451,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 1,
+                  "child": 0
+                },
+                "state": "3099427fde5b4c04a61a34a5dfbc7d5c8895c608efa4f6e44b2285be824150f3",
+                "offered": "32406de1fe6908a369c6adddb4e9fc729abb0e387d9785dcbbd5ea09b790e8ce",
+                "selected": 8,
+                "ranks": [
+                  1033039462,
+                  1015605058,
+                  1010928830,
+                  1028102570,
+                  1028102570,
+                  1028102570,
+                  1028102570,
+                  1033034550,
+                  1036698872,
+                  1034260678,
+                  1033673346
+                ],
+                "children_attempted": 1,
+                "start": 2,
+                "end": 15,
+                "elapsed_micros": 20775,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 2,
+                  "child": 0
+                },
+                "state": "f67a3356f478cd836a335dca3730ef00d4e13e329ed70ece56e9cd12a56fb4e7",
+                "offered": "af1013796619a2c75b9a852c7b26e1973e96cbce9993a192049f416856526b44",
+                "selected": 12,
+                "ranks": [
+                  1062255313,
+                  1060013112,
+                  1063412504,
+                  1032263203,
+                  1034337466,
+                  1056826362,
+                  1039933571,
+                  1049814540,
+                  1027879944,
+                  1057224989,
+                  1060551087,
+                  1026765156,
+                  1065315432,
+                  1058606295
+                ],
+                "children_attempted": 2,
+                "start": 3,
+                "end": 15,
+                "elapsed_micros": 18847,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 3,
+                  "child": 0
+                },
+                "state": "cd6ad1211d3f7752f5257ee0caae0a231fa73dafb37f9697b0463d4b002aad83",
+                "offered": "55080f8a4ba9a798a23036cceabcc50d3674b15fba287721f5eef2efbdc3f333",
+                "selected": 12,
+                "ranks": [
+                  1033664954,
+                  1018121834,
+                  1015496882,
+                  1029311163,
+                  1029311163,
+                  1029311163,
+                  1029311163,
+                  1029317849,
+                  1029317849,
+                  1029317849,
+                  1029317849,
+                  1033555946,
+                  1034338234
+                ],
+                "children_attempted": 1,
+                "start": 4,
+                "end": 10,
+                "elapsed_micros": 8330,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 4,
+                  "child": 0
+                },
+                "state": "142c8585b84660637f7d7e327ce2cd5db392afa82c08f2d30215969453fddf26",
+                "offered": "aa56b307fbd15901f9f2115266722421bfbf63f480d8ac21ac8e36a0f80e8768",
+                "selected": 11,
+                "ranks": [
+                  1033883018,
+                  1018897433,
+                  1016281654,
+                  1029718363,
+                  1029718363,
+                  1029718363,
+                  1029718363,
+                  1029724698,
+                  1029724698,
+                  1029724698,
+                  1029724698,
+                  1034500948
+                ],
+                "children_attempted": 1,
+                "start": 5,
+                "end": 10,
+                "elapsed_micros": 6616,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 5,
+                  "child": 0
+                },
+                "state": "44683e4f15408737f9e641987581d1c59128ca846f88e8aa000e82e1f67f24e8",
+                "offered": "09c1c93c5ae217ed5956edefc38455fe8e16cbcc59ec106251ae7d00bd2702ba",
+                "selected": 11,
+                "ranks": [
+                  1033999432,
+                  1019580603,
+                  1016969178,
+                  1030090968,
+                  1030090968,
+                  1030090968,
+                  1030090968,
+                  1030097298,
+                  1030097298,
+                  1030097298,
+                  1030097298,
+                  1034727842
+                ],
+                "children_attempted": 2,
+                "start": 6,
+                "end": 10,
+                "elapsed_micros": 4918,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 6,
+                  "child": 0
+                },
+                "state": "5b8327f4f1f40ed34d424667d47e783f4c7916a04a4d49f355aa5f3341a72d58",
+                "offered": "5155dbd7e18afce19321cc93f42a6ce453db639b8fad666f670a965351594862",
+                "selected": 9,
+                "ranks": [
+                  1057463854,
+                  1057697282,
+                  1061129306,
+                  1062300325,
+                  1059792801,
+                  1063035079,
+                  1060457276,
+                  1047660671,
+                  1059585805,
+                  1063153873,
+                  1062657643
+                ],
+                "children_attempted": 1,
+                "start": 7,
+                "end": 9,
+                "elapsed_micros": 1574,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 7,
+                  "child": 0
+                },
+                "state": "b8eb0521c1c56ce63173b6832802607afa32dcacf530b70ff7771ba6b4f87f1b",
+                "offered": "a7ef37de60f2947110f55f8fdf7e48b802593084634d1705b06d499d7653a5db",
+                "selected": 0,
+                "ranks": [
+                  1033095144,
+                  1015898760,
+                  1011410148,
+                  1013302836,
+                  1028192420,
+                  1028192420,
+                  1028192420,
+                  1028192420
+                ],
+                "children_attempted": 1,
+                "start": 8,
+                "end": 9,
+                "elapsed_micros": 60,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 6,
+                  "child": 1
+                },
+                "state": "d3f6c9dadf359dc437ddfcd60e96b4c7bfec1b4b50bb4425802495d3be400ca3",
+                "offered": "85b5c2a04fd09c54f3cb5e7ee122958c68022946163e81b29c9acff33b9216ff",
+                "selected": 1,
+                "ranks": [
+                  1026840623,
+                  1033771482,
+                  1018463223,
+                  1015829892,
+                  1029508217,
+                  1029508217,
+                  1029508217,
+                  1029508217,
+                  1029514535,
+                  1029514535,
+                  1029514535,
+                  1029514535
+                ],
+                "children_attempted": 1,
+                "start": 9,
+                "end": 10,
+                "elapsed_micros": 61,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 3,
+                  "child": 1
+                },
+                "state": "be302480e5b653efce9ddf8a372bd1e42777333623dd876047429e0358aefeb8",
+                "offered": "8de2e10c3fed234155d9ccb17006ef447fe542474ba70f342c97ae655afbd0f4",
+                "selected": 14,
+                "ranks": [
+                  1027021839,
+                  1033787304,
+                  1018334235,
+                  1015724818,
+                  1029425133,
+                  1029425133,
+                  1029425133,
+                  1029425133,
+                  1029431813,
+                  1029431813,
+                  1029431813,
+                  1029431813,
+                  1034178950,
+                  1030712311,
+                  1034356920
+                ],
+                "children_attempted": 1,
+                "start": 10,
+                "end": 15,
+                "elapsed_micros": 6858,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 10,
+                  "child": 0
+                },
+                "state": "8e1a175e24064344e9726863413a6700083ec22181f77e794d7b8a247d855f2a",
+                "offered": "4445469670a541a049bf1d97f4228180d4490965d121d56fae22953059311f46",
+                "selected": 12,
+                "ranks": [
+                  1027211999,
+                  1033999964,
+                  1019075069,
+                  1016479192,
+                  1029815542,
+                  1029815542,
+                  1029815542,
+                  1029815542,
+                  1029821867,
+                  1029821867,
+                  1029821867,
+                  1029821867,
+                  1035117174,
+                  1032205306
+                ],
+                "children_attempted": 1,
+                "start": 11,
+                "end": 15,
+                "elapsed_micros": 5137,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 11,
+                  "child": 0
+                },
+                "state": "412ae3c15ce5d0999dc2bbeab978adbf6809918edf995b5939ba10572505a1cc",
+                "offered": "285ab1d4ff477d565d04e126c1ffbd3c8472b76c321bf8b9c11c93b4b76b124b",
+                "selected": 13,
+                "ranks": [
+                  1027521149,
+                  1034109636,
+                  1019631069,
+                  1017043878,
+                  1030126451,
+                  1030126451,
+                  1030126451,
+                  1030126451,
+                  1030132774,
+                  1030132774,
+                  1030132774,
+                  1030132774,
+                  1032729164,
+                  1035106780
+                ],
+                "children_attempted": 2,
+                "start": 12,
+                "end": 15,
+                "elapsed_micros": 3433,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 12,
+                  "child": 0
+                },
+                "state": "c979c5dc29fea6cfa5754a2c2ee2775a03f36c275811be23811c33ccd8974a2a",
+                "offered": "99a9f2cb23ac3d4d834af9cd614b91a02992c796e33b03429c7974be2ff186f2",
+                "selected": 1,
+                "ranks": [
+                  1027044485,
+                  1033873832,
+                  1018674545,
+                  1016056516,
+                  1029617718,
+                  1029617718,
+                  1029617718,
+                  1029617718,
+                  1029624056,
+                  1029624056,
+                  1029624056,
+                  1029624056,
+                  1032281084
+                ],
+                "children_attempted": 1,
+                "start": 13,
+                "end": 14,
+                "elapsed_micros": 62,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 12,
+                  "child": 1
+                },
+                "state": "b5ab82cc80a6416d612f01a000c7ade35b0efa178405dc82737c9603d00f3bb0",
+                "offered": "178209a8d76c9f05113631ebdbc56fa55f24874c164ce43b399bea0947f0a37f",
+                "selected": 2,
+                "ranks": [
+                  1027004929,
+                  1026987500,
+                  1033840436,
+                  1018513680,
+                  1015896706,
+                  1029543451,
+                  1029543451,
+                  1029543451,
+                  1029543451,
+                  1029549829,
+                  1029549829,
+                  1029549829,
+                  1029549829
+                ],
+                "children_attempted": 1,
+                "start": 14,
+                "end": 15,
+                "elapsed_micros": 57,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 1,
+                  "child": 1
+                },
+                "state": "9fe64948eb7a8feb2e226623266fce63a83e74b1dce15f43d79d2d3b3082b7cb",
+                "offered": "f366cf3a71694fdcc5f38ee26ecd5d23285ca16f296330909edd0bcb537666b4",
+                "selected": 8,
+                "ranks": [
+                  1014312768,
+                  1008860320,
+                  1026855547,
+                  1027627351,
+                  1027627351,
+                  1027627351,
+                  1027627351,
+                  1033391694,
+                  1036490730,
+                  1033696328
+                ],
+                "children_attempted": 1,
+                "start": 15,
+                "end": 44,
+                "elapsed_micros": 39423,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 15,
+                  "child": 0
+                },
+                "state": "d1773844eeb476c33e31479b1167ac5670470a37cf5cdf5351152f51334b585c",
+                "offered": "f7244f2b138a3fa7b5dbbdf9b825a6e51c4e192499dc554624e648573b3f899b",
+                "selected": 12,
+                "ranks": [
+                  1017299320,
+                  1014173244,
+                  1028137456,
+                  1028910794,
+                  1028910794,
+                  1028910794,
+                  1028910794,
+                  1028917304,
+                  1028917304,
+                  1028917304,
+                  1028917304,
+                  1034032890,
+                  1034357618
+                ],
+                "children_attempted": 1,
+                "start": 16,
+                "end": 44,
+                "elapsed_micros": 37857,
+                "closed": true
+              }
+            ],
+            "attempts": 73,
+            "omitted": 56
+          }
+        ],
+        "knowledge": []
+      }
+    },
+    {
+      "question": "goal = all(b0, all(b1, all(b2, all(b3, imp(all(b4, not(not(imp(mem(b2, b0), mem(b2, b1))))), imp(not(not(imp(mem(b2, b1), mem(b2, b2)))), imp(not(not(imp(mem(b2, b2), mem(b2, b3)))), imp(not(not(imp(mem(b2, b3), mem(b3, b0)))), imp(eq(b0, b1), imp(mem(b0, b2), imp(mem(b0, b1), imp(imp(mem(b1, b2), imp(mem(b0, b1), mem(b2, b1))), imp(imp(mem(b2, b1), mem(b3, b1)), mem(b3, b1))))))))))))))",
+      "solution": {
+        "cost": {
+          "search_expansions": 15,
+          "checker_calls": 1,
+          "submitted_checker_steps": 484,
+          "retrieved_lemmas": 0,
+          "retrieval_micros": 30,
+          "dependency_check_steps": 0,
+          "original_steps": 15,
+          "useful_steps": 7,
+          "unique_states": 7,
+          "core_work": 66,
+          "generation_micros": 27871,
+          "definition_candidates": 0,
+          "definition_references": 0,
+          "definition_check_steps": 0,
+          "definition_micros": 65,
+          "definition_failure": null,
+          "certificate_failures": 0
+        },
+        "source": "let:\n    a0 = eq(f0, f0)\n    a1 = all(f0,a0)\n    a2 = mem(f1, f2)\n    a3 = mem(f0, f1)\n    a4 = mem(f2, f1)\n    a5 = imp(a3,a4)\n    a6 = imp(a2,a5)\n    a7 = imp(a6,a1)\n    a8 = imp(a3,a7)\n    a9 = mem(f0, f2)\n    a10 = imp(a9,a8)\n    a11 = eq(f0, f1)\n    a12 = imp(a9,a1)\n    a13 = not(a2)\n    a14 = imp(a13,a2)\n    a15 = imp(a2,a14)\n    a16 = imp(a9,a2)\n    a17 = imp(a9,a14)\n    a18 = imp(a16,a17)\n    a19 = not(a1)\n    a20 = not(a19)\n    a21 = imp(a20,a13)\n    a22 = imp(a2,a19)\n    a23 = imp(a21,a22)\n    a24 = imp(a13,a19)\n    a25 = imp(a14,a24)\n    a26 = imp(a9,a24)\n    a27 = imp(a17,a26)\n    a28 = imp(a1,a2)\n    a29 = imp(a24,a28)\n    a30 = imp(a9,a28)\n    a31 = imp(a26,a30)\n    a32 = imp(a12,a16)\n    a33 = imp(a30,a32)\n    a34 = imp(a6,a2)\n    a35 = imp(a2,a34)\n    a36 = imp(a9,a34)\n    a37 = imp(a16,a36)\n    a38 = imp(a6,a6)\n    a39 = imp(a6,a5)\n    a40 = imp(a34,a39)\n    a41 = imp(a9,a39)\n    a42 = imp(a36,a41)\n    a43 = not(a4)\n    a44 = imp(a43,a5)\n    a45 = imp(a5,a44)\n    a46 = imp(a6,a44)\n    a47 = imp(a39,a46)\n    a48 = imp(a9,a46)\n    a49 = imp(a41,a48)\n    a50 = imp(a3,a46)\n    a51 = imp(a46,a50)\n    a52 = imp(a9,a50)\n    a53 = imp(a48,a52)\n    a54 = imp(a43,a1)\n    a55 = imp(a3,a54)\n    a56 = not(a5)\n    a57 = not(a56)\n    a58 = imp(a20,a57)\n    a59 = imp(a56,a19)\n    a60 = imp(a58,a59)\n    a61 = imp(a1,a5)\n    a62 = imp(a59,a61)\n    a63 = imp(a57,a5)\n    a64 = imp(a3,a63)\n    a65 = mem(f1, f1)\n    a66 = imp(a5,a65)\n    a67 = imp(a65,a66)\n    a68 = imp(a3,a65)\n    a69 = imp(a3,a66)\n    a70 = imp(a68,a69)\n    a71 = imp(a65,a4)\n    a72 = imp(a5,a71)\n    a73 = imp(a5,a4)\n    a74 = imp(a66,a73)\n    a75 = imp(a72,a74)\n    a76 = imp(a3,a74)\n    a77 = imp(a74,a76)\n    a78 = imp(a3,a73)\n    a79 = imp(a69,a78)\n    a80 = imp(a76,a79)\n    a81 = imp(a57,a73)\n    a82 = imp(a73,a81)\n    a83 = imp(a3,a81)\n    a84 = imp(a78,a83)\n    a85 = imp(a57,a4)\n    a86 = imp(a63,a85)\n    a87 = imp(a81,a86)\n    a88 = imp(a3,a86)\n    a89 = imp(a83,a88)\n    a90 = imp(a3,a85)\n    a91 = imp(a64,a90)\n    a92 = imp(a88,a91)\n    a93 = imp(a43,a85)\n    a94 = imp(a85,a93)\n    a95 = imp(a3,a93)\n    a96 = imp(a90,a95)\n    a97 = imp(a5,a43)\n    a98 = imp(a57,a97)\n    a99 = imp(a97,a98)\n    a100 = imp(a57,a43)\n    a101 = imp(a63,a100)\n    a102 = imp(a98,a101)\n    a103 = imp(a20,a43)\n    a104 = imp(a43,a103)\n    a105 = imp(a57,a103)\n    a106 = imp(a100,a105)\n    a107 = imp(a4,a19)\n    a108 = imp(a103,a107)\n    a109 = imp(a57,a107)\n    a110 = imp(a105,a109)\n    a111 = imp(a57,a19)\n    a112 = imp(a85,a111)\n    a113 = imp(a109,a112)\n    a114 = imp(a43,a111)\n    a115 = imp(a93,a114)\n    a116 = imp(a3,a114)\n    a117 = imp(a95,a116)\n    a118 = imp(a1,a56)\n    a119 = imp(a111,a118)\n    a120 = imp(a43,a118)\n    a121 = imp(a114,a120)\n    a122 = imp(a3,a120)\n    a123 = imp(a116,a122)\n    a124 = imp(a43,a56)\n    a125 = imp(a54,a124)\n    a126 = imp(a120,a125)\n    a127 = imp(a3,a125)\n    a128 = imp(a122,a127)\n    a129 = imp(a3,a124)\n    a130 = imp(a55,a129)\n    a131 = imp(a127,a130)\n    a132 = imp(a20,a56)\n    a133 = imp(a56,a132)\n    a134 = imp(a43,a132)\n    a135 = imp(a124,a134)\n    a136 = imp(a3,a134)\n    a137 = imp(a129,a136)\n    a138 = imp(a5,a19)\n    a139 = imp(a132,a138)\n    a140 = imp(a43,a138)\n    a141 = imp(a134,a140)\n    a142 = imp(a3,a140)\n    a143 = imp(a136,a142)\n    a144 = imp(a43,a19)\n    a145 = imp(a44,a144)\n    a146 = imp(a140,a145)\n    a147 = imp(a3,a145)\n    a148 = imp(a142,a147)\n    a149 = imp(a6,a145)\n    a150 = imp(a145,a149)\n    a151 = imp(a3,a149)\n    a152 = imp(a147,a151)\n    a153 = imp(a6,a144)\n    a154 = imp(a46,a153)\n    a155 = imp(a149,a154)\n    a156 = imp(a3,a154)\n    a157 = imp(a151,a156)\n    a158 = imp(a3,a153)\n    a159 = imp(a50,a158)\n    a160 = imp(a156,a159)\n    a161 = imp(a9,a159)\n    a162 = imp(a159,a161)\n    a163 = imp(a9,a158)\n    a164 = imp(a52,a163)\n    a165 = imp(a161,a164)\n    a166 = imp(a1,a4)\n    a167 = imp(a144,a166)\n    a168 = imp(a6,a166)\n    a169 = imp(a153,a168)\n    a170 = imp(a3,a168)\n    a171 = imp(a158,a170)\n    a172 = imp(a9,a170)\n    a173 = imp(a163,a172)\n    a174 = imp(a6,a4)\n    a175 = imp(a7,a174)\n    a176 = imp(a168,a175)\n    a177 = imp(a3,a175)\n    a178 = imp(a170,a177)\n    a179 = imp(a9,a177)\n    a180 = imp(a172,a179)\n    a181 = imp(a3,a174)\n    a182 = imp(a8,a181)\n    a183 = imp(a177,a182)\n    a184 = imp(a9,a182)\n    a185 = imp(a179,a184)\n    a186 = imp(a9,a181)\n    a187 = imp(a10,a186)\n    a188 = imp(a184,a187)\n    a189 = mem(f3, f1)\n    a190 = imp(a4,a189)\n    a191 = imp(a190,a4)\n    a192 = imp(a4,a191)\n    a193 = imp(a6,a191)\n    a194 = imp(a174,a193)\n    a195 = imp(a3,a193)\n    a196 = imp(a181,a195)\n    a197 = imp(a9,a195)\n    a198 = imp(a186,a197)\n    a199 = imp(a190,a190)\n    a200 = imp(a190,a189)\n    a201 = imp(a191,a200)\n    a202 = imp(a6,a200)\n    a203 = imp(a193,a202)\n    a204 = imp(a3,a202)\n    a205 = imp(a195,a204)\n    a206 = imp(a9,a204)\n    a207 = imp(a197,a206)\n    a208 = imp(a11,a206)\n    a209 = mem(f2, f3)\n    a210 = mem(f3, f0)\n    a211 = imp(a209,a210)\n    a212 = not(a211)\n    a213 = not(a212)\n    a214 = imp(a213,a208)\n    a215 = mem(f2, f2)\n    a216 = imp(a215,a209)\n    a217 = not(a216)\n    a218 = not(a217)\n    a219 = imp(a218,a214)\n    a220 = imp(a4,a215)\n    a221 = not(a220)\n    a222 = not(a221)\n    a223 = imp(a222,a219)\n    a224 = mem(f2, f0)\n    a225 = imp(a224,a4)\n    a226 = not(a225)\n    a227 = not(a226)\n    a228 = all(f3,a227)\n\n\ngoal = all(b0, all(b1, all(b2, all(b3, imp(all(b4, not(not(imp(mem(b2, b0), mem(b2, b1))))), imp(not(not(imp(mem(b2, b1), mem(b2, b2)))), imp(not(not(imp(mem(b2, b2), mem(b2, b3)))), imp(not(not(imp(mem(b2, b3), mem(b3, b0)))), imp(eq(b0, b1), imp(mem(b0, b2), imp(mem(b0, b1), imp(imp(mem(b1, b2), imp(mem(b0, b1), mem(b2, b1))), imp(imp(mem(b2, b1), mem(b3, b1)), mem(b3, b1))))))))))))))\n\nproof:\n    p0 = refl(f0)\n    p1 = gen(p0, f0)\n    p2 = simp(a1, a6)\n    p3 = mp(p1, p2)\n    p4 = simp(a7, a3)\n    p5 = mp(p3, p4)\n    p6 = simp(a8, a9)\n    p7 = mp(p5, p6)\n    p8 = simp(a10, a11)\n    p9 = mp(p7, p8)\n    p10 = simp(a1, a9)\n    p11 = mp(p1, p10)\n    p12 = simp(a12, a11)\n    p13 = mp(p11, p12)\n    p14 = subst(f0, f1, a9)\n    p15 = simp(a2, a13)\n    p16 = simp(a15, a9)\n    p17 = mp(p15, p16)\n    p18 = frege(a9, a2, a14)\n    p19 = mp(p17, p18)\n    p20 = simp(a18, a11)\n    p21 = mp(p19, p20)\n    p22 = frege(a11, a16, a17)\n    p23 = mp(p21, p22)\n    p24 = mp(p14, p23)\n    p25 = simp(a13, a20)\n    p26 = contra(a2, a19)\n    p27 = simp(a23, a13)\n    p28 = mp(p26, p27)\n    p29 = frege(a13, a21, a22)\n    p30 = mp(p28, p29)\n    p31 = mp(p25, p30)\n    p32 = frege(a13, a2, a19)\n    p33 = mp(p31, p32)\n    p34 = simp(a25, a9)\n    p35 = mp(p33, p34)\n    p36 = frege(a9, a14, a24)\n    p37 = mp(p35, p36)\n    p38 = simp(a27, a11)\n    p39 = mp(p37, p38)\n    p40 = frege(a11, a17, a26)\n    p41 = mp(p39, p40)\n    p42 = mp(p24, p41)\n    p43 = contra(a1, a2)\n    p44 = simp(a29, a9)\n    p45 = mp(p43, p44)\n    p46 = frege(a9, a24, a28)\n    p47 = mp(p45, p46)\n    p48 = simp(a31, a11)\n    p49 = mp(p47, p48)\n    p50 = frege(a11, a26, a30)\n    p51 = mp(p49, p50)\n    p52 = mp(p42, p51)\n    p53 = frege(a9, a1, a2)\n    p54 = simp(a33, a11)\n    p55 = mp(p53, p54)\n    p56 = frege(a11, a30, a32)\n    p57 = mp(p55, p56)\n    p58 = mp(p52, p57)\n    p59 = frege(a11, a12, a16)\n    p60 = mp(p58, p59)\n    p61 = mp(p13, p60)\n    p62 = simp(a2, a6)\n    p63 = simp(a35, a9)\n    p64 = mp(p62, p63)\n    p65 = frege(a9, a2, a34)\n    p66 = mp(p64, p65)\n    p67 = simp(a37, a11)\n    p68 = mp(p66, p67)\n    p69 = frege(a11, a16, a36)\n    p70 = mp(p68, p69)\n    p71 = mp(p61, p70)\n    p72 = simp(a6, a6)\n    p73 = simp(a6, a38)\n    p74 = frege(a6, a38, a6)\n    p75 = mp(p73, p74)\n    p76 = mp(p72, p75)\n    p77 = frege(a6, a2, a5)\n    p78 = mp(p76, p77)\n    p79 = simp(a40, a9)\n    p80 = mp(p78, p79)\n    p81 = frege(a9, a34, a39)\n    p82 = mp(p80, p81)\n    p83 = simp(a42, a11)\n    p84 = mp(p82, p83)\n    p85 = frege(a11, a36, a41)\n    p86 = mp(p84, p85)\n    p87 = mp(p71, p86)\n    p88 = simp(a5, a43)\n    p89 = simp(a45, a6)\n    p90 = mp(p88, p89)\n    p91 = frege(a6, a5, a44)\n    p92 = mp(p90, p91)\n    p93 = simp(a47, a9)\n    p94 = mp(p92, p93)\n    p95 = frege(a9, a39, a46)\n    p96 = mp(p94, p95)\n    p97 = simp(a49, a11)\n    p98 = mp(p96, p97)\n    p99 = frege(a11, a41, a48)\n    p100 = mp(p98, p99)\n    p101 = mp(p87, p100)\n    p102 = simp(a46, a3)\n    p103 = simp(a51, a9)\n    p104 = mp(p102, p103)\n    p105 = frege(a9, a46, a50)\n    p106 = mp(p104, p105)\n    p107 = simp(a53, a11)\n    p108 = mp(p106, p107)\n    p109 = frege(a11, a48, a52)\n    p110 = mp(p108, p109)\n    p111 = mp(p101, p110)\n    p112 = simp(a1, a43)\n    p113 = mp(p1, p112)\n    p114 = simp(a54, a3)\n    p115 = mp(p113, p114)\n    p116 = simp(a55, a11)\n    p117 = mp(p115, p116)\n    p118 = simp(a1, a57)\n    p119 = mp(p1, p118)\n    p120 = simp(a57, a20)\n    p121 = contra(a56, a19)\n    p122 = simp(a60, a57)\n    p123 = mp(p121, p122)\n    p124 = frege(a57, a58, a59)\n    p125 = mp(p123, p124)\n    p126 = mp(p120, p125)\n    p127 = contra(a1, a5)\n    p128 = simp(a62, a57)\n    p129 = mp(p127, p128)\n    p130 = frege(a57, a59, a61)\n    p131 = mp(p129, p130)\n    p132 = mp(p126, p131)\n    p133 = frege(a57, a1, a5)\n    p134 = mp(p132, p133)\n    p135 = mp(p119, p134)\n    p136 = simp(a63, a3)\n    p137 = mp(p135, p136)\n    p138 = simp(a64, a11)\n    p139 = mp(p137, p138)\n    p140 = subst(f0, f1, a3)\n    p141 = simp(a65, a5)\n    p142 = simp(a67, a3)\n    p143 = mp(p141, p142)\n    p144 = frege(a3, a65, a66)\n    p145 = mp(p143, p144)\n    p146 = simp(a70, a11)\n    p147 = mp(p145, p146)\n    p148 = frege(a11, a68, a69)\n    p149 = mp(p147, p148)\n    p150 = mp(p140, p149)\n    p151 = subst(f0, f1, a5)\n    p152 = frege(a5, a65, a4)\n    p153 = simp(a75, a11)\n    p154 = mp(p152, p153)\n    p155 = frege(a11, a72, a74)\n    p156 = mp(p154, p155)\n    p157 = mp(p151, p156)\n    p158 = simp(a74, a3)\n    p159 = simp(a77, a11)\n    p160 = mp(p158, p159)\n    p161 = frege(a11, a74, a76)\n    p162 = mp(p160, p161)\n    p163 = mp(p157, p162)\n    p164 = frege(a3, a66, a73)\n    p165 = simp(a80, a11)\n    p166 = mp(p164, p165)\n    p167 = frege(a11, a76, a79)\n    p168 = mp(p166, p167)\n    p169 = mp(p163, p168)\n    p170 = frege(a11, a69, a78)\n    p171 = mp(p169, p170)\n    p172 = mp(p150, p171)\n    p173 = simp(a73, a57)\n    p174 = simp(a82, a3)\n    p175 = mp(p173, p174)\n    p176 = frege(a3, a73, a81)\n    p177 = mp(p175, p176)\n    p178 = simp(a84, a11)\n    p179 = mp(p177, p178)\n    p180 = frege(a11, a78, a83)\n    p181 = mp(p179, p180)\n    p182 = mp(p172, p181)\n    p183 = frege(a57, a5, a4)\n    p184 = simp(a87, a3)\n    p185 = mp(p183, p184)\n    p186 = frege(a3, a81, a86)\n    p187 = mp(p185, p186)\n    p188 = simp(a89, a11)\n    p189 = mp(p187, p188)\n    p190 = frege(a11, a83, a88)\n    p191 = mp(p189, p190)\n    p192 = mp(p182, p191)\n    p193 = frege(a3, a63, a85)\n    p194 = simp(a92, a11)\n    p195 = mp(p193, p194)\n    p196 = frege(a11, a88, a91)\n    p197 = mp(p195, p196)\n    p198 = mp(p192, p197)\n    p199 = frege(a11, a64, a90)\n    p200 = mp(p198, p199)\n    p201 = mp(p139, p200)\n    p202 = simp(a85, a43)\n    p203 = simp(a94, a3)\n    p204 = mp(p202, p203)\n    p205 = frege(a3, a85, a93)\n    p206 = mp(p204, p205)\n    p207 = simp(a96, a11)\n    p208 = mp(p206, p207)\n    p209 = frege(a11, a90, a95)\n    p210 = mp(p208, p209)\n    p211 = mp(p201, p210)\n    p212 = simp(a63, a43)\n    p213 = mp(p135, p212)\n    p214 = simp(a43, a5)\n    p215 = simp(a97, a57)\n    p216 = simp(a99, a43)\n    p217 = mp(p215, p216)\n    p218 = frege(a43, a97, a98)\n    p219 = mp(p217, p218)\n    p220 = mp(p214, p219)\n    p221 = frege(a57, a5, a43)\n    p222 = simp(a102, a43)\n    p223 = mp(p221, p222)\n    p224 = frege(a43, a98, a101)\n    p225 = mp(p223, p224)\n    p226 = mp(p220, p225)\n    p227 = frege(a43, a63, a100)\n    p228 = mp(p226, p227)\n    p229 = mp(p213, p228)\n    p230 = simp(a43, a20)\n    p231 = simp(a104, a57)\n    p232 = mp(p230, p231)\n    p233 = frege(a57, a43, a103)\n    p234 = mp(p232, p233)\n    p235 = simp(a106, a43)\n    p236 = mp(p234, p235)\n    p237 = frege(a43, a100, a105)\n    p238 = mp(p236, p237)\n    p239 = mp(p229, p238)\n    p240 = contra(a4, a19)\n    p241 = simp(a108, a57)\n    p242 = mp(p240, p241)\n    p243 = frege(a57, a103, a107)\n    p244 = mp(p242, p243)\n    p245 = simp(a110, a43)\n    p246 = mp(p244, p245)\n    p247 = frege(a43, a105, a109)\n    p248 = mp(p246, p247)\n    p249 = mp(p239, p248)\n    p250 = frege(a57, a4, a19)\n    p251 = simp(a113, a43)\n    p252 = mp(p250, p251)\n    p253 = frege(a43, a109, a112)\n    p254 = mp(p252, p253)\n    p255 = mp(p249, p254)\n    p256 = frege(a43, a85, a111)\n    p257 = mp(p255, p256)\n    p258 = simp(a115, a3)\n    p259 = mp(p257, p258)\n    p260 = frege(a3, a93, a114)\n    p261 = mp(p259, p260)\n    p262 = simp(a117, a11)\n    p263 = mp(p261, p262)\n    p264 = frege(a11, a95, a116)\n    p265 = mp(p263, p264)\n    p266 = mp(p211, p265)\n    p267 = contra(a1, a56)\n    p268 = simp(a119, a43)\n    p269 = mp(p267, p268)\n    p270 = frege(a43, a111, a118)\n    p271 = mp(p269, p270)\n    p272 = simp(a121, a3)\n    p273 = mp(p271, p272)\n    p274 = frege(a3, a114, a120)\n    p275 = mp(p273, p274)\n    p276 = simp(a123, a11)\n    p277 = mp(p275, p276)\n    p278 = frege(a11, a116, a122)\n    p279 = mp(p277, p278)\n    p280 = mp(p266, p279)\n    p281 = frege(a43, a1, a56)\n    p282 = simp(a126, a3)\n    p283 = mp(p281, p282)\n    p284 = frege(a3, a120, a125)\n    p285 = mp(p283, p284)\n    p286 = simp(a128, a11)\n    p287 = mp(p285, p286)\n    p288 = frege(a11, a122, a127)\n    p289 = mp(p287, p288)\n    p290 = mp(p280, p289)\n    p291 = frege(a3, a54, a124)\n    p292 = simp(a131, a11)\n    p293 = mp(p291, p292)\n    p294 = frege(a11, a127, a130)\n    p295 = mp(p293, p294)\n    p296 = mp(p290, p295)\n    p297 = frege(a11, a55, a129)\n    p298 = mp(p296, p297)\n    p299 = mp(p117, p298)\n    p300 = simp(a56, a20)\n    p301 = simp(a133, a43)\n    p302 = mp(p300, p301)\n    p303 = frege(a43, a56, a132)\n    p304 = mp(p302, p303)\n    p305 = simp(a135, a3)\n    p306 = mp(p304, p305)\n    p307 = frege(a3, a124, a134)\n    p308 = mp(p306, p307)\n    p309 = simp(a137, a11)\n    p310 = mp(p308, p309)\n    p311 = frege(a11, a129, a136)\n    p312 = mp(p310, p311)\n    p313 = mp(p299, p312)\n    p314 = contra(a5, a19)\n    p315 = simp(a139, a43)\n    p316 = mp(p314, p315)\n    p317 = frege(a43, a132, a138)\n    p318 = mp(p316, p317)\n    p319 = simp(a141, a3)\n    p320 = mp(p318, p319)\n    p321 = frege(a3, a134, a140)\n    p322 = mp(p320, p321)\n    p323 = simp(a143, a11)\n    p324 = mp(p322, p323)\n    p325 = frege(a11, a136, a142)\n    p326 = mp(p324, p325)\n    p327 = mp(p313, p326)\n    p328 = frege(a43, a5, a19)\n    p329 = simp(a146, a3)\n    p330 = mp(p328, p329)\n    p331 = frege(a3, a140, a145)\n    p332 = mp(p330, p331)\n    p333 = simp(a148, a11)\n    p334 = mp(p332, p333)\n    p335 = frege(a11, a142, a147)\n    p336 = mp(p334, p335)\n    p337 = mp(p327, p336)\n    p338 = simp(a145, a6)\n    p339 = simp(a150, a3)\n    p340 = mp(p338, p339)\n    p341 = frege(a3, a145, a149)\n    p342 = mp(p340, p341)\n    p343 = simp(a152, a11)\n    p344 = mp(p342, p343)\n    p345 = frege(a11, a147, a151)\n    p346 = mp(p344, p345)\n    p347 = mp(p337, p346)\n    p348 = frege(a6, a44, a144)\n    p349 = simp(a155, a3)\n    p350 = mp(p348, p349)\n    p351 = frege(a3, a149, a154)\n    p352 = mp(p350, p351)\n    p353 = simp(a157, a11)\n    p354 = mp(p352, p353)\n    p355 = frege(a11, a151, a156)\n    p356 = mp(p354, p355)\n    p357 = mp(p347, p356)\n    p358 = frege(a3, a46, a153)\n    p359 = simp(a160, a11)\n    p360 = mp(p358, p359)\n    p361 = frege(a11, a156, a159)\n    p362 = mp(p360, p361)\n    p363 = mp(p357, p362)\n    p364 = simp(a159, a9)\n    p365 = simp(a162, a11)\n    p366 = mp(p364, p365)\n    p367 = frege(a11, a159, a161)\n    p368 = mp(p366, p367)\n    p369 = mp(p363, p368)\n    p370 = frege(a9, a50, a158)\n    p371 = simp(a165, a11)\n    p372 = mp(p370, p371)\n    p373 = frege(a11, a161, a164)\n    p374 = mp(p372, p373)\n    p375 = mp(p369, p374)\n    p376 = frege(a11, a52, a163)\n    p377 = mp(p375, p376)\n    p378 = mp(p111, p377)\n    p379 = contra(a1, a4)\n    p380 = simp(a167, a6)\n    p381 = mp(p379, p380)\n    p382 = frege(a6, a144, a166)\n    p383 = mp(p381, p382)\n    p384 = simp(a169, a3)\n    p385 = mp(p383, p384)\n    p386 = frege(a3, a153, a168)\n    p387 = mp(p385, p386)\n    p388 = simp(a171, a9)\n    p389 = mp(p387, p388)\n    p390 = frege(a9, a158, a170)\n    p391 = mp(p389, p390)\n    p392 = simp(a173, a11)\n    p393 = mp(p391, p392)\n    p394 = frege(a11, a163, a172)\n    p395 = mp(p393, p394)\n    p396 = mp(p378, p395)\n    p397 = frege(a6, a1, a4)\n    p398 = simp(a176, a3)\n    p399 = mp(p397, p398)\n    p400 = frege(a3, a168, a175)\n    p401 = mp(p399, p400)\n    p402 = simp(a178, a9)\n    p403 = mp(p401, p402)\n    p404 = frege(a9, a170, a177)\n    p405 = mp(p403, p404)\n    p406 = simp(a180, a11)\n    p407 = mp(p405, p406)\n    p408 = frege(a11, a172, a179)\n    p409 = mp(p407, p408)\n    p410 = mp(p396, p409)\n    p411 = frege(a3, a7, a174)\n    p412 = simp(a183, a9)\n    p413 = mp(p411, p412)\n    p414 = frege(a9, a177, a182)\n    p415 = mp(p413, p414)\n    p416 = simp(a185, a11)\n    p417 = mp(p415, p416)\n    p418 = frege(a11, a179, a184)\n    p419 = mp(p417, p418)\n    p420 = mp(p410, p419)\n    p421 = frege(a9, a8, a181)\n    p422 = simp(a188, a11)\n    p423 = mp(p421, p422)\n    p424 = frege(a11, a184, a187)\n    p425 = mp(p423, p424)\n    p426 = mp(p420, p425)\n    p427 = frege(a11, a10, a186)\n    p428 = mp(p426, p427)\n    p429 = mp(p9, p428)\n    p430 = simp(a4, a190)\n    p431 = simp(a192, a6)\n    p432 = mp(p430, p431)\n    p433 = frege(a6, a4, a191)\n    p434 = mp(p432, p433)\n    p435 = simp(a194, a3)\n    p436 = mp(p434, p435)\n    p437 = frege(a3, a174, a193)\n    p438 = mp(p436, p437)\n    p439 = simp(a196, a9)\n    p440 = mp(p438, p439)\n    p441 = frege(a9, a181, a195)\n    p442 = mp(p440, p441)\n    p443 = simp(a198, a11)\n    p444 = mp(p442, p443)\n    p445 = frege(a11, a186, a197)\n    p446 = mp(p444, p445)\n    p447 = mp(p429, p446)\n    p448 = simp(a190, a190)\n    p449 = simp(a190, a199)\n    p450 = frege(a190, a199, a190)\n    p451 = mp(p449, p450)\n    p452 = mp(p448, p451)\n    p453 = frege(a190, a4, a189)\n    p454 = mp(p452, p453)\n    p455 = simp(a201, a6)\n    p456 = mp(p454, p455)\n    p457 = frege(a6, a191, a200)\n    p458 = mp(p456, p457)\n    p459 = simp(a203, a3)\n    p460 = mp(p458, p459)\n    p461 = frege(a3, a193, a202)\n    p462 = mp(p460, p461)\n    p463 = simp(a205, a9)\n    p464 = mp(p462, p463)\n    p465 = frege(a9, a195, a204)\n    p466 = mp(p464, p465)\n    p467 = simp(a207, a11)\n    p468 = mp(p466, p467)\n    p469 = frege(a11, a197, a206)\n    p470 = mp(p468, p469)\n    p471 = mp(p447, p470)\n    p472 = simp(a208, a213)\n    p473 = mp(p471, p472)\n    p474 = simp(a214, a218)\n    p475 = mp(p473, p474)\n    p476 = simp(a219, a222)\n    p477 = mp(p475, p476)\n    p478 = simp(a223, a228)\n    p479 = mp(p477, p478)\n    p480 = gen(p479, f3)\n    p481 = gen(p480, f2)\n    p482 = gen(p481, f1)\n    p483 = gen(p482, f0)\n    return p483\n",
+        "helpers": [],
+        "proof_id": "a1a0ca5117492eb6a987b4782c48437d90d1d8bd07dc1858377808e9942c4eea",
+        "refuted": false,
+        "tree": {
+          "Step": {
+            "action": {
+              "Beta": 8
+            },
+            "children": [
+              {
+                "Step": {
+                  "action": {
+                    "Beta": 7
+                  },
+                  "children": [
+                    {
+                      "Step": {
+                        "action": {
+                          "Substitute": [
+                            4,
+                            5
+                          ]
+                        },
+                        "children": [
+                          {
+                            "Close": [
+                              16,
+                              15
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "Step": {
+                        "action": {
+                          "Substitute": [
+                            4,
+                            5
+                          ]
+                        },
+                        "children": [
+                          {
+                            "Step": {
+                              "action": {
+                                "Substitute": [
+                                  4,
+                                  6
+                                ]
+                              },
+                              "children": [
+                                {
+                                  "Step": {
+                                    "action": {
+                                      "Substitute": [
+                                        4,
+                                        15
+                                      ]
+                                    },
+                                    "children": [
+                                      {
+                                        "Step": {
+                                          "action": {
+                                            "Mp": [
+                                              18,
+                                              17
+                                            ]
+                                          },
+                                          "children": [
+                                            {
+                                              "Close": [
+                                                19,
+                                                14
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "Close": [
+                  14,
+                  9
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "observation": {
+        "question": "goal = all(b0, all(b1, all(b2, all(b3, imp(all(b4, not(not(imp(mem(b2, b0), mem(b2, b1))))), imp(not(not(imp(mem(b2, b1), mem(b2, b2)))), imp(not(not(imp(mem(b2, b2), mem(b2, b3)))), imp(not(not(imp(mem(b2, b3), mem(b3, b0)))), imp(eq(b0, b1), imp(mem(b0, b2), imp(mem(b0, b1), imp(imp(mem(b1, b2), imp(mem(b0, b1), mem(b2, b1))), imp(imp(mem(b2, b1), mem(b3, b1)), mem(b3, b1))))))))))))))",
+        "summary": {
+          "job": 17,
+          "question": "19344de25d9f82fb0447d7c050b4a4a9b070fd11ce17717ffbb89f01ffcbd288",
+          "checkpoint": "08bb1d95ad58b905bedd9e1181b9e6ce38053c8083a5746b304515f851ada2bb",
+          "policy": "72f4e30618d6481891e921116d80e8b5c2ae72c89a6e464c63bc0a6a3404a54d",
+          "request_binding": "a1d660f563eb1d7ec683d16f42ad3e4d4a4a9b9247f08f9bc7b9caec8e167417",
+          "native_context": "8350868f8e6a127524cbe3c78dbc126f1414ba77ed57368a3347ae8ad84a87d5",
+          "origin": "Local",
+          "terminal": {
+            "CertifiedCandidate": {
+              "proof_id": "a1a0ca5117492eb6a987b4782c48437d90d1d8bd07dc1858377808e9942c4eea",
+              "refuted": false
+            }
+          },
+          "trace": {
+            "checked_trajectory": "90a6d438ccb2fdb3734460dd9ab78b90e0682ceddca2cee7cf779ceb41ea3c9c",
+            "observed_branches": null,
+            "observed_execution": "2c875705fff95a69581e245f1b311c0d16585320ac9fd4d74f923bbfcac38eb9"
+          },
+          "cost": {
+            "search_expansions": 15,
+            "checker_calls": 1,
+            "submitted_checker_steps": 484,
+            "retrieved_lemmas": 0,
+            "retrieval_micros": 30,
+            "dependency_check_steps": 0,
+            "original_steps": 15,
+            "useful_steps": 7,
+            "unique_states": 7,
+            "core_work": 66,
+            "generation_micros": 27871,
+            "definition_candidates": 0,
+            "definition_references": 0,
+            "definition_check_steps": 0,
+            "definition_micros": 65,
+            "definition_failure": null,
+            "certificate_failures": 0
+          },
+          "search_limit": 128,
+          "spent_ms": 27,
+          "reserved_units": 1,
+          "receipt": "aa1034db45a955234460a1073c36670fe4b11a4f2fd5517b14679393565a7c73"
+        },
+        "frontier": null,
+        "executions": [
+          {
+            "target": "3c220a122454dda4e2983376ff24a93b354ec4ceb759cdf8d663f736b53f2f9c",
+            "root": {
+              "target": "040404040304020203010100000002010000000401010000000201000000030302020301010000000101000000020101000000010100000001030202030101000000010100000001010100000001010000000003020203010100000001010000000001010000000001000000030300010000000301000000020301010000000301000000010301010000000301000000020303010100000002010000000103010100000003010000000201010000000101000000020303010100000001010000000201010000000001000000020101000000000100000002",
+              "knowledge": []
+            },
+            "events": [
+              {
+                "parent": null,
+                "state": "cab4acbfba32e82aa7b9b54dd6d1016fc46efa6f902bd8cc963f1698510ab4d5",
+                "offered": "5b3fbd9c4c61df6b20078a980f5bbecc7c6620b2d82794d935e0a4edafb6d2ec",
+                "selected": 12,
+                "ranks": [
+                  3181099200,
+                  3181161124,
+                  3180077080,
+                  3173738620,
+                  3173738620,
+                  3173738620,
+                  3173738620,
+                  1012711430,
+                  3144392218,
+                  3134206720,
+                  3155376184,
+                  1023658981,
+                  1028627033,
+                  976442112
+                ],
+                "children_attempted": 2,
+                "start": 0,
+                "end": 15,
+                "elapsed_micros": 21443,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 0,
+                  "child": 0
+                },
+                "state": "f362e2e40b334089d2c38f6eecc1c01258dbe661f1bf902355a8285e422a6c92",
+                "offered": "d18da6f89d1c24f5a0013129dcaa02df025ae5d6c3fde201be20786957b71a6b",
+                "selected": 11,
+                "ranks": [
+                  3179515110,
+                  3179571752,
+                  3177653250,
+                  3170151817,
+                  3170151817,
+                  3170151817,
+                  3170151817,
+                  1020005899,
+                  1006749920,
+                  1009248176,
+                  992525904,
+                  1026945629,
+                  1011736812
+                ],
+                "children_attempted": 2,
+                "start": 1,
+                "end": 15,
+                "elapsed_micros": 19874,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 1,
+                  "child": 0
+                },
+                "state": "e6e85d56fdc1f686ba4c907bfddb8201810cf136e47d1820a0091d7430885b78",
+                "offered": "f0e4bc8a8d4897ed956c1874befaedff7079ac59ef4f7fb1deaca26cc7546fbf",
+                "selected": 8,
+                "ranks": [
+                  1005233072,
+                  3179978708,
+                  3180025176,
+                  3178557105,
+                  3171442687,
+                  3171442687,
+                  3171442687,
+                  3171442687,
+                  1018056592,
+                  998952608,
+                  3135029536,
+                  1008070700
+                ],
+                "children_attempted": 1,
+                "start": 2,
+                "end": 5,
+                "elapsed_micros": 3199,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 2,
+                  "child": 0
+                },
+                "state": "6c5da2386ad604d00e3992ec88a5a377ae93658e2230837650b2e93493d189c0",
+                "offered": "5cc4fc8753ec55f2ffe6732c067864d6b30a59b2bacdd140d5f6b701e7fca484",
+                "selected": 14,
+                "ranks": [
+                  1011464204,
+                  3179278240,
+                  3179307878,
+                  3177125162,
+                  3169597951,
+                  3169597951,
+                  3169597951,
+                  3169597951,
+                  3169593014,
+                  3169593014,
+                  3169593014,
+                  3169593014,
+                  1008178118,
+                  996054400,
+                  1013581364
+                ],
+                "children_attempted": 1,
+                "start": 3,
+                "end": 5,
+                "elapsed_micros": 1628,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 3,
+                  "child": 0
+                },
+                "state": "65dbace9078f9351d4e1b9f52b8a292ea663fa4f03c43ca753a3cfa92ae5676d",
+                "offered": "16acd1ac7a59d7fe9bf9b939bbc6d01432ec2a09aa69b22094b9caf3514fff14",
+                "selected": 0,
+                "ranks": [
+                  1014756964,
+                  3178670985,
+                  3178653389,
+                  3176439032,
+                  3168210211,
+                  3168210211,
+                  3168210211,
+                  3168210211,
+                  3168205063,
+                  3168205063,
+                  3168205063,
+                  3168205063,
+                  1011585478,
+                  1010221244
+                ],
+                "children_attempted": 1,
+                "start": 4,
+                "end": 5,
+                "elapsed_micros": 52,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 1,
+                  "child": 1
+                },
+                "state": "7ecd17c77c380b020a5e19fdd6840baf4d6b79eda374c44480e2e9a8b57bb745",
+                "offered": "4cd011a28485b4bd489f5115ec176d1c6b5b0e3e9b973b86870bb310d8ef0d0e",
+                "selected": 8,
+                "ranks": [
+                  3166649398,
+                  3179815140,
+                  3179991520,
+                  3178487738,
+                  3171372338,
+                  3171372338,
+                  3171372338,
+                  3171372338,
+                  1018186813,
+                  999447152,
+                  1009211484,
+                  992810096,
+                  3165052664,
+                  1008027144
+                ],
+                "children_attempted": 1,
+                "start": 5,
+                "end": 15,
+                "elapsed_micros": 13637,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 5,
+                  "child": 0
+                },
+                "state": "ca1476fd47b8e643b256c313d1617cc8060146a4950733e609cce8194de06f02",
+                "offered": "598519c1edc5bf9a67971ae32f4579c4ba2a71c9d3f9f2e7a3ab462d6acbc00d",
+                "selected": 13,
+                "ranks": [
+                  3164702588,
+                  3179092093,
+                  3179316566,
+                  3177138561,
+                  3169580993,
+                  3169580993,
+                  3169580993,
+                  3169580993,
+                  3169562699,
+                  3169562699,
+                  3169562699,
+                  3169562699,
+                  1008197167,
+                  1014473596,
+                  1006342152,
+                  3163189204
+                ],
+                "children_attempted": 1,
+                "start": 6,
+                "end": 15,
+                "elapsed_micros": 11997,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 6,
+                  "child": 0
+                },
+                "state": "e1f62213cf304c4be3ba726e6dfe0e89bff39c887804e3809a352b472317600b",
+                "offered": "5907bf1ee1bbd6ae995a6471af6248f20b81b7d517c7f80200e82bbf4a210655",
+                "selected": 15,
+                "ranks": [
+                  3163958192,
+                  3178997181,
+                  3179275873,
+                  3177031459,
+                  3169387948,
+                  3169387948,
+                  3169387948,
+                  3169387948,
+                  3169369865,
+                  3169369865,
+                  3169369865,
+                  3169369865,
+                  1008936614,
+                  1011188544,
+                  3163250694,
+                  1014125936
+                ],
+                "children_attempted": 1,
+                "start": 7,
+                "end": 15,
+                "elapsed_micros": 10316,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 7,
+                  "child": 0
+                },
+                "state": "ec492e3fc8544bbb2c98d66973ebe203c911fd4d58d6091f93b86337a522c184",
+                "offered": "130169cc1fd95efeee11cea58ebf91723e6ff19320deb7778cb5df561bf1d2fe",
+                "selected": 7,
+                "ranks": [
+                  1060470022,
+                  1048748730,
+                  1034144063,
+                  1053925286,
+                  1057120810,
+                  1062016732,
+                  1025020808,
+                  1065144446,
+                  1054437294,
+                  1042880941,
+                  1030040658,
+                  1060497432,
+                  1039541234,
+                  1051699739,
+                  1063293230
+                ],
+                "children_attempted": 1,
+                "start": 8,
+                "end": 15,
+                "elapsed_micros": 8807,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 8,
+                  "child": 0
+                },
+                "state": "ae0db5d3b85c951fc1cc3b6d831933e02dbc1cda2326f8644972def29fe1e559",
+                "offered": "e16be9223e8c0fce74f2333b0b2601ec4ed501e4716fcb3d340fa2a4a9ab7eb1",
+                "selected": 10,
+                "ranks": [
+                  3165582526,
+                  3179549354,
+                  3179652046,
+                  3177763484,
+                  3177697557,
+                  3167986116,
+                  3167986116,
+                  3167986116,
+                  3167986116,
+                  1007385558,
+                  1013291800,
+                  3156621836,
+                  3159126214
+                ],
+                "children_attempted": 1,
+                "start": 9,
+                "end": 15,
+                "elapsed_micros": 7299,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 9,
+                  "child": 0
+                },
+                "state": "5adbcb71ef9e8e20dadabd50d5f6605595fbbaea64add6800b6881f5048b9eb0",
+                "offered": "638955f36c7dc6c2523cde65e77b5120bc6f6616a0f239d5ef9bd8de50a55267",
+                "selected": 11,
+                "ranks": [
+                  1056885410,
+                  1062473710,
+                  1040928267,
+                  1064503558,
+                  1059737897,
+                  1052858104,
+                  1048714454,
+                  1058380542,
+                  1063266765,
+                  1057228117,
+                  1057219804,
+                  1064545386,
+                  1040346380
+                ],
+                "children_attempted": 1,
+                "start": 10,
+                "end": 15,
+                "elapsed_micros": 5792,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 10,
+                  "child": 0
+                },
+                "state": "c770dd1456aeea501dc98fb38f6ce6eccb90ee416e8941f142d52428f1db51a8",
+                "offered": "294c0129579b2acca020183f0166bcaeb55572d963b19eac2a09afb020bd9a03",
+                "selected": 10,
+                "ranks": [
+                  3164398004,
+                  3164406488,
+                  3178981109,
+                  3179305736,
+                  3177069144,
+                  3176990374,
+                  3166709047,
+                  3166709047,
+                  3166709047,
+                  3166709047,
+                  1010005344,
+                  3156451782
+                ],
+                "children_attempted": 1,
+                "start": 11,
+                "end": 15,
+                "elapsed_micros": 4346,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 11,
+                  "child": 0
+                },
+                "state": "247503443ac2157b0f99b5ab8fbd9b34b1e6e08686b0709e93a2462f1c5ce2d9",
+                "offered": "b2236db86a86e9a868ae909ff89e8189dab741c6cb486156c17f0177709722d0",
+                "selected": 11,
+                "ranks": [
+                  3167270530,
+                  3167278650,
+                  3179730072,
+                  3179894524,
+                  3179858320,
+                  3178192621,
+                  3177904087,
+                  3169525546,
+                  3169525546,
+                  3169525546,
+                  3169525546,
+                  3161453856
+                ],
+                "children_attempted": 1,
+                "start": 12,
+                "end": 15,
+                "elapsed_micros": 2900,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 12,
+                  "child": 0
+                },
+                "state": "d9d2d61b93de3e7cc42b97a38dd682f3c34e02dd35149009f22c1402b36561a7",
+                "offered": "bea71325aaf516c89fb5cf974a2b29f612fc3791c73475a5506e462250692523",
+                "selected": 4,
+                "ranks": [
+                  1049186500,
+                  1013630509,
+                  1061043536,
+                  1050305417,
+                  1065331620,
+                  1062081748,
+                  1043429736,
+                  1065183785
+                ],
+                "children_attempted": 1,
+                "start": 13,
+                "end": 15,
+                "elapsed_micros": 1537,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 13,
+                  "child": 0
+                },
+                "state": "1b8ad2fc43d1317de49bc0a19b603eeb25081d2ac100c7cbcb7c4b2b6772c8e5",
+                "offered": "1d6424410ca616e22c806689b88cb21c072116e8aefa993d51006460406ec570",
+                "selected": 1,
+                "ranks": [
+                  1039417894,
+                  1063760396,
+                  1048857285,
+                  1063723770,
+                  1026583876,
+                  1057350625,
+                  1042981611,
+                  1057899233,
+                  1056888923
+                ],
+                "children_attempted": 1,
+                "start": 14,
+                "end": 15,
+                "elapsed_micros": 60,
+                "closed": true
+              }
+            ],
+            "attempts": 15,
+            "omitted": 0
+          }
+        ],
+        "knowledge": []
+      }
+    },
+    {
+      "question": "goal = all(b0, all(b1, all(b2, all(b3, imp(imp(mem(b1, b1), imp(mem(b0, b1), mem(b3, b0))), imp(all(b4, imp(mem(b2, b0), mem(b2, b1))), imp(all(b4, imp(mem(b2, b1), mem(b2, b2))), imp(all(b4, not(not(imp(mem(b2, b2), mem(b2, b3))))), imp(imp(mem(b2, b3), mem(b3, b0)), imp(mem(b2, b0), imp(all(b4, imp(mem(b4, b0), mem(b4, b2))), imp(mem(b0, b1), imp(imp(mem(b2, b2), mem(b1, b1)), mem(b3, b0))))))))))))))",
+      "solution": {
+        "cost": {
+          "search_expansions": 91,
+          "checker_calls": 1,
+          "submitted_checker_steps": 610,
+          "retrieved_lemmas": 0,
+          "retrieval_micros": 31,
+          "dependency_check_steps": 0,
+          "original_steps": 91,
+          "useful_steps": 6,
+          "unique_states": 6,
+          "core_work": 369,
+          "generation_micros": 132724,
+          "definition_candidates": 0,
+          "definition_references": 0,
+          "definition_check_steps": 0,
+          "definition_micros": 71,
+          "definition_failure": null,
+          "certificate_failures": 0
+        },
+        "source": "let:\n    a0 = eq(f0, f0)\n    a1 = all(f0,a0)\n    a2 = mem(f1, f1)\n    a3 = mem(f2, f2)\n    a4 = imp(a2,a3)\n    a5 = imp(a4,a1)\n    a6 = mem(f0, f2)\n    a7 = imp(a6,a5)\n    a8 = mem(f2, f0)\n    a9 = mem(f2, f1)\n    a10 = imp(a8,a9)\n    a11 = all(f2,a10)\n    a12 = imp(a11,a7)\n    a13 = mem(f1, f0)\n    a14 = imp(a13,a12)\n    a15 = mem(f3, f0)\n    a16 = imp(a6,a15)\n    a17 = imp(a3,a16)\n    a18 = imp(a11,a5)\n    a19 = imp(a11,a1)\n    a20 = imp(a11,a13)\n    a21 = imp(a11,a2)\n    a22 = imp(a20,a21)\n    a23 = not(a2)\n    a24 = imp(a23,a2)\n    a25 = imp(a2,a24)\n    a26 = imp(a11,a24)\n    a27 = imp(a21,a26)\n    a28 = not(a1)\n    a29 = not(a28)\n    a30 = imp(a29,a23)\n    a31 = imp(a2,a28)\n    a32 = imp(a30,a31)\n    a33 = imp(a23,a28)\n    a34 = imp(a24,a33)\n    a35 = imp(a11,a33)\n    a36 = imp(a26,a35)\n    a37 = imp(a1,a2)\n    a38 = imp(a33,a37)\n    a39 = imp(a11,a37)\n    a40 = imp(a35,a39)\n    a41 = imp(a19,a21)\n    a42 = imp(a39,a41)\n    a43 = imp(a4,a2)\n    a44 = imp(a2,a43)\n    a45 = imp(a11,a43)\n    a46 = imp(a21,a45)\n    a47 = imp(a4,a4)\n    a48 = imp(a4,a3)\n    a49 = imp(a43,a48)\n    a50 = imp(a11,a48)\n    a51 = imp(a45,a50)\n    a52 = not(a3)\n    a53 = imp(a52,a3)\n    a54 = imp(a3,a53)\n    a55 = imp(a4,a53)\n    a56 = imp(a48,a55)\n    a57 = imp(a11,a55)\n    a58 = imp(a50,a57)\n    a59 = not(a52)\n    a60 = imp(a29,a59)\n    a61 = imp(a52,a28)\n    a62 = imp(a60,a61)\n    a63 = imp(a1,a3)\n    a64 = imp(a61,a63)\n    a65 = imp(a3,a3)\n    a66 = imp(a59,a3)\n    a67 = imp(a3,a52)\n    a68 = imp(a59,a67)\n    a69 = imp(a67,a68)\n    a70 = imp(a59,a52)\n    a71 = imp(a66,a70)\n    a72 = imp(a68,a71)\n    a73 = imp(a29,a52)\n    a74 = imp(a52,a73)\n    a75 = imp(a59,a73)\n    a76 = imp(a70,a75)\n    a77 = imp(a3,a28)\n    a78 = imp(a73,a77)\n    a79 = imp(a59,a77)\n    a80 = imp(a75,a79)\n    a81 = imp(a59,a28)\n    a82 = imp(a66,a81)\n    a83 = imp(a79,a82)\n    a84 = imp(a1,a52)\n    a85 = imp(a81,a84)\n    a86 = imp(a53,a61)\n    a87 = imp(a4,a61)\n    a88 = imp(a55,a87)\n    a89 = imp(a11,a87)\n    a90 = imp(a57,a89)\n    a91 = imp(a4,a63)\n    a92 = imp(a87,a91)\n    a93 = imp(a11,a91)\n    a94 = imp(a89,a93)\n    a95 = imp(a5,a48)\n    a96 = imp(a91,a95)\n    a97 = imp(a11,a95)\n    a98 = imp(a93,a97)\n    a99 = imp(a18,a50)\n    a100 = imp(a97,a99)\n    a101 = imp(a13,a50)\n    a102 = imp(a4,a17)\n    a103 = imp(a4,a16)\n    a104 = imp(a48,a103)\n    a105 = imp(a102,a104)\n    a106 = imp(a11,a104)\n    a107 = imp(a104,a106)\n    a108 = imp(a11,a103)\n    a109 = imp(a50,a108)\n    a110 = imp(a106,a109)\n    a111 = imp(a13,a109)\n    a112 = imp(a109,a111)\n    a113 = imp(a13,a108)\n    a114 = imp(a101,a113)\n    a115 = imp(a111,a114)\n    a116 = not(a15)\n    a117 = imp(a116,a16)\n    a118 = imp(a16,a117)\n    a119 = imp(a4,a117)\n    a120 = imp(a103,a119)\n    a121 = imp(a11,a119)\n    a122 = imp(a108,a121)\n    a123 = imp(a13,a121)\n    a124 = imp(a113,a123)\n    a125 = imp(a6,a119)\n    a126 = imp(a119,a125)\n    a127 = imp(a11,a125)\n    a128 = imp(a121,a127)\n    a129 = imp(a13,a127)\n    a130 = imp(a123,a129)\n    a131 = imp(a116,a1)\n    a132 = not(a16)\n    a133 = not(a132)\n    a134 = imp(a29,a133)\n    a135 = imp(a132,a28)\n    a136 = imp(a134,a135)\n    a137 = imp(a1,a16)\n    a138 = imp(a135,a137)\n    a139 = imp(a133,a16)\n    a140 = imp(a16,a16)\n    a141 = imp(a16,a6)\n    a142 = imp(a16,a15)\n    a143 = imp(a141,a142)\n    a144 = imp(a133,a142)\n    a145 = imp(a142,a144)\n    a146 = imp(a133,a15)\n    a147 = imp(a139,a146)\n    a148 = imp(a144,a147)\n    a149 = imp(a116,a146)\n    a150 = imp(a146,a149)\n    a151 = imp(a16,a116)\n    a152 = imp(a133,a151)\n    a153 = imp(a151,a152)\n    a154 = imp(a133,a116)\n    a155 = imp(a139,a154)\n    a156 = imp(a152,a155)\n    a157 = imp(a29,a116)\n    a158 = imp(a116,a157)\n    a159 = imp(a133,a157)\n    a160 = imp(a154,a159)\n    a161 = imp(a15,a28)\n    a162 = imp(a157,a161)\n    a163 = imp(a133,a161)\n    a164 = imp(a159,a163)\n    a165 = imp(a133,a28)\n    a166 = imp(a146,a165)\n    a167 = imp(a163,a166)\n    a168 = imp(a116,a165)\n    a169 = imp(a149,a168)\n    a170 = imp(a1,a132)\n    a171 = imp(a165,a170)\n    a172 = imp(a116,a170)\n    a173 = imp(a168,a172)\n    a174 = imp(a116,a132)\n    a175 = imp(a131,a174)\n    a176 = imp(a172,a175)\n    a177 = imp(a29,a132)\n    a178 = imp(a132,a177)\n    a179 = imp(a116,a177)\n    a180 = imp(a174,a179)\n    a181 = imp(a16,a28)\n    a182 = imp(a177,a181)\n    a183 = imp(a116,a181)\n    a184 = imp(a179,a183)\n    a185 = imp(a116,a28)\n    a186 = imp(a117,a185)\n    a187 = imp(a183,a186)\n    a188 = imp(a4,a186)\n    a189 = imp(a186,a188)\n    a190 = imp(a4,a185)\n    a191 = imp(a119,a190)\n    a192 = imp(a188,a191)\n    a193 = imp(a6,a190)\n    a194 = imp(a125,a193)\n    a195 = imp(a11,a193)\n    a196 = imp(a127,a195)\n    a197 = imp(a13,a195)\n    a198 = imp(a129,a197)\n    a199 = imp(a1,a15)\n    a200 = imp(a185,a199)\n    a201 = imp(a4,a199)\n    a202 = imp(a190,a201)\n    a203 = imp(a6,a201)\n    a204 = imp(a193,a203)\n    a205 = imp(a11,a203)\n    a206 = imp(a195,a205)\n    a207 = imp(a13,a205)\n    a208 = imp(a197,a207)\n    a209 = imp(a4,a15)\n    a210 = imp(a5,a209)\n    a211 = imp(a201,a210)\n    a212 = imp(a6,a210)\n    a213 = imp(a203,a212)\n    a214 = imp(a11,a212)\n    a215 = imp(a205,a214)\n    a216 = imp(a13,a214)\n    a217 = imp(a207,a216)\n    a218 = imp(a6,a209)\n    a219 = imp(a7,a218)\n    a220 = imp(a212,a219)\n    a221 = imp(a11,a219)\n    a222 = imp(a214,a221)\n    a223 = imp(a13,a221)\n    a224 = imp(a216,a223)\n    a225 = imp(a11,a218)\n    a226 = imp(a12,a225)\n    a227 = imp(a221,a226)\n    a228 = imp(a13,a226)\n    a229 = imp(a223,a228)\n    a230 = imp(a13,a225)\n    a231 = imp(a14,a230)\n    a232 = imp(a228,a231)\n    a233 = mem(f1, f3)\n    a234 = imp(a233,a15)\n    a235 = imp(a234,a230)\n    a236 = imp(a230,a235)\n    a237 = imp(a2,a233)\n    a238 = not(a237)\n    a239 = not(a238)\n    a240 = all(f0,a239)\n    a241 = imp(a240,a235)\n    a242 = imp(a235,a241)\n    a243 = mem(f1, f2)\n    a244 = imp(a243,a2)\n    a245 = all(f0,a244)\n    a246 = imp(a245,a241)\n    a247 = imp(a241,a246)\n    a248 = imp(a13,a243)\n    a249 = all(f3,a248)\n    a250 = imp(a249,a246)\n    a251 = imp(a246,a250)\n\n\ngoal = all(b0, all(b1, all(b2, all(b3, imp(imp(mem(b1, b1), imp(mem(b0, b1), mem(b3, b0))), imp(all(b4, imp(mem(b2, b0), mem(b2, b1))), imp(all(b4, imp(mem(b2, b1), mem(b2, b2))), imp(all(b4, not(not(imp(mem(b2, b2), mem(b2, b3))))), imp(imp(mem(b2, b3), mem(b3, b0)), imp(mem(b2, b0), imp(all(b4, imp(mem(b4, b0), mem(b4, b2))), imp(mem(b0, b1), imp(imp(mem(b2, b2), mem(b1, b1)), mem(b3, b0))))))))))))))\n\nproof:\n    p0 = refl(f0)\n    p1 = gen(p0, f0)\n    p2 = simp(a1, a4)\n    p3 = mp(p1, p2)\n    p4 = simp(a5, a6)\n    p5 = mp(p3, p4)\n    p6 = simp(a7, a11)\n    p7 = mp(p5, p6)\n    p8 = simp(a12, a13)\n    p9 = mp(p7, p8)\n    p10 = simp(a14, a17)\n    p11 = mp(p9, p10)\n    p12 = simp(a5, a11)\n    p13 = mp(p3, p12)\n    p14 = simp(a18, a13)\n    p15 = mp(p13, p14)\n    p16 = simp(a1, a11)\n    p17 = mp(p1, p16)\n    p18 = simp(a19, a13)\n    p19 = mp(p17, p18)\n    p20 = simp(a13, a11)\n    p21 = inst(f2, f1, a10)\n    p22 = frege(a11, a13, a2)\n    p23 = mp(p21, p22)\n    p24 = simp(a22, a13)\n    p25 = mp(p23, p24)\n    p26 = frege(a13, a20, a21)\n    p27 = mp(p25, p26)\n    p28 = mp(p20, p27)\n    p29 = simp(a2, a23)\n    p30 = simp(a25, a11)\n    p31 = mp(p29, p30)\n    p32 = frege(a11, a2, a24)\n    p33 = mp(p31, p32)\n    p34 = simp(a27, a13)\n    p35 = mp(p33, p34)\n    p36 = frege(a13, a21, a26)\n    p37 = mp(p35, p36)\n    p38 = mp(p28, p37)\n    p39 = simp(a23, a29)\n    p40 = contra(a2, a28)\n    p41 = simp(a32, a23)\n    p42 = mp(p40, p41)\n    p43 = frege(a23, a30, a31)\n    p44 = mp(p42, p43)\n    p45 = mp(p39, p44)\n    p46 = frege(a23, a2, a28)\n    p47 = mp(p45, p46)\n    p48 = simp(a34, a11)\n    p49 = mp(p47, p48)\n    p50 = frege(a11, a24, a33)\n    p51 = mp(p49, p50)\n    p52 = simp(a36, a13)\n    p53 = mp(p51, p52)\n    p54 = frege(a13, a26, a35)\n    p55 = mp(p53, p54)\n    p56 = mp(p38, p55)\n    p57 = contra(a1, a2)\n    p58 = simp(a38, a11)\n    p59 = mp(p57, p58)\n    p60 = frege(a11, a33, a37)\n    p61 = mp(p59, p60)\n    p62 = simp(a40, a13)\n    p63 = mp(p61, p62)\n    p64 = frege(a13, a35, a39)\n    p65 = mp(p63, p64)\n    p66 = mp(p56, p65)\n    p67 = frege(a11, a1, a2)\n    p68 = simp(a42, a13)\n    p69 = mp(p67, p68)\n    p70 = frege(a13, a39, a41)\n    p71 = mp(p69, p70)\n    p72 = mp(p66, p71)\n    p73 = frege(a13, a19, a21)\n    p74 = mp(p72, p73)\n    p75 = mp(p19, p74)\n    p76 = simp(a2, a4)\n    p77 = simp(a44, a11)\n    p78 = mp(p76, p77)\n    p79 = frege(a11, a2, a43)\n    p80 = mp(p78, p79)\n    p81 = simp(a46, a13)\n    p82 = mp(p80, p81)\n    p83 = frege(a13, a21, a45)\n    p84 = mp(p82, p83)\n    p85 = mp(p75, p84)\n    p86 = simp(a4, a4)\n    p87 = simp(a4, a47)\n    p88 = frege(a4, a47, a4)\n    p89 = mp(p87, p88)\n    p90 = mp(p86, p89)\n    p91 = frege(a4, a2, a3)\n    p92 = mp(p90, p91)\n    p93 = simp(a49, a11)\n    p94 = mp(p92, p93)\n    p95 = frege(a11, a43, a48)\n    p96 = mp(p94, p95)\n    p97 = simp(a51, a13)\n    p98 = mp(p96, p97)\n    p99 = frege(a13, a45, a50)\n    p100 = mp(p98, p99)\n    p101 = mp(p85, p100)\n    p102 = simp(a3, a52)\n    p103 = simp(a54, a4)\n    p104 = mp(p102, p103)\n    p105 = frege(a4, a3, a53)\n    p106 = mp(p104, p105)\n    p107 = simp(a56, a11)\n    p108 = mp(p106, p107)\n    p109 = frege(a11, a48, a55)\n    p110 = mp(p108, p109)\n    p111 = simp(a58, a13)\n    p112 = mp(p110, p111)\n    p113 = frege(a13, a50, a57)\n    p114 = mp(p112, p113)\n    p115 = mp(p101, p114)\n    p116 = simp(a1, a52)\n    p117 = mp(p1, p116)\n    p118 = simp(a1, a59)\n    p119 = mp(p1, p118)\n    p120 = simp(a59, a29)\n    p121 = contra(a52, a28)\n    p122 = simp(a62, a59)\n    p123 = mp(p121, p122)\n    p124 = frege(a59, a60, a61)\n    p125 = mp(p123, p124)\n    p126 = mp(p120, p125)\n    p127 = contra(a1, a3)\n    p128 = simp(a64, a59)\n    p129 = mp(p127, p128)\n    p130 = frege(a59, a61, a63)\n    p131 = mp(p129, p130)\n    p132 = mp(p126, p131)\n    p133 = frege(a59, a1, a3)\n    p134 = mp(p132, p133)\n    p135 = mp(p119, p134)\n    p136 = simp(a3, a3)\n    p137 = simp(a3, a65)\n    p138 = frege(a3, a65, a3)\n    p139 = mp(p137, p138)\n    p140 = mp(p136, p139)\n    p141 = simp(a65, a59)\n    p142 = mp(p140, p141)\n    p143 = frege(a59, a3, a3)\n    p144 = mp(p142, p143)\n    p145 = mp(p135, p144)\n    p146 = simp(a66, a52)\n    p147 = mp(p145, p146)\n    p148 = mp(p135, p146)\n    p149 = simp(a52, a3)\n    p150 = simp(a67, a59)\n    p151 = simp(a69, a52)\n    p152 = mp(p150, p151)\n    p153 = frege(a52, a67, a68)\n    p154 = mp(p152, p153)\n    p155 = mp(p149, p154)\n    p156 = frege(a59, a3, a52)\n    p157 = simp(a72, a52)\n    p158 = mp(p156, p157)\n    p159 = frege(a52, a68, a71)\n    p160 = mp(p158, p159)\n    p161 = mp(p155, p160)\n    p162 = frege(a52, a66, a70)\n    p163 = mp(p161, p162)\n    p164 = mp(p148, p163)\n    p165 = simp(a52, a29)\n    p166 = simp(a74, a59)\n    p167 = mp(p165, p166)\n    p168 = frege(a59, a52, a73)\n    p169 = mp(p167, p168)\n    p170 = simp(a76, a52)\n    p171 = mp(p169, p170)\n    p172 = frege(a52, a70, a75)\n    p173 = mp(p171, p172)\n    p174 = mp(p164, p173)\n    p175 = contra(a3, a28)\n    p176 = simp(a78, a59)\n    p177 = mp(p175, p176)\n    p178 = frege(a59, a73, a77)\n    p179 = mp(p177, p178)\n    p180 = simp(a80, a52)\n    p181 = mp(p179, p180)\n    p182 = frege(a52, a75, a79)\n    p183 = mp(p181, p182)\n    p184 = mp(p174, p183)\n    p185 = frege(a59, a3, a28)\n    p186 = simp(a83, a52)\n    p187 = mp(p185, p186)\n    p188 = frege(a52, a79, a82)\n    p189 = mp(p187, p188)\n    p190 = mp(p184, p189)\n    p191 = frege(a52, a66, a81)\n    p192 = mp(p190, p191)\n    p193 = mp(p147, p192)\n    p194 = contra(a1, a52)\n    p195 = simp(a85, a52)\n    p196 = mp(p194, p195)\n    p197 = frege(a52, a81, a84)\n    p198 = mp(p196, p197)\n    p199 = mp(p193, p198)\n    p200 = frege(a52, a1, a52)\n    p201 = mp(p199, p200)\n    p202 = mp(p117, p201)\n    p203 = simp(a74, a52)\n    p204 = mp(p165, p203)\n    p205 = frege(a52, a52, a73)\n    p206 = mp(p204, p205)\n    p207 = mp(p202, p206)\n    p208 = simp(a78, a52)\n    p209 = mp(p175, p208)\n    p210 = frege(a52, a73, a77)\n    p211 = mp(p209, p210)\n    p212 = mp(p207, p211)\n    p213 = frege(a52, a3, a28)\n    p214 = mp(p212, p213)\n    p215 = simp(a86, a4)\n    p216 = mp(p214, p215)\n    p217 = frege(a4, a53, a61)\n    p218 = mp(p216, p217)\n    p219 = simp(a88, a11)\n    p220 = mp(p218, p219)\n    p221 = frege(a11, a55, a87)\n    p222 = mp(p220, p221)\n    p223 = simp(a90, a13)\n    p224 = mp(p222, p223)\n    p225 = frege(a13, a57, a89)\n    p226 = mp(p224, p225)\n    p227 = mp(p115, p226)\n    p228 = simp(a64, a4)\n    p229 = mp(p127, p228)\n    p230 = frege(a4, a61, a63)\n    p231 = mp(p229, p230)\n    p232 = simp(a92, a11)\n    p233 = mp(p231, p232)\n    p234 = frege(a11, a87, a91)\n    p235 = mp(p233, p234)\n    p236 = simp(a94, a13)\n    p237 = mp(p235, p236)\n    p238 = frege(a13, a89, a93)\n    p239 = mp(p237, p238)\n    p240 = mp(p227, p239)\n    p241 = frege(a4, a1, a3)\n    p242 = simp(a96, a11)\n    p243 = mp(p241, p242)\n    p244 = frege(a11, a91, a95)\n    p245 = mp(p243, p244)\n    p246 = simp(a98, a13)\n    p247 = mp(p245, p246)\n    p248 = frege(a13, a93, a97)\n    p249 = mp(p247, p248)\n    p250 = mp(p240, p249)\n    p251 = frege(a11, a5, a48)\n    p252 = simp(a100, a13)\n    p253 = mp(p251, p252)\n    p254 = frege(a13, a97, a99)\n    p255 = mp(p253, p254)\n    p256 = mp(p250, p255)\n    p257 = frege(a13, a18, a50)\n    p258 = mp(p256, p257)\n    p259 = mp(p15, p258)\n    p260 = simp(a101, a17)\n    p261 = mp(p259, p260)\n    p262 = simp(a17, a4)\n    p263 = frege(a4, a3, a16)\n    p264 = simp(a105, a17)\n    p265 = mp(p263, p264)\n    p266 = frege(a17, a102, a104)\n    p267 = mp(p265, p266)\n    p268 = mp(p262, p267)\n    p269 = simp(a104, a11)\n    p270 = simp(a107, a17)\n    p271 = mp(p269, p270)\n    p272 = frege(a17, a104, a106)\n    p273 = mp(p271, p272)\n    p274 = mp(p268, p273)\n    p275 = frege(a11, a48, a103)\n    p276 = simp(a110, a17)\n    p277 = mp(p275, p276)\n    p278 = frege(a17, a106, a109)\n    p279 = mp(p277, p278)\n    p280 = mp(p274, p279)\n    p281 = simp(a109, a13)\n    p282 = simp(a112, a17)\n    p283 = mp(p281, p282)\n    p284 = frege(a17, a109, a111)\n    p285 = mp(p283, p284)\n    p286 = mp(p280, p285)\n    p287 = frege(a13, a50, a108)\n    p288 = simp(a115, a17)\n    p289 = mp(p287, p288)\n    p290 = frege(a17, a111, a114)\n    p291 = mp(p289, p290)\n    p292 = mp(p286, p291)\n    p293 = frege(a17, a101, a113)\n    p294 = mp(p292, p293)\n    p295 = mp(p261, p294)\n    p296 = simp(a16, a116)\n    p297 = simp(a118, a4)\n    p298 = mp(p296, p297)\n    p299 = frege(a4, a16, a117)\n    p300 = mp(p298, p299)\n    p301 = simp(a120, a11)\n    p302 = mp(p300, p301)\n    p303 = frege(a11, a103, a119)\n    p304 = mp(p302, p303)\n    p305 = simp(a122, a13)\n    p306 = mp(p304, p305)\n    p307 = frege(a13, a108, a121)\n    p308 = mp(p306, p307)\n    p309 = simp(a124, a17)\n    p310 = mp(p308, p309)\n    p311 = frege(a17, a113, a123)\n    p312 = mp(p310, p311)\n    p313 = mp(p295, p312)\n    p314 = simp(a119, a6)\n    p315 = simp(a126, a11)\n    p316 = mp(p314, p315)\n    p317 = frege(a11, a119, a125)\n    p318 = mp(p316, p317)\n    p319 = simp(a128, a13)\n    p320 = mp(p318, p319)\n    p321 = frege(a13, a121, a127)\n    p322 = mp(p320, p321)\n    p323 = simp(a130, a17)\n    p324 = mp(p322, p323)\n    p325 = frege(a17, a123, a129)\n    p326 = mp(p324, p325)\n    p327 = mp(p313, p326)\n    p328 = simp(a1, a116)\n    p329 = mp(p1, p328)\n    p330 = simp(a131, a6)\n    p331 = mp(p329, p330)\n    p332 = simp(a1, a133)\n    p333 = mp(p1, p332)\n    p334 = simp(a133, a29)\n    p335 = contra(a132, a28)\n    p336 = simp(a136, a133)\n    p337 = mp(p335, p336)\n    p338 = frege(a133, a134, a135)\n    p339 = mp(p337, p338)\n    p340 = mp(p334, p339)\n    p341 = contra(a1, a16)\n    p342 = simp(a138, a133)\n    p343 = mp(p341, p342)\n    p344 = frege(a133, a135, a137)\n    p345 = mp(p343, p344)\n    p346 = mp(p340, p345)\n    p347 = frege(a133, a1, a16)\n    p348 = mp(p346, p347)\n    p349 = mp(p333, p348)\n    p350 = simp(a139, a6)\n    p351 = mp(p349, p350)\n    p352 = simp(a6, a16)\n    p353 = simp(a16, a16)\n    p354 = simp(a16, a140)\n    p355 = frege(a16, a140, a16)\n    p356 = mp(p354, p355)\n    p357 = mp(p353, p356)\n    p358 = frege(a16, a6, a15)\n    p359 = mp(p357, p358)\n    p360 = simp(a143, a6)\n    p361 = mp(p359, p360)\n    p362 = frege(a6, a141, a142)\n    p363 = mp(p361, p362)\n    p364 = mp(p352, p363)\n    p365 = simp(a142, a133)\n    p366 = simp(a145, a6)\n    p367 = mp(p365, p366)\n    p368 = frege(a6, a142, a144)\n    p369 = mp(p367, p368)\n    p370 = mp(p364, p369)\n    p371 = frege(a133, a16, a15)\n    p372 = simp(a148, a6)\n    p373 = mp(p371, p372)\n    p374 = frege(a6, a144, a147)\n    p375 = mp(p373, p374)\n    p376 = mp(p370, p375)\n    p377 = frege(a6, a139, a146)\n    p378 = mp(p376, p377)\n    p379 = mp(p351, p378)\n    p380 = simp(a146, a116)\n    p381 = simp(a150, a6)\n    p382 = mp(p380, p381)\n    p383 = frege(a6, a146, a149)\n    p384 = mp(p382, p383)\n    p385 = mp(p379, p384)\n    p386 = simp(a139, a116)\n    p387 = mp(p349, p386)\n    p388 = simp(a116, a16)\n    p389 = simp(a151, a133)\n    p390 = simp(a153, a116)\n    p391 = mp(p389, p390)\n    p392 = frege(a116, a151, a152)\n    p393 = mp(p391, p392)\n    p394 = mp(p388, p393)\n    p395 = frege(a133, a16, a116)\n    p396 = simp(a156, a116)\n    p397 = mp(p395, p396)\n    p398 = frege(a116, a152, a155)\n    p399 = mp(p397, p398)\n    p400 = mp(p394, p399)\n    p401 = frege(a116, a139, a154)\n    p402 = mp(p400, p401)\n    p403 = mp(p387, p402)\n    p404 = simp(a116, a29)\n    p405 = simp(a158, a133)\n    p406 = mp(p404, p405)\n    p407 = frege(a133, a116, a157)\n    p408 = mp(p406, p407)\n    p409 = simp(a160, a116)\n    p410 = mp(p408, p409)\n    p411 = frege(a116, a154, a159)\n    p412 = mp(p410, p411)\n    p413 = mp(p403, p412)\n    p414 = contra(a15, a28)\n    p415 = simp(a162, a133)\n    p416 = mp(p414, p415)\n    p417 = frege(a133, a157, a161)\n    p418 = mp(p416, p417)\n    p419 = simp(a164, a116)\n    p420 = mp(p418, p419)\n    p421 = frege(a116, a159, a163)\n    p422 = mp(p420, p421)\n    p423 = mp(p413, p422)\n    p424 = frege(a133, a15, a28)\n    p425 = simp(a167, a116)\n    p426 = mp(p424, p425)\n    p427 = frege(a116, a163, a166)\n    p428 = mp(p426, p427)\n    p429 = mp(p423, p428)\n    p430 = frege(a116, a146, a165)\n    p431 = mp(p429, p430)\n    p432 = simp(a169, a6)\n    p433 = mp(p431, p432)\n    p434 = frege(a6, a149, a168)\n    p435 = mp(p433, p434)\n    p436 = mp(p385, p435)\n    p437 = contra(a1, a132)\n    p438 = simp(a171, a116)\n    p439 = mp(p437, p438)\n    p440 = frege(a116, a165, a170)\n    p441 = mp(p439, p440)\n    p442 = simp(a173, a6)\n    p443 = mp(p441, p442)\n    p444 = frege(a6, a168, a172)\n    p445 = mp(p443, p444)\n    p446 = mp(p436, p445)\n    p447 = frege(a116, a1, a132)\n    p448 = simp(a176, a6)\n    p449 = mp(p447, p448)\n    p450 = frege(a6, a172, a175)\n    p451 = mp(p449, p450)\n    p452 = mp(p446, p451)\n    p453 = frege(a6, a131, a174)\n    p454 = mp(p452, p453)\n    p455 = mp(p331, p454)\n    p456 = simp(a132, a29)\n    p457 = simp(a178, a116)\n    p458 = mp(p456, p457)\n    p459 = frege(a116, a132, a177)\n    p460 = mp(p458, p459)\n    p461 = simp(a180, a6)\n    p462 = mp(p460, p461)\n    p463 = frege(a6, a174, a179)\n    p464 = mp(p462, p463)\n    p465 = mp(p455, p464)\n    p466 = contra(a16, a28)\n    p467 = simp(a182, a116)\n    p468 = mp(p466, p467)\n    p469 = frege(a116, a177, a181)\n    p470 = mp(p468, p469)\n    p471 = simp(a184, a6)\n    p472 = mp(p470, p471)\n    p473 = frege(a6, a179, a183)\n    p474 = mp(p472, p473)\n    p475 = mp(p465, p474)\n    p476 = frege(a116, a16, a28)\n    p477 = simp(a187, a6)\n    p478 = mp(p476, p477)\n    p479 = frege(a6, a183, a186)\n    p480 = mp(p478, p479)\n    p481 = mp(p475, p480)\n    p482 = simp(a186, a4)\n    p483 = simp(a189, a6)\n    p484 = mp(p482, p483)\n    p485 = frege(a6, a186, a188)\n    p486 = mp(p484, p485)\n    p487 = mp(p481, p486)\n    p488 = frege(a4, a117, a185)\n    p489 = simp(a192, a6)\n    p490 = mp(p488, p489)\n    p491 = frege(a6, a188, a191)\n    p492 = mp(p490, p491)\n    p493 = mp(p487, p492)\n    p494 = frege(a6, a119, a190)\n    p495 = mp(p493, p494)\n    p496 = simp(a194, a11)\n    p497 = mp(p495, p496)\n    p498 = frege(a11, a125, a193)\n    p499 = mp(p497, p498)\n    p500 = simp(a196, a13)\n    p501 = mp(p499, p500)\n    p502 = frege(a13, a127, a195)\n    p503 = mp(p501, p502)\n    p504 = simp(a198, a17)\n    p505 = mp(p503, p504)\n    p506 = frege(a17, a129, a197)\n    p507 = mp(p505, p506)\n    p508 = mp(p327, p507)\n    p509 = contra(a1, a15)\n    p510 = simp(a200, a4)\n    p511 = mp(p509, p510)\n    p512 = frege(a4, a185, a199)\n    p513 = mp(p511, p512)\n    p514 = simp(a202, a6)\n    p515 = mp(p513, p514)\n    p516 = frege(a6, a190, a201)\n    p517 = mp(p515, p516)\n    p518 = simp(a204, a11)\n    p519 = mp(p517, p518)\n    p520 = frege(a11, a193, a203)\n    p521 = mp(p519, p520)\n    p522 = simp(a206, a13)\n    p523 = mp(p521, p522)\n    p524 = frege(a13, a195, a205)\n    p525 = mp(p523, p524)\n    p526 = simp(a208, a17)\n    p527 = mp(p525, p526)\n    p528 = frege(a17, a197, a207)\n    p529 = mp(p527, p528)\n    p530 = mp(p508, p529)\n    p531 = frege(a4, a1, a15)\n    p532 = simp(a211, a6)\n    p533 = mp(p531, p532)\n    p534 = frege(a6, a201, a210)\n    p535 = mp(p533, p534)\n    p536 = simp(a213, a11)\n    p537 = mp(p535, p536)\n    p538 = frege(a11, a203, a212)\n    p539 = mp(p537, p538)\n    p540 = simp(a215, a13)\n    p541 = mp(p539, p540)\n    p542 = frege(a13, a205, a214)\n    p543 = mp(p541, p542)\n    p544 = simp(a217, a17)\n    p545 = mp(p543, p544)\n    p546 = frege(a17, a207, a216)\n    p547 = mp(p545, p546)\n    p548 = mp(p530, p547)\n    p549 = frege(a6, a5, a209)\n    p550 = simp(a220, a11)\n    p551 = mp(p549, p550)\n    p552 = frege(a11, a212, a219)\n    p553 = mp(p551, p552)\n    p554 = simp(a222, a13)\n    p555 = mp(p553, p554)\n    p556 = frege(a13, a214, a221)\n    p557 = mp(p555, p556)\n    p558 = simp(a224, a17)\n    p559 = mp(p557, p558)\n    p560 = frege(a17, a216, a223)\n    p561 = mp(p559, p560)\n    p562 = mp(p548, p561)\n    p563 = frege(a11, a7, a218)\n    p564 = simp(a227, a13)\n    p565 = mp(p563, p564)\n    p566 = frege(a13, a221, a226)\n    p567 = mp(p565, p566)\n    p568 = simp(a229, a17)\n    p569 = mp(p567, p568)\n    p570 = frege(a17, a223, a228)\n    p571 = mp(p569, p570)\n    p572 = mp(p562, p571)\n    p573 = frege(a13, a12, a225)\n    p574 = simp(a232, a17)\n    p575 = mp(p573, p574)\n    p576 = frege(a17, a228, a231)\n    p577 = mp(p575, p576)\n    p578 = mp(p572, p577)\n    p579 = frege(a17, a14, a230)\n    p580 = mp(p578, p579)\n    p581 = mp(p11, p580)\n    p582 = simp(a230, a234)\n    p583 = simp(a236, a17)\n    p584 = mp(p582, p583)\n    p585 = frege(a17, a230, a235)\n    p586 = mp(p584, p585)\n    p587 = mp(p581, p586)\n    p588 = simp(a235, a240)\n    p589 = simp(a242, a17)\n    p590 = mp(p588, p589)\n    p591 = frege(a17, a235, a241)\n    p592 = mp(p590, p591)\n    p593 = mp(p587, p592)\n    p594 = simp(a241, a245)\n    p595 = simp(a247, a17)\n    p596 = mp(p594, p595)\n    p597 = frege(a17, a241, a246)\n    p598 = mp(p596, p597)\n    p599 = mp(p593, p598)\n    p600 = simp(a246, a249)\n    p601 = simp(a251, a17)\n    p602 = mp(p600, p601)\n    p603 = frege(a17, a246, a250)\n    p604 = mp(p602, p603)\n    p605 = mp(p599, p604)\n    p606 = gen(p605, f3)\n    p607 = gen(p606, f1)\n    p608 = gen(p607, f2)\n    p609 = gen(p608, f0)\n    return p609\n",
+        "helpers": [],
+        "proof_id": "42c6e1a39213be71e62df947a20c623a192ed0962eed1df15ac390b67af21c76",
+        "refuted": false,
+        "tree": {
+          "Step": {
+            "action": {
+              "Beta": 0
+            },
+            "children": [
+              {
+                "Step": {
+                  "action": {
+                    "Instantiate": [
+                      1,
+                      0
+                    ]
+                  },
+                  "children": [
+                    {
+                      "Step": {
+                        "action": {
+                          "Beta": 8
+                        },
+                        "children": [
+                          {
+                            "Step": {
+                              "action": {
+                                "Instantiate": [
+                                  6,
+                                  2
+                                ]
+                              },
+                              "children": [
+                                {
+                                  "Step": {
+                                    "action": {
+                                      "Mp": [
+                                        17,
+                                        5
+                                      ]
+                                    },
+                                    "children": [
+                                      {
+                                        "Close": [
+                                          18,
+                                          16
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "Close": [
+                              16,
+                              14
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "Step": {
+                  "action": {
+                    "Mp": [
+                      14,
+                      7
+                    ]
+                  },
+                  "children": [
+                    {
+                      "Close": [
+                        15,
+                        9
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "observation": {
+        "question": "goal = all(b0, all(b1, all(b2, all(b3, imp(imp(mem(b1, b1), imp(mem(b0, b1), mem(b3, b0))), imp(all(b4, imp(mem(b2, b0), mem(b2, b1))), imp(all(b4, imp(mem(b2, b1), mem(b2, b2))), imp(all(b4, not(not(imp(mem(b2, b2), mem(b2, b3))))), imp(imp(mem(b2, b3), mem(b3, b0)), imp(mem(b2, b0), imp(all(b4, imp(mem(b4, b0), mem(b4, b2))), imp(mem(b0, b1), imp(imp(mem(b2, b2), mem(b1, b1)), mem(b3, b0))))))))))))))",
+        "summary": {
+          "job": 23,
+          "question": "ae699d77626d620d82962575c129d16e1d894f725a7073edb41d049ba0217e06",
+          "checkpoint": "08bb1d95ad58b905bedd9e1181b9e6ce38053c8083a5746b304515f851ada2bb",
+          "policy": "72f4e30618d6481891e921116d80e8b5c2ae72c89a6e464c63bc0a6a3404a54d",
+          "request_binding": "a1d660f563eb1d7ec683d16f42ad3e4d4a4a9b9247f08f9bc7b9caec8e167417",
+          "native_context": "8350868f8e6a127524cbe3c78dbc126f1414ba77ed57368a3347ae8ad84a87d5",
+          "origin": "Local",
+          "terminal": {
+            "CertifiedCandidate": {
+              "proof_id": "42c6e1a39213be71e62df947a20c623a192ed0962eed1df15ac390b67af21c76",
+              "refuted": false
+            }
+          },
+          "trace": {
+            "checked_trajectory": "a1168e550fa72a21f53f1f4c65be823207ba087c52448724ffcb4daeddf3c2d0",
+            "observed_branches": null,
+            "observed_execution": "84cdfc813d1943629aaa6aee1a4ae231fd73de946b12604b8066d146883b0b2f"
+          },
+          "cost": {
+            "search_expansions": 91,
+            "checker_calls": 1,
+            "submitted_checker_steps": 610,
+            "retrieved_lemmas": 0,
+            "retrieval_micros": 31,
+            "dependency_check_steps": 0,
+            "original_steps": 91,
+            "useful_steps": 6,
+            "unique_states": 6,
+            "core_work": 369,
+            "generation_micros": 132724,
+            "definition_candidates": 0,
+            "definition_references": 0,
+            "definition_check_steps": 0,
+            "definition_micros": 71,
+            "definition_failure": null,
+            "certificate_failures": 0
+          },
+          "search_limit": 128,
+          "spent_ms": 132,
+          "reserved_units": 1,
+          "receipt": "7cd3a0226400b8e4f64ae04ecaae79199d1f17c828dffb0b650913e0768a9fc5"
+        },
+        "frontier": null,
+        "executions": [
+          {
+            "target": "a1255a828a748972937e4838d9b970fdb43985cc2eb768ff01637bbde05c5e62",
+            "root": {
+              "target": "040404040303010100000002010000000203010100000003010000000201010000000001000000030304030101000000020100000004010100000002010000000303040301010000000201000000030101000000020100000002030402020301010000000201000000020101000000020100000001030301010000000101000000000101000000000100000003030101000000010100000003030403010100000000010000000401010000000001000000020301010000000301000000020303010100000001010000000101010000000201000000020101000000000100000003",
+              "knowledge": []
+            },
+            "events": [
+              {
+                "parent": null,
+                "state": "e935c5744a6a9573e04d5334e62601ab9d40d5455936b4dec413f82a9c2218e6",
+                "offered": "1a5f7c46bb0f46af5df75f6d103b70daf5b14cda98824c4be883c520bce2214f",
+                "selected": 15,
+                "ranks": [
+                  1007404514,
+                  1007404514,
+                  1007404514,
+                  1007404514,
+                  3090455040,
+                  3090455040,
+                  3090455040,
+                  3090455040,
+                  3170061302,
+                  3170061302,
+                  3170061302,
+                  3170061302,
+                  3121442960,
+                  3114351488,
+                  1008050718,
+                  1026464490
+                ],
+                "children_attempted": 2,
+                "start": 0,
+                "end": 91,
+                "elapsed_micros": 122815,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 0,
+                  "child": 0
+                },
+                "state": "ad6885842e53287ab237be379d1303eba794f8b6bac97394476bf41a89ca9ef8",
+                "offered": "b6b2a063b963070be4a07d4aaec90180f3679c58a647eb2a7938cd57a164e783",
+                "selected": 15,
+                "ranks": [
+                  976191104,
+                  976191104,
+                  976191104,
+                  976191104,
+                  3152938448,
+                  3152938448,
+                  3152938448,
+                  3152938448,
+                  3172567194,
+                  3172567194,
+                  3172567194,
+                  3172567194,
+                  3153901428,
+                  3153459280,
+                  984374752,
+                  1029418133
+                ],
+                "children_attempted": 2,
+                "start": 1,
+                "end": 46,
+                "elapsed_micros": 59022,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 1,
+                  "child": 0
+                },
+                "state": "c1371c2f87747e8474e69dfaec56143ef37c0d2b5fd69d917288d3445f2eb7a4",
+                "offered": "89ee506a47811c22e3fb37909e43caf4167f499017afb38f295a36aa3271866b",
+                "selected": 12,
+                "ranks": [
+                  1064072951,
+                  1061320327,
+                  1057489622,
+                  1063455985,
+                  1044654918,
+                  1057337873,
+                  1050611019,
+                  1057989253,
+                  1059688670,
+                  1063890294,
+                  1062032485,
+                  1054878366,
+                  1064650664,
+                  1057759294,
+                  1057282880,
+                  1036286023
+                ],
+                "children_attempted": 1,
+                "start": 2,
+                "end": 46,
+                "elapsed_micros": 57359,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 2,
+                  "child": 0
+                },
+                "state": "630685eaf8fac78414db43fbd90e12ac790d4b58bfd09f1e2ffafc740ad10c4f",
+                "offered": "eb5544b0280549dadc1bdb434d0a42be69187118bdd3f3bc5cf0b86413073cd0",
+                "selected": 0,
+                "ranks": [
+                  1064301952,
+                  1060371001,
+                  1024395598,
+                  1057106400,
+                  1058285383,
+                  1062390374,
+                  1040231700,
+                  1042126865,
+                  1046552035,
+                  1063410073,
+                  1057260691,
+                  1058198444,
+                  1048411438,
+                  1033218279,
+                  1055440846,
+                  1046590793
+                ],
+                "children_attempted": 1,
+                "start": 3,
+                "end": 46,
+                "elapsed_micros": 55706,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 3,
+                  "child": 0
+                },
+                "state": "5b57397b7b25142706621a4aec8fd8520f5a356af5a72e810068cf90ccbb2f24",
+                "offered": "5460b8b2ceb897d2c9fb35c11637577123d64cc71f2ec8a17bdecfa67caf1031",
+                "selected": 4,
+                "ranks": [
+                  1059646053,
+                  1043468828,
+                  1058245862,
+                  1049350834,
+                  1064592989,
+                  1058755349,
+                  1050774744,
+                  1062687933,
+                  1039445978,
+                  1048478368,
+                  1049427365,
+                  1046603787,
+                  1049920617,
+                  1042293744
+                ],
+                "children_attempted": 1,
+                "start": 4,
+                "end": 46,
+                "elapsed_micros": 54163,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 4,
+                  "child": 0
+                },
+                "state": "5e97d4cc4a7d07d74a493ca3a2de3d7df87663218a47b3d4c94fc5a12677bec5",
+                "offered": "43e9f609c694c25e7c9840cf9d35d0ccb782c1b9d60598f821158acc6315f91a",
+                "selected": 2,
+                "ranks": [
+                  1046875240,
+                  1051311002,
+                  1061517725,
+                  1059956277,
+                  1060851953,
+                  1048116391,
+                  1058499022,
+                  1056840798,
+                  1024857439,
+                  1055743685,
+                  1059932342
+                ],
+                "children_attempted": 1,
+                "start": 5,
+                "end": 46,
+                "elapsed_micros": 52610,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 5,
+                  "child": 0
+                },
+                "state": "9d366d62ef1f5dd41831f610643fa2cede3fbd4fcb401ceddc79a6dca36803db",
+                "offered": "ea85899e906373eac43aa90e8d60d4e8be8b74ba823b81c3c64f51b1a5670cbe",
+                "selected": 5,
+                "ranks": [
+                  3177585433,
+                  3162186592,
+                  997913328,
+                  1015407577,
+                  1005616120,
+                  1031401197,
+                  1031087119,
+                  1030985577
+                ],
+                "children_attempted": 2,
+                "start": 6,
+                "end": 46,
+                "elapsed_micros": 50713,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 6,
+                  "child": 0
+                },
+                "state": "95248840f794ee591124b684b82b0457f042b4d5af075bbd8757fbe97e3355a6",
+                "offered": "99e940d55b6e8fcd1d6751beb73c02fdb3f4b28de33a23e458c43c55b198a949",
+                "selected": 4,
+                "ranks": [
+                  1060539261,
+                  1053144195,
+                  1047430802,
+                  1029869611,
+                  1063508048,
+                  1044644000,
+                  1048117226
+                ],
+                "children_attempted": 1,
+                "start": 7,
+                "end": 31,
+                "elapsed_micros": 29690,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 7,
+                  "child": 0
+                },
+                "state": "33b775372337a4dad7cba5f3e94c6377c4957d3c36a3ea45353f52ed7a9d432a",
+                "offered": "1c547dcf6c2f701c45d078a53930a6d9a32c48d6c64f25b0b32761be4107e720",
+                "selected": 4,
+                "ranks": [
+                  3176459094,
+                  3158615444,
+                  1005274452,
+                  1017465675,
+                  1031740669,
+                  1027334281,
+                  1031650015
+                ],
+                "children_attempted": 2,
+                "start": 8,
+                "end": 31,
+                "elapsed_micros": 28229,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 8,
+                  "child": 0
+                },
+                "state": "412deec9a4c986b41461eb735dc8190d496055685181c15a80071ce7805e201d",
+                "offered": "39acea19844662b9b0343346e97a71450efcb300ded9a3ca8e2d64cb95c7b103",
+                "selected": 5,
+                "ranks": [
+                  3162448872,
+                  3177557453,
+                  996354328,
+                  1015215539,
+                  1026312761,
+                  1030672734
+                ],
+                "children_attempted": 2,
+                "start": 9,
+                "end": 18,
+                "elapsed_micros": 10532,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 9,
+                  "child": 0
+                },
+                "state": "d4f2d572f282e8cef3cc7e1aa00cab62fd2eb1a59f3ac7d7bfc47f0b68f7c857",
+                "offered": "0f5be62d7d232208a49bc152b553c2404045bbbf395e43f0d2cb14014281a737",
+                "selected": 4,
+                "ranks": [
+                  3163951808,
+                  3178262939,
+                  978550688,
+                  1012803594,
+                  1025594246
+                ],
+                "children_attempted": 2,
+                "start": 10,
+                "end": 18,
+                "elapsed_micros": 9126,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 10,
+                  "child": 0
+                },
+                "state": "6a5f629be306d11c39a8b425b5df09ef80fb1598c2f643e321e378ffc37dd5d5",
+                "offered": "f90e39b1393bec3ffcefe97320d820e1605d3ed6e580ba84708e7ab0b3913ee8",
+                "selected": 3,
+                "ranks": [
+                  3162228912,
+                  3177844601,
+                  993552784,
+                  1014939052
+                ],
+                "children_attempted": 1,
+                "start": 11,
+                "end": 16,
+                "elapsed_micros": 5282,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 11,
+                  "child": 0
+                },
+                "state": "d08698207f8ca8e2a14f8a5a8dc86aa7e09b638f09f5e55c72104e8a37a1b702",
+                "offered": "b06cf3e3bb4e779719f34341a2974fdac654b34ccdb978cc792a60a0eaaf7bb8",
+                "selected": 3,
+                "ranks": [
+                  3160909788,
+                  3160927076,
+                  3177125785,
+                  1001523464
+                ],
+                "children_attempted": 1,
+                "start": 12,
+                "end": 16,
+                "elapsed_micros": 3980,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 12,
+                  "child": 0
+                },
+                "state": "b328513b20ec025c395de7063d8f1c451771ade9a5dd92d3ef9ca8be33759eaa",
+                "offered": "c9835f46c1bb9dcb983afab1f205e27cc2445e6457a7be195f7429dcd1350205",
+                "selected": 3,
+                "ranks": [
+                  3160760980,
+                  3160617748,
+                  3177034401,
+                  1031600773
+                ],
+                "children_attempted": 2,
+                "start": 13,
+                "end": 16,
+                "elapsed_micros": 2601,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 13,
+                  "child": 0
+                },
+                "state": "9aff9b506898be7c206a99c51725200c879a13fd3a023e4d0406ea0b17c16992",
+                "offered": "7cb021eb5f1ece5a671bdada6eb9c80561a3656f34ee051cac2c8a4838f63495",
+                "selected": 1,
+                "ranks": [
+                  3163294052,
+                  3163178424,
+                  3177844693
+                ],
+                "children_attempted": 1,
+                "start": 14,
+                "end": 15,
+                "elapsed_micros": 38,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 13,
+                  "child": 1
+                },
+                "state": "9b66243f1d5198efceb6243ed50f5a42c1429b64cd927c75149bb5944dcd1997",
+                "offered": "7cb021eb5f1ece5a671bdada6eb9c80561a3656f34ee051cac2c8a4838f63495",
+                "selected": 1,
+                "ranks": [
+                  3163354842,
+                  3163344666,
+                  3178048560
+                ],
+                "children_attempted": 1,
+                "start": 15,
+                "end": 16,
+                "elapsed_micros": 41,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 10,
+                  "child": 1
+                },
+                "state": "afd283d117bd7068eb90f59f88074b1a3fec2d781837eca36d4622a608ee6eb3",
+                "offered": "f90e39b1393bec3ffcefe97320d820e1605d3ed6e580ba84708e7ab0b3913ee8",
+                "selected": 3,
+                "ranks": [
+                  3159499092,
+                  3177216577,
+                  1000355904,
+                  1016136448
+                ],
+                "children_attempted": 1,
+                "start": 16,
+                "end": 18,
+                "elapsed_micros": 1334,
+                "closed": true
+              },
+              {
+                "parent": {
+                  "event": 16,
+                  "child": 0
+                },
+                "state": "81ec45b08f47b36ec8db09c43441febe31e534e63231e29cb99713ddd327c237",
+                "offered": "8b59b5989acfaec07943a2c34451f4ed574f1a97314ae0e6afbd8ce622401c6d",
+                "selected": 1,
+                "ranks": [
+                  1050016802,
+                  1063170762,
+                  1055661366,
+                  1061282561
+                ],
+                "children_attempted": 1,
+                "start": 17,
+                "end": 18,
+                "elapsed_micros": 42,
+                "closed": true
+              }
+            ],
+            "attempts": 91,
+            "omitted": 73
+          }
+        ],
+        "knowledge": []
+      }
+    }
+  ]
+}

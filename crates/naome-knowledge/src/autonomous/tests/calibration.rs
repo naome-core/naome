@@ -1,6 +1,88 @@
 use super::*;
 
 #[tokio::test]
+async fn full_question_page_preserves_discovery_and_rotates_unresolved_work() {
+    const CASE: &str = "autonomous::tests::calibration::full_question_page_preserves_discovery_and_rotates_unresolved_work";
+    if std::env::var_os("NAOME_FINDING_PAGE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env("NAOME_FINDING_PAGE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let mut profile = crate::resources::ResourceProfile::default();
+    profile.tuning.question_page = Some(1);
+    crate::resources::configure(profile).unwrap();
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    questions.attach_persistence(&directory.0).unwrap();
+    let first = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let second = CompiledQuestion::compile(&mocks::create_question(1)).unwrap();
+    admitted(&mut questions, &graph, &first).await;
+    let mut owner = jobs::tests::Manual::new();
+    let mut autonomous = Autonomous::new(
+        intervals(3_600_000),
+        owner.client.clone(),
+        owner.recovery(),
+        vec![first.clone()],
+    );
+    autonomous.next_question = Instant::now();
+    autonomous.next_proof = Instant::now() + Duration::from_secs(3600);
+    autonomous.advance(&mut graph, &mut questions);
+    let requests = owner.requests();
+    assert!(matches!(
+        requests.as_slice(),
+        [(_, jobs::Input::Find { .. })]
+    ));
+    owner.complete(
+        requests[0].0,
+        Ok(jobs::Output::Question(second.source().into())),
+    );
+    autonomous.advance(&mut graph, &mut questions);
+    let selection = questions.completed().await;
+    questions.finish(&graph, selection);
+    autonomous.advance(&mut graph, &mut questions);
+    assert_eq!(autonomous.unanswered.len(), 1);
+    assert!(autonomous.unanswered.contains(&first));
+
+    let mut attempted = BTreeSet::new();
+    for _ in 0..3 {
+        autonomous.next_proof = Instant::now();
+        autonomous.advance(&mut graph, &mut questions);
+        let requests = owner.requests();
+        let [(job, jobs::Input::Solve { question })] = requests.as_slice() else {
+            panic!("expected a bounded solve opportunity: {requests:?}");
+        };
+        attempted.insert(question.clone());
+        owner.complete(*job, Ok(jobs::Output::NoCandidate));
+        autonomous.next_proof = Instant::now() + Duration::from_secs(3600);
+        autonomous.advance(&mut graph, &mut questions);
+        assert!(autonomous.unanswered.len() <= 1);
+        assert!(autonomous.solving.is_empty());
+    }
+    assert_eq!(
+        attempted,
+        BTreeSet::from([first.source().into(), second.source().into()])
+    );
+    drop(questions);
+    let mut restored = super::questions();
+    restored.attach_persistence(&directory.0).unwrap();
+    let backlog = (0..2)
+        .map(|_| restored.next_backlog().unwrap().source().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(backlog, attempted, "unresolved admissions survive restart");
+    assert!(graph.ids().is_empty(), "NoCandidate establishes no answer");
+}
+
+#[tokio::test]
 async fn finding_feedback_tracks_admitted_questions_instead_of_raw_provider_output() {
     const CASE: &str = "autonomous::tests::calibration::finding_feedback_tracks_admitted_questions_instead_of_raw_provider_output";
     if std::env::var_os("NAOME_FINDING_FEEDBACK_TEST").is_none() {

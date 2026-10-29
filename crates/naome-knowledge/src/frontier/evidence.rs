@@ -2,6 +2,9 @@
 use super::*;
 use crate::checkpoint::{Checkpoint, Update};
 use serde::{Deserialize, Serialize};
+mod experience;
+#[cfg(test)]
+pub(crate) use experience::tests::observed_completion;
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
 const MAX_RECORD: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 4096;
@@ -15,16 +18,42 @@ pub(crate) enum Outcome {
     Expired,
     InDoubt,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
     random: u64,
     draws: u64,
+    observations: u64,
+    model_contract: String,
+    model: finder::Model,
+    learning: finder::Learning,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Support {
+    lemma: String,
+    goal: String,
+    resolution: String,
+    first_unresolved_job: u64,
+    lemma_job: u64,
+    goal_job: u64,
+    first_unresolved_at: u64,
+    lemma_at: u64,
+    goal_at: u64,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Plan {
+    goal: String,
+    contract: String,
+    members: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
     pub question: String,
+    pub model_checkpoint: Option<String>,
+    pub experience: Option<crate::learning::experience::ExperienceSummary>,
     pub solver: String,
     pub knowledge: String,
     pub last_draw: u64,
@@ -38,6 +67,16 @@ pub(super) struct Record {
     pub verified_units: u32,
     pub verified_ms: u64,
     last_units: u32,
+    pub first_unresolved_job: u64,
+    pub verified_job: u64,
+    first_unresolved_at: u64,
+    pub(super) verified_at: u64,
+    pub(super) last_attempt_at: u64,
+    pub supports: u64,
+    pub frontier: Option<crate::learning::SearchFrontier>,
+    pub helpers: Vec<String>,
+    pub loop_disabled: bool,
+    pub publication_abandoned: bool,
 }
 impl Record {
     /// A returned candidate remains unverified until its exact checked solution
@@ -53,17 +92,47 @@ impl Record {
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
-    fn validate(&self, key: &str) -> Result<(), String> {
+    fn validate(&self, key: &str, observations: u64) -> Result<(), String> {
         let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
+        experience::record(&question, self)?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err("research evidence identity differs".into());
         }
+        if self.helpers.len() > 4
+            || self.helpers.iter().map(String::len).sum::<usize>()
+                > 4 * naome_authoring::QUESTION_SOURCE_MAX_BYTES
+        {
+            return Err("research helper plan capacity".into());
+        }
+        if let Some(frontier) = &self.frontier {
+            frontier.validate(&question)?;
+        }
+        for source in &self.helpers {
+            let helper = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+            if helper.resolution_id() == question.resolution_id()
+                || !crate::learning::State::eligible(source)
+                || !crate::learning::State::eligible(question.source())
+            {
+                return Err("research helper plan source differs".into());
+            }
+        }
         crate::object::id_bytes(&self.knowledge)?;
         crate::object::id_bytes(&self.solver)?;
+        if let Some(checkpoint) = &self.model_checkpoint {
+            crate::object::id_bytes(checkpoint)?;
+        }
         for root in [&self.verified, &self.prepared].into_iter().flatten() {
             crate::object::id_bytes(root)?;
         }
-        if self.prepared.is_some() && self.last_outcome != Outcome::Candidate
+        if self.first_unresolved_job > self.last_job
+            || self.verified_job > self.last_job
+            || self.verified.is_some() != (self.verified_job > 0)
+            || (self.first_unresolved_job > 0) != (self.first_unresolved_at > 0)
+            || self.verified.is_some() != (self.verified_at > 0)
+            || self.first_unresolved_at > observations
+            || self.verified_at > observations
+            || self.last_attempt_at > observations
+            || self.prepared.is_some() && self.last_outcome != Outcome::Candidate
             || self.verified_units as u64 > self.units
             || self.last_units as u64 > self.units
         {
@@ -82,12 +151,13 @@ pub(super) struct Evidence {
     checkpoint: Checkpoint,
     header: Header,
     solver: String,
+    native: bool,
 }
 impl Evidence {
     pub(super) fn open(
         directory: &Path,
         seed: u64,
-        settings: jobs::RoleSettings,
+        settings: jobs::Settings,
     ) -> Result<Self, String> {
         let directory = crate::storage::research_directory(directory)?;
         let path = directory.join("evidence.sqlite3");
@@ -105,15 +175,30 @@ impl Evidence {
                 &Header {
                     random: seed.max(1),
                     draws: 0,
+                    observations: 0,
+                    model_contract: solver.clone(),
+                    model: finder::Model::fresh(),
+                    learning: finder::Learning::fresh(solver.clone()),
                 },
                 vec![],
             )?
         };
-        let header: Header = checkpoint.header()?;
+        let mut header: Header = checkpoint.header()?;
         if header.random == 0 {
             return Err("invalid research random state".into());
         }
-        checkpoint.require_kinds(&["question"])?;
+        crate::object::id_bytes(&header.model_contract)?;
+        header.model.validate()?;
+        header.learning.validate()?;
+        if header.observations < header.model.updates {
+            return Err("finder observation sequence differs".into());
+        }
+        if header.model_contract != solver {
+            header.model_contract = solver.clone();
+            header.model = finder::Model::fresh();
+            header.learning = finder::Learning::fresh(solver.clone());
+        }
+        checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
             crate::storage::write_marker(&marker, MARKER)?;
         }
@@ -121,7 +206,56 @@ impl Evidence {
             checkpoint,
             header,
             solver,
+            native: settings.native_proof_learning,
         })
+    }
+    pub(super) fn bind_solver(&mut self, solver: String) {
+        // The small predictor is an online historical prior for the configured
+        // solver, including in-flight earlier lower-model snapshots. Precise
+        // current-checkpoint ability stays with the existing feedback owner.
+        self.solver = solver;
+    }
+    pub(super) fn model(&self) -> &finder::Model {
+        &self.header.model
+    }
+    pub(super) fn learning(&self) -> &finder::Learning {
+        &self.header.learning
+    }
+    #[cfg(test)]
+    pub(super) fn initial_parameters(&mut self, seed: u64) -> Result<(), crate::Error> {
+        if self.header.observations != 0
+            || self.header.draws != 0
+            || self.header.model.updates != 0
+            || self.header.model.rehearsals != 0
+            || self.header.model.utility_observations != 0
+        {
+            return Err("Finder initialization would replace actual experience".into());
+        }
+        let mut header = self.header.clone();
+        header.model = finder::Model::seeded(seed);
+        self.commit(&header, vec![])?;
+        self.header = header;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn freeze_parameters(&mut self) {
+        self.header.model.freeze();
+    }
+    #[cfg(test)]
+    pub(super) fn treatment(&mut self, treatment: crate::frontier::Treatment) {
+        self.header.learning.treatment = treatment;
+    }
+    pub(super) fn feedback(
+        &mut self,
+        feedback: &crate::training::ability::Feedback,
+    ) -> Result<(), crate::Error> {
+        let mut next = self.header.clone();
+        if next.learning.feedback(&mut next.model, feedback)? {
+            next.learning.validate()?;
+            self.commit(&next, vec![])?;
+            self.header = next;
+        }
+        Ok(())
     }
     pub(super) fn random(&self) -> u64 {
         self.header.random
@@ -149,31 +283,71 @@ impl Evidence {
             }
             for (key, bytes) in page {
                 let mut record: Record = crate::checkpoint::decode(&bytes)?;
-                record.validate(&key)?;
+                record.validate(&key, self.header.observations)?;
                 if record.solver == self.solver && visit(&record)? && record.verified.is_none() {
                     record.verified = record.prepared.clone();
+                    record.verified_job = record.last_job;
                     let question =
                         CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
-                    self.put(&question, &record).map_err(|e| e.to_string())?;
+                    self.put_observation(&question, &record, Some((true, record.verified_ms)))
+                        .map_err(|e| e.to_string())?;
                 }
                 after = Some(key);
             }
         }
     }
     pub(super) fn get(&self, question: &CompiledQuestion) -> Result<Option<Record>, crate::Error> {
+        let key = record_key(&self.solver, question);
+        let record: Option<Record> = self.checkpoint.get("question", &key, MAX_RECORD)?;
+        if let Some(record) = &record {
+            record.validate(&key, self.header.observations)?;
+        }
+        Ok(record)
+    }
+    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, String> {
         self.checkpoint
-            .get("question", &record_key(&self.solver, question), MAX_RECORD)
-            .map_err(crate::Error::CorruptStorage)
+            .page(
+                "question",
+                after,
+                16,
+                crate::resources::active_limits().question_cache_bytes,
+            )?
+            .into_iter()
+            .map(|(key, bytes)| {
+                let record: Record = crate::checkpoint::decode(&bytes)?;
+                record.validate(&key, self.header.observations)?;
+                Ok((key, record))
+            })
+            .collect()
     }
     pub(super) fn selected(&mut self, random: u64) -> Result<(), crate::Error> {
-        let next = Header {
+        self.select(random, None)
+    }
+    pub(super) fn selected_question(
+        &mut self,
+        random: u64,
+        question: &CompiledQuestion,
+        recipe: Option<finder::Recipe>,
+    ) -> Result<(), crate::Error> {
+        self.select(random, Some((question, recipe)))
+    }
+    fn select(
+        &mut self,
+        random: u64,
+        question: Option<(&CompiledQuestion, Option<finder::Recipe>)>,
+    ) -> Result<(), crate::Error> {
+        let mut next = Header {
             random,
             draws: self
                 .header
                 .draws
                 .checked_add(1)
                 .ok_or("research draw overflow")?,
+            ..self.header.clone()
         };
+        if let Some((question, recipe)) = question {
+            next.learning.selected(question, recipe);
+        }
         self.commit(&next, vec![])?;
         self.header = next;
         Ok(())
@@ -186,25 +360,66 @@ impl Evidence {
                 _ => 0,
             })
             .sum::<u64>()
-            .saturating_add(8192);
+            .saturating_add(crate::checkpoint::encode(header)?.len() as u64)
+            .saturating_add(8192)
+            .saturating_add(crate::checkpoint::encode(header)?.len() as u64 * 3);
         let _disk = crate::resources::DiskLease::acquire(self.checkpoint.directory(), needed)?;
         self.checkpoint
             .commit(header, updates)
             .map_err(crate::Error::from)
     }
     fn put(&mut self, question: &CompiledQuestion, record: &Record) -> Result<(), crate::Error> {
-        let header = Header {
-            random: self.header.random,
-            draws: self.header.draws,
-        };
-        self.commit(
-            &header,
-            vec![Update::put(
-                "question",
-                record_key(&self.solver, question),
-                record,
-            )?],
-        )
+        self.put_observation(question, record, None)
+    }
+    fn put_observation(
+        &mut self,
+        question: &CompiledQuestion,
+        record: &Record,
+        observation: Option<(bool, u64)>,
+    ) -> Result<(), crate::Error> {
+        let mut header = self.header.clone();
+        let mut record = record.clone();
+        if let Some((resolved, millis)) = observation {
+            header.observations = header
+                .observations
+                .checked_add(1)
+                .ok_or("finder observation overflow")?;
+            if resolved && record.verified_at == 0 {
+                record.verified_at = header.observations;
+            } else if !resolved && record.first_unresolved_at == 0 {
+                record.first_unresolved_at = header.observations;
+            }
+            if crate::learning::State::eligible(question.source()) {
+                header
+                    .learning
+                    .observe(&mut header.model, question, resolved, millis)?;
+                let checkpoint = record
+                    .model_checkpoint
+                    .as_deref()
+                    .or((!self.native).then_some(header.model_contract.as_str()));
+                header.learning.remember(
+                    &mut header.model,
+                    question,
+                    checkpoint,
+                    resolved,
+                    millis,
+                    header.draws,
+                )?;
+            }
+        }
+        let key = record_key(&self.solver, question);
+        let mut updates = vec![Update::put("question", &key, &record)?];
+        if let Some(root) = &record.verified
+            && self
+                .checkpoint
+                .get::<String>("proved", root, 128)?
+                .is_none()
+        {
+            updates.push(Update::put("proved", root, &key)?);
+        }
+        self.commit(&header, updates)?;
+        self.header = header;
+        Ok(())
     }
     pub(super) fn attempted(
         &mut self,
@@ -212,12 +427,15 @@ impl Evidence {
         knowledge: [u8; 32],
         completion: &jobs::Completion,
         outcome: Outcome,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<bool, crate::Error> {
         if completion.id == 0 {
-            return Ok(());
+            return Ok(false);
         }
+        let experience = experience::completion(question, completion, outcome)?;
         let mut record = self.get(question)?.unwrap_or(Record {
             question: question.source().into(),
+            model_checkpoint: None,
+            experience: None,
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
             last_draw: 0,
@@ -231,13 +449,32 @@ impl Evidence {
             verified_units: 0,
             verified_ms: 0,
             last_units: 0,
+            first_unresolved_job: 0,
+            verified_job: 0,
+            first_unresolved_at: 0,
+            verified_at: 0,
+            last_attempt_at: 0,
+            supports: 0,
+            frontier: None,
+            helpers: Vec::new(),
+            loop_disabled: false,
+            publication_abandoned: false,
         });
         if completion.id <= record.last_job {
-            return Ok(());
+            if completion.id == record.last_job
+                && let (Some(incoming), Some(stored)) = (experience, &record.experience)
+                && incoming.receipt != stored.receipt
+            {
+                return Err("finder experience substituted a completed receipt".into());
+            }
+            return Ok(false);
         }
+        let knowledge_changed = record.knowledge != crate::hex(&knowledge);
         record.knowledge = crate::hex(&knowledge);
         record.last_draw = self.header.draws;
         record.last_job = completion.id;
+        record.model_checkpoint = completion.model_checkpoint.clone();
+        record.experience = experience.cloned();
         record.last_outcome = outcome;
         record.outcomes[outcome as usize] = record.outcomes[outcome as usize]
             .checked_add(1)
@@ -252,11 +489,144 @@ impl Evidence {
             .ok_or("research time overflow")?;
         record.last_units = completion.reserved_units;
         record.prepared = None;
+        record.publication_abandoned = false;
         if record.verified.is_none() {
             record.verified_units = record.last_units;
             record.verified_ms = completion.spent_ms;
         }
-        self.put(question, &record)
+        let observed_search = !self.native
+            || experience.is_some_and(|summary| {
+                summary.terminal.observed_search_failure(
+                    summary
+                        .cost
+                        .as_ref()
+                        .map_or(0, |cost| cost.search_expansions),
+                )
+            });
+        let observation = (completion.state == jobs::State::Complete
+            && outcome == Outcome::NoCandidate
+            && observed_search)
+            .then_some((false, completion.spent_ms));
+        record.last_attempt_at = self
+            .header
+            .observations
+            .checked_add(u64::from(observation.is_some()))
+            .ok_or("finder observation overflow")?;
+        if observation.is_some()
+            && (record.frontier.is_none() || knowledge_changed)
+            && let Ok(jobs::Output::Native {
+                frontier: Some(frontier),
+                ..
+            }) = &completion.result
+            && crate::learning::State::eligible(question.source())
+        {
+            frontier.validate(question)?;
+            for helper in finder::from_frontier(
+                question,
+                frontier,
+                4,
+                crate::resources::active_limits().question_cache_bytes / 2,
+            ) {
+                if record.helpers.len() >= 4 {
+                    break;
+                }
+                if !record.helpers.iter().any(|source| {
+                    CompiledQuestion::compile(source)
+                        .is_ok_and(|q| q.resolution_id() == helper.resolution_id())
+                }) {
+                    record.helpers.push(helper.source().to_owned());
+                }
+            }
+            record.frontier = Some(frontier.clone());
+        }
+        if observation.is_some() && record.first_unresolved_job == 0 {
+            record.first_unresolved_job = completion.id;
+        }
+        self.put_observation(question, &record, observation)?;
+        Ok(observation.is_some())
+    }
+    pub(super) fn abandon_publication(
+        &mut self,
+        question: &CompiledQuestion,
+        job: u64,
+    ) -> Result<(), crate::Error> {
+        if let Some(mut record) = self.get(question)?
+            && record.last_job == job
+            && record.verified.is_none()
+        {
+            record.publication_abandoned = true;
+            self.put(question, &record)?;
+        }
+        Ok(())
+    }
+    /// Admission is durable before scheduling, so reopening cannot replenish a
+    /// root's four-question allowance or replace previously attempted members.
+    pub(super) fn admit_loop_member(
+        &mut self,
+        goal: &CompiledQuestion,
+        helper: &CompiledQuestion,
+    ) -> Result<bool, crate::Error> {
+        let Some(record) = self.get(goal)? else {
+            return Ok(false);
+        };
+        if record.loop_disabled || helper.resolution_id() == goal.resolution_id() {
+            return Ok(false);
+        }
+        let mut members = self.plan_members(goal)?;
+        let id = crate::hex(helper.resolution_id());
+        if members.contains(&id) {
+            return Ok(true);
+        }
+        if members.len() == 4 {
+            return Ok(false);
+        }
+        members.push(id);
+        let key = record_key(&self.header.model_contract, goal);
+        let plan = Plan {
+            goal: crate::hex(goal.resolution_id()),
+            contract: self.header.model_contract.clone(),
+            members,
+        };
+        let header = self.header.clone();
+        self.commit(&header, vec![Update::put("plan", &key, &plan)?])?;
+        Ok(true)
+    }
+    pub(super) fn plan_members(
+        &self,
+        goal: &CompiledQuestion,
+    ) -> Result<Vec<String>, crate::Error> {
+        let key = record_key(&self.header.model_contract, goal);
+        let Some(plan): Option<Plan> = self.checkpoint.get("plan", &key, 1024)? else {
+            return Ok(Vec::new());
+        };
+        if plan.goal != crate::hex(goal.resolution_id())
+            || plan.contract != self.header.model_contract
+            || plan.members.len() > 4
+            || plan
+                .members
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != plan.members.len()
+        {
+            return Err("research recursive plan binding or capacity".into());
+        }
+        for id in &plan.members {
+            if crate::object::id_bytes(id)? == *goal.resolution_id() {
+                return Err("research recursive plan cycle".into());
+            }
+        }
+        Ok(plan.members)
+    }
+    pub(super) fn exhaust_helpers(
+        &mut self,
+        question: &CompiledQuestion,
+    ) -> Result<(), crate::Error> {
+        if let Some(mut record) = self.get(question)? {
+            record.loop_disabled = true;
+            self.put(question, &record)?;
+        }
+        Ok(())
     }
     pub(super) fn prepared(
         &mut self,
@@ -315,8 +685,116 @@ impl Evidence {
             );
         }
         record.verified = Some(crate::hex(root.as_bytes()));
+        record.verified_job = job;
         record.verified_units = record.last_units;
-        self.put(question, &record)?;
+        self.put_observation(question, &record, Some((true, record.verified_ms)))?;
         Ok(Some((record.verified_units, record.verified_ms)))
+    }
+
+    /// Credit a distinct earlier unresolved goal once, after both exact
+    /// checked targets and their actual dependency edge have been established.
+    pub(super) fn support(
+        &mut self,
+        goal: &CompiledQuestion,
+        actual_goal: &CompiledQuestion,
+        job: u64,
+        root: ArtifactId,
+        dependency: ArtifactId,
+        mut checked: impl FnMut(&CompiledQuestion) -> Result<Option<CompiledQuestion>, crate::Error>,
+    ) -> Result<Option<CompiledQuestion>, crate::Error> {
+        if !crate::learning::State::eligible(goal.source()) {
+            return Ok(None);
+        }
+        let Some(consumer) = self.get(goal)? else {
+            return Ok(None);
+        };
+        if consumer.last_job != job
+            || consumer.verified.as_deref() != Some(crate::hex(root.as_bytes()).as_str())
+            || consumer.first_unresolved_job == 0
+        {
+            return Ok(None);
+        }
+        let lemma = crate::hex(dependency.as_bytes());
+        let Some(key) = self.checkpoint.get::<String>("proved", &lemma, 128)? else {
+            return Ok(None);
+        };
+        let mut producer = self
+            .checkpoint
+            .get::<Record>("question", &key, MAX_RECORD)?
+            .ok_or("finder proof index source is missing")?;
+        producer.validate(&key, self.header.observations)?;
+        if producer.verified.as_deref() != Some(lemma.as_str()) {
+            return Err("finder proof index identity differs".into());
+        }
+        // Job IDs are allocated before execution; concurrent completions may
+        // arrive in another order. Only durable observations establish timing.
+        if consumer.first_unresolved_at >= producer.verified_at
+            || producer.verified_at >= consumer.verified_at
+        {
+            return Ok(None);
+        }
+        let question = CompiledQuestion::compile(&producer.question).map_err(|e| e.to_string())?;
+        let Some(actual_lemma) = checked(&question)? else {
+            return Ok(None);
+        };
+        if !finder::independent_goal(&actual_lemma, actual_goal) {
+            return Ok(None);
+        }
+        let resolution = crate::hex(goal.resolution_id());
+        let receipt_key = crate::hex(&sha2::Sha256::digest(
+            [dependency.as_bytes().as_slice(), goal.resolution_id()].concat(),
+        ));
+        if let Some(receipt) = self
+            .checkpoint
+            .get::<Support>("support", &receipt_key, 4096)?
+        {
+            crate::object::id_bytes(&receipt.goal)?;
+            if receipt.lemma != lemma
+                || receipt.resolution != resolution
+                || receipt.first_unresolved_job == 0
+                || receipt.lemma_job == 0
+                || receipt.goal_job == 0
+                || receipt.first_unresolved_at == 0
+                || receipt.first_unresolved_at >= receipt.lemma_at
+                || receipt.lemma_at >= receipt.goal_at
+                || receipt.goal_at > self.header.observations
+            {
+                return Err("finder support receipt identity differs".into());
+            }
+            return Ok(None);
+        }
+        let mut header = self.header.clone();
+        header.observations = header
+            .observations
+            .checked_add(1)
+            .ok_or("finder observation overflow")?;
+        if crate::learning::State::eligible(question.source()) {
+            header.model.support(&question)?;
+            header.learning.support(&mut header.model, &question)?;
+        }
+        producer.supports = producer
+            .supports
+            .checked_add(1)
+            .ok_or("finder support count overflow")?;
+        let receipt = Support {
+            lemma,
+            goal: crate::hex(root.as_bytes()),
+            resolution,
+            first_unresolved_job: consumer.first_unresolved_job,
+            lemma_job: producer.verified_job,
+            goal_job: job,
+            first_unresolved_at: consumer.first_unresolved_at,
+            lemma_at: producer.verified_at,
+            goal_at: consumer.verified_at,
+        };
+        self.commit(
+            &header,
+            vec![
+                Update::put("question", key, &producer)?,
+                Update::put("support", receipt_key, &receipt)?,
+            ],
+        )?;
+        self.header = header;
+        Ok(Some(question))
     }
 }

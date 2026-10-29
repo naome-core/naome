@@ -133,3 +133,125 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
     assert_eq!(checked.proof().unwrap().manifest(), &manifest);
     assert!(!receiver.contains(manifest.artifact_id()).unwrap());
 }
+
+#[test]
+fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
+    let mut graph = Graph::default();
+    let source = crate::learning::tests::own_solution();
+    let question = crate::learning::tests::own_question();
+    let q = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+    let (root, batch) = graph
+        .prepare_generated(&source.source, &source.helpers, &q)
+        .unwrap();
+    graph
+        .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
+        .unwrap();
+    let mut work = Work::open(
+        &graph
+            .ownership()
+            .directory()
+            .join("learning-program.sqlite3"),
+    )
+    .unwrap();
+    let unused = (0..1500)
+        .map(|i| Command::Equal { left: i, right: i })
+        .collect::<Vec<_>>();
+    for group in unused.chunks(128) {
+        work.append_group(group).unwrap();
+    }
+    work.append_group(&[
+        Command::ProofReference {
+            proof_id: crate::object::id_bytes(&source.proof_id).unwrap(),
+        },
+        Command::Seal { proof: 1500 },
+    ])
+    .unwrap();
+    let budget = Budget {
+        memory_bytes: 256 * 1024 * 1024,
+        concurrency: 1,
+        cache_bytes: 32768,
+        batch_steps: 128,
+        network_requests: 1,
+        yield_ms: 0,
+        paused: None,
+    };
+    while work.advance(&budget, graph.checked_context()).unwrap() {}
+    while !work.prepare_export(&budget).unwrap() {}
+    let checked = work.into_checked().unwrap();
+    let proof = checked.proof().unwrap();
+    let manifest = proof.manifest().clone();
+    assert!(manifest.input_bytes > 8 * 1024);
+    let store = graph.ownership();
+    store.start_program(&manifest).unwrap();
+    loop {
+        let progress = store.program_progress(&manifest).unwrap();
+        if progress.commands == manifest.commands {
+            break;
+        }
+        store
+            .append_program(
+                &manifest,
+                &proof
+                    .input_chunk(progress.commands, 128, CHUNK_BYTES)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    let mut admission = graph.begin_program_admission(&checked).unwrap();
+    while !admission.advance(&graph, &checked, 128).unwrap() {}
+    let batch = admission.finish(&graph, &checked).unwrap();
+    graph
+        .commit_batch(
+            manifest.artifact_id(),
+            batch,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+    let packet = graph
+        .learning_certificate(manifest.artifact_id())
+        .unwrap()
+        .expect("bounded useful DAG despite large unused history");
+    let origin = crate::learning::evidence::decode(&packet)
+        .unwrap()
+        .program
+        .unwrap();
+    assert_eq!(origin.records.len(), 2);
+    assert_eq!(origin.manifest, manifest);
+    let extracted = crate::learning::peer::extract(
+        &question,
+        &crate::hex(manifest.artifact_id().as_bytes()),
+        &packet,
+    )
+    .unwrap();
+    assert_ne!(
+        extracted.proof_id,
+        crate::hex(manifest.proof_id().as_bytes())
+    );
+    crate::learning::peer::validate_solution(
+        &question,
+        &crate::hex(manifest.artifact_id().as_bytes()),
+        &packet,
+        &extracted,
+    )
+    .unwrap();
+    let mut damaged = origin;
+    damaged.records.pop();
+    assert!(
+        crate::learning::program::validate(
+            &damaged,
+            &crate::learning::proof::verify(
+                &crate::learning::evidence::compile(q.proved_target(), &packet).unwrap(),
+                q.proved_target()
+            )
+            .unwrap()
+        )
+        .is_err()
+    );
+    eprintln!(
+        "program_learning source_commands={} source_bytes={} projected_commands={} packet_bytes={}",
+        manifest.commands,
+        manifest.input_bytes,
+        2,
+        packet.len()
+    );
+}

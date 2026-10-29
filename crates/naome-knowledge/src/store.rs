@@ -204,6 +204,19 @@ impl Store {
         catalog.ids_page(after, limit, expected)
     }
 
+    pub(crate) fn peer_learning_page(
+        &self,
+        after: u64,
+        limit: usize,
+        expected: Summary,
+    ) -> Result<Vec<(u64, ArtifactId, Option<libp2p::PeerId>)>, crate::Error> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
+        catalog.peer_learning_page(after, limit, expected)
+    }
     pub(crate) fn inventory_page(
         &self,
         after: Option<crate::corpus::InventoryCursor>,
@@ -360,6 +373,9 @@ impl Store {
                 cut,
                 next_root,
                 guard,
+                peer: guard
+                    .and_then(|guard| guard.peer_origin())
+                    .map(|peer| peer.to_string()),
             },
         );
         // Physical generation follows every owned transaction, including a
