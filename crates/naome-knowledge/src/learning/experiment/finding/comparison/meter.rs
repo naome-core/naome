@@ -91,6 +91,28 @@ impl Meter {
         io.store.inner = store;
         Ok(())
     }
+    pub(super) fn read(&mut self, path: &Path, cap: usize) -> Result<Vec<u8>, String> {
+        let mut cost = persistence::Cost::default();
+        let result = persistence::read(path, cap, &mut cost);
+        self.restore_bytes += cost.bytes;
+        result
+    }
+    pub(super) fn import(&mut self, path: &Path) -> Result<(State, MemoryStore), String> {
+        let (state, store, cost) = persistence::import(path)?;
+        self.restore_bytes += cost.bytes;
+        self.checkpoint_reads += cost.operations;
+        Ok((state, store))
+    }
+    pub(super) fn copy(&mut self, from: &Path, to: &Path, cap: usize) -> Result<(), String> {
+        let bytes = self.read(from, cap)?;
+        if to.exists() {
+            return Err("source restore would overwrite an existing file".into());
+        }
+        std::fs::write(to, &bytes).map_err(|e| e.to_string())?;
+        self.archive_bytes += bytes.len() as u64;
+        self.archive_operations += 1;
+        Ok(())
+    }
     fn totals(&self, io: &sources::history::Io<'_>) -> Result<(u64, u64, u64), String> {
         Ok((
             self.common_cpu + meta::cpu_micros()?.saturating_sub(self.cpu),

@@ -9,7 +9,7 @@ pub(super) struct Cost {
     pub operations: u64,
 }
 
-fn read(path: &Path, cap: usize, cost: &mut Cost) -> Result<Vec<u8>, String> {
+pub(super) fn read(path: &Path, cap: usize, cost: &mut Cost) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .map_err(|e| e.to_string())?
