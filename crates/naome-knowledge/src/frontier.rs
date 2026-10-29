@@ -83,6 +83,14 @@ impl Frontier {
         serde_json::json!({"model":self.evidence.model(),"curriculum":self.evidence.learning()})
     }
     #[cfg(test)]
+    pub(crate) fn initial_parameters(&mut self, seed: u64) -> Result<(), crate::Error> {
+        self.evidence.initial_parameters(seed)
+    }
+    #[cfg(test)]
+    pub(crate) fn freeze_parameters(&mut self) {
+        self.evidence.freeze_parameters();
+    }
+    #[cfg(test)]
     pub(crate) fn treatment(&mut self, treatment: Treatment) {
         self.treatment = treatment;
         self.evidence.treatment(treatment);

@@ -8,7 +8,7 @@ mod continuation;
 const ROUNDS: usize = 3;
 const OPPORTUNITIES: usize = 24;
 
-fn context(state: &State) -> SolveContext<'_> {
+pub(super) fn context(state: &State) -> SolveContext<'_> {
     SolveContext {
         definitions: &state.definitions,
         theorems: &state.knowledge,
@@ -16,7 +16,7 @@ fn context(state: &State) -> SolveContext<'_> {
     }
 }
 
-fn generate(
+pub(super) fn generate(
     state: &State,
     engine: &mut Engine,
     io: &mut sources::history::Io<'_>,
@@ -40,7 +40,7 @@ fn generate(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record(
+pub(super) fn record(
     state: &mut State,
     graph: &mut crate::Graph,
     io: &mut sources::history::Io<'_>,

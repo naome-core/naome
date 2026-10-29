@@ -222,6 +222,26 @@ impl Evidence {
         &self.header.learning
     }
     #[cfg(test)]
+    pub(super) fn initial_parameters(&mut self, seed: u64) -> Result<(), crate::Error> {
+        if self.header.observations != 0
+            || self.header.draws != 0
+            || self.header.model.updates != 0
+            || self.header.model.rehearsals != 0
+            || self.header.model.utility_observations != 0
+        {
+            return Err("Finder initialization would replace actual experience".into());
+        }
+        let mut header = self.header.clone();
+        header.model = finder::Model::seeded(seed);
+        self.commit(&header, vec![])?;
+        self.header = header;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn freeze_parameters(&mut self) {
+        self.header.model.freeze();
+    }
+    #[cfg(test)]
     pub(super) fn treatment(&mut self, treatment: crate::frontier::Treatment) {
         self.header.learning.treatment = treatment;
     }

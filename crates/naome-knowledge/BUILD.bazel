@@ -28,6 +28,7 @@ rust_library(
             "src/learning/adaptive-protocol.json",
             "src/learning/preservation-protocol.json",
             "src/learning/recovery-protocol.json",
+            "src/learning/experiment/finding/comparison/longitudinal/protocol.json",
             "tests/fixtures/**",
         ],
         allow_empty = True,

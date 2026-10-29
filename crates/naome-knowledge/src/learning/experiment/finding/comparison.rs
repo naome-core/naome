@@ -2,6 +2,7 @@
 use super::*;
 mod audit;
 mod closed_loop;
+mod longitudinal;
 mod meter;
 mod run;
 use meter::Meter;

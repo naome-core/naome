@@ -1,4 +1,40 @@
 use super::*;
+
+#[test]
+fn frozen_model_keeps_all_gradient_ports_closed_and_rejects_invalid_labels_atomically() {
+    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let descriptor = analysis::Descriptor::of(&question);
+    let mut model = Model::seeded(91);
+    model.freeze();
+    let before = model.clone();
+    model.observe(&question, true, 7).unwrap();
+    model.support(&question).unwrap();
+    model.observe_utility(&descriptor, 0.75).unwrap();
+    model
+        .rehearse(&descriptor, Some(true), Some(7), Some(true), Some(0.75))
+        .unwrap();
+    assert_eq!(model, before);
+    assert!(model.observe_utility(&descriptor, f32::NAN).is_err());
+    assert!(
+        model
+            .rehearse(&descriptor, Some(true), None, None, Some(f32::NAN))
+            .is_err()
+    );
+    assert_eq!(model, before);
+    let mut live = Model::seeded(91);
+    let initial = live.clone();
+    assert!(
+        live.rehearse(&descriptor, Some(true), Some(7), None, Some(f32::NAN))
+            .is_err()
+    );
+    assert_eq!(
+        live, initial,
+        "invalid utility cannot partly train another output"
+    );
+    live.observe(&question, true, 7).unwrap();
+    assert_ne!(live, initial);
+    assert_ne!(Model::seeded(91), Model::seeded(97));
+}
 fn q(source: &str) -> CompiledQuestion {
     CompiledQuestion::compile(source).unwrap()
 }

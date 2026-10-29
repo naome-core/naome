@@ -7,6 +7,30 @@ pub(super) struct Holdout {
     families: BTreeSet<String>,
     resolutions: BTreeSet<String>,
     lineages: BTreeSet<String>,
+    constructions: BTreeSet<String>,
+}
+
+/// A conservative source-split key also groups reordered outer premises.
+/// Atomic argument roles are deliberately merged; this is no proof checker.
+pub(super) fn normalized_family(question: &CompiledQuestion) -> String {
+    use naome_foundation::{FreeVariable, graph::Node};
+    let mut formula = question.proved_target().clone();
+    let mut binders = 0;
+    while let Some(body) = formula.open_outer_universal(FreeVariable::new(100 + binders)) {
+        formula = body;
+        binders += 1;
+    }
+    let mut premises = Vec::new();
+    while let Node::Implies(a, b) = formula.view().graph_node() {
+        premises.push(curriculum::owned::family(&a.to_owned()));
+        formula = b.to_owned();
+    }
+    premises.sort();
+    digest(&(
+        binders as usize,
+        premises,
+        curriculum::owned::family(&formula),
+    ))
 }
 impl Holdout {
     /// Check source-only inputs before invoking any model or proof search.
@@ -18,6 +42,7 @@ impl Holdout {
         if self
             .families
             .contains(&curriculum::owned::family(question.proved_target()))
+            || self.constructions.contains(&normalized_family(question))
             || self
                 .resolutions
                 .contains(&crate::hex(question.resolution_id()))
@@ -44,6 +69,7 @@ impl Holdout {
             families: BTreeSet::new(),
             resolutions: BTreeSet::new(),
             lineages: BTreeSet::new(),
+            constructions: BTreeSet::new(),
         };
         for case in cases {
             let q = CompiledQuestion::compile(case["source"].as_str().ok_or("source missing")?)
@@ -59,6 +85,7 @@ impl Holdout {
                 return Err("confirmation source identity differs".into());
             }
             result.families.insert(family);
+            result.constructions.insert(normalized_family(&q));
             result.lineages.insert(lineage.to_owned());
         }
         Ok(result)

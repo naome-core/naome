@@ -1,4 +1,45 @@
 use super::*;
+
+impl Engine {
+    /// Materialize the actual zero-update controller for scientific checkpoint
+    /// transport. This uses the canonical network/Adam codec without learning.
+    pub(in crate::learning) fn snapshot<I: ArtifactIo + ?Sized>(
+        &mut self,
+        checkpoint: &Checkpoint,
+        io: &mut I,
+    ) -> Result<Checkpoint, String> {
+        let network = self.take(checkpoint, io)?;
+        let (weights, optimizer) = network.encode();
+        let actual = Checkpoint {
+            weights: Some(artifact::save(io, &weights)?),
+            optimizer: Some(artifact::save(io, &optimizer)?),
+            ..checkpoint.clone()
+        };
+        actual.validate()?;
+        self.cache = Some((actual.clone(), network));
+        Ok(actual)
+    }
+}
+
+#[test]
+fn initial_controller_materialization_preserves_selection_and_paired_adam_on_reopen() {
+    let mut state = super::super::State::fresh();
+    state.meta.model.seed = 91;
+    let mut engine = Engine::default();
+    let mut io = crate::learning::tests::MemoryStore::default();
+    let expected = engine.select(&state, &mut io).unwrap();
+    state.meta.model = engine.snapshot(&state.meta.model, &mut io).unwrap();
+    assert_eq!(state.meta.model.updates, 0);
+    assert!(state.meta.model.weights.is_some() && state.meta.model.optimizer.is_some());
+    let actual = Engine::default().select(&state, &mut io).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        Engine::default()
+            .snapshot(&state.meta.model, &mut io)
+            .unwrap(),
+        state.meta.model
+    );
+}
 #[path = "tests/feedback.rs"]
 mod feedback;
 fn experience(context: u16, plan: Plan, before: u16, after: u16) -> Experience {

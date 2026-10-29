@@ -2,6 +2,48 @@ use super::*;
 use crate::{checkpoint::tests::Directory, mocks};
 use std::time::{Duration, Instant};
 
+#[test]
+fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let target = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+    frontier.initial_parameters(91).unwrap();
+    frontier.freeze_parameters();
+    let initial = frontier.learning_snapshot()["model"].clone();
+    for job in 1..=5 {
+        frontier
+            .attempted(
+                &target,
+                &graph,
+                &native_failure(&target, job, None),
+                Outcome::NoCandidate,
+            )
+            .unwrap();
+        assert_eq!(frontier.learning_snapshot()["model"], initial);
+        assert!(frontier.initial_parameters(97).is_err());
+        drop(frontier);
+        frontier = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+        assert_eq!(
+            frontier.learning_snapshot()["model"],
+            initial,
+            "replay cannot silently alter a completed frozen control"
+        );
+        frontier.freeze_parameters();
+    }
+    assert!(
+        frontier.learning_snapshot()["curriculum"]["cursor"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "actual observations and bounded history still advance"
+    );
+}
+
 fn question(index: u64) -> CompiledQuestion {
     CompiledQuestion::compile(&mocks::create_question(index)).unwrap()
 }

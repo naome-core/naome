@@ -11,6 +11,9 @@ const PARAMETERS: usize = ROLE_START + BINDINGS * OUTPUTS;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::frontier) struct Model {
+    #[cfg(test)]
+    #[serde(skip)]
+    frozen: bool,
     weights: Vec<f32>,
     utility: Vec<f32>,
     pub utility_observations: u64,
@@ -39,13 +42,26 @@ impl Model {
         (PARAMETERS + INPUTS + BINDINGS + 1) * std::mem::size_of::<f32>()
     }
     pub fn fresh() -> Self {
-        let mut random = crate::sampling::Random::new(0x66696e646572);
+        Self::from_seed(0x66696e646572)
+    }
+    #[cfg(test)]
+    pub fn seeded(seed: u64) -> Self {
+        Self::from_seed(seed)
+    }
+    #[cfg(test)]
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+    fn from_seed(seed: u64) -> Self {
+        let mut random = crate::sampling::Random::new(seed);
         let mut weights = Vec::with_capacity(PARAMETERS);
         weights.extend((0..ROLE_START).map(|_| (random.below(2001) as f32 - 1000.) / 20_000.));
         // Direct role terms begin neutral and learn without a second small
         // random projection attenuating their already bounded input signal.
         weights.extend([0.; BINDINGS * OUTPUTS]);
         Self {
+            #[cfg(test)]
+            frozen: false,
             weights,
             utility: vec![0.; INPUTS + BINDINGS + 1],
             utility_observations: 0,
@@ -190,6 +206,10 @@ impl Model {
             return Err("finder utility label differs".into());
         }
         descriptor.validate()?;
+        #[cfg(test)]
+        if self.frozen {
+            return Ok(());
+        }
         self.train_utility(descriptor, target);
         self.utility_observations = self
             .utility_observations
@@ -206,6 +226,14 @@ impl Model {
         utility: Option<f32>,
     ) -> Result<(), String> {
         descriptor.validate()?;
+        // Reject the entire observation before any parameter can change.
+        if utility.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+            return Err("finder replay utility differs".into());
+        }
+        #[cfg(test)]
+        if self.frozen {
+            return Ok(());
+        }
         self.train_descriptor(
             descriptor,
             [
@@ -215,9 +243,6 @@ impl Model {
             ],
         );
         if let Some(target) = utility {
-            if !target.is_finite() || !(0.0..=1.0).contains(&target) {
-                return Err("finder replay utility differs".into());
-            }
             self.train_utility(descriptor, target);
         }
         self.rehearsals = self
@@ -252,6 +277,10 @@ impl Model {
         millis: u64,
         support: Option<f32>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if self.frozen {
+            return Ok(());
+        }
         self.train(
             question,
             [
@@ -278,6 +307,10 @@ impl Model {
         self.validate()
     }
     pub fn support(&mut self, question: &CompiledQuestion) -> Result<(), String> {
+        #[cfg(test)]
+        if self.frozen {
+            return Ok(());
+        }
         self.train(question, [None, None, Some(1.)]);
         self.updates = self
             .updates
