@@ -27,10 +27,19 @@ impl Deref for Status {
     }
 }
 
+struct WorkLock(crate::storage::LockFile);
+impl Drop for WorkLock {
+    fn drop(&mut self) {
+        // Concurrent child creation can inherit the open description. Release
+        // this owner's authority even while that inherited descriptor exists.
+        let _ = self.0.file().unlock();
+    }
+}
+
 pub struct Work {
     engine: Engine,
     path: PathBuf,
-    _lock: crate::storage::LockFile,
+    _lock: WorkLock,
     identity: (u64, u64),
     last_budget: Option<Snapshot>,
     last_recorded_budget: Option<Snapshot>,
@@ -42,7 +51,7 @@ pub(crate) struct CheckedWork {
     proof: CheckedProgram,
     path: PathBuf,
     identity: (u64, u64),
-    _lock: crate::storage::LockFile,
+    _lock: WorkLock,
 }
 impl CheckedWork {
     pub(crate) fn suspend_cache(&mut self) -> Result<(), crate::Error> {
@@ -89,6 +98,7 @@ impl Work {
             Err(std::fs::TryLockError::WouldBlock) => return Err(crate::Error::ExecutionLimit),
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
+        let lock = WorkLock(lock);
         if !path.exists() {
             OpenOptions::new()
                 .create_new(true)
