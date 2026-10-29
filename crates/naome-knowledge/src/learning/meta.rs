@@ -328,19 +328,25 @@ impl Engine {
     pub fn learn<I: ArtifactIo + ?Sized>(
         &mut self,
         state: &super::State,
+        selection: &Selection,
         experience: Experience,
-        mut draw: u64,
         io: &mut I,
     ) -> Result<Update, String> {
+        selection.validate()?;
         experience.validate()?;
         if experience.source_model != super::digest(&state.model)
             || experience.source_epoch != state.epoch
-            || experience.context != context(state)
+            || experience.context != selection.context
+            || experience.plan != selection.plan
         {
             return Err(
-                "meta optimization experience differs from the actual starting context".into(),
+                "meta optimization experience differs from its original model or selected plan"
+                    .into(),
             );
         }
+        // The job owner binds this immutable selection to the prepared history.
+        // Recomputing context from the base would discard that actual input.
+        let mut draw = selection.draw;
         let mut network = self.take(&state.meta.model, io)?;
         let mut memory = state.meta.memory.iter().collect::<Vec<_>>();
         memory.push(&experience);

@@ -1,5 +1,6 @@
 """Transport checks for the longitudinal observer, never learning evidence."""
 import copy
+import hashlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -93,6 +94,56 @@ class ContinualObservation(unittest.TestCase):
         wrong["updates"] = 500
         with self.assertRaises(AssertionError):
             MODULE.audit_completed(record, wrong, record["native"]["progress"]["model"])
+
+    def test_later_candidate_does_not_replace_earlier_model_or_optimizer_evidence(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            node_dir = directory / "node-0"
+            (node_dir / "research").mkdir(parents=True)
+            node = SimpleNamespace(index=0, directory=node_dir, trial=SimpleNamespace(output=directory))
+            path = node_dir / "research/jobs.sqlite3"
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE entries(kind TEXT, key TEXT, payload BLOB, PRIMARY KEY(kind,key))")
+                for identity in (1, 2):
+                    record, candidate = self.record()
+                    record.update(id=identity, binding={}, settings={}, created_ms=1, expires_ms=2)
+                    for field in ("model", "optimizer"):
+                        payload = f"synthetic transport {field} {identity}".encode()
+                        blob = {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+                        candidate[field] = blob
+                        db.execute("INSERT INTO entries VALUES('model',?,?)", (blob["sha256"]+":000000", payload))
+                    record["native"]["progress"]["candidate"] = candidate
+                    db.commit()
+                    MODULE.verify_blobs(node, record, per_job=True)
+            for identity in (1, 2):
+                retained = directory / f"checkpoints/node-0-job-{identity}"
+                manifest = json.loads((retained / "manifest.json").read_text())
+                self.assertEqual(manifest["job"]["id"], identity)
+                for field in ("model", "optimizer"):
+                    payload = (retained / f"{field}.bpk").read_bytes()
+                    self.assertEqual(payload, f"synthetic transport {field} {identity}".encode())
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), manifest["checkpoint"][field]["sha256"])
+
+    def test_frozen_history_remains_available_after_live_blob_reclamation(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            (directory / "research").mkdir()
+            output = directory / "checkpoints/node-0-job-1"
+            output.mkdir(parents=True)
+            node = SimpleNamespace(index=0, directory=directory, trial=SimpleNamespace(output=directory))
+            payload = b"synthetic transport of frozen original inputs"
+            blob = {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            record = {"id": 1, "native": {"history": {"blob": blob}, "progress": {"prepared": {"blob": blob}}}}
+            with sqlite3.connect(directory / "research/jobs.sqlite3") as db:
+                db.execute("CREATE TABLE entries(kind TEXT, key TEXT, payload BLOB)")
+                db.execute("INSERT INTO entries VALUES('model',?,?)", (blob["sha256"]+":000000", payload))
+                db.commit()
+                self.assertEqual(MODULE.capture_inputs(node, record), 2*len(payload))
+                db.execute("DELETE FROM entries")
+                db.commit()
+            self.assertEqual((output / "history-page.bin").read_bytes(), payload)
+            self.assertEqual((output / "prepared-history.bin").read_bytes(), payload)
+            self.assertEqual(json.loads((output / "inputs.json").read_text())["record"], record)
 
 
 if __name__ == "__main__":

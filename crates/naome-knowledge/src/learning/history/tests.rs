@@ -177,3 +177,54 @@ fn prepared_history_preserves_exact_model_optimizer_and_sampling_after_restart()
     assert_eq!(continued.prepared, restored.prepared);
     assert_eq!(continued.plan, restored.plan);
 }
+
+#[test]
+fn final_meta_update_keeps_the_selected_history_context_across_restart() {
+    let (mut job, page, receipt) = fixture();
+    assert_eq!(job.base.preparation, Preparation::Meta);
+    let mut io = crate::learning::tests::MemoryStore::default();
+    assert_eq!(
+        artifact::save(&mut io, &crate::checkpoint::encode(&page).unwrap()).unwrap(),
+        receipt.blob
+    );
+    let mut engine = Engine::default();
+    let last = job.units();
+    assert_eq!(last, model::TRAINING_UNITS + EVALUATIONS + 1);
+    for unit in 1..last {
+        job.execute(unit, None, 2, &mut engine, &mut io).unwrap();
+    }
+    job.validate().unwrap();
+    let progress = job.progress.as_ref().unwrap();
+    let prepared = progress.prepared.clone().unwrap();
+    let selection = progress.plan.clone().unwrap();
+    assert_eq!(selection.context, prepared.context);
+    assert_ne!(selection.context, meta::context(&job.base));
+    assert_eq!(progress.candidate.as_ref().unwrap().updates, 250);
+    let mut resumed: Job =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&job).unwrap()).unwrap();
+    job.execute(last, None, 2, &mut engine, &mut io).unwrap();
+    resumed
+        .execute(last, None, 2, &mut Engine::default(), &mut io)
+        .unwrap();
+    job.validate().unwrap();
+    resumed.validate().unwrap();
+    let completed = job.progress.as_ref().unwrap();
+    let restored = resumed.progress.as_ref().unwrap();
+    let update = completed.meta_update.as_ref().unwrap();
+    let after_restart = restored.meta_update.as_ref().unwrap();
+    assert_eq!(update.experience.context, prepared.context);
+    assert_eq!(update.experience.plan, selection.plan);
+    assert_eq!(update.model.updates, meta::UPDATES);
+    assert_eq!(update.model, after_restart.model);
+    assert_eq!(update.draw, after_restart.draw);
+    assert_eq!(
+        update.first_loss.to_bits(),
+        after_restart.first_loss.to_bits()
+    );
+    assert_eq!(
+        update.last_loss.to_bits(),
+        after_restart.last_loss.to_bits()
+    );
+    assert_eq!(completed.model, restored.model);
+    assert_eq!(completed.prepared, Some(prepared));
+}

@@ -363,10 +363,11 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     let update = meta
         .learn(
             &state,
+            &selection,
             meta::Experience {
                 job: 61,
                 context: selection.context,
-                plan: selection.plan,
+                plan: selection.plan.clone(),
                 source_model: digest(&lower),
                 selected_model: digest(&lower),
                 candidate_model: Some(digest(&candidate)),
@@ -379,7 +380,6 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
                 lower_cpu_micros: 9,
                 lower_wall_micros: 19,
             },
-            selection.draw,
             &mut io,
         )
         .unwrap();

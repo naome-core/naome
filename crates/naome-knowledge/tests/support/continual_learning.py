@@ -94,6 +94,29 @@ def finder_snapshot(node):
         raise
 
 
+def capture_inputs(node, record):
+    """Retain prepared input bytes before the journal's normal reclamation."""
+    native = record["native"]
+    progress = native["progress"]
+    blobs = {}
+    if native.get("history"):
+        blobs["history-page"] = native["history"]["blob"]
+    if progress.get("prepared"):
+        blobs["prepared-history"] = progress["prepared"]["blob"]
+    output = node.trial.output / f"checkpoints/node-{node.index}-job-{record['id']}"
+    read_bytes = 0
+    with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri()+"?mode=ro", uri=True) as db:
+        db.execute("BEGIN")
+        for name, blob in blobs.items():
+            parts = db.execute("SELECT payload FROM entries WHERE kind='model' AND key LIKE ? ORDER BY key", (blob["sha256"]+":%",)).fetchall()
+            payload = b"".join(row[0] for row in parts)
+            read_bytes += len(payload)
+            assert len(payload) == blob["bytes"] and hashlib.sha256(payload).hexdigest() == blob["sha256"]
+            (output / f"{name}.bin").write_bytes(payload)
+    write_receipt(output / "inputs.json", {"record": record, "blobs": blobs})
+    return read_bytes
+
+
 def run(trial, maximum_trials):
     node = Node(trial, 0)
     trial.summary.update(node_count=1, injected_questions=0, imported_proofs=0,
@@ -121,6 +144,7 @@ def run(trial, maximum_trials):
         events = node.logs()
         assert not [e for e in events if e.get("event") == "fatal_error"]
         current = reader.read(node)
+        trial.summary["observer_journal_read_bytes"] = reader.bytes
         finder = finder_snapshot(node)
         if finder is not None and finder != last_finder:
             number = len(observations)
@@ -132,9 +156,13 @@ def run(trial, maximum_trials):
                     continue
                 p = record["native"].get("progress")
                 if p and p["candidate"] is not None and p["unit"] >= 25 and record["id"] not in candidates:
-                    verify_blobs(node, record, "observed_candidate_not_yet_qualified")
+                    verify_blobs(node, record, "observed_candidate_not_yet_qualified", per_job=True)
+                    trial.summary["observer_input_blob_read_bytes"] = trial.summary.get("observer_input_blob_read_bytes", 0) + capture_inputs(node, record)
                     candidates[record["id"]] = p["candidate"]
                     write_receipt(trial.output / "candidate-checkpoints.json", candidates)
+                if record["state"] in ("failed", "expired", "in_doubt", "cancelled"):
+                    write_receipt(trial.output / f"failed-trial-{record['id']}.json", record)
+                    raise RuntimeError(f"native trial {record['id']} {record['state']}: {record.get('failure')}")
                 if record["state"] == "complete" and record["id"] not in completed:
                     assert record["id"] in candidates, "complete candidate bytes were not observed"
                     # Completion and adoption are separate observations. Wait
@@ -195,6 +223,17 @@ def main():
         raise
     finally:
         trial.close()
+        if trial.nodes:
+            node = trial.nodes[0]
+            try:
+                final = snapshot(node)
+                if final is not None:
+                    write_receipt(trial.output / "closed-journal.json", final)
+                    trial.summary.update(selected_solver_updates=final["learning"]["model"]["updates"],
+                        own_examples=final["learning"]["local_examples"])
+                write_receipt(trial.output / "closed-finder.json", finder_snapshot(node))
+            except (sqlite3.Error, TypeError, KeyError) as error:
+                trial.summary.update(result="fail", closed_snapshot_error=f"{type(error).__name__}: {error}")
         retain_evidence(trial.output, trial.summary, "continual", "release")
 
 

@@ -140,7 +140,7 @@ fn meta_checkpoint_update_restores_and_scores_the_following_generated_plan() {
     e.context = selection.context;
     e.source_model = super::super::digest(&state.model);
     e.source_epoch = state.epoch;
-    let update = engine.learn(&state, e, selection.draw, &mut io).unwrap();
+    let update = engine.learn(&state, &selection, e, &mut io).unwrap();
     assert_eq!(update.model.updates, UPDATES);
     assert_eq!(update.model.weights.as_ref().unwrap().bytes, PARAMETERS * 4);
     state.meta.model = update.model;
@@ -185,4 +185,33 @@ fn improving_development_proxy_does_not_replace_transfer_targets() {
     assert_eq!(input, e.features());
     assert!(e.targets()[0] > 0.);
     assert_eq!(e.targets()[1], 0.);
+}
+
+#[test]
+fn meta_learning_rejects_substituted_context_plan_or_original_model() {
+    let state = super::super::State::fresh();
+    let mut io = super::super::tests::MemoryStore::default();
+    let selection = Engine::default().select(&state, &mut io).unwrap();
+    let mut original = experience(500, selection.plan.clone(), 30, 45);
+    original.context = selection.context;
+    original.source_model = super::super::digest(&state.model);
+    original.source_epoch = state.epoch;
+    for mutation in 0..4 {
+        let mut changed = original.clone();
+        match mutation {
+            0 => changed.context[12] = (changed.context[12] + 1) % 1001,
+            1 => changed.plan.phases[0].focused = !changed.plan.phases[0].focused,
+            2 => changed.source_model = "33".repeat(32),
+            _ => changed.source_epoch += 1,
+        }
+        assert!(
+            Engine::default()
+                .learn(&state, &selection, changed, &mut io)
+                .is_err()
+        );
+        assert!(
+            io.0.is_empty(),
+            "reject before any optimizer artifact write"
+        );
+    }
 }

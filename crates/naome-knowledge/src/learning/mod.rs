@@ -915,9 +915,7 @@ impl Job {
                 };
                 let wall = std::time::Instant::now();
                 let cpu = meta::cpu_micros()?;
-                let update = engine
-                    .meta
-                    .learn(&self.base, experience, selection.draw, io)?;
+                let update = engine.meta.learn(&self.base, selection, experience, io)?;
                 p.meta_update = Some(update);
                 p.meta_cpu_micros += meta::cpu_micros()?.saturating_sub(cpu);
                 p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;

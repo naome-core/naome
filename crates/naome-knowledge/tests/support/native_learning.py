@@ -50,12 +50,13 @@ def checkpoint_identity(record):
     return {key: record[key] for key in ("id", "input", "binding", "settings", "created_ms", "expires_ms")}
 
 
-def verify_blobs(node, record, status="candidate_at_resource_pause_not_promoted"):
+def verify_blobs(node, record, status="candidate_at_resource_pause_not_promoted", *, per_job=False):
     candidate = record["native"]["progress"]["candidate"]
     assert candidate and candidate["updates"] >= 10
     result = {}
-    output=node.trial.output / "checkpoints" / f"node-{node.index}"
-    output.mkdir(parents=True,exist_ok=True)
+    name = f"node-{node.index}" + (f"-job-{record['id']}" if per_job else "")
+    output=node.trial.output / "checkpoints" / name
+    output.mkdir(parents=True,exist_ok=not per_job)
     with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
         db.execute("BEGIN")
         for name in ("model", "optimizer"):
