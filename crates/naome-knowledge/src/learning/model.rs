@@ -230,7 +230,7 @@ pub struct Runtime {
     #[cfg(test)]
     observe_batches: bool,
     #[cfg(test)]
-    independent_preservation: bool,
+    contextual_preservation: bool,
 }
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -337,7 +337,7 @@ impl Runtime {
             #[cfg(test)]
             observe_batches: true,
             #[cfg(test)]
-            independent_preservation: false,
+            contextual_preservation: false,
         })
     }
     fn checkpoint<I: ArtifactIo + ?Sized>(
@@ -543,7 +543,7 @@ pub(crate) struct Engine {
     #[cfg(test)]
     pub(super) recurrence: Recurrence,
     #[cfg(test)]
-    independent_preservation: bool,
+    contextual_preservation: bool,
     pub meta: super::meta::Engine,
 }
 #[cfg(test)]
@@ -565,8 +565,8 @@ impl Engine {
         self
     }
     #[cfg(test)]
-    pub(super) fn with_independent_preservation(mut self, independent: bool) -> Self {
-        self.independent_preservation = independent;
+    pub(super) fn with_contextual_preservation(mut self, contextual: bool) -> Self {
+        self.contextual_preservation = contextual;
         self
     }
     fn recurrence(&self) -> Recurrence {
@@ -624,7 +624,7 @@ impl Engine {
         runtime.rich_targets = self.rich_targets();
         #[cfg(test)]
         {
-            runtime.independent_preservation = self.independent_preservation;
+            runtime.contextual_preservation = self.contextual_preservation;
         }
         Ok(runtime)
     }

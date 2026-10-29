@@ -282,8 +282,12 @@ fn preservation_uses_current_checked_context_and_keeps_the_flat_control_exact() 
     let mut io = native::tests::MemoryStore::default();
     let mut original = Runtime::load(&fresh, &mut io).unwrap();
     let mut flat = Runtime::load(&fresh, &mut io).unwrap();
-    flat.independent_preservation = true;
     let mut contextual = Runtime::load(&fresh, &mut io).unwrap();
+    contextual.contextual_preservation = true;
+    assert!(
+        !flat.contextual_preservation,
+        "ordinary training keeps the qualified independent reference path"
+    );
     let mut old_cursor = 71;
     let graphs = pool.batch(&mut old_cursor);
     let original_batch = Batch::from_graphs(&graphs, &original.device).unwrap();

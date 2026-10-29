@@ -208,7 +208,7 @@ fn reconstruct_sequence_consumption() {
             &expected,
             targets,
             recurrence,
-            matches!(arm, Arm::IndependentPreservation),
+            matches!(arm, Arm::ContextualPreservation),
             &mut io,
             || available(&mut observer, started, cpu, &output),
         )?;

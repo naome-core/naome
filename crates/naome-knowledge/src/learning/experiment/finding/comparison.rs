@@ -51,7 +51,7 @@ impl Arm {
         Engine::default()
             .with_targets(targets)
             .with_recurrence(recurrence)
-            .with_independent_preservation(matches!(self, Self::IndependentPreservation))
+            .with_contextual_preservation(matches!(self, Self::ContextualPreservation))
     }
 }
 

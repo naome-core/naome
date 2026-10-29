@@ -11,11 +11,13 @@ impl Runtime {
         let contextual = self.recurrence == Recurrence::Carry && {
             #[cfg(test)]
             {
-                !self.independent_preservation
+                self.contextual_preservation
             }
             #[cfg(not(test))]
             {
-                true
+                // The matched comparison did not establish a retention or
+                // acquisition benefit. Keep the candidate research-only.
+                false
             }
         };
         if contextual {
