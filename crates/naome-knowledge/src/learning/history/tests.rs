@@ -179,6 +179,52 @@ fn prepared_history_preserves_exact_model_optimizer_and_sampling_after_restart()
 }
 
 #[test]
+fn meta_update_preserves_the_reloaded_selection_instead_of_recomputing_base_context() {
+    let (job, page, receipt) = fixture();
+    let restored = Working::prepare(&job, &page, &receipt)
+        .unwrap()
+        .state(&job)
+        .unwrap();
+    let mut io = crate::learning::tests::MemoryStore::default();
+    let selection = meta::Engine::default().select(&restored, &mut io).unwrap();
+    assert_ne!(selection.context, meta::context(&job.base));
+    let experience = meta::Experience {
+        job: 2,
+        context: selection.context,
+        plan: selection.plan.clone(),
+        source_model: digest(&job.base.model),
+        selected_model: digest(&job.base.model),
+        candidate_model: None,
+        source_epoch: job.base.epoch,
+        before: 0,
+        after: 0,
+        protected_loss: false,
+        anchor_loss: false,
+        transfer: transfer::Summary::default(),
+        lower_cpu_micros: 1,
+        lower_wall_micros: 1,
+    };
+    // A real cost-only meta update isolates this binding without simulating a
+    // lower candidate or claiming a training/promotion outcome.
+    let update = meta::Engine::default()
+        .learn(&job.base, &selection, experience.clone(), &mut io)
+        .unwrap();
+    let selection: meta::Selection =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&selection).unwrap()).unwrap();
+    let repeated = meta::Engine::default()
+        .learn(&job.base, &selection, experience, &mut io)
+        .unwrap();
+    assert_eq!(update.experience.context, meta::context(&restored));
+    assert_eq!(update.experience.plan, selection.plan);
+    assert_eq!(update.model.updates, meta::UPDATES);
+    assert_eq!(update.model, repeated.model);
+    assert_eq!(update.draw, repeated.draw);
+    assert_eq!(update.first_loss.to_bits(), repeated.first_loss.to_bits());
+    assert_eq!(update.last_loss.to_bits(), repeated.last_loss.to_bits());
+}
+
+#[cfg(feature = "system-tests")]
+#[test]
 fn final_meta_update_keeps_the_selected_history_context_across_restart() {
     let (mut job, page, receipt) = fixture();
     assert_eq!(job.base.preparation, Preparation::Meta);

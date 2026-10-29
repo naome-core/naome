@@ -15,7 +15,7 @@ import sys
 import time
 
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
-from native_learning import snapshot, verify_blobs, verify_meta
+from native_learning import verify_blobs, verify_meta
 
 
 def audit_completed(record, candidate, selected_model):
@@ -115,6 +115,21 @@ def capture_inputs(node, record):
             (output / f"{name}.bin").write_bytes(payload)
     write_receipt(output / "inputs.json", {"record": record, "blobs": blobs})
     return read_bytes
+
+
+def retain_closed_snapshot(node):
+    closed = node.trial.output / "closed-journal.json"
+    if closed.exists():
+        return
+    # The raw closed journal is already retained. Export only learning and
+    # training records, one payload at a time, without loading solved history.
+    reader = JournalReader()
+    final = reader.read(node)
+    node.trial.summary["closed_observer_journal_read_bytes"] = reader.bytes
+    if final is not None:
+        write_receipt(closed, final)
+        node.trial.summary.update(selected_solver_updates=final["learning"]["model"]["updates"],
+            own_examples=final["learning"]["local_examples"])
 
 
 def run(trial, maximum_trials):
@@ -226,11 +241,7 @@ def main():
         if trial.nodes:
             node = trial.nodes[0]
             try:
-                final = snapshot(node)
-                if final is not None:
-                    write_receipt(trial.output / "closed-journal.json", final)
-                    trial.summary.update(selected_solver_updates=final["learning"]["model"]["updates"],
-                        own_examples=final["learning"]["local_examples"])
+                retain_closed_snapshot(node)
                 write_receipt(trial.output / "closed-finder.json", finder_snapshot(node))
             except (sqlite3.Error, TypeError, KeyError) as error:
                 trial.summary.update(result="fail", closed_snapshot_error=f"{type(error).__name__}: {error}")

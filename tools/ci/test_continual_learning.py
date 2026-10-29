@@ -145,6 +145,30 @@ class ContinualObservation(unittest.TestCase):
             self.assertEqual((output / "prepared-history.bin").read_bytes(), payload)
             self.assertEqual(json.loads((output / "inputs.json").read_text())["record"], record)
 
+    def test_closed_export_keeps_training_only_and_never_reloads_an_existing_export(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            (directory / "research").mkdir()
+            path = directory / "research/jobs.sqlite3"
+            learning = {"model": {"updates": 0}, "local_examples": 3}
+            solve = {"id": 1, "input": {"role": "solve"}, "padding": "x"*(512*1024)}
+            train = {"id": 2, "input": {"role": "train"}}
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE entries(kind TEXT, key TEXT, payload BLOB)")
+                db.executemany("INSERT INTO entries VALUES(?,?,?)", [("learning", "current", json.dumps(learning).encode()),
+                    ("record", "1", json.dumps(solve).encode()), ("record", "2", json.dumps(train).encode())])
+            trial = SimpleNamespace(output=directory, summary={})
+            node = SimpleNamespace(directory=directory, trial=trial)
+            MODULE.retain_closed_snapshot(node)
+            closed = directory / "closed-journal.json"
+            first = closed.read_bytes()
+            value = json.loads(first)
+            self.assertEqual(value, {"learning": learning, "records": {"2": train}})
+            self.assertLess(len(first), 1024)
+            path.unlink()
+            MODULE.retain_closed_snapshot(node)
+            self.assertEqual(closed.read_bytes(), first)
+
 
 if __name__ == "__main__":
     unittest.main()
