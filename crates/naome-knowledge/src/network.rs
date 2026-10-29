@@ -354,6 +354,9 @@ where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
+    // Register before publishing readiness or performing synchronous owner work.
+    let shutdown = shutdown_signal()?;
+    tokio::pin!(shutdown);
     let (autonomy, startup) = match autonomy {
         Some((intervals, startup)) => (Some(intervals), Some(startup)),
         None => (None, None),
@@ -631,9 +634,6 @@ where
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
-    // Keep signal receivers alive while another branch processes synchronous work.
-    let shutdown = shutdown_signal();
-    tokio::pin!(shutdown);
     let owner_busy = node.swarm.busy.clone();
     let outcome:Result<(),String>=worker::while_polled(owner_busy, async {
     loop {
@@ -939,21 +939,29 @@ pub(crate) fn emit(value: Value) {
     println!("{value}");
 }
 
-pub(crate) async fn shutdown_signal() -> Result<(), String> {
+pub(crate) fn shutdown_signal()
+-> Result<impl std::future::Future<Output = Result<(), String>>, String> {
     #[cfg(unix)]
     {
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .map_err(|error| error.to_string())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result.map_err(|error|error.to_string()),
-            _ = terminate.recv() => Ok(()),
-        }
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .map_err(|error| error.to_string())?;
+        Ok(async move {
+            tokio::select! {
+                _ = interrupt.recv() => Ok(()),
+                _ = terminate.recv() => Ok(()),
+            }
+        })
     }
     #[cfg(not(unix))]
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|error| error.to_string())
+    Ok(async {
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|error| error.to_string())
+    })
 }
 
 fn retryable_publication(error: &crate::Error) -> bool {

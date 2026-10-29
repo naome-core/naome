@@ -696,3 +696,41 @@ async fn transport_queue_failure_permanently_revokes_publication() {
         crate::publication::STALE_COMMIT
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn shutdown_receivers_capture_signals_before_the_future_is_polled() {
+    const PROBE: &str = "NAOME_SHUTDOWN_REGISTRATION_PROBE";
+    if let Ok(signal) = std::env::var(PROBE) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let shutdown = shutdown_signal().unwrap();
+            let signal = match signal.as_str() {
+                "terminate" => nix::sys::signal::Signal::SIGTERM,
+                "interrupt" => nix::sys::signal::Signal::SIGINT,
+                _ => panic!("unknown signal probe"),
+            };
+            nix::sys::signal::kill(nix::unistd::getpid(), signal).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), shutdown)
+                .await
+                .expect("registered shutdown signal")
+                .unwrap();
+        });
+        return;
+    }
+    for signal in ["terminate", "interrupt"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "network::tests::shutdown_receivers_capture_signals_before_the_future_is_polled",
+                "--nocapture",
+            ])
+            .env(PROBE, signal)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{signal}: {output:?}");
+    }
+}
