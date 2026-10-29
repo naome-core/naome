@@ -14,6 +14,7 @@ enum Arm {
     ComputeControl,
     IndependentPreservation,
     ContextualPreservation,
+    ReadoutOnly,
 }
 const ARMS: [Arm; 5] = [
     Arm::Baseline,
@@ -23,6 +24,7 @@ const ARMS: [Arm; 5] = [
     Arm::ComputeControl,
 ];
 const PRESERVATION_ARMS: [Arm; 2] = [Arm::IndependentPreservation, Arm::ContextualPreservation];
+const READOUT_ARMS: [Arm; 2] = [Arm::Combined, Arm::ReadoutOnly];
 impl Arm {
     fn name(self) -> &'static str {
         match self {
@@ -33,6 +35,7 @@ impl Arm {
             Self::ComputeControl => "compute_control",
             Self::IndependentPreservation => "independent_preservation",
             Self::ContextualPreservation => "contextual_preservation",
+            Self::ReadoutOnly => "readout_only",
         }
     }
     fn engine(self) -> Engine {
@@ -45,13 +48,15 @@ impl Arm {
             Self::Latent
             | Self::Combined
             | Self::IndependentPreservation
-            | Self::ContextualPreservation => model::Recurrence::Carry,
+            | Self::ContextualPreservation
+            | Self::ReadoutOnly => model::Recurrence::Carry,
             Self::ComputeControl => model::Recurrence::Reset,
         };
         Engine::default()
             .with_targets(targets)
             .with_recurrence(recurrence)
             .with_contextual_preservation(matches!(self, Self::ContextualPreservation))
+            .with_readout_only(matches!(self, Self::ReadoutOnly))
     }
 }
 
@@ -247,6 +252,12 @@ fn matched_experience_and_recurrence() {
 #[ignore = "finite matched preservation-context comparison; requires fresh frozen native sources"]
 fn matched_contextual_preservation() {
     matched(&PRESERVATION_ARMS);
+}
+
+#[test]
+#[ignore = "finite matched full/readout-only learning; requires fresh frozen native sources"]
+fn matched_readout_learning() {
+    matched(&READOUT_ARMS);
 }
 
 fn matched(arms: &[Arm]) {

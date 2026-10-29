@@ -1,6 +1,7 @@
 use super::super::tests::MemoryStore;
 use super::*;
 mod coverage;
+mod readout;
 #[test]
 fn plain_inference_preserves_parameters_and_stable_float32_choices() {
     let example = super::super::tests::own_example();

@@ -117,6 +117,7 @@ fn reconstruct_sequence_consumption() {
         let arm = ARMS
             .into_iter()
             .chain(PRESERVATION_ARMS)
+            .chain(READOUT_ARMS)
             .find(|arm| source["arm"] == arm.name())
             .ok_or("sequence audit arm is unknown")?;
         let (targets, recurrence) = match arm {
@@ -125,7 +126,7 @@ fn reconstruct_sequence_consumption() {
             Arm::Latent => (model::Targets::Actions, model::Recurrence::Carry),
             Arm::Combined => (model::Targets::Rich, model::Recurrence::Carry),
             Arm::ComputeControl => (model::Targets::Rich, model::Recurrence::Reset),
-            Arm::IndependentPreservation | Arm::ContextualPreservation => {
+            Arm::IndependentPreservation | Arm::ContextualPreservation | Arm::ReadoutOnly => {
                 (model::Targets::Rich, model::Recurrence::Carry)
             }
         };
@@ -209,6 +210,7 @@ fn reconstruct_sequence_consumption() {
             targets,
             recurrence,
             matches!(arm, Arm::ContextualPreservation),
+            matches!(arm, Arm::ReadoutOnly),
             &mut io,
             || available(&mut observer, started, cpu, &output),
         )?;

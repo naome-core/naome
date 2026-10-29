@@ -49,6 +49,7 @@ pub(crate) const REQUIREMENTS: Requirements = Requirements {
     work_bytes: 768 * 1024 * 1024,
 };
 pub const PARAMETERS: usize = 1_004_001;
+pub(super) const READOUT_PARAMETERS: usize = 384_961;
 pub const TRAINING_UNITS: u32 = 25;
 pub const UPDATES_PER_UNIT: u64 = 10;
 
@@ -225,6 +226,7 @@ pub struct Runtime {
     identity: String,
     recurrence: Recurrence,
     rich_targets: bool,
+    readout_only: bool,
     sampled_sequence_edges: usize,
     measurements: TrainingMeasurements,
     #[cfg(test)]
@@ -332,6 +334,7 @@ impl Runtime {
             identity: super::digest(checkpoint),
             recurrence: Recurrence::default(),
             rich_targets: true,
+            readout_only: false,
             sampled_sequence_edges: 0,
             measurements: TrainingMeasurements::default(),
             #[cfg(test)]
@@ -390,9 +393,18 @@ impl Runtime {
         if graphs.is_empty() {
             return Err("training requires own accepted proof decisions".into());
         }
+        if self.readout_only {
+            self.policy = self.policy.clone().readout_training();
+        }
         let mut first = 0.;
         let mut last = 0.;
         self.measurements = TrainingMeasurements::default();
+        self.measurements.readout_only = self.readout_only;
+        self.measurements.trainable_parameters = if self.readout_only {
+            READOUT_PARAMETERS
+        } else {
+            PARAMETERS
+        };
         let preservation_started = std::time::Instant::now();
         let preservation_gradient = if let Some((pool, mut cursor)) =
             preservation_pool.filter(|(p, _)| preservation_mode.enabled() && !p.is_empty())
@@ -544,6 +556,8 @@ pub(crate) struct Engine {
     pub(super) recurrence: Recurrence,
     #[cfg(test)]
     contextual_preservation: bool,
+    #[cfg(test)]
+    readout_only: bool,
     pub meta: super::meta::Engine,
 }
 #[cfg(test)]
@@ -554,6 +568,16 @@ pub(super) enum Targets {
     Rich,
 }
 impl Engine {
+    #[cfg(test)]
+    pub(super) fn with_readout_only(mut self, enabled: bool) -> Self {
+        assert!(
+            self.cache.is_empty(),
+            "training scope is fixed before model loading"
+        );
+        self.readout_only = enabled;
+        self
+    }
+
     #[cfg(test)]
     pub(super) fn with_targets(mut self, targets: Targets) -> Self {
         self.targets = targets;
@@ -625,6 +649,7 @@ impl Engine {
         #[cfg(test)]
         {
             runtime.contextual_preservation = self.contextual_preservation;
+            runtime.readout_only = self.readout_only;
         }
         Ok(runtime)
     }

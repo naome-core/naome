@@ -38,6 +38,15 @@ impl Encoded {
 }
 
 impl Policy {
+    /// Keep the native formula encoder and recurrent transition fixed while
+    /// adapting the existing action readout. This changes no inference feature.
+    pub(super) fn readout_training(mut self) -> Self {
+        self.kinds = self.kinds.no_grad();
+        self.roles = self.roles.no_grad();
+        self.messages = self.messages.into_iter().map(Module::no_grad).collect();
+        self
+    }
+
     pub fn new(device: &Device) -> Self {
         Self {
             kinds: EmbeddingConfig::new(19, WIDTH).init(device),

@@ -150,12 +150,14 @@ fn batch(
 /// The caller restores the original native job, exact receipt and page using
 /// the existing source owner. This observer never constructs a replacement
 /// history page, chooses source rows, or calls Job::execute.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::learning) fn audit<I: ArtifactIo + ?Sized>(
     original: &Job,
     expected: &Progress,
     targets: Targets,
     recurrence: Recurrence,
     contextual_preservation: bool,
+    readout_only: bool,
     io: &mut I,
     mut available: impl FnMut() -> Result<(), String>,
 ) -> Result<serde_json::Value, String> {
@@ -238,7 +240,15 @@ pub(in crate::learning) fn audit<I: ArtifactIo + ?Sized>(
     let mut omitted_batches = 0;
     for unit in 0..TRAINING_UNITS {
         available()?;
-        let mut observed = TrainingMeasurements::default();
+        let mut observed = TrainingMeasurements {
+            readout_only,
+            trainable_parameters: if readout_only {
+                super::super::READOUT_PARAMETERS
+            } else {
+                super::super::PARAMETERS
+            },
+            ..Default::default()
+        };
         if !references.is_empty() {
             // The proposal checkpoint advances ten updates per actual unit;
             // the parent-owned reference pool and its separate cursor do not

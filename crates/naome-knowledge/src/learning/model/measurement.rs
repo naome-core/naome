@@ -22,6 +22,9 @@ pub(crate) struct TrainingMeasurements {
     /// that a loss has a nonzero gradient along every edge.
     pub reference_replayed_edges: usize,
     pub reference_max_depth: usize,
+    /// Gradient eligibility, not a count of nonzero updates or learned facts.
+    pub readout_only: bool,
+    pub trainable_parameters: usize,
 }
 impl Default for TrainingMeasurements {
     fn default() -> Self {
@@ -43,11 +46,21 @@ impl Default for TrainingMeasurements {
             reference_slots: 0,
             reference_replayed_edges: 0,
             reference_max_depth: 0,
+            readout_only: false,
+            trainable_parameters: 0,
         }
     }
 }
 impl TrainingMeasurements {
     pub(in crate::learning) fn include(&mut self, unit: &Self) -> Result<(), String> {
+        if self.slots > 0
+            && (self.readout_only != unit.readout_only
+                || self.trainable_parameters != unit.trainable_parameters)
+        {
+            return Err("native training scope changed within a job".into());
+        }
+        self.readout_only = unit.readout_only;
+        self.trainable_parameters = unit.trainable_parameters;
         self.input_digest = super::super::digest(&(&self.input_digest, &unit.input_digest));
         self.target_digest = super::super::digest(&(&self.target_digest, &unit.target_digest));
         self.reference_digest =
