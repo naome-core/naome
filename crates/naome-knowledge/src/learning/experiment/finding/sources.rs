@@ -43,7 +43,6 @@ impl Episode {
         ledger: &lineage::Ledger,
         holdout: &lineage::Holdout,
     ) -> Result<(), String> {
-        self.observation.validate()?;
         let q = CompiledQuestion::compile(&self.observation.question).map_err(|e| e.to_string())?;
         holdout.question(&q, Some(&self.authored_lineage))?;
         ledger.allowed(&self.lineage, holdout)?;
@@ -51,6 +50,16 @@ impl Episode {
         if !ledger.matches_original(&self.lineage, &q, &self.authored_lineage, summary) {
             return Err("frozen episode substituted another source lineage".into());
         }
+        self.validate_context(common)
+    }
+
+    /// Bind an execution to its actual acquisition state, including earlier
+    /// accepted knowledge. Dynamic sources must never borrow a common state.
+    pub(super) fn validate_context(&self, common: &State) -> Result<(), String> {
+        common.validate()?;
+        self.observation.validate()?;
+        let q = CompiledQuestion::compile(&self.observation.question).map_err(|e| e.to_string())?;
+        let summary = &self.observation.summary;
         summary.terminal.validate(self.solution.as_ref())?;
         let context = SolveContext {
             definitions: &common.definitions,

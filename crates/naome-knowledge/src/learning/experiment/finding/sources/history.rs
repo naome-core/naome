@@ -4,13 +4,19 @@ use super::*;
 use crate::learning::history::{Lane, PAGE_BYTES, Page, Receipt, Record, Request, SOURCES, Source};
 use std::{io::Read, ops::Range};
 
+enum Collection<'a> {
+    Frozen(&'a Frozen),
+    Owned(Vec<(Episode, State)>),
+}
+
 pub(in crate::learning::experiment::finding) struct Io<'a> {
     pub(in crate::learning::experiment::finding) store: Store,
-    frozen: &'a Frozen,
+    collection: Collection<'a>,
     directory: &'a Path,
     available: usize,
     pub(in crate::learning::experiment::finding) source_bytes: u64,
     pub(in crate::learning::experiment::finding) source_reads: u64,
+    pub(in crate::learning::experiment::finding) source_written_bytes: u64,
     pub(in crate::learning::experiment::finding) pages: Vec<Value>,
 }
 impl<'a> Io<'a> {
@@ -23,34 +29,101 @@ impl<'a> Io<'a> {
                 inner: MemoryStore(frozen.store.0.clone()),
                 ..Default::default()
             },
-            frozen,
+            collection: Collection::Frozen(frozen),
             directory,
             available: 0,
             source_bytes: 0,
             source_reads: 0,
+            source_written_bytes: 0,
             pages: Vec::new(),
+        }
+    }
+    pub(in crate::learning::experiment::finding) fn journal(
+        store: MemoryStore,
+        directory: &'a Path,
+    ) -> Self {
+        Self {
+            store: Store {
+                inner: store,
+                ..Default::default()
+            },
+            collection: Collection::Owned(Vec::new()),
+            directory,
+            available: 0,
+            source_bytes: 0,
+            source_reads: 0,
+            source_written_bytes: 0,
+            pages: Vec::new(),
+        }
+    }
+    pub(in crate::learning::experiment::finding) fn append(
+        &mut self,
+        episode: Episode,
+        acquisition: State,
+    ) -> Result<(), String> {
+        episode.validate_context(&acquisition)?;
+        let Collection::Owned(entries) = &mut self.collection else {
+            return Err("immutable collection cannot accept live sources".into());
+        };
+        let job = episode.observation.summary.job;
+        if entries.len() >= 144
+            || entries
+                .last()
+                .is_some_and(|(last, _)| last.observation.summary.job >= job)
+        {
+            return Err("live source order or finite experiment capacity differs".into());
+        }
+        for (name, bytes) in [
+            (
+                format!("episode-{job}.json"),
+                serde_json::to_vec_pretty(&episode),
+            ),
+            (
+                format!("source-state-{job}.json"),
+                serde_json::to_vec_pretty(&acquisition),
+            ),
+        ] {
+            let bytes = bytes.map_err(|e| e.to_string())?;
+            if bytes.len() > crate::resources::limits().native_model_blob_bytes {
+                return Err("live source exceeds its existing file capacity".into());
+            }
+            let path = self.directory.join(name);
+            if path.exists() {
+                return Err("live source would replace an earlier execution".into());
+            }
+            std::fs::write(path, &bytes).map_err(|e| e.to_string())?;
+            self.source_written_bytes += bytes.len() as u64;
+        }
+        entries.push((episode, acquisition));
+        self.available = entries.len();
+        Ok(())
+    }
+    pub(in crate::learning::experiment::finding) fn episodes(&self) -> Vec<Episode> {
+        match &self.collection {
+            Collection::Frozen(frozen) => frozen.episodes[..self.available].to_vec(),
+            Collection::Owned(entries) => {
+                entries.iter().map(|(episode, _)| episode.clone()).collect()
+            }
         }
     }
     pub(in crate::learning::experiment::finding) fn epoch(
         &mut self,
         epoch: usize,
     ) -> Result<(), String> {
-        if epoch >= self.frozen.epochs.len() || self.available != epoch * QUERIES {
+        let Collection::Frozen(frozen) = &self.collection else {
+            return Err("live journal has no frozen acquisition epochs".into());
+        };
+        if epoch >= frozen.epochs.len() || self.available != epoch * QUERIES {
             return Err("scientific source epoch skipped or repeated".into());
         }
         self.available = (epoch + 1) * QUERIES;
         Ok(())
     }
     fn episode(&mut self, job: u64, remaining: usize) -> Result<Episode, String> {
-        let index = usize::try_from(job)
-            .map_err(|_| "scientific source job range")?
-            .checked_sub(1)
-            .ok_or("scientific source job is zero")?;
-        let expected = self
-            .frozen
-            .episodes
-            .get(index)
-            .filter(|_| index < self.available)
+        let episodes = self.episodes();
+        let expected = episodes
+            .iter()
+            .find(|episode| episode.observation.summary.job == job)
             .ok_or("scientific source is outside the available epoch")?;
         let path = self.directory.join(format!("episode-{job}.json"));
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -63,6 +136,7 @@ impl<'a> Io<'a> {
         if bytes.len() > remaining {
             return Err("scientific history exhausted its original read allowance".into());
         }
+        let consumed = bytes.len();
         let episode: Episode = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if episode.observation.summary.job != job || digest(&episode) != digest(expected) {
             return Err("scientific source bytes or job differ from the frozen collection".into());
@@ -71,6 +145,30 @@ impl<'a> Io<'a> {
         // read binds exact frozen bytes; native Working rechecks proof sources
         // and Observation validates operational records before model loading.
         episode.observation.validate()?;
+        if let Collection::Owned(entries) = &self.collection {
+            let acquisition = &entries
+                .iter()
+                .find(|(e, _)| e.observation.summary.job == job)
+                .ok_or("live acquisition state absent")?
+                .1;
+            let path = self.directory.join(format!("source-state-{job}.json"));
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let allowance = remaining.saturating_sub(consumed);
+            let mut bytes = Vec::new();
+            file.take(allowance as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            self.source_bytes += bytes.len() as u64;
+            self.source_reads += 1;
+            if bytes.len() > allowance {
+                return Err("live acquisition exhausted its original read allowance".into());
+            }
+            let actual: State = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            if digest(&actual) != digest(acquisition) {
+                return Err("live source acquisition state was substituted".into());
+            }
+            episode.validate_context(&actual)?;
+        }
         Ok(episode)
     }
 }
@@ -84,7 +182,7 @@ impl ArtifactIo for Io<'_> {
         let before_bytes = self.source_bytes;
         let before_reads = self.source_reads;
         let mut entries = BTreeMap::new();
-        for episode in self.frozen.episodes.iter().take(self.available) {
+        for episode in &self.episodes() {
             let job = episode.observation.summary.job;
             match request.lane {
                 Lane::Sources => {

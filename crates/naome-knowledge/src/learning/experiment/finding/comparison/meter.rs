@@ -77,6 +77,7 @@ impl Meter {
             self.common_bytes
                 + self.restore_bytes
                 + io.source_bytes
+                + io.source_written_bytes
                 + io.store.bytes
                 + self.archive_bytes,
         ))
@@ -97,7 +98,7 @@ impl Meter {
     pub(super) fn report(&self, io: &sources::history::Io<'_>) -> Value {
         let (cpu, wall, bytes) = self.totals(io).unwrap();
         let checking = proof::checking_work();
-        json!({"charged_cpu_micros":cpu,"charged_wall_micros":wall,"charged_io_bytes":bytes,"common_cpu_micros":self.common_cpu,"common_wall_micros":self.common_wall,"common_io_bytes":self.common_bytes,"physical_arm_cpu_micros":cpu-self.common_cpu,"physical_arm_wall_micros":wall-self.common_wall,"source_restore_bytes":self.restore_bytes,"history_source_bytes":io.source_bytes,"history_source_reads":io.source_reads,"model_io_bytes":io.store.bytes,"model_io_operations":io.store.operations,"archive_written_bytes":self.archive_bytes,"archive_writes":self.archive_operations,"checker_calls":checking.calls-self.checking.calls,"checker_steps":checking.steps-self.checking.steps,"peak_rss_bytes":crate::resources::feedback::Meter::start().finish(0,true).peak_rss_bytes,"checker_scope":"Instrumented native proof checking; all other preparation and checking CPU is included in physical cost."})
+        json!({"charged_cpu_micros":cpu,"charged_wall_micros":wall,"charged_io_bytes":bytes,"common_cpu_micros":self.common_cpu,"common_wall_micros":self.common_wall,"common_io_bytes":self.common_bytes,"physical_arm_cpu_micros":cpu-self.common_cpu,"physical_arm_wall_micros":wall-self.common_wall,"source_restore_bytes":self.restore_bytes,"history_source_bytes":io.source_bytes,"history_source_reads":io.source_reads,"history_written_bytes":io.source_written_bytes,"model_io_bytes":io.store.bytes,"model_io_operations":io.store.operations,"archive_written_bytes":self.archive_bytes,"archive_writes":self.archive_operations,"checker_calls":checking.calls-self.checking.calls,"checker_steps":checking.steps-self.checking.steps,"peak_rss_bytes":crate::resources::feedback::Meter::start().finish(0,true).peak_rss_bytes,"checker_scope":"Instrumented native proof checking; all other preparation and checking CPU is included in physical cost."})
     }
 }
 
