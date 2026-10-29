@@ -355,6 +355,8 @@ fn execute(
                 &io.store.inner,
             )?;
             meter.write(&round_path.join("selected-state.json"), &state)?;
+            meter.checkpoint(&round_path.join("selected-checkpoint"), &mut state, &mut io)?;
+            engine = Engine::default();
             meter.write(&round_path.join("history-pages.json"), &io.pages)?;
             rounds.push(json!({"round":round,"events":events,"training":training,
                 "evaluation":evaluation,"model":state.model,"finder_learning":finder.learning_snapshot(),
@@ -373,6 +375,9 @@ fn execute(
     let actual = engine.snapshot(&state.model, &mut io)?;
     if actual != state.model || arm == "frozen_solver" && actual != initial_model {
         return Err("closed-loop actual selected weights or Adam differ".into());
+    }
+    if outcome.is_ok() {
+        meter.checkpoint(&output.join("final-checkpoint"), &mut state, &mut io)?;
     }
     let result = json!({"seed":seed,"arm":arm,"complete":outcome.is_ok(),"error":outcome.as_ref().err(),
         "initial_model":initial_model,"final_model":actual,"initial_finder":initial_finder,

@@ -11,6 +11,7 @@ mod comparison;
 mod confirmation;
 mod diagnosis;
 mod lineage;
+mod persistence;
 mod sources;
 
 const SEEDS: [u64; 3] = [41, 73, 101];

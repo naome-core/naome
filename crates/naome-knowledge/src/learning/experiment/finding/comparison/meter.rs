@@ -12,6 +12,7 @@ pub(super) struct Meter {
     common_wall: u64,
     common_bytes: u64,
     restore_bytes: u64,
+    checkpoint_reads: u64,
     archive_bytes: u64,
     archive_operations: u64,
 }
@@ -25,6 +26,7 @@ impl Meter {
             common_wall: 0,
             common_bytes: 0,
             restore_bytes: 0,
+            checkpoint_reads: 0,
             archive_bytes: 0,
             archive_operations: 0,
         })
@@ -70,6 +72,25 @@ impl Meter {
         }
         Ok(())
     }
+    pub(super) fn checkpoint(
+        &mut self,
+        path: &Path,
+        state: &mut State,
+        io: &mut sources::history::Io<'_>,
+    ) -> Result<(), String> {
+        let cost = persistence::export(path, state, &mut io.store)?;
+        self.archive_bytes += cost.bytes;
+        self.archive_operations += cost.operations;
+        let (restored, store, cost) = persistence::import(path)?;
+        self.restore_bytes += cost.bytes;
+        self.checkpoint_reads += cost.operations;
+        if digest(&restored) != digest(state) {
+            return Err("reopened complete learning state differs".into());
+        }
+        *state = restored;
+        io.store.inner = store;
+        Ok(())
+    }
     fn totals(&self, io: &sources::history::Io<'_>) -> Result<(u64, u64, u64), String> {
         Ok((
             self.common_cpu + meta::cpu_micros()?.saturating_sub(self.cpu),
@@ -98,7 +119,7 @@ impl Meter {
     pub(super) fn report(&self, io: &sources::history::Io<'_>) -> Value {
         let (cpu, wall, bytes) = self.totals(io).unwrap();
         let checking = proof::checking_work();
-        json!({"charged_cpu_micros":cpu,"charged_wall_micros":wall,"charged_io_bytes":bytes,"common_cpu_micros":self.common_cpu,"common_wall_micros":self.common_wall,"common_io_bytes":self.common_bytes,"physical_arm_cpu_micros":cpu-self.common_cpu,"physical_arm_wall_micros":wall-self.common_wall,"source_restore_bytes":self.restore_bytes,"history_source_bytes":io.source_bytes,"history_source_reads":io.source_reads,"history_written_bytes":io.source_written_bytes,"model_io_bytes":io.store.bytes,"model_io_operations":io.store.operations,"archive_written_bytes":self.archive_bytes,"archive_writes":self.archive_operations,"checker_calls":checking.calls-self.checking.calls,"checker_steps":checking.steps-self.checking.steps,"peak_rss_bytes":crate::resources::feedback::Meter::start().finish(0,true).peak_rss_bytes,"checker_scope":"Instrumented native proof checking; all other preparation and checking CPU is included in physical cost."})
+        json!({"charged_cpu_micros":cpu,"charged_wall_micros":wall,"charged_io_bytes":bytes,"common_cpu_micros":self.common_cpu,"common_wall_micros":self.common_wall,"common_io_bytes":self.common_bytes,"physical_arm_cpu_micros":cpu-self.common_cpu,"physical_arm_wall_micros":wall-self.common_wall,"source_restore_bytes":self.restore_bytes,"checkpoint_read_operations":self.checkpoint_reads,"history_source_bytes":io.source_bytes,"history_source_reads":io.source_reads,"history_written_bytes":io.source_written_bytes,"model_io_bytes":io.store.bytes,"model_io_operations":io.store.operations,"archive_written_bytes":self.archive_bytes,"archive_writes":self.archive_operations,"checker_calls":checking.calls-self.checking.calls,"checker_steps":checking.steps-self.checking.steps,"peak_rss_bytes":crate::resources::feedback::Meter::start().finish(0,true).peak_rss_bytes,"checker_scope":"Instrumented native proof checking; all other preparation and checking CPU is included in physical cost."})
     }
 }
 
