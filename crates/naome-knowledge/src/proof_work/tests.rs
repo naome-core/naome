@@ -58,6 +58,37 @@ fn identity(work: &mut Work) {
 }
 
 #[test]
+fn owner_release_unlocks_work_despite_an_inherited_descriptor() {
+    let directory = Directory::new();
+    let mut work = Work::open(&directory.path()).unwrap();
+    let inherited = work._lock.0.file().try_clone().unwrap();
+    assert!(matches!(
+        Work::open(&directory.path()),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    drop(work);
+    work = Work::open(&directory.path()).unwrap();
+    drop(inherited);
+    identity(&mut work);
+    assert!(finish(&mut work).fully_checked);
+    while !work.prepare_export(&budget()).unwrap() {}
+    let inherited = work._lock.0.file().try_clone().unwrap();
+    assert!(matches!(
+        Work::open(&directory.path()),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    let checked = work.into_checked().unwrap();
+    assert!(matches!(
+        Work::open(&directory.path()),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    drop(checked);
+    let reopened = Work::open(&directory.path()).unwrap();
+    drop(reopened);
+    drop(inherited);
+}
+
+#[test]
 fn native_program_errors_and_bounded_inspection_survive_json_without_admission() {
     use naome_checker::diagnostics::{Failure, FormulaQuery, OperandRole};
     let directory = Directory::new();

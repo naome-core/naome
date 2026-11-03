@@ -3,6 +3,7 @@ members = [
     "vendor/libp2p-dcutr",
     "vendor/libp2p-mdns",
     "vendor/libp2p-relay",
+    "vendor/libp2p-tcp",
     "crates/naome-authoring",
     "crates/naome-checker",
     "crates/naome-foundation",
@@ -50,3 +51,4 @@ burn-tensor = { path = "vendor/burn-tensor" }
 libp2p-mdns = { path = "vendor/libp2p-mdns" }
 libp2p-dcutr = { path = "vendor/libp2p-dcutr" }
 libp2p-relay = { path = "vendor/libp2p-relay" }
+libp2p-tcp = { path = "vendor/libp2p-tcp" }

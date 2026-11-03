@@ -17,6 +17,7 @@ filegroup(
         "//vendor/libp2p-dcutr:libp2p_dcutr",
         "//vendor/libp2p-mdns:libp2p_mdns",
         "//vendor/libp2p-relay:libp2p_relay",
+        "//vendor/libp2p-tcp:libp2p_tcp",
     ],
 )
 
@@ -38,5 +39,6 @@ test_suite(
         "//vendor/libp2p-dcutr:unit_tests",
         "//vendor/libp2p-mdns:unit_tests",
         "//vendor/libp2p-relay:unit_tests",
+        "//vendor/libp2p-tcp:unit_tests",
     ],
 )

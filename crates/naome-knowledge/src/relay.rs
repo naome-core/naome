@@ -65,6 +65,8 @@ fn rate_limiter() -> Box<dyn relay::RateLimiter> {
 }
 
 pub async fn run(path: &Path) -> Result<(), String> {
+    let shutdown = network::shutdown_signal()?;
+    tokio::pin!(shutdown);
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
         crate::resources::limits().network_config_bytes,
@@ -166,9 +168,6 @@ pub async fn run(path: &Path) -> Result<(), String> {
     network::emit(
         json!({"event":"relay_starting", "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
     );
-    // Dropping a pending listener does not restore Tokio's process signal handler.
-    let shutdown = network::shutdown_signal();
-    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             event = swarm.select_next_some() => match event {
