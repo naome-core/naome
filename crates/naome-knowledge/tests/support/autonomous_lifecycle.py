@@ -866,8 +866,8 @@ class Node:
     def write_config(self):
         (self.directory / "config.json").write_text(json.dumps(self.config, indent=2) + "\n")
 
-    def logs(self):
-        path = self.directory / "node.log"
+    def logs(self, filename="node.log"):
+        path = self.directory / filename
         if not path.exists():
             return []
         events = []
