@@ -7,6 +7,7 @@ the same supervised candidate stream and mathematical checker as other providers
 """
 import argparse
 from contextlib import closing
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -19,26 +20,44 @@ from resource_observation import latest
 
 
 class AutonomousNode(Node):
+    def launch_events(self):
+        # Rotation can move this launch's replay marker into the previous
+        # segment. A line index from before startup cannot survive that move.
+        events = self.logs("node.log.previous") + self.logs()
+        for index in range(len(events) - 1, -1, -1):
+            event = events[index]
+            if (event.get("event") == "startup_replay" and event.get("phase") == "checked"
+                    and event.get("pid") == self.process["pid"]
+                    and event.get("instance_sha256") == self.launch_hash):
+                following = events[index + 1:]
+                for end, later in enumerate(following):
+                    if later.get("event") == "startup_replay" and later.get("phase") == "begin":
+                        return following[:end]
+                return following
+        return []
+
     def start(self, strict_startup=False):
         # Exercise the ordinary dynamic default; no operator profile is needed.
-        self.event_offset=len(self.logs())
         self.release_port()
         result=self.trial.start(self,strict_startup=strict_startup)
         self.capture_process()
-        event=self.trial.wait(lambda:next((event for event in self.logs()[self.event_offset:]
+        endpoint = json.loads((self.directory / "control.json").read_text())
+        assert endpoint["pid"] == self.process["pid"]
+        self.launch_hash = sha256(endpoint["token"].encode()).hexdigest()
+        event=self.trial.wait(lambda:next((event for event in self.launch_events()
             if event.get('event')=='starting'),None))
         if self.peer is not None:assert self.peer==event['peer_id']
         self.peer=event['peer_id']
         return result
 
     def stop(self,cleanup=False):
-        if not getattr(self,'large_screen',False):return super().stop(cleanup=cleanup)
-        # The ordinary matrix separately covers repeated stop/status. A large
-        # screen performs one full stopped-state replay per requested stop.
         status=self.trial.call(self,'stop',cleanup=cleanup)
         assert not status['running'] and not process_group(self.process)
         if self.process is not None:
-            assert sum(event.get('event')=='stopped' for event in self.logs()[self.event_offset:])==1
+            assert sum(event.get('event')=='stopped' for event in self.launch_events())==1
+        if not getattr(self, 'large_screen', False):
+            assert self.trial.call(self, 'stop', cleanup=cleanup) == status
+            assert self.trial.call(self, 'status', cleanup=cleanup) == status
         assert status['accepted_artifacts']==len(self.ids())
         self.reserve_port()
         return status
@@ -98,11 +117,10 @@ def run(trial,units,memory_mib=None):
     assert (donor.directory/'proof-corpus.sqlite3').stat().st_ino!=(receiver.directory/'proof-corpus.sqlite3').stat().st_ino
     write_receipt(trial.output/'interrupted-prefix.json',{'before_kill':prefix,'after_kill':after})
     receiver.start()
-    event_start=len(receiver.logs())
     trial.wait(lambda:next((row for row in program_rows(receiver) if row['id']==identity and row['published']),None),maximum=trial.remaining(600))
     trial.wait(lambda:any(event.get('event')=='accepted' and event.get('id')==identity
-        and event.get('source')=='fetch' for event in receiver.logs()[event_start:]))
-    resumed=[event for event in receiver.logs()[receiver.event_offset:]
+        and event.get('source')=='fetch' for event in receiver.launch_events()))
+    resumed=[event for event in receiver.launch_events()
         if event.get('event')=='exchange_response' and event.get('kind')=='program_data' and event.get('object_id')==identity]
     assert resumed and resumed[0]['position']==after['received'],resumed[:1]
     source_objects=stored_objects(donor);received_objects=stored_objects(receiver)
