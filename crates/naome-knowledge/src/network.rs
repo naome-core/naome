@@ -1200,7 +1200,7 @@ impl Node {
                     if self.flights.len()
                         >= crate::resources::adaptive::network(crate::resources::limits().flights)
                     {
-                        return Err("request capacity".into());
+                        return Err(crate::Error::ExecutionLimit);
                     }
                     let peer: PeerId = value
                         .get("peer")
@@ -1212,11 +1212,11 @@ impl Node {
                         return Err("peer not connected and enabled".into());
                     }
                     if self.flight_count(peer) >= crate::resources::limits().flights_per_peer {
-                        return Err("peer request capacity".into());
+                        return Err(crate::Error::ExecutionLimit);
                     }
                     let now = Instant::now();
                     if !self.outgoing_ready(peer, now) {
-                        return Err("outgoing peer request rate".into());
+                        return Err(crate::Error::ExecutionLimit);
                     }
                     let metadata = if value["command"] == "test_offer" {
                         if !self.test_controls {
