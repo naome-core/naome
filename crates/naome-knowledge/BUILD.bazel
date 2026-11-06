@@ -17,7 +17,7 @@ rust_library(
     version = "0.1.0-alpha.1",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    compile_data = glob(
+    compile_data = ["//:Cargo.lock", "//:rust-toolchain.toml"] + glob(
         [
             "src/**/*.hex",
             "src/learning/curriculum.json",

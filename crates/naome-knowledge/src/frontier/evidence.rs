@@ -26,8 +26,24 @@ struct Header {
     observations: u64,
     model_contract: String,
     model: finder::Model,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    imported_updates: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exchanged_model: Option<FinderRollback>,
     learning: finder::Learning,
 }
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FinderRollback {
+    previous: finder::Model,
+    imported_updates: u64,
+    selected: String,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Support {
@@ -178,6 +194,8 @@ impl Evidence {
                     observations: 0,
                     model_contract: solver.clone(),
                     model: finder::Model::fresh(),
+                    imported_updates: 0,
+                    exchanged_model: None,
                     learning: finder::Learning::fresh(solver.clone()),
                 },
                 vec![],
@@ -190,12 +208,25 @@ impl Evidence {
         crate::object::id_bytes(&header.model_contract)?;
         header.model.validate()?;
         header.learning.validate()?;
-        if header.observations < header.model.updates {
+        if let Some(record) = &header.exchanged_model {
+            record.previous.validate()?;
+            crate::object::id_bytes(&record.selected)?;
+            if record.imported_updates > record.previous.updates
+                || record.previous.updates - record.imported_updates > header.observations
+            {
+                return Err("finder rollback observation sequence differs".into());
+            }
+        }
+        if header.imported_updates > header.model.updates
+            || header.model.updates - header.imported_updates > header.observations
+        {
             return Err("finder observation sequence differs".into());
         }
         if header.model_contract != solver {
             header.model_contract = solver.clone();
             header.model = finder::Model::fresh();
+            header.imported_updates = 0;
+            header.exchanged_model = None;
             header.learning = finder::Learning::fresh(solver.clone());
         }
         checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
@@ -217,6 +248,61 @@ impl Evidence {
     }
     pub(super) fn model(&self) -> &finder::Model {
         &self.header.model
+    }
+    pub(super) fn exchange_snapshot(&self) -> Result<crate::model_exchange::Bundle, String> {
+        use crate::model_exchange::{Bundle, Model, Registration, encode_finder};
+        let (checkpoint, bytes) = encode_finder(&self.header.model)?;
+        let registration = Registration::new(Model::Finder { checkpoint });
+        let memory = Bundle::reserve(&registration)?;
+        Bundle::new(registration, vec![bytes], memory)
+    }
+
+    pub(super) fn exchange_select(
+        &mut self,
+        expected: &str,
+        candidate: Option<&crate::model_exchange::Bundle>,
+    ) -> Result<crate::model_exchange::Registration, crate::Error> {
+        use crate::model_exchange::{Model, Registration, decode_finder, encode_finder};
+        let mut next = self.header.clone();
+        let current = Registration::new(Model::Finder {
+            checkpoint: encode_finder(&next.model)?.0,
+        });
+        if current.id() != expected {
+            return Err("selected finder changed since comparison".into());
+        }
+        let selected = if let Some(candidate) = candidate {
+            let Model::Finder { checkpoint } = &candidate.registration.model else {
+                return Err("finder adoption requires a finder checkpoint".into());
+            };
+            let model = decode_finder(
+                candidate
+                    .part(checkpoint)
+                    .ok_or("finder artifact missing")?,
+            )?;
+            next.exchanged_model = Some(FinderRollback {
+                previous: std::mem::replace(&mut next.model, model),
+                imported_updates: next.imported_updates,
+                selected: candidate.registration.id(),
+            });
+            next.imported_updates = next.model.updates;
+            candidate.registration.clone()
+        } else {
+            let previous = next
+                .exchanged_model
+                .take()
+                .ok_or("no finder exchange to roll back")?;
+            if previous.selected != current.id() {
+                return Err("selected finder advanced after exchange".into());
+            }
+            next.model = previous.previous;
+            next.imported_updates = previous.imported_updates;
+            Registration::new(Model::Finder {
+                checkpoint: encode_finder(&next.model)?.0,
+            })
+        };
+        self.commit(&next, vec![])?;
+        self.header = next;
+        Ok(selected)
     }
     pub(super) fn learning(&self) -> &finder::Learning {
         &self.header.learning

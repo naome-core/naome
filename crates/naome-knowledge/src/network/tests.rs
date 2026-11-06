@@ -514,7 +514,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     .unwrap();
     let status = Arc::new(worker::PublishedStatus::default());
     status.ready.store(true, Ordering::Release);
-    let mut controls = worker::Controls::spawn(Some(control.clone()), status);
+    let mut controls = worker::Controls::spawn(Some(control.clone()), status, mpsc::channel(1).0);
     let (started, observed) = std::sync::mpsc::channel();
     let (release, wait) = std::sync::mpsc::channel();
     graph.set_commit_guard(crate::publication::CommitGuard::new(

@@ -224,6 +224,7 @@ fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String>
 enum Operation {
     Status,
     Stop,
+    Model(crate::model_exchange::control::Request),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -244,7 +245,12 @@ struct Response {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Report {
-    Status { status: Status },
+    Status {
+        status: Status,
+    },
+    Model {
+        result: crate::model_exchange::control::Response,
+    },
 }
 
 pub(crate) struct Control {
@@ -431,11 +437,22 @@ impl Control {
         Ok(hash.finalize().into())
     }
 
+    #[cfg(test)]
     pub(crate) async fn respond(
+        &self,
+        stream: UnixStream,
+        count: usize,
+        ready: bool,
+    ) -> Result<bool, String> {
+        self.respond_with_models(stream, count, ready, None).await
+    }
+
+    pub(crate) async fn respond_with_models(
         &self,
         mut stream: UnixStream,
         count: usize,
         ready: bool,
+        models: Option<&crate::model_exchange::control::Sender>,
     ) -> Result<bool, String> {
         let request: Request = tokio::time::timeout(
             crate::resources::limits().control_request_timeout,
@@ -451,6 +468,32 @@ impl Control {
             socket2::SockRef::from(&stream)
                 .set_send_buffer_size(1024)
                 .map_err(|e| e.to_string())?;
+        }
+        if let Operation::Model(request) = request.operation {
+            let result = async {
+                if !ready || self.stopping() {
+                    return Err("node is not ready for model exchange".into());
+                }
+                let models = models.ok_or("model exchange owner unavailable")?;
+                let (reply, receiver) = tokio::sync::oneshot::channel();
+                models
+                    .try_send((request, reply))
+                    .map_err(|_| "model control queue busy")?;
+                tokio::time::timeout(crate::resources::limits().control_request_timeout, receiver)
+                    .await
+                    .map_err(|_| "model control owner busy")?
+                    .map_err(|_| "model control owner stopped")?
+            }
+            .await;
+            write_frame(
+                &mut stream,
+                &Response {
+                    token: self.endpoint.token.clone(),
+                    report: Report::Model { result },
+                },
+            )
+            .await?;
+            return Ok(false);
         }
         let stopping = matches!(request.operation, Operation::Stop);
         if stopping {
@@ -584,6 +627,20 @@ async fn request(
     operation: Operation,
     launch: Option<&str>,
 ) -> Result<Option<Status>, String> {
+    request_report(directory, operation, launch)
+        .await?
+        .map(|report| match report {
+            Report::Status { status } => Ok(status),
+            Report::Model { .. } => Err("unexpected model control report".into()),
+        })
+        .transpose()
+}
+
+async fn request_report(
+    directory: &Path,
+    operation: Operation,
+    launch: Option<&str>,
+) -> Result<Option<Report>, String> {
     let Some(endpoint) = endpoint(directory)? else {
         return Ok(None);
     };
@@ -621,8 +678,7 @@ async fn request(
     if response.token != endpoint.token {
         return Err("local control response instance mismatch".into());
     }
-    let Report::Status { status } = response.report;
-    Ok(Some(status))
+    Ok(Some(response.report))
 }
 
 fn directory() -> Result<PathBuf, String> {
@@ -1167,8 +1223,24 @@ pub async fn execute() -> Result<(), String> {
     } else {
         crate::resources::initialize_from_environment()?;
     }
+    if let Some(result) = crate::model_exchange::worker::internal(&arguments) {
+        return result;
+    }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
+    }
+    if let Some(request) = crate::model_exchange::control::parse(&arguments) {
+        let report = request_report(&directory()?, Operation::Model(request?), None)
+            .await?
+            .ok_or("model exchange requires a running node")?;
+        let Report::Model { result } = report else {
+            return Err("unexpected lifecycle report for model exchange".into());
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result?).map_err(|e| e.to_string())?
+        );
+        return Ok(());
     }
     let cli::Arguments {
         command,

@@ -4,7 +4,7 @@
 use super::{CompiledQuestion, Formula, FreeVariable};
 use std::collections::{BTreeSet, VecDeque};
 mod model;
-pub(super) use model::Model;
+pub(crate) use model::Model;
 mod analysis;
 pub(super) use analysis::Cache;
 mod learning;

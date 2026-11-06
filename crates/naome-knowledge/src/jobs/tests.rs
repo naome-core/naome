@@ -36,6 +36,15 @@ impl Manual {
         let mut requests = Vec::new();
         while let Ok(command) = self.receiver.try_recv() {
             match command {
+                Command::ModelLease(reply) => {
+                    let _ = reply.send(Err("manual provider has no model worker slots".into()));
+                }
+                Command::ModelSnapshot(reply) => {
+                    let _ = reply.send(Err("manual provider has no selected model".into()));
+                }
+                Command::SelectModel { reply, .. } => {
+                    let _ = reply.send(Err("manual provider cannot select a model".into()));
+                }
                 Command::Accepted { id, root } => {
                     self.receipts.push(Receipt::Accepted { id, root })
                 }

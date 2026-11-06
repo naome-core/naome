@@ -9,6 +9,8 @@ use std::{
 
 mod learning;
 
+#[cfg(all(feature = "developer-tools", feature = "system-tests"))]
+pub(crate) use learning::model_fixture;
 const CHECKPOINT_DOMAIN: &str = "naome:research-jobs";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -445,7 +447,7 @@ impl Disk {
             disk.collect_models(&mut journal)?;
         }
         if let Some(learning) = &journal.learning {
-            for blob in learning.blobs() {
+            for blob in learning.retained_blobs() {
                 disk.verify_blob(blob)?;
             }
         }
@@ -556,7 +558,7 @@ impl Disk {
                 .learning
                 .as_ref()
                 .into_iter()
-                .flat_map(|s| s.blobs().cloned())
+                .flat_map(|s| s.retained_blobs().cloned())
                 .collect();
             self.update_model_refs(&mut updates, "global", refs)?;
         }

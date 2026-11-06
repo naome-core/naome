@@ -21,6 +21,7 @@ mod intake;
 mod jobs;
 mod learning;
 pub mod mocks;
+mod model_exchange;
 pub mod network;
 mod object;
 #[cfg(unix)]
@@ -43,3 +44,15 @@ mod wire;
 pub use corpus::ROOT_FORMAT as CORPUS_ROOT_FORMAT;
 pub use graph::{Graph, Ingest};
 pub use object::{CHECKER_ID, CODEC_ID, Envelope, GRAPH_POLICY_ID, compatibility, hex, unhex};
+
+/// Seed an isolated stopped node with a real native checkpoint for process
+/// acceptance tests. Available only in the system-test developer binary.
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[doc(hidden)]
+pub fn model_exchange_fixture(
+    directory: &std::path::Path,
+    seed: u64,
+    materialize: bool,
+) -> Result<String, String> {
+    jobs::model_fixture(directory, seed, materialize)
+}

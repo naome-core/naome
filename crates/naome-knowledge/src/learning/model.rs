@@ -16,6 +16,7 @@ mod preservation;
 #[cfg(test)]
 mod routing_tests;
 mod utility;
+mod verification;
 use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},
@@ -275,6 +276,13 @@ impl Runtime {
         self.scoring_batch(&Graph::encode(decision)?).map(drop)
     }
     fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
+        Self::load_with_verification(checkpoint, io, false)
+    }
+    fn load_with_verification<I: ArtifactIo + ?Sized>(
+        checkpoint: &Checkpoint,
+        io: &mut I,
+        verify_artifacts: bool,
+    ) -> Result<Self, String> {
         checkpoint.validate()?;
         let device = Device::flex().autodiff();
         let mut policy = {
@@ -307,17 +315,30 @@ impl Runtime {
         let mut optimizer = AdamConfig::new().init();
         let mut preservation = preservation::Preservation::fresh(&policy);
         if let (Some(model), Some(adam)) = (&checkpoint.model, &checkpoint.optimizer) {
-            let bytes = artifact::load(io, model)?;
+            let bytes = Bytes::from_bytes_vec(artifact::load(io, model)?);
+            let descriptors = verify_artifacts
+                .then(|| verification::model(&policy, bytes.clone()))
+                .transpose()?;
             policy = policy
-                .try_load_record(
-                    ModuleRecord::from_bytes(Bytes::from_bytes_vec(bytes))
-                        .map_err(|e| e.to_string())?,
-                )
+                .try_load_record(ModuleRecord::from_bytes(bytes).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?
                 .train();
             let bytes = artifact::load(io, adam)?;
             let adam =
                 preservation.decode(Bytes::from_bytes_vec(bytes.clone()), checkpoint.updates)?;
+            if let Some(descriptors) = descriptors {
+                let restored = canonical_checkpoint(
+                    policy
+                        .clone()
+                        .into_record()
+                        .into_bytes()
+                        .map_err(|e| e.to_string())?,
+                )?;
+                if Blob::of(&restored[..]) != *model {
+                    return Err("native model did not restore exactly".into());
+                }
+                verification::adam(&descriptors, adam.clone(), checkpoint.updates)?;
+            }
             optimizer = optimizer.from_bytes(adam).map_err(|e| e.to_string())?;
             let restored =
                 preservation.encode(optimizer.into_bytes().map_err(|e| e.to_string())?)?;
@@ -623,8 +644,8 @@ impl Engine {
             preservation::Mode::default()
         }
     }
-    #[cfg(test)]
-    pub(super) fn snapshot<I: ArtifactIo + ?Sized>(
+    #[cfg(any(test, all(feature = "developer-tools", feature = "system-tests")))]
+    pub(crate) fn snapshot<I: ArtifactIo + ?Sized>(
         &mut self,
         c: &Checkpoint,
         io: &mut I,
@@ -660,6 +681,16 @@ impl Engine {
         }
         self.cache.push((c, r));
     }
+    pub(crate) fn verify_reference(
+        &mut self,
+        checkpoint: &Checkpoint,
+        io: &mut impl ArtifactIo,
+    ) -> Result<(), String> {
+        let runtime = Runtime::load_with_verification(checkpoint, io, true)?;
+        self.retain(checkpoint.clone(), runtime);
+        Ok(())
+    }
+
     pub fn with<I: ArtifactIo + ?Sized, T>(
         &mut self,
         c: &Checkpoint,

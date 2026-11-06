@@ -308,7 +308,7 @@ fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
     assert!(trained.model.as_ref().unwrap().bytes >= PARAMETERS * 4);
     assert!(trained.optimizer.as_ref().unwrap().bytes >= PARAMETERS * 8);
     assert!(serde_json::to_vec(&trained).unwrap().len() < 1024);
-    let mut resumed = Runtime::load(&trained, &mut io).unwrap();
+    let mut resumed = Runtime::load_with_verification(&trained, &mut io, true).unwrap();
     let mut continued_rng = rng;
     runtime
         .train(&Pool::from_graphs(&graphs), &mut continued_rng, 1)

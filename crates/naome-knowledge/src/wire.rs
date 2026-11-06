@@ -70,6 +70,9 @@ pub(crate) enum Body {
         id: [u8; 32],
         chunk: naome_proof::program::Chunk,
     },
+    Model {
+        packet: crate::model_exchange::protocol::Packet,
+    },
     Missing,
     Receipt {
         status: String,
@@ -88,6 +91,24 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
+    pub(crate) fn response(body: Body) -> Self {
+        if let Body::Model {
+            packet: crate::model_exchange::protocol::Packet::ChunkData { data, .. },
+        } = &body
+        {
+            return match crate::resources::MemoryLease::acquire(data.capacity()) {
+                Ok(memory) => {
+                    let mut frame = Self::new(body);
+                    frame._memory = Some(memory);
+                    frame
+                }
+                Err(_) => Self::new(Body::Error {
+                    reason: "model response capacity".into(),
+                }),
+            };
+        }
+        Self::new(body)
+    }
     pub fn new(body: Body) -> Self {
         Self {
             message: Message {
