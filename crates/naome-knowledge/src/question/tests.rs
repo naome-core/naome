@@ -11,11 +11,11 @@ use std::{
 };
 use tokio::sync::Notify;
 
-const PROOF: &str = "goal=all(s,ex(r,all(e,iff(mem(e,r),and(mem(e,s),eq(e,e)))))) proof: p0=sep(eq(e,e),e,s,r,parameters=[]) return p0";
-const QUESTION: &str = "goal = all(x,mem(x,x))";
-const SOLVED: &str = "goal=all(s,ex(r,all(e,iff(mem(e,r),and(mem(e,s),eq(e,e))))))";
+const PROOF: &str = "0000000001110000000b000000000000000000000000000000000000010000000200000000";
+const QUESTION: &str = "040101000000000100000000";
+const SOLVED: &str = "04020402040203030101000000000100000001020301010000000001000000020200010000000001000000000203020301010000000001000000020200010000000001000000000101000000000100000001";
 
-type Managed = LocalQuestions<fn(CompiledQuestion) -> std::future::Ready<Result<bool, String>>>;
+type Managed = LocalQuestions<fn(ResearchQuestion) -> std::future::Ready<Result<bool, String>>>;
 
 #[tokio::test]
 async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
@@ -109,7 +109,7 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
             Duration::from_secs(3600),
         )
         .unwrap();
-        let original = question("goal = not(all(x,mem(x,x)))");
+        let original = question("02040101000000000100000000");
         let (reply, receiver) = oneshot::channel();
         local.process(Command::Admit(original.clone(), reply), &graph);
         let request = owner.requests().remove(0);
@@ -136,8 +136,8 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
         )
         .unwrap();
         assert_eq!(
-            recovered.known.values().next().unwrap().source(),
-            original.source()
+            recovered.known.values().next().unwrap().to_hex(),
+            original.to_hex()
         );
         assert_eq!(
             recovered.known.values().next().unwrap().negation_parity(),
@@ -223,7 +223,7 @@ impl Directory {
             listen: "/ip4/127.0.0.1/tcp/0".into(),
             peers: Vec::new(),
             discovery: Some(discovery),
-            producer_sources: sources,
+            producer_artifacts: sources,
         }
     }
 }
@@ -233,8 +233,8 @@ impl Drop for Directory {
     }
 }
 
-fn question(source: &str) -> CompiledQuestion {
-    CompiledQuestion::compile(source).unwrap()
+fn question(source: &str) -> ResearchQuestion {
+    ResearchQuestion::from_hex(source).unwrap()
 }
 async fn context(handle: &QuestionHandle) -> LocalQuestionContext {
     tokio::time::timeout(Duration::from_secs(5), handle.context())
@@ -282,7 +282,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_select
         SelectionAssessment::NotRun
     );
     let refuted = handle
-        .admit_question(question("goal = not(all(a,eq(a,a)))"))
+        .admit_question(question("02040001000000000100000000"))
         .await
         .unwrap();
     assert_eq!(
@@ -291,7 +291,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_select
     );
     assert!(refuted.assessment.submitted_negation_parity);
     let double_negative = handle
-        .admit_question(question("goal = not(not(all(a,eq(a,a))))"))
+        .admit_question(question("0202040001000000000100000000"))
         .await
         .unwrap();
     assert_eq!(
@@ -321,7 +321,10 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_select
         .unwrap()
         .unwrap();
     let before = context(&handle).await;
-    let alias = handle.admit_question(question("# cosmetic source and binder change\ngoal = all(renamed, mem(renamed, renamed)) success = \"resolve\"")).await.unwrap();
+    let alias = handle
+        .admit_question(question("040101000000000100000000"))
+        .await
+        .unwrap();
     assert_eq!(
         alias.assessment.prefilter.reason,
         Some(RejectionReason::ExactDuplicate)
@@ -342,7 +345,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_select
     admin.set_policy(limited).await.unwrap();
     let frozen = context(&handle).await;
     let exhausted = handle
-        .admit_question(question("goal = all(x,imp(mem(x,x),mem(x,x)))"))
+        .admit_question(question("040301010000000001000000000101000000000100000000"))
         .await
         .unwrap();
     assert_eq!(
@@ -460,7 +463,7 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
         .unwrap();
     producer
         .send(Ok(crate::network::QueuedCommand::from_value(
-            serde_json::json!({"command":"produce", "source":PROOF}),
+            serde_json::json!({"command":"produce", "artifact":PROOF}),
         )))
         .await
         .unwrap();
@@ -693,7 +696,7 @@ fn prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() {
     let registered = question(QUESTION);
     local
         .registry
-        .insert(RegisteredQuestion::new(*registered.source_hash(), registered.core()).unwrap())
+        .insert(RegisteredQuestion::new(*registered.record_id(), registered.core()).unwrap())
         .unwrap();
     let rejected = local.assess(&graph, &input);
     assert_eq!(rejected.reason, Some(RejectionReason::ExactDuplicate));
@@ -713,13 +716,13 @@ fn prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() {
         local.computations, 4,
         "checked graph changes invalidate cache"
     );
-    let renamed = question("goal = all(z,mem(z,z))");
-    let alias = local.assess(&graph, &renamed);
+    let double_negative = question("0202040101000000000100000000");
+    let alias = local.assess(&graph, &double_negative);
     assert_eq!(next.question, alias.question);
     assert_ne!(next.input, alias.input);
     assert_eq!(
         local.computations, 5,
-        "full source changes invalidate even the same canonical question"
+        "a distinct canonical record keeps a separate assessment in the same resolution family"
     );
 }
 
@@ -740,7 +743,7 @@ fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_reco
             "incomplete work is not cached as a completed decision"
         );
     }
-    let record = *input.source_hash();
+    let record = *input.record_id();
     local
         .registry
         .insert(RegisteredQuestion::new(record, input.core()).unwrap())
@@ -784,27 +787,36 @@ fn registry_pattern(index: u32) -> naome_foundation::Formula {
 #[cfg(feature = "system-tests")]
 #[tokio::test]
 async fn running_node_uses_entire_large_graph_and_registry_before_selection() {
-    use naome_foundation::Formula;
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let target = question(QUESTION);
     let mut late = graph.author(PROOF).unwrap();
-    let solved = question(SOLVED).core().to_source();
-    let mut source = PROOF.trim_end_matches("return p0").to_owned();
-    let mut premise = 0;
+    use naome_proof::{ProofCertificate, ProofStep};
+    let solved = question(SOLVED).core().clone();
+    let bytes = crate::unhex(PROOF).unwrap();
+    let mut steps = ProofCertificate::from_canonical_bytes(&bytes[1..])
+        .unwrap()
+        .steps()
+        .to_vec();
     // Choose a late address from a bounded family of proofs of the same theorem.
-    // Artifact addresses have their own ordering, independently of ProofId.
-    for group in 0..16 {
-        let step = 1 + group * 3;
-        source.push_str(&format!(
-            " p{step}=simp({solved},{solved}) p{}=mp(p{premise},p{step}) p{}=mp(p{premise},p{})",
-            step + 1,
-            step + 2,
-            step + 1
-        ));
-        premise = step + 2;
+    for _ in 0..16 {
+        let premise = (steps.len() - 1) as u32;
+        steps.extend([
+            ProofStep::Simplification {
+                antecedent: solved.clone().into(),
+                consequent: solved.clone().into(),
+            },
+            ProofStep::ModusPonens {
+                premise,
+                implication: premise + 1,
+            },
+            ProofStep::ModusPonens {
+                premise,
+                implication: premise + 2,
+            },
+        ]);
         let candidate = graph
-            .author(&format!("{source} return p{premise}"))
+            .author(&crate::test_inputs::proof(steps.clone()))
             .unwrap();
         if candidate.artifact_id > late.artifact_id {
             late = candidate;
@@ -816,16 +828,10 @@ async fn running_node_uses_entire_large_graph_and_registry_before_selection() {
         assert!(index < 2048, "finite unique checked source family");
         let formula = registry_pattern(index);
         index += 1;
-        let conclusion = Formula::implies(
-            formula.clone(),
-            Formula::implies(target.core().clone(), formula.clone()),
-        );
-        let source = format!(
-            "goal = {} proof: p0 = simp({}, {}) return p0",
-            conclusion.to_source(),
-            formula.to_source(),
-            target.core().to_source()
-        );
+        let source = crate::test_inputs::proof(vec![ProofStep::Simplification {
+            antecedent: formula.into(),
+            consequent: target.core().clone().into(),
+        }]);
         let envelope = graph.author(&source).unwrap();
         if envelope.artifact_id < late_id {
             graph.ingest(envelope, Instant::now()).unwrap();
@@ -861,9 +867,8 @@ async fn running_node_uses_entire_large_graph_and_registry_before_selection() {
     assert_eq!(solved.prefilter.reason, Some(RejectionReason::KnownProof));
     assert_eq!(solved.selection_result, SelectionAssessment::NotRun);
     for index in 0..257 {
-        let source = format!("goal = {}", registry_pattern(index).to_source());
         admin
-            .import_baseline(question(&source))
+            .import_baseline(crate::test_inputs::question(registry_pattern(index)))
             .await
             .unwrap()
             .unwrap();
@@ -871,8 +876,10 @@ async fn running_node_uses_entire_large_graph_and_registry_before_selection() {
     let full = context(&handle).await;
     assert_eq!(full.registered_questions, 257);
     assert_ne!(full.snapshot, initial.snapshot);
-    let last = format!("goal = {}", registry_pattern(256).to_source());
-    let duplicate = handle.assess(question(&last)).await.unwrap();
+    let duplicate = handle
+        .assess(crate::test_inputs::question(registry_pattern(256)))
+        .await
+        .unwrap();
     assert_eq!(
         duplicate.prefilter.reason,
         Some(RejectionReason::ExactDuplicate)
@@ -970,7 +977,7 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
     assert_eq!(after.registered_questions, 1);
     assert_eq!(after.checked_artifacts, 0);
     let receipt = admitted[0];
-    assert_eq!(receipt.record(), *input.source_hash());
+    assert_eq!(receipt.record(), *input.record_id());
     assert_eq!(receipt.input(), readonly.prefilter.input);
     assert_eq!(receipt.policy(), before.policy);
     assert_eq!(receipt.snapshot_before(), before.snapshot);
@@ -987,7 +994,7 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
         "assessment and winning admission each run separate selection"
     );
     let alias = handle
-        .admit_question(question("# another source\ngoal = all(a,mem(a,a))"))
+        .admit_question(question("040101000000000100000000"))
         .await
         .unwrap();
     assert_eq!(
@@ -1092,12 +1099,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     let q = Formula::for_all(FreeVariable::new(1), p.clone());
     let r = Formula::for_all(FreeVariable::new(2), q.clone());
     let mut ids = vec![seed_id];
-    for (antecedent, consequent) in [(&p, &q), (&q, &r)] {
-        let source = format!(
-            "goal = {} proof: p0 = vacuous({}) return p0",
-            Formula::implies(antecedent.clone(), consequent.clone()).to_source(),
-            antecedent.to_source()
-        );
+    for antecedent in [&p, &q] {
+        let source = crate::test_inputs::proof(vec![ProofStep::VacuousUniversal {
+            formula: antecedent.clone().into(),
+        }]);
         let envelope = graph.author(&source).unwrap();
         ids.push(crate::hex(envelope.proof_id().unwrap().unwrap().as_bytes()));
         graph.ingest(envelope, Instant::now()).unwrap();
@@ -1118,8 +1123,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     ));
     let before = context(&handle).await;
     assert_eq!(before.checked_artifacts, 3);
-    let source = format!("goal = {}", r.to_source());
-    let result = handle.admit_question(question(&source)).await.unwrap();
+    let result = handle
+        .admit_question(crate::test_inputs::question(r.clone()))
+        .await
+        .unwrap();
     assert_eq!(
         result.assessment.prefilter.reason,
         Some(RejectionReason::KnownProof)
@@ -1155,7 +1162,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     limited.limits.certificate_steps = 4;
     admin.set_policy(limited).await.unwrap();
     let limited_context = context(&handle).await;
-    let exhausted = handle.admit_question(question(&source)).await.unwrap();
+    let exhausted = handle
+        .admit_question(crate::test_inputs::question(r.clone()))
+        .await
+        .unwrap();
     assert_eq!(
         exhausted.assessment.prefilter.reason,
         Some(RejectionReason::ExecutionLimit)
@@ -1184,17 +1194,16 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
     for cut in 0..4 {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
-        let source = format!(
-            "# original orientation\ngoal = not(not({}))",
-            question(SOLVED).core().to_source()
-        );
-        let question = question(&source);
+        let question = crate::test_inputs::question(naome_foundation::Formula::negate(
+            naome_foundation::Formula::negate(question(SOLVED).core().clone()),
+        ));
+        let source = question.to_hex();
         let mut local = Managed::new(None);
         local.attach_persistence(&directory.0).unwrap();
         let (root, batch) = graph.prepare_generated(PROOF, &[], &question).unwrap();
         let mut registry = local.registry.clone();
         registry
-            .insert(RegisteredQuestion::new(*question.source_hash(), question.core()).unwrap())
+            .insert(RegisteredQuestion::new(*question.record_id(), question.core()).unwrap())
             .unwrap();
         let delta = QuestionDelta {
             registry,
@@ -1246,11 +1255,11 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
             assert!(
                 local
                     .registry
-                    .contains_record(question.source_hash())
+                    .contains_record(question.record_id())
                     .unwrap()
             );
-            assert_eq!(local.known[question.source_hash()].source(), source);
-            assert!(!local.known[question.source_hash()].negation_parity());
+            assert_eq!(local.known[question.record_id()].to_hex(), source);
+            assert!(!local.known[question.record_id()].negation_parity());
         }
         local.recover_publications(&graph).unwrap();
         assert_eq!(local.registry.len(), usize::from(cut >= 1));
@@ -1266,7 +1275,7 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
         let question = question(&crate::checkpoint::tests::question_source(index));
         local
             .registry
-            .insert(RegisteredQuestion::new(*question.source_hash(), question.core()).unwrap())
+            .insert(RegisteredQuestion::new(*question.record_id(), question.core()).unwrap())
             .unwrap();
         local
             .persistence
@@ -1285,7 +1294,7 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
     let extra = question(&crate::checkpoint::tests::question_source(321));
     local
         .registry
-        .insert(RegisteredQuestion::new(*extra.source_hash(), extra.core()).unwrap())
+        .insert(RegisteredQuestion::new(*extra.record_id(), extra.core()).unwrap())
         .unwrap();
     local
         .persistence
@@ -1305,10 +1314,10 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
     assert!(!Arc::ptr_eq(&source, target));
     assert!(target.allocated_bytes().unwrap() < allocated);
     assert_eq!(local.registry.identity(), complete_identity);
-    assert!(local.registry.contains_record(extra.source_hash()).unwrap());
+    assert!(local.registry.contains_record(extra.record_id()).unwrap());
     assert_eq!(snapshot.identity(), identity);
     assert_eq!(snapshot.len(), 320);
-    assert!(!snapshot.contains_record(extra.source_hash()).unwrap());
+    assert!(!snapshot.contains_record(extra.record_id()).unwrap());
     drop(snapshot);
     drop(source);
     drop(local);
@@ -1327,7 +1336,7 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
     let (root, batch) = graph.prepare_generated(PROOF, &[], &selected).unwrap();
     let mut registry = local.registry.clone();
     registry
-        .insert(RegisteredQuestion::new(*selected.source_hash(), selected.core()).unwrap())
+        .insert(RegisteredQuestion::new(*selected.record_id(), selected.core()).unwrap())
         .unwrap();
     persistence::fail_next_exchange();
     assert!(
@@ -1368,7 +1377,7 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
     assert!(
         local
             .registry
-            .contains_record(selected.source_hash())
+            .contains_record(selected.record_id())
             .unwrap()
     );
 }

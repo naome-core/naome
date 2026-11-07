@@ -8,25 +8,9 @@
 //! derive forward contraposition. No hypotheses remain in either certificate.
 use super::*;
 
-enum Term {
-    A,
-    B,
-    Not(usize),
-    Implies(usize, usize),
-}
-enum Step {
-    K(usize, usize),
-    S(usize, usize, usize),
-    C(usize, usize),
-    Mp(usize, usize),
-}
-struct Schema {
-    terms: &'static [Term],
-    steps: &'static [Step],
-}
+use crate::derived::{COMMUTATION, Schema, Step, Term};
 use Step::*;
 use Term::*;
-mod commutation;
 mod contraposition;
 
 pub(super) fn commutation(
@@ -35,7 +19,7 @@ pub(super) fn commutation(
     b: &Formula,
     work: &mut Work,
 ) -> Result<Theorem, Failure> {
-    instantiate(&commutation::COMMUTATION, plan, a, b, work)
+    instantiate(&COMMUTATION, plan, a, b, work)
 }
 
 pub(super) fn contraposition(
@@ -133,3 +117,6 @@ fn instantiate(
     }
     outputs.pop().ok_or(INVALID)
 }
+
+#[cfg(test)]
+mod witness;

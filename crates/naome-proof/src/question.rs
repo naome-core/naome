@@ -8,25 +8,19 @@ pub const QUESTION_TARGET_MAX_NODES: usize = 1024;
 /// Maximum nested primitive nodes in each expanded target, counting the root.
 pub const QUESTION_TARGET_MAX_DEPTH: usize = 32;
 
-/// A rejected formal question source or canonical encoding.
+/// A rejected formal question encoding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionError {
-    Truncated,
-    TrailingBytes,
     Limit(&'static str),
     Invalid(&'static str),
-    Overflow,
     Mathematical(String),
 }
 
 impl fmt::Display for QuestionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Truncated => f.write_str("truncated question value"),
-            Self::TrailingBytes => f.write_str("trailing question bytes"),
             Self::Limit(name) => write!(f, "question limit exceeded: {name}"),
             Self::Invalid(reason) => write!(f, "invalid question: {reason}"),
-            Self::Overflow => f.write_str("question arithmetic overflow"),
             Self::Mathematical(reason) => write!(f, "invalid question formula: {reason}"),
         }
     }

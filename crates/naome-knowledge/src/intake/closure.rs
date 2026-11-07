@@ -77,7 +77,7 @@ impl Closure {
     pub(in crate::intake) fn prepare_certificates(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<CheckedBatch, crate::Error> {
         self.synchronize(graph)?;
         let candidates = self

@@ -37,6 +37,7 @@ pub fn inspect_certificate(
         context,
         IdentityMode::OmitDerivation,
         Some(query),
+        None,
     ) {
         Err(error) => error,
         Ok((conclusion, _, _)) if matches!(diagnostic.failure, Failure::TargetMismatch) => {
@@ -219,7 +220,6 @@ pub(crate) fn error(
             format: InputFormat::Certificate,
             digest: Digest::of(&certificate.to_canonical_bytes()),
             commands: certificate.steps().len() as u64,
-            source_digest: None,
         },
         context.snapshot_id(),
         u64::from(kind.step()),
@@ -459,7 +459,6 @@ pub fn target_mismatch_at_snapshot(
             format: InputFormat::Certificate,
             digest: Digest::of(&certificate.to_canonical_bytes()),
             commands: certificate.steps().len() as u64,
-            source_digest: None,
         },
         snapshot,
         certificate.steps().len() as u64 - 1,

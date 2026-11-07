@@ -17,6 +17,9 @@ use crate::{CheckError, ContextError, ContextView, statement_id};
 
 pub type Identity = [u8; 32];
 
+mod artifact;
+pub use artifact::{QUESTION_BYTES, QuestionOutcome, ResearchQuestion, ResolutionError};
+pub use naome_proof::{QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES, QuestionError};
 mod deduction;
 mod elementary;
 mod equivalence;

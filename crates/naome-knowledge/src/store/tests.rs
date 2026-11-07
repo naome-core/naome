@@ -9,7 +9,7 @@ use std::{
     time::Instant,
 };
 
-const SOURCE: &str = "goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
+const SOURCE: &str = "00000000020600000000210000000000000000";
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
@@ -33,9 +33,8 @@ fn fixtures() -> (Envelope, Envelope) {
     let parent = graph.author(SOURCE).unwrap();
     graph.ingest(parent.clone(), Instant::now()).unwrap();
     let child = graph
-        .author(&format!(
-            "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            parent.proof_id().unwrap().unwrap(),
         ))
         .unwrap();
     (parent, child)
@@ -785,9 +784,8 @@ fn non_root_batch_members_receive_full_catalog_validation_before_acceptance() {
     baseline.ingest(parent.clone(), Instant::now()).unwrap();
     baseline.ingest(child.clone(), Instant::now()).unwrap();
     let root = baseline
-        .author(&format!(
-            "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            crate::hex(child.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            child.proof_id().unwrap().unwrap(),
         ))
         .unwrap();
     baseline.ingest(root.clone(), Instant::now()).unwrap();
@@ -1093,7 +1091,7 @@ fn growing_live_commits_never_rescan_the_corpus_set() {
 fn generation_bound_membership_and_inventory_do_not_fetch_certificate_payloads() {
     let mut graph = Graph::default();
     let (_, result) = graph
-        .produce("goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(a,x) return b")
+        .produce("00000000020600000000210000000000000000")
         .unwrap();
     let before = super::catalog::payload_reads();
     assert!(graph.contains(result.id).unwrap());

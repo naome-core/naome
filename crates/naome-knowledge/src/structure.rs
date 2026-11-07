@@ -1,5 +1,5 @@
 //! Canonical bounded formula signals shared by research and training selection.
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_foundation::graph::Node;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ pub(crate) struct Features {
     pub(crate) family: u16,
 }
 impl Features {
-    pub(crate) fn of(question: &CompiledQuestion) -> Self {
+    pub(crate) fn of(question: &ResearchQuestion) -> Self {
         let mut counts = [0u16; SIGNALS];
         let _: Result<u8, std::convert::Infallible> = question.core().fold_graph(|node| {
             let tag = match node {

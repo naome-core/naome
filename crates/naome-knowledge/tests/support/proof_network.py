@@ -79,15 +79,102 @@ def program_id(manifest):
     return hashlib.sha256(framed).hexdigest()
 
 
+def program_integer(data, offset):
+    value = 0
+    for shift in range(0, 64, 7):
+        byte = data[offset]
+        offset += 1
+        assert shift < 63 or byte <= 1
+        value |= (byte & 127) << shift
+        if byte < 128:
+            assert shift == 0 or byte != 0
+            return value, offset
+    raise AssertionError("program integer overflow")
+
+
+def program_manifest(data):
+    commands, offset = program_integer(data, 0)
+    size, offset = program_integer(data, offset)
+    assert commands > 0 and size > 0 and len(data) == offset + 128
+    manifest = {"commands": commands, "input_bytes": size}
+    for index, field in enumerate(("program_hash", "stream_root", "conclusion", "statement")):
+        manifest[field] = list(data[offset + 32 * index:offset + 32 * (index + 1)])
+    return manifest
+
+
+def verify_program_record(data):
+    tag = data[0]
+    if tag == 18:
+        verify_scope_record(data)
+        return
+    fields = {
+        0: "vv", 1: "vv", 2: "r", 3: "rr", 4: "r",
+        5: "ha", 6: "tt", 7: "tt", 8: "r", 9: "rr", 10: "tr",
+        11: "ttr", 12: "rr", 13: "rrr", 14: "rr", 15: "trr", 16: "r",
+        17: "ttr", 19: "rt", 20: "t", 21: "ttr",
+        22: "z", 23: "h", 24: "rttt", 25: "rttttt", 26: "rr",
+        27: "rt", 28: "r", 29: "r",
+    }[tag]
+    offset = 1
+    for field in fields:
+        if field == "h":
+            offset += 32
+        elif field == "z":
+            assert data[offset] <= 6
+            offset += 1
+        else:
+            value, offset = program_integer(data, offset)
+            if field == "t":
+                assert value < (1 << 32)
+            elif field == "v":
+                assert value & 1 or value >> 1 < (1 << 32)
+            elif field == "a":
+                assert value <= 256
+                for _ in range(value):
+                    argument, offset = program_integer(data, offset)
+                    assert argument < (1 << 32)
+    assert offset == len(data)
+
+
+def verify_scope_record(data):
+    offset = 1
+
+    def integer(maximum):
+        nonlocal offset
+        value, offset = program_integer(data, offset)
+        assert value <= maximum
+        return value
+
+    assumptions = integer(32)
+    assert assumptions > 0
+    for _ in range(assumptions):
+        integer((1 << 64) - 1)
+    actions = integer(32)
+    for index in range(actions):
+        tag = data[offset]
+        offset += 1
+        earlier = assumptions + index - 1
+        integer(earlier)
+        if tag == 0:
+            integer((1 << 32) - 1)
+            for _ in range(integer(8)):
+                integer(earlier)
+        else:
+            assert tag == 1
+            integer(earlier)
+    integer(assumptions + actions - 1)
+    assert offset == len(data)
+
+
 def verify_program_input(catalog,manifest):
     identity=bytes.fromhex(program_artifact_id(manifest))
     saved=catalog.execute('SELECT manifest,received,input_bytes,hash,remaining FROM programs WHERE id=?',(identity,)).fetchone()
-    assert saved is not None and json.loads(saved[0])==manifest
+    assert saved is not None and program_manifest(saved[0])==manifest
     assert saved[1:]==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']),bytes(32))
     previous=bytes(32);count=0;size=0
     for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
         assert position==count and 0<len(command)<=4096
-        assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
+        verify_program_record(command)
         previous=hashlib.sha256(b'naome:proof-program'+previous+len(command).to_bytes(8,'big')+command).digest()
         assert chain==previous
         count+=1;size+=len(command)
@@ -125,26 +212,91 @@ def content_root(compatibility, ids):
         + len(ordered).to_bytes(8, "big") + current).hexdigest()
 
 
-def source(index):
-    # Derived schema consequences remain open in the supported finite filter;
-    # the receiver still checks every transmitted certificate and dependency.
-    a = "all(s,ex(r,all(e,iff(mem(e,r),and(mem(e,s),eq(e,e))))))"
-    b = "all(y, mem(y,y))"
+def u32(value):
+    return value.to_bytes(4, "big")
+
+
+def implication(left, right):
+    return b"\x03" + left + right
+
+
+def negate(formula):
+    return b"\x02" + formula
+
+
+def conjunction(left, right):
+    return negate(implication(left, negate(right)))
+
+
+def atom(tag, left, right, bound):
+    kind = b"\x01" if bound else b"\x00"
+    return bytes([tag]) + kind + u32(left) + kind + u32(right)
+
+
+def member_self():
+    return b"\x04" + atom(1, 0, 0, True)
+
+
+def formula_field(formula):
+    return u32(len(formula)) + formula
+
+
+def certificate(steps):
+    return (b"\x00" + u32(len(steps)) + b"".join(steps)).hex()
+
+
+def simplify(premise, extra):
+    return b"\x00" + formula_field(premise) + formula_field(extra)
+
+
+def mp(premise, implication):
+    return b"\x20" + u32(premise) + u32(implication)
+
+
+def quantified_reflexivity(count, padding=0):
+    offset = padding // 5
+    return certificate([b"\x06" + u32(0)] * (offset + 1) + [
+        b"\x21" + u32(offset + step) + u32(step) for step in range(count)
+    ])
+
+
+def separation_formula():
+    # Beneath forall(s), exists(r), forall(e), the roles have indices 2, 1, 0.
+    left = atom(1, 0, 1, True)
+    right = conjunction(atom(1, 0, 2, True), atom(0, 0, 0, True))
+    return b"\x04\x02\x04\x02\x04" + conjunction(
+        implication(left, right), implication(right, left))
+
+
+def fixture_premise(index):
+    formula = member_self()
     for bit in format(index, "b"):
-        b = f"not({b})" if bit == "1" else f"all(z,{b})"
-    statement = f"imp({b},{a})"
-    return (f'goal = {statement}\nproof:\n'
-            f'    p0 = sep(eq(e,e),e,s,r,parameters=[])\n'
-            f'    p1 = simp({a},{b})\n'
-            f'    p2 = mp(p0,p1)\n    return p2\n')
+        formula = (b"\x02" if bit == "1" else b"\x04") + formula
+    return formula
+
+
+def question_fixture(index):
+    return implication(fixture_premise(index), separation_formula()).hex()
+
+
+def source(index, padding=0):
+    premise = separation_formula()
+    steps = [b"\x06" + u32(0)] * (padding // 5)
+    start = len(steps)
+    steps += [
+        b"\x11" + formula_field(atom(0, 0, 0, False)) + u32(0) + u32(1) + u32(2) + u32(0),
+        simplify(premise, fixture_premise(index)),
+        mp(start, start + 1),
+    ]
+    return certificate(steps)
+
+
+def cite_and_weaken(proof_id, premise, extra):
+    return certificate([b"\x30" + bytes.fromhex(proof_id), simplify(premise, extra), mp(0, 1)])
 
 
 def inventory_source(depth, used):
     return source(100 + depth * (depth - 1) // 2 + used)
-
-
-def question_source(proof_source):
-    return 'goal = ' + proof_source.split("goal = ")[1].split("\n")[0]
 
 
 def stored_objects(node):
@@ -201,7 +353,7 @@ def stored_objects(node):
                 "obligation_proof": obligation.hex() if obligation is not None else None,
                 "compatibility": compatibility.hex(), "payload": payload.hex()}
             if payload.startswith(b'\xffNAOP\0'):
-                manifest=json.loads(payload[len(b'\xffNAOP\0'):])
+                manifest=program_manifest(payload[len(b'\xffNAOP\0'):])
                 assert program_artifact_id(manifest)==object['artifact_id'] and bytes(manifest['statement'])==statement
                 verify_program_input(catalog,manifest)
                 object['program_manifest']=manifest
@@ -257,7 +409,7 @@ class Node:
         self.serial, self.generation = 0, 0
         self.threads = []
 
-    def start(self, producer_sources=(), command_input=True, test_controls=True, network_config=None):
+    def start(self, producer_artifacts=(), command_input=True, test_controls=True, network_config=None):
         assert self.process is None or self.process.poll() is not None
         self.generation += 1
         event_offset = len(self.events)
@@ -266,7 +418,7 @@ class Node:
             "listen": f"/ip4/127.0.0.1/tcp/{self.port}",
             "peers": [{"id": other.identity, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}
                       for other in self.driver.nodes if other is not self],
-            "producer_sources": list(producer_sources),
+            "producer_artifacts": list(producer_artifacts),
             "discovery": {"mdns": False, "dht": False},
         }
         if network_config is not None:
@@ -289,8 +441,8 @@ class Node:
                                                "config_bytes": path.stat().st_size,
                                                "config_sha256": digest(path),
                                                "command_input": "pipe" if command_input else "closed",
-                                               "producer_source_count": len(config["producer_sources"]),
-                                               "producer_source_bytes": sum(len(s.encode()) for s in config["producer_sources"])})
+                                               "producer_source_count": len(config["producer_artifacts"]),
+                                               "producer_source_bytes": sum(len(s) // 2 for s in config["producer_artifacts"])})
         for name, stream in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:
             log = self.driver.output / f"node-{self.index}-{self.generation}.{name}.jsonl"
             thread = threading.Thread(target=self.read, args=(name, stream, log), daemon=True)
@@ -526,7 +678,7 @@ class Driver:
         return object["artifact_id"]
 
     def produce(self, node, depth, label):
-        result = self.nodes[node].command("produce", source=source(depth))
+        result = self.nodes[node].command("produce", artifact=source(depth))
         assert result["result"]["status"] == "accepted"
         object = result["object"]
         self.retain_proof(label, object)
@@ -561,7 +713,7 @@ class Driver:
             for depth in range(1, 35):
                 for used in range(depth):
                     self.check_deadline()
-                    result = self.nodes[0].command("produce", source=inventory_source(depth, used))
+                    result = self.nodes[0].command("produce", artifact=inventory_source(depth, used))
                     assert result["result"]["status"] == "accepted"
                     ids.append(result["object"]["artifact_id"])
             assert len(ids) == len(set(ids)) == 595
@@ -604,8 +756,7 @@ class Driver:
             initial = []
             for index, node in enumerate(self.nodes):
                 reservations[index].close()
-                producer_source = source(index + 1)
-                producer_source += "\n" * (65536 - len(producer_source.encode()))
+                producer_source = source(index + 1, padding=64000)
                 node.start([producer_source])
                 node.command("links", peers=[])
             assert len({node.identity for node in self.nodes}) == 4
@@ -618,14 +769,12 @@ class Driver:
                 object = node.command("object", id=id)["object"]
                 initial.append(self.retain_proof(f"independent-{index}", object))
             assert len(set(initial)) == 4
-            escaped_source = source(1)
-            escaped_source += "#" + "\u0001" * (65536 - len(escaped_source.encode()) - 2) + "\n"
-            escaped_result = self.nodes[0].command("produce", source=escaped_source)
-            assert escaped_result["result"]["status"] == "duplicate"
-            assert escaped_result["object"]["artifact_id"] == initial[0]
-            self.summary["scenarios"]["full_source_with_worst_case_command_escaping"] = {
-                "result": "pass", "source_bytes": len(escaped_source.encode()),
-                "json_source_bytes": len(json.dumps(escaped_source).encode()),
+            padded = source(1, padding=64000)
+            duplicate = self.nodes[0].command("produce", artifact=padded)
+            assert duplicate["result"]["status"] == "duplicate"
+            assert duplicate["object"]["artifact_id"] == initial[0]
+            self.summary["scenarios"]["large_canonical_command_normalizes_duplicate"] = {
+                "result": "pass", "input_bytes": len(padded) // 2,
                 "artifact_id": initial[0], "status": "duplicate",
             }
             started = time.monotonic()
@@ -636,10 +785,9 @@ class Driver:
             # A missing helper leaves no checked/pending/durable orphan.
             self.topology([[0], [1, 3], [2]])
             parent = self.produce(0, 7, "delayed-parent")
-            premise = question_source(source(7)).split("goal = ")[1]
-            b = "all(z,mem(z,z))"
-            child_source = f'goal = imp({b},{premise})\nproof: p0 = cite("{citation_id(parent)}") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2'
-            compiled_child = self.nodes[0].command("produce", source=child_source)
+            premise = bytes.fromhex(question_fixture(7))
+            child_source = cite_and_weaken(citation_id(parent), premise, member_self())
+            compiled_child = self.nodes[0].command("produce", artifact=child_source)
             child = compiled_child["object"]
             metadata = compiled_child["metadata"]
             self.retain_proof("dependent", child)
@@ -674,8 +822,8 @@ class Driver:
             controls = []
             for index, label in enumerate(["malformed", "claimed_id", "compatibility", "mathematical", "statement"]):
                 proof_source = source(50 + index)
-                object = self.nodes[0].command("test_compile", source=proof_source)["object"]
-                q = question_source(proof_source)
+                object = self.nodes[0].command("test_check", artifact=proof_source)["object"]
+                q = question_fixture(50 + index)
                 if label == "malformed":
                     object["payload"] = "0000000001ff"
                     expected_error = "malformed certificate"
@@ -690,9 +838,9 @@ class Driver:
                     expected_error = "mp.expected_implication"
                 else:
                     unrelated_source = source(60)
-                    unrelated = self.nodes[0].command("test_compile", source=unrelated_source)["object"]
+                    unrelated = self.nodes[0].command("test_check", artifact=unrelated_source)["object"]
                     object["statement_id"] = unrelated["statement_id"]
-                    q = question_source(unrelated_source)
+                    q = question_fixture(60)
                     expected_error = "checked identity mismatch"
                 if label != "claimed_id":
                     object["artifact_id"] = artifact_id(object["statement_id"], object["payload"])

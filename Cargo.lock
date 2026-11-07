@@ -2375,22 +2375,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "naome-authoring"
-version = "0.1.0-alpha.1"
-dependencies = [
- "naome-checker",
- "naome-foundation",
- "naome-proof",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.1",
-]
-
-[[package]]
 name = "naome-checker"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "hex",
  "naome-foundation",
  "naome-proof",
  "rusqlite",
@@ -2409,7 +2397,6 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "libp2p",
  "lz4_flex",
- "naome-authoring",
  "naome-checker",
  "naome-foundation",
  "naome-proof",

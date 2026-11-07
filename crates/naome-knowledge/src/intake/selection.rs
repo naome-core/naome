@@ -16,14 +16,14 @@ struct Pending {
 }
 pub(super) struct Selection {
     root: ArtifactId,
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     initial: Option<QuestionAssessment>,
     final_assessment: Option<QuestionAssessment>,
     pending: Option<Pending>,
     until: Instant,
 }
 impl Selection {
-    pub(super) fn new(root: ArtifactId, question: CompiledQuestion) -> Self {
+    pub(super) fn new(root: ArtifactId, question: ResearchQuestion) -> Self {
         Self {
             root,
             question,
@@ -33,7 +33,7 @@ impl Selection {
             until: Instant::now(),
         }
     }
-    pub(super) fn question(&self) -> &CompiledQuestion {
+    pub(super) fn question(&self) -> &ResearchQuestion {
         &self.question
     }
     #[cfg(test)]
@@ -57,7 +57,7 @@ impl Selection {
         deadline: Instant,
     ) -> Result<bool, crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         if self.pending.is_some() {
@@ -95,7 +95,7 @@ impl Selection {
         questions: &mut LocalQuestions<F>,
     ) -> Result<Option<SelectionStage>, crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let Some(pending) = &mut self.pending else {
@@ -144,7 +144,7 @@ impl Selection {
         questions: &mut LocalQuestions<F>,
     ) -> Result<crate::question::QuestionDelta, crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         if self
@@ -169,7 +169,7 @@ impl Selection {
         batch: CheckedBatch,
     ) -> Result<Vec<ArtifactId>, crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         if transfer.root() != self.root {
@@ -198,7 +198,7 @@ impl Selection {
         questions: &mut LocalQuestions<F>,
     ) -> Result<bool, crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let valid = self

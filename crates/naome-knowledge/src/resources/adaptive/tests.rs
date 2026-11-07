@@ -91,21 +91,20 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
         return;
     }
     use crate::{Graph, question::LocalQuestions, runtime::Control};
-    use naome_authoring::CompiledQuestion;
+    use naome_checker::question::ResearchQuestion;
     use serde_json::{Value, json};
     use std::time::{Duration, Instant};
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixStream,
     };
-    const SOURCE: &str = "goal=all(x,eq(x,x)) proof: p0=refl(x) p1=gen(p0,x) return p1";
+    const SOURCE: &str = "00000000020600000000210000000000000000";
     let mut producer = Graph::default();
     let parent = producer.author(SOURCE).unwrap();
     producer.ingest(parent.clone(), Instant::now()).unwrap();
     let child = producer
-        .author(&format!(
-            "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
-            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            parent.proof_id().unwrap().unwrap(),
         ))
         .unwrap();
     let directory = crate::checkpoint::tests::Directory::new();
@@ -114,17 +113,17 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
         graph.ingest(child, Instant::now()).unwrap().status,
         "waiting"
     );
-    let target = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let target = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &target).unwrap();
     graph
         .commit_batch(id, batch, Instant::now() + Duration::from_secs(30))
         .unwrap();
     assert_eq!(graph.pending_count().unwrap(), 1);
-    let target = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    let target = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
     let source = crate::mocks::create_proof(&target).unwrap();
     let (prepared, batch) = graph.prepare_generated(&source, &[], &target).unwrap();
     let mut questions = LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
-    let unanswered = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    let unanswered = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(questions.generation_decision(&graph, &unanswered).passed());
     let (_, selected) = questions.begin_exchange(
         &graph,

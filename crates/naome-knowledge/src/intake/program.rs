@@ -95,6 +95,14 @@ impl Programs {
                     || root.closure.busy())
         })
     }
+    pub(super) fn preparing_admission(&self) -> bool {
+        self.active.as_ref().is_some_and(|root| {
+            root.allowed
+                && !root.refresh
+                && root.offer.transfer.live(Instant::now())
+                && matches!(&root.stage, Stage::Prepare(prepared) if !prepared.pending())
+        })
+    }
     fn enqueue(
         &mut self,
         peer: PeerId,
@@ -223,7 +231,7 @@ impl Programs {
         questions: &mut LocalQuestions<F>,
     ) -> Progress
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         self.declined.retain(|_, until| *until > Instant::now());

@@ -762,8 +762,8 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
     *configured = serde_json::json!(directory);
     let config: network::Config =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
-    if !config.producer_sources.is_empty() {
-        return Err("producer_sources is a developer-only operation; ordinary runtime owns autonomous research".into());
+    if !config.producer_artifacts.is_empty() {
+        return Err("producer_artifacts is a developer-only operation; ordinary runtime owns autonomous research".into());
     }
     Ok((config, intervals.validate()?))
 }

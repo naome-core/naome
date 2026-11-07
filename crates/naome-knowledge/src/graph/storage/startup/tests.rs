@@ -68,13 +68,8 @@ fn budget(cache: usize) {
 }
 fn object(graph: &crate::Graph, parent: Option<&crate::Envelope>) -> crate::Envelope {
     let source = parent
-        .map(|p| {
-            format!(
-                "goal=all(x,eq(x,x)) proof:p0=cite(\"{}\") return p0",
-                crate::hex(p.proof_id().unwrap().unwrap().as_bytes())
-            )
-        })
-        .unwrap_or_else(|| "goal=all(x,eq(x,x)) proof:p0=refl(x) p1=gen(p0,x) return p1".into());
+        .map(|p| crate::test_inputs::cite(p.proof_id().unwrap().unwrap()))
+        .unwrap_or_else(|| "00000000020600000000210000000000000000".into());
     graph.author(&source).unwrap()
 }
 fn corpus(directory: &Path, count: usize) -> (Vec<crate::Envelope>, [u8; 32], [u8; 32]) {

@@ -23,7 +23,7 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
     let receiver = ConfigFile::new();
     let mut graph = Graph::open(&sender.0).unwrap();
     let (relation, _) = graph
-        .produce("def self_equal = relation(x): eq(x,x)")
+        .produce("0100000000010000000b0000000000000000000000")
         .unwrap();
     let digits: String =
         include_str!("../../../../naome-checker/src/tests/fixtures/identity_unique.proof.hex")
@@ -39,7 +39,7 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
     .envelope();
     graph.ingest(witness, Instant::now()).unwrap();
     let (function, _) = graph
-        .produce("def identity = function(input,output): eq(output,input)")
+        .produce(&crate::test_inputs::identity_function())
         .unwrap();
     let mut work =
         crate::proof_work::Work::open(&sender.0.join("definition-program.sqlite3")).unwrap();
@@ -135,7 +135,7 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
             dht: false,
             ..Default::default()
         }),
-        producer_sources: Vec::new(),
+        producer_artifacts: Vec::new(),
     };
     let (sender_handle, sender_admin, inbox) = crate::question::channel();
     let sender_task = tokio::spawn(run_with_questions(
@@ -182,15 +182,25 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
     assert_eq!(replayed.content_root(), expected_root);
     for definition in [relation, function] {
         let id = definition.definition_id().unwrap().unwrap();
-        let alias = if definition.obligation_proof.is_some() {
-            "eq(d(x),x)"
+        use naome_proof::{DefinedFormula, ProofFormula, ProofStep};
+        let x = crate::test_inputs::variable(0);
+        let arguments = if definition.obligation_proof.is_some() {
+            vec![x, x]
         } else {
-            "d(x)"
+            vec![x]
         };
-        let source = format!(
-            "defs: d=\"{}\" goal=all(x,imp({alias},imp({alias},{alias}))) proof: p0=simp({alias},{alias}) p1=gen(p0,x) return p1",
-            crate::hex(id.as_bytes())
-        );
+        let atom =
+            ProofFormula::from_defined(DefinedFormula::defined_relation(id, arguments)).unwrap();
+        let source = crate::test_inputs::proof(vec![
+            ProofStep::Simplification {
+                antecedent: atom.clone(),
+                consequent: atom,
+            },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: x,
+            },
+        ]);
         assert_eq!(replayed.produce(&source).unwrap().1.status, "accepted");
     }
 }

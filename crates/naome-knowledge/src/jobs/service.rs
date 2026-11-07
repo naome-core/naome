@@ -1081,7 +1081,7 @@ fn failure_detail(error: &str) -> String {
 fn output_reservation(input: &Input) -> usize {
     match input {
         Input::Solve { .. } => 6 * crate::resources::limits().closure_bytes + 1024,
-        Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
+        Input::Find { .. } => 6 * naome_checker::question::QUESTION_BYTES + 128,
         Input::Select { .. } => 64,
     }
 }

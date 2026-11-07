@@ -109,7 +109,7 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
     Ok(Ok(Loaded {
         example: Example {
             input: Problem {
-                question: question.source().into(),
+                question: question.to_hex(),
                 context: ordered,
             },
             target: Target { proof, refuted },

@@ -3,8 +3,10 @@ use super::*;
 mod automatic_pause;
 #[cfg(feature = "system-tests")]
 mod definitions;
+#[cfg(unix)]
+mod typed_proof;
 use libp2p::tcp;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct ConfigFile(PathBuf);
@@ -107,14 +109,14 @@ fn full_producer_queue_loads_with_worst_case_json_escaping() {
         "directory": "node",
         "listen": "/ip4/127.0.0.1/tcp/0",
         "peers": [],
-        "producer_sources": sources
+        "producer_artifacts": sources
     }))
     .unwrap();
     assert!(encoded.len() > 6 * crate::resources::limits().proof_bytes);
     assert!(encoded.len() < crate::resources::limits().network_config_bytes);
     std::fs::write(file.path(), &encoded).unwrap();
     let loaded = read_config(&file.path()).unwrap();
-    assert_eq!(loaded.producer_sources, sources);
+    assert_eq!(loaded.producer_artifacts, sources);
     assert_eq!(loaded.directory, file.0.join("node"));
 }
 
@@ -184,13 +186,13 @@ async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
             dht: false,
             ..Default::default()
         }),
-        producer_sources: Vec::new(),
+        producer_artifacts: Vec::new(),
     };
     let mut sender_graph = Graph::open(&sender_dir).unwrap();
     let object = sender_graph
         .author(
             &crate::mocks::create_proof(
-                &CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap(),
+                &ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap(),
             )
             .unwrap(),
         )
@@ -234,7 +236,7 @@ async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
         ),
         false,
         receiver_inbox,
-        Some(move |question: naome_authoring::CompiledQuestion| {
+        Some(move |question: naome_checker::question::ResearchQuestion| {
             let selected = *question.resolution_id() == target;
             let first = selected && observed.fetch_add(1, Ordering::SeqCst) == 0;
             let started = started.clone();
@@ -526,7 +528,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         artifact_id: object.artifact_id.clone(),
         proof_id: hex(object.proof_id().unwrap().unwrap().as_bytes()),
         statement_id: object.statement_id.clone().unwrap(),
-        question: "goal = all(x,eq(x,x))".into(),
+        question: "040001000000000100000000".into(),
     };
     let busy = shared.busy.clone();
     let owner = std::thread::spawn(move || {

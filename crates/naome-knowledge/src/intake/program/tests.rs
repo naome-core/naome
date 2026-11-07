@@ -64,7 +64,7 @@ fn progress_state(intake: &Intake) -> String {
     });
     format!("program={program:?}, certificate={certificate:?}")
 }
-fn accepting(_: CompiledQuestion) -> Ready<Result<bool, String>> {
+fn accepting(_: ResearchQuestion) -> Ready<Result<bool, String>> {
     ready(Ok(true))
 }
 fn budget() -> Budget {
@@ -409,9 +409,9 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
     ];
     let encoded = commands
         .iter()
-        .map(|command| serde_json::to_vec(command).unwrap())
+        .map(|command| naome_proof::program::encode_command(command).unwrap())
         .collect::<Vec<_>>();
-    let question = CompiledQuestion::compile(&question_source()).unwrap();
+    let question = ResearchQuestion::from_hex(&question_source()).unwrap();
     let statement = naome_proof::StatementId::of_canonical_formula(
         &question.positive_target().encode_canonical().unwrap(),
     )
@@ -508,11 +508,17 @@ async fn cited_program_and_parent_commit_together_and_final_decline_publishes_ne
         let proof = source(&producer);
         publish(&mut producer, &proof);
         let helper = proof.proof().unwrap().manifest().artifact_id();
-        let statement = CompiledQuestion::compile(&question_source())
+        let statement = ResearchQuestion::from_hex(&question_source())
             .unwrap()
             .positive_target()
-            .to_source();
-        let parent=producer.author(&format!("goal = imp(all(y,mem(y,y)),{statement}) proof: p0 = cite(\"{}\") p1 = simp({statement},all(y,mem(y,y))) p2 = mp(p0,p1) return p2",crate::hex(proof.proof().unwrap().manifest().proof_id().as_bytes()))).unwrap();
+            .clone();
+        let parent = producer
+            .author(&crate::test_inputs::weaken_citation(
+                proof.proof().unwrap().manifest().proof_id(),
+                statement,
+                crate::test_inputs::member_self(),
+            ))
+            .unwrap();
         let root = ArtifactId::from_bytes(crate::object::id_bytes(&parent.artifact_id).unwrap());
         producer.ingest(parent.clone(), Instant::now()).unwrap();
         let mut receiver = Graph::default();
@@ -520,7 +526,7 @@ async fn cited_program_and_parent_commit_together_and_final_decline_publishes_ne
         let peer = PeerId::random();
         let calls = Arc::new(AtomicUsize::new(0));
         let decisions = calls.clone();
-        let mut questions = LocalQuestions::new(Some(move |_: CompiledQuestion| {
+        let mut questions = LocalQuestions::new(Some(move |_: ResearchQuestion| {
             ready(Ok(!decline || decisions.fetch_add(1, Ordering::SeqCst) == 0))
         }));
         intake

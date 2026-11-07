@@ -3,7 +3,7 @@
 use super::{self as checker, Error, Value};
 use crate::{ArtifactState, ContextView, context::ProgramSource};
 use naome_foundation::{
-    Formula,
+    Formula, FreeVariable,
     construction::Expression,
     graph::{Node, Properties, Transform, Variable},
 };
@@ -12,6 +12,7 @@ use naome_proof::program::{Command, RECORD_BYTES};
 use naome_proof::{DerivationId, ProofId, StatementId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
+use std::sync::Arc;
 
 fn sql<T>(value: rusqlite::Result<T>) -> Result<T, Error> {
     value.map_err(Error::Storage)
@@ -35,6 +36,9 @@ mod diagnostics;
 use definitions::DefinitionEvaluation;
 mod materialization;
 mod references;
+mod scoped;
+#[cfg(test)]
+mod typed_actions;
 use materialization::{Finalization, Shape};
 pub use references::ProgramDependency;
 
@@ -67,6 +71,24 @@ pub struct Engine {
     context_snapshot: Option<[u8; 32]>,
     context_consistent: bool,
     reference_snapshot: Option<[u8; 32]>,
+    handle_scope: Arc<()>,
+}
+
+/// A fact from the checked prefix of one live evaluator. Its position is
+/// portable only inside that evaluator's exact serialized program.
+#[derive(Clone, Debug)]
+pub struct CheckedFact {
+    position: u64,
+    scope: Arc<()>,
+}
+
+/// The outer connective of a checked fact, for selecting rule operands
+/// without materializing a possibly large formula tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactShape {
+    Universal,
+    Implication,
+    Other,
 }
 #[derive(Clone, Copy)]
 struct Export {
@@ -88,6 +110,21 @@ impl CheckedProgram {
     }
     pub fn conclusion(&self) -> Option<&Formula> {
         self.canonical.as_ref()
+    }
+    /// A checked result in the original command order.
+    pub fn result_digest(&self, position: u64) -> Result<([u8; 32], bool), Error> {
+        self.engine.result_digest(position)
+    }
+    /// The primitive instantiation axiom checked inside a fused instruction.
+    /// The axiom is trace output and has no address as a program operand.
+    pub fn instantiation_digest(&self, position: u64) -> Result<[u8; 32], Error> {
+        self.engine.live()?;
+        let axiom = sql(self.engine.connection.query_row(
+            "SELECT axiom FROM checked_instantiation WHERE position=?1",
+            [number(position)?],
+            |row| unsigned(row, 0),
+        ))?;
+        Ok(self.engine.load(axiom)?.1)
     }
     /// Changes only volatile SQLite caches; the complete checked result remains immutable.
     pub fn restrict_cache(&mut self, bytes: u64) -> Result<(), Error> {
@@ -172,11 +209,14 @@ struct Evaluation {
     reference: Option<ProgramSource>,
     reference_depth: u64,
     definition: Option<DefinitionEvaluation>,
+    instantiation_axiom: Option<usize>,
+    deduction: Option<scoped::Preparation>,
 }
 enum Operation {
     Definition,
     Reference(ProofId),
     Input(u64),
+    Graph(Node<u64>),
     Equal(u32, u32),
     Member(u32, u32),
     Not(usize),
@@ -184,6 +224,11 @@ enum Operation {
     Bind(usize, u32),
     Vacuous(usize),
     Substitute(usize, u32, u32),
+    OpenUniversal(usize, u32),
+    Apply {
+        premise: usize,
+        implication: usize,
+    },
     AssertEqual {
         register: usize,
         expected: u64,
@@ -191,24 +236,35 @@ enum Operation {
         role: crate::diagnostics::OperandRole,
     },
 }
-fn compile(expression: Expression<u64>, operations: &mut Vec<Operation>) -> usize {
-    let operation = match expression {
-        Expression::Input(f) => Operation::Input(f),
-        Expression::Equal(a, b) => Operation::Equal(a.identifier(), b.identifier()),
-        Expression::Member(a, b) => Operation::Member(a.identifier(), b.identifier()),
-        Expression::Not(a) => Operation::Not(compile(*a, operations)),
-        Expression::Implies(a, b) => {
-            Operation::Implies(compile(*a, operations), compile(*b, operations))
-        }
-        Expression::ForAll(v, a) => Operation::Bind(compile(*a, operations), v.identifier()),
-        Expression::Vacuous(a) => Operation::Vacuous(compile(*a, operations)),
-        Expression::Substitute(a, b, f) => {
-            Operation::Substitute(compile(*f, operations), a.identifier(), b.identifier())
-        }
-    };
+fn push(operations: &mut Vec<Operation>, operation: Operation) -> usize {
     let result = operations.len();
     operations.push(operation);
     result
+}
+
+fn compile<F>(
+    expression: Expression<F>,
+    operations: &mut Vec<Operation>,
+    input: &impl Fn(F, &mut Vec<Operation>) -> usize,
+) -> usize {
+    let operation = match expression {
+        Expression::Input(f) => return input(f, operations),
+        Expression::Equal(a, b) => Operation::Equal(a.identifier(), b.identifier()),
+        Expression::Member(a, b) => Operation::Member(a.identifier(), b.identifier()),
+        Expression::Not(a) => Operation::Not(compile(*a, operations, input)),
+        Expression::Implies(a, b) => Operation::Implies(
+            compile(*a, operations, input),
+            compile(*b, operations, input),
+        ),
+        Expression::ForAll(v, a) => Operation::Bind(compile(*a, operations, input), v.identifier()),
+        Expression::Vacuous(a) => Operation::Vacuous(compile(*a, operations, input)),
+        Expression::Substitute(a, b, f) => Operation::Substitute(
+            compile(*f, operations, input),
+            a.identifier(),
+            b.identifier(),
+        ),
+    };
+    push(operations, operation)
 }
 
 impl Engine {
@@ -386,6 +442,62 @@ impl Engine {
         let value = checker::Context::previous(self, position)?;
         Ok((self.load(value.formula)?.1, value.proved))
     }
+    /// Resolve an earlier checked, proved command and inspect its outer shape.
+    pub fn checked_fact(&self, position: u64) -> Result<(CheckedFact, FactShape), Error> {
+        self.live()?;
+        if position >= self.cursor {
+            return Err("fact is outside the checked program prefix".into());
+        }
+        let value = checker::Context::previous(self, position)?;
+        if !value.proved {
+            return Err("program result is not a proved fact".into());
+        }
+        let shape = match self.load(value.formula)?.0 {
+            Node::ForAll(_) => FactShape::Universal,
+            Node::Implies(..) => FactShape::Implication,
+            _ => FactShape::Other,
+        };
+        Ok((
+            CheckedFact {
+                position,
+                scope: Arc::clone(&self.handle_scope),
+            },
+            shape,
+        ))
+    }
+
+    /// Return the Foundation formula of an earlier result when it fits the
+    /// ordinary bounded tree codec. Graph-backed facts can still be used by
+    /// handle when no bounded tree exists.
+    pub fn result_formula(&self, position: u64) -> Result<Option<Formula>, Error> {
+        self.live()?;
+        let value = checker::Context::previous(self, position)?;
+        format::bounded_formula(value.formula, |id| {
+            self.load(id).map(|value| value.0).map_err(Into::into)
+        })
+        .map_err(Into::into)
+    }
+
+    /// Select a checked universal fact and a free local term. Append the
+    /// instantiation axiom and modus ponens as one durable instruction.
+    /// The returned position becomes a fact only after ordinary evaluation.
+    pub fn instantiate(
+        &mut self,
+        fact: &CheckedFact,
+        replacement: FreeVariable,
+    ) -> Result<u64, Error> {
+        self.live()?;
+        if !Arc::ptr_eq(&self.handle_scope, &fact.scope) {
+            return Err("fact handle belongs to a different proof evaluator".into());
+        }
+        if self.checked_fact(fact.position)?.1 != FactShape::Universal {
+            return Err("instantiation requires a universal fact".into());
+        }
+        self.append(&Command::Instantiate {
+            premise: fact.position,
+            replacement: replacement.identifier(),
+        })
+    }
     /// The caller owns file locks, native identity, resource leases and SQL
     /// connection configuration. Only this evaluator can issue CheckedProgram.
     pub fn open(mut connection: Connection) -> Result<Self, Error> {
@@ -394,6 +506,7 @@ impl Engine {
         // Small temporary pages keep its disk-backed cache from rounding to zero.
         sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp.page_size=512;
             CREATE TEMP TABLE checked(position INTEGER PRIMARY KEY, node INTEGER NOT NULL, proved INTEGER NOT NULL);
+            CREATE TEMP TABLE checked_instantiation(position INTEGER PRIMARY KEY, axiom INTEGER NOT NULL);
             CREATE TEMP TABLE authenticated_node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL, nodes INTEGER NOT NULL, bytes INTEGER NOT NULL, depth INTEGER NOT NULL);
             CREATE TEMP TABLE verified(source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, PRIMARY KEY(source,depth)) WITHOUT ROWID;
             CREATE TEMP TABLE stack(sequence INTEGER PRIMARY KEY, source INTEGER NOT NULL, depth INTEGER NOT NULL);"))?;
@@ -416,6 +529,7 @@ impl Engine {
             context_snapshot: None,
             context_consistent: true,
             reference_snapshot: None,
+            handle_scope: Arc::new(()),
         })
     }
     fn live(&self) -> Result<(), Error> {
@@ -629,6 +743,8 @@ impl Engine {
                     });
                 }
                 let mut definition = None;
+                let mut instantiation_axiom = None;
+                let mut deduction = None;
                 match plan.construction {
                     checker::Construction::Definition(definition_id, arguments) => {
                         definition = Some(self.begin_definition(
@@ -641,7 +757,25 @@ impl Engine {
                         operations.push(Operation::Definition);
                     }
                     checker::Construction::Formula(expression) => {
-                        compile(expression, &mut operations);
+                        compile(expression, &mut operations, &|id, ops| {
+                            push(ops, Operation::Input(id))
+                        });
+                    }
+                    checker::Construction::Graph(node) => operations.push(Operation::Graph(node)),
+                    checker::Construction::Instantiation {
+                        universal,
+                        replacement,
+                    } => {
+                        let universal = push(&mut operations, Operation::Input(universal));
+                        instantiation_axiom =
+                            Some(scoped::instantiate(&mut operations, universal, replacement).0);
+                    }
+                    checker::Construction::Deduction {
+                        assumptions,
+                        actions,
+                        result,
+                    } => {
+                        deduction = Some(scoped::Preparation::new(assumptions, actions, result));
                     }
                     checker::Construction::Reference(proof) => {
                         operations.push(Operation::Reference(proof));
@@ -659,6 +793,8 @@ impl Engine {
                     reference: None,
                     reference_depth: 0,
                     definition,
+                    instantiation_axiom,
+                    deduction,
                 });
                 sql(self
                     .connection
@@ -666,6 +802,14 @@ impl Engine {
             }
             self.last_quantum_steps += 1;
             let mut active = self.active.take().expect("active command");
+            if let Some(mut deduction) = active.deduction.take() {
+                if !deduction.advance(self, &mut active.operations)? {
+                    active.deduction = Some(deduction);
+                }
+                self.active = Some(active);
+                progress = true;
+                continue;
+            }
             if let Some(value) = self.operation(&mut active, context, query)? {
                 active.registers.push(value);
                 active.position += 1;
@@ -696,6 +840,12 @@ impl Engine {
                     "INSERT INTO checked VALUES(?1,?2,?3)",
                     params![number(self.cursor)?, number(node)?, active.proved],
                 ))?;
+                if let Some(axiom) = active.instantiation_axiom {
+                    sql(self.connection.execute(
+                        "INSERT INTO checked_instantiation VALUES(?1,?2)",
+                        params![number(self.cursor)?, number(active.registers[axiom])?],
+                    ))?;
+                }
                 self.cursor = self
                     .cursor
                     .checked_add(1)
@@ -740,10 +890,24 @@ impl Engine {
                 self.load(id)?;
                 return Ok(Some(id));
             }
+            Operation::Graph(node) => node,
             Operation::Equal(a, b) => Node::Equal(Variable::Free(a), Variable::Free(b)),
             Operation::Member(a, b) => Node::Member(Variable::Free(a), Variable::Free(b)),
             Operation::Not(a) => Node::Not(r[a]),
             Operation::Implies(a, b) => Node::Implies(r[a], r[b]),
+            Operation::Apply {
+                premise,
+                implication,
+            } => {
+                let Node::Implies(antecedent, consequent) = self.load(r[implication])?.0 else {
+                    return Err("composed application requires an implication".into());
+                };
+                if antecedent != r[premise] {
+                    return Err("composed modus ponens antecedent mismatch".into());
+                }
+                return Ok(Some(consequent));
+            }
+
             Operation::Vacuous(a) => Node::ForAll(r[a]),
             Operation::AssertEqual {
                 register,
@@ -773,6 +937,12 @@ impl Engine {
                 let source = r[a];
                 return self.transform(evaluation, source, Transform::Substitute { from, to });
             }
+            Operation::OpenUniversal(universal, replacement) => {
+                let Node::ForAll(body) = self.load(r[universal])?.0 else {
+                    return Err("scoped instantiation requires a universal fact".into());
+                };
+                return self.transform(evaluation, body, Transform::Open(replacement));
+            }
         };
         self.intern(node).map(Some)
     }
@@ -794,8 +964,8 @@ impl Engine {
     ) -> Result<Option<Node<u64>>, Error> {
         let (node, _, properties) = self.load(source)?;
         // Properties come from this owner's replay, including authenticated
-        // children. These transforms only replace free variables.
-        if !properties.has_free_variables {
+        // children. An unaffected subgraph can be reused without descending.
+        if !transform.affects(properties, depth) {
             return Ok(Some(node));
         }
         let nested = node
@@ -1145,20 +1315,29 @@ impl checker::Context for Engine {
     type Formula = u64;
     type Error = Error;
     fn previous(&self, index: u64) -> Result<Value<u64>, Error> {
+        let value = self.previous_node(index)?;
+        if self.load(value.formula)?.2.required_binders != 0 {
+            return Err("program formula has dangling bound variables".into());
+        }
+        Ok(value)
+    }
+    fn previous_node(&self, index: u64) -> Result<Value<u64>, Error> {
         let (formula, proved) = sql(self.connection.query_row(
             "SELECT node,proved FROM checked WHERE position=?1",
             [number(index)?],
             |r| Ok((unsigned(r, 0)?, r.get(1)?)),
         ))?;
-        let (_, _, p) = self.load(formula)?;
-        if p.required_binders != 0 {
-            return Err("program formula has dangling bound variables".into());
-        }
         Ok(Value { formula, proved })
     }
     fn implication(&self, formula: u64) -> Result<Option<(u64, u64)>, Error> {
         Ok(match self.load(formula)?.0 {
             Node::Implies(a, b) => Some((a, b)),
+            _ => None,
+        })
+    }
+    fn universal_body(&self, formula: u64) -> Result<Option<u64>, Error> {
+        Ok(match self.load(formula)?.0 {
+            Node::ForAll(body) => Some(body),
             _ => None,
         })
     }

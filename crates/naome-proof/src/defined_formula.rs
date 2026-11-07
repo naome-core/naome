@@ -32,7 +32,7 @@ const BOUND_VARIABLE: u8 = 0x01;
 pub struct DefinedFormula(Node);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Node {
+pub(crate) enum Node {
     Equal(Variable, Variable),
     Member(Variable, Variable),
     Not(Box<Self>),
@@ -45,12 +45,16 @@ enum Node {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Variable {
+pub(crate) enum Variable {
     Bound(u32),
     Free(FreeVariable),
 }
 
 impl DefinedFormula {
+    pub(crate) fn graph_root(&self) -> &Node {
+        &self.0
+    }
+
     /// Constructs equality between two free variables.
     #[must_use]
     pub const fn equal(left: FreeVariable, right: FreeVariable) -> Self {

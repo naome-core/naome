@@ -64,7 +64,7 @@ pub fn questions(
             Ok(Some(metadata)) => {
                 let (_, _, target) = metadata.compile()?;
                 if super::partition(&target) == partition {
-                    questions.push(target.source().into());
+                    questions.push(target.to_hex());
                 }
             }
             Ok(None) => {}

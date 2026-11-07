@@ -27,7 +27,6 @@ rust_library(
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [
-        "//crates/naome-authoring:naome_authoring",
         "//crates/naome-checker:naome_checker",
         "//crates/naome-foundation:naome_foundation",
         "//crates/naome-storage:naome_storage",
@@ -43,7 +42,10 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":naome_knowledge",
-    compile_data = ["//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex"],
+    compile_data = [
+        "//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex",
+        "//crates/naome-checker:tests/fixtures/membership-witness.program",
+    ] + glob(["tests/fixtures/typed-membership/*.proof", "tests/fixtures/typed-membership/*.question"]),
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -60,7 +62,6 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [
         ":naome_knowledge",
-        "//crates/naome-authoring:naome_authoring",
         "//crates/naome-checker:naome_checker",
         "//crates/naome-foundation:naome_foundation",
         "//crates/naome-storage:naome_storage",

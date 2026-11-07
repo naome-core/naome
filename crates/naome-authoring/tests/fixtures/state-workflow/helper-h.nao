@@ -1,7 +1,0 @@
-# Helper H: every set equals itself. New material belongs to A's author.
-
-goal = all(x, eq(x, x))
-proof:
-    p0 = refl(x)
-    p1 = gen(p0, x)
-    return p1
