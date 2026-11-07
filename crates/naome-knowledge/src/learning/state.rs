@@ -395,6 +395,7 @@ impl State {
             || self.trained != native.base.trained
             || self.meta.model != native.base.meta.model
             || self.meta.draw != native.base.meta.draw
+            || !native.preserves_incumbent_transfer(p)
         {
             return false;
         }

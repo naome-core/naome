@@ -324,6 +324,10 @@ impl Job {
                 .map_or(&self.base.model, |p| &p.model),
         )
     }
+    fn preserves_incumbent_transfer(&self, progress: &Progress) -> bool {
+        progress.promotions <= self.base.promotions || progress.transfer.accepts()
+    }
+
     /// Bind worker reports to the plan and candidate already retained by this
     /// job owner. Re-delivery of a persisted unit is exactly idempotent.
     pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), String> {
@@ -369,6 +373,9 @@ impl Job {
             }
         } else if next.unit != 1 {
             return Err("learning checkpoint lacks its first unit".into());
+        }
+        if !self.preserves_incumbent_transfer(&next) {
+            return Err("learning checkpoint loses an incumbent transfer success".into());
         }
         let previous = self.progress.replace(next);
         if let Err(error) = self.validate() {
@@ -608,7 +615,7 @@ impl Job {
                 && (p.candidate_score <= p.incumbent_score
                     || p.anchor_regression
                     || p.development_regression
-                    || !p.transfer.accepts())
+                    || !p.transfer.supports_recorded_promotion())
             {
                 return Err("retained promotion lacks complete protected transfer gain".into());
             }

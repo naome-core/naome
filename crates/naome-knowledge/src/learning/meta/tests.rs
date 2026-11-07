@@ -226,6 +226,12 @@ fn improving_development_proxy_does_not_replace_transfer_targets() {
     assert_eq!(input, e.features());
     assert!(e.targets()[0] > 0.);
     assert_eq!(e.targets()[1], 0.);
+
+    e.transfer.before = 1;
+    e.transfer.after = 6;
+    e.validate().unwrap();
+    assert_eq!(e.targets()[0], 0.);
+    assert!(e.targets()[1] > 0.);
 }
 
 #[test]

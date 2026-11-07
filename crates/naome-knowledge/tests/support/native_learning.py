@@ -84,7 +84,8 @@ def verify_meta(node, record):
     before = [bin(transfer["before"] >> (2 * i) & 3).count("1") for i in range(12)]
     after = [bin(transfer["after"] >> (2 * i) & 3).count("1") for i in range(12)]
     if progress["diagnostic"] == "candidate_promoted":
-        assert sum(after) > sum(before) and all(a >= b for a, b in zip(after, before))
+        assert sum(after) > sum(before)
+        assert transfer["before"] & ~transfer["after"] == 0
         assert progress["candidate_score"] > progress["incumbent_score"]
         assert not progress["anchor_regression"] and not progress["development_regression"]
 

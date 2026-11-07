@@ -112,7 +112,7 @@ impl Experience {
                 || self.after <= self.before
                 || self.protected_loss
                 || self.anchor_loss
-                || !self.transfer.accepts())
+                || !self.transfer.supports_recorded_promotion())
         {
             return Err("meta retained model lacks protected family transfer gain".into());
         }
@@ -135,7 +135,7 @@ impl Experience {
     }
     fn targets(&self) -> [f32; 3] {
         [
-            if self.selected_model == self.source_model {
+            if self.selected_model == self.source_model || !self.transfer.accepts() {
                 0.
             } else {
                 self.transfer.gain()

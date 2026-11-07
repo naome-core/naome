@@ -50,8 +50,22 @@ impl Summary {
     pub fn gain(&self) -> f32 {
         (self.after.count_ones() as f32 - self.before.count_ones() as f32) / CASES as f32
     }
+    /// Share of families that lost at least one incumbent success.
     pub fn loss(&self) -> f32 {
-        self.families().iter().filter(|p| p[1] < p[0]).count() as f32 / FAMILIES as f32
+        let regressed = self.before & !self.after;
+        (0..FAMILIES)
+            .filter(|family| regressed & (3 << (family * 2)) != 0)
+            .count() as f32
+            / FAMILIES as f32
+    }
+    /// Check the evidence behind an already recorded family-level gain.
+    pub(super) fn supports_recorded_promotion(&self) -> bool {
+        self.complete()
+            && self.gain() > 0.
+            && self
+                .families()
+                .iter()
+                .all(|[before, after]| after >= before)
     }
     pub fn accepts(&self) -> bool {
         self.complete() && self.gain() > 0. && self.loss() == 0.

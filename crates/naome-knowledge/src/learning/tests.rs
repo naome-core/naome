@@ -526,6 +526,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     assert_ne!(candidate.model, incumbent.model);
     assert_ne!(candidate.optimizer, incumbent.optimizer);
     let candidate_for_development_regression = candidate.clone();
+    let candidate_for_transfer_regression = candidate.clone();
     let mut finished = job.base.clone();
     finished.trained = finished.accepted;
     job.progress = Some(Progress {
@@ -584,6 +585,60 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     );
     assert!(alternate.qualify(&job));
     assert_eq!(alternate.model, incumbent);
+
+    let mut transfer_parent = job.base.clone();
+    let mut job = transfer_parent.job();
+    job.training = true;
+    let mut progress = finished_progress(&transfer_parent);
+    progress.unit = job.units() - 1;
+    progress.candidate = Some(candidate_for_transfer_regression.clone());
+    progress.candidate_score = 2;
+    progress.incumbent_score = 1;
+    progress.first_loss = Some(1.);
+    progress.last_loss = Some(0.9);
+    for index in 0..transfer::CASES {
+        progress
+            .transfer
+            .record(index, index == 0, index == 1 || index == 2)
+            .unwrap();
+    }
+    let pending = progress.clone();
+    job.progress = Some(progress);
+    job.execute(job.units(), None, 44, &mut engine, &mut io)
+        .unwrap();
+    assert_eq!(
+        job.progress.as_ref().unwrap().diagnostic,
+        "transfer_regression_rejected"
+    );
+    job.validate().unwrap();
+
+    let mut invalid_promotion = job.clone();
+    let progress = invalid_promotion.progress.as_mut().unwrap();
+    progress.model = candidate_for_transfer_regression;
+    progress.promotions += 1;
+    progress.rejections -= 1;
+    progress.diagnostic = "candidate_promoted".into();
+    progress.development_after = crate::training::ability::Profile::new(digest(&progress.model));
+    progress.finder = None;
+    let mut worker_job = job.clone();
+    worker_job.progress = Some(pending);
+    assert_eq!(
+        worker_job
+            .retain_progress(44, invalid_promotion.progress.clone().unwrap())
+            .unwrap_err(),
+        "learning checkpoint loses an incumbent transfer success"
+    );
+
+    let restored: Job =
+        serde_json::from_slice(&serde_json::to_vec(&invalid_promotion).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert!(!transfer_parent.qualify(&restored));
+    assert_eq!(transfer_parent.model, incumbent);
+
+    assert!(transfer_parent.qualify(&job));
+    assert_eq!(transfer_parent.model, incumbent);
+    assert!(!transfer_parent.qualify(&job));
+    assert_eq!(transfer_parent.model, incumbent);
 }
 fn finished_progress(state: &State) -> Progress {
     Progress {
