@@ -1,22 +1,5 @@
 //! Provider records are durable candidates, never checked graph membership.
-use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, encode_command};
-
-pub(super) fn validate_group(records: &[Command]) -> Result<(), String> {
-    if records.is_empty() || records.len() > CHUNK_RECORDS {
-        return Err("provider program group capacity".into());
-    }
-    for command in records {
-        encode_command(command)?;
-    }
-    if serde_json::to_vec(records)
-        .map_err(|e| e.to_string())?
-        .len()
-        > CHUNK_BYTES
-    {
-        return Err("provider program group byte capacity".into());
-    }
-    Ok(())
-}
+use naome_proof::program::{Command, encode_records};
 
 /// A controlled provider exercises the production stream with a deep checked
 /// intermediate and a small selected conclusion. It is not a general solver.
@@ -58,6 +41,6 @@ pub(super) fn mock_group(
             }
         });
     }
-    validate_group(&commands)?;
+    encode_records(&commands)?;
     Ok(commands)
 }

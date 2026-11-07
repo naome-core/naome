@@ -81,14 +81,14 @@ async fn frame_custody_is_shared_and_released_after_handling() {
 }
 
 #[tokio::test]
-async fn program_data_uses_a_bounded_compressed_frame() {
+async fn program_data_transmits_the_canonical_records_in_a_bounded_frame() {
     use naome_proof::program::{Chunk, Command};
     let chunk = Chunk {
         start: 3,
         previous: [7; 32],
         next: [8; 32],
         records: vec![
-            Command::InstantiationFor {
+            Command::Instantiate {
                 premise: 2,
                 replacement: 1
             };
@@ -111,19 +111,13 @@ async fn program_data_uses_a_bounded_compressed_frame() {
         Body::ProgramData { root, id, chunk: decoded }
             if root == [1; 32] && id == [2; 32] && decoded == chunk));
 
-    let mut oversized = encoded.clone();
-    oversized[4..8].copy_from_slice(&(frame_limit() as u32 + 1).to_le_bytes());
-    assert!(
-        codec
-            .read(&mut Cursor::new(oversized))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("expanded frame byte limit")
+    assert_eq!(
+        &encoded[4 + 32 + 1 + 64..],
+        chunk.canonical_bytes().unwrap()
     );
-    let mut wrong_size = encoded.clone();
-    wrong_size[4..8].copy_from_slice(&(logical.len() as u32 + 1).to_le_bytes());
-    assert!(codec.read(&mut Cursor::new(wrong_size)).await.is_err());
+    let mut malformed = encoded.clone();
+    *malformed.last_mut().unwrap() = 0x80;
+    assert!(codec.read(&mut Cursor::new(malformed)).await.is_err());
     let mut uncompressed = (logical.len() as u32).to_be_bytes().to_vec();
     uncompressed.extend(logical);
     assert!(codec.read(&mut Cursor::new(uncompressed)).await.is_err());

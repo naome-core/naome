@@ -2,7 +2,7 @@
 //! K = simplification, S = Frege, C = classical contraposition.
 use super::*;
 
-pub(super) const COMMUTATION: Schema = Schema {
+pub(crate) const COMMUTATION: Schema = Schema {
     terms: &[
         A,
         Not(0),

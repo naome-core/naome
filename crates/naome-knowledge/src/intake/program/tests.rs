@@ -409,7 +409,7 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
     ];
     let encoded = commands
         .iter()
-        .map(|command| serde_json::to_vec(command).unwrap())
+        .map(|command| naome_proof::program::encode_command(command).unwrap())
         .collect::<Vec<_>>();
     let question = CompiledQuestion::compile(&question_source()).unwrap();
     let statement = naome_proof::StatementId::of_canonical_formula(

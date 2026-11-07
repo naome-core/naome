@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 package(default_visibility = ["//visibility:public"])
 
 exports_files(
-    ["src/tests/fixtures/identity_unique.proof.hex"],
+    ["src/tests/fixtures/identity_unique.proof.hex", "tests/fixtures/membership-witness.program"],
     visibility = ["//crates/naome-knowledge:__pkg__"],
 )
 

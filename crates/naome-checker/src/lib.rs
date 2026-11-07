@@ -13,6 +13,7 @@
 //! that normal form's distinct direct proof and definition dependencies.
 
 pub mod context;
+mod derived;
 pub mod diagnostics;
 pub use diagnostics::CHECKER_ID;
 pub mod program;

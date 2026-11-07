@@ -151,14 +151,14 @@ impl Work {
             .checked_fact(position)
             .map_err(crate::Error::from)
     }
-    /// Append the primitive steps of one typed instantiation action.
+    /// Append one typed instruction for the instantiation axiom and modus ponens.
     pub fn instantiate(
         &mut self,
         fact: &CheckedFact,
         replacement: FreeVariable,
     ) -> Result<u64, crate::Error> {
         self.live()?;
-        let _disk = crate::resources::DiskLease::acquire(self.directory(), 2 * 32 * 1024)?;
+        let _disk = crate::resources::DiskLease::acquire(self.directory(), 32 * 1024)?;
         self.engine
             .instantiate(fact, replacement)
             .map_err(crate::Error::from)
@@ -343,6 +343,10 @@ impl Work {
             started.elapsed(),
         );
         result.map_err(crate::Error::from)
+    }
+    #[cfg(test)]
+    pub(crate) fn last_quantum_steps(&self) -> usize {
+        self.engine.last_quantum_steps()
     }
     pub fn status(&self) -> Result<Status, crate::Error> {
         self.live()?;

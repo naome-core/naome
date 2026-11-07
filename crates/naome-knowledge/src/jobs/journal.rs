@@ -176,9 +176,7 @@ impl Disk {
                 if unit > record.reserved_units || !matches!(record.input, Input::Solve { .. }) {
                     return Err("provider program reservation missing".into());
                 }
-                let commands: Vec<naome_proof::program::Command> =
-                    serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-                super::program::validate_group(&commands)
+                naome_proof::program::decode_records(bytes).map(|_| ())
             },
         )?;
         let header: Header = checkpoint.header()?;
@@ -633,14 +631,13 @@ impl Disk {
     ) -> Result<Vec<naome_proof::program::Command>, String> {
         let records = self
             .checkpoint
-            .get::<Vec<naome_proof::program::Command>>(
+            .get_bytes(
                 "program",
                 &format!("{id}:{unit}"),
                 naome_proof::program::CHUNK_BYTES,
             )?
             .ok_or("provider program group missing")?;
-        super::program::validate_group(&records)?;
-        Ok(records)
+        naome_proof::program::decode_records(&records)
     }
     pub(super) fn save_program_group(
         &mut self,
@@ -649,7 +646,7 @@ impl Disk {
         unit: u32,
         records: Vec<naome_proof::program::Command>,
     ) -> Result<(), crate::Error> {
-        super::program::validate_group(&records)?;
+        let bytes = naome_proof::program::encode_records(&records)?;
         let record = journal
             .records
             .get(&id)
@@ -662,12 +659,11 @@ impl Disk {
             return Err("provider program original reservation missing".into());
         }
         let key = format!("{id}:{unit}");
-        if let Some(previous) = self.checkpoint.get::<Vec<naome_proof::program::Command>>(
-            "program",
-            &key,
-            naome_proof::program::CHUNK_BYTES,
-        )? {
-            return if previous == records {
+        if let Some(previous) =
+            self.checkpoint
+                .get_bytes("program", &key, naome_proof::program::CHUNK_BYTES)?
+        {
+            return if previous == bytes {
                 Ok(())
             } else {
                 Err("resumed provider program group differs".into())
@@ -680,7 +676,11 @@ impl Disk {
         self.checkpoint
             .commit(
                 &journal.header(),
-                vec![crate::checkpoint::Update::put("program", key, &records)?],
+                vec![crate::checkpoint::Update::Put {
+                    kind: "program",
+                    key,
+                    payload: bytes,
+                }],
             )
             .map_err(crate::Error::from)
     }

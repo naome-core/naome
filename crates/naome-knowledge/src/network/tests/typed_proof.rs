@@ -8,7 +8,10 @@ use crate::{
 use naome_checker::{ContextView, check_normal_form_with_step_digests, program::FactShape};
 use naome_proof::{
     ProofStep,
-    program::{CHUNK_BYTES, CHUNK_RECORDS},
+    program::{
+        CHUNK_BYTES, CHUNK_RECORDS, Command, MANIFEST_MAGIC, Projection, StepResult,
+        decode_records, encode_command,
+    },
 };
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -57,8 +60,12 @@ fn helpers(graph: &mut Graph) -> Vec<crate::Envelope> {
         .collect()
 }
 
-fn drain(work: &mut Work, context: &dyn ContextView, budget: &Budget) {
-    while work.advance(budget, context).unwrap() {}
+fn drain(work: &mut Work, context: &dyn ContextView, budget: &Budget) -> usize {
+    let mut units = 0;
+    while work.advance(budget, context).unwrap() {
+        units += work.last_quantum_steps();
+    }
+    units
 }
 
 async fn frame_bytes(body: wire::Body) -> usize {
@@ -78,7 +85,7 @@ fn compare_results(
     proof: &naome_checker::program::CheckedProgram,
     authored: &naome_checker::CheckedProof,
     question: &CompiledQuestion,
-    results: &[u64],
+    results: &[StepResult],
     digests: &[[u8; 32]],
 ) {
     assert_eq!(proof.conclusion(), Some(authored.conclusion()));
@@ -92,11 +99,17 @@ fn compare_results(
         *question
     );
     for (&position, digest) in results.iter().zip(digests) {
-        assert_eq!(
-            proof.result_digest(position).unwrap(),
-            (*digest, true),
-            "step {position}"
-        );
+        let result = match position {
+            StepResult::Result(position) => {
+                let (digest, proved) = proof.result_digest(position).unwrap();
+                assert!(proved);
+                digest
+            }
+            StepResult::InstantiationAxiom(position) => {
+                proof.instantiation_digest(position).unwrap()
+            }
+        };
+        assert_eq!(result, *digest, "step {position:?}");
     }
     assert_eq!(
         proof
@@ -149,9 +162,20 @@ async fn publish_program(graph: &mut Graph, checked: &CheckedWork) -> serde_json
         })
         .await;
     }
+    let Some(crate::object::ProofDescription::Program(metadata)) = graph.description(root).unwrap()
+    else {
+        panic!("expected checked program description");
+    };
+    let description_bytes = frame_bytes(wire::Body::ProgramDescription {
+        root: None,
+        metadata,
+    })
+    .await;
     json!({
         "artifact_id":hex(root.as_bytes()), "proof_id":hex(manifest.proof_id().as_bytes()),
         "record_bytes":manifest.input_bytes, "manifest_bytes":manifest.canonical_bytes().unwrap().len(),
+        "artifact_discriminator_bytes": MANIFEST_MAGIC.len(), "description_frame_bytes":description_bytes,
+        "data_frame_overhead_bytes":package_bytes as u64 - manifest.input_bytes, "compression": "none",
         "data_frame_bytes_max_chunk":package_bytes, "commands":manifest.commands, "register":registration.json(),
     })
 }
@@ -207,7 +231,7 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
 
     // These are the chained instantiations of the exact fourth helper. The
     // fixed replay selects operands; the evaluator decides all rule validity.
-    let mut selected = BTreeMap::new();
+    let mut selected = Vec::new();
     let mut chain = BTreeSet::new();
     let steps = authored.normal_form().certificate().steps();
     for (i, step) in steps.iter().enumerate() {
@@ -219,25 +243,20 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
                 premise,
                 implication,
             } if chain.contains(&(*premise as usize)) => {
-                let ProofStep::UniversalInstantiation { replacement, .. } =
-                    steps[*implication as usize]
-                else {
-                    panic!("expected instantiation of the cited chain");
-                };
-                assert_eq!(
-                    projection.results()[*implication as usize] + 1,
-                    projection.results()[i]
-                );
-                selected.insert(
-                    projection.results()[*implication as usize],
-                    (projection.results()[*premise as usize], replacement),
-                );
+                assert!(matches!(
+                    steps[*implication as usize],
+                    ProofStep::UniversalInstantiation { .. }
+                ));
+                selected.push(i);
                 chain.insert(i);
             }
             _ => {}
         }
     }
     assert_eq!(selected.len(), 12);
+    let mut fusion_phase = Phase::default();
+    let typed = fusion_phase
+        .measure(|| Projection::with_instantiations(authored.normal_form(), &selected).unwrap());
 
     let budget = Budget {
         memory_bytes: 128 * 1024 * 1024,
@@ -252,24 +271,29 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
     let mut checking = Phase::default();
     let mut actions = Phase::default();
     let mut work = Work::open(&typed_dir.join("membership-input.sqlite3")).unwrap();
+    let mut units = 0;
     let mut offset = 0;
-    for (start, (premise, replacement)) in &selected {
-        let start = *start as usize;
-        append.measure(|| {
-            work.append_group(&projection.commands()[offset..start])
+    for (start, command) in typed.commands().iter().enumerate() {
+        let Command::Instantiate {
+            premise,
+            replacement,
+        } = *command
+        else {
+            continue;
+        };
+        append.measure(|| work.append_group(&typed.commands()[offset..start]).unwrap());
+        units += checking.measure(|| drain(&mut work, graph.checked_context(), &budget));
+        let instance = actions.measure(|| {
+            let (fact, shape) = work.checked_fact(premise).unwrap();
+            assert_eq!(shape, FactShape::Universal);
+            work.instantiate(&fact, naome_foundation::FreeVariable::new(replacement))
                 .unwrap()
         });
-        checking.measure(|| drain(&mut work, graph.checked_context(), &budget));
-        let instance = actions.measure(|| {
-            let (fact, shape) = work.checked_fact(*premise).unwrap();
-            assert_eq!(shape, FactShape::Universal);
-            work.instantiate(&fact, *replacement).unwrap()
-        });
-        assert_eq!(instance, start as u64 + 1);
-        offset = start + 2;
+        assert_eq!(instance, start as u64);
+        offset = start + 1;
     }
-    append.measure(|| work.append_group(&projection.commands()[offset..]).unwrap());
-    checking.measure(|| drain(&mut work, graph.checked_context(), &budget));
+    append.measure(|| work.append_group(&typed.commands()[offset..]).unwrap());
+    units += checking.measure(|| drain(&mut work, graph.checked_context(), &budget));
     let mut export = Phase::default();
     let checked = export.measure(|| {
         while !work.prepare_export(&budget).unwrap() {}
@@ -279,7 +303,7 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
         checked.proof().unwrap(),
         &authored,
         &question,
-        projection.results(),
+        typed.results(),
         &digests,
     );
     if output.is_none() {
@@ -287,9 +311,27 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
     }
 
     let mut typed_report = publish_program(&mut graph, &checked).await;
+    typed_report["build_fused_projection"] = fusion_phase.json();
     typed_report["select_and_append_actions"] = actions.json();
     typed_report["append_other_records"] = append.json();
     typed_report["check"] = checking.json();
+    typed_report["checker_work_units"] = units.into();
+    typed_report["certificate_step_positions"] = json!(
+        typed
+            .results()
+            .iter()
+            .map(|position| match position {
+                StepResult::Result(p) => (*p, "result"),
+                StepResult::InstantiationAxiom(p) => (*p, "instantiation_axiom"),
+            })
+            .collect::<Vec<_>>()
+    );
+    typed_report["example_hex"] = json!({
+        "modus_ponens_small": hex(&encode_command(&Command::ModusPonens { premise: 2, implication: 127 }).unwrap()),
+        "instantiate_wide": hex(&encode_command(&Command::Instantiate { premise: 258, replacement: 772 }).unwrap()),
+        "proof_reference": hex(&encode_command(typed.commands().iter().find(|c| matches!(c, Command::ProofReference { .. })).unwrap()).unwrap()),
+        "seal": hex(&encode_command(typed.commands().last().unwrap()).unwrap()),
+    });
     typed_report["export"] = export.json();
 
     let projected_dir = directory.join("source_program");
@@ -299,7 +341,8 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
     let mut projected_append = Phase::default();
     projected_append.measure(|| work.append_group(projection.commands()).unwrap());
     let mut projected_check = Phase::default();
-    projected_check.measure(|| drain(&mut work, projected_graph.checked_context(), &budget));
+    let projected_units =
+        projected_check.measure(|| drain(&mut work, projected_graph.checked_context(), &budget));
     let mut projected_export = Phase::default();
     let projected = projected_export.measure(|| {
         while !work.prepare_export(&budget).unwrap() {}
@@ -315,6 +358,7 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
     let mut projected_report = publish_program(&mut projected_graph, &projected).await;
     projected_report["append"] = projected_append.json();
     projected_report["check"] = projected_check.json();
+    projected_report["checker_work_units"] = projected_units.into();
     projected_report["export"] = projected_export.json();
     assert_ne!(projected_report["proof_id"], typed_report["proof_id"]);
 
@@ -350,6 +394,7 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
         .iter()
         .map(|object| crate::unhex(&object.payload).unwrap().len())
         .sum::<usize>();
+    let witness_report = publish_witness(directory, &question, &budget).await;
     let report = json!({
         "statement_id": hex(authored.statement_id().as_bytes()),
         "primitive_results": digests.len(),
@@ -365,6 +410,7 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
         "source_program": projected_report,
         "typed_program": typed_report,
         "source_projection":projection_phase.json(),
+        "short_witness":witness_report,
         "independent_certificate_trace":oracle_phase.json(), "seed_helpers":helper_storage.json(),
     });
     drop((checked, graph, source_graph, projected, projected_graph));
@@ -373,6 +419,85 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
         serde_json::to_vec_pretty(&report).unwrap(),
     )
     .unwrap();
+}
+
+async fn publish_witness(
+    directory: &Path,
+    question: &CompiledQuestion,
+    budget: &Budget,
+) -> serde_json::Value {
+    let mut decode = Phase::default();
+    let commands = decode.measure(|| {
+        decode_records(include_bytes!(
+            "../../../../naome-checker/tests/fixtures/membership-witness.program"
+        ))
+        .unwrap()
+    });
+    let [
+        Command::Deduce {
+            assumptions,
+            actions,
+            ..
+        },
+    ] = commands
+        .iter()
+        .filter(|command| matches!(command, Command::Deduce { .. }))
+        .collect::<Vec<_>>()
+        .as_slice()
+    else {
+        panic!("one scoped instruction");
+    };
+    assert_eq!((assumptions.len(), actions.len()), (9, 9));
+    let scope_position = commands
+        .iter()
+        .position(|command| matches!(command, Command::Deduce { .. }))
+        .unwrap();
+    let record_sum = |slice: &[Command]| {
+        slice
+            .iter()
+            .map(|command| encode_command(command).unwrap().len())
+            .sum::<usize>()
+    };
+    let directory = directory.join("witness");
+    let mut graph = Graph::open(&directory).unwrap();
+    let mut work = Work::open(&directory.join("membership-input.sqlite3")).unwrap();
+    let mut append = Phase::default();
+    append.measure(|| work.append_group(&commands).unwrap());
+    let mut check = Phase::default();
+    let units = check.measure(|| drain(&mut work, graph.checked_context(), budget));
+    let mut export = Phase::default();
+    let checked = export.measure(|| {
+        while !work.prepare_export(budget).unwrap() {}
+        work.into_checked().unwrap()
+    });
+    let proof = checked.proof().unwrap();
+    assert_eq!(
+        question.classify_checked_program(proof).unwrap(),
+        naome_authoring::QuestionOutcome::Proved
+    );
+    assert!(proof.dependencies_after(None, 1).unwrap().is_empty());
+    assert!(
+        proof
+            .definition_dependencies_after(None, 1)
+            .unwrap()
+            .is_empty()
+    );
+    let mut report = publish_program(&mut graph, &checked).await;
+    report["prototype_bytes"] = 215.into();
+    report["assumptions"] = assumptions.len().into();
+    report["scoped_actions"] = actions.len().into();
+    report["graph_bytes"] = record_sum(&commands[..scope_position]).into();
+    report["scope_bytes"] = record_sum(&commands[scope_position..scope_position + 1]).into();
+    report["close_and_seal_bytes"] = record_sum(&commands[scope_position + 1..]).into();
+    report["exact_dependencies"] = json!([]);
+    report["independent_hilbert_steps"] = 717.into();
+    report["independent_hilbert_bytes"] = 195139.into();
+    report["decode"] = decode.json();
+    report["append"] = append.json();
+    report["check"] = check.json();
+    report["export"] = export.json();
+    report["checker_work_units"] = units.into();
+    report
 }
 
 #[test]
@@ -430,6 +555,9 @@ fn natural_number_projection_preserves_the_binder_and_exact_definition() {
     engine.append_group(projection.commands()).unwrap();
     while engine.advance(32, 32768, &context).unwrap() {}
     for (&position, digest) in projection.results().iter().zip(digests) {
+        let StepResult::Result(position) = position else {
+            panic!("unfused projection");
+        };
         assert_eq!(engine.result_digest(position).unwrap(), (digest, true));
     }
     while !engine.prepare_export(64).unwrap() {}

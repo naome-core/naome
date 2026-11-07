@@ -17,12 +17,17 @@ const GRAPH_NODE_DOMAIN: &[u8] = b"naome:formula-graph\0";
 pub const RECORD_BYTES: usize = 4096;
 pub const CHUNK_RECORDS: usize = 1024;
 pub const CHUNK_BYTES: usize = 32 * 1024;
+pub const SCOPE_ASSUMPTIONS: usize = 32;
+pub const SCOPE_ACTIONS: usize = 32;
+pub const ACTION_PREMISES: usize = 8;
 
+mod binary;
 mod projection;
 mod stream;
-pub use projection::Projection;
+pub use binary::{decode_command, encode_command};
+pub use projection::{Projection, StepResult};
 pub use stream::{
-    ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_command, encode_command,
+    ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_records, encode_records,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,11 +337,18 @@ pub enum Command {
         replacement: u32,
         body: u64,
     },
-    /// Construct the Foundation instantiation axiom for the outer binder of
-    /// an earlier universal fact. Modus ponens with that fact yields the instance.
-    InstantiationFor {
+    /// Apply the instantiation axiom to an earlier universal fact.
+    Instantiate {
         premise: u64,
         replacement: u32,
+    },
+    /// Prove an implication from a private scope of ordered assumptions.
+    /// Local facts start with the assumptions, then each action's result.
+    /// Only the result with all assumptions discharged becomes a program fact.
+    Deduce {
+        assumptions: Vec<u64>,
+        actions: Vec<ScopedAction>,
+        result: u32,
     },
     Reflexivity {
         variable: u32,
@@ -385,6 +397,22 @@ pub enum Command {
     /// has been mathematically checked. No later append is permitted.
     Seal {
         proof: u64,
+    },
+}
+
+/// One inference inside a `Deduce` scope. Operands address earlier facts
+/// within that scope only.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScopedAction {
+    Instantiate {
+        universal: u32,
+        replacement: u32,
+        premises: Vec<u32>,
+    },
+    Conjoin {
+        left: u32,
+        right: u32,
     },
 }
 

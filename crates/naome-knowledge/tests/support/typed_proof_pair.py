@@ -112,8 +112,8 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
     trial.cleanup_timeout = 30
     meters = []
     report = {"arm": arm, "context": temperature}
-    root = metadata[{"source": "source_certificate", "source_program": "source_program", "typed": "typed_program"}[arm]]["artifact_id"]
-    helpers = set(metadata["exact_helper_artifacts"])
+    root = metadata[{"source": "source_certificate", "source_program": "source_program", "typed": "typed_program", "witness": "short_witness"}[arm]]["artifact_id"]
+    helpers = set() if arm == "witness" else set(metadata["exact_helper_artifacts"])
     try:
         donor, receiver = (AutonomousNode(trial, index) for index in range(2))
         shutil.copytree(seeds / arm, donor.directory, dirs_exist_ok=True)
@@ -180,7 +180,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         start = time.monotonic()
         reopened = receiver.start()
         report["offline_reopen_wall_seconds"] = time.monotonic() - start
-        assert reopened["artifact_verification"] == "checked" and reopened["accepted_artifacts"] == 5
+        assert reopened["artifact_verification"] == "checked" and reopened["accepted_artifacts"] == len(helpers) + 1
         assert set(receiver.ids()) == helpers | {root}
         receiver.stop()
         report["result"] = "pass"
@@ -209,14 +209,23 @@ def main():
     pairs = []
     for arm, temperature in [
         ("source", "warm"), ("source_program", "warm"), ("typed", "warm"),
-        ("typed", "cold"), ("source_program", "cold"), ("source", "cold"),
+        ("typed", "cold"), ("source_program", "cold"), ("source", "cold"), ("witness", "cold"),
     ]:
         pairs.append(run(args.binary.resolve(), args.fixture.resolve(), seeds, metadata,
                          output / f"{arm}-{temperature}", arm, temperature))
+    baseline_path = Path(__file__).resolve().parent.parent / "fixtures/typed-membership/comparison.json"
+    baseline = json.loads(baseline_path.read_text())
+    assert baseline["seed"]["statement_id"] == metadata["statement_id"]
+    assert baseline["seed"]["exact_helper_artifacts"] == metadata["exact_helper_artifacts"]
+    before, after = baseline["seed"]["typed_program"], metadata["typed_program"]
+    assert before["record_bytes"] + before["manifest_bytes"] == 24105
+    assert (after["record_bytes"] + after["manifest_bytes"]) * 4 < 24105
     write_receipt(output / "comparison.json", {
         "environment": {"os": platform.system(), "architecture": platform.machine(), "cargo_profile": "test",
                         "node_sha256": digest(args.binary), "fixture_sha256": digest(args.fixture)},
         "measurement": "One observation per arm and checked-context condition. Observed network bytes are forwarded encrypted TCP payload through acceptance. Codec package bytes are the data frames, excluding inventory and requests.",
+        "previous_head": {"sha": "1c00341b4a63875132f1ba6c9cd91a87150a87d6", "typed_program": before,
+                          "pairs": [pair for pair in baseline["pairs"] if pair["arm"] == "typed"]},
         "seed": metadata, "pairs": pairs,
     })
 

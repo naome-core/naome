@@ -10,33 +10,99 @@ use std::collections::{HashMap, hash_map::Entry};
 /// The program requires independent checking and has its own manifest identity.
 pub struct Projection {
     commands: Vec<Command>,
-    results: Vec<u64>,
+    results: Vec<StepResult>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepResult {
+    Result(u64),
+    InstantiationAxiom(u64),
 }
 
 impl Projection {
     pub fn from_normal_form(proof: &ProofNormalForm) -> Self {
+        Self::with_instantiations(proof, &[]).expect("unfused projection")
+    }
+
+    /// Fold selected adjacent instantiation-axiom and modus-ponens pairs.
+    /// Each listed index is the modus ponens step. Its axiom must have no
+    /// other consumers or definition references. Independently replay the
+    /// result and compare the checked trace before treating it as equivalent.
+    pub fn with_instantiations(proof: &ProofNormalForm, sites: &[usize]) -> Result<Self, String> {
+        let steps = proof.certificate().steps();
+        let mut folds = vec![None; steps.len()];
+        if !sites.is_empty() {
+            let mut uses = vec![0u32; steps.len()];
+            for step in steps {
+                for reference in step.local_references().into_iter().flatten() {
+                    uses[reference as usize] += 1;
+                }
+            }
+            for &site in sites {
+                let Some(ProofStep::ModusPonens {
+                    premise,
+                    implication,
+                }) = steps.get(site)
+                else {
+                    return Err("instantiation site must select modus ponens".into());
+                };
+                let axiom = *implication as usize;
+                let ProofStep::UniversalInstantiation {
+                    replacement, body, ..
+                } = &steps[axiom]
+                else {
+                    return Err("instantiation site has no instantiation axiom".into());
+                };
+                if axiom + 1 != site
+                    || uses[axiom] != 1
+                    || body.as_defined().is_some()
+                    || folds[axiom].replace((*premise, *replacement)).is_some()
+                {
+                    return Err(
+                        "instantiation site cannot be folded without losing a reference".into(),
+                    );
+                }
+            }
+        }
+
         let mut builder = Builder::default();
-        let mut results = Vec::with_capacity(proof.certificate().steps().len());
-        for step in proof.certificate().steps() {
-            let position = builder.step(step, &results);
-            results.push(position);
+        let mut results = Vec::with_capacity(steps.len());
+        let mut handles = Vec::with_capacity(steps.len());
+        let mut index = 0;
+        while index < steps.len() {
+            if let Some((premise, replacement)) = folds[index] {
+                let position = builder.push(Command::Instantiate {
+                    premise: handles[premise as usize],
+                    replacement: replacement.identifier(),
+                });
+                results.push(StepResult::InstantiationAxiom(position));
+                handles.push(position);
+                results.push(StepResult::Result(position));
+                handles.push(position);
+                index += 2;
+            } else {
+                let position = builder.step(&steps[index], &handles);
+                results.push(StepResult::Result(position));
+                handles.push(position);
+                index += 1;
+            }
         }
         builder.push(Command::Seal {
-            proof: *results.last().expect("a certificate is nonempty"),
+            proof: *handles.last().expect("a certificate is nonempty"),
         });
-        Self {
+        Ok(Self {
             commands: builder.commands,
             results,
-        }
+        })
     }
 
     pub fn commands(&self) -> &[Command] {
         &self.commands
     }
 
-    /// Program positions of the corresponding normalized certificate results.
+    /// Locations of normalized certificate results in the checked trace.
     /// Schema parameter closures map to the last enclosing generalization.
-    pub fn results(&self) -> &[u64] {
+    pub fn results(&self) -> &[StepResult] {
         &self.results
     }
 }

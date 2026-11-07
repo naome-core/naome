@@ -103,13 +103,23 @@ fn metadata(command: &Command) -> CommandMetadata {
             vec![(R::Body, body)],
             vec![(R::Variable, variable), (R::To, replacement)],
         ),
-        Command::InstantiationFor {
+        Command::Instantiate {
             premise,
             replacement,
         } => (
             Rule::Instantiation,
             vec![(R::Premise, premise)],
             vec![(R::To, replacement)],
+        ),
+        Command::Deduce {
+            ref assumptions, ..
+        } => (
+            Rule::Deduction,
+            assumptions
+                .iter()
+                .map(|&reference| (R::Input, reference))
+                .collect(),
+            vec![],
         ),
         Command::Reflexivity { variable } => {
             (Rule::Reflexivity, vec![], vec![(R::Variable, variable)])

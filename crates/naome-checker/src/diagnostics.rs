@@ -139,6 +139,7 @@ pub enum Rule {
     Distribution,
     Vacuous,
     Instantiation,
+    Deduction,
     Reflexivity,
     Substitution,
     Axiom,

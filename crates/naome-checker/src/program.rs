@@ -7,7 +7,7 @@ use naome_foundation::{
     construction::{self as recipe, Expression},
     graph::Node,
 };
-use naome_proof::program::Command;
+use naome_proof::program::{Command, ScopedAction};
 
 mod engine;
 mod error;
@@ -68,8 +68,12 @@ pub enum Construction<F> {
     Graph(Node<F>),
     Instantiation {
         universal: F,
-        body: F,
         replacement: u32,
+    },
+    Deduction {
+        assumptions: Vec<F>,
+        actions: Vec<ScopedAction>,
+        result: u32,
     },
     Reference(naome_proof::ProofId),
     Definition(naome_proof::DefinitionId, Vec<u32>),
@@ -214,12 +218,12 @@ pub fn prepare<C: Context>(
             replacement,
             body,
         } => recipe::instantiation(variable(v), variable(replacement), formula(body, R::Body)?),
-        Command::InstantiationFor {
+        Command::Instantiate {
             premise,
             replacement,
         } => {
             let universal = proved(premise, R::Premise)?;
-            let body = context
+            context
                 .universal_body(universal)
                 .map_err(PrepareError::Context)?
                 .ok_or(PrepareError::Check(Failure::ExpectedUniversal {
@@ -228,8 +232,27 @@ pub fn prepare<C: Context>(
             return Ok(Plan {
                 construction: Construction::Instantiation {
                     universal,
-                    body,
                     replacement,
+                },
+                proved: true,
+                seal: false,
+                absent,
+            });
+        }
+        Command::Deduce {
+            ref assumptions,
+            ref actions,
+            result,
+        } => {
+            let assumptions = assumptions
+                .iter()
+                .map(|&index| formula(index, R::Input))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Plan {
+                construction: Construction::Deduction {
+                    assumptions,
+                    actions: actions.clone(),
+                    result,
                 },
                 proved: true,
                 seal: false,

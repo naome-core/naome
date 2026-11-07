@@ -48,7 +48,7 @@ fn typed_instantiation_preserves_nested_binders_sharing_and_replay() {
     assert_eq!(engine.status().unwrap().commands, 5);
 
     let result = engine.instantiate(&fact, FreeVariable::new(1)).unwrap();
-    assert_eq!(result, 6);
+    assert_eq!(result, 5);
     assert!(engine.checked_fact(result).is_err());
     engine.advance(4, 32768, &ArtifactState::new()).unwrap();
     assert_eq!(engine.status().unwrap().committed_commands, 5);
@@ -63,7 +63,6 @@ fn typed_instantiation_preserves_nested_binders_sharing_and_replay() {
     let body = Formula::for_all(v(1), Logic::simplification(a, b));
     let expected = Logic::universal_instantiation(v(0), v(1), body);
     let (_, consequent) = expected.implication_parts().unwrap();
-    assert_eq!(engine.result_formula(5).unwrap(), Some(expected));
     assert_eq!(
         engine.result_formula(result).unwrap(),
         Some(consequent.clone())
@@ -78,12 +77,16 @@ fn typed_instantiation_preserves_nested_binders_sharing_and_replay() {
                 premise: result,
                 variable: 1,
             },
-            Command::Seal { proof: 7 },
+            Command::Seal { proof: 6 },
         ])
         .unwrap();
     drain(&mut engine);
     while !engine.prepare_export(64).unwrap() {}
     let checked = engine.checked().unwrap();
+    assert_eq!(
+        checked.instantiation_digest(result).unwrap(),
+        format::formula_hash(&expected)
+    );
     assert_eq!(
         checked.conclusion(),
         Some(&Formula::for_all(v(1), consequent))
@@ -129,7 +132,7 @@ fn raw_instantiation_rejects_future_unproved_and_nonuniversal_inputs() {
             .append_group(&[
                 Command::Equal { left: 0, right: 0 },
                 Command::Reflexivity { variable: 0 },
-                Command::InstantiationFor {
+                Command::Instantiate {
                     premise,
                     replacement: 1,
                 },
@@ -185,4 +188,100 @@ fn graph_nodes_keep_relative_scope_until_a_binder_closes_them() {
         scoped.result_formula(2).unwrap(),
         Some(Logic::simplification(quantifier.clone(), quantifier))
     );
+}
+
+#[test]
+fn scope_rejects_future_facts_and_invalid_applications() {
+    use naome_proof::program::ScopedAction;
+    let prefix = [
+        Command::Equal { left: 0, right: 0 },
+        Command::Implies {
+            antecedent: 0,
+            consequent: 0,
+        },
+        Command::ForAll {
+            variable: 0,
+            body: 1,
+        },
+        Command::Member { element: 1, set: 1 },
+    ];
+    for (action, expected) in [
+        (
+            ScopedAction::Conjoin { left: 0, right: 2 },
+            "outside the earlier deduction scope",
+        ),
+        (
+            ScopedAction::Instantiate {
+                universal: 1,
+                replacement: 1,
+                premises: vec![],
+            },
+            "requires a universal fact",
+        ),
+        (
+            ScopedAction::Instantiate {
+                universal: 0,
+                replacement: 1,
+                premises: vec![1],
+            },
+            "antecedent mismatch",
+        ),
+    ] {
+        let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+        engine.append_group(&prefix).unwrap();
+        drain(&mut engine);
+        engine
+            .append(&Command::Deduce {
+                assumptions: vec![2, 3],
+                actions: vec![action],
+                result: 2,
+            })
+            .unwrap();
+        let error = loop {
+            match engine.advance(1, 32768, &ArtifactState::new()) {
+                Ok(true) => (),
+                other => break other.unwrap_err(),
+            }
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(engine.status().unwrap().checked_commands, 4);
+        assert!(engine.checked_fact(4).is_err());
+    }
+}
+
+#[test]
+fn deduction_returns_only_the_discharged_fact_after_its_quantum() {
+    use naome_proof::program::ScopedAction;
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    engine
+        .append_group(&[
+            Command::Equal { left: 0, right: 0 },
+            Command::Equal { left: 1, right: 1 },
+            Command::Deduce {
+                assumptions: vec![0, 1],
+                actions: vec![ScopedAction::Conjoin { left: 0, right: 1 }],
+                result: 2,
+            },
+        ])
+        .unwrap();
+    let mut units = 0;
+    while engine.advance(1, 32768, &ArtifactState::new()).unwrap() {
+        assert_eq!(engine.last_quantum_steps(), 1);
+        units += 1;
+    }
+    assert!(
+        units > 50,
+        "the joined proof must execute its checked Hilbert steps"
+    );
+    assert!(engine.checked_fact(0).is_err());
+    assert!(engine.checked_fact(1).is_err());
+    assert!(engine.checked_fact(2).is_ok());
+    assert!(engine.checked_fact(3).is_err());
+    let a = Formula::equal(FreeVariable::new(0), FreeVariable::new(0));
+    let b = Formula::equal(FreeVariable::new(1), FreeVariable::new(1));
+    let expected = Formula::implies(
+        a.clone(),
+        Formula::implies(b.clone(), Formula::conjunction(a, b)),
+    );
+    assert_eq!(engine.result_formula(2).unwrap(), Some(expected));
 }

@@ -79,25 +79,102 @@ def program_id(manifest):
     return hashlib.sha256(framed).hexdigest()
 
 
+def program_integer(data, offset):
+    value = 0
+    for shift in range(0, 64, 7):
+        byte = data[offset]
+        offset += 1
+        assert shift < 63 or byte <= 1
+        value |= (byte & 127) << shift
+        if byte < 128:
+            assert shift == 0 or byte != 0
+            return value, offset
+    raise AssertionError("program integer overflow")
+
+
+def program_manifest(data):
+    commands, offset = program_integer(data, 0)
+    size, offset = program_integer(data, offset)
+    assert commands > 0 and size > 0 and len(data) == offset + 128
+    manifest = {"commands": commands, "input_bytes": size}
+    for index, field in enumerate(("program_hash", "stream_root", "conclusion", "statement")):
+        manifest[field] = list(data[offset + 32 * index:offset + 32 * (index + 1)])
+    return manifest
+
+
+def verify_program_record(data):
+    tag = data[0]
+    if tag == 18:
+        verify_scope_record(data)
+        return
+    fields = {
+        0: "vv", 1: "vv", 2: "r", 3: "rr", 4: "r",
+        5: "ha", 6: "tt", 7: "tt", 8: "r", 9: "rr", 10: "tr",
+        11: "ttr", 12: "rr", 13: "rrr", 14: "rr", 15: "trr", 16: "r",
+        17: "ttr", 19: "rt", 20: "t", 21: "ttr",
+        22: "z", 23: "h", 24: "rttt", 25: "rttttt", 26: "rr",
+        27: "rt", 28: "r", 29: "r",
+    }[tag]
+    offset = 1
+    for field in fields:
+        if field == "h":
+            offset += 32
+        elif field == "z":
+            assert data[offset] <= 6
+            offset += 1
+        else:
+            value, offset = program_integer(data, offset)
+            if field == "t":
+                assert value < (1 << 32)
+            elif field == "v":
+                assert value & 1 or value >> 1 < (1 << 32)
+            elif field == "a":
+                assert value <= 256
+                for _ in range(value):
+                    argument, offset = program_integer(data, offset)
+                    assert argument < (1 << 32)
+    assert offset == len(data)
+
+
+def verify_scope_record(data):
+    offset = 1
+
+    def integer(maximum):
+        nonlocal offset
+        value, offset = program_integer(data, offset)
+        assert value <= maximum
+        return value
+
+    assumptions = integer(32)
+    assert assumptions > 0
+    for _ in range(assumptions):
+        integer((1 << 64) - 1)
+    actions = integer(32)
+    for index in range(actions):
+        tag = data[offset]
+        offset += 1
+        earlier = assumptions + index - 1
+        integer(earlier)
+        if tag == 0:
+            integer((1 << 32) - 1)
+            for _ in range(integer(8)):
+                integer(earlier)
+        else:
+            assert tag == 1
+            integer(earlier)
+    integer(assumptions + actions - 1)
+    assert offset == len(data)
+
+
 def verify_program_input(catalog,manifest):
     identity=bytes.fromhex(program_artifact_id(manifest))
     saved=catalog.execute('SELECT manifest,received,input_bytes,hash,remaining FROM programs WHERE id=?',(identity,)).fetchone()
-    assert saved is not None and json.loads(saved[0])==manifest
+    assert saved is not None and program_manifest(saved[0])==manifest
     assert saved[1:]==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']),bytes(32))
     previous=bytes(32);count=0;size=0
     for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
         assert position==count and 0<len(command)<=4096
-        tag = command[0]
-        if tag < 0x80:
-            assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
-        else:
-            assert len(command) == {0x80: 13, 0x81: 19, 0x82: 19, 0x83: 9, 0x84: 17, 0x85: 9}[tag]
-            if tag in (0x81, 0x82):
-                for offset in (1, 10):
-                    kind = command[offset]
-                    assert kind in (0, 1)
-                    if kind == 0:
-                        assert command[offset + 1:offset + 5] == bytes(4)
+        verify_program_record(command)
         previous=hashlib.sha256(b'naome:proof-program'+previous+len(command).to_bytes(8,'big')+command).digest()
         assert chain==previous
         count+=1;size+=len(command)
@@ -211,7 +288,7 @@ def stored_objects(node):
                 "obligation_proof": obligation.hex() if obligation is not None else None,
                 "compatibility": compatibility.hex(), "payload": payload.hex()}
             if payload.startswith(b'\xffNAOP\0'):
-                manifest=json.loads(payload[len(b'\xffNAOP\0'):])
+                manifest=program_manifest(payload[len(b'\xffNAOP\0'):])
                 assert program_artifact_id(manifest)==object['artifact_id'] and bytes(manifest['statement'])==statement
                 verify_program_input(catalog,manifest)
                 object['program_manifest']=manifest
