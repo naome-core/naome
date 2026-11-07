@@ -34,6 +34,15 @@ pub static CORPUS: LazyLock<Corpus> = LazyLock::new(|| {
     );
     corpus
 });
+/// Bind the decoded corpus consumed by training and reservation. Provenance
+/// labels do not establish the identity of these effective inputs.
+pub(super) fn input_digest(corpus: &Corpus) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&(&corpus.cases, &corpus.reserved_ids))
+        .expect("canonical question corpus encoding");
+    Sha256::digest(bytes).into()
+}
+
 pub fn learning(id: &str) -> Option<&'static Case> {
     learning_cases().find(|q| q.id == id)
 }

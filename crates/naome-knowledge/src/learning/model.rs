@@ -123,6 +123,12 @@ pub(crate) struct Checkpoint {
     pub optimizer: Option<Blob>,
 }
 pub(super) fn specification() -> String {
+    static SPECIFICATION: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| specification_for(&super::curriculum::CORPUS));
+    SPECIFICATION.clone()
+}
+
+fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
@@ -132,7 +138,6 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("model/preservation.rs"));
     hash.update(include_str!("model/utility.rs"));
     hash.update(include_str!("finder.rs"));
-    hash.update(include_str!("preservation-protocol.json"));
     hash.update(include_str!("mod.rs"));
     hash.update(include_str!("state.rs"));
     hash.update(include_str!("coverage.rs"));
@@ -155,6 +160,7 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("../training/ability.rs"));
     hash.update(include_str!("../training/planning.rs"));
     hash.update(include_str!("peer.rs"));
+    hash.update(include_str!("peer/program.rs"));
     hash.update(include_str!("definitions.rs"));
     hash.update(include_str!("knowledge.rs"));
     hash.update(include_str!("prerequisites.rs"));
@@ -173,16 +179,40 @@ pub(super) fn specification() -> String {
     hash.update(include_str!("curriculum/owned-exclusions.json"));
     hash.update(include_str!("curriculum/composition-retired.json"));
     hash.update(include_str!("curriculum.rs"));
+    hash.update(super::curriculum::input_digest(corpus));
     hash.update(include_str!("curriculum/adaptive.rs"));
     hash.update(include_str!("curriculum/frontier.rs"));
     hash.update(include_str!("curriculum/composition.rs"));
-    hash.update(include_str!("progress-protocol.json"));
-    hash.update(include_str!("knowledge-protocol.json"));
     hash.update(
         b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;sparse-parent-mean;batch=16;lr=0.001;float32",
     );
     crate::hex(&hash.finalize())
 }
+#[cfg(test)]
+#[test]
+fn checkpoint_specification_binds_effective_corpus_data() {
+    let source = include_str!("curriculum.json");
+    let mut corpus: super::curriculum::Corpus = serde_json::from_str(source).unwrap();
+    let checkpoint = Checkpoint::fresh();
+    assert_eq!(checkpoint.specification, specification_for(&corpus));
+    let original = super::curriculum::input_digest(&corpus);
+    corpus.cases[0].development = !corpus.cases[0].development;
+    assert_eq!(
+        corpus.manifest_sha256,
+        super::curriculum::CORPUS.manifest_sha256
+    );
+    assert_eq!(
+        corpus.questions_sha256,
+        super::curriculum::CORPUS.questions_sha256
+    );
+    assert_ne!(super::curriculum::input_digest(&corpus), original);
+    let mut mismatched = checkpoint.clone();
+    mismatched.specification = specification_for(&corpus);
+    assert_ne!(mismatched.specification, checkpoint.specification);
+    assert!(mismatched.validate().is_err());
+    checkpoint.validate().unwrap();
+}
+
 impl Checkpoint {
     pub fn fresh() -> Self {
         Self {

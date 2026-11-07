@@ -580,14 +580,11 @@ fn matched_knowledge_learning_experiment() {
         &output.join("bank.json"),
         &serde_json::json!({"helpers":bank.helpers,"learning":bank.learning,"development":bank.development,"confirmation":bank.confirmation}),
     );
-    let protocol: serde_json::Value =
-        serde_json::from_str(include_str!("../knowledge-protocol.json")).unwrap();
-    write(&output.join("protocol.json"), &protocol);
     let source = std::env::var("NAOME_KNOWLEDGE_COMMIT")
         .unwrap_or_else(|_| "unfrozen-engineering-pilot".into());
     write(
         &output.join("run-source.json"),
-        &serde_json::json!({"source_commit":source,"specification":Checkpoint::fresh().specification,"bank_sha256":digest(&( &bank.helpers,&bank.learning,&bank.development,&bank.confirmation)),"protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("../knowledge-protocol.json"))),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"backend":"Burn CPU Flex float32","training_before_confirmation":true}),
+        &serde_json::json!({"source_commit":source,"specification":Checkpoint::fresh().specification,"bank_sha256":digest(&( &bank.helpers,&bank.learning,&bank.development,&bank.confirmation)),"pilot":pilot,"seeds":seeds,"rounds":rounds,"parameters":model::PARAMETERS,"backend":"Burn CPU Flex float32","training_before_confirmation":true}),
     );
     let started = Instant::now();
     let mut runs = Vec::new();

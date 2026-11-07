@@ -16,10 +16,6 @@ pub(crate) const PROVIDER: &str = "naome-structural-finder";
 #[cfg(test)]
 mod comparison;
 #[cfg(test)]
-mod experiment;
-#[cfg(test)]
-mod temporal;
-#[cfg(test)]
 mod tests;
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

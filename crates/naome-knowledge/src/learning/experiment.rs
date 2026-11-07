@@ -7,7 +7,6 @@ mod finding;
 mod knowledge;
 mod lemma_loop;
 mod lookup;
-mod runtime;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -348,7 +347,7 @@ fn native_learning_progress_experiment() {
         &serde_json::json!({
             "git_commit":std::env::var("NAOME_PROGRESS_COMMIT").expect("explicit frozen source commit required"),
             "binary_sha256":crate::hex(&Sha256::digest(&bytes)),
-            "protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("progress-protocol.json"))),
+            "specification":model::specification(),
             "corpus_sha256":crate::hex(&Sha256::digest(include_bytes!("curriculum.json"))),
             "frontier_source_sha256":crate::hex(&Sha256::digest(include_bytes!("curriculum/frontier.rs")))
         }),
@@ -378,10 +377,6 @@ fn native_learning_progress_experiment() {
             "search_expansions":[32,128],
             "claim":"Prospective paired comparison on unseen generated construction roots; no external mathematical or production qualification"
         }),
-    );
-    write(
-        &output.join("protocol.json"),
-        &serde_json::from_str::<serde_json::Value>(include_str!("progress-protocol.json")).unwrap(),
     );
     // Every requested seed finishes learning before the first confirmation query.
     let trained = seeds

@@ -917,12 +917,23 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
         serde_json::to_vec(&progress).unwrap().len() * (job.units() as usize)
             < crate::resources::limits().provider_stream_bytes / 2
     );
+    let before = digest(&state);
+    assert!(
+        !state.qualify(&job),
+        "incomplete updates cannot become the inference checkpoint"
+    );
+    assert_eq!(digest(&state), before);
     job.progress.as_mut().unwrap().model.seed += 1;
     assert!(
         job.validate()
             .unwrap_err()
             .contains("before successful qualification")
     );
+    assert!(
+        !state.qualify(&job),
+        "a substituted update cannot become the inference checkpoint"
+    );
+    assert_eq!(digest(&state), before);
 }
 
 #[test]

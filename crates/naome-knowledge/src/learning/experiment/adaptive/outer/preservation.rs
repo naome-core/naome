@@ -89,15 +89,12 @@ fn verified_own_preservation_comparison() {
     assert!(!path.exists(), "preserve all prior experiments");
     std::fs::create_dir_all(path).unwrap();
     let clock = Clock::start();
-    let protocol = crate::hex(&Sha256::digest(include_bytes!(
-        "../../../preservation-protocol.json"
-    )));
     write(
         &path.join("run-source.json"),
         &serde_json::json!({
             "scope":"development_only_preservation_component", "specification":model::specification(),
             "source_commit":std::env::var("NAOME_ADAPTIVE_COMMIT").expect("frozen source commit"),
-            "protocol_sha256":protocol, "contexts":[4507,4603,4703,4801,4903,5003],
+            "contexts":[4507,4603,4703,4801,4903,5003],
             "cold_forks_per_context":2,"warm_methods":["unmasked","binary","smoothed"],
             "maximum_complete_jobs":30,"final_inferences":0,
             "per_job_limits":{"units":150,"updates":250,"cpu_seconds":90,"wall_seconds":120,
