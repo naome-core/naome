@@ -116,6 +116,13 @@ impl Engine {
         query: Option<&crate::diagnostics::FormulaQuery>,
     ) -> Result<Option<u64>, Error> {
         if evaluation.reference.is_none() {
+            if !ContextRead::charge(&mut evaluation.context_read, context, || {
+                Ok(context
+                    .proof_header(proof)?
+                    .map(|header| header.canonical_length()))
+            })? {
+                return Ok(None);
+            }
             self.observe_reference_context(context);
             evaluation.reference = match context.program_source(proof)? {
                 Some(source) => Some(source),
@@ -132,6 +139,7 @@ impl Engine {
                     )?)));
                 }
             };
+            return Ok(None);
         }
         let source = evaluation
             .reference

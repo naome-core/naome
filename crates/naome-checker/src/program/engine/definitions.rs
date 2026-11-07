@@ -3,9 +3,21 @@ use naome_proof::{DefinitionExpansionError, DefinitionId, DefinitionInstantiatio
 
 pub(super) struct DefinitionEvaluation {
     id: DefinitionId,
-    nodes: DefinitionInstantiation,
+    arguments: Vec<u32>,
+    nodes: Option<DefinitionInstantiation>,
     frames: Vec<Frame>,
     value: Option<u64>,
+}
+impl DefinitionEvaluation {
+    pub(super) fn new(id: DefinitionId, arguments: Vec<u32>) -> Self {
+        Self {
+            id,
+            arguments,
+            nodes: None,
+            frames: Vec::new(),
+            value: None,
+        }
+    }
 }
 enum Frame {
     Not,
@@ -13,14 +25,13 @@ enum Frame {
     Implies(Option<u64>),
 }
 impl Engine {
-    pub(super) fn begin_definition(
+    fn load_definition(
         &mut self,
         context: &dyn ContextView,
         id: DefinitionId,
         arguments: &[u32],
-        command: &Command,
         query: Option<&crate::diagnostics::FormulaQuery>,
-    ) -> Result<DefinitionEvaluation, Error> {
+    ) -> Result<DefinitionInstantiation, Error> {
         self.observe_reference_context(context);
         let result = (|| {
             let certificate = context
@@ -29,28 +40,20 @@ impl Engine {
                 .ok_or(DefinitionExpansionError::UnknownDefinition { definition_id: id })?;
             certificate.instantiate(arguments)
         })();
-        let nodes = match result {
-            Ok(nodes) => nodes,
+        match result {
+            Ok(nodes) => Ok(nodes),
             Err(DefinitionExpansionError::Access(source)) => {
-                return Err(crate::ContextError::from(source).into());
+                Err(crate::ContextError::from(source).into())
             }
-            Err(source) => {
-                return Err(Error::Check(Box::new(self.proof_diagnostic(
-                    command,
-                    crate::diagnostics::Failure::Expansion {
-                        reason: (&source).into(),
-                    },
-                    context,
-                    query,
-                )?)));
-            }
-        };
-        Ok(DefinitionEvaluation {
-            id,
-            nodes,
-            frames: Vec::new(),
-            value: None,
-        })
+            Err(source) => Err(Error::Check(Box::new(self.proof_diagnostic(
+                &self.current_command()?,
+                crate::diagnostics::Failure::Expansion {
+                    reason: (&source).into(),
+                },
+                context,
+                query,
+            )?))),
+        }
     }
 
     pub(super) fn advance_definition(
@@ -63,10 +66,24 @@ impl Engine {
             .definition
             .as_mut()
             .ok_or(crate::ContextError::Corrupt)?;
+        let Some(nodes) = &mut definition.nodes else {
+            if ContextRead::charge(&mut evaluation.context_read, context, || {
+                context.definition_canonical_length(definition.id)
+            })? {
+                definition.nodes = Some(self.load_definition(
+                    context,
+                    definition.id,
+                    &definition.arguments,
+                    query,
+                )?);
+                definition.arguments = Vec::new();
+            }
+            return Ok(None);
+        };
         if let Some(value) = definition.value.take() {
             let node = match definition.frames.pop() {
                 None => {
-                    if !definition.nodes.complete() {
+                    if !nodes.complete() {
                         return Err(crate::ContextError::Corrupt.into());
                     }
                     sql(self.connection.execute(
@@ -87,11 +104,7 @@ impl Engine {
             definition.value = Some(self.intern(node)?);
             return Ok(None);
         }
-        let node = match definition
-            .nodes
-            .next()
-            .ok_or(crate::ContextError::Corrupt)?
-        {
+        let node = match nodes.next().ok_or(crate::ContextError::Corrupt)? {
             Ok(node) => node,
             Err(DefinitionExpansionError::Access(source)) => {
                 return Err(crate::ContextError::from(source).into());

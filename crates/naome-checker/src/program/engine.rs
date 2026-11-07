@@ -208,9 +208,46 @@ struct Evaluation {
     restoring: bool,
     reference: Option<ProgramSource>,
     reference_depth: u64,
+    context_read: Option<ContextRead>,
     definition: Option<DefinitionEvaluation>,
     instantiation_axiom: Option<usize>,
     deduction: Option<scoped::Preparation>,
+}
+
+struct ContextRead {
+    snapshot: [u8; 32],
+    remaining: usize,
+}
+
+impl ContextRead {
+    /// Reserve one checker step per KiB of canonical input, including a
+    /// final charged step for an absent source or a graph header. The whole
+    /// bounded blob is authenticated and decoded only after reservation.
+    fn charge(
+        reservation: &mut Option<Self>,
+        context: &dyn ContextView,
+        length: impl FnOnce() -> Result<Option<usize>, crate::ContextError>,
+    ) -> Result<bool, Error> {
+        const BYTES_PER_STEP: usize = 1024;
+        let snapshot = context.snapshot_id();
+        if reservation
+            .as_ref()
+            .is_none_or(|read| read.snapshot != snapshot)
+        {
+            let bytes = length()?.filter(|bytes| *bytes != usize::MAX).unwrap_or(0);
+            *reservation = Some(Self {
+                snapshot,
+                remaining: bytes.div_ceil(BYTES_PER_STEP).max(1),
+            });
+        }
+        let read = reservation.as_mut().expect("charged context read");
+        read.remaining -= 1;
+        if read.remaining == 0 {
+            *reservation = None;
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }
 enum Operation {
     Definition,
@@ -747,13 +784,7 @@ impl Engine {
                 let mut deduction = None;
                 match plan.construction {
                     checker::Construction::Definition(definition_id, arguments) => {
-                        definition = Some(self.begin_definition(
-                            context,
-                            definition_id,
-                            &arguments,
-                            &command,
-                            query,
-                        )?);
+                        definition = Some(DefinitionEvaluation::new(definition_id, arguments));
                         operations.push(Operation::Definition);
                     }
                     checker::Construction::Formula(expression) => {
@@ -792,6 +823,7 @@ impl Engine {
                     restoring: true,
                     reference: None,
                     reference_depth: 0,
+                    context_read: None,
                     definition,
                     instantiation_axiom,
                     deduction,

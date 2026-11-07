@@ -6,6 +6,48 @@ use std::{
     collections::BTreeMap,
 };
 
+/// Accounts for formula work, including definition reads before the context
+/// can materialize a certificate. Cache hits consume the same allowance.
+pub(crate) struct FormulaWorkBudget<'a> {
+    context: &'a dyn ContextView,
+    remaining: Cell<usize>,
+}
+
+impl<'a> FormulaWorkBudget<'a> {
+    pub(crate) fn new(context: &'a dyn ContextView, bytes: usize) -> Self {
+        Self {
+            context,
+            remaining: Cell::new(bytes),
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> usize {
+        self.remaining.get()
+    }
+
+    pub(crate) fn reserve(&self, bytes: usize) -> Result<(), ContextError> {
+        let remaining = self
+            .remaining()
+            .checked_sub(bytes)
+            .ok_or(ContextError::Limit)?;
+        self.remaining.set(remaining);
+        Ok(())
+    }
+}
+
+impl DefinitionResolver for FormulaWorkBudget<'_> {
+    fn resolve_definition(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<DefinitionResolution<'_>>, naome_proof::DefinitionAccessError> {
+        let Some(bytes) = self.context.definition_canonical_length(id)? else {
+            return Ok(None);
+        };
+        self.reserve(bytes)?;
+        self.context.resolve_definition(id)
+    }
+}
+
 pub(crate) struct ReadContext<'a> {
     source: &'a dyn ContextView,
     proofs: RefCell<BTreeMap<ProofId, Option<ProofHeader>>>,
@@ -58,6 +100,9 @@ impl ContextView for ReadContext<'_> {
     }
     fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError> {
         self.source.contains_artifact(id)
+    }
+    fn definition_canonical_length(&self, id: DefinitionId) -> Result<Option<usize>, ContextError> {
+        self.source.definition_canonical_length(id)
     }
     fn program_source(&self, id: ProofId) -> Result<Option<ProgramSource>, ContextError> {
         self.source.program_source(id)

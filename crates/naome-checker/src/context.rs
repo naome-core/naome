@@ -136,6 +136,8 @@ pub trait ContextView: sealed::Sealed + DefinitionResolver {
     fn snapshot_id(&self) -> [u8; 32];
     fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError>;
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError>;
+    /// Authenticated length available before loading a checked definition.
+    fn definition_canonical_length(&self, id: DefinitionId) -> Result<Option<usize>, ContextError>;
     /// A sealed mathematical source for a program citation. Bounded formulas
     /// use the existing canonical representation; disk contexts also supply
     /// authenticated DAG nodes without materializing a large formula tree.
@@ -205,6 +207,10 @@ impl ContextView for ArtifactState {
     }
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError> {
         Ok(self.resolve_proof(id))
+    }
+    fn definition_canonical_length(&self, id: DefinitionId) -> Result<Option<usize>, ContextError> {
+        Ok(ArtifactState::definition_certificate(self, id)
+            .map(|value| value.canonical_bytes().len()))
     }
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
         Ok(self

@@ -146,12 +146,21 @@ impl ResearchQuestion {
             "question needs a checked definition context",
         ))?;
         let context = crate::context::cache::ReadContext::new(context);
+        // A primitive node uses at most eleven bytes. Each referenced
+        // certificate's header fits in the expansion unit for the application.
+        let context = crate::context::cache::FormulaWorkBudget::new(
+            &context,
+            11 * QUESTION_EXPANSION_MAX_NODES,
+        );
         let (expanded, _) = formula
             .expand_with_node_limit(&context, QUESTION_EXPANSION_MAX_NODES - 1)
             .map_err(|error| match error {
                 naome_proof::DefinitionExpansionError::UnknownDefinition { definition_id } => {
                     QuestionError::MissingDefinition(definition_id)
                 }
+                naome_proof::DefinitionExpansionError::Access(
+                    naome_proof::DefinitionAccessError::Limit,
+                ) => QuestionError::Limit("question definition decode bytes"),
                 _ => QuestionError::Mathematical(error.to_string()),
             })?;
         let target = QuestionTarget::from_expanded_formula(expanded)?;

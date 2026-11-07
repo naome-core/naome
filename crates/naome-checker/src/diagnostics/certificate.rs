@@ -107,6 +107,7 @@ pub(crate) fn error(
     results: &[Option<CheckedStep>],
     derived: Option<&Formula>,
     query: Option<&FormulaQuery>,
+    work: &crate::context::cache::FormulaWorkBudget<'_>,
 ) -> CheckError {
     let step = &certificate.steps()[kind.step() as usize];
     let mut roles = schema_roles(step);
@@ -302,7 +303,7 @@ pub(crate) fn error(
     // Input formula fields have no proofhood claim. A failed expansion leaves
     // its typed dependency/limit cause, never an invented primitive formula.
     let mut add_raw = |role, raw: &ProofFormula| {
-        if let Ok(formula) = crate::primitive_formula(kind.step(), raw, context) {
+        if let Ok(formula) = crate::primitive_formula(kind.step(), raw, work) {
             let fragment = tree_fragment(formula.view(), FORMULA_FRAGMENT_NODES, 0);
             if let Some(query) = query
                 && query.operand == role
