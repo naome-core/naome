@@ -6,7 +6,7 @@ use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command};
 fn extending_a_private_batch_does_not_reserve_its_prefix_twice() {
     let graph = Graph::default();
     let parent = graph
-        .author("goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q")
+        .author("00000000020600000000210000000000000000")
         .unwrap();
     let candidate = parent.prepare().unwrap();
     let bound = Graph::publication_reservation(candidate.bytes.len() * 2, 2).unwrap();
@@ -30,7 +30,7 @@ fn extending_a_private_batch_does_not_reserve_its_prefix_twice() {
 fn a_valid_certificate_with_forged_claimed_identity_is_rejected_before_the_write_phase() {
     let mut graph = Graph::default();
     let valid = graph
-        .author("goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q")
+        .author("00000000020600000000210000000000000000")
         .unwrap();
     let mut forged = valid.clone();
     let statement = naome_proof::StatementId::from_bytes([7; 32]);
@@ -102,7 +102,7 @@ fn a_checked_program_rebinds_registration_after_graph_and_copy_changes_before_pu
     let mut prepared = PreparedProgram::new(proof);
     assert!(!prepared.advance(&graph, 0).unwrap());
     let _ = graph
-        .produce("goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q")
+        .produce("00000000020600000000210000000000000000")
         .unwrap();
     assert!(
         !prepared.advance(&graph, 1).unwrap(),

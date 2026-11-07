@@ -133,27 +133,29 @@ pub(super) fn prepare_failure(source: &CheckedStorage, target: Option<&CheckedSt
 // The same large simplification family as the accepted public process case.
 // Sixteen live statements keep the forced copy active through ingest's default step.
 fn object(graph: &Graph, index: usize) -> Envelope {
-    let mut source = String::from("let:\n    large0 = not(not(not(all(x,eq(x,x)))))\n");
-    for level in 1..10 {
-        source.push_str(&format!(
-            "    large{level} = imp(large{},large{})\n",
-            level - 1,
-            level - 1
-        ));
+    let x = crate::test_inputs::variable(0);
+    let mut formula = naome_foundation::Formula::for_all(x, naome_foundation::Formula::equal(x, x));
+    for _ in 0..3 {
+        formula = naome_foundation::Formula::negate(formula);
     }
-    let mut previous = "large9".to_owned();
-    for (position, bit) in format!("{index:017b}").bytes().enumerate() {
-        let name = format!("index{position}");
-        let body = if bit == b'1' {
-            format!("not({previous})")
+    for _ in 1..10 {
+        formula = naome_foundation::Formula::implies(formula.clone(), formula);
+    }
+    for bit in format!("{index:017b}").bytes() {
+        formula = if bit == b'1' {
+            naome_foundation::Formula::negate(formula)
         } else {
-            format!("all(z,{previous})")
+            naome_foundation::Formula::for_all(x, formula)
         };
-        source.push_str(&format!("    {name} = {body}\n"));
-        previous = name;
     }
-    source.push_str(&format!("goal = imp({previous},imp({previous},{previous}))\nproof:\n    p0 = simp({previous},{previous})\n    return p0\n"));
-    graph.author(&source).unwrap()
+    graph
+        .author(&crate::test_inputs::proof(vec![
+            naome_proof::ProofStep::Simplification {
+                antecedent: formula.clone().into(),
+                consequent: formula.into(),
+            },
+        ]))
+        .unwrap()
 }
 fn graph(copy: bool) -> Graph {
     let mut graph = Graph::default();
@@ -256,7 +258,7 @@ fn closed(graph: &Graph, source: &CheckedStorage, target: Option<&CheckedStorage
 }
 
 #[test]
-fn public_ingest_batches_real_source_and_mirror_inserts_before_canonical_commit() {
+fn public_ingest_batches_real_artifact_and_mirror_inserts_before_canonical_commit() {
     for copy in [false, true] {
         let mut graph = graph(copy);
         let source = graph.checked_storage.clone();
@@ -316,7 +318,7 @@ fn public_ingest_batches_real_source_and_mirror_inserts_before_canonical_commit(
         assert_eq!(graph.accepted_count(), 17);
         assert_eq!(
             graph.describe(id).unwrap_err().to_string(),
-            "question limit exceeded: question source bytes"
+            "question limit exceeded: question target nodes"
         );
     }
 }
@@ -511,14 +513,15 @@ fn foreign_writer_waits_while_cold_old_reader_succeeds_and_abort_wakes_it_closed
 
 #[test]
 fn prepared_batch_staleness_deadline_and_last_snapshot_generation_lifetime_survive_admission() {
-    const SOURCE: &str = "goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
+    const SOURCE: &str = "00000000020600000000210000000000000000";
     let mut graph = graph(false);
     let source = graph.checked_storage.clone();
     let path = source.path.clone();
     let weak = Arc::downgrade(&source);
     let old = graph.context.clone();
     let snapshot = old.snapshot_id();
-    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
     let envelope = object(&graph, 8116);
     graph.ingest(envelope, Instant::now()).unwrap();

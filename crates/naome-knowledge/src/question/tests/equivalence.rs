@@ -3,8 +3,8 @@ use super::*;
 #[tokio::test]
 async fn running_node_rejects_certified_equivalence_before_selection_and_after_registry_recovery() {
     let directory = Directory::new();
-    let baseline = question("goal=and(all(x,mem(x,x)),all(y,not(mem(y,y))))");
-    let exchanged = question("goal=and(all(y,not(mem(y,y))),all(x,mem(x,x)))");
+    let baseline = question("02030401010000000001000000000204020101000000000100000000");
+    let exchanged = question("02030402010100000000010000000002040101000000000100000000");
     for recovery in [false, true] {
         let (handle, admin, inbox) = channel();
         let calls = Arc::new(AtomicUsize::new(0));

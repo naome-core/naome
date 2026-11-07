@@ -1,7 +1,7 @@
 use super::*;
 
 static CALLS: AtomicUsize = AtomicUsize::new(0);
-fn counted(_: CompiledQuestion) -> Ready<Result<bool, String>> {
+fn counted(_: ResearchQuestion) -> Ready<Result<bool, String>> {
     CALLS.fetch_add(1, Ordering::SeqCst);
     ready(Ok(true))
 }
@@ -47,7 +47,13 @@ async fn temporary_overload_retains_final_selection_without_declining_or_repeati
         let mut graph = Graph::open(&directory.0).unwrap();
         let mut owner = crate::jobs::tests::Manual::new();
         let mut questions: Questions = if managed {
-            Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap()
+            Questions::managed(
+                owner.client.clone(),
+                &directory.0,
+                Duration::from_secs(60),
+                &graph,
+            )
+            .unwrap()
         } else {
             LocalQuestions::new(Some(counted as fn(_) -> _))
         };
@@ -149,8 +155,13 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
-    let mut questions =
-        Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap();
+    let mut questions = Questions::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(60),
+        &graph,
+    )
+    .unwrap();
     let mut intake = Intake::default();
     let peer = PeerId::random();
     intake.enqueue(peer, fixtures[0].1.clone(), &graph).unwrap();

@@ -1,4 +1,3 @@
-use naome_authoring::CompiledProof;
 use naome_foundation::FOUNDATION_ID;
 use naome_proof::program::MANIFEST_MAGIC;
 use naome_proof::{
@@ -96,41 +95,63 @@ pub(crate) enum ProofDescription {
     Program(ProgramMetadata),
 }
 pub(crate) enum ArtifactTransfer {
-    Certificate(Envelope),
+    Certificate {
+        object: Envelope,
+        question: Option<String>,
+    },
     Program(ProgramMetadata),
 }
 
 impl ProgramMetadata {
     pub(crate) fn question(
         &self,
-    ) -> Result<Option<naome_authoring::CompiledQuestion>, crate::Error> {
-        self.question
-            .as_ref()
-            .map(|question| {
-                Metadata {
-                    artifact_id: hex(self.manifest.artifact_id().as_bytes()),
-                    proof_id: hex(self.manifest.proof_id().as_bytes()),
-                    statement_id: hex(self.manifest.statement_id().as_bytes()),
-                    question: question.clone(),
-                }
-                .compile()
-                .map(|(_, _, question)| question)
-            })
-            .transpose()
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<Option<naome_checker::question::ResearchQuestion>, crate::Error> {
+        use naome_proof::program::{formula_hash, graph_statement_id};
+        let Some(source) = &self.question else {
+            return Ok(None);
+        };
+        let question =
+            naome_checker::question::ResearchQuestion::from_hex_with_context(source, context)?;
+        let mut matches = false;
+        for target in [question.positive_target(), question.negative_target()] {
+            let hash = formula_hash(target);
+            let statement = self.manifest.statement_id();
+            if hash == self.manifest.conclusion
+                && (statement == graph_statement_id(hash) || statement == target_id(target)?)
+            {
+                matches = true;
+                break;
+            }
+        }
+        if !matches {
+            return Err("description statement does not match a question target".into());
+        }
+        Ok(Some(question))
     }
 }
 
 impl Metadata {
     pub(crate) fn compile(
         &self,
-    ) -> Result<(ArtifactId, StatementId, naome_authoring::CompiledQuestion), crate::Error> {
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<
+        (
+            ArtifactId,
+            StatementId,
+            naome_checker::question::ResearchQuestion,
+        ),
+        crate::Error,
+    > {
         let id = ArtifactId::from_bytes(id_bytes(&self.artifact_id)?);
         if ArtifactId::from_proof_id(ProofId::from_bytes(id_bytes(&self.proof_id)?)) != id {
             return Err("description proof address differs".into());
         }
         let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
-        let question = naome_authoring::CompiledQuestion::compile(&self.question)
-            .map_err(|error| error.to_string())?;
+        let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
+            &self.question,
+            context,
+        )?;
         let positive = target_id(question.positive_target())?;
         let negative = target_id(question.negative_target())?;
         if statement != positive && statement != negative {
@@ -142,7 +163,7 @@ impl Metadata {
 
 // Early address binding uses the unchanged checker framing. Only a checked
 // conclusion and classify_checked_proof establish the eventual resolution.
-fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::Error> {
+pub(crate) fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::Error> {
     let bytes = formula
         .encode_canonical()
         .map_err(|error| error.to_string())?;
@@ -152,7 +173,13 @@ fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::
 pub fn compatibility() -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"naome:knowledge:compatibility\0");
-    for value in [FOUNDATION_ID, CODEC_ID, CHECKER_ID, GRAPH_POLICY_ID] {
+    for value in [
+        FOUNDATION_ID,
+        CODEC_ID,
+        CHECKER_ID,
+        GRAPH_POLICY_ID,
+        crate::wire::FRAME_CONTRACT,
+    ] {
         hash.update((value.len() as u32).to_be_bytes());
         hash.update(value.as_bytes());
     }
@@ -244,16 +271,6 @@ pub(crate) enum CheckedArtifact {
     Definition(naome_checker::CheckedDefinition),
 }
 impl CheckedArtifact {
-    pub(crate) fn from_compiled(compiled: naome_authoring::CompiledArtifact) -> Self {
-        match compiled {
-            naome_authoring::CompiledArtifact::Proof(proof) => {
-                Self::Proof(proof.into_checked_proof())
-            }
-            naome_authoring::CompiledArtifact::Definition(definition) => {
-                Self::Definition(definition.into_checked_definition())
-            }
-        }
-    }
     pub(crate) fn id(&self) -> ArtifactId {
         match self {
             Self::Proof(proof) => proof.artifact_id(),
@@ -456,6 +473,17 @@ impl BinaryArtifact {
     }
 }
 
+pub(crate) fn certificate_error(
+    bytes: &[u8],
+    error: naome_proof::ProofCertificateError,
+) -> crate::Error {
+    crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
+        message: format!("malformed certificate: {error}"),
+        input_digest: naome_checker::diagnostics::Digest::of(bytes),
+        reason: crate::error::FormatFailure::from(&error),
+    }))
+}
+
 fn prepare_candidate(
     id: ArtifactId,
     statement: Option<StatementId>,
@@ -469,13 +497,8 @@ fn prepare_candidate(
             if obligation.is_some() {
                 return Err("proof has definition obligation metadata".into());
             }
-            let certificate = ProofCertificate::from_canonical_bytes(payload).map_err(|error| {
-                crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
-                    message: format!("malformed certificate: {error}"),
-                    input_digest: naome_checker::diagnostics::Digest::of(payload),
-                    reason: naome_authoring::FormatFailure::from(&error),
-                }))
-            })?;
+            let certificate = ProofCertificate::from_canonical_bytes(payload)
+                .map_err(|error| certificate_error(payload, error))?;
             let normal = certificate.into_unchecked_normal_form();
             if normal.canonical_bytes() != payload {
                 return Err("non-normal proof bytes".into());
@@ -600,19 +623,6 @@ impl Envelope {
             return Err("program identity binding differs".into());
         }
         Ok(Some(manifest))
-    }
-    pub fn from_compiled(proof: CompiledProof) -> Self {
-        Self {
-            compatibility: hex(&compatibility()),
-            artifact_id: hex(proof.artifact_id().as_bytes()),
-            statement_id: Some(hex(proof.statement_id().as_bytes())),
-            obligation_proof: None,
-            payload: format!(
-                "{:02x}{}",
-                ArtifactPayload::PROOF_TAG,
-                hex(proof.canonical_proof_bytes())
-            ),
-        }
     }
     pub(crate) fn prepare(self) -> Result<Candidate, crate::Error> {
         self.prepare_with_limits(

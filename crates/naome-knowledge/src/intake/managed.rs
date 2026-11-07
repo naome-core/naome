@@ -63,7 +63,7 @@ impl Intake {
                     description.transfer.peer(),
                     description.transfer.root(),
                     description.statement,
-                    *description.question.source_hash(),
+                    *description.question.record_id(),
                 ),
                 DeclineContext {
                     formal,
@@ -80,7 +80,7 @@ impl Intake {
         context_changed: bool,
     ) -> Result<WaitingStep, crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let now = Instant::now();
@@ -141,7 +141,7 @@ impl Intake {
         questions: &mut LocalQuestions<F>,
     ) -> Progress
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let now = Instant::now();

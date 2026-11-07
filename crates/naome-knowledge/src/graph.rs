@@ -160,7 +160,69 @@ impl Graph {
             error
         })
     }
+
+    pub(crate) fn resolves_question(
+        &self,
+        id: ArtifactId,
+        question: &naome_checker::question::ResearchQuestion,
+    ) -> Result<bool, crate::Error> {
+        self.ensure_live()?;
+        self.cold(Self::context_resolves_question(&self.context, id, question))
+    }
+
+    fn context_resolves_question(
+        context: &DiskArtifactState,
+        id: ArtifactId,
+        question: &naome_checker::question::ResearchQuestion,
+    ) -> Result<bool, crate::Error> {
+        let Some(proof) = context.artifact_proof_id(id)? else {
+            return Ok(false);
+        };
+        let header = context
+            .proof_header(proof)?
+            .ok_or("checked proof header missing")?;
+        for formula in [question.positive_target(), question.negative_target()] {
+            let target = if header.canonical_length() == usize::MAX {
+                use naome_proof::program::{formula_hash, graph_statement_id};
+                graph_statement_id(formula_hash(formula))
+            } else {
+                crate::object::target_id(formula)?
+            };
+            if header.statement_id() == target {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn exchange_question(&self, id: ArtifactId) -> Result<Option<String>, crate::Error> {
+        let Some(bytes) = self.cold(self.store.exchange_question(id, self.fixed_summary()))? else {
+            return Ok(None);
+        };
+        let question = self.cold(
+            naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
+                &bytes,
+                &self.context,
+            )
+            .map_err(|error| crate::Error::CorruptStorage(error.to_string())),
+        )?;
+        if question.dependencies().is_empty() || !self.resolves_question(id, &question)? {
+            return self.cold(Err(crate::Error::CorruptStorage(
+                "stored exchange question does not bind the checked proof".into(),
+            )));
+        }
+        Ok(Some(question.to_hex()))
+    }
+
     pub(crate) fn describe(&self, id: ArtifactId) -> Result<Option<Metadata>, crate::Error> {
+        self.describe_with_question(id, self.exchange_question(id)?)
+    }
+
+    fn describe_with_question(
+        &self,
+        id: ArtifactId,
+        question: Option<String>,
+    ) -> Result<Option<Metadata>, crate::Error> {
         self.ensure_live()?;
         let Some(proof_id) = self.cold(self.context.artifact_proof_id(id))? else {
             return Ok(None);
@@ -174,6 +236,14 @@ impl Graph {
             return Ok(None);
         };
         let statement = header.statement_id();
+        if let Some(question) = question {
+            return Ok(Some(Metadata {
+                artifact_id: crate::hex(id.as_bytes()),
+                proof_id: crate::hex(proof_id.as_bytes()),
+                statement_id: crate::hex(statement.as_bytes()),
+                question,
+            }));
+        }
         let conclusion = self
             .cold(
                 self.context
@@ -181,8 +251,9 @@ impl Graph {
                     .map_err(crate::Error::from),
             )?
             .ok_or("checked proof conclusion missing")?;
-        let derived = naome_authoring::CompiledQuestion::from_formula(conclusion.into_owned())
-            .map_err(crate::Error::from)?;
+        let derived =
+            naome_checker::question::ResearchQuestion::from_formula(conclusion.into_owned())
+                .map_err(crate::Error::from)?;
         if derived.formula() != derived.positive_target()
             && derived.formula() != derived.negative_target()
         {
@@ -192,7 +263,10 @@ impl Graph {
             artifact_id: crate::hex(id.as_bytes()),
             proof_id: crate::hex(proof_id.as_bytes()),
             statement_id: crate::hex(statement.as_bytes()),
-            question: format!("goal = {}", derived.core().to_source()),
+            question: naome_checker::question::ResearchQuestion::from_formula(
+                derived.core().clone(),
+            )?
+            .to_hex(),
         };
         Ok(Some(metadata))
     }
@@ -334,6 +408,13 @@ impl Graph {
     /// nodes only at completed handoff. Retained snapshots keep their storage;
     /// all generations share the single bounded cache.
     pub(crate) fn maintain_checked_storage(&mut self) -> Result<(), crate::Error> {
+        self.maintain_checked_storage_with_admission(false)
+    }
+
+    pub(crate) fn maintain_checked_storage_with_admission(
+        &mut self,
+        preparing_program: bool,
+    ) -> Result<(), crate::Error> {
         self.checked_storage.adapt_cache()?;
         let bytes = crate::resources::adaptive::cache(
             crate::resources::active_limits().checker_cache_bytes,
@@ -347,7 +428,13 @@ impl Graph {
         if self.context.read_cache_limits() != cache_limits {
             self.context = self.context.clone().with_read_cache_limits(cache_limits)?;
         }
-        if !crate::resources::adaptive::work_available() {
+        // The staging writes of one multi-quantum registration can cross the
+        // copy threshold before publication. Starting a copy then invalidates
+        // the registration's stamp, so retrying can repeat the same writes
+        // and restart the copy indefinitely. Finish any already active copy.
+        if !crate::resources::adaptive::work_available()
+            || preparing_program && self.compaction.is_none()
+        {
             return Ok(());
         }
         match self.maintain_checked_storage_at(self.next_compaction) {
@@ -514,26 +601,28 @@ impl Graph {
         Ok(Some(live))
     }
 
-    pub fn author(&self, source: &str) -> Result<Envelope, crate::Error> {
+    /// Check a tagged canonical proof or definition in lowercase hex against
+    /// the current context and return its authenticated envelope.
+    pub fn author(&self, encoded: &str) -> Result<Envelope, crate::Error> {
         self.ensure_live()?;
-        if source.len() > crate::resources::limits().proof_bytes {
-            return Err("producer source byte limit".into());
+        if encoded.len() > 2 * crate::resources::limits().proof_bytes {
+            return Err("producer artifact byte limit".into());
         }
-        let checked = CheckedArtifact::from_compiled(self.compile_source(source, &self.context)?);
+        let checked = self.check_input(encoded, &self.context)?;
         self.cold(checked.record(&self.context))
             .map(|record| record.envelope())
     }
 
-    /// Compile and publish local source while retaining its sealed checker result.
+    /// Check and publish a canonical artifact input from the local producer.
     /// Local owner ingestion has its own authority; peer selection stays separate.
-    pub(crate) fn produce(&mut self, source: &str) -> Result<(Envelope, Ingest), crate::Error> {
+    pub(crate) fn produce(&mut self, encoded: &str) -> Result<(Envelope, Ingest), crate::Error> {
         crate::resources::require_work_admission()?;
         self.maintain_checked_storage()?;
-        if source.len() > crate::resources::limits().proof_bytes {
-            return Err("producer source byte limit".into());
+        if encoded.len() > 2 * crate::resources::limits().proof_bytes {
+            return Err("producer artifact byte limit".into());
         }
-        let disk = self.reserve_publication(source.len(), 1)?;
-        let checked = CheckedArtifact::from_compiled(self.compile_source(source, &self.context)?);
+        let disk = self.reserve_publication(encoded.len() / 2, 1)?;
+        let checked = self.check_input(encoded, &self.context)?;
         let record = self.cold(checked.record(&self.context))?;
         if record.bytes.len() > crate::resources::limits().proof_bytes {
             return Err("proof byte limit".into());
@@ -707,22 +796,38 @@ impl Graph {
         Ok(true)
     }
 
-    fn compile_source(
+    fn check_input(
         &self,
-        source: &str,
+        encoded: &str,
         context: &DiskArtifactState,
-    ) -> Result<naome_authoring::CompiledArtifact, crate::Error> {
+    ) -> Result<CheckedArtifact, crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
+        let _memory = crate::resources::MemoryLease::acquire(encoded.len() / 2)?;
         #[cfg(test)]
-        {
-            self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bytes = crate::unhex(encoded)?;
+        let checked = match bytes.split_first() {
+            Some((&naome_proof::ArtifactPayload::PROOF_TAG, payload)) => {
+                let certificate = naome_proof::ProofCertificate::from_canonical_bytes(payload)
+                    .map_err(|error| crate::object::certificate_error(payload, error))?;
+                check_normal_form_with_state(certificate.into_unchecked_normal_form(), context)
+                    .map(CheckedArtifact::Proof)
+                    .map_err(crate::Error::from)
+            }
+            Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, payload)) => {
+                let certificate = naome_proof::DefinitionCertificate::from_canonical_bytes(payload)
+                    .map_err(|error| error.to_string())?;
+                naome_checker::check_definition_with_state(certificate, context)
+                    .map(CheckedArtifact::Definition)
+                    .map_err(crate::Error::from)
+            }
+            _ => Err("unknown artifact input tag".into()),
+        };
+        if let Err(error) = &checked {
+            self.record_check_failure(error);
         }
-        naome_authoring::compile_artifact_against_proof_context(source, context).map_err(|error| {
-            let error = crate::Error::from(error);
-            self.record_check_failure(&error);
-            error
-        })
+        checked
     }
 
     fn check_normal(
@@ -891,7 +996,10 @@ impl Graph {
         let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
         let persisted = self.store.persist_binary_batch(
-            id,
+            crate::store::Publication {
+                root: id,
+                questions: &BTreeMap::new(),
+            },
             batch.entries.iter().map(|(_, record)| record),
             self.fixed_summary(),
             None,

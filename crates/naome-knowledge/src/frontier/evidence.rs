@@ -4,7 +4,7 @@ use crate::checkpoint::{Checkpoint, Update};
 use serde::{Deserialize, Serialize};
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
-const MAX_RECORD: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 4096;
+const MAX_RECORD: usize = 6 * naome_checker::question::QUESTION_BYTES + 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Outcome {
@@ -54,7 +54,7 @@ impl Record {
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
     fn validate(&self, key: &str) -> Result<(), String> {
-        let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
+        let question = ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err("research evidence identity differs".into());
         }
@@ -72,7 +72,7 @@ impl Record {
         Ok(())
     }
 }
-fn record_key(solver: &str, question: &CompiledQuestion) -> String {
+fn record_key(solver: &str, question: &ResearchQuestion) -> String {
     let mut hash = sha2::Sha256::new();
     hash.update(solver.as_bytes());
     hash.update(question.resolution_id());
@@ -153,14 +153,14 @@ impl Evidence {
                 if record.solver == self.solver && visit(&record)? && record.verified.is_none() {
                     record.verified = record.prepared.clone();
                     let question =
-                        CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
+                        ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
                     self.put(&question, &record).map_err(|e| e.to_string())?;
                 }
                 after = Some(key);
             }
         }
     }
-    pub(super) fn get(&self, question: &CompiledQuestion) -> Result<Option<Record>, crate::Error> {
+    pub(super) fn get(&self, question: &ResearchQuestion) -> Result<Option<Record>, crate::Error> {
         self.checkpoint
             .get("question", &record_key(&self.solver, question), MAX_RECORD)
             .map_err(crate::Error::CorruptStorage)
@@ -192,7 +192,7 @@ impl Evidence {
             .commit(header, updates)
             .map_err(crate::Error::from)
     }
-    fn put(&mut self, question: &CompiledQuestion, record: &Record) -> Result<(), crate::Error> {
+    fn put(&mut self, question: &ResearchQuestion, record: &Record) -> Result<(), crate::Error> {
         let header = Header {
             random: self.header.random,
             draws: self.header.draws,
@@ -208,7 +208,7 @@ impl Evidence {
     }
     pub(super) fn attempted(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         knowledge: [u8; 32],
         completion: &jobs::Completion,
         outcome: Outcome,
@@ -217,7 +217,7 @@ impl Evidence {
             return Ok(());
         }
         let mut record = self.get(question)?.unwrap_or(Record {
-            question: question.source().into(),
+            question: question.to_hex(),
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
             last_draw: 0,
@@ -260,7 +260,7 @@ impl Evidence {
     }
     pub(super) fn prepared(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
         root: ArtifactId,
     ) -> Result<(), crate::Error> {
@@ -278,7 +278,7 @@ impl Evidence {
     }
     pub(super) fn rejected(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
     ) -> Result<(), crate::Error> {
         let Some(mut record) = self.get(question)? else {
@@ -297,7 +297,7 @@ impl Evidence {
     }
     pub(super) fn verified(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
         root: ArtifactId,
     ) -> Result<Option<(u32, u64)>, crate::Error> {

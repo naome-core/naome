@@ -5,7 +5,8 @@ from pathlib import Path
 import time
 import traceback
 
-from proof_network import citation_id, proof_metadata, digest, question_source, source, stored_objects
+from proof_network import (citation_id, cite_and_weaken, digest, member_self, proof_metadata,
+                           quantified_reflexivity, question_fixture, source, stored_objects)
 from proof_network_discovery import DiscoveryDriver, Relay, port
 
 
@@ -44,13 +45,10 @@ class QuestionDriver(DiscoveryDriver):
             self.start_participant(node)
         for node in [spare, receiver]:
             node.wait_event(lambda event: event.get("event") == "identified" and event.get("peer") == sender.identity, timeout=40)
-        first = sender.command("produce", source=source(11))
-        helper = sender.command("produce", source=source(7))
-        a = question_source(source(7)).split("goal = ")[1]
-        b = "all(z,mem(z,z))"
-        child_statement = f"imp({b},{a})"
-        child_source = f'goal = {child_statement} proof: p0 = cite("{citation_id(helper["object"])}") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2'
-        child = sender.command("produce", source=child_source)
+        first = sender.command("produce", artifact=source(11))
+        helper = sender.command("produce", artifact=source(7))
+        child_source = cite_and_weaken(citation_id(helper["object"]), bytes.fromhex(question_fixture(7)), member_self())
+        child = sender.command("produce", artifact=child_source)
         expected = [value["object"]["artifact_id"] for value in [first, helper, child]]
         self.wait_set(receiver, expected)
         self.wait_set(spare, expected)
@@ -79,12 +77,12 @@ class QuestionDriver(DiscoveryDriver):
         # An unrelated description must never establish the actual solution.
         # A second supplier remains eligible after the false one is declined.
         receiver.stop()
-        actual = sender.command("test_compile", source=source(31))["object"]
-        unrelated = sender.command("test_compile", source=source(32))["object"]
+        actual = sender.command("test_check", artifact=source(31))["object"]
+        unrelated = sender.command("test_check", artifact=source(32))["object"]
         for supplier in [sender, spare]:
             supplier.command("ingest", object=actual)
         bad, good = sorted([sender, spare], key=lambda node: node.identity)
-        wrong = proof_metadata(actual, question_source(source(32)))
+        wrong = proof_metadata(actual, question_fixture(32))
         wrong["statement_id"] = unrelated["statement_id"]
         bad.command("test_descriptor", metadata=wrong)
         good.stop()
@@ -104,12 +102,7 @@ class QuestionDriver(DiscoveryDriver):
             "good_supplier": good.identity, "good_gets": good_gets}
         if self.mode == "direct":
             sender.command("links", peers=[])
-            formula = "eq(x0,x0)"
-            steps = ["p0 = refl(x0)"]
-            for index in range(34):
-                formula = f"all(x{index},{formula})"
-                steps.append(f"p{index + 1} = gen(p{index},x{index})")
-            result = sender.command("produce", source=f'goal = {formula} proof: ' + " ".join(steps) + " return p34")
+            result = sender.command("produce", artifact=quantified_reflexivity(34))
             assert result["result"]["status"] == "accepted" and result["metadata"] is None, result
             error = result["metadata_error"]
             assert error["schema_version"] == 1 and error["code"] == "input.invalid", error

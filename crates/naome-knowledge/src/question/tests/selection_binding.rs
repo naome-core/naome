@@ -10,6 +10,7 @@ async fn pending_selection_cannot_be_sealed_after_its_policy_or_owner_changes() 
             provider.client.clone(),
             &directory.0,
             Duration::from_secs(3600),
+            &graph,
         )
         .unwrap();
         let (reply, receiver) = oneshot::channel();
@@ -44,6 +45,7 @@ async fn independent_admissions_share_selection_epoch_but_receive_fresh_formal_r
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        &graph,
     )
     .unwrap();
     let mut replies = Vec::new();

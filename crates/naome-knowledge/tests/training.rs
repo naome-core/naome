@@ -21,17 +21,21 @@ fn developer_training_command_exports_recheckable_targets_from_a_stopped_node() 
     let mut graph = Graph::open(&node).unwrap();
     let mut expected = 0;
     for n in 1..=12 {
-        let mut formula = "eq(v0,v0)".to_owned();
-        let mut proof = "p0=refl(v0)".to_owned();
-        for i in 0..n {
-            formula = format!("all(v{i},{formula})");
-            proof.push_str(&format!(" p{}=gen(p{i},v{i})", i + 1));
+        use naome_foundation::{Formula, FreeVariable};
+        use naome_proof::{ProofCertificate, ProofStep};
+        let x = FreeVariable::new(0);
+        let mut formula = Formula::equal(x, x);
+        let mut steps = vec![ProofStep::EqualityReflexivity { variable: x }];
+        for premise in 0..n {
+            let variable = FreeVariable::new(premise);
+            formula = Formula::for_all(variable, formula);
+            steps.push(ProofStep::Generalization { premise, variable });
         }
-        let question =
-            naome_authoring::CompiledQuestion::compile(&format!("goal={formula}")).unwrap();
+        let question = naome_checker::question::ResearchQuestion::from_formula(formula).unwrap();
         expected += usize::from(training::partition(&question) == training::Partition::Training);
+        let bytes = ProofCertificate::new(steps).unwrap().to_canonical_bytes();
         let envelope = graph
-            .author(&format!("goal={formula} proof: {proof} return p{n}"))
+            .author(&format!("00{}", naome_knowledge::hex(&bytes)))
             .unwrap();
         graph.ingest(envelope, Instant::now()).unwrap();
     }

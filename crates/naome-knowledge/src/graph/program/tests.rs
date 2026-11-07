@@ -133,3 +133,47 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
     assert_eq!(checked.proof().unwrap().manifest(), &manifest);
     assert!(!receiver.contains(manifest.artifact_id()).unwrap());
 }
+
+#[test]
+fn program_preparation_defers_new_checked_copies_until_admission_releases() {
+    if std::env::var_os("NAOME_PROGRAM_COMPACTION_TEST").is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "graph::program::tests::program_preparation_defers_new_checked_copies_until_admission_releases",
+                "--nocapture",
+            ])
+            .env("NAOME_PROGRAM_COMPACTION_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        );
+        return;
+    }
+    let mut graph = Graph {
+        next_compaction: 0,
+        ..Graph::default()
+    };
+    let initial = graph.checked_storage.clone();
+    let epoch = initial.copy_epoch().unwrap();
+
+    // A new copy would invalidate a live preparation before its next quantum.
+    graph.maintain_checked_storage_with_admission(true).unwrap();
+    assert!(graph.compaction.is_none());
+    assert!(std::sync::Arc::ptr_eq(&initial, &graph.checked_storage));
+    assert_eq!(initial.copy_epoch().unwrap(), epoch);
+
+    for _ in 0..32 {
+        graph
+            .maintain_checked_storage_with_admission(false)
+            .unwrap();
+        if !std::sync::Arc::ptr_eq(&initial, &graph.checked_storage) {
+            return;
+        }
+    }
+    panic!("copy should start after the program releases admission");
+}

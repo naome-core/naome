@@ -125,7 +125,7 @@ fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
 
 #[test]
 fn source_binding_preserves_original_question_orientation_and_strict_schema() {
-    let source = "goal = not(all(x,mem(x,x)))";
+    let source = "02040101000000000100000000";
     let input = Input::Solve {
         question: source.into(),
     };

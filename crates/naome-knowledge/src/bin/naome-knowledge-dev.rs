@@ -35,7 +35,7 @@ async fn execute() -> Result<(), String> {
                 .and_then(|_|file.sync_all()).map_err(|error|error.to_string())?;
             println!("{}",json!({"peer_id":key.public().to_peer_id().to_string(),
                 "config":{"directory":fs::canonicalize(directory).map_err(|error|error.to_string())?, "listen":"/ip4/0.0.0.0/tcp/0", "peers":[],
-                "discovery":network::DiscoveryConfig::default(),"producer_sources":[]}}));
+                "discovery":network::DiscoveryConfig::default(),"producer_artifacts":[]}}));
             Ok(())
         },
         ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
@@ -64,6 +64,6 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":naome_knowledge::resources::limits().request_timeout.as_secs(),"reconcile_seconds":naome_knowledge::resources::limits().reconcile_interval.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract | training <node-directory> <request.json> | training --help\nrun consumes bounded newline-delimited JSON commands: status (optional after ArtifactId; ids, next_after, status_page_ids, accepted_artifacts), produce, ingest, object, describe, links, announce, offer, stop".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract | training <node-directory> <request.json> | training --help\nrun consumes bounded newline-delimited JSON commands: status (optional after ArtifactId; ids, next_after, status_page_ids, accepted_artifacts), produce (artifact as lowercase hex), ingest, object, describe, links, announce, offer, stop".into()),
     }
 }

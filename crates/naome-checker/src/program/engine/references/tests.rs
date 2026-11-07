@@ -13,6 +13,7 @@ use std::{
 struct Storage {
     bytes: Mutex<BTreeMap<[u8; 32], Vec<u8>>>,
     corrupt: AtomicBool,
+    large_reads: AtomicU64,
 }
 impl ContextStorage for Storage {
     fn read(&self, key: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
@@ -28,6 +29,9 @@ impl ContextStorage for Storage {
             .ok_or(ContextError::Corrupt)?;
         if bytes.len() > maximum {
             return Err(ContextError::Limit);
+        }
+        if bytes.len() > 1024 {
+            self.large_reads.fetch_add(1, Ordering::Relaxed);
         }
         Ok(bytes)
     }
@@ -74,6 +78,107 @@ fn register(state: &mut DiskArtifactState, proof: &CheckedProgram) {
         registration.advance(proof, 31).unwrap();
     }
     *state = registration.finish().unwrap();
+}
+
+#[test]
+fn certificate_citations_import_one_node_per_step_and_replay_after_restart() {
+    use naome_foundation::{Formula, FreeVariable};
+    use naome_proof::{ProofCertificate, ProofStep};
+
+    let x = FreeVariable::new(0);
+    let mut formula = Formula::equal(x, x);
+    for _ in 0..140 {
+        formula = Formula::implies(Formula::member(x, x), formula);
+    }
+    let formula = Formula::for_all(x, formula);
+    let certificate = ProofCertificate::new(vec![ProofStep::Simplification {
+        antecedent: formula.clone().into(),
+        consequent: formula.into(),
+    }])
+    .unwrap();
+    let checked = crate::normalize_and_check(certificate).unwrap();
+    let expected = checked.conclusion().clone();
+    let proof_id = checked.proof_id();
+    let storage = Arc::new(Storage::default());
+    let mut context = DiskArtifactState::new(storage.clone());
+    context.register_proof_for_replication(checked).unwrap();
+    storage.large_reads.store(0, Ordering::Relaxed);
+
+    let path = std::env::temp_dir().join(format!(
+        "naome-certificate-reference-{}.sqlite3",
+        std::process::id(),
+    ));
+    let mut engine = Engine::open(Connection::open(&path).unwrap()).unwrap();
+    engine
+        .append_group(&[
+            Command::ProofReference {
+                proof_id: *proof_id.as_bytes(),
+            },
+            Command::Seal { proof: 0 },
+        ])
+        .unwrap();
+    for step in 0..10 {
+        let before = engine.status().unwrap();
+        assert!(engine.advance(1, 32_768, &context).unwrap());
+        assert_eq!(engine.last_quantum_steps(), 1);
+        let after = engine.status().unwrap();
+        assert_eq!(after.checked_commands, 0);
+        assert!(after.formula_nodes - before.formula_nodes <= 1);
+        if step < 2 {
+            assert_eq!(storage.large_reads.load(Ordering::Relaxed), 0);
+        }
+    }
+    assert_eq!(storage.large_reads.load(Ordering::Relaxed), 1);
+    drop(engine);
+
+    let proof = finish(
+        Engine::open(Connection::open(&path).unwrap()).unwrap(),
+        &context,
+    );
+    assert_eq!(proof.conclusion(), Some(&expected));
+    assert!(proof.references_proof(proof_id).unwrap());
+    drop(proof);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn wrong_arity_definition_load_consumes_budget_before_rejection() {
+    use naome_foundation::FreeVariable;
+    use naome_proof::{DefinedFormula, DefinitionCertificate};
+
+    let x = FreeVariable::new(0);
+    let mut body = DefinedFormula::equal(x, x);
+    for _ in 0..9 {
+        body = DefinedFormula::implies(body.clone(), body);
+    }
+    let certificate = DefinitionCertificate::relation(1, body).unwrap();
+    let load_steps = certificate.canonical_bytes().len().div_ceil(1024);
+    let id = certificate.definition_id();
+    let storage = Arc::new(Storage::default());
+    let mut context = DiskArtifactState::new(storage.clone());
+    context
+        .register_definition(crate::check_definition_with_state(certificate, &context).unwrap())
+        .unwrap();
+    storage.large_reads.store(0, Ordering::Relaxed);
+
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    engine
+        .append(&Command::DefinedRelation {
+            definition_id: *id.as_bytes(),
+            arguments: vec![0, 1],
+        })
+        .unwrap();
+    for _ in 1..load_steps {
+        assert!(engine.advance(1, 32_768, &context).unwrap());
+        assert_eq!(engine.last_quantum_steps(), 1);
+        assert_eq!(engine.status().unwrap().checked_commands, 0);
+        assert_eq!(storage.large_reads.load(Ordering::Relaxed), 0);
+    }
+    let error = engine.advance(1, 32_768, &context).unwrap_err();
+    assert!(error.diagnostic().is_some(), "{error}");
+    assert_eq!(engine.last_quantum_steps(), 1);
+    assert_eq!(engine.status().unwrap().checked_commands, 0);
+    assert_eq!(storage.large_reads.load(Ordering::Relaxed), 1);
 }
 
 fn large_proof(implication: bool) -> CheckedProgram {

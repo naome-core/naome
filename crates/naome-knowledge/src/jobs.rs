@@ -114,7 +114,7 @@ impl RoleSettings {
     fn validate_history(self) -> Result<(), String> {
         if self.limits.horizon_ms == 0
             || self.limits.work_units == 0
-            || self.mock.proof_padding_bytes > naome_authoring::AUTHORING_SOURCE_MAX_BYTES
+            || self.mock.proof_padding_bytes > naome_proof::CERTIFICATE_MAX_BYTES
             || [
                 self.limits.horizon_ms,
                 self.mock.step_ms,
@@ -263,10 +263,12 @@ impl Input {
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Find { question, .. } => {
-                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+                naome_checker::question::ResearchQuestion::from_hex(question)
+                    .map_err(|e| e.to_string())?;
             }
             Self::Solve { question } | Self::Select { question, .. } => {
-                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+                naome_checker::question::ResearchQuestion::from_hex(question)
+                    .map_err(|e| e.to_string())?;
             }
         }
         if let Self::Select {
@@ -296,13 +298,8 @@ impl Input {
 )]
 pub(crate) enum Output {
     Question(String),
-    Proof {
-        source: String,
-        helpers: Vec<String>,
-    },
-    Program {
-        units: u32,
-    },
+    Proof { proof: String, helpers: Vec<String> },
+    Program { units: u32 },
     Selected(bool),
     NoCandidate,
 }
@@ -319,7 +316,7 @@ impl Output {
     fn validate_retained(&self, input: &Input) -> Result<(), String> {
         self.validate_with_limits(
             input,
-            naome_authoring::AUTHORING_SOURCE_MAX_BYTES,
+            naome_proof::CERTIFICATE_MAX_BYTES,
             naome_proof::CERTIFICATE_MAX_STEPS,
             crate::checkpoint::MAX_ROW / 8,
         )
@@ -327,21 +324,22 @@ impl Output {
     fn validate_with_limits(
         &self,
         input: &Input,
-        source_bytes: usize,
+        artifact_bytes: usize,
         objects: usize,
         bytes: usize,
     ) -> Result<(), String> {
         match (self, input) {
             (Self::Question(source), Input::Find { .. })
-                if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES =>
+                if source.len() <= 2 * naome_checker::question::QUESTION_BYTES =>
             {
                 Ok(())
             }
-            (Self::Proof { source, helpers }, Input::Solve { .. })
-                if source.len() <= source_bytes
+            (Self::Proof { proof, helpers }, Input::Solve { .. })
+                if proof.len() <= 2 * artifact_bytes
                     && helpers.len() < objects
-                    && helpers.iter().all(|s| s.len() <= source_bytes)
-                    && source.len() + helpers.iter().map(String::len).sum::<usize>() <= bytes =>
+                    && helpers.iter().all(|s| s.len() <= 2 * artifact_bytes)
+                    && proof.len() + helpers.iter().map(String::len).sum::<usize>()
+                        <= 2 * bytes =>
             {
                 Ok(())
             }
@@ -527,7 +525,7 @@ impl Client {
 }
 
 pub(crate) fn declared_solver_support(
-    question: &naome_authoring::CompiledQuestion,
+    question: &naome_checker::question::ResearchQuestion,
     settings: RoleSettings,
 ) -> bool {
     settings.mock.outcome == MockOutcome::Success && crate::mocks::supports_question(question)

@@ -233,7 +233,7 @@ fn rows(storage: &CheckedStorage, address: [u8; 32]) -> i64 {
 fn checked_graph() -> Graph {
     let mut graph = Graph::default();
     let object = graph
-        .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+        .author("00000000020600000000210000000000000000")
         .unwrap();
     graph.ingest(object, std::time::Instant::now()).unwrap();
     graph
@@ -460,7 +460,7 @@ fn copy_read_mirror_and_real_sql_commit_failures_halt_without_handoff() {
         assert_eq!(graph.store.summary().unwrap().count, 1);
         assert!(
             graph
-                .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+                .author("00000000020600000000210000000000000000")
                 .is_err()
         );
     }
@@ -553,7 +553,7 @@ fn oversized_sql_blob_is_refused_before_parsing_its_header() {
 fn startup_prune_graph() -> (Graph, crate::Envelope, naome_proof::ArtifactId) {
     let mut graph = Graph::default();
     let envelope = graph
-        .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+        .author("00000000020600000000210000000000000000")
         .unwrap();
     let id = naome_proof::ArtifactId::from_bytes(
         crate::unhex(&envelope.artifact_id)

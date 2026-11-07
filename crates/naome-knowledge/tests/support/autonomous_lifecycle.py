@@ -843,7 +843,7 @@ class Node:
         self.config = {
             "directory": str(self.directory),
             "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "peers": [],
-            "producer_sources": [], "discovery": {"mdns": False, "dht": False},
+            "producer_artifacts": [], "discovery": {"mdns": False, "dht": False},
             "runtime": {"question_interval_ms": 3600000, "proof_interval_ms": 100},
         }
         self.write_config()

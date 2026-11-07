@@ -210,10 +210,7 @@ fn a_certificate_closure_checks_program_helpers_with_one_minimum_cache() {
         ],
     );
     let (root, admission) = source
-        .produce(&format!(
-            "goal=all(x,eq(x,x)) proof: p=cite(\"{}\") return p",
-            crate::hex(second.proof_id().as_bytes())
-        ))
+        .produce(&crate::test_inputs::cite(second.proof_id()))
         .unwrap();
     let mut receiver = Graph::default();
     let mut selection = work_selection();
@@ -254,7 +251,7 @@ fn a_certificate_closure_checks_program_helpers_with_one_minimum_cache() {
             "helpers remain private until the complete root commits"
         );
         if closure.certificate_ready() {
-            let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+            let question = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
             let batch = closure.prepare_certificates(&receiver, &question).unwrap();
             assert_eq!(
                 receiver
@@ -443,7 +440,7 @@ async fn receive(
             )
         {
             let (_, admission) = graph
-                .produce("goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q")
+                .produce("00000000020600000000210000000000000000")
                 .unwrap();
             unrelated = Some(admission.id);
         }
@@ -466,7 +463,7 @@ async fn receive(
                 ArtifactTransfer::Program(metadata) => intake
                     .enqueue_program_helper(peer, root, metadata, &graph)
                     .unwrap(),
-                ArtifactTransfer::Certificate(object) => {
+                ArtifactTransfer::Certificate { object, .. } => {
                     fetched.insert(id);
                     intake.payload(peer, root, id, object, &graph).unwrap()
                 }
@@ -558,7 +555,7 @@ async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_p
     let receiver = Directory::new();
     let mut source = Graph::open(&sender.0).unwrap();
     let (_, admission) = source
-        .produce("goal=all(x0,eq(x0,x0)) proof: p0=refl(x0) p1=gen(p0,x0) return p1")
+        .produce("00000000020600000000210000000000000000")
         .unwrap();
     assert_eq!(admission.status, "accepted");
     let certificate = admission.id;
@@ -695,7 +692,7 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
             dht: false,
             ..Default::default()
         }),
-        producer_sources: Vec::new(),
+        producer_artifacts: Vec::new(),
     };
     let (sender_handle, sender_admin, inbox) = crate::question::channel();
     let sender_task = tokio::spawn(network::run_with_questions(

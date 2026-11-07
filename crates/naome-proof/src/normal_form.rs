@@ -4,19 +4,9 @@ use naome_foundation::FreeVariable;
 
 use crate::{ProofCertificate, ProofFormula, ProofReplacement, ProofSeparation, ProofStep, codec};
 
-pub(crate) const UNNORMALIZED_STEP: u32 = u32::MAX;
+const UNNORMALIZED_STEP: u32 = u32::MAX;
 
 pub(super) fn normalize(certificate: ProofCertificate) -> ProofCertificate {
-    normalize_with_step_origins(certificate).0
-}
-
-pub(super) fn normalize_with_step_origins(
-    certificate: ProofCertificate,
-) -> (
-    ProofCertificate,
-    Vec<u32>,
-    BTreeMap<FreeVariable, FreeVariable>,
-) {
     let mut source = certificate.steps.into_iter().map(Some).collect::<Vec<_>>();
     let mut normalized_indices = vec![UNNORMALIZED_STEP; source.len()];
     let mut normalized_steps = Vec::new();
@@ -72,13 +62,9 @@ pub(super) fn normalize_with_step_origins(
 
     // Mapping fixed-width identifiers cannot enlarge a step; reachability and
     // interning only remove steps, so every source certificate limit remains.
-    (
-        ProofCertificate {
-            steps: normalized_steps,
-        },
-        normalized_indices,
-        variables.normalized,
-    )
+    ProofCertificate {
+        steps: normalized_steps,
+    }
 }
 
 #[derive(Clone, Copy)]

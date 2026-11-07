@@ -1,7 +1,7 @@
 //! Independent finite role coordination through untrusted durable job results.
 use crate::{Graph, jobs, network::emit, question};
-use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
+use naome_checker::question::ResearchQuestion;
 use naome_proof::ArtifactId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -61,22 +61,19 @@ struct Finding {
     ticket: jobs::Ticket,
 }
 struct Admission {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     job: u64,
     reply: oneshot::Receiver<question::QuestionAdmission>,
 }
 struct Solving {
     completion: Option<jobs::Completion>,
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     ticket: jobs::Ticket,
     seen: question::Revision,
 }
 mod program;
 enum Candidate {
-    Certificate {
-        source: String,
-        helpers: Vec<String>,
-    },
+    Certificate { proof: String, helpers: Vec<String> },
     Program(Box<program::Generated>),
 }
 impl Candidate {
@@ -84,18 +81,18 @@ impl Candidate {
         &mut self,
         graph: &Graph,
         client: &jobs::Client,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<Option<(ArtifactId, crate::graph::CheckedBatch)>, crate::Error> {
         match self {
-            Self::Certificate { source, helpers } => {
-                graph.prepare_generated(source, helpers, question).map(Some)
+            Self::Certificate { proof, helpers } => {
+                graph.prepare_generated(proof, helpers, question).map(Some)
             }
             Self::Program(program) => program.prepare(graph, client, question),
         }
     }
 }
 struct Publication {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     job: u64,
     candidate: Candidate,
     batch: Option<(ArtifactId, crate::graph::CheckedBatch)>,
@@ -110,7 +107,7 @@ struct Publication {
 }
 
 struct EvidencePublication {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     job: u64,
     root: ArtifactId,
 }
@@ -126,7 +123,7 @@ pub(crate) struct Autonomous {
     cursor: u64,
     next_question: Instant,
     next_proof: Instant,
-    unanswered: VecDeque<CompiledQuestion>,
+    unanswered: VecDeque<ResearchQuestion>,
     recovered_finding: VecDeque<jobs::Record>,
     recovered_other: VecDeque<jobs::Record>,
     // The service skips its bounded initial resident page during archive scans.
@@ -151,7 +148,7 @@ impl Autonomous {
         intervals: Intervals,
         client: jobs::Client,
         recovery: jobs::Recovery,
-        unanswered: Vec<CompiledQuestion>,
+        unanswered: Vec<ResearchQuestion>,
     ) -> Self {
         let now = Instant::now();
         let archive_end = recovery.archive_end;
@@ -235,7 +232,7 @@ impl Autonomous {
         }
     }
 
-    fn retain(&mut self, question: CompiledQuestion) {
+    fn retain(&mut self, question: ResearchQuestion) {
         if self.unanswered.len() < crate::resources::active_limits().question_page
             && !self.unanswered.iter().any(|q| q == &question)
             && !self.solving.contains_key(question.resolution_id())
@@ -264,7 +261,7 @@ impl Autonomous {
         questions: &mut question::LocalQuestions<F>,
     ) -> Vec<ArtifactId>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let now = Instant::now();
@@ -347,7 +344,9 @@ impl Autonomous {
                     self.recovered_other.push_back(record);
                 } else if record.state == jobs::State::InDoubt {
                     self.retire(record);
-                } else if let Ok(question) = CompiledQuestion::compile(source) {
+                } else if let Ok(question) =
+                    ResearchQuestion::from_hex_with_context(source, graph.checked_context())
+                {
                     if self.solving.contains_key(question.resolution_id())
                         || self
                             .publications
@@ -428,7 +427,10 @@ impl Autonomous {
             match finding.ticket.try_recv() {
                 Ok(completion) => match completion.result.clone() {
                     Ok(jobs::Output::Question(source)) => {
-                        match CompiledQuestion::compile(&source) {
+                        match ResearchQuestion::from_hex_with_context(
+                            &source,
+                            graph.checked_context(),
+                        ) {
                             Ok(question) => {
                                 emit(
                                     json!({"event":"question_generated","resolution_id":crate::hex(question.resolution_id()),"job":completion.id}),
@@ -518,13 +520,13 @@ impl Autonomous {
                     );
                 }
                 Ok(completion) => match completion.result.clone() {
-                    Ok(jobs::Output::Proof { source, helpers }) => {
-                        match graph.prepare_generated(&source, &helpers, &solving.question) {
+                    Ok(jobs::Output::Proof { proof, helpers }) => {
+                        match graph.prepare_generated(&proof, &helpers, &solving.question) {
                             Ok((root, batch)) => {
                                 self.publications.push_back(Publication {
                                     question: solving.question,
                                     job: completion.id,
-                                    candidate: Candidate::Certificate { source, helpers },
+                                    candidate: Candidate::Certificate { proof, helpers },
                                     batch: Some((root, batch)),
                                     announced: false,
                                     assessment: None,
@@ -709,7 +711,7 @@ impl Autonomous {
                 match reply.try_recv() {
                     Ok(assessment) => {
                         pending.assessment = questions
-                            .exchange_eligible(&pending.question, &assessment)
+                            .exchange_eligible(graph, &pending.question, &assessment)
                             .then_some(assessment);
                     }
                     Err(oneshot::error::TryRecvError::Empty) => {
@@ -729,7 +731,7 @@ impl Autonomous {
                 }
             }
             if let Some(assessment) = pending.assessment.take()
-                && questions.exchange_eligible(&pending.question, &assessment)
+                && questions.exchange_eligible(graph, &pending.question, &assessment)
             {
                 let current = pending
                     .batch
@@ -843,7 +845,7 @@ impl Autonomous {
         // Refill one fair FIFO item per turn. The complete backlog is durable;
         // the parsed queue is only a bounded working page, never a lifetime cap.
         if self.unanswered.len() < crate::resources::active_limits().question_page
-            && let Some(question) = questions.next_backlog()
+            && let Some(question) = questions.next_backlog(graph)
             && !self.solving.contains_key(question.resolution_id())
             && !self
                 .publications
@@ -881,7 +883,7 @@ impl Autonomous {
                     let context = questions.formal_context(graph);
                     match self.client.submit(
                         jobs::Input::Solve {
-                            question: question.source().to_owned(),
+                            question: question.to_hex(),
                         },
                         context.binding(),
                     ) {
@@ -922,7 +924,7 @@ impl Autonomous {
                 };
                 self.cursor = next;
                 let source = if let Some(frontier) = &mut self.frontier {
-                    let mut eligible = |question: &CompiledQuestion| {
+                    let mut eligible = |question: &ResearchQuestion| {
                         !self.admissions.iter().any(|pending| {
                             pending.question.resolution_id() == question.resolution_id()
                         }) && questions.assess(graph, question).passed()
@@ -942,7 +944,7 @@ impl Autonomous {
                         .collect::<Vec<_>>();
                     let references = candidates.iter().collect::<Vec<_>>();
                     match frontier.choose(&references, graph, self.intervals.jobs.solving, false) {
-                        Ok(Some(index)) => candidates[index].source().to_owned(),
+                        Ok(Some(index)) => candidates[index].to_hex(),
                         Ok(None) => return accepted,
                         Err(error) => {
                             if error.fatal() {

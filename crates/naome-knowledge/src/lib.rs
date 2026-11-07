@@ -42,3 +42,6 @@ mod wire;
 pub use corpus::ROOT_FORMAT as CORPUS_ROOT_FORMAT;
 pub use graph::{Graph, Ingest};
 pub use object::{CHECKER_ID, CODEC_ID, Envelope, GRAPH_POLICY_ID, compatibility, hex, unhex};
+
+#[cfg(test)]
+mod test_inputs;

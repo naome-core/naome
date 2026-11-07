@@ -30,7 +30,7 @@ COUNT, FIRST = 4096, 8100
 LARGE_COUNT = 12288
 LINE_LIMIT, SOURCE_LIMIT = 524288, 65536
 RAW_LIMIT = 256 * 1024**2
-EXPECTED_METADATA_MESSAGE = "question limit exceeded: question source bytes"
+EXPECTED_METADATA_MESSAGE = "question limit exceeded: question target nodes"
 
 
 def streaming_digest(path):
@@ -42,23 +42,14 @@ def streaming_digest(path):
 
 
 def fixture(index, count=COUNT):
-    """Fixed R10 source spelling and independent primitive bytes for either count."""
+    """Generate the canonical workload and independent expected identities."""
     assert count in (COUNT, LARGE_COUNT)
     assert FIRST <= index < FIRST + count
-    bindings = ["large0 = not(not(not(all(x,eq(x,x)))))"]
     formula = b"\x02" * 3 + b"\x04\x00" + (b"\x01" + bytes(4)) * 2
-    for level in range(1, 10):
-        bindings.append(f"large{level} = imp(large{level - 1},large{level - 1})")
+    for _ in range(1, 10):
         formula = b"\x03" + formula + formula
-    previous = "large9"
-    for position, bit in enumerate(format(index, "017b")):
-        name = f"index{position}"
-        bindings.append(f"{name} = " + (f"not({previous})" if bit == "1" else f"all(z,{previous})"))
+    for bit in format(index, "017b"):
         formula = (b"\x02" if bit == "1" else b"\x04") + formula
-        previous = name
-    source = ("let:\n    " + "\n    ".join(bindings)
-              + f"\ngoal = imp({previous},imp({previous},{previous}))"
-              + f"\nproof:\n    p0 = simp({previous},{previous})\n    return p0\n")
     length = len(formula).to_bytes(4, "big")
     canonical = bytes.fromhex("0000000100") + length + formula + length + formula
     conclusion = b"\x03" + formula + b"\x03" + formula + formula
@@ -66,7 +57,8 @@ def fixture(index, count=COUNT):
     foundation = b"naome:zfc"
     statement = hashlib.sha256(b"naome:statement\0" + len(foundation).to_bytes(4, "big")
                                + foundation + len(conclusion).to_bytes(4, "big") + conclusion).hexdigest()
-    return source, canonical, conclusion, statement, artifact_id(statement, "00" + canonical.hex())
+    artifact = "00" + canonical.hex()
+    return artifact, canonical, conclusion, statement, artifact_id(statement, artifact)
 
 
 class EventTail(deque):
@@ -301,7 +293,7 @@ def main():
             for sequence, index in enumerate(range(FIRST, FIRST + args.count), 1):
                 driver.check_deadline()
                 source, canonical, conclusion, statement, identifier = fixture(index, args.count)
-                assert len(source.encode()) <= SOURCE_LIMIT
+                assert len(source) // 2 <= SOURCE_LIMIT
                 row = {"sequence": sequence, "index": index, "artifact_id": identifier,
                        "statement_id": statement, "proof_bytes": len(canonical),
                        "conclusion_bytes": len(conclusion), "roundtrip_ns": None, "validated": False}
@@ -311,7 +303,7 @@ def main():
                     first_call = mark
                 try:
                     try:
-                        result = node.command("produce", source=source)
+                        result = node.command("produce", artifact=source)
                     finally:
                         duration = time.monotonic_ns() - mark
                         row["roundtrip_ns"] = duration

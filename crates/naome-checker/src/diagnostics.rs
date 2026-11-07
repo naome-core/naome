@@ -14,8 +14,7 @@
 //! fields carry the condition, while display messages and formula previews are
 //! presentation only. `input`, `context_snapshot`, the original target, and
 //! checker identity/version bind the evidence. The version is a package release,
-//! not a source-commit attestation. Source authoring additionally binds exact
-//! UTF-8 bytes, argument ranges, normalization origins and expansion edges.
+//! not a source-commit attestation.
 //!
 //! `checked_before` describes locally checked derivations before the first
 //! failure. Global closure and target requirements can still fail. Constructed
@@ -110,8 +109,6 @@ pub struct InputBinding {
     /// SHA-256 of canonical certificate bytes, or the existing program hash.
     pub digest: Digest,
     pub commands: u64,
-    /// Exact original source, when source authoring produced this check.
-    pub source_digest: Option<Digest>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -139,6 +136,7 @@ pub enum Rule {
     Distribution,
     Vacuous,
     Instantiation,
+    Deduction,
     Reflexivity,
     Substitution,
     Axiom,
@@ -181,74 +179,10 @@ pub enum OperandRole {
     Target,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub struct SourceRange {
-    pub start: u32,
-    pub end: u32,
-}
-impl SourceRange {
-    /// Half-open UTF-8 byte range; callers must use the bound source bytes.
-    pub fn new(start: usize, end: usize) -> Option<Self> {
-        (start <= end).then_some(Self {
-            start: u32::try_from(start).ok()?,
-            end: u32::try_from(end).ok()?,
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct SourceOrigin {
-    pub source_step: u32,
-    pub name: String,
-    pub assignment: SourceRange,
-    pub arguments: Vec<ArgumentOrigin>,
-    pub arguments_complete: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ArgumentOrigin {
-    pub role: OperandRole,
-    pub index: Option<u32>,
-    pub range: SourceRange,
-    pub expansions: Vec<ExpansionOrigin>,
-    pub expansions_complete: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpansionKind {
-    FormulaBinding,
-    Definition,
-    ProofReference,
-}
-
-/// An actual parser expansion edge. Declaration and use remain distinct so
-/// repairing one use never implicitly rewrites a shared binding/definition.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ExpansionOrigin {
-    pub kind: ExpansionKind,
-    pub name_digest: Digest,
-    pub usage: SourceRange,
-    pub declaration: SourceRange,
-    pub definition_id: Option<Digest>,
-    pub proof_id: Option<Digest>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct VariableOrigin {
-    pub source_identifier: u32,
-    pub normalized_identifier: u32,
-    pub name_preview: String,
-    pub name_digest: Digest,
-    pub range: SourceRange,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Location {
     /// Zero-based certificate step or program command, bound to `input`.
     pub step: u64,
-    pub origins: Vec<SourceOrigin>,
-    pub origins_complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -260,8 +194,6 @@ pub struct Operand {
     pub proved: Option<bool>,
     pub formula: Option<FormulaFragment>,
     pub variable: Option<u32>,
-    pub origins: Vec<SourceOrigin>,
-    pub origins_complete: bool,
 }
 impl Operand {
     pub(crate) fn new(role: OperandRole) -> Self {
@@ -272,8 +204,6 @@ impl Operand {
             proved: None,
             formula: None,
             variable: None,
-            origins: Vec::new(),
-            origins_complete: true,
         }
     }
 }
@@ -294,8 +224,7 @@ pub struct ProofDiagnostic {
     pub target: Option<FormulaFragment>,
     /// Also supports an immutable target whose DAG cannot be materialized.
     pub target_root: Option<Digest>,
-    pub target_source_digest: Option<Digest>,
-    pub target_source: Option<SourceRange>,
+    pub question_record: Option<Digest>,
     pub alternative_targets: Vec<FormulaFragment>,
     pub outcome: Outcome,
     pub location: Location,
@@ -304,8 +233,6 @@ pub struct ProofDiagnostic {
     pub operands: Vec<Operand>,
     pub operands_complete: bool,
     pub difference: Option<Difference>,
-    pub variable_origins: Vec<VariableOrigin>,
-    pub variable_origins_complete: bool,
     /// The first failing step is not a checked fact. Dependent steps were not
     /// checked; this boundary is in the input format's execution order.
     pub checked_before: u64,
@@ -360,22 +287,15 @@ impl ProofDiagnostic {
             context_consistent: true,
             target: None,
             target_root: None,
-            target_source_digest: None,
-            target_source: None,
+            question_record: None,
             alternative_targets: Vec::new(),
             outcome: failure.outcome(),
-            location: Location {
-                step,
-                origins: Vec::new(),
-                origins_complete: true,
-            },
+            location: Location { step },
             rule,
             failure,
             operands: Vec::new(),
             operands_complete: true,
             difference: None,
-            variable_origins: Vec::new(),
-            variable_origins_complete: true,
             checked_before: step,
             inspection: None,
         }

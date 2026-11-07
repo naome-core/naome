@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+hex = "0.4"
 naome-foundation = { path = "../naome-foundation" }
 naome-proof = { path = "../naome-proof" }
 sha2.workspace = true

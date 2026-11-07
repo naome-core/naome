@@ -17,6 +17,9 @@ use crate::{CheckError, ContextError, ContextView, statement_id};
 
 pub type Identity = [u8; 32];
 
+mod artifact;
+pub use artifact::{QUESTION_BYTES, QuestionOutcome, ResearchQuestion, ResolutionError};
+pub use naome_proof::{QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES, QuestionError};
 mod deduction;
 mod elementary;
 mod equivalence;
@@ -41,7 +44,7 @@ pub struct AssessmentLimits {
 
 impl AssessmentLimits {
     pub const MAXIMUM: Self = Self {
-        formula_nodes: 1024,
+        formula_nodes: naome_proof::QUESTION_EXPANSION_MAX_NODES,
         dependencies: 64,
         operations: 32_768,
         formula_work_bytes: 64 * 1024 * 1024,
@@ -123,6 +126,40 @@ impl<'a> AssessmentQuestion<'a> {
         dependencies: &'a [ArtifactId],
         registered_record: Option<Identity>,
     ) -> Result<Self, RejectionReason> {
+        Self::bounded(
+            foundation,
+            formula,
+            source,
+            dependencies,
+            registered_record,
+            QUESTION_TARGET_MAX_NODES,
+        )
+    }
+
+    /// Binds the canonical source, its checked definition dependencies and its
+    /// already bounded primitive target to one formal assessment input.
+    pub fn from_research_question(
+        question: &'a ResearchQuestion,
+        registered_record: Option<Identity>,
+    ) -> Result<Self, RejectionReason> {
+        Self::bounded(
+            FOUNDATION_ID,
+            question.core(),
+            question.canonical_bytes(),
+            question.dependencies(),
+            registered_record,
+            AssessmentLimits::MAXIMUM.formula_nodes,
+        )
+    }
+
+    fn bounded(
+        foundation: &'a str,
+        formula: &'a Formula,
+        source: &[u8],
+        dependencies: &'a [ArtifactId],
+        registered_record: Option<Identity>,
+        maximum_nodes: usize,
+    ) -> Result<Self, RejectionReason> {
         if foundation.len() > 128 || source.len() > 16 * 1024 {
             return Err(RejectionReason::InputLimit);
         }
@@ -130,7 +167,7 @@ impl<'a> AssessmentQuestion<'a> {
             return Err(RejectionReason::DependencyLimit);
         }
         let bytes = formula
-            .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes)
+            .encode_canonical_with_node_limit(maximum_nodes)
             .map_err(|_| RejectionReason::InputLimit)?
             .0;
         let mut hash = Sha256::new();
@@ -166,8 +203,25 @@ pub struct RegisteredQuestion<'a> {
 
 impl<'a> RegisteredQuestion<'a> {
     pub fn new(record: Identity, formula: &'a Formula) -> Result<Self, RejectionReason> {
+        Self::bounded(record, formula, QUESTION_TARGET_MAX_NODES)
+    }
+
+    /// Builds an entry from the exact source and bounded target of a compiled question.
+    pub fn from_research_question(question: &'a ResearchQuestion) -> Result<Self, RejectionReason> {
+        Self::bounded(
+            *question.record_id(),
+            question.core(),
+            AssessmentLimits::MAXIMUM.formula_nodes,
+        )
+    }
+
+    fn bounded(
+        record: Identity,
+        formula: &'a Formula,
+        maximum_nodes: usize,
+    ) -> Result<Self, RejectionReason> {
         formula
-            .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes)
+            .encode_canonical_with_node_limit(maximum_nodes)
             .map_err(|_| RejectionReason::InputLimit)?;
         if !formula.is_closed() {
             return Err(RejectionReason::InvalidRegistry);

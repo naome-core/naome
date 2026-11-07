@@ -1,8 +1,8 @@
 //! Structural research scheduling over checked local knowledge. Scores are
 //! hypotheses about useful work, never mathematical evidence or job allowances.
 use crate::{Graph, jobs};
-use naome_authoring::CompiledQuestion;
 use naome_checker::ContextView;
+use naome_checker::question::ResearchQuestion;
 use naome_foundation::{Formula, FreeVariable, Separation};
 use naome_proof::ArtifactId;
 use sha2::Digest;
@@ -40,7 +40,7 @@ pub(crate) struct Frontier {
     success_units: [u64; SIGNALS],
     success_millis: [u64; SIGNALS],
     knowledge: VecDeque<Features>,
-    proposals: VecDeque<CompiledQuestion>,
+    proposals: VecDeque<ResearchQuestion>,
     predicates: VecDeque<Formula>,
     after: Option<ArtifactId>,
     observed_root: Option<[u8; 32]>,
@@ -82,7 +82,7 @@ impl Frontier {
         let mut success_millis = [0u64; SIGNALS];
         local.evidence.replay(|record| {
             let question =
-                CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
+                ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
             for (total, count) in attempts.iter_mut().zip(Features::of(&question).counts) {
                 if count > 0 {
                     *total = total.saturating_add(record.substantive_attempts());
@@ -90,7 +90,7 @@ impl Frontier {
             }
             if let Some(root) = record.verified.as_ref().or(record.prepared.as_ref()) {
                 let question =
-                    CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
+                    ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
                 let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
                 if Self::checked_target(graph, root, &question).map_err(|e| e.to_string())? {
                     let features = Features::of(&question);
@@ -117,12 +117,12 @@ impl Frontier {
     fn checked_target(
         graph: &Graph,
         root: ArtifactId,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<bool, crate::Error> {
         let Some(metadata) = graph.describe(root)? else {
             return Ok(false);
         };
-        let (_, _, target) = metadata.compile()?;
+        let (_, _, target) = metadata.compile(graph.checked_context())?;
         Ok(target.resolution_id() == question.resolution_id() && target.core() == question.core())
     }
     fn demonstrated(&mut self, features: &Features, units: u32, millis: u64) {
@@ -139,13 +139,13 @@ impl Frontier {
     }
     fn retain(
         &mut self,
-        question: CompiledQuestion,
-        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+        question: ResearchQuestion,
+        eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
     ) {
         let limits = crate::resources::active_limits();
         let limit = limits.question_page.min(32);
         let budget = limits.question_cache_bytes / 4;
-        let cost = question.source().len() * 8 + 256;
+        let cost = question.canonical_bytes().len() * 8 + 256;
         // An item that cannot fit must not evict the useful resident pool.
         if limit == 0
             || cost > budget
@@ -159,10 +159,10 @@ impl Frontier {
         if !eligible(&question) {
             return;
         }
-        let bytes = |questions: &VecDeque<CompiledQuestion>| {
+        let bytes = |questions: &VecDeque<ResearchQuestion>| {
             questions
                 .iter()
-                .map(|q| q.source().len() * 8 + 256)
+                .map(|q| q.canonical_bytes().len() * 8 + 256)
                 .sum::<usize>()
         };
         while !self.proposals.is_empty()
@@ -176,13 +176,12 @@ impl Frontier {
     fn conjecture(
         &mut self,
         mut formula: Formula,
-        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+        eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
     ) {
         for variable in formula.free_variables() {
             formula = Formula::for_all(variable, formula);
         }
-        if let Ok(question) = CompiledQuestion::compile(&format!("goal = {}", formula.to_source()))
-        {
+        if let Ok(question) = ResearchQuestion::from_formula(formula) {
             self.retain(question, eligible);
         }
     }
@@ -196,9 +195,9 @@ impl Frontier {
             .checked_add(1)?;
         formula.open_outer_universal(FreeVariable::new(fresh))
     }
-    fn explore(&mut self, formula: Formula, eligible: &mut dyn FnMut(&CompiledQuestion) -> bool) {
+    fn explore(&mut self, formula: Formula, eligible: &mut dyn FnMut(&ResearchQuestion) -> bool) {
         let mut open = formula.clone();
-        for _ in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+        for _ in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
             let Some(body) = Self::open_outer(&open) else {
                 break;
             };
@@ -278,7 +277,7 @@ impl Frontier {
     fn explore_parts(
         &mut self,
         formula: Formula,
-        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+        eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
     ) -> Result<(), crate::Error> {
         const PARTS: usize = 16;
         let nodes = formula.view().node_count_and_depth().0;
@@ -307,7 +306,7 @@ impl Frontier {
     pub(crate) fn refresh(
         &mut self,
         graph: &Graph,
-        mut eligible: impl FnMut(&CompiledQuestion) -> bool,
+        mut eligible: impl FnMut(&ResearchQuestion) -> bool,
     ) -> Result<(), crate::Error> {
         crate::resources::require_work_admission()?;
         self.proposals.retain(|question| eligible(question));
@@ -347,7 +346,7 @@ impl Frontier {
             } else {
                 0
             };
-            if length > naome_authoring::QUESTION_SOURCE_MAX_BYTES {
+            if length > naome_checker::question::QUESTION_BYTES {
                 continue;
             }
             let Ok(_projection) = crate::resources::MemoryLease::acquire(length * 8 + 2048) else {
@@ -359,7 +358,7 @@ impl Frontier {
                 Err(error) => return Err(error),
             };
             if let Some(metadata) = description {
-                let (_, _, question) = metadata.compile()?;
+                let (_, _, question) = metadata.compile(graph.checked_context())?;
                 let features = Features::of(&question);
                 for (total, count) in self.building.iter_mut().zip(features.counts) {
                     *total = total.saturating_add(u64::from(count > 0));
@@ -374,7 +373,7 @@ impl Frontier {
                     graph.checked_context().definition_certificate(definition)?
                 && let Ok((body, _)) = certificate.body().expand_with_node_limit(
                     graph.checked_context(),
-                    naome_authoring::QUESTION_TARGET_MAX_NODES,
+                    naome_checker::question::QUESTION_TARGET_MAX_NODES,
                 )
             {
                 self.explore_parts(body, &mut eligible)?;
@@ -389,10 +388,10 @@ impl Frontier {
         }
         Ok(())
     }
-    pub(crate) fn candidates(&self) -> Vec<CompiledQuestion> {
+    pub(crate) fn candidates(&self) -> Vec<ResearchQuestion> {
         let mut candidates = (0..3)
             .filter_map(|cursor| {
-                CompiledQuestion::compile(&crate::mocks::create_question(cursor)).ok()
+                ResearchQuestion::from_hex(&crate::mocks::create_question(cursor)).ok()
             })
             .collect::<Vec<_>>();
         for question in &self.proposals {
@@ -407,7 +406,7 @@ impl Frontier {
     }
     fn previous(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<Option<AttemptHint>, crate::Error> {
         if let Some((_, hint)) = self
             .recent
@@ -436,12 +435,12 @@ impl Frontier {
         }
         Ok(hint)
     }
-    fn forget_hint(&mut self, question: &CompiledQuestion) {
+    fn forget_hint(&mut self, question: &ResearchQuestion) {
         self.recent.retain(|(id, _)| id != question.resolution_id());
     }
     fn weight(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         graph: &Graph,
         settings: jobs::RoleSettings,
     ) -> Result<u64, crate::Error> {
@@ -505,7 +504,7 @@ impl Frontier {
     /// Twenty percent of draws explore uniformly across represented families.
     pub(crate) fn choose(
         &mut self,
-        candidates: &[&CompiledQuestion],
+        candidates: &[&ResearchQuestion],
         graph: &Graph,
         settings: jobs::RoleSettings,
         random_only: bool,
@@ -533,7 +532,7 @@ impl Frontier {
     }
     pub(crate) fn prepared(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
         root: ArtifactId,
     ) -> Result<(), crate::Error> {
@@ -541,7 +540,7 @@ impl Frontier {
     }
     pub(crate) fn rejected(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
     ) -> Result<(), crate::Error> {
         self.evidence.rejected(question, job)?;
@@ -550,7 +549,7 @@ impl Frontier {
     }
     pub(crate) fn attempted(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         graph: &Graph,
         completion: &jobs::Completion,
         outcome: Outcome,
@@ -573,7 +572,7 @@ impl Frontier {
             }
             if outcome == Outcome::NoCandidate {
                 let mut open = question.core().clone();
-                for _ in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+                for _ in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
                     let Some(body) = Self::open_outer(&open) else {
                         break;
                     };
@@ -592,7 +591,7 @@ impl Frontier {
     /// evidence. Received proofs contribute coverage, never local solver skill.
     pub(crate) fn verified(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         graph: &Graph,
         job: u64,
         root: ArtifactId,

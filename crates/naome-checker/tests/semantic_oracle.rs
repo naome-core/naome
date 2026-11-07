@@ -93,8 +93,8 @@ fn generated_logical_axiom_instances_hold_in_independent_finite_structures() {
             worlds(|model, free| {
                 assert!(
                     semantics.evaluate(model, free),
-                    "invalid logical instance at seed {seed}: {}",
-                    axiom.to_source()
+                    "invalid logical instance at seed {seed}: {:?}",
+                    axiom
                 )
             });
         }

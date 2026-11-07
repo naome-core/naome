@@ -343,8 +343,7 @@ fn rolled_back_or_reopened_prefix_requires_replay_before_inspection() {
     assert_eq!(engine.status().unwrap().checked_commands, 0);
 }
 
-#[test]
-fn deep_program_difference_can_be_inspected_in_bounded_segments() {
+fn deep_mismatch_commands() -> Vec<Command> {
     let mut commands = vec![
         Command::Reflexivity { variable: 0 },
         Command::Member { element: 0, set: 0 },
@@ -373,6 +372,41 @@ fn deep_program_difference_can_be_inspected_in_bounded_segments() {
         premise: actual,
         implication,
     });
+    commands
+}
+
+#[test]
+fn failed_program_diagnostic_stays_within_its_quantum() {
+    let mut commands = deep_mismatch_commands();
+    let failed = commands.pop().unwrap();
+    let mut engine = engine(&commands);
+    let context = ArtifactState::new();
+    while engine.advance(2048, 4096, &context).unwrap() {}
+    let checked_before = engine.status().unwrap().checked_commands;
+    engine.append(&failed).unwrap();
+
+    let error = engine.advance(1, 4096, &context).unwrap_err();
+    let limited = error.diagnostic().unwrap();
+    assert_eq!(limited.failure, Failure::AntecedentMismatch);
+    assert!(limited.operand(OperandRole::Premise).is_some());
+    assert!(limited.difference.is_none());
+    assert_eq!(engine.last_quantum_steps(), 1);
+    assert_eq!(engine.status().unwrap().checked_commands, checked_before);
+
+    let error = engine.advance(32, 4096, &context).unwrap_err();
+    let full = error.diagnostic().unwrap();
+    assert_eq!(full.failure, limited.failure);
+    assert_eq!(
+        full.difference.as_ref().unwrap().path.len(),
+        MAX_INSPECTION_PATH
+    );
+    assert!((2..=32).contains(&engine.last_quantum_steps()));
+    assert_eq!(engine.status().unwrap().checked_commands, checked_before);
+}
+
+#[test]
+fn deep_program_difference_can_be_inspected_in_bounded_segments() {
+    let commands = deep_mismatch_commands();
     let mut engine = engine(&commands);
     let report = fail(&mut engine);
     let difference = report.difference.as_ref().unwrap();

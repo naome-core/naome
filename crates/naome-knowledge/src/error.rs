@@ -1,11 +1,81 @@
 //! Operation outcomes retain their meaning until the presentation boundary.
 use std::{error::Error as StdError, fmt};
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FormatFailure {
+    EmptyCertificate,
+    Limit {
+        resource: &'static str,
+        actual: Option<u64>,
+        maximum: u64,
+    },
+    ReferenceNotEarlier {
+        step: u32,
+        reference: u32,
+    },
+    UnexpectedEnd,
+    UnknownTag {
+        domain: &'static str,
+        tag: u8,
+    },
+    Formula {
+        reason: naome_checker::diagnostics::FormulaFailure,
+    },
+    TrailingBytes {
+        remaining: usize,
+    },
+    Unsupported,
+}
+impl From<&naome_proof::ProofCertificateError> for FormatFailure {
+    fn from(error: &naome_proof::ProofCertificateError) -> Self {
+        use naome_proof::ProofCertificateError;
+        match *error {
+            ProofCertificateError::EmptyCertificate => Self::EmptyCertificate,
+            ProofCertificateError::TooManySteps { actual, maximum } => Self::Limit {
+                resource: "steps",
+                actual: Some(actual as u64),
+                maximum: maximum as u64,
+            },
+            ProofCertificateError::InputTooLong { actual, maximum } => Self::Limit {
+                resource: "bytes",
+                actual: Some(actual as u64),
+                maximum: maximum as u64,
+            },
+            ProofCertificateError::FormulaNodeLimitExceeded { maximum } => Self::Limit {
+                resource: "nodes",
+                actual: None,
+                maximum: maximum as u64,
+            },
+            ProofCertificateError::ReferenceNotEarlier { step, reference } => {
+                Self::ReferenceNotEarlier { step, reference }
+            }
+            ProofCertificateError::UnexpectedEnd => Self::UnexpectedEnd,
+            ProofCertificateError::UnknownStepTag(tag) => Self::UnknownTag {
+                domain: "proof_step",
+                tag,
+            },
+            ProofCertificateError::UnknownZfcAxiomTag(tag) => Self::UnknownTag {
+                domain: "zfc_axiom",
+                tag,
+            },
+            ProofCertificateError::Formula(ref reason) => Self::Formula {
+                reason: reason.into(),
+            },
+            ProofCertificateError::DefinedFormula(ref reason) => Self::Formula {
+                reason: reason.into(),
+            },
+            ProofCertificateError::TrailingBytes { remaining } => Self::TrailingBytes { remaining },
+            _ => Self::Unsupported,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CertificateFormatError {
     pub message: String,
     pub input_digest: naome_checker::diagnostics::Digest,
-    pub reason: naome_authoring::FormatFailure,
+    pub reason: FormatFailure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,11 +94,11 @@ pub enum Error {
     StaleAuthority,
     Deadline,
     InvalidInput(String),
+    MissingQuestionDefinition(naome_proof::DefinitionId),
     Proof {
         message: String,
         diagnostic: std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>,
     },
-    Compile(Box<naome_authoring::CompileDiagnostic>),
     DiagnosticInspection(naome_checker::diagnostics::InspectionError),
     CertificateFormat(Box<CertificateFormatError>),
     /// Invalid data read from owned storage remains fatal while retaining the
@@ -42,15 +112,7 @@ impl Error {
     pub fn diagnostic(&self) -> Option<&naome_checker::diagnostics::ProofDiagnostic> {
         match self {
             Self::Proof { diagnostic, .. } => Some(diagnostic),
-            Self::Compile(diagnostic) => diagnostic.proof(),
             Self::Stored(error) => error.diagnostic(),
-            _ => None,
-        }
-    }
-    pub fn compile_diagnostic(&self) -> Option<&naome_authoring::CompileDiagnostic> {
-        match self {
-            Self::Compile(diagnostic) => Some(diagnostic),
-            Self::Stored(error) => error.compile_diagnostic(),
             _ => None,
         }
     }
@@ -63,8 +125,8 @@ impl Error {
             Self::StaleAuthority => "publication.stale_authority",
             Self::Deadline => "publication.deadline",
             Self::InvalidInput(_) => "input.invalid",
+            Self::MissingQuestionDefinition(_) => "question.missing_definition",
             Self::Proof { .. } => "proof.check",
-            Self::Compile(_) => "source.compile",
             Self::DiagnosticInspection(_) => "diagnostic.inspection",
             Self::CertificateFormat(_) => "certificate.format",
             Self::Stored(_) => "storage.invalid_record",
@@ -90,9 +152,7 @@ impl Error {
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
-            error @ (Self::Proof { .. } | Self::Compile(_) | Self::CertificateFormat(_))
-                if !error.retryable() =>
-            {
+            error @ (Self::Proof { .. } | Self::CertificateFormat(_)) if !error.retryable() => {
                 Self::Stored(Box::new(error))
             }
             other => other,
@@ -102,7 +162,6 @@ impl Error {
         match self {
             Self::Stored(error) => error.detail(),
             Self::Proof { message, .. } if self.fatal() => Some(message),
-            Self::Compile(diagnostic) if self.fatal() => Some(diagnostic.message()),
             Self::CorruptStorage(message) | Self::UncertainDurability(message) => Some(message),
             _ => None,
         }
@@ -122,17 +181,11 @@ impl Error {
             | Self::CorruptStorage(message)
             | Self::UncertainDurability(message) => Some(message),
             Self::CertificateFormat(error) => Some(&error.message),
-            Self::Compile(diagnostic) => Some(diagnostic.message()),
             Self::Stored(error) => error.detail(),
             _ => None,
         }
     }
-    fn format_error(
-        &self,
-    ) -> Option<(
-        naome_checker::diagnostics::Digest,
-        &naome_authoring::FormatFailure,
-    )> {
+    fn format_error(&self) -> Option<(naome_checker::diagnostics::Digest, &FormatFailure)> {
         match self {
             Self::CertificateFormat(error) => Some((error.input_digest, &error.reason)),
             Self::Stored(error) => error.format_error(),
@@ -169,8 +222,10 @@ impl fmt::Display for Error {
             Self::ExecutionLimit => f.write_str("operation execution resources exhausted"),
             Self::InputLimit(message) => f.write_str(message),
             Self::InvalidInput(message) => f.write_str(message),
+            Self::MissingQuestionDefinition(id) => {
+                write!(f, "question definition unavailable: {id:?}")
+            }
             Self::Proof { message, .. } => f.write_str(message),
-            Self::Compile(diagnostic) => f.write_str(diagnostic.message()),
             Self::DiagnosticInspection(error) => error.fmt(f),
             Self::CertificateFormat(error) => f.write_str(&error.message),
             Self::Stored(error) => write!(f, "storage halted: {error}"),
@@ -259,13 +314,12 @@ impl From<naome_checker::ContextError> for Error {
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut value = serializer.serialize_struct("OperationError", 9)?;
+        let mut value = serializer.serialize_struct("OperationError", 8)?;
         value.serialize_field("schema_version", &1)?;
         value.serialize_field("code", self.code())?;
         value.serialize_field("message", &self.to_string())?;
         value.serialize_field("retryable", &self.retryable())?;
         value.serialize_field("diagnostic", &self.diagnostic())?;
-        value.serialize_field("source_diagnostic", &self.compile_diagnostic())?;
         value.serialize_field(
             "inspection_error",
             &match self {
@@ -276,7 +330,7 @@ impl serde::Serialize for Error {
         #[derive(serde::Serialize)]
         struct Format<'a> {
             input_digest: naome_checker::diagnostics::Digest,
-            reason: &'a naome_authoring::FormatFailure,
+            reason: &'a FormatFailure,
         }
         let format_error = self.format_error().map(|(input_digest, reason)| Format {
             input_digest,
@@ -297,25 +351,6 @@ impl From<naome_checker::CheckError> for Error {
     }
 }
 
-impl From<naome_authoring::CompileError> for Error {
-    fn from(error: naome_authoring::CompileError) -> Self {
-        match error.kind() {
-            naome_authoring::CompileErrorKind::DefinitionExpansion {
-                source: naome_proof::DefinitionExpansionError::Access(source),
-                ..
-            } => return naome_checker::ContextError::from(source.clone()).into(),
-            naome_authoring::CompileErrorKind::DefinitionCheck { source, .. } => {
-                if let naome_checker::DefinitionCheckError::ContextAccess(source) = source.as_ref()
-                {
-                    return source.clone().into();
-                }
-            }
-            _ => {}
-        }
-        Self::Compile(Box::new(error.into_diagnostic()))
-    }
-}
-
 impl From<naome_checker::DefinitionCheckError> for Error {
     fn from(error: naome_checker::DefinitionCheckError) -> Self {
         match error {
@@ -328,15 +363,15 @@ impl From<naome_checker::DefinitionCheckError> for Error {
     }
 }
 
-impl From<naome_authoring::ResolutionError> for Error {
-    fn from(error: naome_authoring::ResolutionError) -> Self {
+impl From<naome_checker::question::ResolutionError> for Error {
+    fn from(error: naome_checker::question::ResolutionError) -> Self {
         let message = error.to_string();
         match error {
-            naome_authoring::ResolutionError::Target(diagnostic) => Self::Proof {
+            naome_checker::question::ResolutionError::Target(diagnostic) => Self::Proof {
                 message,
                 diagnostic: diagnostic.into(),
             },
-            naome_authoring::ResolutionError::Program(error) => error.into(),
+            naome_checker::question::ResolutionError::Program(error) => error.into(),
         }
     }
 }
@@ -348,7 +383,12 @@ impl From<naome_foundation::FormulaCodecError> for Error {
 }
 impl From<naome_proof::QuestionError> for Error {
     fn from(error: naome_proof::QuestionError) -> Self {
-        Self::InvalidInput(error.to_string())
+        match error {
+            naome_proof::QuestionError::MissingDefinition(id) => {
+                Self::MissingQuestionDefinition(id)
+            }
+            error => Self::InvalidInput(error.to_string()),
+        }
     }
 }
 impl From<naome_checker::ArtifactStateError> for Error {

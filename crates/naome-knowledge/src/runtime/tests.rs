@@ -3,7 +3,7 @@ mod computation;
 mod publication;
 
 use crate::{Envelope, object::id_bytes};
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_proof::ArtifactId;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,48 +26,44 @@ impl Drop for Directory {
     }
 }
 
-fn closure() -> (Envelope, Envelope, CompiledQuestion) {
+fn closure() -> (Envelope, Envelope, ResearchQuestion) {
     let mut producer = Graph::default();
     let helper = producer
         .author(
             &crate::mocks::create_proof(
-                &CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap(),
+                &ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap(),
             )
             .unwrap(),
         )
         .unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
-    let a = CompiledQuestion::compile(&crate::mocks::create_question(0))
+    let a = ResearchQuestion::from_hex(&crate::mocks::create_question(0))
         .unwrap()
         .proved_target()
-        .to_source();
-    let b = "all(y,mem(y,y))";
-    let root=producer.author(&format!("goal = imp({b},{a}) proof: p0 = cite(\"{}\") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2",crate::hex(helper.proof_id().unwrap().unwrap().as_bytes()))).unwrap();
-    let question = CompiledQuestion::compile(&format!("goal = imp({b},{a})")).unwrap();
+        .clone();
+    let b = crate::test_inputs::member_self();
+    let root = producer
+        .author(&crate::test_inputs::weaken_citation(
+            helper.proof_id().unwrap().unwrap(),
+            a.clone(),
+            b.clone(),
+        ))
+        .unwrap();
+    let question = crate::test_inputs::question(naome_foundation::Formula::implies(b, a));
     (helper, root, question)
 }
 
 #[tokio::test]
-async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_storage() {
+async fn canonical_inputs_match_autonomous_mock_roots_and_replays_checked_storage() {
     for cursor in 0..3 {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
         let catalog_question =
-            CompiledQuestion::compile(&crate::mocks::create_question(cursor as u64)).unwrap();
-        let original_bytes = catalog_question.to_canonical_bytes().unwrap();
-        let source = format!(
-            "# Alternate source presentation\n{}\n",
-            catalog_question.source()
-        );
-        let proof = format!(
-            "# Alternate proof presentation\n{}\n",
-            crate::mocks::create_proof(&catalog_question).unwrap()
-        );
-        let question = CompiledQuestion::compile(&source).unwrap();
-        assert_eq!(question.proved_target(), catalog_question.proved_target());
-        assert_eq!(question.refuted_target(), catalog_question.refuted_target());
-        assert_eq!(question.resolution_id(), catalog_question.resolution_id());
-        assert_ne!(question.source_hash(), catalog_question.source_hash());
+            ResearchQuestion::from_hex(&crate::mocks::create_question(cursor as u64)).unwrap();
+        let original_bytes = catalog_question.canonical_bytes();
+        let proof = crate::mocks::create_proof(&catalog_question).unwrap();
+        let question = ResearchQuestion::from_canonical_bytes(original_bytes).unwrap();
+        assert_eq!(question, catalog_question);
         let before = graph
             .author(&crate::mocks::create_proof(&catalog_question).unwrap())
             .unwrap();
@@ -110,12 +106,11 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
             "duplicate"
         );
         assert_eq!(
-            CompiledQuestion::from_canonical_bytes(&original_bytes).unwrap(),
+            ResearchQuestion::from_canonical_bytes(original_bytes).unwrap(),
             catalog_question
         );
         assert_eq!(
-            CompiledQuestion::from_canonical_bytes(&question.to_canonical_bytes().unwrap())
-                .unwrap(),
+            ResearchQuestion::from_canonical_bytes(question.canonical_bytes()).unwrap(),
             question
         );
     }
@@ -367,7 +362,7 @@ fn diagnostic_symlinks_cannot_modify_a_foreign_file() {
 #[tokio::test]
 async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_never_rotates() {
     let directory = Directory::new();
-    let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    let question = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
     let mut graph = Graph::open(&directory.0).unwrap();
     let proof = graph
         .author(&crate::mocks::create_proof(&question).unwrap())

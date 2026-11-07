@@ -44,7 +44,7 @@ impl Generated {
         &mut self,
         graph: &Graph,
         client: &jobs::Client,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<Option<(ArtifactId, crate::graph::CheckedBatch)>, crate::Error> {
         let snapshot = self.budget.refresh(graph.ownership().directory())?.clone();
         if snapshot.budget.paused.is_some() {

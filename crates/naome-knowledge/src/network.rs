@@ -53,7 +53,7 @@ pub struct Config {
     pub discovery: Option<discovery::Config>,
     /// A finite independently operated source queue, attempted once per second.
     #[serde(default)]
-    pub producer_sources: Vec<String>,
+    pub producer_artifacts: Vec<String>,
 }
 pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 
@@ -64,8 +64,8 @@ pub fn routing_contract() -> Value {
         "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
             "protocol":crate::wire::PROTOCOL.as_ref(), "topic":crate::wire::TOPIC,
-            "selection":"Explicit local positive selection before root fetch and before commit",
-            "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
+            "selection":"Exact checked definitions and their required witnesses may be fetched to compile a question. Explicit local positive selection precedes its proof fetch and commit.",
+            "metadata":"Canonical question with exact definition references when available. The description carries no proof bytes.",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::active_limits().queued_metadata,
                 "closure_objects":crate::resources::limits().closure_objects,"closure_bytes":crate::resources::limits().closure_bytes,
                 "closure_steps":crate::resources::limits().closure_steps,"checker_work_bytes":crate::resources::limits().closure_work_bytes,
@@ -195,7 +195,7 @@ struct Node {
     intake: crate::intake::Intake,
     test_objects: BTreeMap<ArtifactId, (Metadata, Option<Envelope>)>,
     test_controls: bool,
-    producer_sources: VecDeque<String>,
+    producer_artifacts: VecDeque<String>,
     next_production: Instant,
 }
 
@@ -217,7 +217,11 @@ pub(crate) async fn run_autonomous(
         config,
         false,
         inbox,
-        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
+        None::<
+            fn(
+                naome_checker::question::ResearchQuestion,
+            ) -> std::future::Ready<Result<bool, String>>,
+        >,
         commands,
         Some((intervals, startup)),
     )
@@ -255,7 +259,7 @@ pub async fn run_with_questions<F, Fut>(
     selection: F,
 ) -> Result<(), String>
 where
-    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
@@ -285,7 +289,11 @@ pub async fn run_with_questions_without_selection(
         config,
         test_controls,
         inbox,
-        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
+        None::<
+            fn(
+                naome_checker::question::ResearchQuestion,
+            ) -> std::future::Ready<Result<bool, String>>,
+        >,
         commands,
         None,
     )
@@ -301,7 +309,7 @@ pub(crate) async fn run_inner<F, Fut>(
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
 ) -> Result<(), String>
 where
-    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
     let (stop, cancel) = tokio::sync::oneshot::channel();
@@ -351,7 +359,7 @@ pub(crate) async fn run_owner<F, Fut>(
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String>
 where
-    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
     // Register before publishing readiness or performing synchronous owner work.
@@ -364,13 +372,13 @@ where
     if config.peers.len() > crate::resources::limits().configured_peers {
         return Err("peer count limit".into());
     }
-    if config.producer_sources.len() > crate::resources::limits().producer_sources
+    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
         || config
-            .producer_sources
+            .producer_artifacts
             .iter()
             .map(String::len)
             .sum::<usize>()
-            > crate::resources::limits().producer_bytes
+            > 2 * crate::resources::limits().producer_bytes
     {
         return Err("producer queue capacity".into());
     }
@@ -584,7 +592,7 @@ where
         intake: crate::intake::Intake::default(),
         test_objects: BTreeMap::new(),
         test_controls,
-        producer_sources: config.producer_sources.into(),
+        producer_artifacts: config.producer_artifacts.into(),
         next_production: Instant::now() + crate::resources::active_limits().production_interval,
     };
     let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
@@ -606,6 +614,7 @@ where
             client.clone(),
             &directory,
             Duration::from_millis(intervals.jobs.selection.limits.horizon_ms),
+            &node.graph,
         )?;
         let unanswered = questions.restored_unanswered(&node.graph);
         let mut autonomous =
@@ -614,7 +623,7 @@ where
         (Some(service), Some(autonomous), questions)
     } else {
         let mut questions = crate::question::LocalQuestions::new(selection);
-        questions.attach_persistence(&directory)?;
+        questions.attach_persistence(&directory, &node.graph)?;
         (None, None, questions)
     };
     questions.recover_publications(&node.graph)?;
@@ -725,7 +734,8 @@ where
         }
         // Reclaim caches even while productive work is suspended. These
         // maintenance owners check the same budget before starting compaction.
-        node.graph.maintain_checked_storage()?;
+        node.graph
+            .maintain_checked_storage_with_admission(node.intake.preparing_program_admission())?;
         questions.maintain_registry()?;
         if work.is_none() {
             continue;
@@ -736,6 +746,13 @@ where
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));
         questions.cancel_closed();
+        if let Some(request) = node.intake.helper_definition_request(&node.graph) {
+            let id = ArtifactId::from_definition_id(request.definition);
+            let grant = node.swarm.grant(request.peer, id);
+            if let Err(error) = node.intake.request_question_definition(request, &node.graph, Some(grant)) {
+                node.graph.program_failure(&error);
+            }
+        }
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
             crate::intake::Progress::Skipped(id, error) => {
@@ -1081,9 +1098,9 @@ impl Node {
                 }
                 "produce" => {
                     let source = value
-                        .get("source")
+                        .get("artifact")
                         .and_then(Value::as_str)
-                        .ok_or("source missing")?;
+                        .ok_or("artifact missing")?;
                     let (object, ingestion) = self.graph.produce(source)?;
                     let id = ingestion.id;
                     let result = self.ingested(ingestion, "producer")?;
@@ -1105,12 +1122,12 @@ impl Node {
                 "object" => Ok(
                     json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
                 ),
-                "test_compile" => {
+                "test_check" => {
                     if !self.test_controls {
                         return Err("test controls disabled".into());
                     }
                     Ok(
-                        json!({"object":self.graph.author(value.get("source").and_then(Value::as_str).ok_or("source missing")?)?}),
+                        json!({"object":self.graph.author(value.get("artifact").and_then(Value::as_str).ok_or("artifact missing")?)?}),
                     )
                 }
                 "test_descriptor" => {
@@ -1121,7 +1138,7 @@ impl Node {
                         value.get("metadata").cloned().ok_or("metadata missing")?,
                     )
                     .map_err(|error| error.to_string())?;
-                    let (id, _, _) = metadata.compile()?;
+                    let (id, _, _) = metadata.compile(self.graph.checked_context())?;
                     if self.test_objects.len() >= crate::resources::limits().developer_objects
                         && !self.test_objects.contains_key(&id)
                     {
@@ -1297,7 +1314,7 @@ impl Node {
         if work.is_some()
             && crate::resources::adaptive::batch(1) > 0
             && now >= self.next_production
-            && let Some(source) = self.producer_sources.pop_front()
+            && let Some(source) = self.producer_artifacts.pop_front()
         {
             self.next_production = now + crate::resources::active_limits().production_interval;
             let result = self
@@ -1307,7 +1324,7 @@ impl Node {
             match result {
                 Ok(result) => emit(json!({"event":"producer_result", "result":result})),
                 Err(error) if retryable_publication(&error) => {
-                    self.producer_sources.push_back(source);
+                    self.producer_artifacts.push_back(source);
                     emit(json!({"event":"producer_deferred", "error":error}));
                 }
                 Err(error) => emit(json!({"event":"producer_rejected", "error":error})),
@@ -1364,7 +1381,53 @@ impl Node {
             && self.outgoing_ready(peer, now)
     }
 
+    fn finish_description(
+        &mut self,
+        peer: PeerId,
+        artifact: ArtifactId,
+        grant: Option<crate::publication::PeerGrant>,
+        result: Result<&'static str, crate::Error>,
+    ) -> Result<&'static str, crate::Error> {
+        let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
+            return result;
+        };
+        // Retain only the ordinary bounded inventory hint. After each checked
+        // definition is admitted, a fresh description supplies the next one.
+        if !self.want(artifact)? {
+            return Err(crate::Error::ExecutionLimit);
+        }
+        self.intake.request_question_definition(
+            crate::intake::DefinitionRequest {
+                peer,
+                definition,
+                question_proof: artifact,
+                helper_deadline: None,
+            },
+            &self.graph,
+            grant,
+        )?;
+        Ok("awaiting_definition")
+    }
+
+    fn fetch_grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
+        self.intake
+            .definition_capability(peer, root)
+            .unwrap_or_else(|| self.swarm.grant(peer, root))
+    }
+
+    fn proof_fetch_error(&mut self, root: ArtifactId, error: crate::Error) {
+        self.graph.program_failure(&error);
+        let event = if error.retryable() {
+            "proof_deferred"
+        } else {
+            self.intake.abort(root);
+            "proof_skipped"
+        };
+        emit(json!({"event":event, "id":hex(root.as_bytes()),"error":error}));
+    }
+
     fn requests(&mut self) {
+        self.intake.trim_certificates();
         let Some(_work) = self.computation.try_enter() else {
             return;
         };
@@ -1420,7 +1483,7 @@ impl Node {
                 let frame = Frame::new(read.body());
                 let request = self
                     .swarm
-                    .request_granted(peer, frame, self.swarm.grant(peer, root));
+                    .request_granted(peer, frame, self.fetch_grant(peer, root));
                 self.flights.insert(
                     request,
                     Flight::Program {
@@ -1459,13 +1522,21 @@ impl Node {
                 self.charge_outgoing(peer, now);
             }
         }
-        // The sole path to Get consumes a private approved root's actual
-        // committed dependency closure. Hints and Graph.pending never issue Get.
+        // Get consumes a selected proof's checked closure or an exact question
+        // definition's bounded preflight. Graph.pending never issues Get.
         for (peer, root, id) in self.intake.needed() {
+            match self.intake.reuse_certificate(peer, root, id, &self.graph) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    self.proof_fetch_error(root, error);
+                    continue;
+                }
+            }
             if self.request_ready(peer, now) && self.automatic_request_ready(peer, now) && self.intake.authorizes(peer, root, id)
-                && !self.flights.values().any(|flight| matches!(flight, Flight::Get { root:r, id:i, .. } if *r == root && *i == id))
+                && !self.flights.values().any(|flight| matches!(flight, Flight::Get { id: requested, .. } if *requested == id))
             {
-                let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.swarm.grant(peer, root));
+                let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.fetch_grant(peer, root));
                 self.flights.insert(request, Flight::Get { started: Instant::now(), root, id, peer });
                 self.charge_automatic_request(peer, now);
                 self.charge_outgoing(peer, now);
@@ -1907,10 +1978,11 @@ impl Node {
                 }
             }
             Body::ProgramOffer { metadata } => {
-                match self
-                    .intake
-                    .enqueue_program(peer, metadata, &self.graph, grant)
-                {
+                let id = metadata.manifest.artifact_id();
+                let queued =
+                    self.intake
+                        .enqueue_program(peer, metadata, &self.graph, grant.clone());
+                match self.finish_description(peer, id, grant, queued) {
                     Ok(status) => Body::Receipt {
                         status: status.into(),
                     },
@@ -1926,8 +1998,12 @@ impl Node {
                         metadata,
                     }
                 }
-                Some(crate::object::ArtifactTransfer::Certificate(object)) => {
-                    Body::Object { root, object }
+                Some(crate::object::ArtifactTransfer::Certificate { object, question }) => {
+                    Body::Object {
+                        root,
+                        object,
+                        question: question.filter(|_| root != id),
+                    }
                 }
                 None => self
                     .test_controls
@@ -1937,14 +2013,21 @@ impl Node {
                             .and_then(|(_, object)| object.clone())
                     })
                     .flatten()
-                    .map(|object| Body::Object { root, object })
+                    .map(|object| Body::Object {
+                        root,
+                        object,
+                        question: None,
+                    })
                     .unwrap_or(Body::Missing),
             },
             Body::Offer { metadata } => {
-                match self
-                    .intake
-                    .enqueue_with_grant(peer, metadata.clone(), &self.graph, grant)
-                {
+                let queued = id_bytes(&metadata.artifact_id).and_then(|id| {
+                    let queued =
+                        self.intake
+                            .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
+                    self.finish_description(peer, ArtifactId::from_bytes(id), grant, queued)
+                });
+                match queued {
                     Ok(status) => Body::Receipt {
                         status: status.into(),
                     },
@@ -2005,10 +2088,10 @@ impl Node {
                 if metadata.manifest.artifact_id() != id {
                     emit(json!({"event":"rejected","error":"program description ID mismatch"}));
                 } else {
-                    match self
-                        .intake
-                        .enqueue_program(peer, metadata, &self.graph, grant)
-                    {
+                    let queued =
+                        self.intake
+                            .enqueue_program(peer, metadata, &self.graph, grant.clone());
+                    match self.finish_description(peer, id, grant, queued) {
                         Ok("duplicate") => {
                             self.wanted.remove(&id);
                         }
@@ -2125,10 +2208,10 @@ impl Node {
                     emit(json!({"event":"rejected","error":"description ID mismatch"}));
                     return Ok(());
                 }
-                match self
-                    .intake
-                    .enqueue_with_grant(peer, metadata.clone(), &self.graph, grant)
-                {
+                let queued =
+                    self.intake
+                        .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
+                match self.finish_description(peer, id, grant, queued) {
                     Ok("duplicate") => {
                         self.wanted.remove(&id);
                     }
@@ -2145,25 +2228,26 @@ impl Node {
                     id,
                     ..
                 },
-                Body::Object { root, object },
+                Body::Object {
+                    root,
+                    object,
+                    question,
+                },
             ) => {
                 let result = if root != *expected_root.as_bytes() {
                     Err("response root mismatch".into())
                 } else {
-                    self.intake
-                        .payload(peer, expected_root, id, object, &self.graph)
+                    self.intake.payload_with_question(
+                        peer,
+                        expected_root,
+                        id,
+                        object,
+                        question,
+                        &self.graph,
+                    )
                 };
                 if let Err(error) = result {
-                    self.graph.program_failure(&error);
-                    if !error.retryable() {
-                        self.intake.abort(expected_root);
-                    }
-                    let event = if error.retryable() {
-                        "proof_deferred"
-                    } else {
-                        "proof_skipped"
-                    };
-                    emit(json!({"event":event, "id":hex(expected_root.as_bytes()),"error":error}));
+                    self.proof_fetch_error(expected_root, error);
                 }
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {

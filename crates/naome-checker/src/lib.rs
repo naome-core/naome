@@ -13,6 +13,7 @@
 //! that normal form's distinct direct proof and definition dependencies.
 
 pub mod context;
+mod derived;
 pub mod diagnostics;
 pub use diagnostics::CHECKER_ID;
 pub mod program;
@@ -228,7 +229,7 @@ fn check_with_canonical_conclusion(
     artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
-    check_with_diagnostic_query(certificate, artifact_state, identity_mode, None)
+    check_with_diagnostic_query(certificate, artifact_state, identity_mode, None, None)
 }
 
 fn check_with_diagnostic_query(
@@ -236,6 +237,7 @@ fn check_with_diagnostic_query(
     artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
     query: Option<&diagnostics::FormulaQuery>,
+    mut step_digests: Option<&mut Vec<[u8; 32]>>,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let reads = context::cache::ReadContext::new(artifact_state);
     let artifact_state: &dyn ContextView = &reads;
@@ -246,7 +248,8 @@ fn check_with_diagnostic_query(
     let mut results: Vec<Option<CheckedStep>> = Vec::with_capacity(steps.len());
     let mut derivation_ids =
         matches!(identity_mode, IdentityMode::Derive).then(|| Vec::with_capacity(steps.len()));
-    let mut remaining_work = CHECKER_MAX_FORMULA_WORK_BYTES;
+    let work =
+        context::cache::FormulaWorkBudget::new(artifact_state, CHECKER_MAX_FORMULA_WORK_BYTES);
     let mut canonical_conclusion = None;
 
     for (position, step) in steps.iter().enumerate() {
@@ -263,7 +266,7 @@ fn check_with_diagnostic_query(
             &mut results,
             &last_uses,
             artifact_state,
-            &mut remaining_work,
+            &work,
         )
         .map_err(|kind| {
             diagnostics::certificate::error(
@@ -273,6 +276,7 @@ fn check_with_diagnostic_query(
                 &results,
                 None,
                 query,
+                &work,
             )
         })?;
         let derivation_inputs = derivation_ids
@@ -302,6 +306,7 @@ fn check_with_diagnostic_query(
                         &results,
                         Some(&formula),
                         query,
+                        &work,
                     )
                 })
             })
@@ -313,7 +318,7 @@ fn check_with_diagnostic_query(
                     .as_ref()
                     .expect("an uncharged formula was canonically encoded")
                     .len();
-                charge_formula_work(position, length, &mut remaining_work).map_err(|kind| {
+                charge_formula_work(position, length, &work).map_err(|kind| {
                     diagnostics::certificate::error(
                         kind,
                         certificate,
@@ -321,6 +326,7 @@ fn check_with_diagnostic_query(
                         &results,
                         Some(&formula),
                         query,
+                        &work,
                     )
                 })?;
                 length
@@ -341,6 +347,9 @@ fn check_with_diagnostic_query(
         if position == final_step {
             canonical_conclusion = canonical;
         }
+        if let Some(digests) = &mut step_digests {
+            digests.push(naome_proof::program::formula_hash(&formula));
+        }
         let retain = position == final_step || last_uses[position as usize].is_some();
         results.push(retain.then_some(CheckedStep {
             formula,
@@ -355,7 +364,7 @@ fn check_with_diagnostic_query(
         .pop()
         .flatten()
         .expect("every ProofCertificate has at least one reconstructed step");
-    charge_formula_work(final_step, canonical_length, &mut remaining_work).map_err(|kind| {
+    charge_formula_work(final_step, canonical_length, &work).map_err(|kind| {
         diagnostics::certificate::error(
             kind,
             certificate,
@@ -363,6 +372,7 @@ fn check_with_diagnostic_query(
             &results,
             Some(&conclusion),
             query,
+            &work,
         )
     })?;
 
@@ -374,6 +384,7 @@ fn check_with_diagnostic_query(
             &results,
             Some(&conclusion),
             query,
+            &work,
         ));
     }
 
@@ -425,7 +436,19 @@ pub fn check_normal_form_with_state(
     normal_form: ProofNormalForm,
     artifact_state: &dyn ContextView,
 ) -> Result<CheckedProof, CheckError> {
-    check_normal_form_with_resolver(normal_form, artifact_state, None)
+    check_normal_form_with_resolver(normal_form, artifact_state, None, None)
+}
+
+/// Checks a bounded certificate and returns the exact Foundation graph digest
+/// of each normalized result, in order, for comparison with program replay.
+pub fn check_normal_form_with_step_digests(
+    normal_form: ProofNormalForm,
+    artifact_state: &dyn ContextView,
+) -> Result<(CheckedProof, Vec<[u8; 32]>), CheckError> {
+    let mut digests = Vec::with_capacity(normal_form.certificate().steps().len());
+    let proof =
+        check_normal_form_with_resolver(normal_form, artifact_state, None, Some(&mut digests))?;
+    Ok((proof, digests))
 }
 
 /// Uses the same checker and captures a requested bounded formula fragment if
@@ -436,7 +459,7 @@ pub fn check_normal_form_with_inspection(
     artifact_state: &dyn ContextView,
     query: &diagnostics::FormulaQuery,
 ) -> Result<CheckedProof, CheckError> {
-    check_normal_form_with_resolver(normal_form, artifact_state, Some(query))
+    check_normal_form_with_resolver(normal_form, artifact_state, Some(query), None)
 }
 
 /// Expands an authoring definition body and checks its canonical certificate.
@@ -568,12 +591,14 @@ fn check_normal_form_with_resolver(
     normal_form: ProofNormalForm,
     artifact_state: &dyn ContextView,
     query: Option<&diagnostics::FormulaQuery>,
+    step_digests: Option<&mut Vec<[u8; 32]>>,
 ) -> Result<CheckedProof, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_diagnostic_query(
         normal_form.certificate(),
         artifact_state,
         IdentityMode::Derive,
         query,
+        step_digests,
     )?;
     let derivation_id =
         derivation_id.expect("derivation mode computes the final derivation identity");
@@ -657,31 +682,31 @@ fn derive_step(
     results: &mut [Option<CheckedStep>],
     last_uses: &[Option<u32>],
     artifact_state: &dyn ContextView,
-    remaining_work: &mut usize,
+    work: &context::cache::FormulaWorkBudget<'_>,
 ) -> Result<DerivedStep, CheckErrorKind> {
     let formula = match proof_step {
         ProofStep::Simplification {
             antecedent,
             consequent,
         } => Logic::simplification(
-            primitive_formula(step, antecedent, artifact_state)?.into_owned(),
-            primitive_formula(step, consequent, artifact_state)?.into_owned(),
+            primitive_formula(step, antecedent, work)?.into_owned(),
+            primitive_formula(step, consequent, work)?.into_owned(),
         ),
         ProofStep::Frege {
             first,
             second,
             third,
         } => Logic::frege(
-            primitive_formula(step, first, artifact_state)?.into_owned(),
-            primitive_formula(step, second, artifact_state)?.into_owned(),
-            primitive_formula(step, third, artifact_state)?.into_owned(),
+            primitive_formula(step, first, work)?.into_owned(),
+            primitive_formula(step, second, work)?.into_owned(),
+            primitive_formula(step, third, work)?.into_owned(),
         ),
         ProofStep::ClassicalContraposition {
             antecedent,
             consequent,
         } => Logic::classical_contraposition(
-            primitive_formula(step, antecedent, artifact_state)?.into_owned(),
-            primitive_formula(step, consequent, artifact_state)?.into_owned(),
+            primitive_formula(step, antecedent, work)?.into_owned(),
+            primitive_formula(step, consequent, work)?.into_owned(),
         ),
         ProofStep::UniversalDistribution {
             variable,
@@ -689,11 +714,11 @@ fn derive_step(
             consequent,
         } => Logic::universal_distribution(
             *variable,
-            primitive_formula(step, antecedent, artifact_state)?.into_owned(),
-            primitive_formula(step, consequent, artifact_state)?.into_owned(),
+            primitive_formula(step, antecedent, work)?.into_owned(),
+            primitive_formula(step, consequent, work)?.into_owned(),
         ),
         ProofStep::VacuousUniversal { formula } => {
-            Logic::vacuous_universal(primitive_formula(step, formula, artifact_state)?.into_owned())
+            Logic::vacuous_universal(primitive_formula(step, formula, work)?.into_owned())
         }
         ProofStep::UniversalInstantiation {
             variable,
@@ -702,25 +727,25 @@ fn derive_step(
         } => Logic::universal_instantiation(
             *variable,
             *replacement,
-            primitive_formula(step, body, artifact_state)?.into_owned(),
+            primitive_formula(step, body, work)?.into_owned(),
         ),
         ProofStep::EqualityReflexivity { variable } => Logic::equality_reflexivity(*variable),
         ProofStep::EqualitySubstitution { from, to, body } => Logic::equality_substitution(
             *from,
             *to,
-            primitive_formula(step, body, artifact_state)?.into_owned(),
+            primitive_formula(step, body, work)?.into_owned(),
         ),
         ProofStep::ZfcAxiom(axiom) => axiom.formula(),
         ProofStep::Separation(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
-            let schema = primitive_separation(step, schema, artifact_state)?;
+            let schema = primitive_separation(step, schema, work)?;
             schema
                 .formula()
                 .map_err(|source| CheckErrorKind::Schema { step, source })?
         }
         ProofStep::Replacement(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
-            let schema = primitive_replacement(step, schema, artifact_state)?;
+            let schema = primitive_replacement(step, schema, work)?;
             schema
                 .formula()
                 .map_err(|source| CheckErrorKind::Schema { step, source })?
@@ -734,7 +759,7 @@ fn derive_step(
                     proof_id: *proof_id,
                 })?;
             // Metadata is bounded; reserve logical work before reading a cold formula.
-            charge_formula_work(step, header.length, remaining_work)?;
+            charge_formula_work(step, header.length, work)?;
             let formula = artifact_state
                 .proof_formula(header, header.length)
                 .map_err(|source| CheckErrorKind::ContextAccess { step, source })?
@@ -758,7 +783,7 @@ fn derive_step(
                 .canonical_length
                 .checked_add(implication.canonical_length)
                 .expect("two formula lengths fit usize");
-            charge_formula_work(step, referenced_work, remaining_work)?;
+            charge_formula_work(step, referenced_work, work)?;
             Logic::modus_ponens(&premise.formula, &implication.formula).map_err(|source| {
                 let comparison = implication
                     .formula
@@ -778,7 +803,7 @@ fn derive_step(
         ProofStep::Generalization { premise, variable } => {
             let premise_index = *premise as usize;
             let premise_length = result(results, *premise).canonical_length;
-            charge_formula_work(step, premise_length, remaining_work)?;
+            charge_formula_work(step, premise_length, work)?;
             let premise = if last_uses[premise_index] == Some(step) {
                 results[premise_index]
                     .take()
@@ -801,7 +826,7 @@ fn derive_step(
 fn primitive_formula<'a>(
     step: u32,
     formula: &'a ProofFormula,
-    artifact_state: &dyn ContextView,
+    artifact_state: &dyn naome_proof::DefinitionResolver,
 ) -> Result<Cow<'a, Formula>, CheckErrorKind> {
     if let Some(formula) = formula.as_primitive() {
         Ok(Cow::Borrowed(formula))
@@ -824,7 +849,7 @@ fn primitive_formula<'a>(
 fn primitive_separation(
     step: u32,
     schema: &ProofSeparation,
-    artifact_state: &dyn ContextView,
+    artifact_state: &dyn naome_proof::DefinitionResolver,
 ) -> Result<Separation, CheckErrorKind> {
     Ok(Separation {
         predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
@@ -838,7 +863,7 @@ fn primitive_separation(
 fn primitive_replacement(
     step: u32,
     schema: &ProofReplacement,
-    artifact_state: &dyn ContextView,
+    artifact_state: &dyn naome_proof::DefinitionResolver,
 ) -> Result<Replacement, CheckErrorKind> {
     Ok(Replacement {
         predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
@@ -880,10 +905,10 @@ fn result(results: &[Option<CheckedStep>], reference: u32) -> &CheckedStep {
 fn charge_formula_work(
     step: u32,
     amount: usize,
-    remaining: &mut usize,
+    work: &context::cache::FormulaWorkBudget<'_>,
 ) -> Result<(), CheckErrorKind> {
-    if amount > *remaining {
-        let actual = (CHECKER_MAX_FORMULA_WORK_BYTES - *remaining)
+    if work.reserve(amount).is_err() {
+        let actual = (CHECKER_MAX_FORMULA_WORK_BYTES - work.remaining())
             .checked_add(amount)
             .expect("formula work charges fit usize");
         return Err(CheckErrorKind::FormulaWorkLimitExceeded {
@@ -893,7 +918,6 @@ fn charge_formula_work(
         });
     }
 
-    *remaining -= amount;
     Ok(())
 }
 
@@ -919,10 +943,6 @@ impl CheckError {
     }
     pub fn into_diagnostic(self) -> std::sync::Arc<diagnostics::ProofDiagnostic> {
         self.diagnostic
-    }
-    /// Authoring attaches source origins without changing mathematical evidence.
-    pub fn diagnostic_mut(&mut self) -> &mut diagnostics::ProofDiagnostic {
-        std::sync::Arc::make_mut(&mut self.diagnostic)
     }
     pub fn step(&self) -> u32 {
         self.kind.step()

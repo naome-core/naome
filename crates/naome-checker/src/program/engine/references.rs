@@ -116,6 +116,13 @@ impl Engine {
         query: Option<&crate::diagnostics::FormulaQuery>,
     ) -> Result<Option<u64>, Error> {
         if evaluation.reference.is_none() {
+            if !ContextRead::charge(&mut evaluation.context_read, context, || {
+                Ok(context
+                    .proof_header(proof)?
+                    .map(|header| header.canonical_length()))
+            })? {
+                return Ok(None);
+            }
             self.observe_reference_context(context);
             evaluation.reference = match context.program_source(proof)? {
                 Some(source) => Some(source),
@@ -132,20 +139,17 @@ impl Engine {
                     )?)));
                 }
             };
+            return Ok(None);
         }
         let source = evaluation
             .reference
-            .as_ref()
+            .as_mut()
             .expect("checked reference source");
         if source.proof != proof {
             return Err(crate::ContextError::Corrupt.into());
         }
-        let node = match &source.representation {
-            ProgramRepresentation::Formula(formula) => {
-                // This representation obeys the existing bounded certificate
-                // codec. Unbounded graph sources take the incremental path.
-                Some(checker::Context::fixed(self, formula)?)
-            }
+        let node = match &mut source.representation {
+            ProgramRepresentation::Formula(cursor) => cursor.advance(|node| self.intern(node))?,
             ProgramRepresentation::Graph { root, nodes } => {
                 self.import_node(*root, nodes.as_ref(), &mut evaluation.reference_depth)?
             }

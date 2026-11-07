@@ -16,20 +16,23 @@ use std::{
 };
 
 fn source(index: usize) -> String {
-    let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
-    let a = question.proved_target().to_source();
-    let mut b = "mem(y,y)".to_owned();
+    let question = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
+    use naome_foundation::Formula;
+    let a = question.proved_target().clone();
+    let y = crate::test_inputs::variable(0);
+    let mut b = Formula::member(y, y);
     for bit in format!("{index:b}").bytes() {
-        b = format!(
-            "imp({}, {b})",
-            if bit == b'1' { "eq(y,y)" } else { "mem(y,y)" }
-        );
+        let premise = if bit == b'1' {
+            Formula::equal(y, y)
+        } else {
+            Formula::member(y, y)
+        };
+        b = Formula::implies(premise, b);
     }
-    b = format!("all(y,{b})");
-    let proof = crate::mocks::create_proof(&question).unwrap();
-    let prefix = proof.rsplit_once("return p0").unwrap().0;
-    let steps = prefix.split_once("proof:").unwrap().1;
-    format!("goal = imp({b},{a}) proof:{steps} p1=simp({a},{b}) p2=mp(p0,p1) return p2")
+    let b = Formula::for_all(y, b);
+    let payload = crate::unhex(&crate::mocks::create_proof(&question).unwrap()).unwrap();
+    let proof = naome_proof::ProofCertificate::from_canonical_bytes(&payload[1..]).unwrap();
+    crate::test_inputs::proof(crate::test_inputs::weaken(proof.steps().to_vec(), a, b))
 }
 
 fn fixture(index: usize) -> (Envelope, Metadata) {
@@ -40,10 +43,10 @@ fn fixture(index: usize) -> (Envelope, Metadata) {
     (object, producer.describe(id).unwrap().unwrap())
 }
 
-fn accepting(_: CompiledQuestion) -> Ready<Result<bool, String>> {
+fn accepting(_: ResearchQuestion) -> Ready<Result<bool, String>> {
     ready(Ok(true))
 }
-type Questions = LocalQuestions<fn(CompiledQuestion) -> Ready<Result<bool, String>>>;
+type Questions = LocalQuestions<fn(ResearchQuestion) -> Ready<Result<bool, String>>>;
 fn new_questions() -> Questions {
     LocalQuestions::new(Some(accepting as fn(_) -> _))
 }
@@ -53,8 +56,13 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
-    let mut questions =
-        Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap();
+    let mut questions = Questions::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(60),
+        &graph,
+    )
+    .unwrap();
     let peer = PeerId::random();
     let mut intake = Intake::default();
     let metadata = fixture(41).1;
@@ -94,7 +102,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
 
 async fn selection<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
 where
-    F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     assert!(!questions.available());
@@ -104,7 +112,7 @@ where
 
 fn registered<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph) -> usize
 where
-    F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     let (sender, mut receiver) = oneshot::channel();
@@ -114,7 +122,7 @@ where
 
 async fn approve<F, Fut>(intake: &mut Intake, questions: &mut LocalQuestions<F>, graph: &mut Graph)
 where
-    F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     assert!(matches!(
@@ -134,7 +142,7 @@ where
 fn descriptions_bind_the_checked_statement_and_preserve_existing_proof_addresses() {
     let mut graph = Graph::default();
     let object = graph
-        .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+        .author("00000000020600000000210000000000000000")
         .unwrap();
     assert_eq!(
         crate::hex(object.proof_id().unwrap().unwrap().as_bytes()),
@@ -143,11 +151,16 @@ fn descriptions_bind_the_checked_statement_and_preserve_existing_proof_addresses
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     graph.ingest(object.clone(), Instant::now()).unwrap();
     let mut metadata = graph.describe(id).unwrap().unwrap();
-    let (_, statement, question) = metadata.compile().unwrap();
+    let (_, statement, question) = metadata.compile(graph.checked_context()).unwrap();
     assert_eq!(hex(statement.as_bytes()), object.statement_id.unwrap());
     assert!(!question.negation_parity());
     metadata.statement_id = "00".repeat(32);
-    assert!(metadata.compile().unwrap_err().contains("question target"));
+    assert!(
+        metadata
+            .compile(graph.checked_context())
+            .unwrap_err()
+            .contains("question target")
+    );
 }
 
 #[tokio::test]
@@ -397,7 +410,7 @@ async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fet
 }
 
 #[tokio::test]
-async fn declined_metadata_does_not_poison_new_source_or_peer_for_same_proof() {
+async fn declined_metadata_does_not_poison_new_question_record_or_peer_for_same_proof() {
     let (object, metadata) = fixture(4);
     let peer = PeerId::random();
     let mut graph = Graph::default();
@@ -419,7 +432,7 @@ async fn declined_metadata_does_not_poison_new_source_or_peer_for_same_proof() {
         "declined"
     );
     let mut changed = metadata.clone();
-    changed.question = format!("# changed exact input\n{}", changed.question);
+    changed.question = format!("0202{}", changed.question);
     assert_eq!(intake.enqueue(peer, changed, &graph).unwrap(), "queued");
     approve(&mut intake, &mut questions, &mut graph).await;
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
@@ -466,6 +479,12 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
 }
 
 fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
+    dependent_fixture_with_extra(crate::test_inputs::member_self())
+}
+
+fn dependent_fixture_with_extra(
+    extra: naome_foundation::Formula,
+) -> (Envelope, Envelope, Metadata) {
     let mut producer = Graph::default();
     let helper = producer.author(&source(5)).unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
@@ -475,16 +494,83 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
         ))
         .unwrap()
         .unwrap()
-        .question
-        .split("goal = ")
-        .nth(1)
+        .compile(producer.checked_context())
         .unwrap()
-        .to_owned();
-    let b = "all(z,mem(z,z))";
-    let root = producer.author(&format!("goal = imp({b},{premise}) proof: p0 = cite(\"{}\") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2", crate::hex(helper.proof_id().unwrap().unwrap().as_bytes()))).unwrap();
+        .2
+        .core()
+        .clone();
+    let root = producer
+        .author(&crate::test_inputs::weaken_citation(
+            helper.proof_id().unwrap().unwrap(),
+            premise,
+            extra,
+        ))
+        .unwrap();
     let id = ArtifactId::from_bytes(id_bytes(&root.artifact_id).unwrap());
     producer.ingest(root.clone(), Instant::now()).unwrap();
     (root, helper, producer.describe(id).unwrap().unwrap())
+}
+
+#[tokio::test]
+async fn shared_helper_bytes_require_a_live_approved_closure_for_each_root() {
+    let (first, helper, first_metadata) = dependent_fixture();
+    let (second, _, second_metadata) = dependent_fixture_with_extra(
+        naome_foundation::Formula::negate(crate::test_inputs::member_self()),
+    );
+    let id = |object: &Envelope| ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+    let (first_id, second_id, helper_id) = (id(&first), id(&second), id(&helper));
+    assert_ne!(first_id, second_id);
+    let (first_peer, second_peer) = (PeerId::random(), PeerId::random());
+    let mut graph = Graph::default();
+    let mut questions = new_questions();
+    let mut intake = Intake::default();
+
+    intake.enqueue(first_peer, first_metadata, &graph).unwrap();
+    approve(&mut intake, &mut questions, &mut graph).await;
+    intake
+        .payload(first_peer, first_id, first_id, first, &graph)
+        .unwrap();
+    intake
+        .payload(first_peer, first_id, helper_id, helper, &graph)
+        .unwrap();
+    intake.abort(first_id);
+    assert_eq!(graph.accepted_count(), 0);
+
+    intake
+        .enqueue(second_peer, second_metadata, &graph)
+        .unwrap();
+    approve(&mut intake, &mut questions, &mut graph).await;
+    assert!(
+        !intake
+            .reuse_certificate(second_peer, second_id, helper_id, &graph)
+            .unwrap()
+    );
+    intake
+        .payload(second_peer, second_id, second_id, second, &graph)
+        .unwrap();
+    assert!(
+        !intake
+            .reuse_certificate(first_peer, second_id, helper_id, &graph)
+            .unwrap()
+    );
+    assert!(
+        intake
+            .reuse_certificate(second_peer, second_id, helper_id, &graph)
+            .unwrap()
+    );
+    assert_eq!(
+        intake.active.as_ref().unwrap().closure.certificate_count(),
+        2
+    );
+    assert!(intake.needed().is_empty());
+    assert_eq!(graph.accepted_count(), 0);
+
+    intake.advance(&mut graph, &mut questions);
+    selection(&mut questions, &graph).await;
+    assert!(
+        matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids == vec![helper_id, second_id])
+    );
+    assert!(!graph.contains(first_id).unwrap());
 }
 
 #[tokio::test]
@@ -531,21 +617,9 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
     let (object, helper, metadata) = dependent_fixture();
     let mut producer = Graph::default();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
-    let formula = producer
-        .describe(ArtifactId::from_bytes(
-            id_bytes(&helper.artifact_id).unwrap(),
-        ))
-        .unwrap()
-        .unwrap()
-        .compile()
-        .unwrap()
-        .2
-        .core()
-        .to_source();
     let owner = producer
-        .author(&format!(
-            "goal = {formula} proof: p0 = cite(\"{}\") return p0",
-            crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            helper.proof_id().unwrap().unwrap(),
         ))
         .unwrap();
     let owner_id = ArtifactId::from_bytes(id_bytes(&owner.artifact_id).unwrap());
@@ -582,41 +656,39 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
 #[tokio::test]
 async fn necessary_helper_outside_question_codec_is_checked_without_own_question_selection() {
     let mut producer = Graph::default();
-    let mut formula = "eq(x0,x0)".to_owned();
-    for index in 0..40 {
-        formula = format!("all(x{index},{formula})");
-    }
-    let mut proof = "p0 = refl(x0)".to_owned();
-    for index in 0..40 {
-        proof.push_str(&format!(" p{} = gen(p{},x{index})", index + 1, index));
-    }
-    let helper = producer
-        .author(&format!("goal = {formula} proof: {proof} return p40"))
-        .unwrap();
+    use crate::test_inputs::{proof, reflexivity, variable, weaken};
+    use naome_foundation::Formula;
+    use naome_proof::ProofStep;
+
+    let helper = producer.author(&proof(reflexivity(0..40))).unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
     let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     assert!(producer.describe(helper_id).is_err());
-    let mut steps = format!(
-        "p0 = cite(\"{}\")",
-        crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
-    );
-    let mut previous = "p0".to_owned();
-    for (offset, variable) in (1..40).rev().enumerate() {
-        let mut body = "eq(x0,x0)".to_owned();
-        for index in 0..variable {
-            body = format!("all(x{index},{body})");
-        }
-        steps.push_str(&format!(
-            " u{offset} = inst(x{variable},x{variable},{body}) r{offset} = mp({previous},u{offset})"
-        ));
-        previous = format!("r{offset}");
+    let mut steps = vec![ProofStep::ProofReference {
+        proof_id: helper.proof_id().unwrap().unwrap(),
+    }];
+    let x = variable(0);
+    for i in (0..40).rev() {
+        let body = (0..i).fold(Formula::equal(x, x), |formula, v| {
+            Formula::for_all(variable(v), formula)
+        });
+        let premise = (steps.len() - 1) as u32;
+        steps.push(ProofStep::UniversalInstantiation {
+            variable: variable(i),
+            replacement: variable(i),
+            body: body.into(),
+        });
+        steps.push(ProofStep::ModusPonens {
+            premise,
+            implication: premise + 1,
+        });
     }
-    steps.push_str(&format!(" last=inst(x0,x0,eq(x0,x0)) opened=mp({previous},last) weakening=simp(eq(x0,x0),mem(x0,x0)) result=mp(opened,weakening) closed=gen(result,x0)"));
-    let object = producer
-        .author(&format!(
-            "goal = all(x0,imp(mem(x0,x0),eq(x0,x0))) proof: {steps} return closed"
-        ))
-        .unwrap();
+    let mut steps = weaken(steps, Formula::equal(x, x), Formula::member(x, x));
+    steps.push(ProofStep::Generalization {
+        premise: (steps.len() - 1) as u32,
+        variable: x,
+    });
+    let object = producer.author(&proof(steps)).unwrap();
     let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     producer.ingest(object.clone(), Instant::now()).unwrap();
     let metadata = producer.describe(root).unwrap().unwrap();
@@ -684,7 +756,10 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
         if mode == 3 {
             let (sender, _receiver) = oneshot::channel();
             questions.process(
-                Command::ImportBaseline(metadata.compile().unwrap().2, sender),
+                Command::ImportBaseline(
+                    metadata.compile(graph.checked_context()).unwrap().2,
+                    sender,
+                ),
                 &graph,
             );
         }
@@ -741,13 +816,10 @@ async fn invalid_parent_after_valid_helper_leaves_no_orphan_or_registry_effect()
 #[tokio::test]
 async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_does_not() {
     let (object, metadata) = fixture(6);
-    let derived = metadata.compile().unwrap().2;
-    let original = CompiledQuestion::compile(&format!(
-        "# original owner source\ngoal = not({})",
-        derived.core().to_source()
-    ))
-    .unwrap();
     let mut graph = Graph::default();
+    let derived = metadata.compile(graph.checked_context()).unwrap().2;
+    let original =
+        crate::test_inputs::question(naome_foundation::Formula::negate(derived.core().clone()));
     let mut questions = new_questions();
     let (sender, receiver) = oneshot::channel();
     questions.process(Command::Admit(original.clone(), sender), &graph);

@@ -45,7 +45,7 @@ pub fn plan(graph: &Graph, request: &Request, candidates: &[String]) -> Result<P
     let mut seen = BTreeSet::new();
     let mut eligible = Vec::new();
     for source in candidates {
-        let target = CompiledQuestion::compile(source)?;
+        let target = ResearchQuestion::from_hex(source)?;
         if partition(&target) != Partition::Training
             || !seen.insert(*target.resolution_id())
             || !formal.generation_decision(graph, &target).passed()
@@ -79,7 +79,7 @@ pub fn plan(graph: &Graph, request: &Request, candidates: &[String]) -> Result<P
         chosen.push(features);
         questions.push(PlannedQuestion {
             structural_group: group(&target),
-            question: target.source().into(),
+            question: target.to_hex(),
             priority,
         });
     }

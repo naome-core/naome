@@ -132,14 +132,16 @@ fn schema_depth_preflight_has_an_exact_boundary_and_precedes_schema_errors() {
 fn formula_work_limit_is_exact_and_inclusive() {
     assert_eq!(CHECKER_MAX_FORMULA_WORK_BYTES, 4_194_304);
 
-    let mut remaining = CHECKER_MAX_FORMULA_WORK_BYTES;
+    let context = ArtifactState::new();
+    let work =
+        crate::context::cache::FormulaWorkBudget::new(&context, CHECKER_MAX_FORMULA_WORK_BYTES);
     assert_eq!(
-        charge_formula_work(7, CHECKER_MAX_FORMULA_WORK_BYTES, &mut remaining),
+        charge_formula_work(7, CHECKER_MAX_FORMULA_WORK_BYTES, &work),
         Ok(())
     );
-    assert_eq!(remaining, 0);
+    assert_eq!(work.remaining(), 0);
     assert_eq!(
-        charge_formula_work(8, 1, &mut remaining),
+        charge_formula_work(8, 1, &work),
         Err(CheckError::FormulaWorkLimitExceeded {
             step: 8,
             actual: CHECKER_MAX_FORMULA_WORK_BYTES + 1,
