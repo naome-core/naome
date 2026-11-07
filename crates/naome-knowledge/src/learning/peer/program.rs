@@ -470,6 +470,105 @@ fn differing_operands(mut left: Formula, mut right: Formula) -> Option<(Formula,
     }
 }
 
+fn operand_mp(
+    engine: &CheckedProgram,
+    target: &Formula,
+    recent: &VecDeque<(usize, Formula, Rule)>,
+    observed: (usize, usize),
+) -> Result<Option<Graph>, String> {
+    let lookup = |position| -> Result<Option<Formula>, String> {
+        if let Some((_, formula, _)) = recent.iter().find(|(index, _, _)| *index == position) {
+            return Ok(Some(formula.clone()));
+        }
+        engine
+            .proved_formula(position as u64)
+            .map_err(|error| error.to_string())
+    };
+    let (Some(premise), Some(implication)) = (lookup(observed.0)?, lookup(observed.1)?) else {
+        return Ok(None);
+    };
+    let Some((_, consequence)) = implication.view().implication_parts() else {
+        return Err("checked peer implication operand differs".into());
+    };
+    let alternative = recent.iter().rev().find_map(|(index, formula, rule)| {
+        let (antecedent, candidate) = formula.view().implication_parts()?;
+        if candidate == consequence {
+            return None;
+        }
+        if antecedent == premise.view() {
+            return Some((
+                (observed.0, *index),
+                premise.clone(),
+                formula.clone(),
+                candidate.to_owned(),
+                *rule,
+            ));
+        }
+        let (other, known, _) = recent
+            .iter()
+            .rev()
+            .find(|(_, known, _)| known.view() == antecedent)?;
+        Some((
+            (*other, *index),
+            known.clone(),
+            formula.clone(),
+            candidate.to_owned(),
+            *rule,
+        ))
+    });
+    let Some(alternative) = alternative else {
+        return Ok(None);
+    };
+    let rule = recent
+        .iter()
+        .find(|(index, _, _)| *index == observed.1)
+        .map_or(Rule::ModusPonens, |(_, _, rule)| *rule);
+    let actual = (
+        observed,
+        premise,
+        implication.clone(),
+        consequence.to_owned(),
+        rule,
+    );
+    let mut pairs = [actual, alternative];
+    pairs.sort_by_key(|(positions, ..)| *positions);
+    let expert = usize::from(pairs[1].0 == observed);
+    let mut context: Vec<Binding> = Vec::new();
+    let mut candidates = Vec::new();
+    for (_, premise, implication, conclusion, rule) in pairs {
+        let operands = [implication, premise]
+            .into_iter()
+            .map(|formula| {
+                context
+                    .iter()
+                    .position(|binding| binding.formula == formula)
+                    .unwrap_or_else(|| {
+                        context.push(Binding { formula });
+                        context.len() - 1
+                    })
+            })
+            .collect();
+        candidates.push(Candidate {
+            rule,
+            premises: operands,
+            consequences: vec![conclusion],
+        });
+    }
+    let decision = Decision {
+        goal: target.clone(),
+        context,
+        candidates,
+        expert,
+    };
+    match Graph::encode(&decision) {
+        Ok(graph) => Ok(Some(graph)),
+        Err(error) if error == "formula_graph_capacity" => {
+            Graph::encode_at_depth(&decision, 4).map(Some)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn graphs(
     engine: &CheckedProgram,
     target: &Formula,
@@ -593,23 +692,30 @@ fn graphs(
                 premise,
                 implication,
             } = command
-            && let Some(mut graph) = checked_mp(
+        {
+            let operands = (*premise as usize, *implication as usize);
+            let graph = checked_mp(
                 target,
                 &goal_parts,
                 recent
                     .iter()
                     .map(|(index, formula, rule)| (*index, formula, *rule)),
-                (*premise as usize, *implication as usize),
-            )?
-        {
-            graph.binding = crate::learning::digest(&(position, &graph.binding));
-            bytes = bytes
-                .checked_add(graph.work_bytes())
-                .ok_or("peer program graph work overflow")?;
-            if bytes > MODEL_REQUIREMENTS.work_bytes / 16 {
-                return Err("peer program graph work capacity".into());
+                operands,
+            )?;
+            let graph = match graph {
+                Some(graph) => Some(graph),
+                None => operand_mp(engine, target, &recent, operands)?,
+            };
+            if let Some(mut graph) = graph {
+                graph.binding = crate::learning::digest(&(position, operands));
+                bytes = bytes
+                    .checked_add(graph.work_bytes())
+                    .ok_or("peer program graph work overflow")?;
+                if bytes > MODEL_REQUIREMENTS.work_bytes / 16 {
+                    break;
+                }
+                graphs.push(graph);
             }
-            graphs.push(graph);
         }
         if let Some(formula) = engine
             .proved_formula(position as u64)

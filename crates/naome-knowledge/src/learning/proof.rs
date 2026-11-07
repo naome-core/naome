@@ -70,6 +70,7 @@ pub enum Term {
         target: Formula,
         definitions: Vec<super::definitions::Entry>,
     },
+    Sealed(Arc<Term>, Formula),
     Variable(usize, Formula),
     Kernel(Kernel),
     Generalize(FreeVariable, Box<Self>),
@@ -108,7 +109,9 @@ impl Term {
 
     pub fn formula(&self) -> Formula {
         match self {
-            Self::Variable(_, formula) | Self::Apply(_, _, formula) => formula.clone(),
+            Self::Variable(_, formula) | Self::Apply(_, _, formula) | Self::Sealed(_, formula) => {
+                formula.clone()
+            }
             Self::Kernel(k) => k.formula(),
             Self::Native { target, .. } | Self::Lemma { target, .. } => target.clone(),
             Self::Generalize(variable, body) => Formula::for_all(*variable, body.formula()),
@@ -244,6 +247,13 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
                 verified.definitions,
             )))
         }
+        Term::Sealed(body, target) => {
+            let body = lower(body)?;
+            if body.formula() != *target {
+                return Err("sealed native recipe conclusion differs".into());
+            }
+            Ok(body)
+        }
         Term::Variable(id, formula) => Ok(Combinator::new(Kind::Variable(*id, formula.clone()))),
         Term::Kernel(k) => Ok(Combinator::new(Kind::Kernel(k.clone()))),
         Term::Generalize(v, body) => Ok(Combinator::new(Kind::Generalize(*v, lower(body)?))),
@@ -315,7 +325,7 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         steps,
         lemmas,
         definitions,
-    } = recipe(term, expected)?;
+    } = lower_recipe(term, expected, true)?;
     let certificate = ProofCertificate::new(steps).map_err(|error| match error {
         naome_proof::ProofCertificateError::TooManySteps { .. }
         | naome_proof::ProofCertificateError::InputTooLong { .. }
@@ -367,12 +377,16 @@ pub(super) struct Recipe {
 }
 
 /// Lower the actual search term into bounded inference operands. A program
-/// consumer can keep these as typed commands without a certificate round trip.
+/// consumer accounts for canonical commands after sharing identical formulas.
+pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> {
+    lower_recipe(term, expected, false)
+}
+
 #[expect(
     clippy::mutable_key_type,
     reason = "OnceLock memoizes immutable structure; hash and equality never change."
 )]
-pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> {
+fn lower_recipe(term: &Term, expected: &Formula, certificate: bool) -> Result<Recipe, String> {
     if term.formula() != *expected {
         return Err("search term differs from the requested target".into());
     }
@@ -392,14 +406,14 @@ pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> 
     let root = lower(term)?;
     let mut steps = Vec::new();
     let mut cache = HashMap::new();
-    let mut formula_nodes = 0usize;
+    let mut formula_nodes = certificate.then_some(0usize);
     let mut lemmas = Vec::new();
     let mut definitions = Vec::new();
     fn emit(
         term: &Arc<Combinator>,
         steps: &mut Vec<ProofStep>,
         cache: &mut HashMap<Arc<Combinator>, u32>,
-        formula_nodes: &mut usize,
+        formula_nodes: &mut Option<usize>,
         lemmas: &mut Vec<ProofCertificate>,
         definitions: &mut Vec<super::definitions::Entry>,
     ) -> Result<u32, String> {
@@ -447,57 +461,59 @@ pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> 
                 }
             }
         };
-        *formula_nodes += match &step {
-            ProofStep::Simplification {
-                antecedent,
-                consequent,
-            } => [antecedent, consequent]
-                .iter()
-                .map(|formula| {
-                    formula
-                        .as_primitive()
-                        .unwrap()
-                        .view()
-                        .node_count_and_depth()
-                        .0
-                })
-                .sum::<usize>(),
-            ProofStep::Frege {
-                first,
-                second,
-                third,
-            } => [first, second, third]
-                .iter()
-                .map(|formula| {
-                    formula
-                        .as_primitive()
-                        .unwrap()
-                        .view()
-                        .node_count_and_depth()
-                        .0
-                })
-                .sum::<usize>(),
-            ProofStep::ClassicalContraposition {
-                antecedent,
-                consequent,
+        if let Some(formula_nodes) = formula_nodes {
+            *formula_nodes += match &step {
+                ProofStep::Simplification {
+                    antecedent,
+                    consequent,
+                } => [antecedent, consequent]
+                    .iter()
+                    .map(|formula| {
+                        formula
+                            .as_primitive()
+                            .unwrap()
+                            .view()
+                            .node_count_and_depth()
+                            .0
+                    })
+                    .sum::<usize>(),
+                ProofStep::Frege {
+                    first,
+                    second,
+                    third,
+                } => [first, second, third]
+                    .iter()
+                    .map(|formula| {
+                        formula
+                            .as_primitive()
+                            .unwrap()
+                            .view()
+                            .node_count_and_depth()
+                            .0
+                    })
+                    .sum::<usize>(),
+                ProofStep::ClassicalContraposition {
+                    antecedent,
+                    consequent,
+                }
+                | ProofStep::UniversalDistribution {
+                    antecedent,
+                    consequent,
+                    ..
+                } => [antecedent, consequent]
+                    .iter()
+                    .map(|f| f.as_primitive().unwrap().view().node_count_and_depth().0)
+                    .sum(),
+                ProofStep::UniversalInstantiation { body, .. }
+                | ProofStep::EqualitySubstitution { body, .. }
+                | ProofStep::VacuousUniversal { formula: body } => {
+                    body.as_primitive().unwrap().view().node_count_and_depth().0
+                }
+                _ => 0,
+            };
+            if *formula_nodes > naome_proof::CERTIFICATE_MAX_FORMULA_NODES {
+                return Err(FORMULA_WORK_LIMIT.into());
             }
-            | ProofStep::UniversalDistribution {
-                antecedent,
-                consequent,
-                ..
-            } => [antecedent, consequent]
-                .iter()
-                .map(|f| f.as_primitive().unwrap().view().node_count_and_depth().0)
-                .sum(),
-            ProofStep::UniversalInstantiation { body, .. }
-            | ProofStep::EqualitySubstitution { body, .. }
-            | ProofStep::VacuousUniversal { formula: body } => {
-                body.as_primitive().unwrap().view().node_count_and_depth().0
-            }
-            _ => 0,
-        };
-        if *formula_nodes > naome_proof::CERTIFICATE_MAX_FORMULA_NODES {
-            return Err(FORMULA_WORK_LIMIT.into());
         }
         let index = u32::try_from(steps.len()).map_err(|_| "proof index width")?;
         steps.push(step);

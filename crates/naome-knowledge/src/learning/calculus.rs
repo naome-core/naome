@@ -5,11 +5,14 @@ use naome_foundation::{Formula, FreeVariable};
 use naome_proof::ProofStep;
 
 #[derive(Default)]
-pub struct Names(pub usize);
+pub struct Names {
+    next: usize,
+    pub native_programs: bool,
+}
 impl Names {
     pub fn assumption(&mut self, formula: Formula) -> (usize, Term) {
-        let id = self.0;
-        self.0 += 1;
+        let id = self.next;
+        self.next += 1;
         (id, Term::Variable(id, formula))
     }
 }

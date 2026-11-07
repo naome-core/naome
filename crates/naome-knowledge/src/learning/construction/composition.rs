@@ -316,7 +316,7 @@ pub fn construct(
     maximum: usize,
     started: Instant,
 ) -> Result<(Option<proof::Verified>, usize), String> {
-    let (term, work) = construct_term(target, context, maximum, started)?;
+    let (term, work) = construct_term(target, context, maximum, started, false)?;
     let proof = term.map(|term| proof::verify(&term, target)).transpose()?;
     Ok((proof, work))
 }
@@ -326,11 +326,15 @@ pub(crate) fn construct_term(
     context: &[proof::Term],
     maximum: usize,
     started: Instant,
+    native: bool,
 ) -> Result<(Option<proof::Term>, usize), String> {
     let maximum = maximum.min(16);
     let mut context = context.to_vec();
     let deduction_work = deductions(target, &mut context, maximum, started)?;
     let mut search = logic::Search::new(maximum.saturating_sub(deduction_work), started);
+    if native {
+        search = search.native();
+    }
     let term = search.prove(target, &context)?;
     Ok((term, deduction_work + search.work))
 }

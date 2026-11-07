@@ -1429,6 +1429,7 @@ fn search_question_report(
                 &terms,
                 remaining,
                 orientation_started,
+                true,
             )?;
             remaining = remaining.saturating_sub(work);
             if let Some(term) = term {

@@ -106,7 +106,7 @@ def run(trial):
     assert checked_program["checker_work"] > 0
     definitions = [o["artifact_id"] for o in objects if o["statement_id"] is None]
     proofs = [o["artifact_id"] for o in objects if o["statement_id"] is not None]
-    assert len(definitions) >= 2 and len(proofs) >= 3
+    assert len(definitions) >= 2 and proofs == [root], "the native Nat construction emits no helper certificate"
     assert len(objects) == len(solution["helpers"]) + 1
     assert source_record["input"]["question"] == goal
     all_ids = a.ids()

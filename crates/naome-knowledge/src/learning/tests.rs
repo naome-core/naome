@@ -1499,7 +1499,7 @@ fn native_nat_program_reuse_from_a_received_catalog() {
     let directory = std::path::PathBuf::from(std::env::var_os("NAOME_TEST_NAT_CATALOG").unwrap());
     let question =
         ResearchQuestion::from_hex(&std::env::var("NAOME_TEST_NAT_QUESTION").unwrap()).unwrap();
-    let graph = crate::Graph::open(&directory).unwrap();
+    let mut graph = crate::Graph::open(&directory).unwrap();
     let target = question.proved_target().encode_canonical().unwrap();
     let statement = naome_proof::StatementId::of_canonical_formula(&target).unwrap();
     let id = graph
@@ -1513,6 +1513,11 @@ fn native_nat_program_reuse_from_a_received_catalog() {
         .unwrap()
         .expect("received Nat program");
     assert_eq!(manifest.proof_id(), id);
+    let pairing = naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ZfcAxiom(
+        naome_foundation::ZfcAxiom::Pairing,
+    )])
+    .unwrap();
+    graph.produce(&proof::artifact(&pairing)).unwrap();
     let target = graph
         .ids_page(None, 16)
         .unwrap()

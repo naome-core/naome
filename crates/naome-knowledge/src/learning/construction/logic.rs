@@ -52,11 +52,14 @@ fn fresh(context: &[Term], goal: &Formula) -> FreeVariable {
 /// A checked closed sublemma becomes opaque to bracket abstraction, preventing
 /// repeated discharge from expanding its derivation. The final checker still
 /// checks every emitted primitive step.
-fn seal(term: Term) -> Result<Term, String> {
+fn seal(term: Term, names: &Names) -> Result<Term, String> {
     if !term.free_assumptions().is_empty() {
         return Err("open construction lemma".into());
     }
     let formula = term.formula();
+    if names.native_programs {
+        return Ok(Term::Sealed(std::sync::Arc::new(term), formula));
+    }
     let verified = proof::verify(&term, &formula)?;
     let mut term = Term::Lemma {
         certificate: verified.certificate,
@@ -81,7 +84,7 @@ fn project(value: Term, second: bool, names: &mut Names) -> Result<Term, String>
     } else {
         left
     };
-    let law = seal(Term::Lambda(id, formula, Box::new(result)))?;
+    let law = seal(Term::Lambda(id, formula, Box::new(result)), names)?;
     let result = c::app(law, value)?;
     if result.formula() != if second { b } else { a } {
         return Err("projection result".into());
@@ -97,11 +100,10 @@ pub(in crate::learning) fn join(a: Term, b: Term, names: &mut Names) -> Result<T
     let (k, h) = names.assumption(implication.clone());
     let nb = c::app(h, av)?;
     let result = c::neg_intro(k, implication, bv, nb, names)?;
-    let law = seal(Term::Lambda(
-        i,
-        af,
-        Box::new(Term::Lambda(j, bf, Box::new(result))),
-    ))?;
+    let law = seal(
+        Term::Lambda(i, af, Box::new(Term::Lambda(j, bf, Box::new(result)))),
+        names,
+    )?;
     c::app(c::app(law, a)?, b)
 }
 fn exists_intro(
@@ -116,7 +118,7 @@ fn exists_intro(
     let (i, h) = names.assumption(all.clone());
     let negative = c::instantiate(h, v)?;
     let result = c::neg_intro(i, all, b, negative, names)?;
-    let law = seal(Term::Lambda(j, bf, Box::new(result)))?;
+    let law = seal(Term::Lambda(j, bf, Box::new(result)), names)?;
     c::app(law, body)
 }
 fn eliminate(
@@ -156,11 +158,10 @@ fn exists_elim(
     let (k, p) = names.assumption(body);
     let consequence = c::app(c::instantiate(h, v)?, p)?;
     let result = eliminate(e, v, k, consequence, names)?;
-    let law = seal(Term::Lambda(
-        i,
-        all,
-        Box::new(Term::Lambda(j, ef, Box::new(result))),
-    ))?;
+    let law = seal(
+        Term::Lambda(i, all, Box::new(Term::Lambda(j, ef, Box::new(result)))),
+        names,
+    )?;
     c::app(c::app(law, bridge)?, value)
 }
 
@@ -203,6 +204,10 @@ impl Search {
             started,
             names: Names::default(),
         }
+    }
+    pub fn native(mut self) -> Self {
+        self.names.native_programs = true;
+        self
     }
     fn spend(&mut self, depth: usize) -> bool {
         if self.work >= self.maximum

@@ -131,8 +131,11 @@ pub fn construct_with(
         maximum,
         started,
         ranker,
-        known,
-        definitions,
+        ConstructionContext {
+            known,
+            definitions,
+            native: false,
+        },
         |term, offer, direct| {
             let verified = proof::verify(term, target)?;
             if !direct && !selection::used(offer, &verified)? {
@@ -165,8 +168,11 @@ pub(super) fn construct_program(
         maximum,
         started,
         ranker,
-        known,
-        definitions,
+        ConstructionContext {
+            known,
+            definitions,
+            native: true,
+        },
         |term, offer, direct| {
             let mut recipe = proof::recipe(term, target)?;
             if !direct && !selection::used_recipe(offer, &recipe)? {
@@ -301,19 +307,24 @@ fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>)
     Ok((output, helpers))
 }
 
+struct ConstructionContext<'a> {
+    known: &'a [super::knowledge::Entry],
+    definitions: &'a [super::definitions::Entry],
+    native: bool,
+}
+
 fn construct_candidate<T>(
     target: &Formula,
     maximum: usize,
     started: std::time::Instant,
     ranker: &mut dyn super::model::Ranker,
-    known: &[super::knowledge::Entry],
-    definitions: &[super::definitions::Entry],
+    context: ConstructionContext<'_>,
     mut finish: impl FnMut(&proof::Term, &selection::Offer, bool) -> Result<Option<T>, String>,
 ) -> Result<(Option<T>, usize, Option<selection::Selection>), String> {
     if maximum == 0 {
         return Ok((None, 0, None));
     }
-    let offers = selection::offers(target, known)?;
+    let offers = selection::offers(target, context.known)?;
     if offers.is_empty() {
         return Ok((None, 0, None));
     }
@@ -332,8 +343,8 @@ fn construct_candidate<T>(
     for selected in selection::order(target, &offers, ranker)? {
         let offer = &offers[selected];
         let selection = selection::Selection {
-            known: known.to_vec(),
-            definitions: definitions.to_vec(),
+            known: context.known.to_vec(),
+            definitions: context.definitions.to_vec(),
             selected,
         };
         if let Some(term) = offer.context.iter().find(|t| t.formula() == *target)
@@ -347,6 +358,9 @@ fn construct_candidate<T>(
             maximum.saturating_sub(work)
         };
         let mut search = logic::Search::new(allowance, started);
+        if context.native {
+            search = search.native();
+        }
         let found = search.prove(target, &offer.context)?;
         work += search.work;
         if let Some(term) = found
