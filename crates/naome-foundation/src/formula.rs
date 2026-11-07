@@ -3,7 +3,6 @@
 mod canonical;
 mod comparison;
 pub mod graph;
-mod source;
 
 pub use comparison::{FormulaMismatch, FormulaPathSegment};
 

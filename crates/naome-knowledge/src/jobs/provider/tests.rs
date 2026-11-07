@@ -42,7 +42,7 @@ impl Supervisor for Grants {
 
 #[test]
 fn structural_finding_finalizes_the_exact_selected_source_under_one_owned_quantum() {
-    let question = "goal=all(x,all(y,imp(mem(x,y),mem(y,x))))".to_owned();
+    let question = "04040301010000000101000000000101000000000100000001".to_owned();
     let mut grants = Grants::default();
     let result = drive(
         &mut Finding {

@@ -4,9 +4,10 @@ use crate::learning::tests::MemoryStore;
 #[test]
 fn row_routing_preserves_logits_and_the_complete_adam_update_bitwise() {
     let solution = crate::learning::tests::own_solution();
-    let question =
-        naome_authoring::CompiledQuestion::compile(&crate::learning::tests::own_question())
-            .unwrap();
+    let question = naome_checker::question::ResearchQuestion::from_hex(
+        &crate::learning::tests::own_question(),
+    )
+    .unwrap();
     let graph = crate::learning::search::compile(question.proved_target(), &solution.tree)
         .unwrap()
         .1

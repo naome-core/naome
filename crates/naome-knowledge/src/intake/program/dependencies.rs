@@ -75,15 +75,31 @@ impl Programs {
         root: ArtifactId,
         id: ArtifactId,
         object: Envelope,
+        question: Option<String>,
         graph: &Graph,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<crate::object::Candidate, crate::Error> {
         if !self.authorizes(peer, root, id) {
             return Err("unrequested program dependency certificate".into());
         }
         let active = self.active.as_mut().expect("selected program parent");
-        active
-            .closure
-            .certificate_payload(id, object, graph, &active.offer.transfer)
+        let candidate =
+            active
+                .closure
+                .certificate_payload(id, object, graph, &active.offer.transfer)?;
+        if let Some(question) = question {
+            active.closure.remember_question(id, question);
+        }
+        Ok(candidate)
+    }
+
+    pub(in crate::intake) fn needs_certificate(
+        &self,
+        peer: PeerId,
+        root: ArtifactId,
+        id: ArtifactId,
+    ) -> bool {
+        self.helper_root(peer, root)
+            .is_some_and(|root| root.closure.needs(id))
     }
 }
 
@@ -96,6 +112,17 @@ impl Intake {
         graph: &Graph,
     ) -> Result<(), crate::Error> {
         let id = metadata.manifest.artifact_id();
+        if self.definition_authorizes(peer, root, id) {
+            if root == id {
+                return Err("requested definition payload differs".into());
+            }
+            return self
+                .definition
+                .as_mut()
+                .expect("requested definition")
+                .closure
+                .insert(metadata, graph);
+        }
         if self.programs.authorizes(peer, root, id) {
             return self.programs.insert_helper(peer, root, metadata, graph);
         }
@@ -115,7 +142,7 @@ impl Intake {
         questions: &mut LocalQuestions<F>,
     ) -> Result<(), crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let Some(root) = &mut self.active else {

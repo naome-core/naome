@@ -1,7 +1,0 @@
-
-
-def identity = function(
-    input,
-    output,
-):
-    eq(output, input)

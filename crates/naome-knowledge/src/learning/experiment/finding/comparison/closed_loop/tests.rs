@@ -3,13 +3,13 @@ use super::*;
 #[test]
 fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
     let directory = Directory::new();
-    let held = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-    let bytes = serde_json::to_vec(&json!({"cases":[{"source":held.source(),
+    let held = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let bytes = serde_json::to_vec(&json!({"cases":[{"source":held.to_hex(),
         "resolution":crate::hex(held.resolution_id()),
         "family":curriculum::owned::family(held.proved_target()),"lineage":"held-fixture"}]}))
     .unwrap();
     let holdout = lineage::Holdout::read(&bytes, &crate::hex(&Sha256::digest(&bytes))).unwrap();
-    let q = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let q = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     let mut solution = crate::learning::tests::own_solution();
     let mut state = State::fresh();
     state.accept(crate::learning::tests::own_example()).unwrap();
@@ -18,14 +18,7 @@ fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
         .unwrap();
     state.replay.push(state.replay[0].clone());
     let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
-    let mut slack = capacity - crate::checkpoint::encode(&state).unwrap().len() - 1;
-    for example in &mut state.replay {
-        let padding =
-            slack.min(naome_authoring::QUESTION_SOURCE_MAX_BYTES - example.question.len());
-        example.question.push_str(&" ".repeat(padding));
-        slack -= padding;
-    }
-    assert_eq!(slack, 0);
+    crate::learning::tests::fill_checkpoint_budget(&mut state, capacity);
     state.validate().unwrap();
     let frozen = digest(&(
         &state.model,
@@ -49,7 +42,7 @@ fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
     let job = 42;
     let completion = completed_search(&state, &q, job, &generation, context(&state), SEARCH, 0);
     let mut control = state.clone();
-    control.observe_result(q.source(), true, "", 0, SEARCH as u32);
+    control.observe_result(&q.to_hex(), true, "", 0, SEARCH as u32);
     assert!(
         control.validate().is_err(),
         "fixture must cross the actual existing byte boundary"
@@ -154,8 +147,8 @@ fn audit_actual_capacity_failures() {
 #[test]
 fn live_sources_keep_their_actual_context_and_lifetime_admission() {
     let directory = Directory::new();
-    let held = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-    let bytes = serde_json::to_vec(&json!({"cases":[{"source":held.source(),
+    let held = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let bytes = serde_json::to_vec(&json!({"cases":[{"source":held.to_hex(),
         "resolution":crate::hex(held.resolution_id()),
         "family":curriculum::owned::family(held.proved_target()),"lineage":"held-fixture"}]}))
     .unwrap();
@@ -167,7 +160,7 @@ fn live_sources_keep_their_actual_context_and_lifetime_admission() {
     let mut ledger = lineage::Ledger::new(&holdout);
     let mut questions = BTreeSet::new();
     let mut proofs = BTreeSet::new();
-    let q = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let q = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     let original = state.clone();
     for job in 1..=2 {
         // A deterministic checker fixture, without neural calls or a claimed

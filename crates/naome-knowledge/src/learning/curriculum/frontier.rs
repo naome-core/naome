@@ -1,7 +1,7 @@
 //! Question-only compositional roots, grouped before any model inference.
 //! No reference answer, teacher proof or solver outcome participates in generation.
 use super::Case;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_foundation::{Formula, FreeVariable};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,11 +175,8 @@ fn root(family: usize, index: usize) -> (String, Vec<(String, String)>) {
             _ => unreachable!(),
         };
         let question =
-            CompiledQuestion::from_formula(formula).expect("bounded closed frontier question");
-        variants.push((
-            crate::hex(question.resolution_id()),
-            question.source().to_owned(),
-        ));
+            ResearchQuestion::from_formula(formula).expect("bounded closed frontier question");
+        variants.push((crate::hex(question.resolution_id()), question.to_hex()));
     }
     (signature, variants)
 }
@@ -305,7 +302,7 @@ fn build() -> Bank {
         .chain(&confirmation)
         .map(|case| {
             super::owned::family(
-                CompiledQuestion::compile(&case.source)
+                ResearchQuestion::from_hex(&case.source)
                     .expect("sealed frontier")
                     .proved_target(),
             )
@@ -340,7 +337,7 @@ mod tests {
                 assert!(identities.insert(&case.id));
                 let previous = groups.insert(&case.dependency, split);
                 assert!(previous.is_none_or(|old| old == split));
-                let question = CompiledQuestion::compile(&case.source).unwrap();
+                let question = ResearchQuestion::from_hex(&case.source).unwrap();
                 assert_eq!(crate::hex(question.resolution_id()), case.id);
                 assert!(question.formula().is_closed());
                 assert!(!super::super::CORPUS.cases.iter().any(|c| c.id == case.id));

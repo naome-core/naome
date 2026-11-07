@@ -119,8 +119,7 @@ fn original_conclusion(
     state: &ArtifactState,
 ) -> Result<(Formula, Vec<FreeVariable>), String> {
     let sliced = slice(steps, index, &BTreeMap::new())?;
-    let (normal_form, origins) =
-        certificate(sliced)?.into_unchecked_normal_form_with_step_origins();
+    let (normal_form, origins) = certificate(sliced)?.into_unchecked_normal_form_with_variables();
     let checked_steps = normal_form.certificate().steps().len() as u64;
     let error = match proof::check_normal_form(normal_form, state) {
         Ok(closed) => return Ok((closed.conclusion().clone(), vec![])),
@@ -144,8 +143,8 @@ fn original_conclusion(
         return Err("bounded complete native free-variable inventory required".into());
     }
     let source_variables = origins
-        .variables()
-        .map(|(source, normal)| (normal, source))
+        .into_iter()
+        .map(|(source, normal)| (normal.identifier(), source.identifier()))
         .collect::<BTreeMap<_, _>>();
     let free = variables
         .free_variables
@@ -171,26 +170,18 @@ fn original_conclusion(
 fn portable(
     checked: CheckedProof,
     expected: &Formula,
-    definitions: &[definitions::Entry],
+    _definitions: &[definitions::Entry],
     state: &ArtifactState,
 ) -> Result<CheckedProof, String> {
     let limit = crate::resources::limits().proof_bytes;
     if checked.conclusion() != expected || checked.normal_form().canonical_bytes().len() > limit {
         return Err("partition target or native size differs".into());
     }
-    let source = proof::render_in_context(
-        checked.normal_form().certificate(),
-        expected,
-        definitions,
-        state,
-        false,
-    )?;
-    if source.len() > limit {
-        return Err("partition source exceeds capacity".into());
+    let source = proof::artifact(checked.normal_form().certificate());
+    if source.len() > 2 * limit {
+        return Err("partition artifact exceeds capacity".into());
     }
-    let compiled = naome_authoring::compile_against_proof_context(&source, state)
-        .map_err(|e| e.to_string())?
-        .into_checked_proof();
+    let compiled = proof::check_artifact(&source, state)?;
     if compiled.proof_id() != checked.proof_id()
         || compiled.conclusion() != expected
         || compiled.direct_artifact_dependencies() != checked.direct_artifact_dependencies()
@@ -222,7 +213,7 @@ pub(super) fn fit(
     budget: &mut Budget,
 ) -> Result<CheckedProof, String> {
     let limits = crate::resources::limits();
-    if original.normal_form().canonical_bytes().len() <= limits.proof_bytes {
+    if original.normal_form().canonical_bytes().len() < limits.proof_bytes {
         return Ok(original);
     }
     // Copy-on-write snapshot of the exact checked dependencies of this object.

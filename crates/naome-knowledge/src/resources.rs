@@ -190,7 +190,7 @@ resource_policy! {
         capacity wanted_attempts: usize = 16;
         capacity gossip_packet_bytes: usize = 1024;
         capacity producer_bytes: usize = 65_536;
-        capacity producer_sources: usize = 32;
+        capacity producer_artifacts: usize = 32;
         capacity exchange_streams: usize = 4;
         capacity inbound_streams: usize = 16;
         capacity identify_protocol_bytes: usize = 256;
@@ -579,7 +579,7 @@ impl Limits {
             self.waiters_per_job,
             self.transport_events,
             self.inbound_streams,
-            self.producer_sources,
+            self.producer_artifacts,
             self.developer_questions,
             self.developer_objects,
             self.provider_events,
@@ -619,7 +619,7 @@ impl Limits {
             self.checker_cache_entries,
             self.wanted_attempts,
             self.exchange_streams,
-            self.producer_sources,
+            self.producer_artifacts,
             self.request_burst,
         ] {
             if count > self.memory_bytes / 512 {

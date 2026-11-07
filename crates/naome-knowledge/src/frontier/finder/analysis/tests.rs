@@ -1,12 +1,12 @@
 use super::*;
-fn q(source: &str) -> CompiledQuestion {
-    CompiledQuestion::compile(source).unwrap()
+fn q(source: &str) -> ResearchQuestion {
+    ResearchQuestion::from_hex(source).unwrap()
 }
 
 #[test]
 fn cached_facts_match_fresh_analysis_and_do_not_cache_learned_scores() {
-    let a = q("goal=all(a,all(b,all(c,imp(mem(a,b),imp(mem(b,c),mem(a,c))))))");
-    let b = q("goal=not(all(a,all(b,all(c,imp(mem(a,b),imp(mem(b,c),mem(a,c)))))))");
+    let a = q("0404040301010000000201000000010301010000000101000000000101000000020100000000");
+    let b = q("020404040301010000000201000000010301010000000101000000000101000000020100000000");
     let mut cache = Cache::default();
     let facts = cache.get(&a).unwrap();
     assert_eq!(facts.descriptor.features, Features::of(&a));
@@ -32,9 +32,9 @@ fn cached_facts_match_fresh_analysis_and_do_not_cache_learned_scores() {
 
 #[test]
 fn variable_roles_preserve_shadowing_and_independent_quantifier_scopes() {
-    let a = q("goal=all(a,and(all(a,mem(a,a)),mem(a,a)))");
-    let renamed = q("goal=all(x,and(all(y,mem(y,y)),mem(x,x)))");
-    let crossed = q("goal=all(x,and(all(y,mem(x,x)),mem(x,x)))");
+    let a = q("040203040101000000000100000000020101000000000100000000");
+    let renamed = q("040203040101000000000100000000020101000000000100000000");
+    let crossed = q("040203040101000000010100000001020101000000000100000000");
     assert_eq!(bindings(&a), bindings(&renamed));
     assert_ne!(bindings(&a), bindings(&crossed));
 }
@@ -58,7 +58,7 @@ fn oversized_analysis_is_transient_under_a_small_cache_budget() {
     let mut profile = crate::resources::ResourceProfile::default();
     profile.tuning.question_cache_bytes = Some(4096);
     crate::resources::configure(profile).unwrap();
-    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
+    let question = q("04040301010000000101000000000101000000000100000001");
     let mut cache = Cache::default();
     let first = cache.get(&question).unwrap();
     let second = cache.get(&question).unwrap();

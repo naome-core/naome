@@ -182,7 +182,8 @@ impl Provider for Finding {
         Ok((checkpoint == 0).then_some(1))
     }
     fn execute(&mut self, _unit: u32, _owner: &mut dyn Supervisor) -> Result<(), Failure> {
-        naome_authoring::CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
+        naome_checker::question::ResearchQuestion::from_hex(&self.question)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
     fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
@@ -279,7 +280,7 @@ struct Mock {
 }
 fn streams(input: &Input, work: MockWork) -> bool {
     work.program_units > 0
-        && matches!(input,Input::Solve{question} if naome_authoring::CompiledQuestion::compile(question).ok()==naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).ok())
+        && matches!(input,Input::Solve{question} if naome_checker::question::ResearchQuestion::from_hex(question).ok()==naome_checker::question::ResearchQuestion::from_hex(&crate::mocks::create_question(0)).ok())
 }
 impl Mock {
     fn streams(&self) -> bool {
@@ -357,39 +358,33 @@ impl Provider for Mock {
                 })
             }
             Input::Solve { question } => {
-                let compiled = naome_authoring::CompiledQuestion::compile(question)
+                if naome_checker::question::ResearchQuestion::source_requires_definitions(question)
+                    .map_err(|e| e.to_string())?
+                {
+                    return Ok(Output::NoCandidate);
+                }
+                let compiled = naome_checker::question::ResearchQuestion::from_hex(question)
                     .map_err(|e| e.to_string())?;
-                let source = if self.work.outcome == MockOutcome::Malformed {
-                    Some("invalid proof".into())
-                } else if self.work.outcome == MockOutcome::WrongTarget {
-                    let other = (0..3)
-                        .find_map(|cursor| {
-                            let other = naome_authoring::CompiledQuestion::compile(
-                                &crate::mocks::create_question(cursor),
-                            )
-                            .ok()?;
-                            (other.resolution_id() != compiled.resolution_id()).then_some(other)
-                        })
-                        .ok_or("mock alternate target absent")?;
-                    crate::mocks::create_proof(&other)
+                let proof = if self.work.outcome == MockOutcome::Malformed {
+                    Some("00ff".into())
                 } else {
-                    crate::mocks::create_proof(&compiled)
+                    let target = if self.work.outcome == MockOutcome::WrongTarget {
+                        (0..3)
+                            .map(crate::mocks::create_question)
+                            .filter_map(|bytes| {
+                                naome_checker::question::ResearchQuestion::from_hex(&bytes).ok()
+                            })
+                            .find(|other| other.resolution_id() != compiled.resolution_id())
+                            .ok_or("mock alternate target absent")?
+                    } else {
+                        compiled
+                    };
+                    crate::mocks::create_padded_proof(&target, self.work.proof_padding_bytes)
                 };
-                source
-                    .map(|mut source| {
-                        source.push_str(
-                            &" ".repeat(
-                                self.work.proof_padding_bytes.min(
-                                    crate::resources::limits()
-                                        .proof_bytes
-                                        .saturating_sub(source.len()),
-                                ),
-                            ),
-                        );
-                        Output::Proof {
-                            source,
-                            helpers: Vec::new(),
-                        }
+                proof
+                    .map(|proof| Output::Proof {
+                        proof,
+                        helpers: Vec::new(),
                     })
                     .unwrap_or(Output::NoCandidate)
             }
@@ -397,11 +392,10 @@ impl Provider for Mock {
                 return Err("native learning jobs require the native provider".into());
             }
             Input::Select { question, .. } => {
-                let compiled = naome_authoring::CompiledQuestion::compile(question)
+                naome_checker::question::ResearchQuestion::source_requires_definitions(question)
                     .map_err(|e| e.to_string())?;
-                let yes =
-                    libp2p::futures::executor::block_on(crate::mocks::select_question(compiled))?;
-                Output::Selected(yes && self.work.outcome != MockOutcome::Malformed)
+                // Formal validation (including definition resolution) belongs to the receiver.
+                Output::Selected(self.work.outcome != MockOutcome::Malformed)
             }
         };
         Ok(output)

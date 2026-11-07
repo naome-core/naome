@@ -1,7 +1,33 @@
 use super::*;
-fn q(source: &str) -> CompiledQuestion {
-    CompiledQuestion::compile(source).unwrap()
+fn q(source: &str) -> ResearchQuestion {
+    ResearchQuestion::from_hex(source).unwrap()
 }
+
+fn membership_conjunction(bits: u64) -> ResearchQuestion {
+    let (a, b, c) = (
+        crate::test_inputs::variable(0),
+        crate::test_inputs::variable(1),
+        crate::test_inputs::variable(2),
+    );
+    let body = [(a, b), (b, a), (a, c), (c, a), (b, c), (c, b), (a, a)]
+        .into_iter()
+        .enumerate()
+        .map(|(bit, (element, set))| {
+            let atom = naome_foundation::Formula::member(element, set);
+            if bits & (1 << bit) == 0 {
+                atom
+            } else {
+                naome_foundation::Formula::negate(atom)
+            }
+        })
+        .reduce(naome_foundation::Formula::conjunction)
+        .unwrap();
+    let formula = [a, b, c].into_iter().rev().fold(body, |body, binder| {
+        naome_foundation::Formula::for_all(binder, body)
+    });
+    crate::test_inputs::question(formula)
+}
+
 fn checkpoint() -> String {
     "11".repeat(32)
 }
@@ -11,11 +37,11 @@ fn scarce_checked_completions_keep_half_the_rehearsal_share_without_more_updates
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
     let sources = [
-        "goal=all(a,all(b,imp(eq(a,b),eq(b,a))))",
-        "goal=all(a,all(b,imp(mem(a,b),mem(b,a))))",
-        "goal=all(a,all(b,not(mem(a,b))))",
-        "goal=all(a,all(b,all(c,imp(mem(a,b),mem(a,c)))))",
-        "goal=all(a,all(b,all(c,not(mem(a,b)))))",
+        "04040300010000000101000000000001000000000100000001",
+        "04040301010000000101000000000101000000000100000001",
+        "0404020101000000010100000000",
+        "0404040301010000000201000000010101000000020100000000",
+        "040404020101000000020100000001",
     ];
     for (index, source) in sources.iter().enumerate() {
         learning
@@ -59,27 +85,14 @@ fn scarce_checked_completions_keep_half_the_rehearsal_share_without_more_updates
 fn recent_misses_in_one_formula_family_do_not_evict_its_checked_success() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
-    let success = q("goal=all(a,all(b,all(c,imp(and(mem(a,b),mem(a,c)),and(mem(a,b),mem(a,c))))))");
+    let success = q(
+        "040404030203010100000002010000000102010100000002010000000002030101000000020100000001020101000000020100000000",
+    );
     learning
         .remember(&mut model, &success, Some(&checkpoint()), true, 1, 1)
         .unwrap();
-    let atoms = [
-        "mem(a,b)", "mem(b,a)", "mem(a,c)", "mem(c,a)", "mem(b,c)", "mem(c,b)", "mem(a,a)",
-    ];
     for bits in 0..120u64 {
-        let body = atoms
-            .iter()
-            .enumerate()
-            .map(|(bit, atom)| {
-                if bits & (1 << bit) == 0 {
-                    (*atom).to_owned()
-                } else {
-                    format!("not({atom})")
-                }
-            })
-            .reduce(|a, b| format!("and({a},{b})"))
-            .unwrap();
-        let miss = q(&format!("goal=all(a,all(b,all(c,{body})))"));
+        let miss = membership_conjunction(bits);
         assert_eq!(
             Descriptor::of(&success).features.family,
             Descriptor::of(&miss).features.family
@@ -119,9 +132,9 @@ fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
         },
     ];
     let sources = [
-        "goal=all(a,all(b,imp(mem(a,b),mem(b,a))))",
-        "goal=all(a,all(b,imp(eq(a,b),mem(a,b))))",
-        "goal=all(a,all(b,not(mem(a,b))))",
+        "04040301010000000101000000000101000000000100000001",
+        "04040300010000000101000000000101000000010100000000",
+        "0404020101000000010100000000",
     ];
     for step in 0..32 {
         for (index, source) in sources.iter().enumerate() {
@@ -196,7 +209,7 @@ fn fresh_checked_results_do_not_train_negative_support() {
 fn late_old_checkpoint_results_do_not_train_current_recipe_ability() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
-    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
+    let question = q("04040301010000000101000000000101000000000100000001");
     learning.selected(
         &question,
         Some(Recipe {
@@ -216,28 +229,13 @@ fn late_old_checkpoint_results_do_not_train_current_recipe_ability() {
 fn replay_preserves_families_and_does_not_relabel_old_solver_outcomes() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
-    let equality = q("goal=all(a,all(b,imp(eq(a,b),eq(b,a))))");
+    let equality = q("04040300010000000101000000000001000000000100000001");
     learning
         .remember(&mut model, &equality, Some(&checkpoint()), true, 1, 1)
         .unwrap();
-    let atoms = [
-        "mem(a,b)", "mem(b,a)", "mem(a,c)", "mem(c,a)", "mem(b,c)", "mem(c,b)", "mem(a,a)",
-    ];
     let mut distinct = std::collections::BTreeSet::new();
     for i in 0..120u64 {
-        let body = atoms
-            .iter()
-            .enumerate()
-            .map(|(bit, atom)| {
-                if i & (1 << bit) == 0 {
-                    (*atom).to_owned()
-                } else {
-                    format!("not({atom})")
-                }
-            })
-            .reduce(|a, b| format!("and({a},{b})"))
-            .unwrap();
-        let question = q(&format!("goal=all(a,all(b,all(c,{body})))"));
+        let question = membership_conjunction(i);
         assert!(distinct.insert(*question.resolution_id()));
         learning
             .remember(
@@ -274,7 +272,7 @@ fn replay_preserves_families_and_does_not_relabel_old_solver_outcomes() {
 
 #[test]
 fn pending_lemma_use_is_not_rehearsed_as_failure() {
-    let question = q("goal=all(a,all(b,imp(eq(a,b),eq(b,a))))");
+    let question = q("04040300010000000101000000000001000000000100000001");
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
     model.observe(&question, true, 1).unwrap();
@@ -307,7 +305,7 @@ fn pending_lemma_use_is_not_rehearsed_as_failure() {
 fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
-    let question = q("goal=all(a,all(b,imp(eq(a,b),eq(b,a))))");
+    let question = q("04040300010000000101000000000001000000000100000001");
     learning
         .remember(&mut model, &question, Some(&checkpoint()), true, 5, 1)
         .unwrap();
@@ -352,7 +350,7 @@ fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit(
 fn current_curriculum_rejects_corrupt_recipes_and_replay_descriptors() {
     let mut learning = Learning::fresh(checkpoint());
     let mut model = Model::fresh();
-    let question = q("goal=all(a,all(b,imp(mem(a,b),mem(b,a))))");
+    let question = q("04040301010000000101000000000101000000000100000001");
     learning
         .remember(&mut model, &question, Some(&checkpoint()), false, 10, 1)
         .unwrap();

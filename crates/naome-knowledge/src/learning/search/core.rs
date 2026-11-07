@@ -189,11 +189,11 @@ pub fn checked(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use naome_authoring::CompiledQuestion;
+    use naome_checker::question::ResearchQuestion;
     #[test]
     fn irrelevant_effects_are_removed_and_all_fact_indices_are_replayed() {
-        let q = CompiledQuestion::compile(
-            "goal=all(x,all(y,imp(not(not(mem(x,x))),imp(not(not(mem(y,x))),imp(and(mem(x,x),mem(y,y)),mem(y,y))))))",
+        let q = ResearchQuestion::from_hex(
+            "04040302020101000000010100000001030202010100000000010000000103020301010000000101000000010201010000000001000000000101000000000100000000",
         )
         .unwrap();
         let target = q.proved_target();
@@ -225,10 +225,10 @@ mod tests {
 #[cfg(test)]
 mod alternatives {
     use super::*;
-    use naome_authoring::CompiledQuestion;
+    use naome_checker::question::ResearchQuestion;
     #[test]
     fn two_native_checked_completions_share_only_their_exact_initial_state() {
-        let q = CompiledQuestion::compile("goal=all(x,all(y,all(z,imp(imp(mem(x,x),mem(y,y)),imp(mem(x,x),imp(imp(mem(z,z),mem(y,y)),imp(mem(z,z),imp(not(not(mem(x,z))),mem(y,y)))))))))").unwrap();
+        let q = ResearchQuestion::from_hex("04040403030101000000020100000002010100000001010000000103010100000002010000000203030101000000000100000000010100000001010000000103010100000000010000000003020201010000000201000000000101000000010100000001").unwrap();
         let target = q.proved_target();
         let state = prepare(target).unwrap().state;
         let mut graphs = Vec::new();

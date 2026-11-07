@@ -2,7 +2,7 @@ use super::*;
 use crate::checkpoint::tests::Directory;
 use std::time::{Duration, Instant};
 
-fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64) {
+fn failed(frontier: &mut Frontier, graph: &Graph, q: &ResearchQuestion, job: u64) {
     let completion = evidence::observed_completion(
         q,
         job,
@@ -16,7 +16,7 @@ fn failed(frontier: &mut Frontier, graph: &Graph, q: &CompiledQuestion, job: u64
         .attempted(q, graph, &completion, Outcome::NoCandidate)
         .unwrap();
 }
-fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &CompiledQuestion, job: u64) -> String {
+fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &ResearchQuestion, job: u64) -> String {
     let solution = crate::learning::tests::symbolic_solution(q);
     let completion = jobs::Completion {
         experience: None,
@@ -46,12 +46,13 @@ fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &CompiledQuestion, job
     frontier.verified(q, graph, job, root).unwrap();
     solution.proof_id
 }
-fn fixture() -> (CompiledQuestion, CompiledQuestion, [CompiledQuestion; 2]) {
+fn fixture() -> (ResearchQuestion, ResearchQuestion, [ResearchQuestion; 2]) {
     let (parent, leaves) = crate::learning::tests::helper_goal();
-    let other =
-        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c))))))")
-            .unwrap();
-    let root = CompiledQuestion::from_formula(Formula::conjunction(
+    let other = ResearchQuestion::from_hex(
+        "0404040300010000000201000000010300010000000101000000000001000000020100000000",
+    )
+    .unwrap();
+    let root = ResearchQuestion::from_formula(Formula::conjunction(
         other.formula().clone(),
         parent.formula().clone(),
     ))
@@ -233,9 +234,10 @@ fn failed_helper_descends_and_checked_children_release_its_original_parent_once(
         "unchanged child proofs cannot grant another parent attempt"
     );
     assert_eq!(frontier.evidence.plan_members(&root).unwrap().len(), 4);
-    let fifth =
-        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))")
-            .unwrap();
+    let fifth = ResearchQuestion::from_hex(
+        "0404040300010000000201000000010301010000000201000000000101000000010100000000",
+    )
+    .unwrap();
     assert!(!frontier.evidence.admit_loop_member(&root, &fifth).unwrap());
     drop(frontier);
     let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
@@ -258,12 +260,12 @@ fn admission_failure_does_not_spend_a_member_and_depth_two_leaves_do_not_expand(
         ..Default::default()
     };
     let (leaf, _) = crate::learning::tests::helper_goal();
-    let parent = CompiledQuestion::from_formula(Formula::conjunction(
+    let parent = ResearchQuestion::from_formula(Formula::conjunction(
         leaf.formula().clone(),
         leaf.formula().clone(),
     ))
     .unwrap();
-    let root = CompiledQuestion::from_formula(Formula::conjunction(
+    let root = ResearchQuestion::from_formula(Formula::conjunction(
         parent.formula().clone(),
         parent.formula().clone(),
     ))

@@ -1,7 +1,7 @@
 //! A bounded prior for solvability, observed cost and demonstrated goal support.
 use super::super::SIGNALS;
 use super::analysis::{BINDINGS, Descriptor};
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use serde::{Deserialize, Serialize};
 const INPUTS: usize = SIGNALS + 3;
 const HIDDEN: usize = 8;
@@ -123,7 +123,7 @@ impl Model {
     }
     /// Moderate solvability keeps the frontier away from both repeated easy
     /// wins and hopeless work. Actual support outweighs a small cost advantage.
-    pub fn weight(&self, question: &CompiledQuestion) -> u64 {
+    pub fn weight(&self, question: &ResearchQuestion) -> u64 {
         self.weight_from(&Descriptor::of(question))
     }
     pub fn weight_from(&self, descriptor: &Descriptor) -> u64 {
@@ -132,13 +132,13 @@ impl Model {
         (1024. * (0.05 + 4. * useful * useful) * frontier / (1. + cost)) as u64 + 1
     }
     #[cfg(test)]
-    pub fn predictions(&self, question: &CompiledQuestion) -> [f32; OUTPUTS] {
+    pub fn predictions(&self, question: &ResearchQuestion) -> [f32; OUTPUTS] {
         self.predictions_from(&Descriptor::of(question))
     }
     pub fn predictions_from(&self, descriptor: &Descriptor) -> [f32; OUTPUTS] {
         self.forward(&input(descriptor), &descriptor.bindings).1
     }
-    fn train(&mut self, question: &CompiledQuestion, labels: [Option<f32>; OUTPUTS]) {
+    fn train(&mut self, question: &ResearchQuestion, labels: [Option<f32>; OUTPUTS]) {
         self.train_descriptor(&Descriptor::of(question), labels);
     }
     fn train_descriptor(&mut self, descriptor: &Descriptor, labels: [Option<f32>; OUTPUTS]) {
@@ -255,7 +255,7 @@ impl Model {
     /// another proof. Its support label stays unavailable until a checked use.
     pub fn observe(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
     ) -> Result<(), String> {
@@ -264,7 +264,7 @@ impl Model {
     #[cfg(test)]
     pub fn observe_provisional(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
     ) -> Result<(), String> {
@@ -272,7 +272,7 @@ impl Model {
     }
     fn observe_labels(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
         support: Option<f32>,
@@ -306,7 +306,7 @@ impl Model {
         }
         self.validate()
     }
-    pub fn support(&mut self, question: &CompiledQuestion) -> Result<(), String> {
+    pub fn support(&mut self, question: &ResearchQuestion) -> Result<(), String> {
         #[cfg(test)]
         if self.frozen {
             return Ok(());

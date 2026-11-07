@@ -1,7 +1,7 @@
 //! Goal-directed helper construction and generic relation exploration.
 //! Questions contain no proofs or truth labels. The formal owner still checks
 //! every admission and every resulting proof independently.
-use super::{CompiledQuestion, Formula, FreeVariable};
+use super::{Formula, FreeVariable, ResearchQuestion};
 use std::collections::{BTreeSet, VecDeque};
 mod model;
 pub(super) use model::Model;
@@ -77,7 +77,7 @@ fn inclusion(seed: &Formula) -> Option<Formula> {
     ))
 }
 /// Exact invertible AND obligations; proposing them grants no validity.
-pub(super) fn conjuncts(goal: &CompiledQuestion) -> Option<Vec<CompiledQuestion>> {
+pub(super) fn conjuncts(goal: &ResearchQuestion) -> Option<Vec<ResearchQuestion>> {
     let mut body = goal.formula().clone();
     while let Some(opened) = open(&body) {
         body = opened;
@@ -87,14 +87,14 @@ pub(super) fn conjuncts(goal: &CompiledQuestion) -> Option<Vec<CompiledQuestion>
     Some(
         [left.to_owned(), right.to_owned()]
             .into_iter()
-            .filter_map(|f| CompiledQuestion::from_formula(close(f)).ok())
+            .filter_map(|f| ResearchQuestion::from_formula(close(f)).ok())
             .filter(|q| meaningful(q) && q.resolution_id() != goal.resolution_id())
             .collect(),
     )
 }
 /// Proper subgoals are generalized with their original variable relationships.
 /// A helper may be stronger than the goal; no inference is claimed by proposing it.
-fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
+fn helpers(goal: &ResearchQuestion, cursor: u64) -> Vec<ResearchQuestion> {
     if let Some(mut result) = conjuncts(goal) {
         if !result.is_empty() {
             let len = result.len();
@@ -115,7 +115,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
         }
         if let Some((a, b)) = part.implication_parts() {
             for child in [a.clone(), b.clone(), Formula::negate(a.clone())] {
-                if let Ok(question) = CompiledQuestion::from_formula(close(child))
+                if let Ok(question) = ResearchQuestion::from_formula(close(child))
                     && meaningful(&question)
                     && key(&question) != goal_key
                     && question.resolution_id() != goal.resolution_id()
@@ -128,7 +128,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
         } else if let Some(body) = part.view().negated() {
             // Conjunction and existence are encoded through negation. Retain
             // the positive proper subgoal as well as its surrounding syntax.
-            if let Ok(question) = CompiledQuestion::from_formula(close(body.to_owned()))
+            if let Ok(question) = ResearchQuestion::from_formula(close(body.to_owned()))
                 && meaningful(&question)
                 && question.resolution_id() != goal.resolution_id()
                 && key(&question) != goal_key
@@ -147,7 +147,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
 /// A recipe changes one bounded structural construction parameter. Formal
 /// admission remains with the supplied owner; rejection never grants more work.
 pub(super) struct Proposal {
-    pub question: CompiledQuestion,
+    pub question: ResearchQuestion,
     pub recipe: Option<Recipe>,
 }
 pub(super) struct PageBudget {
@@ -175,11 +175,11 @@ fn varied(seed: &Formula, other: &Formula, recipe: Recipe) -> Option<Formula> {
 pub(super) fn proposals(
     cursor: u64,
     seeds: &VecDeque<Formula>,
-    goals: &VecDeque<CompiledQuestion>,
+    goals: &VecDeque<ResearchQuestion>,
     learning: &Learning,
     draw: u64,
     budget: PageBudget,
-    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
 ) -> Vec<Proposal> {
     let mut groups = Vec::new();
     for goal in goals
@@ -214,7 +214,7 @@ pub(super) fn proposals(
         let other = &relations[(index + 1 + offset % 2) % relations.len()];
         if let Some(seed) = varied(&relations[index], other, recipe)
             && let Some(formula) = property(&seed, u64::from(recipe.operator))
-            && let Ok(question) = CompiledQuestion::from_formula(formula)
+            && let Ok(question) = ResearchQuestion::from_formula(formula)
         {
             recipes.entry(*question.resolution_id()).or_insert(recipe);
             if index < 2 {
@@ -247,11 +247,11 @@ pub(super) fn proposals(
 pub(super) fn questions(
     cursor: u64,
     seeds: &VecDeque<Formula>,
-    goals: &VecDeque<CompiledQuestion>,
+    goals: &VecDeque<ResearchQuestion>,
     maximum: usize,
     bytes: usize,
-    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
-) -> Vec<CompiledQuestion> {
+    eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
+) -> Vec<ResearchQuestion> {
     proposals(
         cursor,
         seeds,
@@ -270,32 +270,32 @@ pub(super) fn questions(
 }
 pub(super) fn for_goal(
     cursor: u64,
-    goal: &CompiledQuestion,
+    goal: &ResearchQuestion,
     maximum: usize,
     bytes: usize,
-) -> Vec<CompiledQuestion> {
+) -> Vec<ResearchQuestion> {
     bounded(helpers(goal, cursor), maximum, bytes)
 }
-fn bounded(all: Vec<CompiledQuestion>, maximum: usize, bytes: usize) -> Vec<CompiledQuestion> {
+fn bounded(all: Vec<ResearchQuestion>, maximum: usize, bytes: usize) -> Vec<ResearchQuestion> {
     bounded_eligible(all, maximum, bytes, &mut |_| true)
 }
 fn bounded_eligible(
-    all: Vec<CompiledQuestion>,
+    all: Vec<ResearchQuestion>,
     maximum: usize,
     bytes: usize,
-    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
-) -> Vec<CompiledQuestion> {
+    eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
+) -> Vec<ResearchQuestion> {
     let mut seen = BTreeSet::new();
     let mut retained = 0;
     let mut result = Vec::new();
     let mut checks = 0;
     for question in all {
-        let cost = question.source().len() * 8 + 256;
+        let cost = question.to_hex().len() * 8 + 256;
         if result.len() >= maximum.min(12) || checks >= 20 {
             break;
         }
         if meaningful(&question)
-            && crate::learning::State::eligible(question.source())
+            && crate::learning::State::eligible(&question.to_hex())
             && retained + cost <= bytes
             && seen.insert(key(&question))
         {
@@ -312,12 +312,12 @@ fn bounded_eligible(
 /// Closed conditional cut questions extracted from actual stalled branches.
 /// Branch facts are only premises of a proposed theorem and confer no authority.
 pub(crate) fn from_frontier(
-    goal: &CompiledQuestion,
+    goal: &ResearchQuestion,
     report: &crate::learning::SearchFrontier,
     maximum: usize,
     bytes: usize,
-) -> Vec<CompiledQuestion> {
-    if !crate::learning::State::eligible(goal.source()) || report.validate(goal).is_err() {
+) -> Vec<ResearchQuestion> {
+    if !crate::learning::State::eligible(&goal.to_hex()) || report.validate(goal).is_err() {
         return Vec::new();
     }
     let Ok(contexts) = report.contexts() else {
@@ -371,7 +371,7 @@ pub(crate) fn from_frontier(
             for premise in premises.into_iter().rev() {
                 conditional = Formula::implies(premise, conditional);
             }
-            if let Ok(q) = CompiledQuestion::from_formula(close(conditional))
+            if let Ok(q) = ResearchQuestion::from_formula(close(conditional))
                 && q.resolution_id() != goal.resolution_id()
                 && key(&q) != key(goal)
                 && q.formula().view().node_count_and_depth().0

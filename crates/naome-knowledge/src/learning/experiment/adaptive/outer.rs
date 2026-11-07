@@ -45,7 +45,7 @@ fn prepare_meta_source(seed: u64, context: usize, cuts: [usize; 2], dir: &Path) 
     for row in &common.rows {
         if !row["solution"].is_null() {
             let s: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
-            let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
+            let q = ResearchQuestion::from_hex(row["question"].as_str().unwrap()).unwrap();
             admit_discovery(&mut graph, &q, &s).unwrap();
         }
     }

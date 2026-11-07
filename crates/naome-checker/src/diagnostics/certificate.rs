@@ -37,6 +37,7 @@ pub fn inspect_certificate(
         context,
         IdentityMode::OmitDerivation,
         Some(query),
+        None,
     ) {
         Err(error) => error,
         Ok((conclusion, _, _)) if matches!(diagnostic.failure, Failure::TargetMismatch) => {
@@ -99,6 +100,41 @@ pub(crate) fn schema_roles(step: &ProofStep) -> Vec<(OperandRole, u32)> {
     }
 }
 
+/// The diagnostic walks only work paid for from the same allowance as
+/// checking. Reserve the shape scan and every subsequent complete tree walk
+/// together, stopping before visiting another node if the allowance is gone.
+fn reserve_tree(
+    work: &crate::context::cache::FormulaWorkBudget<'_>,
+    view: FormulaView<'_>,
+    passes: usize,
+) -> bool {
+    let mut pending = vec![view];
+    while let Some(node) = pending.pop() {
+        if work.reserve(passes).is_err() {
+            return false;
+        }
+        pending.extend(node.graph_node().children().into_iter().flatten());
+    }
+    true
+}
+
+fn budgeted_fragment(
+    work: &crate::context::cache::FormulaWorkBudget<'_>,
+    view: FormulaView<'_>,
+) -> Option<FormulaFragment> {
+    reserve_tree(work, view, 2).then(|| tree_fragment(view, FORMULA_FRAGMENT_NODES, 0))
+}
+
+fn budgeted_inspection(
+    work: &crate::context::cache::FormulaWorkBudget<'_>,
+    view: FormulaView<'_>,
+    query: &FormulaQuery,
+) -> Option<FormulaFragment> {
+    reserve_tree(work, view, 3)
+        .then(|| tree_query(view, query).ok())
+        .flatten()
+}
+
 pub(crate) fn error(
     kind: CheckErrorKind,
     certificate: &ProofCertificate,
@@ -106,6 +142,7 @@ pub(crate) fn error(
     results: &[Option<CheckedStep>],
     derived: Option<&Formula>,
     query: Option<&FormulaQuery>,
+    work: &crate::context::cache::FormulaWorkBudget<'_>,
 ) -> CheckError {
     let step = &certificate.steps()[kind.step() as usize];
     let mut roles = schema_roles(step);
@@ -219,7 +256,6 @@ pub(crate) fn error(
             format: InputFormat::Certificate,
             digest: Digest::of(&certificate.to_canonical_bytes()),
             commands: certificate.steps().len() as u64,
-            source_digest: None,
         },
         context.snapshot_id(),
         u64::from(kind.step()),
@@ -229,27 +265,29 @@ pub(crate) fn error(
     if matches!(kind, CheckErrorKind::OpenConclusion { .. }) {
         diagnostic.checked_before = certificate.steps().len() as u64;
     }
-    let mut formula_operand = |role, reference: Option<u32>, formula: Option<&Formula>, proved| {
-        let mut operand = Operand::new(role);
-        operand.reference = reference.map(u64::from);
-        operand.proved = proved;
-        if formula.is_none() {
-            diagnostic.operands_complete = false;
-        }
-        if let Some(formula) = formula {
-            operand.formula = Some(tree_fragment(formula.view(), FORMULA_FRAGMENT_NODES, 0));
-            if let Some(query) = query
-                && query.operand == role
-                && operand
-                    .formula
-                    .as_ref()
-                    .is_some_and(|f| f.root == query.root)
-            {
-                diagnostic.inspection = tree_query(formula.view(), query).ok();
+    let mut formula_operand =
+        |role, reference: Option<u32>, formula: Option<FormulaView<'_>>, proved| {
+            let mut operand = Operand::new(role);
+            operand.reference = reference.map(u64::from);
+            operand.proved = proved;
+            if formula.is_none() {
+                diagnostic.operands_complete = false;
             }
-        }
-        diagnostic.operands.push(operand);
-    };
+            if let Some(formula) = formula {
+                operand.formula = budgeted_fragment(work, formula);
+                diagnostic.operands_complete &= operand.formula.is_some();
+                if let Some(query) = query
+                    && query.operand == role
+                    && operand
+                        .formula
+                        .as_ref()
+                        .is_some_and(|f| f.root == query.root)
+                {
+                    diagnostic.inspection = budgeted_inspection(work, formula, query);
+                }
+            }
+            diagnostic.operands.push(operand);
+        };
     match step {
         ProofStep::ModusPonens {
             premise,
@@ -259,7 +297,7 @@ pub(crate) fn error(
                 results
                     .get(r as usize)
                     .and_then(Option::as_ref)
-                    .map(|r| &r.formula)
+                    .map(|r| r.formula.view())
             };
             formula_operand(
                 OperandRole::Premise,
@@ -274,15 +312,19 @@ pub(crate) fn error(
                 Some(true),
             );
             if let Some(implication) = result(*implication)
-                && let Some((antecedent, _)) = implication.view().implication_parts()
+                && let Some((antecedent, _)) = implication.implication_parts()
             {
-                let antecedent = antecedent.to_owned();
-                formula_operand(OperandRole::Antecedent, None, Some(&antecedent), None);
+                formula_operand(OperandRole::Antecedent, None, Some(antecedent), None);
                 if let Some(premise) = result(*premise)
-                    && let Some(comparison) = FormulaMismatch::between(&antecedent, premise)
+                    && let CheckErrorKind::Logic {
+                        comparison: Some(comparison),
+                        ..
+                    } = &kind
+                    && reserve_tree(work, antecedent, 2)
+                    && reserve_tree(work, premise, 2)
                 {
                     diagnostic.difference =
-                        Some(tree_difference(&antecedent, premise, &comparison));
+                        Some(tree_difference_views(antecedent, premise, comparison));
                 }
             }
         }
@@ -293,7 +335,7 @@ pub(crate) fn error(
                 results
                     .get(*premise as usize)
                     .and_then(Option::as_ref)
-                    .map(|r| &r.formula),
+                    .map(|r| r.formula.view()),
                 Some(true),
             );
         }
@@ -302,13 +344,14 @@ pub(crate) fn error(
     // Input formula fields have no proofhood claim. A failed expansion leaves
     // its typed dependency/limit cause, never an invented primitive formula.
     let mut add_raw = |role, raw: &ProofFormula| {
-        if let Ok(formula) = crate::primitive_formula(kind.step(), raw, context) {
-            let fragment = tree_fragment(formula.view(), FORMULA_FRAGMENT_NODES, 0);
+        if let Ok(formula) = crate::primitive_formula(kind.step(), raw, work)
+            && let Some(fragment) = budgeted_fragment(work, formula.view())
+        {
             if let Some(query) = query
                 && query.operand == role
                 && fragment.root == query.root
             {
-                diagnostic.inspection = tree_query(formula.view(), query).ok();
+                diagnostic.inspection = budgeted_inspection(work, formula.view(), query);
             }
             let mut operand = Operand::new(role);
             operand.formula = Some(fragment);
@@ -382,7 +425,8 @@ pub(crate) fn error(
     if let Some(formula) = derived {
         let mut operand = Operand::new(R::Conclusion);
         operand.proved = (!matches!(kind, CheckErrorKind::DerivedFormula { .. })).then_some(true);
-        operand.formula = Some(tree_fragment(formula.view(), FORMULA_FRAGMENT_NODES, 0));
+        operand.formula = budgeted_fragment(work, formula.view());
+        diagnostic.operands_complete &= operand.formula.is_some();
         if let Some(query) = query
             && query.operand == R::Conclusion
             && operand
@@ -390,7 +434,7 @@ pub(crate) fn error(
                 .as_ref()
                 .is_some_and(|f| f.root == query.root)
         {
-            diagnostic.inspection = tree_query(formula.view(), query).ok();
+            diagnostic.inspection = budgeted_inspection(work, formula.view(), query);
         }
         diagnostic.operands.push(operand);
     }
@@ -403,6 +447,14 @@ pub(crate) fn error(
 pub(crate) fn tree_difference(
     expected: &Formula,
     actual: &Formula,
+    comparison: &FormulaMismatch,
+) -> Difference {
+    tree_difference_views(expected.view(), actual.view(), comparison)
+}
+
+fn tree_difference_views(
+    expected: FormulaView<'_>,
+    actual: FormulaView<'_>,
     comparison: &FormulaMismatch,
 ) -> Difference {
     let path = comparison
@@ -427,8 +479,8 @@ pub(crate) fn tree_difference(
     };
     Difference {
         path: path.clone(),
-        expected: node(expected.view()),
-        actual: node(actual.view()),
+        expected: node(expected),
+        actual: node(actual),
         complete: true,
     }
 }
@@ -459,7 +511,6 @@ pub fn target_mismatch_at_snapshot(
             format: InputFormat::Certificate,
             digest: Digest::of(&certificate.to_canonical_bytes()),
             commands: certificate.steps().len() as u64,
-            source_digest: None,
         },
         snapshot,
         certificate.steps().len() as u64 - 1,

@@ -88,7 +88,7 @@ fn native_completion_binds_its_actual_model_terminal_trace_and_work() {
     assert_eq!(
         summary.question,
         crate::hex(
-            naome_authoring::CompiledQuestion::compile(&question)
+            naome_checker::question::ResearchQuestion::from_hex(&question)
                 .unwrap()
                 .resolution_id()
         )
@@ -260,7 +260,7 @@ fn accepted(owner: &mut Owner) -> u64 {
             .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
             .is_err()
     );
-    let q = naome_authoring::CompiledQuestion::compile(&source).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
     let mut graph = crate::Graph::default();
     let (root, batch) = graph.prepare_generated(&solution.source, &[], &q).unwrap();
     graph
@@ -484,9 +484,13 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
     let admission = PeerAdmission {
         certificate: Some(
             crate::learning::peer::pack(
-                naome_authoring::compile(&checked_solution().source)
-                    .unwrap()
-                    .canonical_proof_bytes(),
+                crate::learning::proof::check_artifact(
+                    &checked_solution().source,
+                    &naome_checker::ArtifactState::new(),
+                )
+                .unwrap()
+                .normal_form()
+                .canonical_bytes(),
                 &[],
             )
             .unwrap(),
@@ -593,9 +597,13 @@ fn reserved_or_unclassified_peer_admissions_have_one_durable_unsupported_disposi
         let admission = PeerAdmission {
             certificate: Some(
                 crate::learning::peer::pack(
-                    naome_authoring::compile(&checked_solution().source)
-                        .unwrap()
-                        .canonical_proof_bytes(),
+                    crate::learning::proof::check_artifact(
+                        &checked_solution().source,
+                        &naome_checker::ArtifactState::new(),
+                    )
+                    .unwrap()
+                    .normal_form()
+                    .canonical_bytes(),
                     &[],
                 )
                 .unwrap(),
@@ -641,9 +649,13 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
     let admission = PeerAdmission {
         certificate: Some(
             crate::learning::peer::pack(
-                naome_authoring::compile(&checked_solution().source)
-                    .unwrap()
-                    .canonical_proof_bytes(),
+                crate::learning::proof::check_artifact(
+                    &checked_solution().source,
+                    &naome_checker::ArtifactState::new(),
+                )
+                .unwrap()
+                .normal_form()
+                .canonical_bytes(),
                 &[],
             )
             .unwrap(),
@@ -921,14 +933,18 @@ fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_
     let (directory, mut owner) = native();
     let original = checked_solution();
     let question = crate::learning::tests::own_question();
-    let q = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
     let known = crate::learning::proof::verify(
         &crate::learning::evidence::compile(
             q.proved_target(),
             &crate::learning::peer::pack(
-                naome_authoring::compile(&original.source)
-                    .unwrap()
-                    .canonical_proof_bytes(),
+                crate::learning::proof::check_artifact(
+                    &original.source,
+                    &naome_checker::ArtifactState::new(),
+                )
+                .unwrap()
+                .normal_form()
+                .canonical_bytes(),
                 &[],
             )
             .unwrap(),
@@ -938,9 +954,7 @@ fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_
     )
     .unwrap();
     let mut context = naome_checker::ArtifactState::new();
-    context
-        .register_proof(original.checked().unwrap().into_checked_proof())
-        .unwrap();
+    context.register_proof(original.checked().unwrap()).unwrap();
     let commands = vec![
         naome_proof::program::Command::ProofReference {
             proof_id: *known.native_id.as_bytes(),
@@ -1330,9 +1344,13 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
     let admission = PeerAdmission {
         certificate: Some(
             crate::learning::peer::pack(
-                naome_authoring::compile(&solution.source)
-                    .unwrap()
-                    .canonical_proof_bytes(),
+                crate::learning::proof::check_artifact(
+                    &solution.source,
+                    &naome_checker::ArtifactState::new(),
+                )
+                .unwrap()
+                .normal_form()
+                .canonical_bytes(),
                 &[],
             )
             .unwrap(),

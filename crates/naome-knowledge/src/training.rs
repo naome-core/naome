@@ -11,7 +11,7 @@
 //! A consumer must additionally keep descendants of the same authored source in
 //! one split. Reserved evaluation results have a separate, non-adaptive API.
 use crate::{Envelope, Error, Graph, structure::Features};
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_proof::ArtifactId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -67,7 +67,7 @@ pub enum Partition {
 /// A conservative syntax group: alpha-renamings, opposite resolutions and
 /// identical primitive signal patterns share a group. Formula counts intentionally
 /// over-group examples; neither topic labels nor semantic independence is claimed.
-pub fn group(question: &CompiledQuestion) -> String {
+pub fn group(question: &ResearchQuestion) -> String {
     let features = Features::of(question);
     let mut digest = Sha256::new();
     digest.update(b"naome:training-structure\0");
@@ -78,7 +78,7 @@ pub fn group(question: &CompiledQuestion) -> String {
     crate::hex(&digest.finalize())
 }
 
-pub fn partition(question: &CompiledQuestion) -> Partition {
+pub fn partition(question: &ResearchQuestion) -> Partition {
     // group() produces a canonical digest; use all bytes, not a displayed name.
     let digest = Sha256::digest(group(question).as_bytes());
     match u16::from_be_bytes([digest[0], digest[1]]) % 5 {
@@ -193,10 +193,12 @@ pub fn select(graph: &Graph, request: &Request) -> Result<Batch, Error> {
     selection::select(graph, request)
 }
 
-fn question(graph: &Graph, root: &str) -> Result<CompiledQuestion, Error> {
+fn question(graph: &Graph, root: &str) -> Result<ResearchQuestion, Error> {
     let id = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
     let metadata = describe(graph, id)?.ok_or("training target is not a checked proof")?;
-    metadata.compile().map(|(_, _, question)| question)
+    metadata
+        .compile(graph.checked_context())
+        .map(|(_, _, question)| question)
 }
 
 struct Observation {
@@ -223,7 +225,7 @@ fn probes(
     }
     let mut result = BTreeMap::new();
     for probe in observations {
-        let target = CompiledQuestion::compile(&probe.question)?;
+        let target = ResearchQuestion::from_hex(&probe.question)?;
         if partition(&target) != expected {
             return Err("training evaluation partition differs".into());
         }
@@ -251,7 +253,7 @@ fn probes(
             .insert(
                 *target.resolution_id(),
                 Observation {
-                    input: *target.source_hash(),
+                    input: *target.record_id(),
                     features: Features::of(&target),
                     solved,
                     micros: probe.spent_ms.saturating_mul(1000),

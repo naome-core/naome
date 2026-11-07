@@ -22,18 +22,17 @@ fn request() -> Request {
         random_only: false,
     }
 }
-fn fixture() -> (Graph, Vec<(CompiledQuestion, String)>) {
+fn fixture() -> (Graph, Vec<(ResearchQuestion, String)>) {
     let mut graph = Graph::default();
     let mut roots = Vec::new();
     for n in 1..=18 {
-        let mut formula = "eq(v0,v0)".to_owned();
-        let mut proof = "p0=refl(v0)".to_owned();
-        for i in 0..n {
-            formula = format!("all(v{i},{formula})");
-            proof.push_str(&format!(" p{}=gen(p{i},v{i})", i + 1));
-        }
-        let source = format!("goal={formula} proof: {proof} return p{n}");
-        let question = CompiledQuestion::compile(&format!("goal={formula}")).unwrap();
+        use naome_foundation::Formula;
+        let x = crate::test_inputs::variable(0);
+        let formula = (0..n).fold(Formula::equal(x, x), |formula, i| {
+            Formula::for_all(crate::test_inputs::variable(i), formula)
+        });
+        let source = crate::test_inputs::proof(crate::test_inputs::reflexivity(0..n));
+        let question = crate::test_inputs::question(formula);
         let root = graph.produce(&source).unwrap().0.artifact_id;
         roots.push((question, root));
     }
@@ -57,7 +56,7 @@ fn batches(graph: &Graph, mut request: Request) -> Vec<Example> {
         }
     }
 }
-fn report(graph: &Graph, roots: &[(CompiledQuestion, String)], checkpoint: u8) -> Development {
+fn report(graph: &Graph, roots: &[(ResearchQuestion, String)], checkpoint: u8) -> Development {
     Development {
         solver: solver(checkpoint),
         knowledge: crate::hex(&graph.content_root()),
@@ -67,7 +66,7 @@ fn report(graph: &Graph, roots: &[(CompiledQuestion, String)], checkpoint: u8) -
             .map(|(q, root)| Probe {
                 spent_ms: 1,
                 work_units: 1,
-                question: q.source().into(),
+                question: q.to_hex(),
                 result: Outcome::Verified {
                     artifact: root.clone(),
                 },
@@ -89,7 +88,7 @@ fn exported_targets_are_checked_known_proofs_and_reserved_groups_do_not_leak() {
     assert_eq!(graph.content_root(), original);
     let mut receiver = Graph::default();
     for example in &examples {
-        let q = CompiledQuestion::compile(&example.input.question).unwrap();
+        let q = ResearchQuestion::from_hex(&example.input.question).unwrap();
         assert_eq!(partition(&q), Partition::Training);
         assert!(!example.target.refuted);
         assert!(example.input.context.is_empty());
@@ -150,7 +149,7 @@ fn diagnostic_checkpoint_context_budget_and_partition_are_enforced() {
         probes: vec![Probe {
             spent_ms: 1,
             work_units: 1,
-            question: q.source().into(),
+            question: q.to_hex(),
             result: Outcome::Verified {
                 artifact: root.clone(),
             },
@@ -173,7 +172,7 @@ fn unsupported_or_mismatched_positive_reports_cannot_create_training_evidence() 
     r.development = Some(d);
     assert!(select(&graph, &r).is_err());
     let mut d = report(&graph, &roots, 1);
-    let target = CompiledQuestion::compile(&d.probes[0].question).unwrap();
+    let target = ResearchQuestion::from_hex(&d.probes[0].question).unwrap();
     let (_, other) = roots
         .iter()
         .find(|(q, _)| q.resolution_id() != target.resolution_id())
@@ -190,7 +189,7 @@ fn scarcity_and_development_weakness_change_priorities_without_false_labels() {
     let (graph, roots) = fixture();
     let mut r = request();
     let mut d = report(&graph, &roots, 1);
-    let target = CompiledQuestion::compile(&d.probes[0].question).unwrap();
+    let target = ResearchQuestion::from_hex(&d.probes[0].question).unwrap();
     let features = Features::of(&target);
     let rules = [false; signals::RULES];
     r.development = Some(d.clone());
@@ -262,7 +261,7 @@ fn paired_evaluation_counts_errors_and_enforces_equal_total_budget() {
         .map(|(q, _)| Probe {
             spent_ms: 1,
             work_units: 1,
-            question: q.source().into(),
+            question: q.to_hex(),
             result: Outcome::Unavailable,
         })
         .collect::<Vec<_>>();
@@ -283,7 +282,7 @@ fn paired_evaluation_counts_errors_and_enforces_equal_total_budget() {
     targeted.solver = solver(2);
     let (_, root) = roots
         .iter()
-        .find(|(q, _)| q.source() == targeted.probes[0].question)
+        .find(|(q, _)| q.to_hex() == targeted.probes[0].question)
         .unwrap();
     targeted.probes[0].result = Outcome::Verified {
         artifact: root.clone(),
@@ -308,9 +307,9 @@ fn paired_evaluation_counts_errors_and_enforces_equal_total_budget() {
 
 #[test]
 fn partition_keeps_renamings_and_opposite_resolution_together() {
-    let a = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-    let b = CompiledQuestion::compile("goal=all(other,eq(other,other))").unwrap();
-    let negative = CompiledQuestion::compile("goal=not(all(x,eq(x,x)))").unwrap();
+    let a = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let b = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let negative = ResearchQuestion::from_hex("02040001000000000100000000").unwrap();
     assert_eq!(group(&a), group(&b));
     assert_eq!(group(&a), group(&negative));
     assert_eq!(partition(&a), partition(&negative));
@@ -322,7 +321,7 @@ fn research_plan_excludes_answers_duplicates_and_reserved_work() {
     let mut sources = roots
         .iter()
         .take(3)
-        .map(|(q, _)| q.source().to_owned())
+        .map(|(q, _)| q.to_hex())
         .collect::<Vec<_>>();
     let x = naome_foundation::FreeVariable::new(0);
     let mut predicate = naome_foundation::Formula::member(x, x);
@@ -336,8 +335,8 @@ fn research_plan_excludes_answers_duplicates_and_reserved_work() {
         }
         .formula()
         .unwrap();
-        let q = CompiledQuestion::from_formula(formula).unwrap();
-        sources.push(q.source().into());
+        let q = ResearchQuestion::from_formula(formula).unwrap();
+        sources.push(q.to_hex());
         predicate =
             naome_foundation::Formula::implies(predicate, naome_foundation::Formula::equal(x, x));
     }
@@ -348,7 +347,7 @@ fn research_plan_excludes_answers_duplicates_and_reserved_work() {
     assert!(!plan.questions.is_empty());
     let mut unique = BTreeSet::new();
     for selected in plan.questions {
-        let q = CompiledQuestion::compile(&selected.question).unwrap();
+        let q = ResearchQuestion::from_hex(&selected.question).unwrap();
         assert_eq!(partition(&q), Partition::Training);
         assert!(unique.insert(*q.resolution_id()));
         assert!(
@@ -370,7 +369,7 @@ fn question_only_suite_pages_cover_the_selected_partition_without_labels() {
         let encoded = serde_json::to_value(&page).unwrap();
         assert!(encoded.get("proof").is_none() && encoded.get("probes").is_none());
         for source in page.questions {
-            let q = CompiledQuestion::compile(&source).unwrap();
+            let q = ResearchQuestion::from_hex(&source).unwrap();
             assert_eq!(partition(&q), Partition::Reserved);
             assert!(observed.insert(*q.resolution_id()));
         }
@@ -402,24 +401,25 @@ fn a_training_theorem_cannot_smuggle_a_reserved_lemma_into_its_context() {
         .proof_id()
         .unwrap()
         .unwrap();
-    let reference = crate::hex(reference.as_bytes());
     let mut found = false;
     for n in 1..=12 {
         let mut formula = reserved.formula().clone();
-        let mut proof = "p0=cite(base)".to_owned();
+        let mut steps = vec![naome_proof::ProofStep::ProofReference {
+            proof_id: reference,
+        }];
         for i in 0..n {
             let variable = naome_foundation::FreeVariable::new(100 + i);
             formula = naome_foundation::Formula::for_all(variable, formula);
-            proof.push_str(&format!(" p{}=gen(p{i},f{})", i + 1, 100 + i));
+            steps.push(naome_proof::ProofStep::Generalization {
+                premise: i,
+                variable,
+            });
         }
-        let target = CompiledQuestion::from_formula(formula.clone()).unwrap();
+        let target = ResearchQuestion::from_formula(formula.clone()).unwrap();
         if partition(&target) != Partition::Training {
             continue;
         }
-        let source = format!(
-            "refs: base=\"{reference}\" goal={} proof: {proof} return p{n}",
-            formula.to_source()
-        );
+        let source = crate::test_inputs::proof(steps);
         let derived = graph.produce(&source).unwrap().0.artifact_id;
         let examples = batches(&graph, request());
         assert!(

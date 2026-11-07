@@ -6,10 +6,10 @@ use naome_proof::{DefinedFormula, DefinitionCertificate};
 fn natural_definitions() -> Vec<definitions::Entry> {
     let mut graph = crate::Graph::default();
     let (empty, _) = graph
-        .produce("def empty=relation(x): all(y,not(mem(y,x)))")
+        .produce("0100000000010000000d04020101000000000000000000")
         .unwrap();
     let (successor, _) = graph
-        .produce("def successor=relation(x,s): all(y,iff(mem(y,s),or(mem(y,x),eq(y,x))))")
+        .produce("0100000000020000004c04020303010100000000000000000103020101000000000000000000000100000000000000000002030302010100000000000000000000010000000000000000000101000000000000000001")
         .unwrap();
     let source = format!(
         "defs: e=\"{}\" s=\"{}\" def inductive=relation(i): and(ex(z,and(e(z),mem(z,i))),all(n,imp(mem(n,i),ex(t,and(s(n,t),mem(t,i))))))",
@@ -95,9 +95,8 @@ pub fn evaluate(
                         proof::source_with_definitions(&proof, std::slice::from_ref(candidate))
                             .unwrap();
                     let context = definitions::context(std::slice::from_ref(candidate)).unwrap();
-                    let checked = naome_authoring::compile_against_proof_context(&source, &context)
-                        .unwrap()
-                        .into_checked_proof();
+                    let checked =
+                        crate::learning::proof::check_artifact(&source, &context).unwrap();
                     if checked
                         .direct_artifact_dependencies()
                         .contains(&candidate.address().unwrap())
@@ -121,7 +120,7 @@ pub fn evaluate(
                 let selected = prediction.as_ref().ok().copied();
                 results.push(serde_json::json!({
                     "track":track,"id":digest(&(track,index,style,&proof.target.encode_canonical().unwrap())),
-                    "query":proof.target.to_source(),
+                    "query":crate::hex(&proof.target.encode_canonical().unwrap()),
                     "definition_ids":candidates.iter().map(|e|crate::hex(e.certificate().unwrap().definition_id().as_bytes())).collect::<Vec<_>>(),
                     "definitions":candidates,"valid_indices":valid,"reference_use_witnesses":witnesses,
                     "selected_index":selected,"correct":selected.is_some_and(|i|valid.contains(&i)),

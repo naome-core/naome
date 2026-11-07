@@ -102,6 +102,7 @@ impl Preparation {
             context_bytes: graph.context_bytes,
             _disk: disk,
             payload_bytes: 0,
+            questions: BTreeMap::new(),
         })
     }
     fn from_batch(batch: CheckedBatch) -> Self {

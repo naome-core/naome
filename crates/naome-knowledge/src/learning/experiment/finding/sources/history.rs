@@ -294,8 +294,8 @@ impl ArtifactIo for Io<'_> {
 fn terminal_records_keep_unknowns_horizon_and_original_read_bounds() {
     let directory = Directory::new();
     let common = State::fresh();
-    let q = CompiledQuestion::compile(
-        "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,all(y,mem(x,y))),mem(b,a)))))",
+    let q = ResearchQuestion::from_hex(
+        "04040302000100000001010000000003040401010000000101000000000101000000000100000001",
     )
     .unwrap();
     let episodes = (1..=QUERIES as u64)
@@ -313,7 +313,7 @@ fn terminal_records_keep_unknowns_horizon_and_original_read_bounds() {
                 lineage: "unit-fixture".into(),
                 authored_lineage: "unit-fixture".into(),
                 observation: experience::Observation {
-                    question: q.source().into(),
+                    question: q.to_hex(),
                     summary,
                     frontier: None,
                     executions: Vec::new(),

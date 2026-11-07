@@ -278,7 +278,7 @@ impl Trace {
 
     pub(crate) fn validate_question(
         &self,
-        question: &naome_authoring::CompiledQuestion,
+        question: &naome_checker::question::ResearchQuestion,
     ) -> Result<(), String> {
         self.validate()?;
         let targets = [question.proved_target(), question.refuted_target()]
@@ -296,7 +296,7 @@ impl Trace {
 
     pub(crate) fn validate_context(
         &self,
-        question: &naome_authoring::CompiledQuestion,
+        question: &naome_checker::question::ResearchQuestion,
         knowledge: &[super::super::knowledge::Entry],
     ) -> Result<(), String> {
         self.validate_question(question)?;

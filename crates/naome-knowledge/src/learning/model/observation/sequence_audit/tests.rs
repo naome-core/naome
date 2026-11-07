@@ -97,7 +97,7 @@ fn checked_graph_masks_distinguish_loss_paths_from_constant_objectives() {
     )))
     .unwrap();
     let record = &fixture.records[0];
-    let q = naome_authoring::CompiledQuestion::compile(&record.question).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&record.question).unwrap();
     let target = if record.solution.refuted {
         q.refuted_target()
     } else {

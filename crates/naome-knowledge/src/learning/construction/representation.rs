@@ -57,9 +57,8 @@ pub fn apply(
             definitions: Vec::new(),
         };
         let source = proof::source_with_definitions(&candidate, entries)?;
-        let checked = naome_authoring::compile_against_proof_context(&source, &context)
-            .map_err(|e| e.to_string())?
-            .into_checked_proof();
+        let checked =
+            crate::learning::proof::check_artifact(&source, &context).map_err(|e| e.to_string())?;
         if checked.conclusion() != &candidate.target {
             return Err("construction meaning rewrite changed the claim".into());
         }
@@ -101,21 +100,26 @@ mod tests {
     #[test]
     fn new_meanings_rewrite_only_generated_proofs_and_preserve_existing_lemma_identity() {
         let original = crate::learning::tests::own_solution();
-        let q = naome_authoring::CompiledQuestion::compile(&crate::learning::tests::own_question())
-            .unwrap();
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            &crate::learning::tests::own_question(),
+        )
+        .unwrap();
         let known = search::core::checked(q.proved_target(), &original.tree)
             .unwrap()
             .2;
         let entry = knowledge::Entry {
             packet: crate::learning::evidence::pack(&known).unwrap(),
         };
-        let naome_authoring::CompiledArtifact::Definition(d) =
-            naome_authoring::compile_artifact("def equality=relation(x,y): eq(x,y)").unwrap()
+        let naome_proof::ArtifactPayload::Definition(d) =
+            naome_proof::ArtifactPayload::from_canonical_bytes(
+                &crate::unhex("0100000000020000000b0000000000000000000001").unwrap(),
+            )
+            .unwrap()
         else {
             panic!("definition")
         };
         let meaning = definitions::Entry {
-            certificate: d.canonical_definition_bytes().to_vec(),
+            certificate: d.canonical_bytes().to_vec(),
             obligation: None,
         };
         let x = FreeVariable::new(40);
@@ -153,7 +157,7 @@ mod tests {
         );
         let text = proof::source(&found).unwrap();
         assert_eq!(
-            naome_authoring::compile_against_proof_context(&text, &context)
+            crate::learning::proof::check_artifact(&text, &context)
                 .unwrap()
                 .proof_id(),
             found.native_id

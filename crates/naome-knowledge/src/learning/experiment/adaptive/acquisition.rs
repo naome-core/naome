@@ -42,7 +42,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
     for row in &common.rows {
         if !row["solution"].is_null() {
             let solution: Solution = serde_json::from_value(row["solution"].clone()).unwrap();
-            let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
+            let q = ResearchQuestion::from_hex(row["question"].as_str().unwrap()).unwrap();
             admit_discovery(&mut graph, &q, &solution).unwrap();
         }
     }
@@ -59,7 +59,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
         .rows
         .iter()
         .map(|row| {
-            let q = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
+            let q = ResearchQuestion::from_hex(row["question"].as_str().unwrap()).unwrap();
             crate::hex(q.resolution_id())
         })
         .collect::<BTreeSet<_>>();
@@ -71,10 +71,10 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
                 panic!("common acquisition exhausted the unchanged arm ceiling");
             }
             frontier.feedback(Some(state.feedback()));
-            let mut eligible = |q: &CompiledQuestion| {
+            let mut eligible = |q: &ResearchQuestion| {
                 !seen.contains(&crate::hex(q.resolution_id()))
-                    && meta_partition(q.source(), false)
-                    && State::eligible(q.source())
+                    && meta_partition(&q.to_hex(), false)
+                    && State::eligible(&q.to_hex())
                     && formal.assess(&graph, q).passed()
             };
             frontier.refresh(&graph, &mut eligible).unwrap();
@@ -97,7 +97,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
             let job = 10_000 + round as u64 * 48 + index as u64;
             let mut row = acquire(
                 &mut state,
-                q.source(),
+                &q.to_hex(),
                 job,
                 &mut engine,
                 &mut store,
@@ -146,7 +146,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
                 frontier.verified(q, &graph, job, root).unwrap();
             }
             state.observe_result(
-                q.source(),
+                &q.to_hex(),
                 solution.is_some(),
                 row["diagnostic"].as_str().unwrap(),
                 row["elapsed_micros"].as_u64().unwrap(),
@@ -154,7 +154,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
             );
             state.compact().unwrap();
             state.validate().unwrap();
-            let case = curriculum::owned::case(q.source()).unwrap();
+            let case = curriculum::owned::case(&q.to_hex()).unwrap();
             row["id"] = serde_json::json!(id);
             row["family"] = serde_json::json!(case.family);
             row["dependency"] = serde_json::json!(case.dependency);

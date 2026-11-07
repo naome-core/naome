@@ -95,14 +95,14 @@ fn shape(formula: FormulaView<'_>, assumption: Option<Shape>) -> Shape {
         result
     }
 }
-pub(in crate::frontier) fn key(question: &CompiledQuestion) -> [u8; 32] {
+pub(in crate::frontier) fn key(question: &ResearchQuestion) -> [u8; 32] {
     Sha256::digest(shape(question.formula().view(), None).bytes()).into()
 }
-pub(in crate::frontier) fn meaningful(question: &CompiledQuestion) -> bool {
+pub(in crate::frontier) fn meaningful(question: &ResearchQuestion) -> bool {
     shape(question.formula().view(), None).truth.is_none()
         && boolean_constant(question.formula().view()).is_none()
 }
-pub(super) fn screen(question: &CompiledQuestion) -> ([u8; 32], bool) {
+pub(super) fn screen(question: &ResearchQuestion) -> ([u8; 32], bool) {
     let reduced = shape(question.formula().view(), None);
     (
         Sha256::digest(reduced.bytes()).into(),
@@ -181,8 +181,8 @@ fn boolean_constant(mut formula: FormulaView<'_>) -> Option<bool> {
 }
 /// A pure Boolean wrapper around the cited lemma is not a new supported goal.
 pub(in crate::frontier) fn independent_goal(
-    lemma: &CompiledQuestion,
-    goal: &CompiledQuestion,
+    lemma: &ResearchQuestion,
+    goal: &ResearchQuestion,
 ) -> bool {
     meaningful(goal)
         && key(lemma) != key(goal)
@@ -196,10 +196,10 @@ pub(in crate::frontier) fn independent_goal(
 /// Complete non-atomic fragments can motivate a helper; atomic overlap alone
 /// does not establish a proof prerequisite or a useful observation.
 #[cfg(test)]
-pub(in crate::frontier) fn relevance(lemma: &CompiledQuestion, goal: &CompiledQuestion) -> u64 {
+pub(in crate::frontier) fn relevance(lemma: &ResearchQuestion, goal: &ResearchQuestion) -> u64 {
     fragments(lemma).intersection(&fragments(goal)).count() as u64
 }
-pub(super) fn fragments(question: &CompiledQuestion) -> BTreeSet<[u8; 32]> {
+pub(super) fn fragments(question: &ResearchQuestion) -> BTreeSet<[u8; 32]> {
     use std::collections::BTreeSet;
     fn collect(f: &Formula, out: &mut BTreeSet<[u8; 32]>, left: &mut usize) {
         if *left == 0 {

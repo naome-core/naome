@@ -162,8 +162,8 @@ fn an_incomplete_collection_never_imports_model_parameters() {
         &directory.0.join("cost.json"),
         &json!({"epochs":1,"episodes":48,"complete":false,"optimizer_updates":0}),
     );
-    let held = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-    let bytes=serde_json::to_vec(&json!({"cases":[{"source":held.source(),"resolution":crate::hex(held.resolution_id()),"family":curriculum::owned::family(held.proved_target()),"lineage":"held"}]})).unwrap();
+    let held = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let bytes=serde_json::to_vec(&json!({"cases":[{"source":held.to_hex(),"resolution":crate::hex(held.resolution_id()),"family":curriculum::owned::family(held.proved_target()),"lineage":"held"}]})).unwrap();
     let holdout = lineage::Holdout::read(&bytes, &crate::hex(&Sha256::digest(&bytes))).unwrap();
     let error = Frozen::read(&directory.0, &holdout).err().unwrap();
     assert!(error.contains("incomplete"));

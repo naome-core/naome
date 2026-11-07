@@ -85,7 +85,7 @@ impl Graph {
     pub(crate) fn learning_question(
         &self,
         id: ArtifactId,
-    ) -> Result<Option<naome_authoring::CompiledQuestion>, crate::Error> {
+    ) -> Result<Option<naome_checker::question::ResearchQuestion>, crate::Error> {
         use naome_checker::ContextView;
         self.ensure_live()?;
         let Some(proof) = self.cold(self.context.artifact_proof_id(id))? else {
@@ -114,7 +114,7 @@ impl Graph {
             )?
             .ok_or("checked learning formula missing")?
             .into_owned();
-        Ok(naome_authoring::CompiledQuestion::from_formula(formula).ok())
+        Ok(naome_checker::question::ResearchQuestion::from_formula(formula).ok())
     }
     pub(crate) fn learning_definition(
         &self,

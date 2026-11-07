@@ -107,7 +107,7 @@ fn evaluate_frozen_confirmation_models() {
             let state: State = serde_json::from_slice(&std::fs::read(state_path).unwrap()).unwrap();
             state.validate().unwrap();
             for example in state.examples() {
-                let q = CompiledQuestion::compile(&example.question).unwrap();
+                let q = ResearchQuestion::from_hex(&example.question).unwrap();
                 assert!(
                     !reserved.contains(&curriculum::owned::family(q.proved_target())),
                     "confirmation lineage entered a training source"
@@ -136,7 +136,7 @@ fn evaluate_frozen_confirmation_models() {
                         "confirmation paused by resource owner"
                     );
                 }
-                let q = CompiledQuestion::compile(case["source"].as_str().unwrap()).unwrap();
+                let q = ResearchQuestion::from_hex(case["source"].as_str().unwrap()).unwrap();
                 assert_eq!(curriculum::owned::family(q.proved_target()), case["family"]);
                 let wall = Instant::now();
                 let before = meta::cpu_micros().unwrap();
@@ -144,7 +144,7 @@ fn evaluate_frozen_confirmation_models() {
                 let generated = engine
                     .with(&model, &mut io, |runtime| {
                         solve_with_report(
-                            q.source(),
+                            &q.to_hex(),
                             runtime,
                             128,
                             800_000 + index as u64,
@@ -200,7 +200,7 @@ fn freeze_disjoint_confirmation_questions() {
     ] {
         let prior: Value = serde_json::from_str(content).unwrap();
         for case in prior["cases"].as_array().unwrap() {
-            let q = CompiledQuestion::compile(case["source"].as_str().unwrap()).unwrap();
+            let q = ResearchQuestion::from_hex(case["source"].as_str().unwrap()).unwrap();
             known.insert(curriculum::owned::family(q.proved_target()));
         }
     }
@@ -211,11 +211,11 @@ fn freeze_disjoint_confirmation_questions() {
     let mut excluded = Vec::new();
     let mut identities = BTreeSet::new();
     for input in inputs["cases"].as_array().unwrap() {
-        let q = CompiledQuestion::compile(input["source"].as_str().unwrap()).unwrap();
+        let q = ResearchQuestion::from_hex(input["source"].as_str().unwrap()).unwrap();
         let id = crate::hex(q.resolution_id());
         let family = curriculum::owned::family(q.proved_target());
         let assessment = owner.assess(&graph, &q);
-        let reason = if known.contains(&family) || !State::eligible(q.source()) {
+        let reason = if known.contains(&family) || !State::eligible(&q.to_hex()) {
             Some("existing_or_reserved_structural_family")
         } else if !assessment.passed() {
             Some("formal_question_prefilter")
@@ -224,7 +224,7 @@ fn freeze_disjoint_confirmation_questions() {
         } else {
             None
         };
-        let row = json!({"source":q.source(),"resolution":id,"family":family,"lineage":input["lineage"],"variant":input["variant"],"exclusion":reason});
+        let row = json!({"source":q.to_hex(),"resolution":id,"family":family,"lineage":input["lineage"],"variant":input["variant"],"exclusion":reason});
         if reason.is_some() {
             excluded.push(row);
         } else {

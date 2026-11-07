@@ -1,7 +1,7 @@
 //! Prospective composition questions. Inputs and structural siblings are split
 //! without executing a solver or importing an answer certificate.
 use super::Case;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_foundation::{Formula, FreeVariable};
 use sha2::{Digest, Sha256};
 use std::{
@@ -41,7 +41,7 @@ fn build() -> Bank {
     let helpers = choices
         .into_iter()
         .filter(|q| {
-            let q = CompiledQuestion::compile(&q.source).expect("sealed helper question");
+            let q = ResearchQuestion::from_hex(&q.source).expect("sealed helper question");
             let (nodes, depth) = q.proved_target().view().node_count_and_depth();
             (10..=48).contains(&nodes)
                 && depth <= 12
@@ -54,7 +54,7 @@ fn build() -> Bank {
     let mut grouped: BTreeMap<String, BTreeMap<String, Case>> = BTreeMap::new();
     let mut ids = BTreeSet::new();
     for (helper, h) in helpers.iter().enumerate() {
-        let h = CompiledQuestion::compile(&h.source)
+        let h = ResearchQuestion::from_hex(&h.source)
             .unwrap()
             .proved_target()
             .clone();
@@ -86,7 +86,7 @@ fn build() -> Bank {
                         for v in formula.free_variables().into_iter().rev() {
                             formula = Formula::for_all(v, formula);
                         }
-                        let Ok(q) = CompiledQuestion::from_formula(formula) else {
+                        let Ok(q) = ResearchQuestion::from_formula(formula) else {
                             continue;
                         };
                         let id = crate::hex(q.resolution_id());
@@ -102,7 +102,7 @@ fn build() -> Bank {
                         if super::owned::sealed_family(&structural) {
                             continue;
                         }
-                        variants.push((structural, id, q.source().to_owned()));
+                        variants.push((structural, id, q.to_hex()));
                     }
                     // Atom-renamed siblings have exactly the same conservative
                     // family. Grouping occurs before split or representative choice.
@@ -198,7 +198,7 @@ mod tests {
             .chain(bank.development.iter())
             .chain(bank.confirmation.iter())
         {
-            let compiled = CompiledQuestion::compile(&q.source).unwrap();
+            let compiled = ResearchQuestion::from_hex(&q.source).unwrap();
             assert_eq!(q.id, crate::hex(compiled.resolution_id()));
             assert_eq!(
                 super::super::owned::case(&q.source).is_some(),

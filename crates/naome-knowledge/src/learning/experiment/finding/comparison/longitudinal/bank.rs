@@ -187,7 +187,7 @@ fn opened(mut formula: Formula) -> (usize, Vec<Formula>, Formula) {
 
 /// Conservative shape grouping also removes outer premise order. It grants
 /// no mathematical equivalence/admission and intentionally merges atom roles.
-pub(super) fn near_family(question: &CompiledQuestion) -> String {
+pub(super) fn near_family(question: &ResearchQuestion) -> String {
     lineage::normalized_family(question)
 }
 
@@ -203,12 +203,12 @@ pub(super) fn cases(track: usize, recipe: usize, root: usize) -> Result<Vec<Case
     let variant = implication(premises, goal);
     let mut result = Vec::new();
     for (variant, formula) in [formula, variant].into_iter().enumerate() {
-        let q = CompiledQuestion::from_formula(formula).map_err(|e| e.to_string())?;
-        if !State::eligible(q.source()) {
+        let q = ResearchQuestion::from_formula(formula).map_err(|e| e.to_string())?;
+        if !State::eligible(&q.to_hex()) {
             return Ok(Vec::new());
         }
         result.push(Case {
-            source: q.source().into(),
+            source: q.to_hex(),
             resolution: crate::hex(q.resolution_id()),
             family: curriculum::owned::family(q.proved_target()),
             construction: near_family(&q),
@@ -230,7 +230,7 @@ pub(super) fn build(historical: &[String]) -> Result<Bank, String> {
     let mut used_constructions = BTreeSet::new();
     let mut used_resolutions = BTreeSet::new();
     for source in historical {
-        let q = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
         used_families.insert(curriculum::owned::family(q.proved_target()));
         used_constructions.insert(near_family(&q));
         used_resolutions.insert(crate::hex(q.resolution_id()));

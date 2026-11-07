@@ -41,13 +41,17 @@ fn reference_calibration_rejects_a_ceiling_and_selects_the_frozen_first_triple()
 
 #[test]
 fn question_family_groups_premise_order_and_keeps_demands_separate_from_answers() {
-    let q = CompiledQuestion::compile("goal=all(x,all(y,imp(mem(x,y),imp(eq(x,y),mem(y,x)))))")
-        .unwrap();
-    let r = CompiledQuestion::compile("goal=all(x,all(y,imp(eq(x,y),imp(mem(x,y),mem(y,x)))))")
-        .unwrap();
+    let q = ResearchQuestion::from_hex(
+        "04040301010000000101000000000300010000000101000000000101000000000100000001",
+    )
+    .unwrap();
+    let r = ResearchQuestion::from_hex(
+        "04040300010000000101000000000301010000000101000000000101000000000100000001",
+    )
+    .unwrap();
     assert_ne!(q.resolution_id(), r.resolution_id());
     assert_eq!(bank::near_family(&q), bank::near_family(&r));
-    let bytes=serde_json::to_vec(&json!({"cases":[{"source":q.source(),"family":curriculum::owned::family(q.proved_target()),"resolution":crate::hex(q.resolution_id()),"lineage":"test construction"}]})).unwrap();
+    let bytes=serde_json::to_vec(&json!({"cases":[{"source":q.to_hex(),"family":curriculum::owned::family(q.proved_target()),"resolution":crate::hex(q.resolution_id()),"lineage":"test construction"}]})).unwrap();
     let holdout = lineage::Holdout::read(&bytes, &crate::hex(&Sha256::digest(&bytes))).unwrap();
     assert!(
         holdout.question(&r, None).is_err(),
@@ -58,10 +62,10 @@ fn question_family_groups_premise_order_and_keeps_demands_separate_from_answers(
             // Construction itself executes no solver, teacher or optimizer.
             let cases = bank::cases(track, recipe, 1057).unwrap();
             for case in cases {
-                let q = CompiledQuestion::compile(&case.source).unwrap();
+                let q = ResearchQuestion::from_hex(&case.source).unwrap();
                 assert_eq!(case.resolution, crate::hex(q.resolution_id()));
                 assert_eq!(case.construction, bank::near_family(&q));
-                assert!(State::eligible(q.source()));
+                assert!(State::eligible(&q.to_hex()));
             }
         }
     }
@@ -167,7 +171,7 @@ fn admitted_design_recomputes_complete_reference_coverage_and_all_family_splits(
     assert_eq!(assessment::selected(&design, false).unwrap().len(), 216);
     assert_eq!(assessment::selected(&design, true).unwrap().len(), 108);
     for case in &design.bank.acquisition {
-        let q = CompiledQuestion::compile(&case.source).unwrap();
+        let q = ResearchQuestion::from_hex(&case.source).unwrap();
         design.holdout.question(&q, None).unwrap();
     }
     calibration["rows"].as_array_mut().unwrap().pop();

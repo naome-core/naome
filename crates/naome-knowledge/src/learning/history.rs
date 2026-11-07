@@ -142,8 +142,8 @@ impl Source {
             }
             _ => return Err("historical origin lacks its exact admission evidence".into()),
         }
-        let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
-        let checked = self.solution.checked()?.into_checked_proof();
+        let question = ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
+        let checked = self.solution.checked()?;
         let target = if self.solution.refuted {
             question.refuted_target()
         } else {

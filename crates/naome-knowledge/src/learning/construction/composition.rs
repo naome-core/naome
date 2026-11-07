@@ -142,14 +142,15 @@ fn deductions(
         {
             break;
         }
-        let Ok(question) = naome_authoring::CompiledQuestion::from_formula(part.clone()) else {
+        let Ok(question) = naome_checker::question::ResearchQuestion::from_formula(part.clone())
+        else {
             continue;
         };
         work += 1;
         let Ok(request) = naome_checker::question::AssessmentQuestion::new(
             naome_foundation::FOUNDATION_ID,
             question.formula(),
-            question.source().as_bytes(),
+            question.to_hex().as_bytes(),
             &[],
             None,
         ) else {

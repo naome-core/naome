@@ -1,7 +1,11 @@
 use super::super::{SolveContext, construction, search_question_report};
 use super::*;
 
-fn inputs() -> (naome_authoring::CompiledQuestion, crate::Graph, Vec<String>) {
+fn inputs() -> (
+    naome_checker::question::ResearchQuestion,
+    crate::Graph,
+    Vec<String>,
+) {
     let (goal, helpers) = crate::learning::tests::helper_goal();
     let mut graph = crate::Graph::default();
     let mut required = Vec::new();
@@ -32,13 +36,13 @@ fn an_answered_internal_obligation_supplies_a_checked_certificate_without_intake
     let (_, graph, required) = inputs();
     let (_, helpers) = crate::learning::tests::helper_goal();
     let axiom = naome_foundation::ZfcAxiom::Extensionality.formula();
-    let internal = naome_authoring::CompiledQuestion::from_formula(axiom.clone()).unwrap();
+    let internal = naome_checker::question::ResearchQuestion::from_formula(axiom.clone()).unwrap();
     let mut owner =
         crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
     let decision = owner.assess(&graph, &internal);
     assert!(decision.has_answer());
     assert!(!decision.passed());
-    let goal = naome_authoring::CompiledQuestion::from_formula(
+    let goal = naome_checker::question::ResearchQuestion::from_formula(
         naome_foundation::Formula::conjunction(helpers[0].formula().clone(), axiom),
     )
     .unwrap();
@@ -46,7 +50,7 @@ fn an_answered_internal_obligation_supplies_a_checked_certificate_without_intake
     let full = graph.prerequisites(required).unwrap().unwrap();
     let before = graph.content_root();
     let result = search_question_report(
-        goal.source(),
+        &goal.to_hex(),
         &mut NoNeural,
         16,
         &SolveContext {
@@ -74,7 +78,8 @@ fn an_internal_refutation_never_supplies_the_positive_prerequisite() {
     let (_, graph, required) = inputs();
     let infinity = naome_foundation::ZfcAxiom::Infinity.formula();
     let opposite = infinity.view().negated().unwrap().to_owned();
-    let internal = naome_authoring::CompiledQuestion::from_formula(opposite.clone()).unwrap();
+    let internal =
+        naome_checker::question::ResearchQuestion::from_formula(opposite.clone()).unwrap();
     let mut owner =
         crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
     let decision = owner.assess(&graph, &internal);
@@ -99,7 +104,7 @@ fn full_prerequisites_compose_without_populating_the_neural_snapshot() {
     assert!(base.require_theorems(&required).is_err());
     full.require(&base, &required).unwrap();
     let generated = search_question_report(
-        goal.source(),
+        &goal.to_hex(),
         &mut NoNeural,
         3,
         &SolveContext {
@@ -196,7 +201,7 @@ fn claimed_addresses_do_not_replace_checked_identity_or_complete_dependencies() 
 fn large_checked_prerequisites_resolve_the_observed_missing_root() {
     fn admit_discovery(
         graph: &mut crate::Graph,
-        question: &naome_authoring::CompiledQuestion,
+        question: &naome_checker::question::ResearchQuestion,
         solution: &super::super::Solution,
     ) -> Result<(), crate::Error> {
         let (root, batch) =
@@ -221,9 +226,10 @@ fn large_checked_prerequisites_resolve_the_observed_missing_root() {
             Some("helper" | "parent_retry" | "descendant")
         ) && !event["solution"].is_null()
         {
-            let question =
-                naome_authoring::CompiledQuestion::compile(event["question"].as_str().unwrap())
-                    .unwrap();
+            let question = naome_checker::question::ResearchQuestion::from_hex(
+                event["question"].as_str().unwrap(),
+            )
+            .unwrap();
             let solution: super::super::Solution =
                 serde_json::from_value(event["solution"].clone()).unwrap();
             admit_discovery(&mut graph, &question, &solution).unwrap();
@@ -258,7 +264,7 @@ fn large_checked_prerequisites_resolve_the_observed_missing_root() {
         .expect("full checked conjunction prerequisites must compose");
     admit_discovery(
         &mut graph,
-        &naome_authoring::CompiledQuestion::compile(root).unwrap(),
+        &naome_checker::question::ResearchQuestion::from_hex(root).unwrap(),
         &solution,
     )
     .unwrap();

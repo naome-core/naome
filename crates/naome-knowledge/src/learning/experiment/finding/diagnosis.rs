@@ -6,7 +6,7 @@ fn compacted_replay_requires_the_original_checked_proof_and_binding() {
     let example = crate::learning::tests::own_example();
     let mut state = State::fresh();
     state.accept(example.clone()).unwrap();
-    let q = CompiledQuestion::compile(&example.question).unwrap();
+    let q = ResearchQuestion::from_hex(&example.question).unwrap();
     let (_, _, proof) = search::core::checked(q.proved_target(), &example.tree).unwrap();
     let steps = proof.certificate.steps().len()
         + proof.lemmas.iter().map(|p| p.steps().len()).sum::<usize>();
@@ -49,7 +49,7 @@ fn replay(
     let mut state = common.clone();
     let mut graph = crate::Graph::default();
     for (source, solution, _) in initial {
-        let q = CompiledQuestion::compile(source).unwrap();
+        let q = ResearchQuestion::from_hex(source).unwrap();
         let (root, batch) = graph
             .prepare_generated(&solution.source, &solution.helpers, &q)
             .unwrap();
@@ -137,13 +137,13 @@ fn replay(
         }
         assert_eq!(accepted, expected["accepted_training"].as_bool().unwrap());
         state.observe_result(
-            q.source(),
+            &q.to_hex(),
             generated.solution.is_some(),
             &generated.diagnostic,
             recorded,
             SEARCH as u32,
         );
-        rows.push(json!({"attempt":index,"question":q.source(),"resolution":crate::hex(q.resolution_id()),"recorded_generation_micros":recorded,"actual_cost":generated.cost,"solution":generated.solution,"accepted_training":accepted}));
+        rows.push(json!({"attempt":index,"question":q.to_hex(),"resolution":crate::hex(q.resolution_id()),"recorded_generation_micros":recorded,"actual_cost":generated.cost,"solution":generated.solution,"accepted_training":accepted}));
         write(&path.join("trace.json"), &rows);
     }
     assert_eq!(

@@ -80,7 +80,7 @@ enum Frame {
     Program {
         id: u64,
         unit: u32,
-        records: Vec<naome_proof::program::Command>,
+        records: String,
     },
     Progress {
         id: u64,
@@ -489,7 +489,14 @@ async fn run_owned(
                         && outstanding == Some(unit)
                         && matches!(record.input, Input::Solve { .. }) =>
                 {
-                    super::program::validate_group(&records)?;
+                    if records.len() > naome_proof::program::CHUNK_BYTES * 2 {
+                        return Err("provider program group byte capacity".into());
+                    }
+                    let bytes = crate::unhex(&records)?;
+                    if crate::hex(&bytes) != records {
+                        return Err("noncanonical provider program encoding".into());
+                    }
+                    let records = naome_proof::program::decode_records(&bytes)?;
                     let (reply, receipt) = oneshot::channel();
                     events
                         .send(Event::Program {
@@ -1201,7 +1208,7 @@ impl super::provider::Supervisor for WorkerControl {
         unit: u32,
         records: Vec<naome_proof::program::Command>,
     ) -> Result<(), String> {
-        super::program::validate_group(&records)?;
+        let records = crate::hex(&naome_proof::program::encode_records(&records)?);
         emit(&Frame::Program {
             id: self.id,
             unit,

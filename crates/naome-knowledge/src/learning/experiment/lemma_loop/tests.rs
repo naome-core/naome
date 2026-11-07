@@ -9,7 +9,7 @@ fn observed_filtered_leaf_completes_its_original_parent_within_the_total_budget(
         "../../../../tests/fixtures/recursive-lemma-loop.json"
     ))
     .unwrap();
-    let question = CompiledQuestion::compile(&input.cases[22].source).unwrap();
+    let question = ResearchQuestion::from_hex(&input.cases[22].source).unwrap();
     assert_eq!(
         crate::hex(question.resolution_id()),
         "9a623c5e1c3837f0900970df0ebb8206b2b9428f31d83fd2a8be977385b40e11"
@@ -29,7 +29,7 @@ fn observed_filtered_leaf_completes_its_original_parent_within_the_total_budget(
 #[test]
 #[ignore = "explicit question-only preflight; never executes a model"]
 fn preflight_fresh_composition_questions() {
-    fn families(q: &CompiledQuestion, depth: usize, out: &mut BTreeSet<String>) {
+    fn families(q: &ResearchQuestion, depth: usize, out: &mut BTreeSet<String>) {
         out.insert(curriculum::owned::family(q.proved_target()));
         if depth >= 2 {
             return;
@@ -42,7 +42,7 @@ fn preflight_fresh_composition_questions() {
             && let Some(right) = negative_right.negated()
         {
             for part in [left.to_owned(), right.to_owned()] {
-                let q = CompiledQuestion::from_formula(part).unwrap();
+                let q = ResearchQuestion::from_formula(part).unwrap();
                 families(&q, depth + 1, out);
             }
         }
@@ -61,7 +61,7 @@ fn preflight_fresh_composition_questions() {
     let mut previous = BTreeSet::new();
     for case in old.cases {
         families(
-            &CompiledQuestion::compile(&case.source).unwrap(),
+            &ResearchQuestion::from_hex(&case.source).unwrap(),
             0,
             &mut previous,
         );
@@ -72,15 +72,15 @@ fn preflight_fresh_composition_questions() {
     let mut ids = BTreeSet::new();
     let mut rows = Vec::new();
     for case in input.cases {
-        let question = CompiledQuestion::compile(&case.source).unwrap();
+        let question = ResearchQuestion::from_hex(&case.source).unwrap();
         assert!(question.formula().free_variables().is_empty());
         assert!(ids.insert(*question.resolution_id()));
         let decision = owner.assess(&graph, &question);
         let mut actual = BTreeSet::new();
         families(&question, 0, &mut actual);
         let overlap = actual.intersection(&previous).cloned().collect::<Vec<_>>();
-        rows.push(json!({"question":question.source(),"id":crate::hex(question.resolution_id()),"group":case.family,
-            "shape":case.shape,"eligible":State::eligible(question.source()),"initial_formal_passed":decision.passed(),
+        rows.push(json!({"question":question.to_hex(),"id":crate::hex(question.resolution_id()),"group":case.family,
+            "shape":case.shape,"eligible":State::eligible(&question.to_hex()),"initial_formal_passed":decision.passed(),
             "has_answer":decision.has_answer(),"rule":decision.rule,"reason":format!("{:?}",decision.reason),
             "structural_families":actual,"development_family_overlap":overlap}));
     }
@@ -100,7 +100,7 @@ fn observed_lost_recursive_goal_closes_within_the_original_total_budget() {
         "../../../../tests/fixtures/recursive-lemma-loop.json"
     ))
     .unwrap();
-    let question = CompiledQuestion::compile(&input.cases[2].source).unwrap();
+    let question = ResearchQuestion::from_hex(&input.cases[2].source).unwrap();
     assert_eq!(
         crate::hex(question.resolution_id()),
         "d8b3b1334367db8bafb03bb101a86ef990cfcfe09d8772889f6bdbfa30692a7d"
@@ -132,7 +132,7 @@ fn observed_nested_goal_executes_its_failed_helpers_children() {
         "../../../../tests/fixtures/lemma-loop-questions.json"
     ))
     .unwrap();
-    let q = CompiledQuestion::compile(old.last().unwrap()).unwrap();
+    let q = ResearchQuestion::from_hex(old.last().unwrap()).unwrap();
     let (common, io) = inputs::checkpoint(41, &path.join("common-model"));
     let mut results = BTreeMap::new();
     let mut removal = BTreeMap::new();
@@ -160,7 +160,7 @@ fn observed_nested_goal_executes_its_failed_helpers_children() {
     let descendants = events.iter().filter(|e| e["role"] == "descendant").count();
     write(
         &path.join("summary.json"),
-        &json!({"question":q.source(),"arms":results,"helper_removal":removal,"descendant_attempts":descendants,"scope":"Previously observed development goal, excluded from the fresh 24-question comparison"}),
+        &json!({"question":q.to_hex(),"arms":results,"helper_removal":removal,"descendant_attempts":descendants,"scope":"Previously observed development goal, excluded from the fresh 24-question comparison"}),
     );
     assert!(
         descendants > 0,

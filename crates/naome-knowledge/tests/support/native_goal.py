@@ -11,20 +11,18 @@ from native_learning import snapshot
 from types import SimpleNamespace
 
 
-def inductive(variable):
-    # This is part of the question's primitive meaning, not a proof, a supplied
-    # definition artifact, or a witness. Production search has no Nat template.
-    return (
-        f"and(ex(e,and(all(z,not(mem(z,e))),mem(e,{variable}))),"
-        f"all(n,imp(mem(n,{variable}),ex(s,and("
-        "all(z,iff(mem(z,s),or(mem(z,n),eq(z,n)))),"
-        f"mem(s,{variable}))))))"
-    )
-
-
-def question(set_name="w", element="x", bound="i"):
-    return (f"goal=ex({set_name},all({element},iff(mem({element},{set_name}),"
-            f"all({bound},imp({inductive(bound)},mem({element},{bound}))))))")
+# Primitive encoding of the least inductive set membership characterization.
+GOAL = (
+    "02040204020303010100000000010000000104030203020402020304020101000000000100000001020101000000"
+    "00010000000102040301010000000001000000010204020203040203030101000000000100000001030201010000"
+    "00000100000002000100000000010000000202030302010100000000010000000200010000000001000000020101"
+    "00000000010000000102010100000000010000000201010000000101000000000203040302030204020203040201"
+    "01000000000100000001020101000000000100000001020403010100000000010000000102040202030402030301"
+    "01000000000100000001030201010000000001000000020001000000000100000002020303020101000000000100"
+    "00000200010000000001000000020101000000000100000001020101000000000100000002010100000001010000"
+    "00000101000000000100000001"
+)
+UNPROVED = "02040204020303010100000000010000000102010100000000010000000002030201010000000001000000000101000000000100000001"
 
 
 def records(node):
@@ -54,7 +52,7 @@ def run(trial):
         node.stop()
     for node, other in ((a, b), (b, a)):
         node.config["peers"] = [{"id": other.peer, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}]
-    goal = question()
+    goal = GOAL
     (trial.output / "goal.nao").write_text(goal + "\n")
     a.config["formal_goal"] = goal
     a.config["runtime"]["question_interval_ms"] = 1000
@@ -123,15 +121,15 @@ def run(trial):
         assert status["artifact_verification"] == "checked"
         assert node.ids() == all_ids
     a.stop()
-    a.config["formal_goal"] = question("omega", "value", "bound")
+    a.config["formal_goal"] = GOAL
     a.write_config()
     a.start()
     assert a.ids() == all_ids
     a.stop()
-    a.config["formal_goal"] = "goal=ex("
+    a.config["formal_goal"] = "04"
     a.write_config()
     trial.call(a, "start", success=False)
-    invalid = "goal=ex(w,all(x,iff(mem(x,w),not(mem(x,x)))))"
+    invalid = UNPROVED
     a.config["formal_goal"] = invalid
     a.write_config()
     a.start()
@@ -151,7 +149,7 @@ def run(trial):
     for node in trial.nodes:
         node.stop()
     trial.summary["scenarios"]["restart"] = {"exact_closure_rechecked": True,
-                                               "alpha_renamed_goal": question("omega", "value", "bound")}
+                                               "canonical_goal": GOAL}
     trial.summary["result"] = "pass"
 
 

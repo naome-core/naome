@@ -3,11 +3,11 @@ use super::*;
 pub(in crate::frontier) fn questions(
     cursor: u64,
     seeds: &VecDeque<Formula>,
-    goals: &VecDeque<CompiledQuestion>,
+    goals: &VecDeque<ResearchQuestion>,
     maximum: usize,
     bytes: usize,
-    eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
-) -> Vec<CompiledQuestion> {
+    eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
+) -> Vec<ResearchQuestion> {
     let mut groups = Vec::new();
     for goal in goals
         .iter()
@@ -42,7 +42,7 @@ pub(in crate::frontier) fn questions(
         let index = (cursor as usize + offset) % relations.len();
         let seed = &relations[index];
         if let Some(formula) = property(seed, cursor / relations.len() as u64 + offset as u64)
-            && let Ok(question) = CompiledQuestion::from_formula(formula)
+            && let Ok(question) = ResearchQuestion::from_formula(formula)
         {
             if index % original < 2 {
                 free_questions.push_back(question);

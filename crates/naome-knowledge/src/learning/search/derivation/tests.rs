@@ -1,5 +1,5 @@
 use super::*;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 
 #[test]
 fn oversized_optional_fragments_preserve_checked_parent_training() {
@@ -21,7 +21,7 @@ fn oversized_optional_fragments_preserve_checked_parent_training() {
     let mut omitted_admitted = 0;
     let mut omitted_observed = 0;
     for record in fixture.records {
-        let q = CompiledQuestion::compile(&record.question).unwrap();
+        let q = ResearchQuestion::from_hex(&record.question).unwrap();
         let target = if record.solution.refuted {
             q.refuted_target()
         } else {
@@ -123,8 +123,8 @@ fn source_id(target: &Formula, tree: &Tree) -> String {
 
 #[test]
 fn contextual_fragments_recheck_all_premises_scope_and_original_branch() {
-    let q = CompiledQuestion::compile(
-        "goal=all(a,all(b,all(c,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),mem(c,c)))))))",
+    let q = ResearchQuestion::from_hex(
+        "0404040303010100000002010000000201010000000101000000010303010100000001010000000101010000000001000000000301010000000201000000020101000000000100000000",
     ).unwrap();
     let target = q.proved_target();
     let state = prepare(target).unwrap().state;
@@ -187,8 +187,8 @@ fn contextual_fragments_recheck_all_premises_scope_and_original_branch() {
 
 #[test]
 fn symbolic_preferences_require_two_checked_completions_of_the_same_state() {
-    let q = CompiledQuestion::compile(
-        "goal=all(a,all(b,all(c,imp(imp(mem(a,a),mem(c,c)),imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),mem(c,c))))))))",
+    let q = ResearchQuestion::from_hex(
+        "0404040303010100000002010000000201010000000001000000000303010100000002010000000201010000000101000000010303010100000001010000000101010000000001000000000301010000000201000000020101000000000100000000",
     ).unwrap();
     let target = q.proved_target();
     let state = prepare(target).unwrap().state;
@@ -276,8 +276,10 @@ fn witness_branch_sequences_keep_the_actual_fresh_variable_scope() {
             Ok(vec![0.; d.candidates.len()])
         }
     }
-    let q = CompiledQuestion::compile("goal=all(x,imp(ex(y,mem(y,x)),ex(y,or(mem(y,x),eq(y,x)))))")
-        .unwrap();
+    let q = ResearchQuestion::from_hex(
+        "04030204020101000000000100000001020402030201010000000001000000010001000000000100000001",
+    )
+    .unwrap();
     let tree = solve(q.proved_target(), &mut Ordered, 128)
         .unwrap()
         .tree
@@ -327,8 +329,8 @@ fn hindsight_does_not_invent_observation_of_a_rebased_checked_path() {
                 .collect())
         }
     }
-    let q = CompiledQuestion::compile(
-        "goal=all(x,all(y,imp(not(not(mem(x,x))),imp(not(not(mem(y,x))),imp(and(mem(x,x),mem(y,y)),mem(y,y))))))",
+    let q = ResearchQuestion::from_hex(
+        "04040302020101000000010100000001030202010100000000010000000103020301010000000101000000010201010000000001000000000101000000000100000000",
     ).unwrap();
     let found = solve(q.proved_target(), &mut Detour, 128).unwrap();
     let tree = found.tree.unwrap();
@@ -366,10 +368,10 @@ fn unresolved_observation() -> super::super::super::experience::Observation {
                 .collect())
         }
     }
-    let q = CompiledQuestion::compile(
-        "goal=all(a,all(b,all(c,all(d,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(d,d),mem(a,a)),imp(mem(d,d),imp(not(not(mem(b,b))),mem(c,c)))))))))",
+    let q = ResearchQuestion::from_hex(
+        "0404040403030101000000030100000003010100000002010000000203030101000000000100000000010100000003010000000303010100000000010000000003020201010000000201000000020101000000010100000001",
     ).unwrap();
-    assert!(crate::learning::State::eligible(q.source()));
+    assert!(crate::learning::State::eligible(&q.to_hex()));
     let started = Instant::now();
     let found = solve(q.proved_target(), &mut BranchFirst, 128).unwrap();
     assert!(
@@ -383,7 +385,7 @@ fn unresolved_observation() -> super::super::super::experience::Observation {
         // Explicit symbolic test policy: no fabricated neural execution.
         checkpoint: digest(&"no neural model used"),
         policy: digest(&"branch-first symbolic fixture"),
-        request_binding: digest(&q.source()),
+        request_binding: digest(&q.to_hex()),
         native_context: digest(&Vec::<String>::new()),
         origin: Origin::Local,
         terminal: found.terminal,
@@ -403,7 +405,7 @@ fn unresolved_observation() -> super::super::super::experience::Observation {
     };
     summary.receipt = digest(&summary);
     let observation = experience::Observation {
-        question: q.source().into(),
+        question: q.to_hex(),
         summary,
         frontier: found.frontier,
         executions,
@@ -424,7 +426,7 @@ fn an_unresolved_search_contributes_only_independently_checked_conditional_branc
         !fragments.is_empty(),
         "closed observed branch must have its own native proof"
     );
-    let question = CompiledQuestion::compile(&observation.question).unwrap();
+    let question = ResearchQuestion::from_hex(&observation.question).unwrap();
     for fragment in fragments {
         fragment.validate_observation(&observation).unwrap();
         let proof = fragment.verify().unwrap();

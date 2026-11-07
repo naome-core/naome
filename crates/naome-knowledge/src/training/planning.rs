@@ -19,7 +19,7 @@ pub(crate) fn continuation(source: Formula) -> Option<Formula> {
 
 pub(crate) fn continuation_parent(formula: &Formula) -> Option<Formula> {
     let mut open = formula.clone();
-    for variable in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+    for variable in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
         let Some(body) = open.open_outer_universal(FreeVariable::new(variable as u32)) else {
             break;
         };
@@ -73,7 +73,7 @@ pub fn plan(graph: &Graph, request: &Request, candidates: &[String]) -> Result<P
     let mut seen = BTreeSet::new();
     let mut eligible = Vec::new();
     for source in candidates {
-        let target = CompiledQuestion::compile(source)?;
+        let target = ResearchQuestion::from_hex(source)?;
         if partition(&target) != Partition::Training
             || !seen.insert(*target.resolution_id())
             || !formal.generation_decision(graph, &target).passed()
@@ -107,7 +107,7 @@ pub fn plan(graph: &Graph, request: &Request, candidates: &[String]) -> Result<P
         chosen.push(features);
         questions.push(PlannedQuestion {
             structural_group: group(&target),
-            question: target.source().into(),
+            question: target.to_hex(),
             priority,
         });
     }

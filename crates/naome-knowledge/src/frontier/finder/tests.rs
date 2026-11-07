@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn frozen_model_keeps_all_gradient_ports_closed_and_rejects_invalid_labels_atomically() {
-    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let question = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     let descriptor = analysis::Descriptor::of(&question);
     let mut model = Model::seeded(91);
     model.freeze();
@@ -35,28 +35,13 @@ fn frozen_model_keeps_all_gradient_ports_closed_and_rejects_invalid_labels_atomi
     assert_ne!(live, initial);
     assert_ne!(Model::seeded(91), Model::seeded(97));
 }
-fn q(source: &str) -> CompiledQuestion {
-    CompiledQuestion::compile(source).unwrap()
+fn q(source: &str) -> ResearchQuestion {
+    ResearchQuestion::from_hex(source).unwrap()
 }
 
 #[test]
 fn relation_rotation_uses_the_whole_retained_context() {
-    let seeds = [
-        "mem(a,b)",
-        "not(mem(a,b))",
-        "imp(mem(a,b),eq(a,b))",
-        "and(mem(a,b),mem(b,a))",
-        "or(mem(a,b),mem(b,a))",
-        "imp(mem(a,b),mem(b,a))",
-        "imp(eq(a,b),mem(a,b))",
-        "iff(mem(a,b),mem(b,a))",
-    ]
-    .into_iter()
-    .map(|s| {
-        let question = q(&format!("goal=all(a,all(b,{s}))"));
-        open(&open(question.formula()).unwrap()).unwrap()
-    })
-    .collect::<VecDeque<_>>();
+    let seeds = VecDeque::from(crate::test_inputs::relation_examples());
     let first = seeds.iter().take(4).cloned().collect();
     let collect = |seeds: &VecDeque<Formula>| {
         (0..96)
@@ -77,9 +62,9 @@ fn relation_rotation_uses_the_whole_retained_context() {
 
 #[test]
 fn predictor_learns_variable_wiring_cost_without_using_variable_names() {
-    let a = q("goal=all(a,all(b,all(c,imp(mem(a,b),imp(mem(b,c),mem(a,c))))))");
-    let b = q("goal=all(a,all(b,all(c,imp(mem(a,b),imp(mem(b,c),mem(c,a))))))");
-    let renamed = q("goal=all(x,all(y,all(z,imp(mem(x,y),imp(mem(y,z),mem(x,z))))))");
+    let a = q("0404040301010000000201000000010301010000000101000000000101000000020100000000");
+    let b = q("0404040301010000000201000000010301010000000101000000000101000000000100000002");
+    let renamed = q("0404040301010000000201000000010301010000000101000000000101000000020100000000");
     assert_eq!(
         super::super::Features::of(&a),
         super::super::Features::of(&b)
@@ -132,20 +117,20 @@ fn formal_rejections_refill_the_page_within_the_fixed_check_budget() {
 #[test]
 fn research_screen_rejects_boolean_padding_without_rejecting_relation_properties() {
     for source in [
-        "goal=all(x,eq(x,x))",
-        "goal=all(x,not(eq(x,x)))",
-        "goal=all(x,imp(mem(x,x),mem(x,x)))",
-        "goal=all(x,imp(and(mem(x,x),not(mem(x,x))),eq(x,x)))",
-        "goal=all(x,iff(mem(x,x),mem(x,x)))",
-        "goal=all(x,all(y,imp(and(eq(x,y),eq(y,x)),eq(x,y))))",
+        "040001000000000100000000",
+        "04020001000000000100000000",
+        "040301010000000001000000000101000000000100000000",
+        "040302030101000000000100000000020201010000000001000000000001000000000100000000",
+        "0402030301010000000001000000000101000000000100000000020301010000000001000000000101000000000100000000",
+        "040403020300010000000101000000000200010000000001000000010001000000010100000000",
     ] {
         assert!(!meaningful(&q(source)), "{source}");
     }
-    let symmetry = q("goal=all(x,all(y,imp(eq(x,y),eq(y,x))))");
+    let symmetry = q("04040300010000000101000000000001000000000100000001");
     assert!(meaningful(&symmetry));
     assert_eq!(
         key(&symmetry),
-        key(&q("goal=all(a,all(b,not(not(imp(eq(a,b),eq(b,a))))))"))
+        key(&q("040402020300010000000101000000000001000000000100000001"))
     );
 }
 #[test]
@@ -162,7 +147,7 @@ fn ordinary_exploration_is_closed_bounded_and_not_a_tautology_catalog() {
         );
         assert!(
             page.iter()
-                .map(|q| q.source().len() * 8 + 256)
+                .map(|q| q.to_hex().len() * 8 + 256)
                 .sum::<usize>()
                 <= 64 * 1024
         );
@@ -170,11 +155,13 @@ fn ordinary_exploration_is_closed_bounded_and_not_a_tautology_catalog() {
         for question in page {
             assert!(question.formula().is_closed());
             assert!(meaningful(&question));
-            assert!(crate::learning::State::eligible(question.source()));
+            assert!(crate::learning::State::eligible(&question.to_hex()));
             assert!(seen.insert(key(&question)));
             unique.insert(*question.resolution_id());
             assert_eq!(
-                CompiledQuestion::compile(question.source()).unwrap().core(),
+                ResearchQuestion::from_hex(&question.to_hex())
+                    .unwrap()
+                    .core(),
                 question.core()
             );
         }
@@ -188,8 +175,10 @@ fn ordinary_exploration_is_closed_bounded_and_not_a_tautology_catalog() {
 }
 #[test]
 fn helpers_are_proper_goal_parts_with_capture_free_parameter_roles() {
-    let goal = q("goal=all(a,imp(all(x,imp(mem(x,a),mem(a,x))),all(y,imp(mem(a,y),mem(y,a)))))");
-    let expected = q("goal=all(a,all(x,imp(mem(x,a),mem(a,x))))");
+    let goal = q(
+        "0403040301010000000001000000010101000000010100000000040301010000000101000000000101000000000100000001",
+    );
+    let expected = q("04040301010000000001000000010101000000010100000000");
     let candidates = helpers(&goal, 0);
     assert!(candidates.iter().any(|q| q.core() == expected.core()));
     assert!(
@@ -201,13 +190,15 @@ fn helpers_are_proper_goal_parts_with_capture_free_parameter_roles() {
 }
 #[test]
 fn elementary_wrappers_cannot_claim_goal_support() {
-    let lemma = q("goal=all(x,all(y,imp(eq(x,y),eq(y,x))))");
-    let wrapper =
-        q("goal=all(a,all(b,imp(imp(all(x,all(y,imp(eq(x,y),eq(y,x)))),mem(a,b)),mem(a,b))))");
+    let lemma = q("04040300010000000101000000000001000000000100000001");
+    let wrapper = q(
+        "040403030404030001000000010100000000000100000000010000000101010000000101000000000101000000010100000000",
+    );
     assert!(!independent_goal(&lemma, &wrapper));
     assert!(!independent_goal(&lemma, &lemma));
-    let substitution = q("goal=all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))");
-    let instance = q("goal=all(a,all(b,imp(eq(a,b),imp(mem(a,a),mem(b,a)))))");
+    let substitution =
+        q("0404040300010000000201000000010301010000000201000000000101000000010100000000");
+    let instance = q("04040300010000000101000000000301010000000101000000010101000000000100000001");
     assert!(independent_goal(&substitution, &instance));
 }
 #[test]

@@ -2,35 +2,16 @@ use super::*;
 use crate::Graph;
 use naome_checker::{CHECKER_MAX_FORMULA_WORK_BYTES as WORK_BYTES, ContextView, DiskCopyBudget};
 use naome_proof::{ArtifactId, DerivationId, StatementId};
-use std::fmt::Write;
 type Expected = (ArtifactId, StatementId, DerivationId, Vec<u8>);
 fn fixture(index: usize) -> (String, Vec<u8>, Vec<u8>) {
     assert!((8100..130712).contains(&index));
-    let mut source = String::from("let:\n    large0 = not(not(not(all(x,eq(x,x)))))\n");
     let mut formula = vec![2, 2, 2, 4, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0];
-    for level in 1..10 {
-        writeln!(
-            source,
-            "    large{level} = imp(large{},large{})",
-            level - 1,
-            level - 1
-        )
-        .unwrap();
+    for _ in 1..10 {
         formula = [vec![3], formula.clone(), formula].concat();
     }
-    let mut last = "large9".to_owned();
-    for (position, bit) in format!("{index:017b}").bytes().enumerate() {
-        let name = format!("index{position}");
-        let body = if bit == b'1' {
-            format!("not({last})")
-        } else {
-            format!("all(z,{last})")
-        };
-        writeln!(source, "    {name} = {body}").unwrap();
+    for bit in format!("{index:017b}").bytes() {
         formula.insert(0, if bit == b'1' { 2 } else { 4 });
-        last = name;
     }
-    write!(source, "goal = imp({last},imp({last},{last}))\nproof:\n    p0 = simp({last},{last})\n    return p0\n").unwrap();
     let length = u32::try_from(formula.len()).unwrap().to_be_bytes().to_vec();
     let proof = [
         vec![0, 0, 0, 1, 0],
@@ -42,7 +23,7 @@ fn fixture(index: usize) -> (String, Vec<u8>, Vec<u8>) {
     .concat();
     let goal = [vec![3], formula.clone(), vec![3], formula.clone(), formula].concat();
     assert_eq!((proof.len(), goal.len()), (16429, 24626));
-    (source, proof, goal)
+    (format!("00{}", crate::hex(&proof)), proof, goal)
 }
 fn admit(g: &mut Graph, index: usize) -> Expected {
     let (source, proof, goal) = fixture(index);

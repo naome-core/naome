@@ -43,7 +43,7 @@ impl Design {
                 if case.track >= 3 || !(1..=6).contains(&case.recipe) || case.variant > 1 {
                     return Err("capability cell or variant differs".into());
                 }
-                let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+                let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
                 if case.family != curriculum::owned::family(q.proved_target())
                     || case.resolution != crate::hex(q.resolution_id())
                     || case.construction != lineage::normalized_family(&q)

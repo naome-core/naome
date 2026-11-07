@@ -149,7 +149,7 @@ fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
 
 #[test]
 fn source_binding_preserves_original_question_orientation_and_strict_schema() {
-    let source = "goal = not(all(x,mem(x,x)))";
+    let source = "02040101000000000100000000";
     let input = Input::Solve {
         question: source.into(),
     };
@@ -177,14 +177,14 @@ fn ordinary_product_rejects_developer_workloads_before_spawning() {
 
 #[test]
 fn selected_finding_question_binds_the_returned_question() {
-    let supplied = "goal=all(x,eq(x,x))".to_owned();
+    let supplied = "040001000000000100000000".to_owned();
     let input = Input::Find {
         cursor: 1,
         question: supplied.clone(),
     };
     assert!(Output::Question(supplied).validate(&input).is_ok());
     assert!(
-        Output::Question("goal=all(x,eq(x,x)) ".into())
+        Output::Question("040101000000000100000000".into())
             .validate(&input)
             .is_err()
     );

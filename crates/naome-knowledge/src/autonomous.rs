@@ -1,7 +1,7 @@
 //! Independent finite role coordination through untrusted durable job results.
 use crate::{Graph, jobs, network::emit, question};
-use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
+use naome_checker::question::ResearchQuestion;
 use naome_proof::ArtifactId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -61,22 +61,19 @@ struct Finding {
     ticket: jobs::Ticket,
 }
 struct Admission {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     job: u64,
     reply: oneshot::Receiver<question::QuestionAdmission>,
 }
 struct Solving {
     completion: Option<jobs::Completion>,
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     ticket: jobs::Ticket,
     seen: question::Revision,
 }
 mod program;
 enum Candidate {
-    Certificate {
-        source: String,
-        helpers: Vec<String>,
-    },
+    Certificate { proof: String, helpers: Vec<String> },
     Program(Box<program::Generated>),
 }
 impl Candidate {
@@ -84,18 +81,18 @@ impl Candidate {
         &mut self,
         graph: &Graph,
         client: &jobs::Client,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<Option<(ArtifactId, crate::graph::CheckedBatch)>, crate::Error> {
         match self {
-            Self::Certificate { source, helpers } => {
-                graph.prepare_generated(source, helpers, question).map(Some)
+            Self::Certificate { proof, helpers } => {
+                graph.prepare_generated(proof, helpers, question).map(Some)
             }
             Self::Program(program) => program.prepare(graph, client, question),
         }
     }
 }
 struct Publication {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     job: u64,
     candidate: Candidate,
     batch: Option<(ArtifactId, crate::graph::CheckedBatch)>,
@@ -110,7 +107,7 @@ struct Publication {
 }
 
 struct EvidencePublication {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     job: u64,
     root: ArtifactId,
 }
@@ -124,10 +121,10 @@ pub(crate) struct Autonomous {
     intervals: Intervals,
     client: jobs::Client,
     cursor: u64,
-    formal_goal: Option<CompiledQuestion>,
+    formal_goal: Option<ResearchQuestion>,
     next_question: Instant,
     next_proof: Instant,
-    unanswered: VecDeque<CompiledQuestion>,
+    unanswered: VecDeque<ResearchQuestion>,
     recovered_finding: VecDeque<jobs::Record>,
     recovered_other: VecDeque<jobs::Record>,
     // The service skips its bounded initial resident page during archive scans.
@@ -153,7 +150,7 @@ impl Autonomous {
         intervals: Intervals,
         client: jobs::Client,
         recovery: jobs::Recovery,
-        unanswered: Vec<CompiledQuestion>,
+        unanswered: Vec<ResearchQuestion>,
     ) -> Self {
         let now = Instant::now();
         let archive_end = recovery.archive_end;
@@ -219,7 +216,7 @@ impl Autonomous {
         self.error.as_deref()
     }
     /// A canonical question fixed by the stopped node's start configuration.
-    pub(crate) fn formal_goal(&mut self, source: Option<CompiledQuestion>) {
+    pub(crate) fn formal_goal(&mut self, source: Option<ResearchQuestion>) {
         self.formal_goal = source;
     }
 
@@ -279,7 +276,7 @@ impl Autonomous {
         self.receipt(jobs::Receipt::Discard(record.input, record.binding))
     }
 
-    fn retain(&mut self, question: CompiledQuestion) {
+    fn retain(&mut self, question: ResearchQuestion) {
         if self.unanswered.len() < crate::resources::active_limits().question_page
             && !self.unanswered.iter().any(|q| q == &question)
             && !self.solving.contains_key(question.resolution_id())
@@ -291,16 +288,17 @@ impl Autonomous {
 
     fn retry<F, Fut>(
         &mut self,
-        question: CompiledQuestion,
+        question: ResearchQuestion,
         questions: &mut question::LocalQuestions<F>,
+        graph: &Graph,
     ) where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         // Rotate durable unresolved work before retrying a completed attempt.
         // Its original admission remains in the backlog even when the parsed
         // working page has room for only one question.
-        self.retain(questions.next_backlog().unwrap_or(question));
+        self.retain(questions.next_backlog(graph).unwrap_or(question));
     }
 
     fn defer_recovery(&mut self, record: jobs::Record, seen: question::Revision, now: Instant) {
@@ -322,7 +320,7 @@ impl Autonomous {
         questions: &mut question::LocalQuestions<F>,
     ) -> Vec<ArtifactId>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let mut accepted = Vec::new();
@@ -425,7 +423,24 @@ impl Autonomous {
                     if !self.retire(record) {
                         return accepted;
                     }
-                } else if let Ok(question) = CompiledQuestion::compile(source) {
+                } else if let Ok(question) =
+                    ResearchQuestion::from_hex_with_context(source, graph.checked_context())
+                {
+                    let same_polarity = |candidate: &&ResearchQuestion| {
+                        candidate.resolution_id() == question.resolution_id()
+                            && candidate.negation_parity() == question.negation_parity()
+                    };
+                    let question = self
+                        .formal_goal
+                        .as_ref()
+                        .filter(same_polarity)
+                        .cloned()
+                        .or_else(|| {
+                            questions
+                                .owned_question(graph, &question)
+                                .filter(|candidate| same_polarity(&candidate))
+                        })
+                        .unwrap_or(question);
                     if self.solving.contains_key(question.resolution_id())
                         || self
                             .publications
@@ -523,7 +538,10 @@ impl Autonomous {
             match finding.ticket.try_recv() {
                 Ok(completion) => match completion.result.clone() {
                     Ok(jobs::Output::Question(source)) => {
-                        match CompiledQuestion::compile(&source) {
+                        match ResearchQuestion::from_hex_with_context(
+                            &source,
+                            graph.checked_context(),
+                        ) {
                             Ok(question) => {
                                 emit(
                                     json!({"event":"question_generated","resolution_id":crate::hex(question.resolution_id()),"job":completion.id}),
@@ -645,13 +663,13 @@ impl Autonomous {
                     }
                 }
                 Ok(completion) => match completion.result.clone().map(jobs::Output::candidate) {
-                    Ok(jobs::Output::Proof { source, helpers }) => {
-                        match graph.prepare_generated(&source, &helpers, &solving.question) {
+                    Ok(jobs::Output::Proof { proof, helpers }) => {
+                        match graph.prepare_generated(&proof, &helpers, &solving.question) {
                             Ok((root, batch)) => {
                                 self.publications.push_back(Publication {
                                     question: solving.question,
                                     job: completion.id,
-                                    candidate: Candidate::Certificate { source, helpers },
+                                    candidate: Candidate::Certificate { proof, helpers },
                                     batch: Some((root, batch)),
                                     announced: false,
                                     assessment: None,
@@ -683,7 +701,7 @@ impl Autonomous {
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
-                                self.retry(solving.question, questions);
+                                self.retry(solving.question, questions, graph);
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
@@ -713,13 +731,13 @@ impl Autonomous {
                         });
                     }
                     Ok(jobs::Output::NoCandidate) => {
-                        self.retry(solving.question, questions);
+                        self.retry(solving.question, questions, graph);
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
                     }
                     _ => {
-                        self.retry(solving.question, questions);
+                        self.retry(solving.question, questions, graph);
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
@@ -871,7 +889,7 @@ impl Autonomous {
                 match reply.try_recv() {
                     Ok(assessment) => {
                         pending.assessment = questions
-                            .exchange_eligible(&pending.question, &assessment)
+                            .exchange_eligible(graph, &pending.question, &assessment)
                             .then_some(assessment);
                     }
                     Err(oneshot::error::TryRecvError::Empty) => {
@@ -891,7 +909,7 @@ impl Autonomous {
                 }
             }
             if let Some(assessment) = pending.assessment.take()
-                && questions.exchange_eligible(&pending.question, &assessment)
+                && questions.exchange_eligible(graph, &pending.question, &assessment)
             {
                 let current = pending
                     .batch
@@ -1027,7 +1045,7 @@ impl Autonomous {
         // Refill one fair FIFO item per turn. The complete backlog is durable;
         // the parsed queue is only a bounded working page, never a lifetime cap.
         if self.unanswered.len() < crate::resources::active_limits().question_page
-            && let Some(question) = questions.next_backlog()
+            && let Some(question) = questions.next_backlog(graph)
             && !self.solving.contains_key(question.resolution_id())
             && !self
                 .publications
@@ -1038,8 +1056,10 @@ impl Autonomous {
         }
 
         let planned_work = if let Some(frontier) = &mut self.frontier {
-            let mut available = |q: &CompiledQuestion| {
-                let q = questions.owned_question(q).unwrap_or_else(|| q.clone());
+            let mut available = |q: &ResearchQuestion| {
+                let q = questions
+                    .owned_question(graph, q)
+                    .unwrap_or_else(|| q.clone());
                 questions.generation_decision(graph, &q).passed()
                     || questions.assess(graph, &q).passed()
             };
@@ -1075,7 +1095,7 @@ impl Autonomous {
             let pending = work
                 .pending
                 .into_iter()
-                .map(|q| questions.owned_question(&q).unwrap_or(q))
+                .map(|q| questions.owned_question(graph, &q).unwrap_or(q))
                 .collect::<Vec<_>>();
             if !planned.is_empty() {
                 loop_candidates = Some(if pending.is_empty() {
@@ -1103,7 +1123,7 @@ impl Autonomous {
             }
             if !waiting {
                 let original = questions
-                    .owned_question(&goal)
+                    .owned_question(graph, &goal)
                     .unwrap_or_else(|| goal.clone());
                 if questions.generation_decision(graph, &original).passed() {
                     self.retain(original);
@@ -1156,10 +1176,18 @@ impl Autonomous {
                             return accepted;
                         }
                     };
+                    // Solver workers receive the checked primitive target. Keep the
+                    // original question here for the graph's checked publication metadata.
+                    let solving = if question.dependencies().is_empty() {
+                        question.to_hex()
+                    } else {
+                        match ResearchQuestion::from_formula(question.formula().clone()) {
+                            Ok(target) => target.to_hex(),
+                            Err(_) => return accepted,
+                        }
+                    };
                     match self.client.submit_after(
-                        jobs::Input::Solve {
-                            question: question.source().to_owned(),
-                        },
+                        jobs::Input::Solve { question: solving },
                         context.binding(),
                         required,
                         prerequisites,
@@ -1213,7 +1241,7 @@ impl Autonomous {
                     if let Some(question) = &self.formal_goal {
                         frontier.focus(question.clone());
                     }
-                    let mut eligible = |question: &CompiledQuestion| {
+                    let mut eligible = |question: &ResearchQuestion| {
                         !self.admissions.iter().any(|pending| {
                             pending.question.resolution_id() == question.resolution_id()
                         }) && questions.assess(graph, question).passed()
@@ -1255,7 +1283,7 @@ impl Autonomous {
                         .collect::<Vec<_>>();
                     let references = candidates.iter().collect::<Vec<_>>();
                     match frontier.choose(&references, graph, self.intervals.jobs.solving, false) {
-                        Ok(Some(index)) => candidates[index].source().to_owned(),
+                        Ok(Some(index)) => candidates[index].to_hex(),
                         Ok(None) => return accepted,
                         Err(error) => {
                             if error.fatal() {

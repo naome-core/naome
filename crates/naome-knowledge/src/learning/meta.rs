@@ -407,7 +407,7 @@ pub fn context(state: &super::State) -> [u16; CONTEXT] {
     let mut skill = [0u64; 6];
     let mut bands = [0u64; 4];
     for e in sources {
-        if let Ok(q) = naome_authoring::CompiledQuestion::compile(&e.question) {
+        if let Ok(q) = naome_checker::question::ResearchQuestion::from_hex(&e.question) {
             let (s, b) = crate::training::ability::signature(&q);
             for (i, p) in s.into_iter().enumerate() {
                 skill[i] += u64::from(p);

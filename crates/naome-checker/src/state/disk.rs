@@ -438,6 +438,9 @@ impl super::registration::RegistrationView for DiskArtifactState {
 
 impl sealed::Sealed for DiskArtifactState {}
 impl ContextView for DiskArtifactState {
+    fn definition_canonical_length(&self, id: DefinitionId) -> Result<Option<usize>, ContextError> {
+        DiskArtifactState::definition_canonical_length(self, id)
+    }
     fn program_source(
         &self,
         id: ProofId,

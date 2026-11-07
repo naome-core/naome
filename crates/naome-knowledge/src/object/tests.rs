@@ -90,8 +90,16 @@ fn statement_metadata_preserves_the_actual_sign_for_conjunctive_proof_feedback()
             artifact_id: crate::hex(ArtifactId::from_proof_id(proof).as_bytes()),
             proof_id: crate::hex(proof.as_bytes()),
             statement_id: crate::hex(target_id(target).unwrap().as_bytes()),
-            question: format!("goal={}", goal.core().to_source()),
+            question: naome_checker::question::ResearchQuestion::from_formula(goal.core().clone())
+                .unwrap()
+                .to_hex(),
         };
-        assert_eq!(metadata.statement_question().unwrap().formula(), target);
+        assert_eq!(
+            metadata
+                .statement_question(&naome_checker::ArtifactState::new())
+                .unwrap()
+                .formula(),
+            target
+        );
     }
 }

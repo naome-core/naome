@@ -124,7 +124,7 @@ pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, Strin
         let mut statement = verified.target.clone();
         let mut relevant =
             requested.contains(&statement.encode_canonical().map_err(|e| e.to_string())?);
-        for index in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+        for index in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
             if relevant {
                 break;
             }
@@ -215,15 +215,13 @@ pub fn verified(tree: &Tree) -> Result<proof::Verified, String> {
     proof::verify(&super::search::compile(&target, tree)?.0, &target)
 }
 pub fn helpers(verified: &proof::Verified) -> Result<Vec<String>, String> {
-    let mut output = verified
-        .definitions
-        .iter()
-        .map(|e| e.source(&[]))
-        .collect::<Result<Vec<_>, _>>()?;
-    output.extend(proof::lemma_sources(
-        &verified.definitions,
-        &verified.lemmas,
-    )?);
+    let mut output = Vec::new();
+    super::definitions::append_artifacts(&verified.definitions, &mut output)?;
+    for lemma in proof::lemma_sources(&verified.definitions, &verified.lemmas)? {
+        if !output.contains(&lemma) {
+            output.push(lemma);
+        }
+    }
     Ok(output)
 }
 
@@ -362,7 +360,7 @@ mod tests {
         let mut examples = fixture.examples;
         let own = super::super::tests::own_solution();
         examples.push(Record {
-            question: super::super::tests::own_question() + &" ".repeat(4096),
+            question: super::super::tests::own_question(),
             proof_id: own.proof_id,
             refuted: own.refuted,
             tree: own.tree,
@@ -371,14 +369,14 @@ mod tests {
         });
         let mut state = State::fresh();
         let mut graph = crate::Graph::default();
-        // A parser-valid longer owner input must not lose the unchanged quorum
-        // simply because its already checked knowledge uses verbose JSON.
+        // The checked library and the newly admitted owner example share the
+        // ordinary byte allowance.
         let mut frozen_library = Vec::new();
         for (i, record) in examples.into_iter().enumerate() {
             if i == 7 {
                 frozen_library = state.knowledge.clone();
             }
-            let q = naome_authoring::CompiledQuestion::compile(&record.question).unwrap();
+            let q = naome_checker::question::ResearchQuestion::from_hex(&record.question).unwrap();
             let (root, batch) = graph
                 .prepare_generated(&record.source, &record.helpers, &q)
                 .unwrap();
@@ -450,8 +448,8 @@ mod tests {
         let entry = Entry {
             packet: evidence::pack(&proof).unwrap(),
         };
-        let question = naome_authoring::CompiledQuestion::compile(
-            "goal=all(x,all(y,imp(imp(mem(x,y),mem(y,x)),imp(mem(x,y),mem(y,x)))))",
+        let question = naome_checker::question::ResearchQuestion::from_hex(
+            "04040303010100000001010000000001010000000001000000010301010000000101000000000101000000000100000001",
         )
         .unwrap();
         assert!(relevance(&axiom.formula(), question.proved_target()) > 0);
@@ -486,7 +484,7 @@ mod tests {
         };
         let x = naome_foundation::FreeVariable::new(0);
         let target = Formula::implies(Formula::for_all(x, Formula::equal(x, x)), axiom.formula());
-        let q = naome_authoring::CompiledQuestion::from_formula(target.clone()).unwrap();
+        let q = naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
         assert!(
             search::solve(&target, &mut Ordered, 16)
                 .unwrap()
@@ -521,13 +519,16 @@ mod tests {
         }));
         assert!(validate_availability(&target, &tree, &[], &[]).is_err());
         assert!(validate_availability(&target, &tree, std::slice::from_ref(&entry), &[]).is_ok());
-        let naome_authoring::CompiledArtifact::Definition(d) =
-            naome_authoring::compile_artifact("def equality=relation(x,y): eq(x,y)").unwrap()
+        let naome_proof::ArtifactPayload::Definition(d) =
+            naome_proof::ArtifactPayload::from_canonical_bytes(
+                &crate::unhex("0100000000020000000b0000000000000000000001").unwrap(),
+            )
+            .unwrap()
         else {
             panic!("definition")
         };
         let meaning = super::super::definitions::Entry {
-            certificate: d.canonical_definition_bytes().to_vec(),
+            certificate: d.canonical_bytes().to_vec(),
             obligation: None,
         };
         let wrapped = Tree::Definitions {
@@ -606,9 +607,9 @@ mod tests {
         assert!(
             helpers
                 .iter()
-                .all(|q| super::super::State::eligible(q.source()))
+                .all(|q| super::super::State::eligible(&q.to_hex()))
         );
-        assert!(super::super::State::eligible(goal.source()));
+        assert!(super::super::State::eligible(&goal.to_hex()));
         let directory = crate::checkpoint::tests::Directory::new();
         let graph = crate::Graph::default();
         let settings = crate::jobs::Settings {
@@ -689,8 +690,9 @@ mod tests {
         };
         let finder = crate::frontier::Frontier::open(&directory.0, &graph, 41, settings).unwrap();
         for case in super::super::curriculum::development().into_iter().take(32) {
-            let question = naome_authoring::CompiledQuestion::compile(&case.source).unwrap();
-            assert!(!super::super::State::eligible(question.source()));
+            let question =
+                naome_checker::question::ResearchQuestion::from_hex(&case.source).unwrap();
+            assert!(!super::super::State::eligible(&question.to_hex()));
             let page = finder.goal_candidates(0, &question);
             assert_eq!(page.len(), 1);
             assert_eq!(page[0].core(), question.core());

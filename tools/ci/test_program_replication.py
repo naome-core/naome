@@ -46,15 +46,20 @@ class ProgramObservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             node = SimpleNamespace(directory=pathlib.Path(directory))
             with sqlite3.connect(node.directory / "proof-corpus.sqlite3") as writer:
-                writer.executescript("CREATE TABLE programs(id BLOB,manifest TEXT,received INTEGER);"
+                writer.executescript("CREATE TABLE programs(id BLOB,manifest BLOB,received INTEGER);"
                                      "CREATE TABLE artifacts(id BLOB);")
-                writer.execute("INSERT INTO programs VALUES(?,?,?)", (b"proof", json.dumps({"commands": 4}), 2))
+                manifest = bytes([4, 12]) + bytes(128)
+                writer.execute("INSERT INTO programs VALUES(?,?,?)", (b"proof", manifest, 2))
                 writer.commit()
                 writer.execute("BEGIN EXCLUSIVE")
                 self.assertEqual(program_rows(node), [])
                 writer.rollback()
-                self.assertEqual(program_rows(node), [{"id": b"proof".hex(), "manifest": {"commands": 4},
-                                                      "received": 2, "published": False}])
+                self.assertEqual(program_rows(node), [{
+                    "id": b"proof".hex(), "received": 2, "published": False,
+                    "manifest": {"commands": 4, "input_bytes": 12,
+                                 **{key: [0] * 32 for key in (
+                                     "program_hash", "stream_root", "conclusion", "statement")}},
+                }])
                 writer.execute("UPDATE programs SET received=4")
                 writer.execute("INSERT INTO artifacts VALUES(?)", (b"proof",))
                 writer.commit()

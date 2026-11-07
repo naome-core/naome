@@ -114,12 +114,12 @@ pub(super) fn portable_packet(
     let packet = evidence::pack(&verified)?;
     let source = proof::source(&verified)?;
     let helpers = evidence::helpers(&packet)?;
-    if source.len() > limits.proof_bytes
+    if source.len() > 2 * limits.proof_bytes
         || helpers.len() >= limits.closure_objects
         || helpers
             .iter()
-            .any(|helper| helper.len() > limits.proof_bytes)
-        || source.len() + helpers.iter().map(String::len).sum::<usize>() > limits.closure_bytes
+            .any(|helper| helper.len() > 2 * limits.proof_bytes)
+        || source.len() + helpers.iter().map(String::len).sum::<usize>() > 2 * limits.closure_bytes
     {
         return Err("repaired construction source closure exceeds capacity".into());
     }

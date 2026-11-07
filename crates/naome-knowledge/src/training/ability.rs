@@ -38,7 +38,7 @@ impl Skill {
     }
 }
 
-pub(crate) fn signature(q: &CompiledQuestion) -> ([bool; SKILLS], u32) {
+pub(crate) fn signature(q: &ResearchQuestion) -> ([bool; SKILLS], u32) {
     signature_features(&Features::of(q))
 }
 pub(crate) fn signature_features(f: &Features) -> ([bool; SKILLS], u32) {
@@ -123,7 +123,7 @@ impl Profile {
     }
     pub(crate) fn observe(
         &mut self,
-        q: &CompiledQuestion,
+        q: &ResearchQuestion,
         budget: u32,
         solved: Option<bool>,
         micros: u64,
@@ -196,7 +196,7 @@ impl Profile {
         let cost = cell[2] as f64 / cell[0].saturating_add(cell[3]).max(1) as f64 / 1000.0;
         (probability, uncertainty, cost.max(1.0))
     }
-    pub(crate) fn priority(&self, q: &CompiledQuestion, budget: u32) -> u64 {
+    pub(crate) fn priority(&self, q: &ResearchQuestion, budget: u32) -> u64 {
         self.priority_features(&Features::of(q), budget)
     }
     pub(crate) fn priority_features(&self, features: &Features, budget: u32) -> u64 {
@@ -267,7 +267,7 @@ impl Feedback {
         self.attempts.validate()?;
         self.development.validate()
     }
-    pub(crate) fn priority(&self, q: &CompiledQuestion, budget: u32) -> u64 {
+    pub(crate) fn priority(&self, q: &ResearchQuestion, budget: u32) -> u64 {
         if self.development.is_empty() {
             self.attempts.priority(q, budget)
         } else {
@@ -285,9 +285,10 @@ mod tests {
     use super::*;
     #[test]
     fn mastery_and_failure_change_reachable_bands_without_mixing_checkpoints_or_budgets() {
-        let easy = CompiledQuestion::compile("goal=all(a,imp(mem(a,a),mem(a,a)))").unwrap();
-        let hard = CompiledQuestion::compile(
-            "goal=all(x,all(y,imp(mem(x,y),imp(mem(y,x),and(mem(x,y),mem(y,x))))))",
+        let easy =
+            ResearchQuestion::from_hex("040301010000000001000000000101000000000100000000").unwrap();
+        let hard = ResearchQuestion::from_hex(
+            "040403010100000001010000000003010100000000010000000102030101000000010100000000020101000000000100000001",
         )
         .unwrap();
         assert!(signature(&easy).1 < signature(&hard).1);

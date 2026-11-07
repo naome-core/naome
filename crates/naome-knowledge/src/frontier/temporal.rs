@@ -32,7 +32,7 @@ fn family_held_out_temporal_comparison() {
     let questions = input
         .cases
         .iter()
-        .map(|c| CompiledQuestion::compile(&c.source).unwrap())
+        .map(|c| ResearchQuestion::from_hex(&c.source).unwrap())
         .collect::<Vec<_>>();
     let families = input
         .cases

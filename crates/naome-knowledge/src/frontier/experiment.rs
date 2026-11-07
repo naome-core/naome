@@ -32,11 +32,11 @@ fn cpu() -> i64 {
     let u = getrusage(UsageWho::RUSAGE_SELF).unwrap();
     u.user_time().num_microseconds() + u.system_time().num_microseconds()
 }
-fn questions(input: &Inputs) -> Vec<CompiledQuestion> {
+fn questions(input: &Inputs) -> Vec<ResearchQuestion> {
     input
         .cases
         .iter()
-        .map(|c| CompiledQuestion::compile(&c.source).unwrap())
+        .map(|c| ResearchQuestion::from_hex(&c.source).unwrap())
         .collect()
 }
 
@@ -82,22 +82,8 @@ fn fixed_solver_finder_comparison() {
         let directory = Directory::new();
         let mut f = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
         if regime != "cold" {
-            for source in [
-                "mem(a,b)",
-                "not(mem(a,b))",
-                "imp(mem(a,b),eq(a,b))",
-                "and(mem(a,b),mem(b,a))",
-                "or(mem(a,b),mem(b,a))",
-                "imp(mem(a,b),mem(b,a))",
-                "imp(eq(a,b),mem(a,b))",
-                "iff(mem(a,b),mem(b,a))",
-            ] {
-                let q = CompiledQuestion::compile(&format!("goal=all(a,all(b,{source}))")).unwrap();
-                let mut body = q.formula().clone();
-                while let Some(opened) = Frontier::open_outer(&body) {
-                    body = opened;
-                }
-                f.retain_predicate(body);
+            for relation in crate::test_inputs::relation_examples() {
+                f.retain_predicate(relation);
             }
         }
         if regime == "mixed" {

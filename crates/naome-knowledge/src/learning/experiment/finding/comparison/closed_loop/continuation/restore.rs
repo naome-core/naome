@@ -77,7 +77,7 @@ pub(super) fn restore<'a>(
             if episode.observation.summary.job != job {
                 return Err("warm source observation has another job".into());
             }
-            let question = CompiledQuestion::compile(&episode.observation.question)
+            let question = ResearchQuestion::from_hex(&episode.observation.question)
                 .map_err(|e| e.to_string())?;
             if let Some(solution) = &episode.solution {
                 crate::learning::experiment::knowledge::admit_discovery(

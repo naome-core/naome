@@ -25,8 +25,8 @@ impl model::Ranker for UniversalChoice {
 
 #[test]
 fn equivalent_universal_choices_share_the_checked_success_mass() {
-    let q = CompiledQuestion::compile(
-        "goal=all(x,all(y,imp(all(z,imp(mem(x,y),mem(y,x))),imp(mem(x,y),mem(y,x)))))",
+    let q = ResearchQuestion::from_hex(
+        "0404030403010100000002010000000101010000000101000000020301010000000101000000000101000000000100000001",
     )
     .unwrap();
     let mut graphs = Vec::new();
@@ -63,8 +63,8 @@ fn equivalent_universal_choices_share_the_checked_success_mass() {
 
 #[test]
 fn different_universal_consequences_keep_separate_labels() {
-    let q = CompiledQuestion::compile(
-        "goal=all(x,all(y,imp(all(z,imp(mem(z,y),mem(y,z))),imp(mem(x,y),mem(y,x)))))",
+    let q = ResearchQuestion::from_hex(
+        "0404030403010100000000010000000101010000000101000000000301010000000101000000000101000000000100000001",
     )
     .unwrap();
     let result = search::solve(q.proved_target(), &mut UniversalChoice(0), 32).unwrap();
@@ -91,13 +91,13 @@ pub(crate) fn own_question() -> String {
         .clone()
 }
 /// Two admissible helper goals beyond the elementary prefilter.
-pub(crate) fn helper_goal() -> (CompiledQuestion, [CompiledQuestion; 2]) {
+pub(crate) fn helper_goal() -> (ResearchQuestion, [ResearchQuestion; 2]) {
     let helpers = [
-        "goal=all(a,all(b,imp(eq(a,b),eq(b,a))))",
-        "goal=all(a,all(b,imp(all(z,imp(eq(a,z),eq(b,z))),all(z,imp(eq(b,z),eq(a,z))))))",
+        "04040300010000000101000000000001000000000100000001",
+        "040403040300010000000201000000000001000000010100000000040300010000000101000000000001000000020100000000",
     ]
-    .map(|s| CompiledQuestion::compile(s).unwrap());
-    let goal = CompiledQuestion::from_formula(Formula::conjunction(
+    .map(|s| ResearchQuestion::from_hex(s).unwrap());
+    let goal = ResearchQuestion::from_formula(Formula::conjunction(
         helpers[0].formula().clone(),
         helpers[1].formula().clone(),
     ))
@@ -126,7 +126,7 @@ fn question_seed_preserves_dependency_partitions_and_native_identities() {
     let mut groups = BTreeMap::new();
     let mut ids = std::collections::BTreeSet::new();
     for q in &c.cases {
-        let compiled = CompiledQuestion::compile(&q.source).unwrap();
+        let compiled = ResearchQuestion::from_hex(&q.source).unwrap();
         assert_eq!(crate::hex(compiled.resolution_id()), q.id);
         assert!(ids.insert(q.id.clone()));
         assert!(c.reserved_ids.binary_search(&q.id).is_err());
@@ -242,16 +242,22 @@ fn native_search_reconstructs_classical_quantifier_equality_and_zfc_proofs() {
         ZfcAxiom::Pairing.formula(),
     ];
     for target in targets {
-        let source = format!("goal={}", proof::close(target).to_source());
+        let source = ResearchQuestion::from_formula(proof::close(target))
+            .unwrap()
+            .to_hex();
         let solution = search_question(&source, &mut Symbolic, 128)
             .unwrap()
             .0
             .expect("native candidate");
         assert!(!solution.refuted);
-        let proof = naome_authoring::compile(&solution.source).unwrap();
+        let proof = crate::learning::proof::check_artifact(
+            &solution.source,
+            &naome_checker::ArtifactState::new(),
+        )
+        .unwrap();
         assert_eq!(crate::hex(proof.proof_id().as_bytes()), solution.proof_id);
     }
-    let source = "goal=all(x,mem(x,x))";
+    let source = "040101000000000100000000";
     assert!(
         search_question(source, &mut Symbolic, 1)
             .unwrap()
@@ -680,7 +686,7 @@ fn finished_progress(state: &State) -> Progress {
 }
 pub(crate) fn measured_progress() -> Progress {
     let mut progress = finished_progress(&fixed_state());
-    let question = CompiledQuestion::compile(&own_question()).unwrap();
+    let question = ResearchQuestion::from_hex(&own_question()).unwrap();
     progress
         .development_before
         .observe(&question, 32, Some(true), 1234);
@@ -922,7 +928,7 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
 #[test]
 fn later_better_proof_advances_replay_revision_without_recounting_the_question() {
     let original = own_example();
-    let q = CompiledQuestion::compile(&original.question).unwrap();
+    let q = ResearchQuestion::from_hex(&original.question).unwrap();
     let target = q.proved_target();
     let (term, _) = search::compile(target, &original.tree).unwrap();
     let k = proof::Kernel::new(naome_proof::ProofStep::Simplification {
@@ -960,7 +966,7 @@ fn later_better_proof_advances_replay_revision_without_recounting_the_question()
 #[test]
 fn proof_strategy_cost_uses_the_same_native_unit_for_local_traces_and_peer_dags() {
     let own = own_example();
-    let q = CompiledQuestion::compile(&own.question).unwrap();
+    let q = ResearchQuestion::from_hex(&own.question).unwrap();
     let (_, cost, checked) = search::core::checked(q.proved_target(), &own.tree).unwrap();
     let native = checked.certificate.steps().len();
     assert_ne!(
@@ -986,13 +992,14 @@ fn proof_strategy_cost_uses_the_same_native_unit_for_local_traces_and_peer_dags(
 #[test]
 fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_reference_count() {
     fn meaning(source: &str) -> definitions::Entry {
-        let naome_authoring::CompiledArtifact::Definition(d) =
-            naome_authoring::compile_artifact(source).unwrap()
+        let naome_proof::ArtifactPayload::Definition(d) =
+            naome_proof::ArtifactPayload::from_canonical_bytes(&crate::unhex(source).unwrap())
+                .unwrap()
         else {
             panic!("definition")
         };
         definitions::Entry {
-            certificate: d.canonical_definition_bytes().to_vec(),
+            certificate: d.canonical_bytes().to_vec(),
             obligation: None,
         }
     }
@@ -1004,7 +1011,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
             available: 1,
             proof: Box::new(e.tree),
         };
-        let q = CompiledQuestion::compile(&e.question).unwrap();
+        let q = ResearchQuestion::from_hex(&e.question).unwrap();
         e.proof_id = crate::hex(
             search::core::checked(q.proved_target(), &e.tree)
                 .unwrap()
@@ -1014,7 +1021,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
         );
         e
     }
-    let equality = meaning("def equality=relation(x,y): eq(x,y)");
+    let equality = meaning("0100000000020000000b0000000000000000000001");
     let mut state = fixed_state();
     assert!(state.remember_definition(equality.clone()).unwrap());
     let id = crate::hex(equality.address().unwrap().as_bytes());
@@ -1025,12 +1032,22 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
     assert!(!state.accept(example).unwrap());
     assert_eq!(state.definition_uses[&id], 1);
     for n in 0..10 {
-        let mut body = "mem(x,y)".to_owned();
+        let x = naome_foundation::FreeVariable::new(0);
+        let y = naome_foundation::FreeVariable::new(1);
+        let mut body = Formula::member(x, y);
         for _ in 0..n {
-            body = format!("not({body})");
+            body = Formula::negate(body);
         }
+        let definition = naome_proof::DefinitionCertificate::relation(
+            2,
+            naome_proof::DefinedFormula::from_primitive(&body).unwrap(),
+        )
+        .unwrap();
         state
-            .remember_definition(meaning(&format!("def cold=relation(x,y): {body}")))
+            .remember_definition(definitions::Entry {
+                certificate: definition.canonical_bytes().to_vec(),
+                obligation: None,
+            })
             .unwrap();
     }
     assert!(
@@ -1042,7 +1059,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
         crate::checkpoint::decode(&crate::checkpoint::encode(&state).unwrap()).unwrap();
     restored.validate().unwrap();
     assert_eq!(restored.definition_uses[&id], 1);
-    let unused = meaning("def unused=relation(x,y): mem(x,y)");
+    let unused = meaning("0100000000020000000b0100000000000000000001");
     let mut state = fixed_state();
     state.remember_definition(unused.clone()).unwrap();
     let mut unsupported = own_example();
@@ -1052,7 +1069,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
         available: 1,
         proof: Box::new(unsupported.tree),
     };
-    let q = CompiledQuestion::compile(&unsupported.question).unwrap();
+    let q = ResearchQuestion::from_hex(&unsupported.question).unwrap();
     assert!(
         search::core::checked(q.proved_target(), &unsupported.tree).is_err(),
         "a selected but unused name is not a winning decision"
@@ -1067,7 +1084,7 @@ fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_refe
 #[test]
 fn a_peer_certificate_cannot_be_reclassified_as_a_local_discovery_trace() {
     let mut solution = own_solution();
-    let q = CompiledQuestion::compile(&own_question()).unwrap();
+    let q = ResearchQuestion::from_hex(&own_question()).unwrap();
     let verified = search::core::checked(q.proved_target(), &solution.tree)
         .unwrap()
         .2;
@@ -1093,8 +1110,8 @@ fn valid_stored_theorems_beyond_question_capacity_do_not_halt_learning() {
     }
     let verified = proof::verify(&term, &term.formula()).unwrap();
     assert!(matches!(
-        CompiledQuestion::from_formula(verified.target.clone()),
-        Err(naome_authoring::QuestionError::Limit(_))
+        ResearchQuestion::from_formula(verified.target.clone()),
+        Err(naome_checker::question::QuestionError::Limit(_))
     ));
     let entry = knowledge::Entry {
         packet: evidence::pack(&verified).unwrap(),
@@ -1112,17 +1129,10 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     let anchors = digest(&state.anchors);
     let accepted = state.accepted;
     let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
-    // Valid source spelling can reach the real working-byte boundary. It
-    // preserves the canonical target and its independently checked proof.
+    // Exercise the real byte boundary with checked replay and bounded
+    // scheduling observations.
     state.replay.push(state.replay[0].clone());
-    let mut slack = capacity - crate::checkpoint::encode(&state).unwrap().len() - 1;
-    for example in &mut state.replay {
-        let padding =
-            slack.min(naome_authoring::QUESTION_SOURCE_MAX_BYTES - example.question.len());
-        example.question.push_str(&" ".repeat(padding));
-        slack -= padding;
-    }
-    assert_eq!(slack, 0);
+    crate::learning::tests::fill_checkpoint_budget(&mut state, capacity);
     state.validate().unwrap();
     let before_bytes = crate::checkpoint::encode(&state).unwrap().len();
     let mut job = state.job();
@@ -1198,14 +1208,128 @@ fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     job.retain_progress(71, p).unwrap();
 }
 
-pub(crate) fn stalled_frontier(question: &CompiledQuestion) -> SearchFrontier {
+pub(crate) fn stalled_frontier(question: &ResearchQuestion) -> SearchFrontier {
     let failed = search::solve(question.proved_target(), &mut Symbolic, 16).unwrap();
     assert!(failed.tree.is_none());
     failed.frontier.unwrap()
 }
-pub(crate) fn symbolic_solution(question: &CompiledQuestion) -> Solution {
-    search_question(question.source(), &mut Symbolic, 128)
+pub(crate) fn symbolic_solution(question: &ResearchQuestion) -> Solution {
+    search_question(&question.to_hex(), &mut Symbolic, 128)
         .unwrap()
         .0
         .unwrap()
+}
+
+/// Fill the real working allowance using only valid current state records.
+pub(super) fn fill_checkpoint_budget(state: &mut State, capacity: usize) {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/checked-learning-library.json"
+    ))
+    .unwrap();
+    for (index, row) in fixture["examples"].as_array().unwrap().iter().enumerate() {
+        let example = Example {
+            origin: Origin::Local,
+            job: 100 + index as u64,
+            question: row["question"].as_str().unwrap().into(),
+            proof_id: row["proof_id"].as_str().unwrap().into(),
+            refuted: row["refuted"].as_bool().unwrap(),
+            tree: serde_json::from_value(row["tree"].clone()).unwrap(),
+        };
+        state.replay.push(example);
+        if crate::checkpoint::encode(state).unwrap().len() > capacity {
+            state.replay.pop();
+        }
+    }
+    // The graph's learned library and definition catalog contribute real
+    // checked bytes. Keep sufficient room for a fresh ability observation.
+    let budget = capacity - 32;
+    for example in state.replay.clone() {
+        let question = ResearchQuestion::from_hex(&example.question).unwrap();
+        let target = if example.refuted {
+            question.refuted_target()
+        } else {
+            question.proved_target()
+        };
+        let Ok((_, _, verified)) = search::core::checked(target, &example.tree) else {
+            continue;
+        };
+        let Ok(packet) = evidence::pack(&verified) else {
+            continue;
+        };
+        if state.knowledge.iter().any(|entry| entry.packet == packet) {
+            continue;
+        }
+        state.knowledge.push(knowledge::Entry { packet });
+        if knowledge::validate(&state.knowledge).is_err()
+            || crate::checkpoint::encode(state).unwrap().len() > budget
+        {
+            state.knowledge.pop();
+        }
+    }
+
+    fn repeated(count: usize) -> naome_foundation::Formula {
+        use naome_foundation::{Formula, FreeVariable};
+        if count == 1 {
+            return Formula::member(FreeVariable::new(0), FreeVariable::new(0));
+        }
+        let half = count / 2;
+        Formula::conjunction(repeated(half), repeated(count - half))
+    }
+    let mut low = 1;
+    let mut high = 1024;
+    let mut selected = None;
+    while low <= high {
+        let count = (low + high) / 2;
+        let relation = naome_proof::DefinedFormula::from_primitive(&repeated(count)).unwrap();
+        let certificate = naome_proof::DefinitionCertificate::relation(1, relation).unwrap();
+        let entry = definitions::Entry {
+            certificate: certificate.to_canonical_bytes(),
+            obligation: None,
+        };
+        state.definitions.push(entry);
+        let fits = state
+            .definitions
+            .iter()
+            .map(definitions::Entry::bytes)
+            .sum::<usize>()
+            <= definitions::BYTES
+            && crate::checkpoint::encode(state).unwrap().len() <= budget;
+        let entry = state.definitions.pop().unwrap();
+        if fits {
+            selected = Some(entry);
+            low = count + 1;
+        } else {
+            high = count - 1;
+        }
+    }
+    if let Some(entry) = selected {
+        state.definitions.push(entry);
+    }
+
+    let question = ResearchQuestion::from_hex(&own_question()).unwrap();
+    for allowance in 256..384 {
+        let previous = state.feedback.development.clone();
+        for digits in (0..20).rev() {
+            state.feedback.development = previous.clone();
+            state.feedback.development.observe(
+                &question,
+                allowance,
+                Some(true),
+                10_u64.pow(digits),
+            );
+            if crate::checkpoint::encode(state).unwrap().len() <= capacity {
+                break;
+            }
+        }
+        if crate::checkpoint::encode(state).unwrap().len() > capacity {
+            state.feedback.development = previous;
+            break;
+        }
+    }
+    let remaining = capacity - crate::checkpoint::encode(state).unwrap().len();
+    assert!(
+        remaining <= 19,
+        "checkpoint test fixture leaves {remaining} bytes unused"
+    );
+    state.feedback.revision = 10_u64.pow(remaining.min(19) as u32);
 }

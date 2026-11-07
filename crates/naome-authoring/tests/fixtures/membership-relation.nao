@@ -1,4 +1,0 @@
-
-
-def holds = relation(element, set):
-    mem(element, set)

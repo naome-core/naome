@@ -57,13 +57,13 @@ pub(super) fn advance(
             finder.feedback(Some(state.feedback()));
             finder
                 .refresh(graph, |q| {
-                    State::eligible(q.source())
+                    State::eligible(&q.to_hex())
                         && holdout.question(q, None).is_ok()
                         && owner.assess(graph, q).passed()
                 })
                 .map_err(|e| e.to_string())?;
             let candidates = finder.candidate_page(*cursor, |q| {
-                State::eligible(q.source())
+                State::eligible(&q.to_hex())
                     && holdout.question(q, None).is_ok()
                     && owner.assess(graph, q).passed()
             });

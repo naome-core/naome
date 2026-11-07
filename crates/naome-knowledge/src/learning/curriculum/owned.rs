@@ -1,7 +1,7 @@
 //! Owner questions are admitted by conservative lineage before learning.
 //! Existing corpus and frontier lineages never enter through this route.
 use super::{Case, frontier};
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_foundation::{Formula, FormulaView, graph::Node};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, sync::LazyLock};
@@ -53,7 +53,7 @@ pub(super) fn sealed_family(family: &str) -> bool {
         || RETIRED.families.contains(family)
 }
 pub fn case(question: &str) -> Option<Case> {
-    let q = CompiledQuestion::compile(question).ok()?;
+    let q = ResearchQuestion::from_hex(question).ok()?;
     let id = crate::hex(q.resolution_id());
     if let Some(case) = super::learning(&id) {
         return Some(case.clone());
@@ -64,12 +64,12 @@ pub fn case(question: &str) -> Option<Case> {
     // A continuation of a checked closed source retains its source lineage.
     // Opening outer goal binders does not expose a closed source's bound names.
     if let Some(parent) = crate::training::continuation_parent(q.proved_target())
-        && let Ok(source) = CompiledQuestion::from_formula(parent)
+        && let Ok(source) = ResearchQuestion::from_formula(parent)
     {
-        let inherited = case(source.source())?;
+        let inherited = case(&source.to_hex())?;
         return Some(Case {
             id,
-            source: q.source().into(),
+            source: q.to_hex(),
             family: inherited.family,
             dependency: inherited.dependency,
             development: false,
@@ -87,7 +87,7 @@ pub fn case(question: &str) -> Option<Case> {
     // otherwise unclassified user question.
     Some(Case {
         id,
-        source: q.source().to_owned(),
+        source: q.to_hex(),
         family: format!("owned-{family}"),
         dependency: family,
         development: false,
@@ -105,15 +105,18 @@ mod tests {
     fn new_lineages_keep_reserved_and_existing_structural_siblings_out() {
         assert_eq!(original_exclusions().len(), 2063);
         for existing in super::super::CORPUS.cases.iter().take(12) {
-            let q = CompiledQuestion::compile(&existing.source).unwrap();
+            let q = ResearchQuestion::from_hex(&existing.source).unwrap();
             assert!(original_exclusions().contains(&family(q.proved_target())));
         }
         for q in super::super::development() {
             assert!(case(&q.source).is_none());
         }
-        let first = CompiledQuestion::compile("goal=all(x,all(y,imp(mem(x,x),mem(y,x))))").unwrap();
+        let first =
+            ResearchQuestion::from_hex("04040301010000000101000000010101000000000100000001")
+                .unwrap();
         let renamed =
-            CompiledQuestion::compile("goal=all(u,all(v,imp(mem(v,u),mem(u,u))))").unwrap();
+            ResearchQuestion::from_hex("04040301010000000001000000010101000000010100000001")
+                .unwrap();
         assert_eq!(
             family(first.proved_target()),
             family(renamed.proved_target())
@@ -134,14 +137,14 @@ mod tests {
     #[test]
     fn proof_continuations_inherit_source_lineage_and_cannot_promote_reserved_parents() {
         fn continuation(source: &str) -> String {
-            let q = CompiledQuestion::compile(source).unwrap();
+            let q = ResearchQuestion::from_hex(source).unwrap();
             let mut formula = crate::training::continuation(q.proved_target().clone()).unwrap();
             for v in formula.free_variables().into_iter().rev() {
                 formula = Formula::for_all(v, formula);
             }
-            CompiledQuestion::from_formula(formula)
+            ResearchQuestion::from_formula(formula)
                 .unwrap()
-                .source()
+                .to_hex()
                 .to_owned()
         }
         let parent = super::super::CORPUS

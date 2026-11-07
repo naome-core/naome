@@ -3,7 +3,8 @@ use crate::learning::{self as native, graph::Batch, model::Pool, tests::MemorySt
 
 fn graph() -> Graph {
     let solution = native::tests::own_solution();
-    let q = naome_authoring::CompiledQuestion::compile(&native::tests::own_question()).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&native::tests::own_question())
+        .unwrap();
     native::search::compile(q.proved_target(), &solution.tree)
         .unwrap()
         .1

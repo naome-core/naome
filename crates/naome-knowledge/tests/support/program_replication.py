@@ -15,7 +15,7 @@ import signal
 import sqlite3
 import time
 from autonomous_lifecycle import Node, Trial, process_group, process_identity, retain_evidence, write_receipt
-from proof_network import stored_objects
+from proof_network import program_manifest, stored_objects
 from resource_observation import latest
 
 
@@ -37,7 +37,6 @@ class AutonomousNode(Node):
         return []
 
     def start(self, strict_startup=False):
-        # Exercise the ordinary dynamic default; no operator profile is needed.
         self.release_port()
         result=self.trial.start(self,strict_startup=strict_startup)
         self.capture_process()
@@ -68,7 +67,7 @@ def program_rows(node):
     if not path.exists():return []
     try:
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=0)) as connection:
-            return [{'id':identity.hex(),'manifest':json.loads(manifest),'received':received,
+            return [{'id':identity.hex(),'manifest':program_manifest(manifest),'received':received,
                 'published':bool(published)} for identity,manifest,received,published in connection.execute(
                 'SELECT id,manifest,received,EXISTS(SELECT 1 FROM artifacts WHERE artifacts.id=programs.id) FROM programs ORDER BY id')]
     except sqlite3.OperationalError as error:
@@ -82,13 +81,19 @@ def program_rows(node):
 def run(trial,units,memory_mib=None):
     os.environ["NAOME_DEV_RESOURCE_OBSERVATIONS"]="1"
     donor,receiver=AutonomousNode(trial,0),AutonomousNode(trial,1)
+    # Keep the donor's publication quantum fixed. Dynamic feedback can
+    # reduce it to one record after checking, making the durable import
+    # dominate the crash/restart deadline on loaded runners.
+    profiles = [(donor, 128)]
     if memory_mib is not None:
         assert 8<=memory_mib<=512
         trial.command_timeout=300;trial.cleanup_timeout=300
-        for node in (donor,receiver):
+        profiles = [(donor, memory_mib), (receiver, memory_mib)]
+        for node, _ in profiles:
             node.large_screen=True;node.expected_profile='custom'
-            write_receipt(node.directory/'resource-profile.json',{'profile':'custom','custom':{
-                'memory_bytes':memory_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
+    for node, limit_mib in profiles:
+        write_receipt(node.directory/'resource-profile.json',{'profile':'custom','custom':{
+            'memory_bytes':limit_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
     donor.config['runtime']['jobs']={'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
         'mock':{'program_units':units}}}
     for node in (donor,receiver):node.write_config();node.start();node.stop()
@@ -151,7 +156,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--binary',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--units',type=int,default=64)
+    parser.add_argument('--units',type=int,default=144)
     parser.add_argument('--timeout',type=float,default=240)
     parser.add_argument('--memory-mib',type=int)
     parser.add_argument('--profile',default='test')

@@ -8,17 +8,15 @@ use naome_proof::{ProofCertificate, ProofStep, StatementId};
 use sha2::Digest;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const SOURCE: &str = "goal = all(x, eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
+const SOURCE: &str = "00000000020600000000210000000000000000";
 
 #[test]
 fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
     let producer = Graph::default();
     let helper = producer.author(SOURCE).unwrap();
-    let root_source = format!(
-        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
-    );
-    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let root_source = crate::test_inputs::cite(helper.proof_id().unwrap().unwrap());
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let mut receiver = Graph::default();
     let (root, batch) = receiver
         .prepare_generated(&root_source, &[SOURCE.into()], &question)
@@ -55,12 +53,10 @@ fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
 fn generated_missing_invalid_unused_and_wrong_target_helpers_never_publish() {
     let receiver = Graph::default();
     let helper = receiver.author(SOURCE).unwrap();
-    let root_source = format!(
-        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
-    );
+    let root_source = crate::test_inputs::cite(helper.proof_id().unwrap().unwrap());
     let question =
-        naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+        naome_checker::question::ResearchQuestion::from_hex(&crate::mocks::create_question(0))
+            .unwrap();
     assert!(
         receiver
             .prepare_generated(&root_source, &[], &question)
@@ -72,7 +68,8 @@ fn generated_missing_invalid_unused_and_wrong_target_helpers_never_publish() {
             .is_err()
     );
     let unrelated =
-        naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(1)).unwrap();
+        naome_checker::question::ResearchQuestion::from_hex(&crate::mocks::create_question(1))
+            .unwrap();
     assert!(
         receiver
             .prepare_generated(&root_source, &[SOURCE.into()], &unrelated)
@@ -100,9 +97,8 @@ fn introduce(graph: &mut Graph) -> Envelope {
 }
 fn citation(graph: &Graph, parent: &Envelope) -> Envelope {
     graph
-        .author(&format!(
-            "goal = all(x, eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            parent.proof_id().unwrap().unwrap(),
         ))
         .unwrap()
 }
@@ -137,7 +133,7 @@ fn aliases_and_alternative_derivations_coexist() {
         "duplicate"
     );
     assert_eq!(graph.ids().len(), 2);
-    let alternate = graph.author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = simp(eq(x,x),eq(x,x)) p2 = mp(p0,p1) p3 = mp(p0,p2) p4 = gen(p3,x) return p4").unwrap();
+    let alternate = graph.author("00000000050600000000000000000b00000000000000000000000000000b0000000000000000000000200000000000000001200000000000000002210000000300000000").unwrap();
     assert_eq!(alternate.statement_id, parent.statement_id);
     assert_ne!(alternate.artifact_id, parent.artifact_id);
     let alternate_checked = check_normal_form_with_state(
@@ -421,7 +417,8 @@ fn storage_failure_does_not_publish_memory_state_and_halts_further_admission() {
 #[test]
 fn expired_commit_rolls_back_without_publishing_or_halting_the_graph() {
     let mut graph = Graph::default();
-    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
     let before = graph.content_root();
     assert_eq!(
@@ -449,11 +446,9 @@ fn generation_compaction_preserves_cold_snapshots_and_rejects_old_prepared_batch
     let old = graph.context.clone();
     let old_storage = Arc::downgrade(&graph.checked_storage);
     let before = old.snapshot_id();
-    let source = format!(
-        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
-    );
-    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let source = crate::test_inputs::cite(parent.proof_id().unwrap().unwrap());
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
     graph.next_compaction = 0;
     graph.maintain_checked_storage().unwrap();
@@ -505,11 +500,9 @@ fn drain_current_copy(graph: &mut Graph) {
 fn pre_attach_batch_is_stale_before_canonical_write_while_generation_is_unchanged() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
-    let source = format!(
-        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
-    );
-    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let source = crate::test_inputs::cite(parent.proof_id().unwrap().unwrap());
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
     let storage = graph.checked_storage.clone();
     let epoch = storage.copy_epoch().unwrap();
@@ -544,9 +537,9 @@ fn post_attach_batch_and_new_formula_survive_current_root_handoff_with_cold_read
     let old_storage = Arc::downgrade(&graph.checked_storage);
     let old_snapshot = old.snapshot_id();
     assert!(graph.test_compaction_step(1).unwrap());
-    let source = "goal = imp(all(x,eq(x,x)),imp(all(y,eq(y,y)),all(x,eq(x,x)))) proof: p0 = simp(all(x,eq(x,x)),all(y,eq(y,y))) return p0";
-    let question = naome_authoring::CompiledQuestion::compile(
-        "goal = imp(all(x,eq(x,x)),imp(all(y,eq(y,y)),all(x,eq(x,x))))",
+    let source = "0000000001000000000c0400010000000001000000000000000c040001000000000100000000";
+    let question = naome_checker::question::ResearchQuestion::from_hex(
+        "0304000100000000010000000003040001000000000100000000040001000000000100000000",
     )
     .unwrap();
     let expected = graph.author(source).unwrap();
@@ -594,11 +587,9 @@ fn an_expired_post_attach_batch_preserves_deadline_and_partial_copy_state() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
     assert!(graph.test_compaction_step(1).unwrap());
-    let source = format!(
-        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
-    );
-    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let source = crate::test_inputs::cite(parent.proof_id().unwrap().unwrap());
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
     let before = graph.content_root();
     assert_eq!(
@@ -744,9 +735,8 @@ fn unrelated_external_payload_change_halts_admission_without_advancing_checked_s
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
     let child = graph
-        .author(&format!(
-            "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            parent.proof_id().unwrap().unwrap(),
         ))
         .unwrap();
     let before = graph.content_root();
@@ -845,8 +835,8 @@ fn startup_prune_fixture(directory: &Path) -> (Graph, Vec<Envelope>, StatementId
     let mut envelopes = vec![parent.clone(), citation(&graph, &parent)];
     graph.ingest(envelopes[1].clone(), Instant::now()).unwrap();
     for source in [
-        "let: a = all(x,eq(x,x)) goal = imp(a,imp(a,a)) proof: p0 = simp(a,a) return p0",
-        "let: a = all(x,eq(x,x)) b = all(x,all(y,eq(x,x))) goal = imp(a,imp(b,a)) proof: p0 = simp(a,b) return p0",
+        "0000000001000000000c0400010000000001000000000000000c040001000000000100000000",
+        "0000000001000000000c0400010000000001000000000000000d04040001000000010100000001",
     ] {
         let envelope = graph.author(source).unwrap();
         assert_eq!(
@@ -977,7 +967,8 @@ fn local_source_production_reuses_one_sealed_check_with_identical_transport_byte
 fn disk_pressure_rejects_every_preparation_and_batch_commit_without_integrity_halt() {
     let mut graph = Graph::default();
     let envelope = graph.author(SOURCE).unwrap();
-    let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
     crate::resources::with_disk_available(
         u128::from(crate::resources::limits().disk_reserve_bytes),
@@ -1044,7 +1035,9 @@ fn unchanged_blocked_backlog_performs_no_sql_writes_and_wakes_on_exact_dependenc
 fn a_peer_root_grant_revokes_only_its_publication() {
     for revoked in [false, true] {
         let mut graph = Graph::default();
-        let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+        let question =
+            naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000")
+                .unwrap();
         let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
         let related = PeerGrant::new();
         let unrelated = PeerGrant::new();
@@ -1057,6 +1050,7 @@ fn a_peer_root_grant_revokes_only_its_publication() {
             batch,
             Instant::now() + Duration::from_secs(5),
             Some(related),
+            None,
         );
         if revoked {
             assert_eq!(result.unwrap_err(), crate::Error::StaleAuthority);

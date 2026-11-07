@@ -207,7 +207,7 @@ impl Fragment {
         if super::super::digest(&subtree) != *tree || trace.target != self.source_target {
             return Err("contextual proof observed subtree differs".into());
         }
-        let question = naome_authoring::CompiledQuestion::compile(&observation.question)
+        let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)
             .map_err(|e| e.to_string())?;
         let target = observed_target(trace, &question)?;
         let knowledge = trace.context(&observation.knowledge)?;
@@ -461,7 +461,7 @@ pub(crate) fn checked(
 
 fn observed_target<'a>(
     trace: &trace::Trace,
-    question: &'a naome_authoring::CompiledQuestion,
+    question: &'a naome_checker::question::ResearchQuestion,
 ) -> Result<&'a Formula, String> {
     [question.proved_target(), question.refuted_target()]
         .into_iter()
@@ -477,7 +477,7 @@ pub(crate) fn observed(
     observation: &super::super::experience::Observation,
 ) -> Result<Vec<Derivation>, String> {
     observation.validate()?;
-    let question = naome_authoring::CompiledQuestion::compile(&observation.question)
+    let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)
         .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     let mut attempts = 0;

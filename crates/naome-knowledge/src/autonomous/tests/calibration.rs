@@ -23,9 +23,9 @@ async fn full_question_page_preserves_discovery_and_rotates_unresolved_work() {
     let directory = crate::checkpoint::tests::Directory::new();
     let mut graph = Graph::default();
     let mut questions = questions();
-    questions.attach_persistence(&directory.0).unwrap();
-    let first = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
-    let second = CompiledQuestion::compile(&mocks::create_question(1)).unwrap();
+    questions.attach_persistence(&directory.0, &graph).unwrap();
+    let first = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
+    let second = ResearchQuestion::from_hex(&mocks::create_question(1)).unwrap();
     admitted(&mut questions, &graph, &first).await;
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
@@ -42,10 +42,7 @@ async fn full_question_page_preserves_discovery_and_rotates_unresolved_work() {
         requests.as_slice(),
         [(_, jobs::Input::Find { .. })]
     ));
-    owner.complete(
-        requests[0].0,
-        Ok(jobs::Output::Question(second.source().into())),
-    );
+    owner.complete(requests[0].0, Ok(jobs::Output::Question(second.to_hex())));
     autonomous.advance(&mut graph, &mut questions);
     let selection = questions.completed().await;
     questions.finish(&graph, selection);
@@ -68,15 +65,12 @@ async fn full_question_page_preserves_discovery_and_rotates_unresolved_work() {
         assert!(autonomous.unanswered.len() <= 1);
         assert!(autonomous.solving.is_empty());
     }
-    assert_eq!(
-        attempted,
-        BTreeSet::from([first.source().into(), second.source().into()])
-    );
+    assert_eq!(attempted, BTreeSet::from([first.to_hex(), second.to_hex()]));
     drop(questions);
     let mut restored = super::questions();
-    restored.attach_persistence(&directory.0).unwrap();
+    restored.attach_persistence(&directory.0, &graph).unwrap();
     let backlog = (0..2)
-        .map(|_| restored.next_backlog().unwrap().source().to_owned())
+        .map(|_| restored.next_backlog(&graph).unwrap().to_hex())
         .collect::<BTreeSet<_>>();
     assert_eq!(backlog, attempted, "unresolved admissions survive restart");
     assert!(graph.ids().is_empty(), "NoCandidate establishes no answer");
@@ -101,10 +95,10 @@ async fn finding_feedback_tracks_admitted_questions_instead_of_raw_provider_outp
     }
     let mut graph = Graph::default();
     graph
-        .produce("goal=all(x,eq(x,x)) proof:p0=refl(x) p1=gen(p0,x) return p1")
+        .produce("00000000020600000000210000000000000000")
         .unwrap();
     let mut questions =
-        LocalQuestions::new(Some(|_: CompiledQuestion| std::future::ready(Ok(true))));
+        LocalQuestions::new(Some(|_: ResearchQuestion| std::future::ready(Ok(true))));
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
         Intervals {
@@ -116,7 +110,7 @@ async fn finding_feedback_tracks_admitted_questions_instead_of_raw_provider_outp
         owner.recovery(),
         vec![],
     );
-    let outcomes = ["goal=all(x,eq(x,x))", "goal=all(x,mem(x,x))"];
+    let outcomes = ["040001000000000100000000", "040101000000000100000000"];
     for (index, source) in outcomes.into_iter().enumerate() {
         autonomous.next_question = Instant::now();
         autonomous.advance(&mut graph, &mut questions);

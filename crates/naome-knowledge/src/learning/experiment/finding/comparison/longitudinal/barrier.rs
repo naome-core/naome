@@ -202,7 +202,7 @@ pub(super) fn read(
                 let acquisition: State =
                     serde_json::from_slice(&context).map_err(|e| e.to_string())?;
                 episode.validate_context(&acquisition)?;
-                let q = CompiledQuestion::compile(&episode.observation.question)
+                let q = ResearchQuestion::from_hex(&episode.observation.question)
                     .map_err(|e| e.to_string())?;
                 design
                     .holdout

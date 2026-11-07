@@ -7,7 +7,6 @@ exports_files([
 filegroup(
     name = "mr_build",
     srcs = [
-        "//crates/naome-authoring:naome_authoring",
         "//crates/naome-checker:naome_checker",
         "//crates/naome-foundation:naome_foundation",
         "//crates/naome-knowledge:naome",
@@ -24,11 +23,6 @@ filegroup(
 test_suite(
     name = "mr_tests",
     tests = [
-        "//crates/naome-authoring:cli",
-        "//crates/naome-authoring:proof_context",
-        "//crates/naome-authoring:single_language",
-        "//crates/naome-authoring:state_workflow_fixtures",
-        "//crates/naome-authoring:unit_tests",
         "//crates/naome-checker:semantic_oracle",
         "//crates/naome-checker:unit_tests",
         "//crates/naome-foundation:unit_tests",

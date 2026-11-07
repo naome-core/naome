@@ -5,8 +5,10 @@ fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() 
     let mut graph = Graph::default();
     let object = introduce(&mut graph);
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
-    let Some(crate::object::ArtifactTransfer::Certificate(transferred)) =
-        graph.transfer(id).unwrap()
+    let Some(crate::object::ArtifactTransfer::Certificate {
+        object: transferred,
+        ..
+    }) = graph.transfer(id).unwrap()
     else {
         panic!("certificate transfer missing")
     };
@@ -16,7 +18,7 @@ fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() 
     else {
         panic!("certificate description missing")
     };
-    let (described, statement, question) = description.compile().unwrap();
+    let (described, statement, question) = description.compile(graph.checked_context()).unwrap();
     assert_eq!(described, id);
     assert_eq!(
         statement.as_bytes(),
@@ -24,7 +26,7 @@ fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() 
     );
     assert_eq!(
         question.resolution_id(),
-        naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))")
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000")
             .unwrap()
             .resolution_id()
     );
@@ -41,7 +43,8 @@ fn reverse_arrival_dependency_chain_is_checked_once_and_published_atomically() {
     }
     let root = ArtifactId::from_bytes(id_bytes(&objects.last().unwrap().artifact_id).unwrap());
     let mut receiver = Graph::default();
-    let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let candidates = objects
         .iter()
         .rev()
@@ -82,7 +85,9 @@ fn measure_dependency_batch_and_startup() {
         let directory = producer.ownership().directory().to_owned();
         // Keep this original owner for the bounded batch fixtures; reopening
         // measures a separate directory so ownership never overlaps.
-        let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+        let question =
+            naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000")
+                .unwrap();
         let root = ArtifactId::from_bytes(id_bytes(&objects.last().unwrap().artifact_id).unwrap());
         for repeat in 0..3 {
             let receiver = Graph::default();

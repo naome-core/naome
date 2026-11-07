@@ -49,14 +49,14 @@ pub(super) fn evidence_for(state: &State, source: &[Evidence]) -> Vec<Evidence> 
 }
 pub(super) fn admit_discovery(
     graph: &mut crate::Graph,
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     solution: &Solution,
 ) -> Result<bool, crate::Error> {
-    let checked = solution.checked()?.into_checked_proof();
+    let checked = solution.checked()?;
     let outcome = q
         .classify_checked_proof(&checked)
         .map_err(crate::Error::from)?;
-    if solution.refuted != (outcome == naome_authoring::QuestionOutcome::Refuted) {
+    if solution.refuted != (outcome == naome_checker::question::QuestionOutcome::Refuted) {
         return Err("own discovery orientation differs".into());
     }
     let root = crate::object::proof_address(&solution.proof_id)?;
@@ -87,7 +87,7 @@ pub(super) fn acquire(
         serde_json::json!({"event":"own_search_started","job":job,"question":source})
     );
     let started = Instant::now();
-    let q = CompiledQuestion::compile(source).unwrap();
+    let q = ResearchQuestion::from_hex(source).unwrap();
     let generated = engine
         .with(&state.model, store, |runtime| {
             solve_with_report(
@@ -365,20 +365,20 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
 #[test]
 fn repeated_own_discovery_reuses_its_already_checked_graph_root() {
     let source = super::super::tests::own_question();
-    let question = CompiledQuestion::compile(&source).unwrap();
+    let question = ResearchQuestion::from_hex(&source).unwrap();
     let solution = super::super::tests::own_solution();
     let mut graph = crate::Graph::default();
     assert!(admit_discovery(&mut graph, &question, &solution).unwrap());
     let accepted = graph.accepted_count();
     assert!(!admit_discovery(&mut graph, &question, &solution).unwrap());
     assert_eq!(graph.accepted_count(), accepted);
-    let other = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    let other = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(admit_discovery(&mut graph, &other, &solution).is_err());
     assert_eq!(graph.accepted_count(), accepted);
 }
 pub(super) fn contains_question(
     entry: &super::super::knowledge::Entry,
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
 ) -> bool {
     let v = entry.verified().unwrap();
     let matches = |formula: &naome_foundation::Formula| {
@@ -418,7 +418,7 @@ fn evaluate_arm(
             .strip_prefix("composition-helper-")
             .and_then(|s| s.parse::<usize>().ok());
         let required = helper.map(|h| {
-            CompiledQuestion::compile(&curriculum::composition::BANK.helpers[h].source).unwrap()
+            ResearchQuestion::from_hex(&curriculum::composition::BANK.helpers[h].source).unwrap()
         });
         let offered_before = known.len();
         let mut required_present = false;
@@ -429,7 +429,7 @@ fn evaluate_arm(
             }
         }
         let removed_entries = offered_before - known.len();
-        let target = CompiledQuestion::compile(&q.source).unwrap();
+        let target = ResearchQuestion::from_hex(&q.source).unwrap();
         assert!(
             known.iter().all(|entry| !contains_question(entry, &target)),
             "no exact target answer anywhere in the dictionary closure"
@@ -464,7 +464,7 @@ fn evaluate_arm(
         let mut root_steps = 0;
         let mut closure_steps = 0;
         if let Some(solution) = &solution {
-            let actual = solution.checked().unwrap().into_checked_proof();
+            let actual = solution.checked().unwrap();
             assert_eq!(crate::hex(actual.proof_id().as_bytes()), solution.proof_id);
             let target = if solution.refuted {
                 target.refuted_target()

@@ -311,7 +311,8 @@ fn replay_steps(
 }
 pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution, String> {
     let started = std::time::Instant::now();
-    let q = naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+    let q =
+        naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
     let (term, graphs) = compile(q.proved_target(), bytes)?;
     if graphs.is_empty() {
         return Err("peer DAG has no supported ambiguous inference".into());
@@ -373,8 +374,12 @@ mod tests {
     fn native_dag_edges_are_extracted_without_goal_search_and_remain_bound_to_the_artifact() {
         let solution = super::super::tests::own_solution();
         let question = super::super::tests::own_question();
-        let original = naome_authoring::compile(&solution.source).unwrap();
-        let compressed = pack(original.canonical_proof_bytes(), &[]).unwrap();
+        let original = crate::learning::proof::check_artifact(
+            &solution.source,
+            &naome_checker::ArtifactState::new(),
+        )
+        .unwrap();
+        let compressed = pack(original.normal_form().canonical_bytes(), &[]).unwrap();
         let extracted = extract(
             &question,
             &crate::hex(original.artifact_id().as_bytes()),
@@ -384,12 +389,15 @@ mod tests {
         assert_eq!(extracted.cost.search_expansions, 0);
         assert!(extracted.cost.unique_states > 0);
         assert_eq!(
-            naome_authoring::compile(&extracted.source)
-                .unwrap()
-                .proof_id(),
+            crate::learning::proof::check_artifact(
+                &extracted.source,
+                &naome_checker::ArtifactState::new()
+            )
+            .unwrap()
+            .proof_id(),
             original.proof_id()
         );
-        let target = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+        let target = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
         let (_, graphs) = compile(target.proved_target(), &compressed).unwrap();
         assert!(!graphs.is_empty());
         assert!(graphs.iter().all(|g| {
@@ -418,7 +426,7 @@ mod tests {
         );
         eprintln!(
             "peer_dag original_bytes={} compressed_bytes={} steps={} useful_states={}",
-            original.canonical_proof_bytes().len(),
+            original.normal_form().canonical_bytes().len(),
             compressed.len(),
             extracted.cost.original_steps,
             graphs.len()
@@ -428,14 +436,17 @@ mod tests {
     fn admitted_definition_references_keep_exact_native_identity_during_peer_replay() {
         let solution = super::super::tests::own_solution();
         let question = super::super::tests::own_question();
-        let q = naome_authoring::CompiledQuestion::compile(&question).unwrap();
-        let naome_authoring::CompiledArtifact::Definition(definition) =
-            naome_authoring::compile_artifact("def equal=relation(x,y): eq(x,y)").unwrap()
+        let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
+        let naome_proof::ArtifactPayload::Definition(definition) =
+            naome_proof::ArtifactPayload::from_canonical_bytes(
+                &crate::unhex("0100000000020000000b0000000000000000000001").unwrap(),
+            )
+            .unwrap()
         else {
-            panic!("definition");
+            panic!("definition")
         };
         let entry = super::super::definitions::Entry {
-            certificate: definition.canonical_definition_bytes().to_vec(),
+            certificate: definition.canonical_bytes().to_vec(),
             obligation: None,
         };
         let tree = Tree::Definitions {

@@ -352,9 +352,10 @@ impl Graph {
                 .describe_program(id, manifest)
                 .map(crate::object::ArtifactTransfer::Program)
                 .map(Some),
-            None => Ok(Some(crate::object::ArtifactTransfer::Certificate(
-                record.envelope(),
-            ))),
+            None => Ok(Some(crate::object::ArtifactTransfer::Certificate {
+                object: record.envelope(),
+                question: self.exchange_question(id)?,
+            })),
         }
     }
 
@@ -363,13 +364,15 @@ impl Graph {
         id: ArtifactId,
         manifest: Manifest,
     ) -> Result<crate::object::ProgramMetadata, crate::Error> {
-        let question = if self
+        let question = if let Some(question) = self.exchange_question(id)? {
+            Some(question)
+        } else if self
             .context
             .proof_header(manifest.proof_id())
             .map_err(crate::Error::from)?
             .is_some_and(|header| header.canonical_length() != usize::MAX)
         {
-            match self.describe(id) {
+            match self.describe_with_question(id, None) {
                 Ok(metadata) => metadata.map(|metadata| metadata.question),
                 Err(error) if !error.fatal() => None,
                 Err(error) => return Err(error),

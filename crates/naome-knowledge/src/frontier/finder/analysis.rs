@@ -32,7 +32,7 @@ impl Descriptor {
         }
         Ok(())
     }
-    pub fn of(question: &CompiledQuestion) -> Self {
+    pub fn of(question: &ResearchQuestion) -> Self {
         Self {
             features: Features::of(question),
             bindings: bindings(question),
@@ -42,7 +42,7 @@ impl Descriptor {
 
 /// Names never enter this sketch. Each lexical binder has a separate identity,
 /// including shadowed binders and independent quantifiers in sibling branches.
-fn bindings(question: &CompiledQuestion) -> [f32; BINDINGS] {
+fn bindings(question: &ResearchQuestion) -> [f32; BINDINGS] {
     #[derive(Default)]
     struct Sketch {
         scopes: Vec<u64>,
@@ -117,7 +117,7 @@ fn bindings(question: &CompiledQuestion) -> [f32; BINDINGS] {
 }
 
 pub(in crate::frontier) struct Analysis {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     pub descriptor: Descriptor,
     interest: OnceLock<([u8; 32], bool)>,
     fragments: OnceLock<BTreeSet<[u8; 32]>>,
@@ -155,20 +155,22 @@ impl Cache {
             self.bytes -= self.entries.pop_front().expect("charged analysis").bytes;
         }
     }
-    pub fn descriptor(&self, question: &CompiledQuestion) -> Option<&Descriptor> {
+    pub fn descriptor(&self, question: &ResearchQuestion) -> Option<&Descriptor> {
         self.entries
             .iter()
-            .find(|a| a.question.source_hash() == question.source_hash() && a.question == *question)
+            .find(|a| a.question.record_id() == question.record_id() && a.question == *question)
             .map(|a| &a.descriptor)
     }
-    pub fn get(&mut self, question: &CompiledQuestion) -> Result<Arc<Analysis>, crate::Error> {
+    pub fn get(&mut self, question: &ResearchQuestion) -> Result<Arc<Analysis>, crate::Error> {
         self.trim();
         let budget = crate::resources::adaptive::cache(
             crate::resources::active_limits().question_cache_bytes / 2,
         );
-        if let Some(index) = self.entries.iter().position(|a| {
-            a.question.source_hash() == question.source_hash() && a.question == *question
-        }) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|a| a.question.record_id() == question.record_id() && a.question == *question)
+        {
             let entry = self.entries.remove(index).expect("located analysis");
             self.entries.push_back(entry.clone());
             return Ok(entry);
@@ -176,7 +178,7 @@ impl Cache {
         // Includes the compiled source, at most 32 fragment keys, lazy-set
         // allocation overhead and the bounded transient binding sketch.
         let bytes =
-            question.source().len().saturating_mul(8) + 4096 + std::mem::size_of::<Analysis>();
+            question.to_hex().len().saturating_mul(8) + 4096 + std::mem::size_of::<Analysis>();
         while !self.entries.is_empty()
             && (self.bytes.saturating_add(bytes) > budget || self.entries.len() >= 128)
         {

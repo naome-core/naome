@@ -18,7 +18,7 @@ fn cpu_nanos() -> u64 {
     let usage = getrusage(UsageWho::RUSAGE_SELF).expect("read process CPU");
     (usage.user_time().num_microseconds() + usage.system_time().num_microseconds()) as u64 * 1000
 }
-fn pool() -> Vec<CompiledQuestion> {
+fn pool() -> Vec<ResearchQuestion> {
     let x = FreeVariable::new(0);
     let y = FreeVariable::new(1);
     let atoms = [
@@ -27,7 +27,7 @@ fn pool() -> Vec<CompiledQuestion> {
         Formula::negate(Formula::equal(x, x)),
     ];
     let mut questions = (0..2)
-        .map(|i| CompiledQuestion::compile(&crate::mocks::create_question(i)).unwrap())
+        .map(|i| ResearchQuestion::from_hex(&crate::mocks::create_question(i)).unwrap())
         .collect::<Vec<_>>();
     for left in &atoms {
         for right in &atoms {
@@ -49,7 +49,7 @@ fn pool() -> Vec<CompiledQuestion> {
                 }
                 .formula()
                 .unwrap();
-                questions.push(CompiledQuestion::from_formula(formula).unwrap());
+                questions.push(ResearchQuestion::from_formula(formula).unwrap());
             }
         }
     }
@@ -58,7 +58,7 @@ fn pool() -> Vec<CompiledQuestion> {
         for variable in variables.iter().rev() {
             formula = Formula::for_all(*variable, formula);
         }
-        CompiledQuestion::from_formula(formula).unwrap()
+        ResearchQuestion::from_formula(formula).unwrap()
     };
     questions.extend([
         close(&[x], Formula::member(x, x)),
@@ -79,7 +79,7 @@ fn pool() -> Vec<CompiledQuestion> {
             ),
         ),
         close(&[x], Formula::exists(y, Formula::member(x, y))),
-        CompiledQuestion::from_formula(Formula::exists(
+        ResearchQuestion::from_formula(Formula::exists(
             x,
             Formula::for_all(y, Formula::member(y, x)),
         ))
@@ -93,10 +93,11 @@ fn pool() -> Vec<CompiledQuestion> {
     questions.retain(|q| seen.insert(*q.resolution_id()));
     questions
 }
-fn held_out() -> Vec<CompiledQuestion> {
+fn held_out() -> Vec<ResearchQuestion> {
     let x = FreeVariable::new(0);
     let y = FreeVariable::new(1);
-    let mut questions = vec![CompiledQuestion::compile(&crate::mocks::create_question(2)).unwrap()];
+    let mut questions =
+        vec![ResearchQuestion::from_hex(&crate::mocks::create_question(2)).unwrap()];
     for predicate in [
         Formula::member(x, y),
         Formula::implies(Formula::member(x, x), Formula::member(y, x)),
@@ -111,7 +112,7 @@ fn held_out() -> Vec<CompiledQuestion> {
         }
         .formula()
         .unwrap();
-        questions.push(CompiledQuestion::from_formula(formula).unwrap());
+        questions.push(ResearchQuestion::from_formula(formula).unwrap());
     }
     questions
 }
@@ -185,7 +186,7 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
         explored_families.insert(features.family);
         let output = crate::mocks::create_proof(target)
             .map(|source| jobs::Output::Proof {
-                source,
+                proof: source,
                 helpers: vec![],
             })
             .unwrap_or(jobs::Output::NoCandidate);
@@ -207,7 +208,11 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
         frontier
             .attempted(target, &graph, &completion, outcome)
             .unwrap();
-        if let jobs::Output::Proof { source, helpers } = output {
+        if let jobs::Output::Proof {
+            proof: source,
+            helpers,
+        } = output
+        {
             let (root, batch) = graph.prepare_generated(&source, &helpers, target).unwrap();
             frontier.prepared(target, attempts, root).unwrap();
             graph

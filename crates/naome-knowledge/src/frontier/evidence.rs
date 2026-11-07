@@ -7,7 +7,7 @@ mod experience;
 pub(crate) use experience::tests::observed_completion;
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
-const MAX_RECORD: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 4096;
+const MAX_RECORD: usize = 6 * naome_checker::question::QUESTION_BYTES + 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Outcome {
@@ -93,14 +93,14 @@ impl Record {
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
     fn validate(&self, key: &str, observations: u64) -> Result<(), String> {
-        let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
+        let question = ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
         experience::record(&question, self)?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err("research evidence identity differs".into());
         }
         if self.helpers.len() > 4
             || self.helpers.iter().map(String::len).sum::<usize>()
-                > 4 * naome_authoring::QUESTION_SOURCE_MAX_BYTES
+                > 4 * (2 * naome_checker::question::QUESTION_BYTES)
         {
             return Err("research helper plan capacity".into());
         }
@@ -108,10 +108,10 @@ impl Record {
             frontier.validate(&question)?;
         }
         for source in &self.helpers {
-            let helper = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+            let helper = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
             if helper.resolution_id() == question.resolution_id()
                 || !crate::learning::State::eligible(source)
-                || !crate::learning::State::eligible(question.source())
+                || !crate::learning::State::eligible(&question.to_hex())
             {
                 return Err("research helper plan source differs".into());
             }
@@ -141,7 +141,7 @@ impl Record {
         Ok(())
     }
 }
-fn record_key(solver: &str, question: &CompiledQuestion) -> String {
+fn record_key(solver: &str, question: &ResearchQuestion) -> String {
     let mut hash = sha2::Sha256::new();
     hash.update(solver.as_bytes());
     hash.update(question.resolution_id());
@@ -288,7 +288,7 @@ impl Evidence {
                     record.verified = record.prepared.clone();
                     record.verified_job = record.last_job;
                     let question =
-                        CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
+                        ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
                     self.put_observation(&question, &record, Some((true, record.verified_ms)))
                         .map_err(|e| e.to_string())?;
                 }
@@ -296,7 +296,7 @@ impl Evidence {
             }
         }
     }
-    pub(super) fn get(&self, question: &CompiledQuestion) -> Result<Option<Record>, crate::Error> {
+    pub(super) fn get(&self, question: &ResearchQuestion) -> Result<Option<Record>, crate::Error> {
         let key = record_key(&self.solver, question);
         let record: Option<Record> = self.checkpoint.get("question", &key, MAX_RECORD)?;
         if let Some(record) = &record {
@@ -326,7 +326,7 @@ impl Evidence {
     pub(super) fn selected_question(
         &mut self,
         random: u64,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         recipe: Option<finder::Recipe>,
     ) -> Result<(), crate::Error> {
         self.select(random, Some((question, recipe)))
@@ -334,7 +334,7 @@ impl Evidence {
     fn select(
         &mut self,
         random: u64,
-        question: Option<(&CompiledQuestion, Option<finder::Recipe>)>,
+        question: Option<(&ResearchQuestion, Option<finder::Recipe>)>,
     ) -> Result<(), crate::Error> {
         let mut next = Header {
             random,
@@ -368,12 +368,12 @@ impl Evidence {
             .commit(header, updates)
             .map_err(crate::Error::from)
     }
-    fn put(&mut self, question: &CompiledQuestion, record: &Record) -> Result<(), crate::Error> {
+    fn put(&mut self, question: &ResearchQuestion, record: &Record) -> Result<(), crate::Error> {
         self.put_observation(question, record, None)
     }
     fn put_observation(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         record: &Record,
         observation: Option<(bool, u64)>,
     ) -> Result<(), crate::Error> {
@@ -389,7 +389,7 @@ impl Evidence {
             } else if !resolved && record.first_unresolved_at == 0 {
                 record.first_unresolved_at = header.observations;
             }
-            if crate::learning::State::eligible(question.source()) {
+            if crate::learning::State::eligible(&question.to_hex()) {
                 header
                     .learning
                     .observe(&mut header.model, question, resolved, millis)?;
@@ -423,7 +423,7 @@ impl Evidence {
     }
     pub(super) fn attempted(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         knowledge: [u8; 32],
         completion: &jobs::Completion,
         outcome: Outcome,
@@ -433,7 +433,7 @@ impl Evidence {
         }
         let experience = experience::completion(question, completion, outcome)?;
         let mut record = self.get(question)?.unwrap_or(Record {
-            question: question.source().into(),
+            question: question.to_hex(),
             model_checkpoint: None,
             experience: None,
             solver: self.solver.clone(),
@@ -518,7 +518,7 @@ impl Evidence {
                 frontier: Some(frontier),
                 ..
             }) = &completion.result
-            && crate::learning::State::eligible(question.source())
+            && crate::learning::State::eligible(&question.to_hex())
         {
             frontier.validate(question)?;
             for helper in finder::from_frontier(
@@ -531,10 +531,10 @@ impl Evidence {
                     break;
                 }
                 if !record.helpers.iter().any(|source| {
-                    CompiledQuestion::compile(source)
+                    ResearchQuestion::from_hex(source)
                         .is_ok_and(|q| q.resolution_id() == helper.resolution_id())
                 }) {
-                    record.helpers.push(helper.source().to_owned());
+                    record.helpers.push(helper.to_hex());
                 }
             }
             record.frontier = Some(frontier.clone());
@@ -547,7 +547,7 @@ impl Evidence {
     }
     pub(super) fn abandon_publication(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
     ) -> Result<(), crate::Error> {
         if let Some(mut record) = self.get(question)?
@@ -563,8 +563,8 @@ impl Evidence {
     /// root's four-question allowance or replace previously attempted members.
     pub(super) fn admit_loop_member(
         &mut self,
-        goal: &CompiledQuestion,
-        helper: &CompiledQuestion,
+        goal: &ResearchQuestion,
+        helper: &ResearchQuestion,
     ) -> Result<bool, crate::Error> {
         let Some(record) = self.get(goal)? else {
             return Ok(false);
@@ -593,7 +593,7 @@ impl Evidence {
     }
     pub(super) fn plan_members(
         &self,
-        goal: &CompiledQuestion,
+        goal: &ResearchQuestion,
     ) -> Result<Vec<String>, crate::Error> {
         let key = record_key(&self.header.model_contract, goal);
         let Some(plan): Option<Plan> = self.checkpoint.get("plan", &key, 1024)? else {
@@ -620,7 +620,7 @@ impl Evidence {
     }
     pub(super) fn exhaust_helpers(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<(), crate::Error> {
         if let Some(mut record) = self.get(question)? {
             record.loop_disabled = true;
@@ -630,7 +630,7 @@ impl Evidence {
     }
     pub(super) fn prepared(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
         root: ArtifactId,
     ) -> Result<(), crate::Error> {
@@ -648,7 +648,7 @@ impl Evidence {
     }
     pub(super) fn rejected(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
     ) -> Result<(), crate::Error> {
         let Some(mut record) = self.get(question)? else {
@@ -667,7 +667,7 @@ impl Evidence {
     }
     pub(super) fn verified(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
         root: ArtifactId,
     ) -> Result<Option<(u32, u64)>, crate::Error> {
@@ -695,14 +695,14 @@ impl Evidence {
     /// checked targets and their actual dependency edge have been established.
     pub(super) fn support(
         &mut self,
-        goal: &CompiledQuestion,
-        actual_goal: &CompiledQuestion,
+        goal: &ResearchQuestion,
+        actual_goal: &ResearchQuestion,
         job: u64,
         root: ArtifactId,
         dependency: ArtifactId,
-        mut checked: impl FnMut(&CompiledQuestion) -> Result<Option<CompiledQuestion>, crate::Error>,
-    ) -> Result<Option<CompiledQuestion>, crate::Error> {
-        if !crate::learning::State::eligible(goal.source()) {
+        mut checked: impl FnMut(&ResearchQuestion) -> Result<Option<ResearchQuestion>, crate::Error>,
+    ) -> Result<Option<ResearchQuestion>, crate::Error> {
+        if !crate::learning::State::eligible(&goal.to_hex()) {
             return Ok(None);
         }
         let Some(consumer) = self.get(goal)? else {
@@ -733,7 +733,7 @@ impl Evidence {
         {
             return Ok(None);
         }
-        let question = CompiledQuestion::compile(&producer.question).map_err(|e| e.to_string())?;
+        let question = ResearchQuestion::from_hex(&producer.question).map_err(|e| e.to_string())?;
         let Some(actual_lemma) = checked(&question)? else {
             return Ok(None);
         };
@@ -768,7 +768,7 @@ impl Evidence {
             .observations
             .checked_add(1)
             .ok_or("finder observation overflow")?;
-        if crate::learning::State::eligible(question.source()) {
+        if crate::learning::State::eligible(&question.to_hex()) {
             header.model.support(&question)?;
             header.learning.support(&mut header.model, &question)?;
         }

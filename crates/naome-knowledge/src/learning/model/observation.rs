@@ -17,7 +17,8 @@ pub(in crate::learning) fn own_sources(job: &Job) -> Vec<Source> {
         .map(|example| {
             assert!(matches!(example.origin, Origin::Local));
             assert!(curriculum::owned::case(&example.question).is_some());
-            let question = naome_authoring::CompiledQuestion::compile(&example.question).unwrap();
+            let question =
+                naome_checker::question::ResearchQuestion::from_hex(&example.question).unwrap();
             let target = if example.refuted {
                 question.refuted_target()
             } else {

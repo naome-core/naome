@@ -20,12 +20,12 @@ pub(super) fn generate(
     state: &State,
     engine: &mut Engine,
     io: &mut sources::history::Io<'_>,
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     job: u64,
 ) -> Result<(Generation, jobs::Completion), String> {
     let wall = Instant::now();
     let generation = engine.with(&state.model, io, |runtime| {
-        solve_with_report(q.source(), runtime, SEARCH, job, context(state))
+        solve_with_report(&q.to_hex(), runtime, SEARCH, job, context(state))
     })?;
     let completion = completed_search(
         state,
@@ -45,7 +45,7 @@ pub(super) fn record(
     graph: &mut crate::Graph,
     io: &mut sources::history::Io<'_>,
     meter: &mut Meter,
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     generation: Generation,
     completion: jobs::Completion,
     job: u64,
@@ -59,7 +59,7 @@ pub(super) fn record(
     let acquisition = state.clone();
     holdout.question(q, Some(authored))?;
     let observation = experience::Observation {
-        question: q.source().to_owned(),
+        question: q.to_hex(),
         summary: completion
             .experience
             .ok_or("native execution lacks its observation")?,
@@ -89,7 +89,7 @@ pub(super) fn record(
                 Example {
                     origin: Origin::Local,
                     job,
-                    question: q.source().into(),
+                    question: q.to_hex(),
                     proof_id: solution.proof_id.clone(),
                     refuted: solution.refuted,
                     tree: solution.tree.clone(),
@@ -104,7 +104,7 @@ pub(super) fn record(
         meter.write(&path.join(format!("accepted-{job}.json")), solution)?;
     }
     state.observe_result(
-        q.source(),
+        &q.to_hex(),
         episode.solution.is_some(),
         &generation.diagnostic,
         generation.cost.generation_micros,
@@ -114,7 +114,7 @@ pub(super) fn record(
     // Disk::save_with. Its growth must be paid before the next source snapshot.
     state.compact()?;
     state.validate()?;
-    let row = json!({"job":job,"question":q.source(),"resolution":crate::hex(q.resolution_id()),
+    let row = json!({"job":job,"question":q.to_hex(),"resolution":crate::hex(q.resolution_id()),
         "family":curriculum::owned::family(q.proved_target()),"acquisition_model":acquisition.model,
         "acquisition_state_sha256":digest(&acquisition),"solved":episode.solution.is_some(),
         "proof_id":episode.solution.as_ref().map(|s| &s.proof_id),"new_resolution":new_resolution,
@@ -143,11 +143,11 @@ fn execute(
         .into_iter()
         .filter(|case| State::eligible(&case.source))
         .filter(|case| {
-            CompiledQuestion::compile(&case.source)
+            ResearchQuestion::from_hex(&case.source)
                 .is_ok_and(|q| holdout.question(&q, Some(&case.dependency)).is_ok())
         })
         .filter(|case| {
-            CompiledQuestion::compile(&case.source)
+            ResearchQuestion::from_hex(&case.source)
                 .is_ok_and(|q| bootstrap_seen.insert(crate::hex(q.resolution_id())))
         })
         .take(48)
@@ -159,7 +159,7 @@ fn execute(
         .into_iter()
         .chain(&curriculum::adaptive::BANK.transfer)
     {
-        let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
         holdout.question(&q, Some(&case.dependency))?;
     }
     let mut state = State::fresh();
@@ -185,7 +185,7 @@ fn execute(
     for case in bootstrap {
         job += 1;
         run::available(&mut meter, &io, &mut observer, output)?;
-        let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
         let (generation, completion) = generate(&state, &mut engine, &mut io, &q, job)?;
         preparation.push(record(
             &mut state,

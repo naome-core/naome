@@ -40,8 +40,8 @@ pub(super) fn validate_source(
     example: &crate::learning::Example,
     source: &Record,
 ) -> Result<(), String> {
-    let q =
-        naome_authoring::CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+    let q = naome_checker::question::ResearchQuestion::from_hex(&example.question)
+        .map_err(|e| e.to_string())?;
     if c.get::<u64>("sample", &crate::hex(q.resolution_id()), 64)?
         .is_none()
         || c.get::<u64>("replay_seen", &example.proof_id, 64)? != Some(example.job)
@@ -363,7 +363,7 @@ fn validate_peer(
         return Err("peer admission compressed capacity".into());
     }
     if let Some(question) = &a.question {
-        naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+        naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
     }
     let pending = c.get::<PeerAdmission>(
         "peer_pending",
@@ -418,7 +418,8 @@ fn validate_sample(
         Input::Peer { question, .. } => (true, question),
         _ => return Err("native sample source role differs".into()),
     };
-    let q = naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+    let q =
+        naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
     if key != crate::hex(q.resolution_id())
         || !crate::learning::State::eligible(question)
         || source.state != State::Complete

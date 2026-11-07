@@ -1,5 +1,5 @@
 //! Checked structural coverage for bounded replay retention, never model inputs.
-use super::{CompiledQuestion, Example, digest, graph::Graph, search};
+use super::{Example, ResearchQuestion, digest, graph::Graph, search};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -109,7 +109,7 @@ impl Profile {
         }) {
             return Ok(profile);
         }
-        let q = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
         let target = if example.refuted {
             q.refuted_target()
         } else {

@@ -1,5 +1,5 @@
 use super::*;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 #[cfg(test)]
 thread_local! { static DEPENDENCY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]
@@ -18,6 +18,7 @@ pub(crate) struct CheckedBatch {
     pub(super) context_bytes: usize,
     pub(super) _disk: crate::resources::DiskLease,
     pub(super) payload_bytes: usize,
+    pub(super) questions: BTreeMap<ArtifactId, Vec<u8>>,
 }
 
 impl CheckedBatch {
@@ -27,48 +28,45 @@ impl CheckedBatch {
 }
 
 impl Graph {
-    /// Check returned native sources in one bounded temporary context, then
+    /// Check returned canonical artifacts in one bounded temporary context, then
     /// require the exact root and its complete actual cited closure. No helper
     /// is published or persisted before the final checked batch commit.
     pub(crate) fn prepare_generated(
         &self,
         source: &str,
         helpers: &[String],
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<(ArtifactId, CheckedBatch), crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
         // Capture before helper preparation can write immutable staged nodes.
         // The shared batch path must never refresh this token after a copy starts.
-        if source.len() > crate::resources::limits().proof_bytes
+        if source.len() > 2 * crate::resources::limits().proof_bytes
             || helpers.len() >= crate::resources::limits().closure_objects
             || helpers
                 .iter()
-                .any(|s| s.len() > crate::resources::limits().proof_bytes)
+                .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
             || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                > crate::resources::limits().closure_bytes
+                > 2 * crate::resources::limits().closure_bytes
         {
-            return Err("generated closure source capacity".into());
+            return Err("generated closure input capacity".into());
         }
         let mut preparation = Preparation::new(
             self,
             None,
-            source.len() + helpers.iter().map(String::len).sum::<usize>(),
+            (source.len() + helpers.iter().map(String::len).sum::<usize>()) / 2,
             helpers.len() + 1,
         )?;
         let mut steps = 0usize;
         let mut bytes = 0usize;
         let mut root = None;
-        // Compilation returns a sealed CheckedProof. Keep that result rather
-        // than converting it to transport syntax and invoking Checker again.
         for (position, source) in helpers
             .iter()
             .map(String::as_str)
             .chain(std::iter::once(source))
             .enumerate()
         {
-            let checked =
-                CheckedArtifact::from_compiled(self.compile_source(source, preparation.context())?);
+            let checked = self.check_input(source, preparation.context())?;
             let record = checked.record(preparation.context())?;
             let id = record.id;
             steps = steps
@@ -88,7 +86,7 @@ impl Graph {
                 return Err("generated closure checker work capacity".into());
             }
             root = Some(id);
-            // The final compilation is the root. All helpers must belong to
+            // The last checked artifact is the root. All helpers must belong to
             // its actual cited closure; no unrelated checked helper is admitted.
             if position == helpers.len() {
                 question
@@ -121,7 +119,7 @@ impl Graph {
         &self,
         root: ArtifactId,
         candidates: BTreeMap<ArtifactId, Candidate>,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
@@ -132,7 +130,7 @@ impl Graph {
         &self,
         root: ArtifactId,
         mut candidates: BTreeMap<ArtifactId, Candidate>,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         prefix: Option<CheckedBatch>,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
@@ -222,6 +220,36 @@ impl Graph {
         Ok(preparation.into_prefix())
     }
 
+    /// Bind optional peer metadata to each independently checked member. A
+    /// bad hint has no effect on mathematical admission of its parent.
+    pub(crate) fn retain_helper_questions<'a>(
+        &self,
+        batch: &mut CheckedBatch,
+        sources: impl IntoIterator<Item = (ArtifactId, &'a str)>,
+    ) -> Result<(), crate::Error> {
+        for (id, source) in sources {
+            if !batch.edges.contains_key(&id) {
+                continue;
+            }
+            let Ok(question) = ResearchQuestion::from_hex_with_context(source, &batch.context)
+            else {
+                continue;
+            };
+            if !question.dependencies().is_empty()
+                && self.cold(Self::context_resolves_question(
+                    &batch.context,
+                    id,
+                    &question,
+                ))?
+            {
+                batch
+                    .questions
+                    .insert(id, question.canonical_bytes().to_vec());
+            }
+        }
+        self.ensure_live()
+    }
+
     /// Commit a prepared delta against its exact checked base, then publish
     /// only infallible roots/scalars. No caller can apply an uncommitted batch.
     #[cfg(test)]
@@ -231,15 +259,16 @@ impl Graph {
         batch: CheckedBatch,
         deadline: Instant,
     ) -> Result<Vec<ArtifactId>, crate::Error> {
-        self.commit_batch_granted(root, batch, deadline, None)
+        self.commit_batch_granted(root, batch, deadline, None, None)
     }
 
     pub(crate) fn commit_batch_granted(
         &mut self,
         root: ArtifactId,
-        batch: CheckedBatch,
+        mut batch: CheckedBatch,
         deadline: Instant,
         peer: Option<PeerGrant>,
+        question: Option<&ResearchQuestion>,
     ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         self.publication_current()?;
@@ -263,12 +292,30 @@ impl Graph {
         }
         batch._disk.recheck(self.store.directory())?;
         batch.require_closure(self, root)?;
+        if let Some(question) = question
+            && (question.dependencies().is_empty()
+                || !self.cold(Self::context_resolves_question(
+                    &batch.context,
+                    root,
+                    question,
+                ))?)
+        {
+            return Err("exchange question does not bind the checked root".into());
+        }
+        if let Some(question) = question {
+            batch
+                .questions
+                .insert(root, question.canonical_bytes().to_vec());
+        }
         let storage = self.checked_storage.clone();
         let gate = self.cold(storage.write_gate())?;
         batch.stamp.check_at_gate(self, gate.epoch())?;
         let admitted: Vec<_> = batch.entries.iter().map(|(id, _)| *id).collect();
         let result = self.store.persist_binary_batch(
-            root,
+            crate::store::Publication {
+                root,
+                questions: &batch.questions,
+            },
             batch.entries.iter().map(|(_, object)| object),
             self.fixed_summary(),
             Some(deadline),

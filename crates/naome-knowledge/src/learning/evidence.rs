@@ -216,15 +216,13 @@ pub fn steps(bytes: &[u8]) -> Result<usize, String> {
 }
 pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, String> {
     let verified = checked(bytes)?;
-    let mut sources = verified
-        .definitions
-        .iter()
-        .map(|e| e.source(&[]))
-        .collect::<Result<Vec<_>, _>>()?;
-    sources.extend(proof::lemma_sources(
-        &verified.definitions,
-        &verified.lemmas,
-    )?);
+    let mut sources = Vec::new();
+    super::definitions::append_artifacts(&verified.definitions, &mut sources)?;
+    for lemma in proof::lemma_sources(&verified.definitions, &verified.lemmas)? {
+        if !sources.contains(&lemma) {
+            sources.push(lemma);
+        }
+    }
     Ok(sources)
 }
 

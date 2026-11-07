@@ -10,7 +10,7 @@ fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() 
         native_proof_learning: true,
         ..Default::default()
     };
-    let target = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let target = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
     frontier.initial_parameters(91).unwrap();
     frontier.freeze_parameters();
@@ -44,8 +44,8 @@ fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() 
     );
 }
 
-fn question(index: u64) -> CompiledQuestion {
-    CompiledQuestion::compile(&mocks::create_question(index)).unwrap()
+fn question(index: u64) -> ResearchQuestion {
+    ResearchQuestion::from_hex(&mocks::create_question(index)).unwrap()
 }
 fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Completion {
     jobs::Completion {
@@ -61,7 +61,7 @@ fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Comple
 }
 
 fn native_failure(
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     id: u64,
     frontier: Option<crate::learning::SearchFrontier>,
 ) -> jobs::Completion {
@@ -85,7 +85,7 @@ fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
         ..Default::default()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
-    let target = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let target = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     frontier
         .attempted(
             &target,
@@ -134,7 +134,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
         native_proof_learning: true,
         ..Default::default()
     };
-    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let question = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     let initial = frontier.evidence.model().clone();
     assert!(!frontier.helpers_needed(&question).unwrap());
@@ -171,7 +171,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
     let result = completion(
         5,
         jobs::Output::Proof {
-            source: solution.source.clone(),
+            proof: solution.source.clone(),
             helpers: vec![],
         },
         jobs::State::Complete,
@@ -207,7 +207,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
         64 * 1024,
         &mut |_| true,
     );
-    let identities = |questions: Vec<CompiledQuestion>| {
+    let identities = |questions: Vec<ResearchQuestion>| {
         questions
             .into_iter()
             .take(generated.len())
@@ -229,7 +229,7 @@ fn finder_reopens_a_durable_observation_once_after_uncertain_acknowledgement() {
         native_proof_learning: true,
         ..Default::default()
     };
-    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let question = ResearchQuestion::from_hex(&crate::learning::tests::own_question()).unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     let result = native_failure(&question, 1, None);
     crate::checkpoint::fail_after_commit();
@@ -248,7 +248,7 @@ fn finder_reopens_a_durable_observation_once_after_uncertain_acknowledgement() {
     assert_eq!(frontier.evidence.model().updates, 1);
     assert_eq!(frontier.evidence.model().resolved, 0);
 }
-fn checked(graph: &mut Graph, question: &CompiledQuestion) -> ArtifactId {
+fn checked(graph: &mut Graph, question: &ResearchQuestion) -> ArtifactId {
     graph
         .produce(&mocks::create_proof(question).unwrap())
         .unwrap()
@@ -258,10 +258,10 @@ fn checked(graph: &mut Graph, question: &CompiledQuestion) -> ArtifactId {
 
 #[test]
 fn structure_ignores_spelling_and_preserves_generalizations_as_candidates() {
-    let a = CompiledQuestion::compile("goal = all(x,imp(mem(x,x),eq(x,x)))").unwrap();
-    let b = CompiledQuestion::compile("goal=all(y, imp(mem(y,y), eq(y,y)))").unwrap();
+    let a = ResearchQuestion::from_hex("040301010000000001000000000001000000000100000000").unwrap();
+    let b = ResearchQuestion::from_hex("040301010000000001000000000001000000000100000000").unwrap();
     let generalized =
-        CompiledQuestion::compile("goal=all(x,all(y,imp(mem(x,y),eq(x,y))))").unwrap();
+        ResearchQuestion::from_hex("04040301010000000101000000000001000000010100000000").unwrap();
     assert_eq!(Features::of(&a), Features::of(&b));
     assert_ne!(Features::of(&a), Features::of(&generalized));
     let directory = Directory::new();
@@ -290,7 +290,7 @@ fn received_knowledge_changes_coverage_without_claiming_local_ability() {
     let common = frontier
         .weight(&question(0), &graph, jobs::RoleSettings::default())
         .unwrap();
-    let rare = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    let rare = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(
         frontier
             .weight(&rare, &graph, jobs::RoleSettings::default())
@@ -309,9 +309,10 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
         ..jobs::Settings::default()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
-    let easy = CompiledQuestion::compile("goal=all(a,imp(mem(a,a),mem(a,a)))").unwrap();
-    let hard = CompiledQuestion::compile(
-        "goal=all(x,all(y,imp(mem(x,y),imp(mem(y,x),and(mem(x,y),mem(y,x))))))",
+    let easy =
+        ResearchQuestion::from_hex("040301010000000001000000000101000000000100000000").unwrap();
+    let hard = ResearchQuestion::from_hex(
+        "040403010100000001010000000003010100000000010000000102030101000000010100000000020101000000000100000001",
     )
     .unwrap();
     let mut feedback = crate::training::ability::Feedback::fresh("11".repeat(32));
@@ -381,7 +382,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     let result = completion(
         2,
         jobs::Output::Proof {
-            source: "invalid proof".into(),
+            proof: "invalid proof".into(),
             helpers: vec![],
         },
         jobs::State::Complete,
@@ -438,7 +439,7 @@ fn fresh_checked_exact_solutions_restore_ability_and_random_state_after_restart(
     let result = completion(
         1,
         jobs::Output::Proof {
-            source,
+            proof: source,
             helpers: vec![],
         },
         jobs::State::Complete,
@@ -470,11 +471,11 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
     let directory = Directory::new();
     let mut graph = Graph::default();
     graph
-        .produce("def member_self = relation(x): mem(x,x)")
+        .produce("0100000000010000000b0100000000000000000000")
         .unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
-    let goal = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
+    let goal = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(
         frontier
             .candidate_page(0, |_| true)
@@ -516,7 +517,7 @@ async fn live_autonomy_uses_the_frontier_and_excludes_checked_answers_and_regist
     else {
         panic!("finding work was not submitted");
     };
-    let candidate = CompiledQuestion::compile(source).unwrap();
+    let candidate = ResearchQuestion::from_hex(source).unwrap();
     assert_ne!(candidate.resolution_id(), question(0).resolution_id());
     owner.complete(*id, Ok(jobs::Output::Question(source.clone())));
     autonomous.advance(&mut graph, &mut questions);
@@ -540,7 +541,7 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     let result = completion(
         1,
         jobs::Output::Proof {
-            source: mocks::create_proof(&target).unwrap(),
+            proof: mocks::create_proof(&target).unwrap(),
             helpers: vec![],
         },
         jobs::State::Complete,
@@ -575,7 +576,8 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
 fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_bound_counts() {
     let directory = Directory::new();
     let graph = Graph::default();
-    let target = CompiledQuestion::compile("goal=all(x,imp(mem(x,x),eq(x,x)))").unwrap();
+    let target =
+        ResearchQuestion::from_hex("040301010000000001000000000001000000000100000000").unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
     frontier
@@ -585,7 +587,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
         .attempted(&target, &graph, &result, Outcome::NoCandidate)
         .unwrap();
     assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
-    let helper = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let helper = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     assert!(
         frontier
             .candidate_page(0, |_| true)
@@ -650,7 +652,8 @@ fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjecture
         ),
         &mut |_| true,
     );
-    let expected = CompiledQuestion::compile("goal=all(y,all(x,imp(eq(y,x),mem(x,y))))").unwrap();
+    let expected =
+        ResearchQuestion::from_hex("04040300010000000101000000000101000000000100000001").unwrap();
     assert!(
         frontier
             .candidate_page(0, |_| true)
@@ -695,10 +698,10 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
     let mut pending = std::collections::BTreeSet::new();
     for _ in 0..3 {
         let mut diagnostics = Vec::new();
-        let mut eligible = |question: &CompiledQuestion| {
+        let mut eligible = |question: &ResearchQuestion| {
             let decision = formal.assess(&graph, question);
             if diagnostics.len() < 12 {
-                diagnostics.push((question.source().to_owned(), decision.rule, decision.reason));
+                diagnostics.push((question.to_hex(), decision.rule, decision.reason));
             }
             !pending.contains(question.resolution_id()) && decision.passed()
         };
@@ -719,7 +722,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
         let bytes = frontier
             .proposals
             .iter()
-            .map(|q| q.source().len() * 8 + 256)
+            .map(|q| q.canonical_bytes().len() * 8 + 256)
             .sum::<usize>();
         assert!(bytes <= crate::resources::active_limits().question_cache_bytes / 4);
     }
@@ -745,7 +748,7 @@ async fn backlog_ranking_checks_only_the_selected_target_before_provider_work() 
         }
         .formula()
         .unwrap();
-        backlog.push(CompiledQuestion::from_formula(formula).unwrap());
+        backlog.push(ResearchQuestion::from_formula(formula).unwrap());
         predicate = Formula::implies(predicate, Formula::equal(x, x));
     }
     let mut questions =
@@ -779,41 +782,95 @@ async fn backlog_ranking_checks_only_the_selected_target_before_provider_work() 
 
 fn helper_use_fixture() -> (
     Graph,
-    CompiledQuestion,
+    ResearchQuestion,
     ArtifactId,
-    CompiledQuestion,
+    ResearchQuestion,
     String,
 ) {
     let mut graph = Graph::default();
-    let lemma =
-        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))")
-            .unwrap();
-    let source = format!(
-        "{} proof: p0=subst(a,b,mem(a,c)) p1=gen(p0,c) p2=gen(p1,b) p3=gen(p2,a) return p3",
-        lemma.source()
-    );
+    let lemma = ResearchQuestion::from_hex(
+        "0404040300010000000201000000010301010000000201000000000101000000010100000000",
+    )
+    .unwrap();
+    use crate::test_inputs::{proof, variable};
+    use naome_foundation::Formula;
+    use naome_proof::ProofStep::{
+        EqualitySubstitution, Generalization, ModusPonens, ProofReference, UniversalInstantiation,
+    };
+    let (a, b, c) = (variable(0), variable(1), variable(2));
+    let source = proof(vec![
+        EqualitySubstitution {
+            from: a,
+            to: b,
+            body: Formula::member(a, c).into(),
+        },
+        Generalization {
+            premise: 0,
+            variable: c,
+        },
+        Generalization {
+            premise: 1,
+            variable: b,
+        },
+        Generalization {
+            premise: 2,
+            variable: a,
+        },
+    ]);
     let (artifact, admitted) = graph.produce(&source).unwrap();
-    let proof = crate::hex(artifact.proof_id().unwrap().unwrap().as_bytes());
-    let goal = CompiledQuestion::compile("goal=all(a,all(b,imp(eq(a,b),imp(mem(a,a),mem(b,a)))))")
-        .unwrap();
-    let consumer = format!(
-        r#"{} proof:
-        p0=cite("{}")
-        p1=inst(a,a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))
-        p2=mp(p0,p1)
-        p3=inst(b,b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c)))))
-        p4=mp(p2,p3)
-        p5=inst(c,a,imp(eq(a,b),imp(mem(a,c),mem(b,c))))
-        p6=mp(p4,p5) p7=gen(p6,b) p8=gen(p7,a) return p8"#,
-        goal.source(),
-        proof
+    let proof_id = artifact.proof_id().unwrap().unwrap();
+    let body = Formula::implies(
+        Formula::equal(a, b),
+        Formula::implies(Formula::member(a, c), Formula::member(b, c)),
     );
+    let goal = crate::test_inputs::question(Formula::for_all(
+        a,
+        Formula::for_all(b, body.clone().substitute_free(c, a)),
+    ));
+    let consumer = proof(vec![
+        ProofReference { proof_id },
+        UniversalInstantiation {
+            variable: a,
+            replacement: a,
+            body: Formula::for_all(b, Formula::for_all(c, body.clone())).into(),
+        },
+        ModusPonens {
+            premise: 0,
+            implication: 1,
+        },
+        UniversalInstantiation {
+            variable: b,
+            replacement: b,
+            body: Formula::for_all(c, body.clone()).into(),
+        },
+        ModusPonens {
+            premise: 2,
+            implication: 3,
+        },
+        UniversalInstantiation {
+            variable: c,
+            replacement: a,
+            body: body.into(),
+        },
+        ModusPonens {
+            premise: 4,
+            implication: 5,
+        },
+        Generalization {
+            premise: 6,
+            variable: b,
+        },
+        Generalization {
+            premise: 7,
+            variable: a,
+        },
+    ]);
     assert!(
-        crate::learning::State::eligible(lemma.source()),
+        crate::learning::State::eligible(&lemma.to_hex()),
         "lemma must be eligible"
     );
     assert!(
-        crate::learning::State::eligible(goal.source()),
+        crate::learning::State::eligible(&goal.to_hex()),
         "goal must be eligible"
     );
     (graph, lemma, admitted.id, goal, consumer)
@@ -821,14 +878,14 @@ fn helper_use_fixture() -> (
 fn record_checked(
     frontier: &mut Frontier,
     graph: &Graph,
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     job: u64,
     root: ArtifactId,
 ) {
     let result = completion(
         job,
         jobs::Output::Proof {
-            source: String::new(),
+            proof: String::new(),
             helpers: vec![],
         },
         jobs::State::Complete,
@@ -861,7 +918,7 @@ fn checked_helper_support_is_durable_atomic_and_requires_an_earlier_unsolved_goa
     let result = completion(
         3,
         jobs::Output::Proof {
-            source: consumer,
+            proof: consumer,
             helpers: vec![],
         },
         jobs::State::Complete,
@@ -958,7 +1015,7 @@ fn support_replay_recovers_a_missing_or_uncertain_credit_without_duplication() {
                 &completion(
                     3,
                     jobs::Output::Proof {
-                        source: consumer,
+                        proof: consumer,
                         helpers: vec![],
                     },
                     jobs::State::Complete,
@@ -1000,11 +1057,8 @@ fn solving_a_goal_without_using_its_helper_cannot_earn_support() {
         )
         .unwrap();
     record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
-    let source = format!(
-        "{} proof: p0=subst(a,b,mem(a,c)) p1=gen(p0,c) p2=inst(c,a,imp(eq(a,b),imp(mem(a,c),mem(b,c)))) p3=mp(p1,p2) p4=gen(p3,b) p5=gen(p4,a) return p5",
-        goal.source()
-    );
-    let root = graph.produce(&source).unwrap().1.id;
+    let source = "00000000060700000000000000010000000b0100000000000000000002210000000000000002050000000200000000000000230300000000000000000000010301000000000000000000020100000000010000000002200000000100000002210000000300000001210000000400000000";
+    let root = graph.produce(source).unwrap().1.id;
     assert!(graph.direct_dependencies(root).unwrap().is_empty());
     record_checked(&mut frontier, &graph, &goal, 3, root);
     assert_eq!(frontier.evidence.model().supports, 0);
@@ -1056,8 +1110,8 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     profile.tuning.question_page = Some(1);
     crate::resources::configure(profile).unwrap();
     let (goal, helpers) = crate::learning::tests::helper_goal();
-    assert!(crate::learning::State::eligible(goal.source()));
-    let cost = goal.source().len() * 8 + 256;
+    assert!(crate::learning::State::eligible(&goal.to_hex()));
+    let cost = goal.to_hex().len() * 8 + 256;
     assert!(
         cost > 1024 && cost <= 4096,
         "exercise the real cache partition boundary"
@@ -1085,7 +1139,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
         frontier
             .goals
             .iter()
-            .map(|q| q.source().len() * 8 + 256)
+            .map(|q| q.to_hex().len() * 8 + 256)
             .sum::<usize>()
             <= 4096
     );
@@ -1111,7 +1165,7 @@ fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() 
         for variable in closed.free_variables().into_iter().rev() {
             closed = Formula::for_all(variable, closed);
         }
-        let question = CompiledQuestion::from_formula(closed).unwrap();
+        let question = ResearchQuestion::from_formula(closed).unwrap();
         assert_ne!(finder::key(&question), finder::key(&lemma));
     }
 }
@@ -1125,7 +1179,7 @@ fn explicit_goal_exploration_contains_only_the_goal_and_its_conjunct_helpers() {
         ..Default::default()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
-    frontier.focus(CompiledQuestion::compile("goal=all(a,mem(a,a))").unwrap());
+    frontier.focus(ResearchQuestion::from_hex("040101000000000100000000").unwrap());
     let pool = (0..8)
         .flat_map(|cursor| frontier.goal_candidates(cursor, &goal))
         .collect::<Vec<_>>();
@@ -1275,7 +1329,7 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
         let candidate = completion(
             2 + i as u64,
             jobs::Output::Proof {
-                source: crate::learning::tests::symbolic_solution(helper).source,
+                proof: crate::learning::tests::symbolic_solution(helper).source,
                 helpers: Vec::new(),
             },
             jobs::State::Complete,

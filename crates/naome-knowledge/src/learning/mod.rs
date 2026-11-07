@@ -32,7 +32,7 @@ pub(crate) fn input_specification() -> String {
     Checkpoint::fresh().specification
 }
 pub(crate) use model::{Engine, REQUIREMENTS as MODEL_REQUIREMENTS, TRAINING_UNITS};
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -117,7 +117,7 @@ impl Example {
             coverage,
         } = &self.tree
         {
-            let Ok(q) = CompiledQuestion::compile(&self.question) else {
+            let Ok(q) = ResearchQuestion::from_hex(&self.question) else {
                 return false;
             };
             let target = if self.refuted {
@@ -210,7 +210,7 @@ impl Progress {
         candidate: &Checkpoint,
         result: &transfer::Evaluation,
     ) -> Result<(), String> {
-        let target = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+        let target = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
         self.development_before.observe(
             &target,
             32,
@@ -284,7 +284,7 @@ pub(crate) struct Solution {
 impl Solution {
     /// The local acceptance receipt publishes this bounded hint atomically
     /// with replay; the canonical graph remains the mathematical owner.
-    pub fn theorem(&self, question: &CompiledQuestion) -> Result<Option<knowledge::Entry>, String> {
+    pub fn theorem(&self, question: &ResearchQuestion) -> Result<Option<knowledge::Entry>, String> {
         let target = if self.refuted {
             question.refuted_target()
         } else {
@@ -297,12 +297,12 @@ impl Solution {
         let packet = evidence::pack(&verified)?;
         Ok((packet.len() <= knowledge::BYTES).then_some(knowledge::Entry { packet }))
     }
-    pub fn checked(&self) -> Result<naome_authoring::CompiledProof, String> {
+    pub fn checked(&self) -> Result<naome_checker::CheckedProof, String> {
         if self.helpers != definitions::helpers(&self.tree)? {
             return Err("definition helper source binding differs".into());
         }
         let context = definitions::proof_context(&self.tree)?;
-        let proof = naome_authoring::compile_against_proof_context(&self.source, &context)
+        let proof = crate::learning::proof::check_artifact(&self.source, &context)
             .map_err(|e| e.to_string())?;
         if crate::hex(proof.proof_id().as_bytes()) != self.proof_id {
             return Err("native source identity differs".into());
@@ -634,7 +634,7 @@ impl Job {
                 return Err("development observations differ from their incumbent".into());
             }
             if let Some(solution) = &p.result {
-                let checked = solution.checked()?.into_checked_proof();
+                let checked = solution.checked()?;
                 if let search::Tree::Composed { inputs, .. } = &solution.tree
                     && inputs.iter().any(|id| !self.required.contains(id))
                 {
@@ -928,7 +928,7 @@ impl Job {
                 p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
             }
             if let Some(question) = question {
-                let q = CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+                let q = ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
                 if curriculum::reserved(&crate::hex(q.resolution_id())) {
                     p.diagnostic = "reserved_question_excluded".into();
                     p.terminal = experience::TerminalEvidence::NoSearch(
@@ -1087,7 +1087,7 @@ fn solve_with_report(
             });
         }
         let definition_started = std::time::Instant::now();
-        let question = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+        let question = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
         let target = if solution.refuted {
             question.refuted_target()
         } else {
@@ -1112,12 +1112,12 @@ fn solve_with_report(
                     let source = proof::source(&checked)?;
                     let helpers = definitions::helpers(&tree)?;
                     if source.len() + helpers.iter().map(String::len).sum::<usize>()
-                        <= crate::resources::limits().closure_bytes
-                        && source.len() <= crate::resources::limits().proof_bytes
+                        <= 2 * crate::resources::limits().closure_bytes
+                        && source.len() <= 2 * crate::resources::limits().proof_bytes
                         && checked.payload_bytes <= crate::resources::limits().proof_bytes
-                        && helpers
-                            .iter()
-                            .all(|source| source.len() <= crate::resources::limits().proof_bytes)
+                        && helpers.iter().all(|source| {
+                            source.len() <= 2 * crate::resources::limits().proof_bytes
+                        })
                     {
                         solution.source = source;
                         solution.helpers = helpers;
@@ -1223,7 +1223,7 @@ fn search_question_report(
 ) -> Result<Generation, String> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
-    let q = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+    let q = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
     let mut retrieval_micros = 0;
     let mut retrieved = 0;
     let mut dependency_steps = 0;
@@ -1431,7 +1431,7 @@ fn search_question_report(
                 ))
             }) {
                 Ok((source, proof_id, payload_bytes, references, check_steps))
-                    if source.len() <= crate::resources::limits().proof_bytes
+                    if source.len() <= 2 * crate::resources::limits().proof_bytes
                         && payload_bytes
                             <= crate::resources::limits()
                                 .proof_bytes
@@ -1441,9 +1441,9 @@ fn search_question_report(
                     if helpers.len() >= crate::resources::limits().closure_objects
                         || helpers
                             .iter()
-                            .any(|s| s.len() > crate::resources::limits().proof_bytes)
+                            .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
                         || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                            > crate::resources::limits().closure_bytes
+                            > 2 * crate::resources::limits().closure_bytes
                     {
                         failure = "certificate_closure_capacity".into();
                         terminal = experience::TerminalEvidence::Unsupported(

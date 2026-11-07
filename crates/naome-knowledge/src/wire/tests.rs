@@ -79,3 +79,99 @@ async fn frame_custody_is_shared_and_released_after_handling() {
     retained.pop();
     assert!(other.read(&mut Cursor::new(encoded())).await.is_ok());
 }
+
+#[tokio::test]
+async fn program_data_transmits_the_canonical_records_in_a_bounded_frame() {
+    use naome_proof::program::{Chunk, Command};
+    let chunk = Chunk {
+        start: 3,
+        previous: [7; 32],
+        next: [8; 32],
+        records: vec![
+            Command::Instantiate {
+                premise: 2,
+                replacement: 1
+            };
+            64
+        ],
+    };
+    let codec = Codec::default();
+    let frame = Frame::new(Body::ProgramData {
+        root: [1; 32],
+        id: [2; 32],
+        chunk: chunk.clone(),
+    });
+    let mut output = Cursor::new(Vec::new());
+    codec.write(&mut output, frame).await.unwrap();
+    let encoded = output.into_inner();
+    let decoded = codec.read(&mut Cursor::new(&encoded)).await.unwrap();
+    assert!(matches!(decoded.message.body,
+        Body::ProgramData { root, id, chunk: decoded }
+            if root == [1; 32] && id == [2; 32] && decoded == chunk));
+
+    assert_eq!(
+        &encoded[4 + 32 + 1 + 64..],
+        chunk.canonical_bytes().unwrap()
+    );
+    let mut malformed = encoded.clone();
+    *malformed.last_mut().unwrap() = 0x80;
+    assert!(codec.read(&mut Cursor::new(malformed)).await.is_err());
+}
+
+#[tokio::test]
+async fn program_offer_binds_the_canonical_question_bytes() {
+    use crate::object::ProgramMetadata;
+    use naome_checker::question::ResearchQuestion;
+    use naome_foundation::{Formula, FreeVariable};
+    use naome_proof::program::{Manifest, formula_hash};
+    use naome_proof::{DefinedFormula, DefinitionCertificate};
+
+    let x = FreeVariable::new(0);
+    let mut context = naome_checker::ArtifactState::new();
+    let certificate = DefinitionCertificate::relation(1, DefinedFormula::equal(x, x)).unwrap();
+    let definition_id = certificate.definition_id();
+    let definition = naome_checker::check_definition_with_state(certificate, &context).unwrap();
+    context.register_definition(definition).unwrap();
+    let question = ResearchQuestion::from_defined_formula(
+        DefinedFormula::for_all(x, DefinedFormula::defined_relation(definition_id, [x])),
+        &context,
+    )
+    .unwrap();
+    let target = Formula::for_all(x, Formula::equal(x, x))
+        .encode_canonical()
+        .unwrap();
+    let manifest = Manifest {
+        commands: 1,
+        input_bytes: 2,
+        program_hash: [7; 32],
+        stream_root: [8; 32],
+        conclusion: formula_hash(question.formula()),
+        statement: *naome_proof::StatementId::of_canonical_formula(&target)
+            .unwrap()
+            .as_bytes(),
+    };
+    let metadata = ProgramMetadata {
+        manifest,
+        question: Some(question.to_hex()),
+    };
+    let codec = Codec::default();
+    let mut bytes = Cursor::new(Vec::new());
+    codec
+        .write(&mut bytes, Frame::new(Body::ProgramOffer { metadata }))
+        .await
+        .unwrap();
+    assert!(bytes.get_ref().ends_with(question.canonical_bytes()));
+    let decoded = codec
+        .read(&mut Cursor::new(bytes.into_inner()))
+        .await
+        .unwrap();
+    let Body::ProgramOffer { metadata } = decoded.message.body else {
+        panic!("expected program offer");
+    };
+    assert!(
+        metadata
+            .question(&naome_checker::ArtifactState::new())
+            .is_err()
+    );
+    assert_eq!(metadata.question(&context).unwrap(), Some(question));
+}

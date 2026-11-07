@@ -1,7 +1,7 @@
 //! Question-only combinations for the supported native operations. No proof,
 //! continuation, success flag or solver is used to construct or partition them.
 use super::Case;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_foundation::{Formula, FreeVariable};
 use std::{collections::BTreeSet, sync::LazyLock};
 
@@ -57,14 +57,14 @@ fn root_identity(premises: &[Formula], target: &Formula) -> String {
     use sha2::{Digest, Sha256};
     crate::hex(&Sha256::digest(normalized.into_iter().min().unwrap()))
 }
-fn question(seed: u64, variant: usize) -> Option<(CompiledQuestion, String)> {
+fn question(seed: u64, variant: usize) -> Option<(ResearchQuestion, String)> {
     question_with_steps(seed, variant, 0)
 }
 fn question_with_steps(
     seed: u64,
     variant: usize,
     extra: usize,
-) -> Option<(CompiledQuestion, String)> {
+) -> Option<(ResearchQuestion, String)> {
     let mut rng = crate::sampling::Random::new(seed.wrapping_mul(0x9e3779b97f4a7c15));
     let steps = 2 + (seed as usize / 4 % 6) + extra;
     let a = FreeVariable::new(variant as u32);
@@ -161,7 +161,7 @@ fn question_with_steps(
     for variable in target.free_variables().into_iter().rev() {
         target = Formula::for_all(variable, target);
     }
-    CompiledQuestion::from_formula(target)
+    ResearchQuestion::from_formula(target)
         .ok()
         .map(|q| (q, root))
 }
@@ -225,7 +225,7 @@ fn build() -> Bank {
             }
             cases.push(Case {
                 id,
-                source: q.source().into(),
+                source: q.to_hex(),
                 family: format!("adaptive-operation-{}", seed % 4),
                 dependency: format!("adaptive/{family}"),
                 development: part != 0,
@@ -364,7 +364,7 @@ fn heldout(
                 }
                 Some(Case {
                     id,
-                    source: q.source().into(),
+                    source: q.to_hex(),
                     family: format!("adaptive-operation-{kind}"),
                     dependency: format!("adaptive/{family}"),
                     development: true,

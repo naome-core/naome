@@ -230,10 +230,9 @@ impl Search {
         #[cfg(test)]
         if std::env::var_os("NAOME_CONSTRUCTION_TRACE").is_some() {
             eprintln!(
-                "visit {} depth={depth} context={} goal={}",
+                "visit {} depth={depth} context={} goal={goal:?}",
                 self.work,
                 context.len(),
-                goal.to_source()
             );
         }
         if let Some(t) = context.iter().find(|t| t.formula() == *goal) {

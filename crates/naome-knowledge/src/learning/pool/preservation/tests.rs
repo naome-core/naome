@@ -24,23 +24,11 @@ fn checked(branching: bool) -> Pool {
         }
     }
     let source = if branching {
-        "goal=all(a,all(b,all(c,imp(imp(mem(a,a),mem(b,b)),imp(imp(not(mem(a,a)),mem(b,b)),imp(not(not(mem(c,c))),mem(b,b)))))))"
-            .into()
+        "0404040303010100000002010000000201010000000101000000010303020101000000020100000002010100000001010000000103020201010000000001000000000101000000010100000001"
     } else {
-        let variables = ["a", "b", "c", "d", "e", "f"];
-        let mut body = "imp(mem(a,a),mem(f,f))".to_string();
-        for pair in variables.windows(2).rev() {
-            body = format!(
-                "imp(imp(mem({0},{0}),mem({1},{1})),{body})",
-                pair[0], pair[1]
-            );
-        }
-        for variable in variables.into_iter().rev() {
-            body = format!("all({variable},{body})");
-        }
-        format!("goal={body}")
+        "0404040404040303010100000005010000000501010000000401000000040303010100000004010000000401010000000301000000030303010100000003010000000301010000000201000000020303010100000002010000000201010000000101000000010303010100000001010000000101010000000001000000000301010000000501000000050101000000000100000000"
     };
-    let question = naome_authoring::CompiledQuestion::compile(&source).unwrap();
+    let question = naome_checker::question::ResearchQuestion::from_hex(source).unwrap();
     let found = search::solve(question.proved_target(), &mut Ordered(branching), 128).unwrap();
     let tree = found.tree.unwrap();
     let (term, _) = search::compile(question.proved_target(), &tree).unwrap();

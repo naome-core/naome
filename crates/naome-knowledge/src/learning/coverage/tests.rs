@@ -34,7 +34,7 @@ fn different(own: &Example) -> Example {
     panic!("fixture must supply a different independently checked strategy");
 }
 fn stored(mut example: Example) -> (Example, Evidence) {
-    let q = CompiledQuestion::compile(&example.question).unwrap();
+    let q = ResearchQuestion::from_hex(&example.question).unwrap();
     let steps = super::super::state::proof_steps(q.proved_target(), &example.tree).unwrap();
     let evidence = Evidence {
         job: example.job,

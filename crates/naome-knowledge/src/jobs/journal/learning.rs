@@ -66,7 +66,8 @@ impl Disk {
             return Err("peer compressed admission capacity".into());
         }
         if let Some(question) = &admission.question {
-            naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+            naome_checker::question::ResearchQuestion::from_hex(question)
+                .map_err(|e| e.to_string())?;
         }
         let learning = journal
             .learning
@@ -244,7 +245,7 @@ impl Disk {
                     .learning
                     .as_mut()
                     .ok_or("peer learning state missing")?;
-                let q = naome_authoring::CompiledQuestion::compile(question)
+                let q = naome_checker::question::ResearchQuestion::from_hex(question)
                     .map_err(|e| e.to_string())?;
                 let key = crate::hex(q.resolution_id());
                 let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
@@ -626,7 +627,7 @@ impl Disk {
             .clone()
             .ok_or("native learning owner state absent")?;
         let key = crate::hex(
-            naome_authoring::CompiledQuestion::compile(question)
+            naome_checker::question::ResearchQuestion::from_hex(question)
                 .map_err(|e| e.to_string())?
                 .resolution_id(),
         );
@@ -636,8 +637,8 @@ impl Disk {
             .get::<u64>("replay_seen", &solution.proof_id, 64)?
             .is_none();
         let sampled = unseen && learning.consider(example, unique)?;
-        let question =
-            naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+        let question = naome_checker::question::ResearchQuestion::from_hex(question)
+            .map_err(|e| e.to_string())?;
         if let Some(theorem) = solution.theorem(&question)? {
             learning.remember_theorem(theorem)?;
         }

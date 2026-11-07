@@ -50,13 +50,13 @@ impl Utility {
 fn example(
     example: &Example,
     evidence: &[Evidence],
-) -> Result<Option<(CompiledQuestion, graph::Graph)>, String> {
+) -> Result<Option<(ResearchQuestion, graph::Graph)>, String> {
     if !matches!(example.origin, Origin::Local)
         || curriculum::owned::case(&example.question).is_none()
     {
         return Err("finder utility requires eligible local training proofs".into());
     }
-    let q = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+    let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
     let target = if example.refuted {
         q.refuted_target()
     } else {

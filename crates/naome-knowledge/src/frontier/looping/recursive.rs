@@ -1,7 +1,7 @@
 //! Frozen recursive scheduler from commit 441531bc. Test-only control.
 use super::*;
 struct Node {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     record: Option<evidence::Record>,
     children: Vec<usize>,
     checked: Option<(String, u64)>,
@@ -11,13 +11,13 @@ struct Node {
 impl Node {
     fn load(
         frontier: &Frontier,
-        question: CompiledQuestion,
+        question: ResearchQuestion,
         graph: &Graph,
         depth: usize,
         memory: &mut Vec<Arc<crate::resources::MemoryLease>>,
     ) -> Result<Self, crate::Error> {
         let record = frontier.evidence.get(&question)?;
-        let bytes = question.source().len().saturating_mul(24)
+        let bytes = question.to_hex().len().saturating_mul(24)
             + record.as_ref().map_or(0, |r| {
                 r.helpers.iter().map(|s| s.len() * 24 + 768).sum::<usize>()
             })
@@ -97,9 +97,9 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
 impl Frontier {
     pub(crate) fn previous_loop_work(
         &mut self,
-        goal: &CompiledQuestion,
+        goal: &ResearchQuestion,
         graph: &Graph,
-        mut available: impl FnMut(&CompiledQuestion) -> bool,
+        mut available: impl FnMut(&ResearchQuestion) -> bool,
     ) -> Result<Work, crate::Error> {
         let mut memory = Vec::new();
         let mut nodes = Vec::<Node>::new();
@@ -114,7 +114,7 @@ impl Frontier {
             {
                 let sources = record.helpers.clone();
                 for source in sources {
-                    let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                    let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
                     if helper.formula().view().node_count_and_depth().0
                         >= nodes[index]
                             .question

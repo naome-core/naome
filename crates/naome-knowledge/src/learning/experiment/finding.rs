@@ -197,7 +197,7 @@ fn assert_feedback_reproduced(expected: &Value, reference: &Value) {
 
 #[test]
 fn recorded_finder_cost_view_is_distinct_from_measured_native_feedback() {
-    let q = CompiledQuestion::compile("goal=all(a,eq(a,a))").unwrap();
+    let q = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let mut measured = crate::training::ability::Feedback::fresh("11".repeat(32));
     measured.development.observe(&q, 32, Some(true), 9000);
     let mut recorded = measured.clone();
@@ -271,13 +271,13 @@ fn solve(
     state: &State,
     engine: &mut Engine,
     io: &mut Store,
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     job: u64,
 ) -> Generation {
     engine
         .with(&state.model, io, |runtime| {
             solve_with_report(
-                q.source(),
+                &q.to_hex(),
                 runtime,
                 SEARCH,
                 job,
@@ -294,7 +294,7 @@ fn solve(
 fn accept(
     state: &mut State,
     graph: &mut crate::Graph,
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     solution: &Solution,
     job: u64,
     path: &Path,
@@ -311,7 +311,7 @@ fn accept(
         .accept(Example {
             origin: Origin::Local,
             job,
-            question: q.source().into(),
+            question: q.to_hex(),
             proof_id: solution.proof_id.clone(),
             refuted: solution.refuted,
             tree: solution.tree.clone(),
@@ -339,27 +339,27 @@ fn prepare(seed: u64, path: &Path) -> (State, MemoryStore, Vec<(String, Solution
     let mut accepted = Vec::new();
     let mut rows = Vec::new();
     for (index, case) in shuffled_learning(seed).into_iter().take(64).enumerate() {
-        let q = CompiledQuestion::compile(&case.source).unwrap();
+        let q = ResearchQuestion::from_hex(&case.source).unwrap();
         let job = 1 + index as u64;
         let result = solve(&state, &mut engine, &mut io, &q, job);
         let success = if let Some(solution) = &result.solution {
             let added = accept(&mut state, &mut graph, &q, solution, job, path);
             if added {
-                accepted.push((q.source().to_owned(), solution.clone(), job));
+                accepted.push((q.to_hex(), solution.clone(), job));
             }
             added
         } else {
             false
         };
         state.observe_result(
-            q.source(),
+            &q.to_hex(),
             result.solution.is_some(),
             &result.diagnostic,
             result.cost.generation_micros,
             SEARCH as u32,
         );
         rows.push(
-            json!({"source":q.source(),"case":case.id,"accepted":success,"cost":result.cost}),
+            json!({"source":q.to_hex(),"case":case.id,"accepted":success,"cost":result.cost}),
         );
         if state.needs_training() {
             break;
@@ -417,7 +417,7 @@ fn owned_evidence(state: &State, sources: &[Evidence]) -> Result<Vec<Evidence>, 
             .find(|e| e.job == example.job && e.proof_id == example.proof_id)
             .ok_or("harness owned replay source missing")?;
         let trace = example.trajectory(std::slice::from_ref(source))?;
-        let q = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
         let target = if example.refuted {
             q.refuted_target()
         } else {
@@ -535,7 +535,7 @@ fn arm(
         })
         .collect::<Vec<_>>();
     for (source, solution, _) in initial {
-        let q = CompiledQuestion::compile(source).unwrap();
+        let q = ResearchQuestion::from_hex(source).unwrap();
         let (root, batch) = graph
             .prepare_generated(&solution.source, &solution.helpers, &q)
             .unwrap();
@@ -666,13 +666,13 @@ fn arm(
                 solved += 1;
             }
             state.observe_result(
-                q.source(),
+                &q.to_hex(),
                 result.solution.is_some(),
                 &result.diagnostic,
                 label_micros,
                 SEARCH as u32,
             );
-            events.push(json!({"question":q.source(),"resolution":crate::hex(q.resolution_id()),"solved":result.solution.is_some(),"accepted_training":accepted,"cost":result.cost,"diagnostic":result.diagnostic,"feedback_cost_micros":label_micros}));
+            events.push(json!({"question":q.to_hex(),"resolution":crate::hex(q.resolution_id()),"solved":result.solution.is_some(),"accepted_training":accepted,"cost":result.cost,"diagnostic":result.diagnostic,"feedback_cost_micros":label_micros}));
         }
         let training = if coupled {
             train(
@@ -786,7 +786,7 @@ fn matched_continual_finder_study() {
             .unwrap()
             .iter()
             .map(|case| {
-                let q = CompiledQuestion::compile(case["source"].as_str().unwrap()).unwrap();
+                let q = ResearchQuestion::from_hex(case["source"].as_str().unwrap()).unwrap();
                 let family = curriculum::owned::family(q.proved_target());
                 assert_eq!(case["family"], family);
                 assert!(!curriculum::owned::original_exclusions().contains(&family));

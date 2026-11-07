@@ -20,7 +20,7 @@ fn development_capacity_profile(checkpoint: String) -> crate::training::ability:
         .into_iter()
         .chain(&curriculum::adaptive::BANK.transfer)
     {
-        let question = CompiledQuestion::compile(&case.source).unwrap();
+        let question = ResearchQuestion::from_hex(&case.source).unwrap();
         // Every actual cell has at most one observation per question. These
         // three passes bound all outcome counters and saturate measured cost,
         // while preserving the exact syntax cells and coverage sketches.
@@ -55,7 +55,7 @@ fn prospective_outer_profile_reserve_bounds_actual_qualification_outcomes() {
             .chain(&curriculum::adaptive::BANK.transfer)
             .enumerate()
         {
-            let question = CompiledQuestion::compile(&case.source).unwrap();
+            let question = ResearchQuestion::from_hex(&case.source).unwrap();
             let outcome = match mode {
                 0 => Some(true),
                 1 => Some(false),
@@ -420,7 +420,7 @@ fn evaluate(
     let mut rows = Vec::new();
     for (i, q) in cases.iter().enumerate() {
         let clock = Clock::start();
-        let target = CompiledQuestion::compile(&q.source).unwrap();
+        let target = ResearchQuestion::from_hex(&q.source).unwrap();
         assert!(
             run.state
                 .knowledge

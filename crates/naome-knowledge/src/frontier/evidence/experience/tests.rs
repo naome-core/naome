@@ -8,7 +8,7 @@ fn reseal(summary: &mut ExperienceSummary) {
 }
 
 fn observed(
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     terminal: TerminalEvidence,
     expansions: usize,
     frontier: Option<crate::learning::SearchFrontier>,
@@ -19,7 +19,7 @@ fn observed(
 /// Explicit synthetic search receipt for tests of Finder scheduling and storage.
 /// This fixture is never a measured search result or model-quality observation.
 pub(crate) fn observed_completion(
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     job: u64,
     terminal: TerminalEvidence,
     expansions: usize,

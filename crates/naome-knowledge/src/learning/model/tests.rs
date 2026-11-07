@@ -5,7 +5,7 @@ mod readout;
 #[test]
 fn plain_inference_preserves_parameters_and_stable_float32_choices() {
     let example = super::super::tests::own_example();
-    let q = naome_authoring::CompiledQuestion::compile(&example.question).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&example.question).unwrap();
     let graph = super::super::search::compile(q.proved_target(), &example.tree)
         .unwrap()
         .1
@@ -179,7 +179,8 @@ fn maximum_supported_batch_memory_is_bounded() {
 fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
     let solution = super::super::tests::own_solution();
     let q =
-        naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question()).unwrap();
+        naome_checker::question::ResearchQuestion::from_hex(&super::super::tests::own_question())
+            .unwrap();
     let graph = super::super::search::compile(q.proved_target(), &solution.tree)
         .unwrap()
         .1
@@ -251,7 +252,8 @@ fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
 fn zero_update_snapshot_preserves_fresh_predictions_and_optimizer_continuation() {
     let solution = super::super::tests::own_solution();
     let q =
-        naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question()).unwrap();
+        naome_checker::question::ResearchQuestion::from_hex(&super::super::tests::own_question())
+            .unwrap();
     let graph = super::super::search::compile(q.proved_target(), &solution.tree)
         .unwrap()
         .1
@@ -289,7 +291,7 @@ fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
         .unwrap()
         .0
         .expect("own checked trace");
-    let q = naome_authoring::CompiledQuestion::compile(&source).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
     let (_, graphs) = super::super::search::compile(q.proved_target(), &solution.tree).unwrap();
     assert!(!graphs.is_empty());
     let graphs = vec![graphs.into_iter().min_by_key(|g| g.nodes.len()).unwrap()];

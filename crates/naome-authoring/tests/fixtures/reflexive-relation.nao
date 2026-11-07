@@ -1,4 +1,0 @@
-
-
-def self_equal = relation(value,):
-    eq(value, value)

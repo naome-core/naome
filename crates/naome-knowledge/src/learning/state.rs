@@ -19,7 +19,7 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
     if e.job == 0 {
         return Err("learning example lacks an owned job".into());
     }
-    let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
+    let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
     if curriculum::owned::case(&e.question).is_none() {
         return Err("learning example outside eligible dependency split".into());
     }
@@ -179,7 +179,7 @@ impl State {
             validate_example(e)?;
         }
         for e in &self.replay {
-            let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
+            let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
             let count = strategies
                 .entry(crate::hex(q.resolution_id()))
                 .or_insert(0usize);
@@ -243,16 +243,14 @@ impl State {
     }
     pub fn remember_theorem(&mut self, entry: knowledge::Entry) -> Result<bool, String> {
         let verified = entry.verified()?;
-        let q = match CompiledQuestion::from_formula(verified.target) {
+        let q = match ResearchQuestion::from_formula(verified.target) {
             Ok(question) => question,
             // Stored mathematics can exceed the bounded neural question view.
             // Declining a derived hint must not halt the accepted-store owner.
-            Err(
-                naome_authoring::QuestionError::Limit(_) | naome_authoring::QuestionError::Overflow,
-            ) => return Ok(false),
+            Err(naome_checker::question::QuestionError::Limit(_)) => return Ok(false),
             Err(error) => return Err(error.to_string()),
         };
-        if !Self::eligible(q.source()) || self.knowledge.contains(&entry) {
+        if !Self::eligible(&q.to_hex()) || self.knowledge.contains(&entry) {
             return Ok(false);
         }
         // Different checked topological closures can carry the same root.
@@ -364,7 +362,7 @@ impl State {
         if !Self::eligible(question) {
             return;
         }
-        let Ok(q) = CompiledQuestion::compile(question) else {
+        let Ok(q) = ResearchQuestion::from_hex(question) else {
             return;
         };
         self.feedback.attempts.observe(&q, budget, solved, micros);
@@ -578,7 +576,7 @@ impl State {
         mut pool: pool::Pool,
     ) -> Result<pool::Pool, String> {
         for e in sources {
-            let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
+            let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
             let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
             let target = if e.refuted {
                 q.refuted_target()
@@ -609,9 +607,9 @@ impl State {
     }
     #[cfg(test)]
     pub fn accept(&mut self, example: Example) -> Result<bool, String> {
-        let id = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+        let id = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
         let unique = !self.examples().any(|e| {
-            CompiledQuestion::compile(&e.question)
+            ResearchQuestion::from_hex(&e.question)
                 .is_ok_and(|q| q.resolution_id() == id.resolution_id())
         });
         self.consider(example, unique)
@@ -634,7 +632,7 @@ impl State {
         if self.examples().any(|e| e.proof_id == example.proof_id) {
             return Ok(false);
         }
-        let q = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
         if curriculum::owned::case(&example.question).is_none() {
             return Ok(false);
         }
@@ -660,7 +658,7 @@ impl State {
             .iter()
             .enumerate()
             .filter(|(_, e)| {
-                CompiledQuestion::compile(&e.question)
+                ResearchQuestion::from_hex(&e.question)
                     .is_ok_and(|old| old.resolution_id() == q.resolution_id())
             })
             .collect::<Vec<_>>();

@@ -139,7 +139,7 @@ fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
     let mut graph = Graph::default();
     let source = crate::learning::tests::own_solution();
     let question = crate::learning::tests::own_question();
-    let q = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
     let (root, batch) = graph
         .prepare_generated(&source.source, &source.helpers, &q)
         .unwrap();
@@ -153,7 +153,7 @@ fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
             .join("learning-program.sqlite3"),
     )
     .unwrap();
-    let unused = (0..1500)
+    let unused = (0..1800)
         .map(|i| Command::Equal { left: i, right: i })
         .collect::<Vec<_>>();
     for group in unused.chunks(128) {
@@ -163,7 +163,7 @@ fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
         Command::ProofReference {
             proof_id: crate::object::id_bytes(&source.proof_id).unwrap(),
         },
-        Command::Seal { proof: 1500 },
+        Command::Seal { proof: 1800 },
     ])
     .unwrap();
     let budget = Budget {
@@ -254,4 +254,48 @@ fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
         2,
         packet.len()
     );
+}
+
+#[test]
+fn program_preparation_defers_new_checked_copies_until_admission_releases() {
+    if std::env::var_os("NAOME_PROGRAM_COMPACTION_TEST").is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "graph::program::tests::program_preparation_defers_new_checked_copies_until_admission_releases",
+                "--nocapture",
+            ])
+            .env("NAOME_PROGRAM_COMPACTION_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        );
+        return;
+    }
+    let mut graph = Graph {
+        next_compaction: 0,
+        ..Graph::default()
+    };
+    let initial = graph.checked_storage.clone();
+    let epoch = initial.copy_epoch().unwrap();
+
+    // A new copy would invalidate a live preparation before its next quantum.
+    graph.maintain_checked_storage_with_admission(true).unwrap();
+    assert!(graph.compaction.is_none());
+    assert!(std::sync::Arc::ptr_eq(&initial, &graph.checked_storage));
+    assert_eq!(initial.copy_epoch().unwrap(), epoch);
+
+    for _ in 0..32 {
+        graph
+            .maintain_checked_storage_with_admission(false)
+            .unwrap();
+        if !std::sync::Arc::ptr_eq(&initial, &graph.checked_storage) {
+            return;
+        }
+    }
+    panic!("copy should start after the program releases admission");
 }

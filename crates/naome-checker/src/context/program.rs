@@ -1,6 +1,6 @@
 //! Only checked contexts can issue a cited conclusion and its immutable reader.
 use super::*;
-use naome_foundation::graph::{Node, Properties};
+use naome_foundation::graph::{FormulaGraphCursor, Node, Properties};
 use std::sync::Arc;
 
 pub struct ProgramSource {
@@ -11,7 +11,7 @@ pub struct ProgramSource {
 }
 
 pub(crate) enum ProgramRepresentation {
-    Formula(Formula),
+    Formula(FormulaGraphCursor<u64>),
     Graph {
         root: [u8; 32],
         nodes: Arc<dyn ProgramNodes>,
@@ -28,7 +28,7 @@ impl ProgramSource {
             proof,
             statement: header.statement,
             derivation: header.derivation,
-            representation: ProgramRepresentation::Formula(formula),
+            representation: ProgramRepresentation::Formula(formula.into_graph_cursor()),
         }
     }
 

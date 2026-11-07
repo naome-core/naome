@@ -32,7 +32,7 @@ pub(super) fn evaluate(
 ) -> Result<Value, String> {
     let mut rows = Vec::new();
     for (index, case) in curriculum::development().into_iter().enumerate() {
-        let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
         // No model call occurs until this entire original source passed its split.
         holdout.question(&q, Some(&case.dependency))?;
         available(meter, io, observer, path)?;
@@ -41,7 +41,7 @@ pub(super) fn evaluate(
         let bytes = io.store.bytes;
         let result = engine.with(&state.model, io, |runtime| {
             solve_with_report(
-                q.source(),
+                &q.to_hex(),
                 runtime,
                 32,
                 9_000_000 + index as u64,
@@ -52,7 +52,7 @@ pub(super) fn evaluate(
             )
         })?;
         if let Some(solution) = &result.solution {
-            let checked = solution.checked()?.into_checked_proof();
+            let checked = solution.checked()?;
             let expected = if solution.refuted {
                 q.refuted_target()
             } else {

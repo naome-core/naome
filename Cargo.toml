@@ -4,7 +4,6 @@ members = [
     "vendor/libp2p-mdns",
     "vendor/libp2p-relay",
     "vendor/libp2p-tcp",
-    "crates/naome-authoring",
     "crates/naome-checker",
     "crates/naome-foundation",
     "crates/naome-knowledge",

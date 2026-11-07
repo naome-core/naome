@@ -41,7 +41,7 @@ impl Ranker for Observed<'_> {
 
 #[test]
 fn sibling_and_backtracked_alternatives_restore_their_actual_parent_memory() {
-    let q = naome_authoring::CompiledQuestion::compile("goal=all(a,all(b,all(c,all(d,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(d,d),mem(a,a)),imp(mem(d,d),imp(not(not(mem(b,b))),mem(c,c)))))))))").unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_hex("0404040403030101000000030100000003010100000002010000000203030101000000000100000000010100000003010000000303010100000000010000000003020201010000000201000000020101000000010100000001").unwrap();
     let state = prepare(q.proved_target()).unwrap().state;
     let root_actions = actions(&state);
     let mut io = native::tests::MemoryStore::default();
@@ -92,7 +92,8 @@ fn sibling_and_backtracked_alternatives_restore_their_actual_parent_memory() {
             );
             let previous = ranker.calls.len();
             let another =
-                naome_authoring::CompiledQuestion::compile(&native::tests::own_question()).unwrap();
+                naome_checker::question::ResearchQuestion::from_hex(&native::tests::own_question())
+                    .unwrap();
             solve(another.proved_target(), &mut ranker, 32)?;
             assert!(ranker.calls.len() > previous);
             assert!(

@@ -23,7 +23,7 @@ fn write(path: &Path, value: &impl Serialize) {
 /// snapshot are retained here rather than inferred from diagnostic text.
 fn completed_search(
     state: &State,
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     job: u64,
     result: &Generation,
     context: SolveContext<'_>,
@@ -192,7 +192,7 @@ fn train_seed(
                     proof_id: solution.proof_id.clone(),
                     trace: solution.tree.clone(),
                 });
-                let question = CompiledQuestion::compile(&q.source).unwrap();
+                let question = ResearchQuestion::from_hex(&q.source).unwrap();
                 let (root, batch) = graph
                     .prepare_generated(&solution.source, &solution.helpers, &question)
                     .unwrap();
@@ -287,7 +287,7 @@ fn train_seed(
         let examples = state
             .examples()
             .map(|e| {
-                let q = CompiledQuestion::compile(&e.question).unwrap();
+                let q = ResearchQuestion::from_hex(&e.question).unwrap();
                 let target = if e.refuted {
                     q.refuted_target()
                 } else {

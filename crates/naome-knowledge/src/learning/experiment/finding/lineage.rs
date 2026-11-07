@@ -12,7 +12,7 @@ pub(super) struct Holdout {
 
 /// A conservative source-split key also groups reordered outer premises.
 /// Atomic argument roles are deliberately merged; this is no proof checker.
-pub(super) fn normalized_family(question: &CompiledQuestion) -> String {
+pub(super) fn normalized_family(question: &ResearchQuestion) -> String {
     use naome_foundation::{FreeVariable, graph::Node};
     let mut formula = question.proved_target().clone();
     let mut binders = 0;
@@ -36,7 +36,7 @@ impl Holdout {
     /// Check source-only inputs before invoking any model or proof search.
     pub(super) fn question(
         &self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         authored_lineage: Option<&str>,
     ) -> Result<(), String> {
         if self
@@ -72,7 +72,7 @@ impl Holdout {
             constructions: BTreeSet::new(),
         };
         for case in cases {
-            let q = CompiledQuestion::compile(case["source"].as_str().ok_or("source missing")?)
+            let q = ResearchQuestion::from_hex(case["source"].as_str().ok_or("source missing")?)
                 .map_err(|e| e.to_string())?;
             let family = curriculum::owned::family(q.proved_target());
             let resolution = crate::hex(q.resolution_id());
@@ -119,7 +119,7 @@ impl Ledger {
 
     pub(super) fn original(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         lineage: &str,
         experience: &experience::ExperienceSummary,
     ) -> Result<String, String> {
@@ -128,7 +128,7 @@ impl Ledger {
             return Err("original experience source differs".into());
         }
         self.insert(Material {
-            question: question.source().to_owned(),
+            question: question.to_hex(),
             lineage: Some(lineage.to_owned()),
             experience: Some(experience.clone()),
             parents: BTreeSet::new(),
@@ -138,13 +138,13 @@ impl Ledger {
     pub(super) fn matches_original(
         &self,
         key: &str,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         lineage: &str,
         experience: &experience::ExperienceSummary,
     ) -> bool {
         self.materials.get(key).is_some_and(|material| {
             material.parents.is_empty()
-                && material.question == question.source()
+                && material.question == question.to_hex()
                 && material.lineage.as_deref() == Some(lineage)
                 && material
                     .experience
@@ -156,14 +156,14 @@ impl Ledger {
 
     pub(super) fn derived(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         parents: BTreeSet<String>,
     ) -> Result<String, String> {
         if parents.is_empty() || parents.iter().any(|p| !self.materials.contains_key(p)) {
             return Err("derived material lacks its complete known parents".into());
         }
         self.insert(Material {
-            question: question.source().to_owned(),
+            question: question.to_hex(),
             lineage: None,
             experience: None,
             parents,
@@ -215,7 +215,7 @@ impl Ledger {
                 return Err("source ancestor bytes differ".into());
             }
             let question =
-                CompiledQuestion::compile(&material.question).map_err(|e| e.to_string())?;
+                ResearchQuestion::from_hex(&material.question).map_err(|e| e.to_string())?;
             holdout.question(&question, material.lineage.as_deref())?;
             match (
                 &material.experience,
@@ -244,10 +244,10 @@ impl Ledger {
 mod tests {
     use super::*;
 
-    fn question(source: &str) -> CompiledQuestion {
-        CompiledQuestion::compile(source).unwrap()
+    fn question(source: &str) -> ResearchQuestion {
+        ResearchQuestion::from_hex(source).unwrap()
     }
-    fn receipt(q: &CompiledQuestion) -> experience::ExperienceSummary {
+    fn receipt(q: &ResearchQuestion) -> experience::ExperienceSummary {
         crate::frontier::evidence::observed_completion(
             q,
             1,
@@ -258,9 +258,9 @@ mod tests {
         .experience
         .unwrap()
     }
-    fn bank(q: &CompiledQuestion) -> (Vec<u8>, Holdout) {
+    fn bank(q: &ResearchQuestion) -> (Vec<u8>, Holdout) {
         let bytes = serde_json::to_vec(&json!({"cases":[{
-            "source":q.source(),"resolution":crate::hex(q.resolution_id()),
+            "source":q.to_hex(),"resolution":crate::hex(q.resolution_id()),
             "family":curriculum::owned::family(q.proved_target()),"lineage":"reserved-family"
         }]}))
         .unwrap();
@@ -271,8 +271,8 @@ mod tests {
 
     #[test]
     fn changed_target_and_multiple_derivations_cannot_hide_a_reserved_ancestor() {
-        let held = question("goal=all(x,eq(x,x))");
-        let other = question("goal=all(x,imp(eq(x,x),eq(x,x)))");
+        let held = question("040001000000000100000000");
+        let other = question("040300010000000001000000000001000000000100000000");
         let (_, guard) = bank(&held);
         assert!(guard.question(&held, None).is_err());
         assert!(guard.question(&other, Some("reserved-family")).is_err());
@@ -304,8 +304,8 @@ mod tests {
 
     #[test]
     fn restored_lineage_requires_complete_bound_sources() {
-        let held = question("goal=all(x,eq(x,x))");
-        let other = question("goal=all(x,imp(eq(x,x),eq(x,x)))");
+        let held = question("040001000000000100000000");
+        let other = question("040300010000000001000000000001000000000100000000");
         let (_, guard) = bank(&held);
         let mut ledger = Ledger::new(&guard);
         let before = digest(&ledger);
@@ -335,8 +335,8 @@ mod tests {
 
     #[test]
     fn frozen_bank_and_original_receipts_are_checked_before_use() {
-        let held = question("goal=all(x,eq(x,x))");
-        let other = question("goal=all(x,imp(eq(x,x),eq(x,x)))");
+        let held = question("040001000000000100000000");
+        let other = question("040300010000000001000000000001000000000100000000");
         let (bytes, guard) = bank(&held);
         assert!(Holdout::read(&bytes, &digest(&"different bank")).is_err());
         let mut bank: Value = serde_json::from_slice(&bytes).unwrap();

@@ -192,10 +192,10 @@ fn compare_retained_carry_and_reset() {
         let mut selected = Vec::new();
         let mut seen = BTreeSet::new();
         for episode in frozen.episodes.iter().take(48) {
-            let q = CompiledQuestion::compile(&episode.observation.question)
+            let q = ResearchQuestion::from_hex(&episode.observation.question)
                 .map_err(|e| e.to_string())?;
             holdout.question(&q, Some(&episode.authored_lineage))?;
-            if State::eligible(q.source()) && seen.insert(crate::hex(q.resolution_id())) {
+            if State::eligible(&q.to_hex()) && seen.insert(crate::hex(q.resolution_id())) {
                 selected.push((episode.observation.summary.job, q));
             }
             if selected.len() == 24 {
@@ -228,7 +228,7 @@ fn compare_retained_carry_and_reset() {
         meter.write(&output.join("input.json"), &json!({"checkpoint":saved,"checkpoint_binding":digest(&saved),
             "source_state":state_binding,"source_bindings":bindings,"source_restore":restored,
             "import_read_bytes":import_bytes,"original_source_collection":frozen.cost,"checkpoint_index":checkpoint_index,
-            "search_limit":32,"tasks":selected.iter().map(|(job,q)|json!({"job":job,"source":q.source(),"resolution":crate::hex(q.resolution_id())})).collect::<Vec<_>>(),
+            "search_limit":32,"tasks":selected.iter().map(|(job,q)|json!({"job":job,"source":q.to_hex(),"resolution":crate::hex(q.resolution_id())})).collect::<Vec<_>>(),
             "context":digest(&(&frozen.initial.definitions,&frozen.initial.knowledge)),"optimizer_updates":0}))?;
         for (index, (job, q)) in selected.iter().enumerate() {
             let mut pair = [Value::Null, Value::Null];
@@ -241,7 +241,7 @@ fn compare_retained_carry_and_reset() {
                 let before_io = io.store.bytes;
                 let generated = engines[mode].with(&saved, &mut io, |runtime| {
                     solve_with_report(
-                        q.source(),
+                        &q.to_hex(),
                         runtime,
                         32,
                         *job,
@@ -253,7 +253,7 @@ fn compare_retained_carry_and_reset() {
                     )
                 })?;
                 if let Some(solution) = &generated.solution {
-                    let checked = solution.checked()?.into_checked_proof();
+                    let checked = solution.checked()?;
                     let expected = if solution.refuted {
                         q.refuted_target()
                     } else {

@@ -19,7 +19,7 @@ struct Source {
     solution: Solution,
     origin: Value,
 }
-fn families(q: &CompiledQuestion, depth: usize, out: &mut BTreeSet<String>) {
+fn families(q: &ResearchQuestion, depth: usize, out: &mut BTreeSet<String>) {
     out.insert(curriculum::owned::family(q.proved_target()));
     if depth >= 2 {
         return;
@@ -33,7 +33,7 @@ fn families(q: &CompiledQuestion, depth: usize, out: &mut BTreeSet<String>) {
     {
         for part in [left.to_owned(), right.to_owned()] {
             families(
-                &CompiledQuestion::from_formula(part).unwrap(),
+                &ResearchQuestion::from_formula(part).unwrap(),
                 depth + 1,
                 out,
             );
@@ -67,8 +67,8 @@ fn sources(root: &Path, output: &Path, excluded: &BTreeSet<String>) -> Vec<Vec<S
                     continue;
                 }
                 let question =
-                    CompiledQuestion::compile(event["question"].as_str().unwrap()).unwrap();
-                if !State::eligible(question.source())
+                    ResearchQuestion::from_hex(event["question"].as_str().unwrap()).unwrap();
+                if !State::eligible(&question.to_hex())
                     || excluded.contains(&curriculum::owned::family(question.proved_target()))
                 {
                     continue;
@@ -82,7 +82,7 @@ fn sources(root: &Path, output: &Path, excluded: &BTreeSet<String>) -> Vec<Vec<S
                         + row_index as u64 * 1024
                         + arm_index as u64 * 128
                         + event_index as u64,
-                    question: question.source().into(),
+                    question: question.to_hex(),
                     solution,
                     origin: json!({"events":path,"events_sha256":crate::hex(&Sha256::digest(&bytes)),
                         "run_seed":41,"root":row["id"],"arm":arm,"job_seed":event["job_seed"],"event_index":event_index}),
@@ -129,7 +129,7 @@ fn pool(state: &State, evidence: &[Evidence], current: Option<&BTreeSet<u64>>) -
         .training_sources()
         .filter(|e| current.is_none_or(|jobs| jobs.contains(&e.job)))
     {
-        let q = CompiledQuestion::compile(&e.question).unwrap();
+        let q = ResearchQuestion::from_hex(&e.question).unwrap();
         let target = if e.refuted {
             q.refuted_target()
         } else {
@@ -157,12 +157,12 @@ fn evaluate_questions(
     io: &mut Store,
 ) -> Vec<Value> {
     questions.iter().map(|source| {
-        let q = CompiledQuestion::compile(source).unwrap();
+        let q = ResearchQuestion::from_hex(source).unwrap();
         let generated = engine.with(c,io,|runtime| solve_with_report(source,runtime,INFERENCE,100,SolveContext::default()));
         match generated {
             Ok(g) => {
                 if let Some(s) = &g.solution {
-                    q.classify_checked_proof(&s.checked().unwrap().into_checked_proof()).unwrap();
+                    q.classify_checked_proof(&s.checked().unwrap()).unwrap();
                 }
                 json!({"id":crate::hex(q.resolution_id()),"solved":g.solution.is_some(),
                     "proof_id":g.solution.map(|s|s.proof_id),"diagnostic":g.diagnostic,"cost":g.cost})
@@ -184,7 +184,7 @@ fn readout(
         let mut checked_pool = pool::Pool::default();
         for source in group {
             let e = example(source);
-            let q = CompiledQuestion::compile(&e.question).unwrap();
+            let q = ResearchQuestion::from_hex(&e.question).unwrap();
             let target = if e.refuted {
                 q.refuted_target()
             } else {
@@ -258,7 +258,7 @@ fn retained_parameter_learning_retention_and_transfer() {
     let mut excluded = BTreeSet::new();
     for case in &fresh.cases {
         families(
-            &CompiledQuestion::compile(&case.source).unwrap(),
+            &ResearchQuestion::from_hex(&case.source).unwrap(),
             0,
             &mut excluded,
         );
@@ -266,7 +266,7 @@ fn retained_parameter_learning_retention_and_transfer() {
     let groups = sources(&old, &output, &excluded);
     let mut graph = crate::Graph::default();
     for source in groups.iter().flatten() {
-        let q = CompiledQuestion::compile(&source.question).unwrap();
+        let q = ResearchQuestion::from_hex(&source.question).unwrap();
         admit_discovery(&mut graph, &q, &source.solution).unwrap();
     }
     drop(graph);

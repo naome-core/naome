@@ -8,12 +8,10 @@ fn measure_prefilter_cache() {
     let graph = Graph::default();
     let inputs: Vec<_> = (0..8)
         .map(|index| {
-            CompiledQuestion::compile(&format!(
-                "goal=all(x,{}mem(x,x){})",
-                "not(".repeat(index),
-                ")".repeat(index),
-            ))
-            .unwrap()
+            use naome_foundation::{Formula, FreeVariable};
+            let x = FreeVariable::new(0);
+            let body = (0..index).fold(Formula::member(x, x), |body, _| Formula::negate(body));
+            ResearchQuestion::from_formula(Formula::for_all(x, body)).unwrap()
         })
         .collect();
     for group in ["cache_repeated", "cache_alternating", "cache_fresh"] {
@@ -72,7 +70,7 @@ async fn measure_prefilter_node_api() {
             dht: false,
             ..Default::default()
         }),
-        producer_sources: Vec::new(),
+        producer_artifacts: Vec::new(),
     };
     let (handle, admin, inbox) = channel();
     let task = tokio::spawn(crate::network::run_with_questions(
@@ -87,12 +85,10 @@ async fn measure_prefilter_node_api() {
         .unwrap();
     let inputs: Vec<_> = (0..8)
         .map(|index| {
-            CompiledQuestion::compile(&format!(
-                "goal=all(x,{}mem(x,x){})",
-                "not(".repeat(index),
-                ")".repeat(index),
-            ))
-            .unwrap()
+            use naome_foundation::{Formula, FreeVariable};
+            let x = FreeVariable::new(0);
+            let body = (0..index).fold(Formula::member(x, x), |body, _| Formula::negate(body));
+            ResearchQuestion::from_formula(Formula::for_all(x, body)).unwrap()
         })
         .collect();
     let evaluations = 2048;

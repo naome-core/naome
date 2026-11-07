@@ -27,7 +27,7 @@ impl std::ops::Deref for Generated {
 impl Session<'_> {
     fn generate(
         &mut self,
-        q: &CompiledQuestion,
+        q: &ResearchQuestion,
         cap: usize,
         job: u64,
         required: &[String],
@@ -45,7 +45,7 @@ impl Session<'_> {
             .engine
             .with(&self.state.model, self.io, |runtime| {
                 solve_with_report(
-                    q.source(),
+                    &q.to_hex(),
                     runtime,
                     allowance,
                     job,
@@ -80,7 +80,7 @@ impl Session<'_> {
     }
 }
 fn checked(
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     generated: &Generation,
     graph: &mut crate::Graph,
     path: &Path,
@@ -95,13 +95,13 @@ fn checked(
     Some(solution.proof_id.clone())
 }
 fn event(
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     generated: &Generation,
     role: &str,
     job: u64,
     required: &[String],
 ) -> Value {
-    json!({"role":role,"job_seed":job,"question":q.source(),"required":required,"cost":generated.cost,"diagnostic":generated.diagnostic,"solution":generated.solution,"open_branches":generated.frontier})
+    json!({"role":role,"job_seed":job,"question":q.to_hex(),"required":required,"cost":generated.cost,"diagnostic":generated.diagnostic,"solution":generated.solution,"open_branches":generated.frontier})
 }
 fn outcome(generated: &Generation) -> Outcome {
     if generated.solution.is_some() {
@@ -111,7 +111,7 @@ fn outcome(generated: &Generation) -> Outcome {
     }
 }
 pub(super) fn arm(
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     kind: &str,
     seed: u64,
     common: &State,
@@ -164,10 +164,10 @@ pub(super) fn arm(
             if !meter.within(&io) || meter.remaining() == 0 {
                 break;
             }
-            let mut available = |helper: &CompiledQuestion| {
+            let mut available = |helper: &ResearchQuestion| {
                 let gate = questions.assess(&graph, helper);
                 if !gate.passed() && declined.insert(*helper.resolution_id()) {
-                    events.push(json!({"role":"helper_intake_unavailable","question":helper.source(),"rule":gate.rule,"reason":format!("{:?}",gate.reason),"has_answer":gate.has_answer()}));
+                    events.push(json!({"role":"helper_intake_unavailable","question":helper.to_hex(),"rule":gate.rule,"reason":format!("{:?}",gate.reason),"has_answer":gate.has_answer()}));
                 }
                 gate.passed()
             };
@@ -211,7 +211,7 @@ pub(super) fn arm(
             };
             if offered.is_err() {
                 finder.exhaust_helpers(&helper).unwrap();
-                events.push(json!({"role":"required_prerequisites_unavailable","question":helper.source(),"required":needed}));
+                events.push(json!({"role":"required_prerequisites_unavailable","question":helper.to_hex(),"required":needed}));
                 continue;
             }
             let generated = Session {
@@ -335,7 +335,7 @@ pub(super) fn arm(
     json!({"arm":kind,"first_failed":first_failed,"counted_solution":counted,"proof_id":result,"required_lemmas":required,"acquired_helpers":acquired,"used_helpers":used_helpers,"retry_allowance":retry_allowance,"audit_debit":audit_debit,"cost":costs,"initial_model":digest(&common.model),"final_model":final_model,"retained_weight_updates":state.model.updates.saturating_sub(common.model.updates),"lower_training_enabled":false,"finder_support_events":finder_owner.as_ref().map(|f|f.support_updates())})
 }
 pub(super) fn removal(
-    q: &CompiledQuestion,
+    q: &ResearchQuestion,
     candidate: &Value,
     common: &State,
     common_io: &MemoryStore,

@@ -85,8 +85,8 @@ fn calibrate_longitudinal_tracks() {
                     !solution.refuted,
                     "intended entailment was refuted; reject construction"
                 );
-                let checked = solution.checked().unwrap().into_checked_proof();
-                let q = CompiledQuestion::compile(&case.source).unwrap();
+                let checked = solution.checked().unwrap();
+                let q = ResearchQuestion::from_hex(&case.source).unwrap();
                 assert_eq!(checked.conclusion(), q.proved_target());
                 meter
                     .write(

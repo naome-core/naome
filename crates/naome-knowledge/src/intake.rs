@@ -6,8 +6,8 @@ use crate::{
     question::{FormalContext, LocalQuestions, QuestionAssessment},
 };
 use libp2p::PeerId;
-use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
+use naome_checker::question::ResearchQuestion;
 use naome_proof::{ArtifactId, StatementId};
 #[cfg(test)]
 use std::time::Duration;
@@ -20,7 +20,9 @@ use tokio::sync::oneshot;
 
 mod certificate;
 mod closure;
+mod definition;
 use closure::Closure;
+pub(crate) use definition::DefinitionRequest;
 mod managed;
 mod program;
 mod selection;
@@ -34,7 +36,7 @@ mod tests;
 struct Description {
     transfer: TransferGrant,
     statement: StatementId,
-    question: CompiledQuestion,
+    question: ResearchQuestion,
 }
 
 enum Phase {
@@ -64,6 +66,12 @@ struct DeclineContext {
     until: Instant,
 }
 
+struct CachedCertificate {
+    record: crate::object::BinaryArtifact,
+    question: Option<String>,
+    charged: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct Intake {
     queue: VecDeque<Description>,
@@ -72,6 +80,9 @@ pub(crate) struct Intake {
     waiting: VecDeque<managed::Waiting>,
     managed_context: Option<(FormalContext, crate::question::Revision)>,
     programs: program::Programs,
+    definition: Option<definition::DefinitionFetch>,
+    certificates: VecDeque<CachedCertificate>,
+    certificate_bytes: usize,
 }
 
 pub(crate) enum Progress {
@@ -124,7 +135,7 @@ impl Intake {
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
-        let (id, statement, question) = metadata.compile()?;
+        let (id, statement, question) = metadata.compile(graph.checked_context())?;
         if graph.contains(id)? {
             return Ok("duplicate");
         }
@@ -171,7 +182,7 @@ impl Intake {
         }
         if self
             .declined
-            .contains_key(&(peer, id, statement, *question.source_hash()))
+            .contains_key(&(peer, id, statement, *question.record_id()))
         {
             return Ok("declined");
         }
@@ -187,31 +198,43 @@ impl Intake {
     }
 
     pub(crate) fn needed(&self) -> Vec<(PeerId, ArtifactId, ArtifactId)> {
-        self.active
-            .as_ref()
-            .filter(|root| {
-                matches!(root.phase, Phase::Fetch) && root.description.transfer.live(Instant::now())
-            })
-            .map(|root| {
-                root.closure
+        self.definition
+            .iter()
+            .filter(|fetch| fetch.transfer.live(Instant::now()))
+            .flat_map(|fetch| {
+                fetch
+                    .closure
                     .needed()
-                    .map(|id| {
-                        (
-                            root.description.transfer.peer(),
-                            root.description.transfer.root(),
-                            id,
-                        )
-                    })
-                    .collect::<Vec<_>>()
+                    .map(|id| (fetch.transfer.peer(), fetch.transfer.root(), id))
             })
-            .unwrap_or_default()
-            .into_iter()
+            .chain(
+                self.active
+                    .as_ref()
+                    .filter(|root| {
+                        matches!(root.phase, Phase::Fetch)
+                            && root.description.transfer.live(Instant::now())
+                    })
+                    .map(|root| {
+                        root.closure
+                            .needed()
+                            .map(|id| {
+                                (
+                                    root.description.transfer.peer(),
+                                    root.description.transfer.root(),
+                                    id,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            )
             .chain(self.programs.needed())
             .collect()
     }
 
     pub(crate) fn authorizes(&self, peer: PeerId, root_id: ArtifactId, id: ArtifactId) -> bool {
-        self.programs.authorizes(peer, root_id, id)
+        self.definition_authorizes(peer, root_id, id)
+            || self.programs.authorizes(peer, root_id, id)
             || self.active.as_ref().is_some_and(|root| {
                 root.fetching()
                     && root
@@ -222,6 +245,7 @@ impl Intake {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn payload(
         &mut self,
         peer: PeerId,
@@ -230,27 +254,165 @@ impl Intake {
         object: Envelope,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
-        if self.programs.authorizes(peer, root_id, expected) {
-            return self
-                .programs
-                .certificate_payload(peer, root_id, expected, object, graph);
+        self.payload_with_question(peer, root_id, expected, object, None, graph)
+    }
+
+    pub(crate) fn payload_with_question(
+        &mut self,
+        peer: PeerId,
+        root_id: ArtifactId,
+        expected: ArtifactId,
+        object: Envelope,
+        question: Option<String>,
+        graph: &Graph,
+    ) -> Result<(), crate::Error> {
+        let question =
+            question.filter(|source| source.len() <= 2 * naome_checker::question::QUESTION_BYTES);
+        let candidate = if self.definition_authorizes(peer, root_id, expected) {
+            let fetch = self.definition.as_mut().expect("requested definition");
+            let candidate =
+                fetch
+                    .closure
+                    .certificate_payload(expected, object, graph, &fetch.transfer)?;
+            if let Some(source) = &question {
+                fetch.closure.remember_question(expected, source.clone());
+            }
+            candidate
+        } else if self.programs.authorizes(peer, root_id, expected) {
+            self.programs.certificate_payload(
+                peer,
+                root_id,
+                expected,
+                object,
+                question.clone(),
+                graph,
+            )?
+        } else {
+            if self.active.as_ref().is_some_and(|root| {
+                root.description.transfer.peer() == peer
+                    && root.description.transfer.root() == root_id
+                    && !root.description.transfer.live(Instant::now())
+            }) {
+                return Err("expired proof fetch grant".into());
+            }
+            if !self.authorizes(peer, root_id, expected) {
+                return Err("unrequested proof payload".into());
+            }
+            let root = self.active.as_mut().ok_or("unrequested proof payload")?;
+            let candidate = root.closure.certificate_payload(
+                expected,
+                object,
+                graph,
+                &root.description.transfer,
+            )?;
+            if let Some(source) = &question {
+                root.closure.remember_question(expected, source.clone());
+            }
+            candidate
+        };
+        // A function's untrusted witness route is outside its artifact hash.
+        // Only candidates with fully bound dependency routing can be shared.
+        self.cache_certificate(&candidate, question);
+        Ok(())
+    }
+
+    pub(crate) fn reuse_certificate(
+        &mut self,
+        peer: PeerId,
+        root: ArtifactId,
+        id: ArtifactId,
+        graph: &Graph,
+    ) -> Result<bool, crate::Error> {
+        let Some(saved) = self.certificates.iter().find(|saved| saved.record.id == id) else {
+            return Ok(false);
+        };
+        let needed = self.definition_authorizes(peer, root, id)
+            || self.programs.needs_certificate(peer, root, id)
+            || self.active.as_ref().is_some_and(|active| {
+                active.fetching()
+                    && active.closure.needs(id)
+                    && active
+                        .description
+                        .transfer
+                        .authorizes(peer, root, Instant::now())
+            });
+        if !needed {
+            return Ok(false);
         }
-        if self.active.as_ref().is_some_and(|root| {
-            root.description.transfer.peer() == peer
-                && root.description.transfer.root() == root_id
-                && !root.description.transfer.live(Instant::now())
-        }) {
-            return Err("expired proof fetch grant".into());
+        // Reapply the same ingress accounting and checks under the new grant.
+        let _envelope = crate::resources::MemoryLease::acquire(saved.record.bytes.len() * 2 + 512)?;
+        self.payload_with_question(
+            peer,
+            root,
+            id,
+            saved.record.envelope(),
+            saved.question.clone(),
+            graph,
+        )?;
+        Ok(true)
+    }
+
+    fn cache_certificate(
+        &mut self,
+        candidate: &crate::object::Candidate,
+        question: Option<String>,
+    ) {
+        if candidate.obligation.is_some()
+            || self
+                .certificates
+                .iter()
+                .any(|saved| saved.record.id == candidate.id)
+        {
+            return;
         }
-        if !self.authorizes(peer, root_id, expected) {
-            return Err("unrequested proof payload".into());
+        let charged = candidate.bytes.len()
+            + candidate.dependencies.len() * 128
+            + question.as_ref().map_or(0, String::len)
+            + 512;
+        if charged > Self::certificate_cache_capacity() {
+            return;
         }
-        let root = self.active.as_mut().ok_or("unrequested proof payload")?;
-        root.closure
-            .certificate_payload(expected, object, graph, &root.description.transfer)
+        let Ok(memory) = crate::resources::MemoryLease::acquire(charged) else {
+            return;
+        };
+        let mut record = candidate.record();
+        // Keep only the immutable bytes and routing, releasing the expensive
+        // decoded-tree lease when its original closure drops the candidate.
+        record._memory = Some(memory);
+        self.certificate_bytes += charged;
+        self.certificates.push_back(CachedCertificate {
+            record,
+            question,
+            charged,
+        });
+        self.trim_certificates();
+    }
+
+    fn certificate_cache_capacity() -> usize {
+        crate::resources::adaptive::cache(crate::resources::limits().closure_bytes)
+    }
+
+    pub(crate) fn trim_certificates(&mut self) {
+        let capacity = Self::certificate_cache_capacity();
+        while self.certificate_bytes > capacity
+            || self.certificates.len() > crate::resources::limits().closure_objects
+        {
+            let oldest = self
+                .certificates
+                .pop_front()
+                .expect("nonempty certificate cache");
+            self.certificate_bytes -= oldest.charged;
+        }
     }
 
     pub(crate) fn abort(&mut self, root_id: ArtifactId) {
+        if self
+            .definition
+            .as_ref()
+            .is_some_and(|fetch| fetch.transfer.root() == root_id)
+        {
+            self.definition = None;
+        }
         self.programs.remove(root_id);
         self.waiting
             .retain(|w| w.description.transfer.root() != root_id);
@@ -264,6 +426,13 @@ impl Intake {
     }
 
     pub(crate) fn disconnected(&mut self, peer: PeerId) {
+        if self
+            .definition
+            .as_ref()
+            .is_some_and(|fetch| fetch.transfer.peer() == peer)
+        {
+            self.definition = None;
+        }
         self.programs.failed(peer, None);
         self.waiting
             .retain(|w| w.description.transfer.peer() != peer);
@@ -278,15 +447,23 @@ impl Intake {
         }
     }
 
+    pub(crate) fn preparing_program_admission(&self) -> bool {
+        self.programs.preparing_admission()
+    }
+
     pub(crate) fn advance<F, Fut>(
         &mut self,
         graph: &mut Graph,
         questions: &mut LocalQuestions<F>,
     ) -> Progress
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        match self.advance_definition(graph) {
+            Progress::Waiting => {}
+            progress => return progress,
+        }
         if self.active.as_ref().is_some_and(|root| {
             root.closure.member_count() > crate::resources::limits().closure_objects
         }) {
@@ -304,9 +481,17 @@ impl Intake {
                 return Progress::Skipped(root.description.transfer.root(), error);
             }
         }
-        match self.programs.advance(graph, questions) {
+        let metadata_waiter = self.metadata_waiter();
+        match self.programs.advance(graph, questions, metadata_waiter) {
             Progress::Waiting => {}
             progress => return progress,
+        }
+        if metadata_waiter.is_some_and(|waiting| {
+            self.active
+                .as_ref()
+                .is_some_and(|root| root.description.transfer.root() == waiting)
+        }) {
+            return Progress::Waiting;
         }
         if questions.uses_jobs() {
             return self.advance_managed(graph, questions);

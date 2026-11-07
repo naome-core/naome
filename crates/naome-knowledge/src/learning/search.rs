@@ -912,9 +912,8 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
         let source = super::proof::source_with_definitions(&verified, &definitions)?;
         let context = super::proof::lemma_context(&definitions, &verified.lemmas)?;
-        let checked = naome_authoring::compile_against_proof_context(&source, &context)
-            .map_err(|e| e.to_string())?
-            .into_checked_proof();
+        let checked =
+            crate::learning::proof::check_artifact(&source, &context).map_err(|e| e.to_string())?;
         if !checked
             .direct_artifact_dependencies()
             .contains(&entry.address()?)
@@ -1044,18 +1043,6 @@ pub(super) const AXIOMS: [naome_foundation::ZfcAxiom; 7] = [
     naome_foundation::ZfcAxiom::Foundation,
     naome_foundation::ZfcAxiom::Choice,
 ];
-pub fn axiom_name(a: naome_foundation::ZfcAxiom) -> &'static str {
-    use naome_foundation::ZfcAxiom::*;
-    match a {
-        Extensionality => "extensionality",
-        Pairing => "pairing",
-        Union => "union",
-        PowerSet => "power_set",
-        Infinity => "infinity",
-        Foundation => "foundation",
-        Choice => "choice",
-    }
-}
 
 #[cfg(test)]
 mod witness_tests {
@@ -1068,8 +1055,8 @@ mod witness_tests {
     }
     #[test]
     fn the_last_allowed_transition_can_close_without_spending_another_expansion() {
-        let question = naome_authoring::CompiledQuestion::compile(
-            "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,mem(x,a)),mem(b,a)))))",
+        let question = naome_checker::question::ResearchQuestion::from_hex(
+            "040403020001000000010100000000030401010000000001000000020101000000000100000001",
         )
         .unwrap();
         let result = solve_with_knowledge(
@@ -1110,8 +1097,8 @@ mod witness_tests {
     }
     #[test]
     fn existential_transport_discharges_its_fresh_witness_in_the_native_checker() {
-        let q = naome_authoring::CompiledQuestion::compile(
-            "goal=all(x,imp(ex(y,mem(y,x)),ex(y,or(mem(y,x),eq(y,x)))))",
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            "04030204020101000000000100000001020402030201010000000001000000010001000000000100000001",
         )
         .unwrap();
         let found = solve(q.proved_target(), &mut Ordered, 128).unwrap();
@@ -1119,11 +1106,13 @@ mod witness_tests {
         let (_, _, checked) = core::checked(q.proved_target(), &tree).unwrap();
         let source = super::super::proof::source(&checked).unwrap();
         assert_eq!(
-            naome_authoring::compile(&source).unwrap().proof_id(),
+            crate::learning::proof::check_artifact(&source, &naome_checker::ArtifactState::new())
+                .unwrap()
+                .proof_id(),
             checked.native_id
         );
-        let invalid = naome_authoring::CompiledQuestion::compile(
-            "goal=all(x,imp(ex(y,mem(y,x)),all(y,mem(y,x))))",
+        let invalid = naome_checker::question::ResearchQuestion::from_hex(
+            "04030204020101000000000100000001040101000000000100000001",
         )
         .unwrap();
         assert!(

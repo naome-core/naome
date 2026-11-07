@@ -22,7 +22,7 @@ fn canonical_answer_readback() {
         };
         let seed = row["seed"].as_u64().unwrap();
         let id = row["id"].as_str().unwrap();
-        let question = CompiledQuestion::compile(row["question"].as_str().unwrap()).unwrap();
+        let question = ResearchQuestion::from_hex(row["question"].as_str().unwrap()).unwrap();
         for (name, arm) in arms {
             // This prefix was already paid by the original arm. Reconstruct it
             // independently for readback; do not call this extra diagnostic
@@ -47,7 +47,7 @@ fn canonical_answer_readback() {
                 }
                 let solution: Solution = serde_json::from_value(event["solution"].clone()).unwrap();
                 let source =
-                    CompiledQuestion::compile(event["question"].as_str().unwrap()).unwrap();
+                    ResearchQuestion::from_hex(event["question"].as_str().unwrap()).unwrap();
                 admitted += usize::from(admit_discovery(&mut graph, &source, &solution).unwrap());
             }
             let reconstruction_cpu = meta::cpu_micros().unwrap() - reconstruction_cpu;

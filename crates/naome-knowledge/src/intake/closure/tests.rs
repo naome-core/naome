@@ -20,20 +20,18 @@ fn id(object: &Envelope) -> ArtifactId {
 fn fixtures() -> (Envelope, Envelope, Envelope) {
     let mut producer = Graph::default();
     let helper = producer
-        .produce("goal=all(x,eq(x,x)) proof: p0=refl(x) p1=gen(p0,x) return p1")
+        .produce("00000000020600000000210000000000000000")
         .unwrap()
         .0;
     let parent = producer
-        .produce(&format!(
-            "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
-            crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
+        .produce(&crate::test_inputs::cite(
+            helper.proof_id().unwrap().unwrap(),
         ))
         .unwrap()
         .0;
     let root = producer
-        .author(&format!(
-            "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
-            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
+        .author(&crate::test_inputs::cite(
+            parent.proof_id().unwrap().unwrap(),
         ))
         .unwrap();
     (root, parent, helper)
@@ -75,7 +73,7 @@ fn preparing_received_certificates_keeps_one_allocation_charge() {
             .unwrap();
     }
     let charged = crate::resources::memory_usage().0;
-    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let question = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let batch = closure.prepare_certificates(&graph, &question).unwrap();
     assert_eq!(
         crate::resources::memory_usage().0,
@@ -99,13 +97,8 @@ fn a_reverse_received_chain_visits_each_dependency_only_when_added_and_completed
     let mut objects = Vec::new();
     for _ in 0..64 {
         let text = objects.last().map_or_else(
-            || "goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q".into(),
-            |object: &Envelope| {
-                format!(
-                    "goal=all(x,eq(x,x)) proof: p=cite(\"{}\") return p",
-                    crate::hex(object.proof_id().unwrap().unwrap().as_bytes())
-                )
-            },
+            || "00000000020600000000210000000000000000".into(),
+            |object: &Envelope| crate::test_inputs::cite(object.proof_id().unwrap().unwrap()),
         );
         objects.push(source.produce(&text).unwrap().0);
     }
@@ -134,7 +127,7 @@ fn a_reverse_received_chain_visits_each_dependency_only_when_added_and_completed
         126,
         "idle quanta do not rescan the closure"
     );
-    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let question = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let batch = closure.prepare_certificates(&receiver, &question).unwrap();
     assert_eq!(
         receiver
@@ -199,7 +192,7 @@ fn one_frontier_deduplicates_members_and_rejected_payloads_do_not_spend_budget()
         .unwrap();
     assert_eq!(closure.member_count(), 3);
     assert!(closure.certificate_ready());
-    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let question = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let _batch = closure.prepare_certificates(&graph, &question).unwrap();
     assert_eq!(
         graph.accepted_count(),

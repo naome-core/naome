@@ -217,8 +217,8 @@ mod tests {
     use super::*;
     #[test]
     fn separation_is_instantiated_from_the_goal_instead_of_a_named_theorem() {
-        let q = naome_authoring::CompiledQuestion::compile(
-            "goal=all(a,ex(b,all(x,iff(mem(x,b),and(mem(x,a),not(mem(x,x)))))))",
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            "040204020402030301010000000001000000010203010100000000010000000202020101000000000100000000020302030101000000000100000002020201010000000001000000000101000000000100000001",
         )
         .unwrap();
         let (proof, work) = solve(q.proved_target(), 128).unwrap();
@@ -229,11 +229,9 @@ mod tests {
             proof.payload_bytes
         );
         let source = proof::source(&proof).unwrap();
-        let compiled = naome_authoring::compile_against_proof_context(
-            &source,
-            &naome_checker::ArtifactState::new(),
-        )
-        .unwrap();
+        let compiled =
+            crate::learning::proof::check_artifact(&source, &naome_checker::ArtifactState::new())
+                .unwrap();
         assert_eq!(compiled.proof_id(), proof.native_id);
     }
     #[test]
@@ -264,11 +262,12 @@ mod tests {
             selection: None,
         };
         let (_, graphs) = super::super::search::compile(&target, &tree).unwrap();
-        let question = naome_authoring::CompiledQuestion::from_formula(target.clone()).unwrap();
+        let question =
+            naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
         eprintln!(
             "Nat native DAG decisions={} eligible_new_lineage={} packet_bytes={}",
             graphs.len(),
-            super::super::State::eligible(question.source()),
+            super::super::State::eligible(&question.to_hex()),
             packet.len()
         );
         assert!(
@@ -289,7 +288,7 @@ mod tests {
         );
         let helpers = evidence::helpers(&packet).unwrap();
         let source = proof::source(&proof).unwrap();
-        let size = source.len() + helpers.iter().map(String::len).sum::<usize>();
+        let size = (source.len() + helpers.iter().map(String::len).sum::<usize>()) / 2;
         eprintln!(
             "Nat closure objects={} source_bytes={size} packet_bytes={}",
             helpers.len() + 1,
@@ -298,10 +297,11 @@ mod tests {
         assert!(
             helpers
                 .iter()
-                .all(|s| s.len() <= crate::resources::limits().proof_bytes)
+                .all(|s| s.len() / 2 <= crate::resources::limits().proof_bytes)
         );
         assert!(size <= crate::resources::limits().closure_bytes);
-        let question = naome_authoring::CompiledQuestion::from_formula(target.clone()).unwrap();
+        let question =
+            naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
         let mut graph = crate::Graph::default();
         assert!(
             graph
@@ -326,7 +326,7 @@ mod tests {
         let example = super::super::Example {
             origin: super::super::Origin::Local,
             job: 1,
-            question: question.source().to_owned(),
+            question: question.to_hex(),
             proof_id: crate::hex(proof.native_id.as_bytes()),
             refuted: false,
             tree: tree.clone(),
@@ -355,14 +355,16 @@ mod tests {
         job.validate().unwrap();
         job.evidence[0].proof_id = "ff".repeat(32);
         assert!(job.validate().is_err());
-        let wrong = naome_authoring::CompiledQuestion::compile("goal=all(x,not(eq(x,x)))").unwrap();
+        let wrong =
+            naome_checker::question::ResearchQuestion::from_hex("04020001000000000100000000")
+                .unwrap();
         assert!(evidence::compile(wrong.proved_target(), &packet).is_err());
         assert_eq!(solve(&target, 0).unwrap().1, 0);
     }
 
     #[test]
     fn a_different_nonempty_class_is_bounded_without_a_fixed_zfc_witness() {
-        let q=naome_authoring::CompiledQuestion::compile("goal=all(a,imp(ex(i,mem(a,i)),ex(w,all(x,iff(mem(x,w),all(i,imp(mem(a,i),mem(x,i))))))))").unwrap();
+        let q=naome_checker::question::ResearchQuestion::from_hex("0403020402010100000001010000000002040204020303010100000000010000000104030101000000030100000000010100000001010000000002030403010100000003010000000001010000000101000000000101000000000100000001").unwrap();
         let (proof, work) = solve(q.proved_target(), 128).unwrap();
         eprintln!("generic class work={work}");
         let proof = proof.expect("generic nonempty class intersection");
@@ -375,8 +377,8 @@ mod tests {
     }
     #[test]
     fn unbounded_comprehension_is_not_inferred_from_separation() {
-        let q = naome_authoring::CompiledQuestion::compile(
-            "goal=ex(w,all(x,iff(mem(x,w),not(mem(x,x)))))",
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            "02040204020303010100000000010000000102010100000000010000000002030201010000000001000000000101000000000100000001",
         )
         .unwrap();
         assert!(solve(q.proved_target(), 128).unwrap().0.is_none());

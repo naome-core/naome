@@ -1,9 +1,0 @@
-# Every source name in this file is presentation-only.
-
-
-goal = all(x, eq(x, x))
-
-proof:
-    p0 = refl(x)
-    p1 = gen(p0, x)
-    return p1

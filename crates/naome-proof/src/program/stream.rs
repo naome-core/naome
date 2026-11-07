@@ -1,39 +1,29 @@
 //! Canonical program bytes and authenticated stream transitions. These rules
 //! establish input integrity only, never mathematical validity or admission.
 use super::{
-    CHUNK_BYTES, CHUNK_RECORDS, Chunk, Command, Manifest, RECORD_BYTES, command_hash, stream_hash,
+    CHUNK_BYTES, CHUNK_RECORDS, Chunk, Command, Manifest, RECORD_BYTES,
+    binary::{Reader, put_integer, read_command, write_command},
+    command_hash, decode_command, encode_command, stream_hash,
 };
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_BYTES: usize = 2048;
-
-pub fn encode_command(command: &Command) -> Result<Vec<u8>, String> {
-    let bytes = serde_json::to_vec(command).map_err(|error| error.to_string())?;
-    if bytes.len() > RECORD_BYTES {
-        return Err("program command byte capacity".into());
-    }
-    Ok(bytes)
-}
-
-pub fn decode_command(bytes: &[u8]) -> Result<Command, String> {
-    if bytes.len() > RECORD_BYTES {
-        return Err("program command byte capacity".into());
-    }
-    let command = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    if encode_command(&command)? != bytes {
-        return Err("noncanonical program command".into());
-    }
-    Ok(command)
-}
+pub const MANIFEST_BYTES: usize = 2 * 10 + 4 * 32;
 
 impl Manifest {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, String> {
         if self.commands == 0 || self.input_bytes == 0 {
             return Err("invalid program manifest".into());
         }
-        let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        if bytes.len() > MANIFEST_BYTES {
-            return Err("program manifest byte capacity".into());
+        let mut bytes = Vec::with_capacity(MANIFEST_BYTES);
+        put_integer(&mut bytes, self.commands);
+        put_integer(&mut bytes, self.input_bytes);
+        for digest in [
+            self.program_hash,
+            self.stream_root,
+            self.conclusion,
+            self.statement,
+        ] {
+            bytes.extend_from_slice(&digest);
         }
         Ok(bytes)
     }
@@ -42,12 +32,86 @@ impl Manifest {
         if bytes.len() > MANIFEST_BYTES {
             return Err("program manifest byte capacity".into());
         }
-        let manifest: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        if manifest.canonical_bytes()? != bytes {
-            return Err("noncanonical program manifest".into());
+        let mut input = Reader(bytes);
+        let commands = input.integer()?;
+        let input_bytes = input.integer()?;
+        if commands == 0 || input_bytes == 0 {
+            return Err("invalid program manifest".into());
         }
-        Ok(manifest)
+        let result = Self {
+            commands,
+            input_bytes,
+            program_hash: input.fixed()?,
+            stream_root: input.fixed()?,
+            conclusion: input.fixed()?,
+            statement: input.fixed()?,
+        };
+        if !input.0.is_empty() {
+            return Err("trailing program manifest bytes".into());
+        }
+        Ok(result)
     }
+}
+
+impl Chunk {
+    /// Authenticate these decoded records against the selected manifest before
+    /// using them. This encoding carries only a prefix cursor and commitments.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        put_integer(&mut bytes, self.start);
+        bytes.extend_from_slice(&self.previous);
+        bytes.extend_from_slice(&self.next);
+        bytes.extend(encode_records(&self.records)?);
+        Ok(bytes)
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let mut input = Reader(bytes);
+        let start = input.integer()?;
+        let previous = input.fixed()?;
+        let next = input.fixed()?;
+        let records = decode_records(input.0)?;
+        Ok(Self {
+            start,
+            previous,
+            next,
+            records,
+        })
+    }
+}
+
+pub fn encode_records(records: &[Command]) -> Result<Vec<u8>, String> {
+    if records.is_empty() || records.len() > CHUNK_RECORDS {
+        return Err("program chunk record capacity".into());
+    }
+    let mut bytes = Vec::new();
+    for command in records {
+        let before = bytes.len();
+        write_command(command, &mut bytes)?;
+        if bytes.len() - before > RECORD_BYTES || bytes.len() > CHUNK_BYTES {
+            return Err("program chunk byte capacity".into());
+        }
+    }
+    Ok(bytes)
+}
+
+pub fn decode_records(bytes: &[u8]) -> Result<Vec<Command>, String> {
+    if bytes.is_empty() || bytes.len() > CHUNK_BYTES {
+        return Err("program chunk byte capacity".into());
+    }
+    let mut input = Reader(bytes);
+    let mut records = Vec::new();
+    while !input.0.is_empty() {
+        if records.len() == CHUNK_RECORDS {
+            return Err("program chunk record capacity".into());
+        }
+        let before = input.0.len();
+        records.push(read_command(&mut input)?);
+        if before - input.0.len() > RECORD_BYTES {
+            return Err("program command byte capacity".into());
+        }
+    }
+    Ok(records)
 }
 
 /// Forward commitment to a sequence of canonical input records. The caller

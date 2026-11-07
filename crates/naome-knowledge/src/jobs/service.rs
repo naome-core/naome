@@ -1684,7 +1684,7 @@ fn output_reservation(input: &Input) -> usize {
         Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
             6 * crate::resources::limits().closure_bytes + 1024
         }
-        Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
+        Input::Find { .. } => 6 * naome_checker::question::QUESTION_BYTES + 128,
         Input::Select { .. } => 64,
     }
 }

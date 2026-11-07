@@ -35,7 +35,8 @@ pub use definition::{
 pub use identity::{ArtifactId, DefinitionId, DerivationId, ProofId, StatementId};
 pub use proof_formula::ProofFormula;
 pub use question::{
-    QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES, QuestionError, QuestionTarget,
+    QUESTION_EXPANSION_MAX_NODES, QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES,
+    QuestionError, QuestionTarget,
 };
 
 /// Maximum encoded length admitted for one proof certificate.
@@ -123,76 +124,22 @@ impl ProofCertificate {
         }
     }
 
-    /// Consumes this certificate and derives its unchecked normal form with
-    /// source-step origins for authoring diagnostics.
-    ///
-    /// The returned origins resolve a normalized step to its zero-based
-    /// position in this certificate. Unreachable steps are absent. When
-    /// multiple reachable source steps intern into one exact normalized node,
-    /// lookup retains the lowest source position. Mathematical validity
-    /// remains unchecked.
-    pub fn into_unchecked_normal_form_with_step_origins(
+    /// Preserves the free-variable renaming used by normalization so a
+    /// checker-inspected open proof fragment can be closed in its original scope.
+    pub fn into_unchecked_normal_form_with_variables(
         self,
-    ) -> (ProofNormalForm, ProofStepOrigins) {
-        let (certificate, source_to_normalized, variables) =
-            normal_form::normalize_with_step_origins(self);
+    ) -> (
+        ProofNormalForm,
+        std::collections::BTreeMap<FreeVariable, FreeVariable>,
+    ) {
+        let (certificate, variables) = normal_form::normalize_with_variables(self);
         (
             ProofNormalForm {
                 certificate: Arc::new(certificate),
                 canonical_bytes: Arc::new(OnceLock::new()),
             },
-            ProofStepOrigins {
-                source_to_normalized,
-                variables: variables
-                    .into_iter()
-                    .map(|(source, normalized)| (source.identifier(), normalized.identifier()))
-                    .collect(),
-            },
+            variables,
         )
-    }
-}
-
-/// Source-step provenance for one unchecked proof normal form.
-///
-/// This opaque mapping is retained only for authoring diagnostics. It is not
-/// part of canonical proof content or mathematical validity.
-#[must_use]
-pub struct ProofStepOrigins {
-    source_to_normalized: Vec<u32>,
-    variables: Vec<(u32, u32)>,
-}
-
-impl ProofStepOrigins {
-    /// All reachable source occurrences of a normalized step, in source order.
-    /// A caller may bound the returned page without discarding other origins.
-    pub fn source_steps(&self, normalized: u32) -> impl Iterator<Item = u32> + '_ {
-        self.source_to_normalized
-            .iter()
-            .enumerate()
-            .filter_map(move |(source, value)| {
-                (*value == normalized && normalized != normal_form::UNNORMALIZED_STEP)
-                    .then_some(source as u32)
-            })
-    }
-    /// Source and normalized free-variable identities from the same traversal.
-    pub fn variables(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.variables.iter().copied()
-    }
-    /// Returns the lowest reachable source step interned into `normalized`.
-    ///
-    /// Returns `None` when `normalized` is not a step in the associated normal
-    /// form. The returned position is zero-based in the original certificate.
-    pub fn source_step(&self, normalized: u32) -> Option<u32> {
-        if normalized == normal_form::UNNORMALIZED_STEP {
-            return None;
-        }
-        self.source_to_normalized
-            .iter()
-            .position(|candidate| *candidate == normalized)
-            .map(|source| {
-                u32::try_from(source)
-                    .expect("the certificate step limit makes every source index representable")
-            })
     }
 }
 

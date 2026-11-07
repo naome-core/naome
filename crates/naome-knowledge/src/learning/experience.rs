@@ -185,7 +185,8 @@ impl ExperienceSummary {
             State::Cancelled | State::Expired | State::InDoubt => TerminalEvidence::Interrupted,
             _ => unreachable!("nonterminal records returned above"),
         };
-        let q = naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+        let q = naome_checker::question::ResearchQuestion::from_hex(question)
+            .map_err(|e| e.to_string())?;
         if let Some(progress) = progress {
             for execution in &progress.executions {
                 execution.validate_context(&q, &native.base.knowledge)?;
@@ -326,7 +327,7 @@ impl Observation {
         if !super::State::eligible(&self.question) {
             return Err("history observation is outside the eligible training lineage".into());
         }
-        let question = naome_authoring::CompiledQuestion::compile(&self.question)
+        let question = naome_checker::question::ResearchQuestion::from_hex(&self.question)
             .map_err(|e| e.to_string())?;
         if self.summary.question != crate::hex(question.resolution_id())
             || self.summary.trace.observed_branches != self.frontier.as_ref().map(digest)
@@ -386,8 +387,8 @@ mod tests {
                 Ok(vec![0.; decision.candidates.len()])
             }
         }
-        let q = naome_authoring::CompiledQuestion::compile(
-            "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,all(y,mem(x,y))),mem(b,a)))))",
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            "04040302000100000001010000000003040401010000000101000000000101000000000100000001",
         )
         .unwrap();
         let empty = super::super::search::solve(q.proved_target(), &mut Ordered, 0).unwrap();

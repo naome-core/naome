@@ -6,7 +6,7 @@ use crate::learning::experience::{ExperienceSummary, TerminalEvidence};
 pub(super) mod tests;
 
 pub(super) fn completion<'a>(
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     completion: &'a jobs::Completion,
     outcome: Outcome,
 ) -> Result<Option<&'a ExperienceSummary>, String> {
@@ -69,7 +69,7 @@ pub(super) fn completion<'a>(
     Ok(Some(summary))
 }
 
-pub(super) fn record(question: &CompiledQuestion, record: &Record) -> Result<(), String> {
+pub(super) fn record(question: &ResearchQuestion, record: &Record) -> Result<(), String> {
     if let Some(summary) = &record.experience {
         summary.validate()?;
         if summary.job != record.last_job

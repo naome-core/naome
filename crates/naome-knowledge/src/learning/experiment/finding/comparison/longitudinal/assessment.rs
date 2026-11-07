@@ -103,7 +103,7 @@ fn provenance(directory: &Path, meter: &mut Meter) -> Result<BTreeMap<String, us
             )?)
             .map_err(|e| e.to_string())?;
             if let Some(solution) = episode.solution {
-                let q = CompiledQuestion::compile(&episode.observation.question)
+                let q = ResearchQuestion::from_hex(&episode.observation.question)
                     .map_err(|e| e.to_string())?;
                 if let Some(entry) = solution.theorem(&q)? {
                     first
@@ -149,12 +149,12 @@ fn evaluate(
     for (index, cell) in cases.iter().enumerate() {
         run::available(meter, io, observer, output)?;
         let case: Case = serde_json::from_value(cell["case"].clone()).map_err(|e| e.to_string())?;
-        let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
         let cpu = meta::cpu_micros()?;
         let wall = Instant::now();
         let generation = engine.with(model, io, |runtime| {
             solve_with_report(
-                q.source(),
+                &q.to_hex(),
                 runtime,
                 32,
                 8_000_000 + index as u64,
@@ -167,9 +167,7 @@ fn evaluate(
         })?;
         let mut refs = BTreeSet::new();
         if let Some(solution) = &generation.solution {
-            if solution.refuted
-                || solution.checked()?.into_checked_proof().conclusion() != q.proved_target()
-            {
+            if solution.refuted || solution.checked()?.conclusion() != q.proved_target() {
                 return Err("assessment proof does not establish its intended target".into());
             }
             let (_, _, verified) = search::core::checked(q.proved_target(), &solution.tree)?;

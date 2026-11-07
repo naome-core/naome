@@ -163,7 +163,7 @@ fn execute(
         .into_iter()
         .chain(&curriculum::adaptive::BANK.transfer)
     {
-        let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
         holdout.question(&q, Some(&case.dependency))?;
     }
     let mut io = sources::history::Io::new(&frozen, input);

@@ -1,7 +1,7 @@
 //! Bounded procedural autocurriculum and checkpoint-aware rehearsal.
 //! All values schedule research; none establish mathematical validity.
 use super::{Model, analysis::Descriptor};
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -265,7 +265,7 @@ impl Learning {
         1 + ((regret + uncertainty / 2. + stale / 4.) * (0.5 + utility) / (1. + cost.ln_1p() / 16.)
             * 65536.) as u64
     }
-    pub fn selected(&mut self, q: &CompiledQuestion, recipe: Option<Recipe>) {
+    pub fn selected(&mut self, q: &ResearchQuestion, recipe: Option<Recipe>) {
         self.trim();
         if self.pending.iter().any(|o| &o.id == q.resolution_id()) {
             return;
@@ -285,7 +285,7 @@ impl Learning {
     pub fn observe(
         &self,
         model: &mut Model,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
     ) -> Result<(), String> {
@@ -306,7 +306,7 @@ impl Learning {
     pub fn remember(
         &mut self,
         model: &mut Model,
-        q: &CompiledQuestion,
+        q: &ResearchQuestion,
         checkpoint: Option<&str>,
         resolved: bool,
         millis: u64,
@@ -359,7 +359,7 @@ impl Learning {
         self.trim();
         self.rehearse(model)
     }
-    pub fn support(&mut self, model: &mut Model, q: &CompiledQuestion) -> Result<(), String> {
+    pub fn support(&mut self, model: &mut Model, q: &ResearchQuestion) -> Result<(), String> {
         if let Some(sample) = self
             .samples
             .iter_mut()

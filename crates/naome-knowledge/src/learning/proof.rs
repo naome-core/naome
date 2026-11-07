@@ -4,7 +4,6 @@ use naome_checker::ArtifactState;
 use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{ProofCertificate, ProofId, ProofNormalForm, ProofStep};
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::sync::Arc;
 
 mod combinator;
@@ -494,206 +493,126 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
 }
 
 pub fn source(proof: &Verified) -> Result<String, String> {
-    render(proof, &proof.definitions, false)
+    Ok(artifact(&proof.certificate))
 }
+
+pub(super) fn artifact(certificate: &ProofCertificate) -> String {
+    crate::hex(&naome_proof::ArtifactPayload::Proof(certificate.clone()).to_canonical_bytes())
+}
+
+pub(crate) fn check_artifact(
+    encoded: &str,
+    context: &dyn naome_checker::ContextView,
+) -> Result<naome_checker::CheckedProof, String> {
+    let bytes = crate::unhex(encoded).map_err(|error| error.to_string())?;
+    let naome_proof::ArtifactPayload::Proof(certificate) =
+        naome_proof::ArtifactPayload::from_canonical_bytes(&bytes)
+            .map_err(|error| error.to_string())?
+    else {
+        return Err("expected a canonical proof artifact".into());
+    };
+    check_normal_form(certificate.into_unchecked_normal_form(), context)
+        .map_err(|error| error.to_string())
+}
+
 pub fn source_with_definitions(
     proof: &Verified,
     definitions: &[super::definitions::Entry],
 ) -> Result<String, String> {
-    render(proof, definitions, true)
-}
-fn render(
-    proof: &Verified,
-    definitions: &[super::definitions::Entry],
-    rewrite: bool,
-) -> Result<String, String> {
     if proof
         .definitions
         .iter()
-        .any(|existing| !definitions.contains(existing))
+        .any(|entry| !definitions.contains(entry))
     {
-        return Err("exact native references cannot be replaced during source export".into());
+        return Err("exact native references cannot be replaced during proof encoding".into());
     }
+    let rewrite = |value: &naome_proof::ProofFormula| {
+        if value.as_defined().is_some() {
+            return Ok(value.clone());
+        }
+        let primitive = value
+            .expand_with(&ArtifactState::new())
+            .map_err(|error| error.to_string())?;
+        super::definitions::represent(primitive.as_ref(), definitions)
+    };
+    let steps = proof
+        .certificate
+        .steps()
+        .iter()
+        .map(|step| {
+            Ok(match step {
+                ProofStep::Simplification {
+                    antecedent,
+                    consequent,
+                } => ProofStep::Simplification {
+                    antecedent: rewrite(antecedent)?,
+                    consequent: rewrite(consequent)?,
+                },
+                ProofStep::Frege {
+                    first,
+                    second,
+                    third,
+                } => ProofStep::Frege {
+                    first: rewrite(first)?,
+                    second: rewrite(second)?,
+                    third: rewrite(third)?,
+                },
+                ProofStep::ClassicalContraposition {
+                    antecedent,
+                    consequent,
+                } => ProofStep::ClassicalContraposition {
+                    antecedent: rewrite(antecedent)?,
+                    consequent: rewrite(consequent)?,
+                },
+                ProofStep::UniversalDistribution {
+                    variable,
+                    antecedent,
+                    consequent,
+                } => ProofStep::UniversalDistribution {
+                    variable: *variable,
+                    antecedent: rewrite(antecedent)?,
+                    consequent: rewrite(consequent)?,
+                },
+                ProofStep::VacuousUniversal { formula } => ProofStep::VacuousUniversal {
+                    formula: rewrite(formula)?,
+                },
+                ProofStep::UniversalInstantiation {
+                    variable,
+                    replacement,
+                    body,
+                } => ProofStep::UniversalInstantiation {
+                    variable: *variable,
+                    replacement: *replacement,
+                    body: rewrite(body)?,
+                },
+                ProofStep::EqualitySubstitution { from, to, body } => {
+                    ProofStep::EqualitySubstitution {
+                        from: *from,
+                        to: *to,
+                        body: rewrite(body)?,
+                    }
+                }
+                ProofStep::Separation(instance) => {
+                    ProofStep::Separation(naome_proof::ProofSeparation {
+                        predicate: rewrite(&instance.predicate)?,
+                        ..instance.clone()
+                    })
+                }
+                ProofStep::Replacement(instance) => {
+                    ProofStep::Replacement(naome_proof::ProofReplacement {
+                        predicate: rewrite(&instance.predicate)?,
+                        ..instance.clone()
+                    })
+                }
+                _ => step.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let certificate = ProofCertificate::new(steps).map_err(|error| error.to_string())?;
     let context = lemma_context(definitions, &proof.lemmas)?;
-    render_in_context(
-        &proof.certificate,
-        &proof.target,
-        definitions,
-        &context,
-        rewrite,
-    )
-}
-
-pub(super) fn render_in_context(
-    certificate: &ProofCertificate,
-    target: &Formula,
-    definitions: &[super::definitions::Entry],
-    context: &ArtifactState,
-    rewrite: bool,
-) -> Result<String, String> {
-    let mut output = String::new();
-    write!(output, "\ngoal = {}\n\nproof:\n", target.to_source()).map_err(|e| e.to_string())?;
-    let mut bindings = String::new();
-    let mut names = HashMap::new();
-    fn bind(
-        f: &Formula,
-        names: &mut HashMap<Formula, String>,
-        bindings: &mut String,
-        definitions: &[super::definitions::Entry],
-    ) -> Result<String, String> {
-        if let Some(reference) = super::definitions::application(f, definitions)? {
-            return Ok(reference);
-        }
-        if let Some(name) = names.get(f) {
-            return Ok(name.clone());
-        }
-        use naome_foundation::graph::Node;
-        let expression = match f.view().graph_node() {
-            Node::Not(body) => format!(
-                "not({})",
-                bind(&body.to_owned(), names, bindings, definitions)?
-            ),
-            Node::Implies(a, b) => format!(
-                "imp({},{})",
-                bind(&a.to_owned(), names, bindings, definitions)?,
-                bind(&b.to_owned(), names, bindings, definitions)?
-            ),
-            Node::ForAll(_) => {
-                let used = f.free_variables();
-                let v = (0..=u32::MAX)
-                    .map(FreeVariable::new)
-                    .find(|v| !used.contains(v))
-                    .ok_or("source binder space")?;
-                let body = f.open_outer_universal(v).ok_or("source universal")?;
-                format!(
-                    "all(f{},{})",
-                    v.identifier(),
-                    bind(&body, names, bindings, definitions)?
-                )
-            }
-            _ => f.to_source(),
-        };
-        let name = format!("a{}", names.len());
-        writeln!(bindings, "    {name} = {expression}").map_err(|e| e.to_string())?;
-        names.insert(f.clone(), name.clone());
-        Ok(name)
+    let checked = check(certificate, &context).map_err(|error| error.to_string())?;
+    if checked.conclusion() != &proof.target {
+        return Err("typed representation changed the checked conclusion".into());
     }
-    let mut formula = |value: &naome_proof::ProofFormula| -> Result<String, String> {
-        if let Some(defined) = value.as_defined() {
-            return super::definitions::exact_expression(defined, definitions);
-        }
-        bind(
-            value
-                .expand_with(context)
-                .map_err(|e| e.to_string())?
-                .as_ref(),
-            &mut names,
-            &mut bindings,
-            if rewrite { definitions } else { &[] },
-        )
-    };
-    for (index, step) in certificate.steps().iter().enumerate() {
-        let rule = match step {
-            ProofStep::Simplification {
-                antecedent,
-                consequent,
-            } => format!("simp({}, {})", formula(antecedent)?, formula(consequent)?),
-            ProofStep::Frege {
-                first,
-                second,
-                third,
-            } => format!(
-                "frege({}, {}, {})",
-                formula(first)?,
-                formula(second)?,
-                formula(third)?
-            ),
-            ProofStep::ModusPonens {
-                premise,
-                implication,
-            } => format!("mp(p{premise}, p{implication})"),
-            ProofStep::Generalization { premise, variable } => {
-                format!("gen(p{premise}, f{})", variable.identifier())
-            }
-            ProofStep::ProofReference { proof_id } => {
-                format!("cite(\"{}\")", crate::hex(proof_id.as_bytes()))
-            }
-            ProofStep::UniversalInstantiation {
-                variable,
-                replacement,
-                body,
-            } => format!(
-                "inst(f{}, f{}, {})",
-                variable.identifier(),
-                replacement.identifier(),
-                formula(body)?
-            ),
-            ProofStep::ClassicalContraposition {
-                antecedent,
-                consequent,
-            } => format!("contra({}, {})", formula(antecedent)?, formula(consequent)?),
-            ProofStep::EqualityReflexivity { variable } => {
-                format!("refl(f{})", variable.identifier())
-            }
-            ProofStep::EqualitySubstitution { from, to, body } => format!(
-                "subst(f{}, f{}, {})",
-                from.identifier(),
-                to.identifier(),
-                formula(body)?
-            ),
-            ProofStep::UniversalDistribution {
-                variable,
-                antecedent,
-                consequent,
-            } => format!(
-                "dist(f{}, {}, {})",
-                variable.identifier(),
-                formula(antecedent)?,
-                formula(consequent)?
-            ),
-            ProofStep::VacuousUniversal { formula: body } => format!("vacuous({})", formula(body)?),
-            ProofStep::ZfcAxiom(axiom) => {
-                format!("axiom(\"{}\")", super::search::axiom_name(*axiom))
-            }
-            ProofStep::Separation(instance) => format!(
-                "sep({}, f{}, f{}, f{}, parameters=[{}])",
-                formula(&instance.predicate)?,
-                instance.element.identifier(),
-                instance.source.identifier(),
-                instance.result.identifier(),
-                instance
-                    .parameters
-                    .iter()
-                    .map(|v| format!("f{}", v.identifier()))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            ProofStep::Replacement(instance) => format!(
-                "replace({}, f{}, f{}, f{}, f{}, f{}, parameters=[{}])",
-                formula(&instance.predicate)?,
-                instance.input.identifier(),
-                instance.output.identifier(),
-                instance.uniqueness_witness.identifier(),
-                instance.source.identifier(),
-                instance.result.identifier(),
-                instance
-                    .parameters
-                    .iter()
-                    .map(|v| format!("f{}", v.identifier()))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-        };
-        writeln!(output, "    p{index} = {rule}").map_err(|e| e.to_string())?;
-    }
-    writeln!(output, "    return p{}", certificate.steps().len() - 1).map_err(|e| e.to_string())?;
-    let output = if bindings.is_empty() {
-        output
-    } else {
-        format!("let:\n{bindings}\n{output}")
-    };
-    Ok(format!(
-        "{}{output}",
-        super::definitions::aliases(definitions)?
-    ))
+    Ok(artifact(checked.normal_form().certificate()))
 }

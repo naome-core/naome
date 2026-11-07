@@ -26,7 +26,7 @@ pub(super) fn execute(
     for episode in &frozen.episodes {
         io.append(episode.clone(), frozen.initial.clone())?;
         if let Some(solution) = &episode.solution {
-            let q = CompiledQuestion::compile(&episode.observation.question)
+            let q = ResearchQuestion::from_hex(&episode.observation.question)
                 .map_err(|e| e.to_string())?;
             crate::learning::experiment::knowledge::admit_discovery(&mut graph, &q, solution)
                 .map_err(|e| e.to_string())?;
@@ -86,8 +86,8 @@ pub(super) fn execute(
         for opportunity in 0..opportunities {
             run::available(&mut meter, &io, &mut observer, output)?;
             finder.feedback(Some(state.feedback()));
-            let mut allowed = |q: &CompiledQuestion| {
-                State::eligible(q.source())
+            let mut allowed = |q: &ResearchQuestion| {
+                State::eligible(&q.to_hex())
                     && design.holdout.question(q, None).is_ok()
                     && owner.assess(&graph, q).passed()
             };
@@ -102,7 +102,7 @@ pub(super) fn execute(
             for offset in 0..4 {
                 let case = &design.bank.acquisition
                     [(cursor as usize * 4 + offset) % design.bank.acquisition.len()];
-                let q = CompiledQuestion::compile(&case.source).map_err(|e| e.to_string())?;
+                let q = ResearchQuestion::from_hex(&case.source).map_err(|e| e.to_string())?;
                 if allowed(&q)
                     && !candidates
                         .iter()

@@ -1,16 +1,16 @@
 //! Recoverable finite prerequisite plans, subordinate to checker and job owners.
 use super::*;
 pub(crate) struct Work {
-    pub target: CompiledQuestion,
-    pub planned: Vec<CompiledQuestion>,
-    pub pending: Vec<CompiledQuestion>,
+    pub target: ResearchQuestion,
+    pub planned: Vec<ResearchQuestion>,
+    pub pending: Vec<ResearchQuestion>,
     pub required: Vec<String>,
     ready: bool,
     _memory: Vec<Arc<crate::resources::MemoryLease>>,
 }
 const DEPTH: usize = 2;
 struct Node {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     record: Option<evidence::Record>,
     children: Vec<usize>,
     checked: Option<(String, u64)>,
@@ -20,13 +20,13 @@ struct Node {
 impl Node {
     fn load(
         frontier: &Frontier,
-        question: CompiledQuestion,
+        question: ResearchQuestion,
         graph: &Graph,
         depth: usize,
         memory: &mut Vec<Arc<crate::resources::MemoryLease>>,
     ) -> Result<Self, crate::Error> {
         let record = frontier.evidence.get(&question)?;
-        let bytes = question.source().len().saturating_mul(24)
+        let bytes = question.to_hex().len().saturating_mul(24)
             + record.as_ref().map_or(0, |r| {
                 r.helpers.iter().map(|s| s.len() * 24 + 768).sum::<usize>()
             })
@@ -117,8 +117,8 @@ impl Frontier {
     pub(crate) fn loop_focus(
         &mut self,
         graph: &Graph,
-        mut available: impl FnMut(&CompiledQuestion) -> bool,
-    ) -> Result<Option<(CompiledQuestion, Work)>, crate::Error> {
+        mut available: impl FnMut(&ResearchQuestion) -> bool,
+    ) -> Result<Option<(ResearchQuestion, Work)>, crate::Error> {
         let mut sources = Vec::new();
         let mut children = std::collections::BTreeSet::new();
         for goal in &self.goals {
@@ -128,7 +128,7 @@ impl Frontier {
                 && !record.helpers.is_empty()
             {
                 for source in record.helpers {
-                    let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                    let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
                     children.insert(*helper.resolution_id());
                 }
                 sources.push(goal.clone());
@@ -149,14 +149,14 @@ impl Frontier {
 
     pub(crate) fn abandon_publication(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         job: u64,
     ) -> Result<(), crate::Error> {
         self.evidence.abandon_publication(question, job)
     }
     pub(crate) fn exhaust_helpers(
         &mut self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<(), crate::Error> {
         self.evidence.exhaust_helpers(question)
     }
@@ -165,9 +165,9 @@ impl Frontier {
     /// once; failed leaves never become mathematical negative evidence.
     pub(crate) fn loop_work(
         &mut self,
-        goal: &CompiledQuestion,
+        goal: &ResearchQuestion,
         graph: &Graph,
-        mut available: impl FnMut(&CompiledQuestion) -> bool,
+        mut available: impl FnMut(&ResearchQuestion) -> bool,
     ) -> Result<Work, crate::Error> {
         let mut memory = Vec::new();
         let mut nodes = Vec::<Node>::new();
@@ -189,13 +189,13 @@ impl Frontier {
                     finder::conjuncts(&nodes[index].question)
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|q| q.source().to_owned())
+                        .map(|q| q.to_hex())
                         .collect()
                 } else {
                     Vec::new()
                 };
                 for source in sources {
-                    let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                    let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
                     if helper.formula().view().node_count_and_depth().0
                         >= nodes[index]
                             .question

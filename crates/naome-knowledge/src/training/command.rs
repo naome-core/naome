@@ -62,9 +62,9 @@ pub fn questions(
         }
         match describe(graph, *id) {
             Ok(Some(metadata)) => {
-                let (_, _, target) = metadata.compile()?;
+                let (_, _, target) = metadata.compile(graph.checked_context())?;
                 if super::partition(&target) == partition {
-                    questions.push(target.source().into());
+                    questions.push(target.to_hex());
                 }
             }
             Ok(None) => {}

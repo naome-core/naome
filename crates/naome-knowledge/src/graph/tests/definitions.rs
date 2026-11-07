@@ -1,13 +1,19 @@
 use super::*;
 
-const RELATION: &str = "def self_equal = relation(x): eq(x,x)";
+const RELATION: &str = "0100000000010000000b0000000000000000000000";
 
 fn definition_source(definition: &Envelope) -> String {
-    format!(
-        "defs: r=\"{}\" {} proof: p0=sep(r(f0),f0,f1,f2,parameters=[]) return p0",
-        crate::hex(definition.definition_id().unwrap().unwrap().as_bytes()),
-        crate::mocks::create_question(0),
-    )
+    use naome_proof::{DefinedFormula, ProofFormula, ProofSeparation, ProofStep};
+    let [element, source, result] = [0, 1, 2].map(crate::test_inputs::variable);
+    let id = definition.definition_id().unwrap().unwrap();
+    crate::test_inputs::proof(vec![ProofStep::Separation(ProofSeparation {
+        predicate: ProofFormula::from_defined(DefinedFormula::defined_relation(id, [element]))
+            .unwrap(),
+        element,
+        source,
+        result,
+        parameters: vec![],
+    })])
 }
 fn identity_obligation() -> Envelope {
     let digits: String =
@@ -109,12 +115,12 @@ fn function_definitions_require_the_exact_obligation_proof_and_replay_it() {
     let witness_id = witness.proof_id().unwrap().unwrap();
     assert!(
         sender
-            .author("def identity = function(input,output): eq(output,input)")
+            .author(&crate::test_inputs::identity_function())
             .is_err()
     );
     sender.ingest(witness.clone(), Instant::now()).unwrap();
     let (definition, outcome) = sender
-        .produce("def identity = function(input,output): eq(output,input)")
+        .produce(&crate::test_inputs::identity_function())
         .unwrap();
     assert_eq!(
         definition.obligation_proof.as_deref(),
@@ -172,7 +178,8 @@ fn selected_proof_and_definition_commit_atomically_as_one_checked_closure() {
         .collect();
     let mut receiver = Graph::default();
     let question =
-        naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+        naome_checker::question::ResearchQuestion::from_hex(&crate::mocks::create_question(0))
+            .unwrap();
     let batch = receiver.prepare_batch(root, candidates, &question).unwrap();
     assert_eq!(receiver.accepted_count(), 0);
     assert_eq!(

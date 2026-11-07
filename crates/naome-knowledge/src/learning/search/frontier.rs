@@ -72,7 +72,7 @@ impl Frontier {
     }
     pub(crate) fn validate(
         &self,
-        question: &naome_authoring::CompiledQuestion,
+        question: &naome_checker::question::ResearchQuestion,
     ) -> Result<(), String> {
         if self.states.is_empty()
             || self.states.len() > STATES
@@ -145,8 +145,8 @@ mod tests {
     }
     #[test]
     fn failed_branches_retain_the_target_assumptions_and_bound_witnesses() {
-        let q = naome_authoring::CompiledQuestion::compile(
-            "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,all(y,mem(x,y))),mem(b,a)))))",
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            "04040302000100000001010000000003040401010000000101000000000101000000000100000001",
         )
         .unwrap();
         let result = solve(q.proved_target(), &mut Ordered, 1).unwrap();
@@ -167,7 +167,8 @@ mod tests {
         let mut altered = report.clone();
         altered.states[0].facts.remove(0);
         assert!(altered.validate(&q).is_err());
-        let other = naome_authoring::CompiledQuestion::compile("goal=all(a,mem(a,a))").unwrap();
+        let other = naome_checker::question::ResearchQuestion::from_hex("040101000000000100000000")
+            .unwrap();
         assert!(report.validate(&other).is_err());
         let restored: Frontier =
             serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();

@@ -43,7 +43,8 @@ impl Episode {
         ledger: &lineage::Ledger,
         holdout: &lineage::Holdout,
     ) -> Result<(), String> {
-        let q = CompiledQuestion::compile(&self.observation.question).map_err(|e| e.to_string())?;
+        let q =
+            ResearchQuestion::from_hex(&self.observation.question).map_err(|e| e.to_string())?;
         holdout.question(&q, Some(&self.authored_lineage))?;
         ledger.allowed(&self.lineage, holdout)?;
         let summary = &self.observation.summary;
@@ -58,7 +59,8 @@ impl Episode {
     pub(super) fn validate_context(&self, common: &State) -> Result<(), String> {
         common.validate()?;
         self.observation.validate()?;
-        let q = CompiledQuestion::compile(&self.observation.question).map_err(|e| e.to_string())?;
+        let q =
+            ResearchQuestion::from_hex(&self.observation.question).map_err(|e| e.to_string())?;
         let summary = &self.observation.summary;
         summary.terminal.validate(self.solution.as_ref())?;
         let context = SolveContext {
@@ -88,7 +90,7 @@ impl Episode {
             {
                 return Err("frozen candidate cost differs from its actual execution".into());
             }
-            let checked = solution.checked()?.into_checked_proof();
+            let checked = solution.checked()?;
             let expected = if solution.refuted {
                 q.refuted_target()
             } else {
@@ -125,8 +127,8 @@ pub(super) fn freeze(seed: u64, count: usize, holdout: &lineage::Holdout, output
     let mut seen = BTreeSet::new();
     let mut excluded = Vec::new();
     for case in shuffled_learning(seed) {
-        let q = CompiledQuestion::compile(&case.source).unwrap();
-        if !State::eligible(q.source()) || holdout.question(&q, Some(&case.dependency)).is_err() {
+        let q = ResearchQuestion::from_hex(&case.source).unwrap();
+        if !State::eligible(&q.to_hex()) || holdout.question(&q, Some(&case.dependency)).is_err() {
             excluded.push(json!({"case":case.id,"dependency":case.dependency,"resolution":crate::hex(q.resolution_id())}));
             continue;
         }
@@ -188,7 +190,7 @@ pub(super) fn freeze(seed: u64, count: usize, holdout: &lineage::Holdout, output
                 && io.bytes <= IO,
             "source collection exhausted its unchanged total allowance"
         );
-        let q = CompiledQuestion::compile(&case.source).unwrap();
+        let q = ResearchQuestion::from_hex(&case.source).unwrap();
         holdout.question(&q, Some(&case.dependency)).unwrap();
         let job = 1 + index as u64;
         let wall = Instant::now();
@@ -207,7 +209,7 @@ pub(super) fn freeze(seed: u64, count: usize, holdout: &lineage::Holdout, output
             wall.elapsed().as_millis() as u64,
         );
         let observation = experience::Observation {
-            question: q.source().to_owned(),
+            question: q.to_hex(),
             summary: completion.experience.unwrap(),
             frontier: generation.frontier,
             executions: generation.executions,
@@ -311,15 +313,15 @@ fn freeze_shared_experience_sources() {
 
 #[test]
 fn another_allowed_receipt_cannot_replace_an_episodes_original_source() {
-    let held = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-    let bank = serde_json::to_vec(&json!({"cases":[{"source":held.source(),"resolution":crate::hex(held.resolution_id()),"family":curriculum::owned::family(held.proved_target()),"lineage":"held"}]})).unwrap();
+    let held = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let bank = serde_json::to_vec(&json!({"cases":[{"source":held.to_hex(),"resolution":crate::hex(held.resolution_id()),"family":curriculum::owned::family(held.proved_target()),"lineage":"held"}]})).unwrap();
     let holdout = lineage::Holdout::read(&bank, &crate::hex(&Sha256::digest(&bank))).unwrap();
     let common = State::fresh();
-    let q = CompiledQuestion::compile(
-        "goal=all(a,all(b,imp(not(eq(a,b)),imp(all(x,all(y,mem(x,y))),mem(b,a)))))",
+    let q = ResearchQuestion::from_hex(
+        "04040302000100000001010000000003040401010000000101000000000101000000000100000001",
     )
     .unwrap();
-    assert!(State::eligible(q.source()));
+    assert!(State::eligible(&q.to_hex()));
     let mut ledger = lineage::Ledger::new(&holdout);
     let mut fixture = |job| {
         // Deliberately unknown unit-test evidence, never a collected outcome.
@@ -342,7 +344,7 @@ fn another_allowed_receipt_cannot_replace_an_episodes_original_source() {
             lineage,
             authored_lineage: "training".into(),
             observation: experience::Observation {
-                question: q.source().into(),
+                question: q.to_hex(),
                 summary,
                 frontier: None,
                 executions: Vec::new(),

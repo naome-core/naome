@@ -1,8 +1,8 @@
 use super::*;
 use crate::learning as native;
 
-fn question() -> naome_authoring::CompiledQuestion {
-    naome_authoring::CompiledQuestion::compile(&native::tests::own_question()).unwrap()
+fn question() -> naome_checker::question::ResearchQuestion {
+    naome_checker::question::ResearchQuestion::from_hex(&native::tests::own_question()).unwrap()
 }
 struct Ordered;
 impl Ranker for Ordered {
@@ -89,14 +89,15 @@ fn altered_state_action_scores_parent_or_work_are_rejected() {
         }
         assert!(trace.validate().is_err(), "mutation {mutation}");
     }
-    let other = naome_authoring::CompiledQuestion::compile("goal=all(a,mem(a,a))").unwrap();
+    let other =
+        naome_checker::question::ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(original.validate_context(&other, &[]).is_err());
 }
 
 #[test]
 fn truncated_observations_keep_a_replayable_prefix_and_count_omitted_work() {
-    let q = naome_authoring::CompiledQuestion::compile(
-        "goal=all(a,all(b,imp(all(x,all(y,all(z,mem(x,x)))),mem(a,b))))",
+    let q = naome_checker::question::ResearchQuestion::from_hex(
+        "04040304040401010000000201000000020101000000010100000000",
     )
     .unwrap();
     let result = solve(q.proved_target(), &mut Ordered, 256).unwrap();
@@ -114,8 +115,8 @@ fn truncated_observations_keep_a_replayable_prefix_and_count_omitted_work() {
 
 #[test]
 fn a_closed_flag_cannot_replace_an_unrecorded_required_transition() {
-    let q = naome_authoring::CompiledQuestion::compile(
-        "goal=all(a,all(b,all(c,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),mem(c,c)))))))",
+    let q = naome_checker::question::ResearchQuestion::from_hex(
+        "0404040303010100000002010000000201010000000101000000010303010100000001010000000101010000000001000000000301010000000201000000020101000000000100000000",
     ).unwrap();
     let found = solve(q.proved_target(), &mut Ordered, 128).unwrap();
     assert!(found.tree.is_some());
@@ -145,7 +146,7 @@ fn theorem_context_binds_the_original_checked_packet_not_just_an_allowed_formula
         Formula::for_all(variable, Formula::equal(variable, variable)),
         axiom.formula(),
     );
-    let q = naome_authoring::CompiledQuestion::from_formula(target.clone()).unwrap();
+    let q = naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
     let found = solve_with_knowledge(
         &target,
         &mut Ordered,

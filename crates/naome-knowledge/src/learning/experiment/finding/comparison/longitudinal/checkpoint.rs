@@ -45,7 +45,7 @@ pub(super) fn save(
         let acquisition: State = serde_json::from_slice(&context).map_err(|e| e.to_string())?;
         original.validate_context(&acquisition)?;
         if let Some(solution) = &original.solution {
-            let q = CompiledQuestion::compile(&original.observation.question)
+            let q = ResearchQuestion::from_hex(&original.observation.question)
                 .map_err(|e| e.to_string())?;
             crate::learning::experiment::knowledge::admit_discovery(
                 &mut reconstructed,

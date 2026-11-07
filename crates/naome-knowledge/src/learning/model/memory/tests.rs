@@ -13,7 +13,7 @@ fn observed() -> (search::derivation::Derivation, search::trace::Trace) {
     }
     // Keep an unused double-negation choice at the descendant. Its checked
     // action label is then an actual reference state, not a single-choice tail.
-    let question = naome_authoring::CompiledQuestion::compile("goal=all(a,all(b,all(c,all(d,imp(imp(mem(a,a),mem(b,b)),imp(imp(mem(b,b),mem(c,c)),imp(mem(a,a),imp(not(not(mem(d,d))),mem(c,c)))))))))").unwrap();
+    let question = naome_checker::question::ResearchQuestion::from_hex("0404040403030101000000030100000003010100000002010000000203030101000000020100000002010100000001010000000103010100000003010000000303020201010000000001000000000101000000010100000001").unwrap();
     let found = search::solve(question.proved_target(), &mut Ordered, 128).unwrap();
     let tree = found.tree.unwrap();
     let (term, _) = search::compile(question.proved_target(), &tree).unwrap();

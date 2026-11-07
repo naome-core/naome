@@ -26,12 +26,12 @@ fn frozen_inputs_are_closed_distinct_and_do_not_reuse_observed_goals() {
     .unwrap();
     let old = old
         .iter()
-        .map(|s| *CompiledQuestion::compile(s).unwrap().resolution_id())
+        .map(|s| *ResearchQuestion::from_hex(s).unwrap().resolution_id())
         .collect::<BTreeSet<_>>();
     let mut ids = BTreeSet::new();
     let mut families = BTreeMap::<String, usize>::new();
     for case in input.cases {
-        let q = CompiledQuestion::compile(&case.source).unwrap();
+        let q = ResearchQuestion::from_hex(&case.source).unwrap();
         assert!(q.formula().free_variables().is_empty());
         assert!(!old.contains(q.resolution_id()));
         assert!(ids.insert(*q.resolution_id()));

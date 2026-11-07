@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-type Questions = LocalQuestions<fn(CompiledQuestion) -> Ready<Result<bool, String>>>;
+type Questions = LocalQuestions<fn(ResearchQuestion) -> Ready<Result<bool, String>>>;
 fn questions() -> Questions {
     LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _))
 }
@@ -25,9 +25,9 @@ fn intervals(question_interval_ms: u64) -> Intervals {
 async fn admitted<F, Fut>(
     questions: &mut LocalQuestions<F>,
     graph: &Graph,
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
 ) where
-    F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     let (reply, receiver) = oneshot::channel();
@@ -111,7 +111,7 @@ async fn exhausted_free_research_plan_releases_independent_finding() {
     let requests = owner.requests();
     assert!(
         requests.iter().any(
-            |(_, input)| matches!(input,jobs::Input::Find{question,..} if question!=goal.source())
+            |(_, input)| matches!(input,jobs::Input::Find{question,..} if question!=&goal.to_hex())
         ),
         "an exhausted optional plan cannot suppress all new finding"
     );
@@ -135,10 +135,10 @@ async fn inconclusive_recovery_does_not_starve_later_records_or_archive_pages() 
     questions.process(question::Command::Policy(policy, reply), &graph);
     receiver.await.unwrap();
     let limited = jobs::Input::Solve {
-        question: "goal=all(x,imp(mem(x,x),mem(x,x)))".into(),
+        question: "040301010000000001000000000101000000000100000000".into(),
     };
     let available = jobs::Input::Solve {
-        question: "goal=all(x,mem(x,x))".into(),
+        question: "040101000000000100000000".into(),
     };
     let first = recovered(1, limited.clone());
     let original = serde_json::to_vec(&first).unwrap();
@@ -148,7 +148,7 @@ async fn inconclusive_recovery_does_not_starve_later_records_or_archive_pages() 
         vec![recovered(
             4,
             jobs::Input::Select {
-                question: "goal=all(x,mem(x,x))".into(),
+                question: "040101000000000100000000".into(),
                 purpose: jobs::Purpose::Admission,
                 root: None,
             },
@@ -225,7 +225,7 @@ async fn rejected_unanswered_work_preserves_its_retry_and_independent_question_s
         std::future::ready(Ok(true))
     }));
     let mut graph = Graph::default();
-    let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let selected = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
     admitted(&mut questions, &graph, &selected).await;
     let mut policy = PrefilterPolicy::default();
     policy.limits.operations = 1;
@@ -274,7 +274,7 @@ async fn rejected_unanswered_work_preserves_its_retry_and_independent_question_s
 async fn changed_graph_rebuilds_generated_closure_without_repeating_selection() {
     let mut graph = Graph::default();
     let mut questions = questions();
-    let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let selected = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
     admitted(&mut questions, &graph, &selected).await;
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
@@ -293,13 +293,13 @@ async fn changed_graph_rebuilds_generated_closure_without_repeating_selection() 
     owner.complete(
         requests[0].0,
         Ok(jobs::Output::Proof {
-            source: mocks::create_proof(&selected).unwrap(),
+            proof: mocks::create_proof(&selected).unwrap(),
             helpers: Vec::new(),
         }),
     );
     assert!(autonomous.advance(&mut graph, &mut questions).is_empty());
     assert_eq!(autonomous.publications.len(), 1);
-    let unrelated = CompiledQuestion::compile(&mocks::create_question(1)).unwrap();
+    let unrelated = ResearchQuestion::from_hex(&mocks::create_question(1)).unwrap();
     let object = graph
         .author(&mocks::create_proof(&unrelated).unwrap())
         .unwrap();
@@ -340,7 +340,7 @@ async fn changed_graph_rebuilds_generated_closure_without_repeating_selection() 
 async fn unsupported_questions_retry_boundedly_and_a_received_answer_cancels_generation() {
     let mut graph = Graph::default();
     let mut questions = questions();
-    let unsupported = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
+    let unsupported = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     admitted(&mut questions, &graph, &unsupported).await;
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
@@ -359,7 +359,7 @@ async fn unsupported_questions_retry_boundedly_and_a_received_answer_cancels_gen
     assert!(autonomous.solving.is_empty());
     assert!(autonomous.next_proof > Instant::now());
     autonomous.unanswered.clear();
-    let answered = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let answered = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
     admitted(&mut questions, &graph, &answered).await;
     let object = graph
         .author(&mocks::create_proof(&answered).unwrap())
@@ -377,7 +377,7 @@ async fn unsupported_questions_retry_boundedly_and_a_received_answer_cancels_gen
 async fn busy_gossip_wakes_do_not_repeat_formal_work_for_unchanged_pending_jobs() {
     let mut graph = Graph::default();
     let mut questions = questions();
-    let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let selected = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
     admitted(&mut questions, &graph, &selected).await;
     let owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
@@ -400,7 +400,7 @@ async fn busy_gossip_wakes_do_not_repeat_formal_work_for_unchanged_pending_jobs(
 async fn unchanged_successful_publication_retains_the_first_checked_batch() {
     let mut graph = Graph::default();
     let mut questions = questions();
-    let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let selected = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
     admitted(&mut questions, &graph, &selected).await;
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
@@ -415,7 +415,7 @@ async fn unchanged_successful_publication_retains_the_first_checked_batch() {
     owner.complete(
         request.0,
         Ok(jobs::Output::Proof {
-            source: mocks::create_proof(&selected).unwrap(),
+            proof: mocks::create_proof(&selected).unwrap(),
             helpers: Vec::new(),
         }),
     );
@@ -437,7 +437,7 @@ async fn unchanged_successful_publication_retains_the_first_checked_batch() {
 #[test]
 fn full_job_channel_retains_one_exact_receipt_and_defers_new_autonomous_work() {
     let input = jobs::Input::Solve {
-        question: "goal=all(x,eq(x,x))".into(),
+        question: "040001000000000100000000".into(),
     };
     let binding = jobs::Binding::new([3; 32], [4; 32]);
     for receipt in [
@@ -486,12 +486,12 @@ fn full_job_channel_retains_one_exact_receipt_and_defers_new_autonomous_work() {
 #[test]
 fn deferred_completion_receipt_preserves_the_unsolved_question_and_closed_service_still_fails() {
     let mut owner = jobs::tests::Manual::new();
-    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let question = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let ticket = owner
         .client
         .submit(
             jobs::Input::Solve {
-                question: question.source().into(),
+                question: question.to_hex(),
             },
             jobs::Binding::new([0; 32], [0; 32]),
         )
@@ -542,7 +542,7 @@ async fn research_evidence_backpressure_retains_the_original_completion_until_du
     let directory = crate::checkpoint::tests::Directory::new();
     let mut graph = Graph::default();
     let mut questions = questions();
-    let target = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    let target = ResearchQuestion::from_hex(&mocks::create_question(0)).unwrap();
     admitted(&mut questions, &graph, &target).await;
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
@@ -630,7 +630,7 @@ async fn stalled_owner_goal_waits_for_each_planned_helper_and_then_retries_once(
             let jobs::Input::Solve { question } = input else {
                 panic!("unexpected non-solve request");
             };
-            let q = CompiledQuestion::compile(&question).unwrap();
+            let q = ResearchQuestion::from_hex(&question).unwrap();
             if q.resolution_id() == goal.resolution_id() {
                 assert_eq!(attempted.len(), 2);
                 retried = true;
@@ -662,10 +662,11 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
     let mut graph = Graph::default();
     let mut questions = questions();
     let (parent, leaves) = crate::learning::tests::helper_goal();
-    let other =
-        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c))))))")
-            .unwrap();
-    let root = CompiledQuestion::from_formula(naome_foundation::Formula::conjunction(
+    let other = ResearchQuestion::from_hex(
+        "0404040300010000000201000000010300010000000101000000000001000000020100000000",
+    )
+    .unwrap();
+    let root = ResearchQuestion::from_formula(naome_foundation::Formula::conjunction(
         other.formula().clone(),
         parent.formula().clone(),
     ))
@@ -711,7 +712,7 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
         .iter()
         .filter_map(|(_, input)| {
             if let jobs::Input::Find { question, .. } = input {
-                Some(CompiledQuestion::compile(question).unwrap())
+                Some(ResearchQuestion::from_hex(question).unwrap())
             } else {
                 None
             }

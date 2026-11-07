@@ -95,6 +95,14 @@ impl Programs {
                     || root.closure.busy())
         })
     }
+    pub(super) fn preparing_admission(&self) -> bool {
+        self.active.as_ref().is_some_and(|root| {
+            root.allowed
+                && !root.refresh
+                && root.offer.transfer.live(Instant::now())
+                && matches!(&root.stage, Stage::Prepare(prepared) if !prepared.pending())
+        })
+    }
     fn enqueue(
         &mut self,
         peer: PeerId,
@@ -123,7 +131,7 @@ impl Programs {
         {
             return Ok("declined");
         }
-        if metadata.question()?.is_none() {
+        if metadata.question(graph.checked_context())?.is_none() {
             return Ok("unselected");
         }
         if self
@@ -217,13 +225,22 @@ impl Programs {
                 || id.is_some_and(|id| offer.metadata.manifest.artifact_id() != id)
         });
     }
+    pub(in crate::intake) fn helper_definition_request(
+        &mut self,
+        graph: &Graph,
+    ) -> Option<DefinitionRequest> {
+        let root = self.active.as_mut().filter(|root| root.fetching())?;
+        DefinitionRequest::for_helper(graph, &root.offer.transfer, &mut root.closure)
+    }
+
     pub(super) fn advance<F, Fut>(
         &mut self,
         graph: &mut Graph,
         questions: &mut LocalQuestions<F>,
+        metadata_waiter: Option<ArtifactId>,
     ) -> Progress
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         self.declined.retain(|_, until| *until > Instant::now());
@@ -237,7 +254,7 @@ impl Programs {
             let authority = (|| -> Result<Selection, crate::Error> {
                 let question = offer
                     .metadata
-                    .question()?
+                    .question(graph.checked_context())?
                     .ok_or("program has no supported selection question")?;
                 Ok(Selection::new(id, question))
             })();
@@ -257,6 +274,13 @@ impl Programs {
                 }
                 Err(error) => return Progress::Skipped(id, error),
             }
+        }
+        if metadata_waiter.is_some_and(|waiting| {
+            self.active
+                .as_ref()
+                .is_some_and(|root| root.offer.transfer.root() == waiting)
+        }) {
+            return Progress::Waiting;
         }
         let Some(mut root) = self.active.take() else {
             return Progress::Waiting;
@@ -388,7 +412,8 @@ impl Programs {
                     if root.refresh || !root.offer.transfer.live(Instant::now()) {
                         return Ok(None);
                     }
-                    let batch = prepared.take_batch().ok_or("program batch absent")?;
+                    let mut batch = prepared.take_batch().ok_or("program batch absent")?;
+                    root.closure.attach_questions(graph, &mut batch)?;
                     // The transferred batch owns the prefix. If preparation or
                     // publication defers, rebuild it from the checked helpers.
                     root.closure.invalidate_prefix();
@@ -453,6 +478,18 @@ impl Intake {
         &self,
         graph: &Graph,
     ) -> Result<Option<ProgramRequest>, crate::Error> {
+        if let Some(fetch) = &self.definition
+            && fetch.transfer.live(Instant::now())
+            && let Some((id, start, records)) = fetch.closure.request(graph)?
+        {
+            return Ok(Some((
+                fetch.transfer.peer(),
+                fetch.transfer.root(),
+                id,
+                start,
+                records,
+            )));
+        }
         if let Some(root) = &self.active
             && root.closure.has_programs()
             && root.description.transfer.live(Instant::now())
@@ -476,6 +513,11 @@ impl Intake {
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
+        if let Some(fetch) = &mut self.definition
+            && fetch.transfer.authorizes(peer, root_id, Instant::now())
+        {
+            return fetch.closure.payload(id, chunk, graph);
+        }
         if self.programs.authorizes(peer, root_id, id) {
             return self
                 .programs
@@ -498,6 +540,11 @@ impl Intake {
         self.programs.refresh_needed()
     }
     pub(crate) fn program_busy(&self) -> bool {
-        self.programs.busy() || self.active.as_ref().is_some_and(|root| root.closure.busy())
+        self.programs.busy()
+            || self
+                .definition
+                .as_ref()
+                .is_some_and(|fetch| fetch.closure.busy())
+            || self.active.as_ref().is_some_and(|root| root.closure.busy())
     }
 }

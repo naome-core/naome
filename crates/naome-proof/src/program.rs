@@ -17,10 +17,17 @@ const GRAPH_NODE_DOMAIN: &[u8] = b"naome:formula-graph\0";
 pub const RECORD_BYTES: usize = 4096;
 pub const CHUNK_RECORDS: usize = 1024;
 pub const CHUNK_BYTES: usize = 32 * 1024;
+pub const SCOPE_ASSUMPTIONS: usize = 32;
+pub const SCOPE_ACTIONS: usize = 32;
+pub const ACTION_PREMISES: usize = 8;
 
+mod binary;
+mod projection;
 mod stream;
+pub use binary::{decode_command, encode_command};
+pub use projection::{Projection, StepResult};
 pub use stream::{
-    ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_command, encode_command,
+    ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_records, encode_records,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,9 +273,15 @@ pub fn bounded_formula<I: Copy>(
         .map_err(|e| e.to_string())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Add one primitive graph node. Child positions are local to the program.
+    /// Bound indices remain relative to this node's enclosing binders.
+    Graph {
+        #[serde(with = "NodeSource")]
+        node: Node<u64>,
+    },
     /// Expand a selected conservative definition into an unproved formula.
     DefinedRelation {
         definition_id: [u8; 32],
@@ -324,6 +337,19 @@ pub enum Command {
         replacement: u32,
         body: u64,
     },
+    /// Apply the instantiation axiom to an earlier universal fact.
+    Instantiate {
+        premise: u64,
+        replacement: u32,
+    },
+    /// Prove an implication from a private scope of ordered assumptions.
+    /// Local facts start with the assumptions, then each action's result.
+    /// Only the result with all assumptions discharged becomes a program fact.
+    Deduce {
+        assumptions: Vec<u64>,
+        actions: Vec<ScopedAction>,
+        result: u32,
+    },
     Reflexivity {
         variable: u32,
     },
@@ -374,7 +400,47 @@ pub enum Command {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One inference inside a `Deduce` scope. Operands address earlier facts
+/// within that scope only.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScopedAction {
+    Instantiate {
+        universal: u32,
+        replacement: u32,
+        premises: Vec<u32>,
+    },
+    Conjoin {
+        left: u32,
+        right: u32,
+    },
+}
+
+// Keep serialization at the program boundary, not in Foundation.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Node", rename_all = "snake_case")]
+enum NodeSource<I> {
+    Equal(
+        #[serde(with = "VariableSource")] Variable,
+        #[serde(with = "VariableSource")] Variable,
+    ),
+    Member(
+        #[serde(with = "VariableSource")] Variable,
+        #[serde(with = "VariableSource")] Variable,
+    ),
+    Not(I),
+    Implies(I, I),
+    ForAll(I),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Variable", rename_all = "snake_case")]
+enum VariableSource {
+    Free(u32),
+    Bound(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Axiom {
     Extensionality,
