@@ -102,6 +102,7 @@ pub(crate) enum ArtifactTransfer {
 impl ProgramMetadata {
     pub(crate) fn question(
         &self,
+        context: &dyn naome_checker::ContextView,
     ) -> Result<Option<naome_checker::question::ResearchQuestion>, crate::Error> {
         self.question
             .as_ref()
@@ -112,7 +113,7 @@ impl ProgramMetadata {
                     statement_id: hex(self.manifest.statement_id().as_bytes()),
                     question: question.clone(),
                 }
-                .compile()
+                .compile(context)
                 .map(|(_, _, question)| question)
             })
             .transpose()
@@ -122,6 +123,7 @@ impl ProgramMetadata {
 impl Metadata {
     pub(crate) fn compile(
         &self,
+        context: &dyn naome_checker::ContextView,
     ) -> Result<
         (
             ArtifactId,
@@ -135,8 +137,10 @@ impl Metadata {
             return Err("description proof address differs".into());
         }
         let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
-        let question = naome_checker::question::ResearchQuestion::from_hex(&self.question)
-            .map_err(|error| error.to_string())?;
+        let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
+            &self.question,
+            context,
+        )?;
         let positive = target_id(question.positive_target())?;
         let negative = target_id(question.negative_target())?;
         if statement != positive && statement != negative {
@@ -148,7 +152,7 @@ impl Metadata {
 
 // Early address binding uses the unchanged checker framing. Only a checked
 // conclusion and classify_checked_proof establish the eventual resolution.
-fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::Error> {
+pub(crate) fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::Error> {
     let bytes = formula
         .encode_canonical()
         .map_err(|error| error.to_string())?;

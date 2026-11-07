@@ -122,7 +122,7 @@ impl Frontier {
         let Some(metadata) = graph.describe(root)? else {
             return Ok(false);
         };
-        let (_, _, target) = metadata.compile()?;
+        let (_, _, target) = metadata.compile(graph.checked_context())?;
         Ok(target.resolution_id() == question.resolution_id() && target.core() == question.core())
     }
     fn demonstrated(&mut self, features: &Features, units: u32, millis: u64) {
@@ -358,7 +358,7 @@ impl Frontier {
                 Err(error) => return Err(error),
             };
             if let Some(metadata) = description {
-                let (_, _, question) = metadata.compile()?;
+                let (_, _, question) = metadata.compile(graph.checked_context())?;
                 let features = Features::of(&question);
                 for (total, count) in self.building.iter_mut().zip(features.counts) {
                     *total = total.saturating_add(u64::from(count > 0));

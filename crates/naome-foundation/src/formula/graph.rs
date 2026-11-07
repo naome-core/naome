@@ -130,6 +130,14 @@ impl<I: Copy> Node<I> {
 }
 
 impl Formula {
+    /// Consumes a bounded tree as a sequence of postorder graph operations.
+    pub fn into_graph_cursor<I: Copy>(self) -> FormulaGraphCursor<I> {
+        FormulaGraphCursor {
+            pending: vec![Pending::Tree(self.0)],
+            results: Vec::new(),
+        }
+    }
+
     /// Projects a bounded tree through the same primitive node vocabulary used
     /// by disk processing. The callback may intern each node on disk.
     pub fn fold_graph<I: Copy, E>(
@@ -154,6 +162,59 @@ impl Formula {
             emit(node)
         }
         walk(&self.0, &mut emit)
+    }
+}
+
+enum Pending {
+    Tree(Tree),
+    Parent(Node<()>),
+}
+
+/// An owned, resumable traversal that retains only the unfinished tree and
+/// the path to the current node. Each step visits or emits a single node.
+pub struct FormulaGraphCursor<I> {
+    pending: Vec<Pending>,
+    results: Vec<I>,
+}
+
+impl<I: Copy> FormulaGraphCursor<I> {
+    pub fn advance<E>(
+        &mut self,
+        emit: impl FnOnce(Node<I>) -> Result<I, E>,
+    ) -> Result<Option<I>, E> {
+        let variable = |v| match v {
+            TreeVariable::Free(v) => Variable::Free(v.identifier()),
+            TreeVariable::Bound(v) => Variable::Bound(u64::from(v)),
+        };
+        let node = match self.pending.pop() {
+            None => return Ok(self.results.last().copied()),
+            Some(Pending::Tree(Tree::Equal(a, b))) => Node::Equal(variable(a), variable(b)),
+            Some(Pending::Tree(Tree::Member(a, b))) => Node::Member(variable(a), variable(b)),
+            Some(Pending::Tree(Tree::Not(body))) => {
+                self.pending.push(Pending::Parent(Node::Not(())));
+                self.pending.push(Pending::Tree(*body));
+                return Ok(None);
+            }
+            Some(Pending::Tree(Tree::ForAll(body))) => {
+                self.pending.push(Pending::Parent(Node::ForAll(())));
+                self.pending.push(Pending::Tree(*body));
+                return Ok(None);
+            }
+            Some(Pending::Tree(Tree::Implies(left, right))) => {
+                self.pending.push(Pending::Parent(Node::Implies((), ())));
+                self.pending.push(Pending::Tree(*right));
+                self.pending.push(Pending::Tree(*left));
+                return Ok(None);
+            }
+            Some(Pending::Parent(parent)) => {
+                let base = self.results.len() - parent.children().into_iter().flatten().count();
+                let mut children = self.results.drain(base..);
+                parent.map(|()| children.next().expect("postorder child"))
+            }
+        };
+        let id = emit(node)?;
+        self.results.push(id);
+        Ok(self.pending.is_empty().then_some(id))
     }
 }
 

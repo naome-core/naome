@@ -30,7 +30,7 @@ fn original_source_orientation_and_first_admission_survive_row_updates_and_resta
         )
         .unwrap();
     let restored = persistence
-        .entries_page(None)
+        .entries_page(None, &naome_checker::ArtifactState::new())
         .unwrap()
         .into_iter()
         .map(|(_, entry)| entry)
@@ -50,7 +50,7 @@ fn original_source_orientation_and_first_admission_survive_row_updates_and_resta
     drop(persistence);
     let persistence = Persistence::open(&directory.0, policy).unwrap();
     let restored = persistence
-        .entries_page(None)
+        .entries_page(None, &naome_checker::ArtifactState::new())
         .unwrap()
         .into_iter()
         .map(|(_, entry)| entry)
@@ -118,7 +118,8 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
         drop(persistence);
         let replay = Instant::now();
         let mut questions = LocalQuestions::new(Some(|_| std::future::ready(Ok(true))));
-        questions.attach_persistence(&directory).unwrap();
+        let graph = crate::Graph::default();
+        questions.attach_persistence(&directory, &graph).unwrap();
         let replay_seconds = replay.elapsed().as_secs_f64();
         assert_eq!(questions.registry.len(), (phase + 1) * BATCH);
         assert!(questions.known.len() <= crate::resources::active_limits().question_page);
@@ -126,7 +127,11 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
         let persistence = questions.persistence.as_mut().unwrap();
         for index in phase * 16..(phase + 1) * 16 {
             assert_eq!(
-                persistence.next_backlog().unwrap().unwrap().to_hex(),
+                persistence
+                    .next_backlog(graph.checked_context())
+                    .unwrap()
+                    .unwrap()
+                    .to_hex(),
                 crate::checkpoint::tests::question_source(index)
             );
         }
@@ -134,7 +139,7 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
             ResearchQuestion::from_hex(&crate::checkpoint::tests::question_source(0)).unwrap();
         assert_eq!(
             persistence
-                .admitted(first.resolution_id())
+                .admitted(first.resolution_id(), graph.checked_context())
                 .unwrap()
                 .unwrap()
                 .0
@@ -194,7 +199,7 @@ fn stricter_assessment_policy_preserves_current_sources_and_first_policy_identit
     assert_eq!(persistence.header.policy, crate::hex(&old.identity()));
     let mut sources = Vec::new();
     persistence
-        .replay(|_, question| {
+        .replay(&naome_checker::ArtifactState::new(), |_, question| {
             sources.push(question.to_hex());
             Ok(())
         })

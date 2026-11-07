@@ -76,7 +76,7 @@ impl Programs {
         id: ArtifactId,
         object: Envelope,
         graph: &Graph,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<crate::object::Candidate, crate::Error> {
         if !self.authorizes(peer, root, id) {
             return Err("unrequested program dependency certificate".into());
         }
@@ -84,6 +84,23 @@ impl Programs {
         active
             .closure
             .certificate_payload(id, object, graph, &active.offer.transfer)
+    }
+
+    pub(in crate::intake) fn reuse_certificate(
+        &mut self,
+        peer: PeerId,
+        root: ArtifactId,
+        candidate: crate::object::Candidate,
+        graph: &Graph,
+    ) -> Result<bool, crate::Error> {
+        if !self.authorizes(peer, root, candidate.id) {
+            return Ok(false);
+        }
+        let active = self.active.as_mut().expect("selected program parent");
+        active
+            .closure
+            .reuse_certificate(candidate, graph, &active.offer.transfer)?;
+        Ok(true)
     }
 }
 

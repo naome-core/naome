@@ -34,7 +34,8 @@ pub use definition::{
 pub use identity::{ArtifactId, DefinitionId, DerivationId, ProofId, StatementId};
 pub use proof_formula::ProofFormula;
 pub use question::{
-    QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES, QuestionError, QuestionTarget,
+    QUESTION_EXPANSION_MAX_NODES, QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES,
+    QuestionError, QuestionTarget,
 };
 
 /// Maximum encoded length admitted for one proof certificate.

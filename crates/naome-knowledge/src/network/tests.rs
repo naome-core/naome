@@ -203,7 +203,7 @@ async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
         .describe(root)
         .unwrap()
         .unwrap()
-        .compile()
+        .compile(sender_graph.checked_context())
         .unwrap()
         .2
         .resolution_id();

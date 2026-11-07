@@ -160,6 +160,33 @@ impl Graph {
             error
         })
     }
+
+    pub(crate) fn resolves_question(
+        &self,
+        id: ArtifactId,
+        question: &naome_checker::question::ResearchQuestion,
+    ) -> Result<bool, crate::Error> {
+        self.ensure_live()?;
+        let Some(proof) = self.cold(self.context.artifact_proof_id(id))? else {
+            return Ok(false);
+        };
+        let header = self
+            .cold(self.context.proof_header(proof))?
+            .ok_or("checked proof header missing")?;
+        for formula in [question.positive_target(), question.negative_target()] {
+            let target = if header.canonical_length() == usize::MAX {
+                use naome_proof::program::{formula_hash, graph_statement_id};
+                graph_statement_id(formula_hash(formula))
+            } else {
+                crate::object::target_id(formula)?
+            };
+            if header.statement_id() == target {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn describe(&self, id: ArtifactId) -> Result<Option<Metadata>, crate::Error> {
         self.ensure_live()?;
         let Some(proof_id) = self.cold(self.context.artifact_proof_id(id))? else {

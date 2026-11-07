@@ -14,7 +14,7 @@ pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledg
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_PROGRAM: u32 = 1 << 31;
 pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:json-control,binary-program,binary-formula-question";
+    "naome:frames:json-control,binary-program,binary-defined-formula-question";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

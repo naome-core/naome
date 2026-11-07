@@ -3,16 +3,20 @@ use naome_foundation::{FOUNDATION_ID, Formula};
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt};
 
-/// Maximum primitive formula nodes in each expanded target.
+/// Maximum formula nodes in each submitted target.
 pub const QUESTION_TARGET_MAX_NODES: usize = 1024;
-/// Maximum nested primitive nodes in each expanded target, counting the root.
+/// Maximum nested nodes in each submitted target, counting the root.
 pub const QUESTION_TARGET_MAX_DEPTH: usize = 32;
+/// Maximum primitive nodes after eliminating checked definition applications.
+pub const QUESTION_EXPANSION_MAX_NODES: usize = 2048;
+const QUESTION_EXPANSION_MAX_DEPTH: usize = 128;
 
 /// A rejected formal question encoding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionError {
     Limit(&'static str),
     Invalid(&'static str),
+    MissingDefinition(crate::DefinitionId),
     Mathematical(String),
 }
 
@@ -21,6 +25,7 @@ impl fmt::Display for QuestionError {
         match self {
             Self::Limit(name) => write!(f, "question limit exceeded: {name}"),
             Self::Invalid(reason) => write!(f, "invalid question: {reason}"),
+            Self::MissingDefinition(id) => write!(f, "question definition unavailable: {id:?}"),
             Self::Mathematical(reason) => write!(f, "invalid question formula: {reason}"),
         }
     }
@@ -41,6 +46,28 @@ pub struct QuestionTarget {
 }
 impl QuestionTarget {
     pub fn from_formula(formula: Formula) -> Result<Self, QuestionError> {
+        Self::bounded(
+            formula,
+            QUESTION_TARGET_MAX_NODES,
+            QUESTION_TARGET_MAX_DEPTH,
+        )
+    }
+
+    /// Constructs exact primitive resolution targets after bounded definition
+    /// elimination. The caller separately validates the compact source.
+    pub fn from_expanded_formula(formula: Formula) -> Result<Self, QuestionError> {
+        Self::bounded(
+            formula,
+            QUESTION_EXPANSION_MAX_NODES,
+            QUESTION_EXPANSION_MAX_DEPTH,
+        )
+    }
+
+    fn bounded(
+        formula: Formula,
+        max_nodes: usize,
+        max_depth: usize,
+    ) -> Result<Self, QuestionError> {
         if !formula.is_closed() {
             return Err(QuestionError::Invalid("question has free variables"));
         }
@@ -53,17 +80,16 @@ impl QuestionTarget {
         let leading = encoded.iter().take_while(|&&tag| tag == 0x02).count();
         let core_nodes = nodes - leading;
         let core_depth = depth - leading;
-        if core_nodes + 1 > QUESTION_TARGET_MAX_NODES {
+        if core_nodes + 1 > max_nodes {
             return Err(QuestionError::Limit("question target nodes"));
         }
-        if core_depth + 1 > QUESTION_TARGET_MAX_DEPTH {
+        if core_depth + 1 > max_depth {
             return Err(QuestionError::Limit("question target depth"));
         }
         let canonical_core = encoded[leading..].to_vec();
-        let core =
-            Formula::decode_canonical_with_node_limit(&canonical_core, QUESTION_TARGET_MAX_NODES)
-                .map_err(|error| QuestionError::Mathematical(error.to_string()))?
-                .0;
+        let core = Formula::decode_canonical_with_node_limit(&canonical_core, max_nodes)
+            .map_err(|error| QuestionError::Mathematical(error.to_string()))?
+            .0;
         let resolution_id = hash(
             b"naome:state:resolution:v1\0",
             &[FOUNDATION_ID.as_bytes(), &canonical_core],

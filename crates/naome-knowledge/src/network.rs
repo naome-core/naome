@@ -614,6 +614,7 @@ where
             client.clone(),
             &directory,
             Duration::from_millis(intervals.jobs.selection.limits.horizon_ms),
+            &node.graph,
         )?;
         let unanswered = questions.restored_unanswered(&node.graph);
         let mut autonomous =
@@ -622,7 +623,7 @@ where
         (Some(service), Some(autonomous), questions)
     } else {
         let mut questions = crate::question::LocalQuestions::new(selection);
-        questions.attach_persistence(&directory)?;
+        questions.attach_persistence(&directory, &node.graph)?;
         (None, None, questions)
     };
     questions.recover_publications(&node.graph)?;
@@ -1130,7 +1131,7 @@ impl Node {
                         value.get("metadata").cloned().ok_or("metadata missing")?,
                     )
                     .map_err(|error| error.to_string())?;
-                    let (id, _, _) = metadata.compile()?;
+                    let (id, _, _) = metadata.compile(self.graph.checked_context())?;
                     if self.test_objects.len() >= crate::resources::limits().developer_objects
                         && !self.test_objects.contains_key(&id)
                     {
@@ -1373,7 +1374,19 @@ impl Node {
             && self.outgoing_ready(peer, now)
     }
 
+    fn proof_fetch_error(&mut self, root: ArtifactId, error: crate::Error) {
+        self.graph.program_failure(&error);
+        let event = if error.retryable() {
+            "proof_deferred"
+        } else {
+            self.intake.abort(root);
+            "proof_skipped"
+        };
+        emit(json!({"event":event, "id":hex(root.as_bytes()),"error":error}));
+    }
+
     fn requests(&mut self) {
+        self.intake.trim_certificates();
         let Some(_work) = self.computation.try_enter() else {
             return;
         };
@@ -1471,8 +1484,16 @@ impl Node {
         // The sole path to Get consumes a private approved root's actual
         // committed dependency closure. Hints and Graph.pending never issue Get.
         for (peer, root, id) in self.intake.needed() {
+            match self.intake.reuse_certificate(peer, root, id, &self.graph) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    self.proof_fetch_error(root, error);
+                    continue;
+                }
+            }
             if self.request_ready(peer, now) && self.automatic_request_ready(peer, now) && self.intake.authorizes(peer, root, id)
-                && !self.flights.values().any(|flight| matches!(flight, Flight::Get { root:r, id:i, .. } if *r == root && *i == id))
+                && !self.flights.values().any(|flight| matches!(flight, Flight::Get { id: requested, .. } if *requested == id))
             {
                 let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.swarm.grant(peer, root));
                 self.flights.insert(request, Flight::Get { started: Instant::now(), root, id, peer });
@@ -2163,16 +2184,7 @@ impl Node {
                         .payload(peer, expected_root, id, object, &self.graph)
                 };
                 if let Err(error) = result {
-                    self.graph.program_failure(&error);
-                    if !error.retryable() {
-                        self.intake.abort(expected_root);
-                    }
-                    let event = if error.retryable() {
-                        "proof_deferred"
-                    } else {
-                        "proof_skipped"
-                    };
-                    emit(json!({"event":event, "id":hex(expected_root.as_bytes()),"error":error}));
+                    self.proof_fetch_error(expected_root, error);
                 }
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {

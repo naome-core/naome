@@ -117,6 +117,7 @@ impl Persistence {
     /// and hand the resulting formal value straight to the checked registry.
     pub(super) fn replay(
         &self,
+        context: &dyn naome_checker::ContextView,
         mut visit: impl FnMut(Entry, ResearchQuestion) -> Result<(), String>,
     ) -> Result<(), String> {
         self.report((|| {
@@ -125,7 +126,7 @@ impl Persistence {
             self.checkpoint
                 .scan("question", QUESTION_ENTRY_MAX_BYTES, |key, bytes| {
                     let entry: Entry = crate::checkpoint::decode(bytes)?;
-                    let question = validate_entry(key, &entry)?;
+                    let question = decode_entry(key, &entry, context)?;
                     if entry.kind == Kind::Admitted {
                         admitted = admitted
                             .checked_add(1)
@@ -175,7 +176,11 @@ impl Persistence {
         })())
     }
     #[cfg(test)]
-    pub(super) fn entries_page(&self, after: Option<&str>) -> Result<Vec<(String, Entry)>, String> {
+    pub(super) fn entries_page(
+        &self,
+        after: Option<&str>,
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<Vec<(String, Entry)>, String> {
         self.report((|| {
             self.checkpoint
                 .page(
@@ -189,7 +194,7 @@ impl Persistence {
                 .into_iter()
                 .map(|(key, bytes)| {
                     let entry: Entry = crate::checkpoint::decode(&bytes)?;
-                    validate_entry(&key, &entry)?;
+                    decode_entry(&key, &entry, context)?;
                     Ok((key, entry))
                 })
                 .collect()
@@ -198,6 +203,7 @@ impl Persistence {
     pub(super) fn admitted(
         &self,
         resolution: &Identity,
+        context: &dyn naome_checker::ContextView,
     ) -> Result<Option<(ResearchQuestion, Identity)>, String> {
         self.report((|| {
             let Some(key) =
@@ -210,7 +216,7 @@ impl Persistence {
                 .checkpoint
                 .get::<Entry>("question", &key, QUESTION_ENTRY_MAX_BYTES)?
                 .ok_or("admitted canonical question is missing")?;
-            let question = validate_entry(&key, &entry)?;
+            let question = decode_entry(&key, &entry, context)?;
             if entry.kind != Kind::Admitted || question.resolution_id() != resolution {
                 return Err("admission record index differs".into());
             }
@@ -248,7 +254,10 @@ impl Persistence {
     }
     /// The cursor is committed before work is offered. A crash preserves the
     /// row and rotates the next attempt; a busy worker never loses the entry.
-    pub(super) fn next_backlog(&mut self) -> Result<Option<ResearchQuestion>, String> {
+    pub(super) fn next_backlog(
+        &mut self,
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<Option<ResearchQuestion>, String> {
         let read = |after: Option<&str>| {
             self.checkpoint.page(
                 "backlog",
@@ -269,7 +278,7 @@ impl Persistence {
             .checkpoint
             .get::<Entry>("question", &backlog.record, QUESTION_ENTRY_MAX_BYTES)?
             .ok_or("backlog canonical question missing")?;
-        let question = validate_entry(&backlog.record, &entry)?;
+        let question = decode_entry(&backlog.record, &entry, context)?;
         if entry.kind != Kind::Admitted
             || crate::hex(question.resolution_id()) != backlog.resolution
             || self
@@ -346,6 +355,7 @@ impl Persistence {
     }
     pub(super) fn publications(
         &self,
+        context: &dyn naome_checker::ContextView,
     ) -> Result<Vec<(naome_proof::ArtifactId, ResearchQuestion)>, String> {
         self.checkpoint
             .page(
@@ -358,7 +368,8 @@ impl Persistence {
             .map(|(key, bytes)| {
                 let root = naome_proof::ArtifactId::from_bytes(crate::object::id_bytes(&key)?);
                 let encoded: String = crate::checkpoint::decode(&bytes)?;
-                let question = ResearchQuestion::from_hex(&encoded).map_err(|e| e.to_string())?;
+                let question = ResearchQuestion::from_hex_with_context(&encoded, context)
+                    .map_err(|e| e.to_string())?;
                 Ok((root, question))
             })
             .collect()
@@ -415,7 +426,7 @@ impl Persistence {
                 first,
             },
         };
-        validate_entry(&key, &entry)?;
+        validate_entry(&key, &entry, question)?;
         let mut updates = vec![crate::checkpoint::Update::put("question", key, &entry)?];
         if entry.kind == Kind::Prepared {
             let resolution = crate::hex(question.resolution_id());
@@ -467,8 +478,18 @@ impl Persistence {
             .map_err(|error| crate::Error::from(error).to_string())
     }
 }
-fn validate_entry(key: &str, entry: &Entry) -> Result<ResearchQuestion, String> {
-    let question = ResearchQuestion::from_hex(&entry.encoded).map_err(|e| e.to_string())?;
+fn decode_entry(
+    key: &str,
+    entry: &Entry,
+    context: &dyn naome_checker::ContextView,
+) -> Result<ResearchQuestion, String> {
+    let question = ResearchQuestion::from_hex_with_context(&entry.encoded, context)
+        .map_err(|e| e.to_string())?;
+    validate_entry(key, entry, &question)?;
+    Ok(question)
+}
+
+fn validate_entry(key: &str, entry: &Entry, question: &ResearchQuestion) -> Result<(), String> {
     if key != crate::hex(question.record_id())
         || matches!(entry.kind, Kind::Prepared | Kind::Admitted) != entry.first.is_some()
     {
@@ -490,7 +511,7 @@ fn validate_entry(key: &str, entry: &Entry) -> Result<ResearchQuestion, String> 
             return Err("question admission original record differs".into());
         }
     }
-    Ok(question)
+    Ok(())
 }
 
 #[cfg(test)]

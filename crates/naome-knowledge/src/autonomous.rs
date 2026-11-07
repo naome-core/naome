@@ -344,7 +344,9 @@ impl Autonomous {
                     self.recovered_other.push_back(record);
                 } else if record.state == jobs::State::InDoubt {
                     self.retire(record);
-                } else if let Ok(question) = ResearchQuestion::from_hex(source) {
+                } else if let Ok(question) =
+                    ResearchQuestion::from_hex_with_context(source, graph.checked_context())
+                {
                     if self.solving.contains_key(question.resolution_id())
                         || self
                             .publications
@@ -425,7 +427,10 @@ impl Autonomous {
             match finding.ticket.try_recv() {
                 Ok(completion) => match completion.result.clone() {
                     Ok(jobs::Output::Question(source)) => {
-                        match ResearchQuestion::from_hex(&source) {
+                        match ResearchQuestion::from_hex_with_context(
+                            &source,
+                            graph.checked_context(),
+                        ) {
                             Ok(question) => {
                                 emit(
                                     json!({"event":"question_generated","resolution_id":crate::hex(question.resolution_id()),"job":completion.id}),
@@ -706,7 +711,7 @@ impl Autonomous {
                 match reply.try_recv() {
                     Ok(assessment) => {
                         pending.assessment = questions
-                            .exchange_eligible(&pending.question, &assessment)
+                            .exchange_eligible(graph, &pending.question, &assessment)
                             .then_some(assessment);
                     }
                     Err(oneshot::error::TryRecvError::Empty) => {
@@ -726,7 +731,7 @@ impl Autonomous {
                 }
             }
             if let Some(assessment) = pending.assessment.take()
-                && questions.exchange_eligible(&pending.question, &assessment)
+                && questions.exchange_eligible(graph, &pending.question, &assessment)
             {
                 let current = pending
                     .batch
@@ -840,7 +845,7 @@ impl Autonomous {
         // Refill one fair FIFO item per turn. The complete backlog is durable;
         // the parsed queue is only a bounded working page, never a lifetime cap.
         if self.unanswered.len() < crate::resources::active_limits().question_page
-            && let Some(question) = questions.next_backlog()
+            && let Some(question) = questions.next_backlog(graph)
             && !self.solving.contains_key(question.resolution_id())
             && !self
                 .publications

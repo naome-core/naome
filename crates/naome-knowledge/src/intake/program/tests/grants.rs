@@ -11,7 +11,10 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
     graph.ownership().start_program(&manifest).unwrap();
     let mut programs = Programs {
         active: Some(Root {
-            authority: Selection::new(id, metadata.question().unwrap().unwrap()),
+            authority: Selection::new(
+                id,
+                metadata.question(graph.checked_context()).unwrap().unwrap(),
+            ),
             offer: Offer {
                 metadata,
                 transfer: TransferGrant::new(peer, id, None),
@@ -68,7 +71,10 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_selecti
     let mut intake = Intake::default();
     intake.programs.active = Some(Root {
         authority: {
-            let mut selection = Selection::new(id, metadata.question().unwrap().unwrap());
+            let mut selection = Selection::new(
+                id,
+                metadata.question(graph.checked_context()).unwrap().unwrap(),
+            );
             selection.set_until(original_until);
             selection
         },

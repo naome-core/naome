@@ -77,7 +77,7 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
                 Ok(None) => return Ok(Err(Omission::Unsupported)),
                 Err(error) => return Err(error),
             };
-            let (_, statement, question) = metadata.compile()?;
+            let (_, statement, question) = metadata.compile(graph.checked_context())?;
             if partition(&question) != Partition::Training {
                 return Ok(Err(Omission::OtherSplit));
             }
@@ -171,7 +171,7 @@ pub(super) fn select(graph: &Graph, request: &Request) -> Result<Batch, Error> {
             counts.duplicates += 1;
             continue;
         }
-        let (_, _, target) = metadata.compile()?;
+        let (_, _, target) = metadata.compile(graph.checked_context())?;
         if partition(&target) != Partition::Training {
             counts.reserved += 1;
             continue;

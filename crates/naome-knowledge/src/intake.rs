@@ -72,6 +72,8 @@ pub(crate) struct Intake {
     waiting: VecDeque<managed::Waiting>,
     managed_context: Option<(FormalContext, crate::question::Revision)>,
     programs: program::Programs,
+    certificates: VecDeque<crate::object::Candidate>,
+    certificate_bytes: usize,
 }
 
 pub(crate) enum Progress {
@@ -124,7 +126,7 @@ impl Intake {
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
-        let (id, statement, question) = metadata.compile()?;
+        let (id, statement, question) = metadata.compile(graph.checked_context())?;
         if graph.contains(id)? {
             return Ok("duplicate");
         }
@@ -230,24 +232,91 @@ impl Intake {
         object: Envelope,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
-        if self.programs.authorizes(peer, root_id, expected) {
-            return self
-                .programs
-                .certificate_payload(peer, root_id, expected, object, graph);
+        let candidate = if self.programs.authorizes(peer, root_id, expected) {
+            self.programs
+                .certificate_payload(peer, root_id, expected, object, graph)?
+        } else {
+            if self.active.as_ref().is_some_and(|root| {
+                root.description.transfer.peer() == peer
+                    && root.description.transfer.root() == root_id
+                    && !root.description.transfer.live(Instant::now())
+            }) {
+                return Err("expired proof fetch grant".into());
+            }
+            if !self.authorizes(peer, root_id, expected) {
+                return Err("unrequested proof payload".into());
+            }
+            let root = self.active.as_mut().ok_or("unrequested proof payload")?;
+            root.closure
+                .certificate_payload(expected, object, graph, &root.description.transfer)?
+        };
+        // A function's untrusted witness route is outside its artifact hash.
+        // Only candidates with fully bound dependency routing can be shared.
+        if candidate.obligation.is_none()
+            && !self
+                .certificates
+                .iter()
+                .any(|saved| saved.id == candidate.id)
+        {
+            self.certificate_bytes += candidate.bytes.len();
+            self.certificates.push_back(candidate);
+            self.trim_certificates();
         }
-        if self.active.as_ref().is_some_and(|root| {
-            root.description.transfer.peer() == peer
-                && root.description.transfer.root() == root_id
-                && !root.description.transfer.live(Instant::now())
-        }) {
-            return Err("expired proof fetch grant".into());
+        Ok(())
+    }
+
+    pub(crate) fn reuse_certificate(
+        &mut self,
+        peer: PeerId,
+        root: ArtifactId,
+        id: ArtifactId,
+        graph: &Graph,
+    ) -> Result<bool, crate::Error> {
+        let Some(candidate) = self
+            .certificates
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if self
+            .programs
+            .reuse_certificate(peer, root, candidate.clone(), graph)?
+        {
+            return Ok(true);
         }
-        if !self.authorizes(peer, root_id, expected) {
-            return Err("unrequested proof payload".into());
+        if let Some(active) = &mut self.active
+            && active.fetching()
+            && active.closure.needs(id)
+            && active
+                .description
+                .transfer
+                .authorizes(peer, root, Instant::now())
+        {
+            active
+                .closure
+                .reuse_certificate(candidate, graph, &active.description.transfer)?;
+            return Ok(true);
         }
-        let root = self.active.as_mut().ok_or("unrequested proof payload")?;
-        root.closure
-            .certificate_payload(expected, object, graph, &root.description.transfer)
+        Ok(false)
+    }
+
+    pub(crate) fn trim_certificates(&mut self) {
+        // Candidate leases charge 64 times their wire bytes. Leave the shared
+        // allocation budget available for active checks and shrink under load.
+        let bytes = crate::resources::adaptive::cache(
+            crate::resources::active_limits().checked_cache_bytes / 8,
+        ) / 64;
+        while self.certificate_bytes > bytes
+            || self.certificates.len() > crate::resources::limits().closure_objects
+        {
+            let oldest = self
+                .certificates
+                .pop_front()
+                .expect("nonempty certificate cache");
+            self.certificate_bytes -= oldest.bytes.len();
+        }
     }
 
     pub(crate) fn abort(&mut self, root_id: ArtifactId) {

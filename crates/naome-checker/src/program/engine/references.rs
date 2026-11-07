@@ -135,17 +135,13 @@ impl Engine {
         }
         let source = evaluation
             .reference
-            .as_ref()
+            .as_mut()
             .expect("checked reference source");
         if source.proof != proof {
             return Err(crate::ContextError::Corrupt.into());
         }
-        let node = match &source.representation {
-            ProgramRepresentation::Formula(formula) => {
-                // This representation obeys the existing bounded certificate
-                // codec. Unbounded graph sources take the incremental path.
-                Some(checker::Context::fixed(self, formula)?)
-            }
+        let node = match &mut source.representation {
+            ProgramRepresentation::Formula(cursor) => cursor.advance(|node| self.intern(node))?,
             ProgramRepresentation::Graph { root, nodes } => {
                 self.import_node(*root, nodes.as_ref(), &mut evaluation.reference_depth)?
             }

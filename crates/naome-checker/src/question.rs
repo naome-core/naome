@@ -44,7 +44,7 @@ pub struct AssessmentLimits {
 
 impl AssessmentLimits {
     pub const MAXIMUM: Self = Self {
-        formula_nodes: 1024,
+        formula_nodes: naome_proof::QUESTION_EXPANSION_MAX_NODES,
         dependencies: 64,
         operations: 32_768,
         formula_work_bytes: 64 * 1024 * 1024,

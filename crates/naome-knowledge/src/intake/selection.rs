@@ -115,7 +115,7 @@ impl Selection {
             && self
                 .initial
                 .as_ref()
-                .is_none_or(|initial| !questions.exchange_eligible(&self.question, initial))
+                .is_none_or(|initial| !questions.exchange_eligible(graph, &self.question, initial))
         {
             return Err("initial selection declined or stale".into());
         }
@@ -150,7 +150,7 @@ impl Selection {
         if self
             .initial
             .as_ref()
-            .is_none_or(|initial| !questions.exchange_eligible(&self.question, initial))
+            .is_none_or(|initial| !questions.exchange_eligible(graph, &self.question, initial))
         {
             return Err("initial selection declined or stale".into());
         }
@@ -201,9 +201,9 @@ impl Selection {
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
-        let valid = self
-            .selected()
-            .is_some_and(|assessment| questions.exchange_eligible(&self.question, assessment));
+        let valid = self.selected().is_some_and(|assessment| {
+            questions.exchange_eligible(graph, &self.question, assessment)
+        });
         if self.pending.is_none() && (!self.ready(stage) || !valid || Instant::now() >= self.until)
         {
             if !valid || Instant::now() >= self.until && stage == SelectionStage::Initial {

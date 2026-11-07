@@ -76,6 +76,61 @@ fn register(state: &mut DiskArtifactState, proof: &CheckedProgram) {
     *state = registration.finish().unwrap();
 }
 
+#[test]
+fn certificate_citations_import_one_node_per_step_and_replay_after_restart() {
+    use naome_foundation::{Formula, FreeVariable};
+    use naome_proof::{ProofCertificate, ProofStep};
+
+    let x = FreeVariable::new(0);
+    let mut formula = Formula::equal(x, x);
+    for _ in 0..40 {
+        formula = Formula::implies(Formula::member(x, x), formula);
+    }
+    let formula = Formula::for_all(x, formula);
+    let certificate = ProofCertificate::new(vec![ProofStep::Simplification {
+        antecedent: formula.clone().into(),
+        consequent: formula.into(),
+    }])
+    .unwrap();
+    let checked = crate::normalize_and_check(certificate).unwrap();
+    let expected = checked.conclusion().clone();
+    let proof_id = checked.proof_id();
+    let mut context = DiskArtifactState::new(Arc::new(Storage::default()));
+    context.register_proof_for_replication(checked).unwrap();
+
+    let path = std::env::temp_dir().join(format!(
+        "naome-certificate-reference-{}.sqlite3",
+        std::process::id(),
+    ));
+    let mut engine = Engine::open(Connection::open(&path).unwrap()).unwrap();
+    engine
+        .append_group(&[
+            Command::ProofReference {
+                proof_id: *proof_id.as_bytes(),
+            },
+            Command::Seal { proof: 0 },
+        ])
+        .unwrap();
+    for _ in 0..10 {
+        let before = engine.status().unwrap();
+        assert!(engine.advance(1, 32_768, &context).unwrap());
+        assert_eq!(engine.last_quantum_steps(), 1);
+        let after = engine.status().unwrap();
+        assert_eq!(after.checked_commands, 0);
+        assert!(after.formula_nodes - before.formula_nodes <= 1);
+    }
+    drop(engine);
+
+    let proof = finish(
+        Engine::open(Connection::open(&path).unwrap()).unwrap(),
+        &context,
+    );
+    assert_eq!(proof.conclusion(), Some(&expected));
+    assert!(proof.references_proof(proof_id).unwrap());
+    drop(proof);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn large_proof(implication: bool) -> CheckedProgram {
     let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
     engine

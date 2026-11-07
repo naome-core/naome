@@ -56,8 +56,13 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
-    let mut questions =
-        Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap();
+    let mut questions = Questions::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(60),
+        &graph,
+    )
+    .unwrap();
     let peer = PeerId::random();
     let mut intake = Intake::default();
     let metadata = fixture(41).1;
@@ -146,11 +151,16 @@ fn descriptions_bind_the_checked_statement_and_preserve_existing_proof_addresses
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     graph.ingest(object.clone(), Instant::now()).unwrap();
     let mut metadata = graph.describe(id).unwrap().unwrap();
-    let (_, statement, question) = metadata.compile().unwrap();
+    let (_, statement, question) = metadata.compile(graph.checked_context()).unwrap();
     assert_eq!(hex(statement.as_bytes()), object.statement_id.unwrap());
     assert!(!question.negation_parity());
     metadata.statement_id = "00".repeat(32);
-    assert!(metadata.compile().unwrap_err().contains("question target"));
+    assert!(
+        metadata
+            .compile(graph.checked_context())
+            .unwrap_err()
+            .contains("question target")
+    );
 }
 
 #[tokio::test]
@@ -469,6 +479,12 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
 }
 
 fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
+    dependent_fixture_with_extra(crate::test_inputs::member_self())
+}
+
+fn dependent_fixture_with_extra(
+    extra: naome_foundation::Formula,
+) -> (Envelope, Envelope, Metadata) {
     let mut producer = Graph::default();
     let helper = producer.author(&source(5)).unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
@@ -478,7 +494,7 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
         ))
         .unwrap()
         .unwrap()
-        .compile()
+        .compile(producer.checked_context())
         .unwrap()
         .2
         .core()
@@ -487,12 +503,74 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
         .author(&crate::test_inputs::weaken_citation(
             helper.proof_id().unwrap().unwrap(),
             premise,
-            crate::test_inputs::member_self(),
+            extra,
         ))
         .unwrap();
     let id = ArtifactId::from_bytes(id_bytes(&root.artifact_id).unwrap());
     producer.ingest(root.clone(), Instant::now()).unwrap();
     (root, helper, producer.describe(id).unwrap().unwrap())
+}
+
+#[tokio::test]
+async fn shared_helper_bytes_require_a_live_approved_closure_for_each_root() {
+    let (first, helper, first_metadata) = dependent_fixture();
+    let (second, _, second_metadata) = dependent_fixture_with_extra(
+        naome_foundation::Formula::negate(crate::test_inputs::member_self()),
+    );
+    let id = |object: &Envelope| ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+    let (first_id, second_id, helper_id) = (id(&first), id(&second), id(&helper));
+    assert_ne!(first_id, second_id);
+    let (first_peer, second_peer) = (PeerId::random(), PeerId::random());
+    let mut graph = Graph::default();
+    let mut questions = new_questions();
+    let mut intake = Intake::default();
+
+    intake.enqueue(first_peer, first_metadata, &graph).unwrap();
+    approve(&mut intake, &mut questions, &mut graph).await;
+    intake
+        .payload(first_peer, first_id, first_id, first, &graph)
+        .unwrap();
+    intake
+        .payload(first_peer, first_id, helper_id, helper, &graph)
+        .unwrap();
+    intake.abort(first_id);
+    assert_eq!(graph.accepted_count(), 0);
+
+    intake
+        .enqueue(second_peer, second_metadata, &graph)
+        .unwrap();
+    approve(&mut intake, &mut questions, &mut graph).await;
+    assert!(
+        !intake
+            .reuse_certificate(second_peer, second_id, helper_id, &graph)
+            .unwrap()
+    );
+    intake
+        .payload(second_peer, second_id, second_id, second, &graph)
+        .unwrap();
+    assert!(
+        !intake
+            .reuse_certificate(first_peer, second_id, helper_id, &graph)
+            .unwrap()
+    );
+    assert!(
+        intake
+            .reuse_certificate(second_peer, second_id, helper_id, &graph)
+            .unwrap()
+    );
+    assert_eq!(
+        intake.active.as_ref().unwrap().closure.certificate_count(),
+        2
+    );
+    assert!(intake.needed().is_empty());
+    assert_eq!(graph.accepted_count(), 0);
+
+    intake.advance(&mut graph, &mut questions);
+    selection(&mut questions, &graph).await;
+    assert!(
+        matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids == vec![helper_id, second_id])
+    );
+    assert!(!graph.contains(first_id).unwrap());
 }
 
 #[tokio::test]
@@ -678,7 +756,10 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
         if mode == 3 {
             let (sender, _receiver) = oneshot::channel();
             questions.process(
-                Command::ImportBaseline(metadata.compile().unwrap().2, sender),
+                Command::ImportBaseline(
+                    metadata.compile(graph.checked_context()).unwrap().2,
+                    sender,
+                ),
                 &graph,
             );
         }
@@ -735,10 +816,10 @@ async fn invalid_parent_after_valid_helper_leaves_no_orphan_or_registry_effect()
 #[tokio::test]
 async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_does_not() {
     let (object, metadata) = fixture(6);
-    let derived = metadata.compile().unwrap().2;
+    let mut graph = Graph::default();
+    let derived = metadata.compile(graph.checked_context()).unwrap().2;
     let original =
         crate::test_inputs::question(naome_foundation::Formula::negate(derived.core().clone()));
-    let mut graph = Graph::default();
     let mut questions = new_questions();
     let (sender, receiver) = oneshot::channel();
     questions.process(Command::Admit(original.clone(), sender), &graph);

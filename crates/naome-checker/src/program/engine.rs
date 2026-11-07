@@ -796,9 +796,6 @@ impl Engine {
                     instantiation_axiom,
                     deduction,
                 });
-                sql(self
-                    .connection
-                    .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
             }
             self.last_quantum_steps += 1;
             let mut active = self.active.take().expect("active command");
@@ -815,9 +812,6 @@ impl Engine {
                 active.position += 1;
                 active.restore_sequence = 0;
                 active.restoring = true;
-                sql(self
-                    .connection
-                    .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
             }
             if active.position == active.operations.len() {
                 let node = *active.registers.last().ok_or("empty proof recipe")?;
@@ -991,6 +985,12 @@ impl Engine {
         let position = number(self.cursor)?;
         let operation = active.position as i64;
         if active.restoring {
+            if active.restore_sequence == 0 {
+                // Scratch rows belong to one traversal, including during replay.
+                sql(self
+                    .connection
+                    .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
+            }
             let row:Option<(i64,u64,u64,u64)>=sql(self.connection.query_row("SELECT sequence,source,depth,result FROM equation WHERE position=?1 AND operation=?2 AND sequence>?3 ORDER BY sequence LIMIT 1",params![position,operation,active.restore_sequence],|r|Ok((r.get(0)?,unsigned(r,1)?,unsigned(r,2)?,unsigned(r,3)?))).optional())?;
             if let Some((sequence, input, depth, result)) = row {
                 let node = self

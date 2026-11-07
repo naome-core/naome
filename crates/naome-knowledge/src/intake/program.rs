@@ -131,7 +131,7 @@ impl Programs {
         {
             return Ok("declined");
         }
-        if metadata.question()?.is_none() {
+        if metadata.question(graph.checked_context())?.is_none() {
             return Ok("unselected");
         }
         if self
@@ -245,7 +245,7 @@ impl Programs {
             let authority = (|| -> Result<Selection, crate::Error> {
                 let question = offer
                     .metadata
-                    .question()?
+                    .question(graph.checked_context())?
                     .ok_or("program has no supported selection question")?;
                 Ok(Selection::new(id, question))
             })();

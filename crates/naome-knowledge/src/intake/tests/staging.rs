@@ -17,8 +17,13 @@ async fn managed_short_proof_is_fetched_and_checked_once_across_final_selection(
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
-    let mut questions =
-        Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap();
+    let mut questions = Questions::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(60),
+        &graph,
+    )
+    .unwrap();
     let peer = PeerId::random();
     let mut intake = Intake::default();
     let (object, metadata) = fixture(74);
@@ -73,6 +78,7 @@ async fn expired_staging_releases_payload_but_keeps_the_final_selection_result()
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        &graph,
     )
     .unwrap();
     let peer = PeerId::random();

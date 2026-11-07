@@ -1,3 +1,4 @@
+mod defined_questions;
 use super::*;
 use crate::{Graph, network};
 use libp2p::identity;
@@ -26,6 +27,7 @@ async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        &graph,
     )
     .unwrap();
     let mut receivers = Vec::new();
@@ -107,6 +109,7 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
             owner.client.clone(),
             &directory.0,
             Duration::from_secs(3600),
+            &graph,
         )
         .unwrap();
         let original = question("02040101000000000100000000");
@@ -133,6 +136,7 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
             owner.client.clone(),
             &directory.0,
             Duration::from_secs(3600),
+            &graph,
         )
         .unwrap();
         assert_eq!(
@@ -157,17 +161,27 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
 
 #[test]
 fn established_question_checkpoint_loss_refuses_fresh_provenance() {
+    let graph = Graph::default();
     let directory = Directory::new();
     let owner = crate::jobs::tests::Manual::new();
     let local = Managed::managed(
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        &graph,
     )
     .unwrap();
     drop(local);
     std::fs::remove_file(directory.0.join("research/questions.sqlite3")).unwrap();
-    assert!(Managed::managed(owner.client, &directory.0, Duration::from_secs(3600)).is_err());
+    assert!(
+        Managed::managed(
+            owner.client,
+            &directory.0,
+            Duration::from_secs(3600),
+            &graph
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -179,6 +193,7 @@ async fn changed_epoch_retires_a_result_already_received_before_finish() {
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        &graph,
     )
     .unwrap();
     let (reply, receiver) = oneshot::channel();
@@ -1199,7 +1214,7 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
         ));
         let source = question.to_hex();
         let mut local = Managed::new(None);
-        local.attach_persistence(&directory.0).unwrap();
+        local.attach_persistence(&directory.0, &graph).unwrap();
         let (root, batch) = graph.prepare_generated(PROOF, &[], &question).unwrap();
         let mut registry = local.registry.clone();
         registry
@@ -1239,14 +1254,14 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
         drop(graph);
         let graph = Graph::open(&directory.0).unwrap();
         let mut local = Managed::new(None);
-        local.attach_persistence(&directory.0).unwrap();
+        local.attach_persistence(&directory.0, &graph).unwrap();
         local.recover_publications(&graph).unwrap();
         assert!(
             local
                 .persistence
                 .as_ref()
                 .unwrap()
-                .publications()
+                .publications(graph.checked_context())
                 .unwrap()
                 .is_empty()
         );
@@ -1268,9 +1283,10 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
 
 #[test]
 fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_snapshots() {
+    let graph = Graph::default();
     let directory = Directory::new();
     let mut local = Managed::new(None);
-    local.attach_persistence(&directory.0).unwrap();
+    local.attach_persistence(&directory.0, &graph).unwrap();
     for index in 0..320 {
         let question = question(&crate::checkpoint::tests::question_source(index));
         local
@@ -1322,7 +1338,7 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
     drop(source);
     drop(local);
     let mut reopened = Managed::new(None);
-    reopened.attach_persistence(&directory.0).unwrap();
+    reopened.attach_persistence(&directory.0, &graph).unwrap();
     assert_eq!(reopened.registry.identity(), complete_identity);
 }
 
@@ -1332,7 +1348,7 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
     let mut graph = Graph::open(&directory.0).unwrap();
     let selected = question(SOLVED);
     let mut local = Managed::new(None);
-    local.attach_persistence(&directory.0).unwrap();
+    local.attach_persistence(&directory.0, &graph).unwrap();
     let (root, batch) = graph.prepare_generated(PROOF, &[], &selected).unwrap();
     let mut registry = local.registry.clone();
     registry
@@ -1362,7 +1378,7 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
             .persistence
             .as_ref()
             .unwrap()
-            .publications()
+            .publications(graph.checked_context())
             .unwrap()
             .len(),
         1
@@ -1371,7 +1387,7 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
     drop(graph);
     let graph = Graph::open(&directory.0).unwrap();
     let mut local = Managed::new(None);
-    local.attach_persistence(&directory.0).unwrap();
+    local.attach_persistence(&directory.0, &graph).unwrap();
     local.recover_publications(&graph).unwrap();
     assert_eq!(local.registry.len(), 1);
     assert!(

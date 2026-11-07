@@ -210,6 +210,11 @@ impl Provider for Mock {
                 })
             }
             Input::Solve { question } => {
+                if naome_checker::question::ResearchQuestion::source_requires_definitions(question)
+                    .map_err(|e| e.to_string())?
+                {
+                    return Ok(Output::NoCandidate);
+                }
                 let compiled = naome_checker::question::ResearchQuestion::from_hex(question)
                     .map_err(|e| e.to_string())?;
                 let proof = if self.work.outcome == MockOutcome::Malformed {
@@ -236,11 +241,10 @@ impl Provider for Mock {
                     .unwrap_or(Output::NoCandidate)
             }
             Input::Select { question, .. } => {
-                let compiled = naome_checker::question::ResearchQuestion::from_hex(question)
+                naome_checker::question::ResearchQuestion::source_requires_definitions(question)
                     .map_err(|e| e.to_string())?;
-                let yes =
-                    libp2p::futures::executor::block_on(crate::mocks::select_question(compiled))?;
-                Output::Selected(yes && self.work.outcome != MockOutcome::Malformed)
+                // Formal validation (including definition resolution) belongs to the receiver.
+                Output::Selected(self.work.outcome != MockOutcome::Malformed)
             }
         };
         Ok(output)

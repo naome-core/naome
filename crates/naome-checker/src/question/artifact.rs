@@ -3,7 +3,10 @@ use std::{error::Error, fmt};
 
 use crate::CheckedProof;
 use naome_foundation::Formula;
-use naome_proof::{QuestionError, QuestionTarget};
+use naome_proof::{
+    ArtifactId, DefinedFormula, QUESTION_EXPANSION_MAX_NODES, QUESTION_TARGET_MAX_DEPTH,
+    QUESTION_TARGET_MAX_NODES, QuestionError, QuestionTarget,
+};
 use sha2::{Digest, Sha256};
 
 pub const QUESTION_BYTES: usize = 16 * 1024;
@@ -49,12 +52,13 @@ pub enum QuestionOutcome {
     Refuted,
 }
 
-/// A bounded canonical formula and its rederived resolution targets.
+/// A bounded canonical submission and its rederived primitive resolution targets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResearchQuestion {
     bytes: Vec<u8>,
     record_id: [u8; 32],
     target: QuestionTarget,
+    dependencies: Vec<ArtifactId>,
 }
 
 impl ResearchQuestion {
@@ -74,6 +78,14 @@ impl ResearchQuestion {
             .formula()
             .encode_canonical()
             .map_err(|error| QuestionError::Mathematical(error.to_string()))?;
+        Self::new(bytes, target, Vec::new())
+    }
+
+    fn new(
+        bytes: Vec<u8>,
+        target: QuestionTarget,
+        dependencies: Vec<ArtifactId>,
+    ) -> Result<Self, QuestionError> {
         if bytes.len() > QUESTION_BYTES {
             return Err(QuestionError::Limit("question bytes"));
         }
@@ -82,6 +94,7 @@ impl ResearchQuestion {
             bytes,
             record_id,
             target,
+            dependencies,
         })
     }
 
@@ -94,17 +107,101 @@ impl ResearchQuestion {
     }
 
     pub fn from_hex(value: &str) -> Result<Self, QuestionError> {
-        if value.len() > 2 * QUESTION_BYTES {
-            return Err(QuestionError::Limit("encoded question bytes"));
+        Self::from_canonical_bytes(&decode_hex(value)?)
+    }
+
+    /// Decodes a canonical question against the receiving node's checked context.
+    pub fn from_hex_with_context(
+        value: &str,
+        context: &dyn crate::ContextView,
+    ) -> Result<Self, QuestionError> {
+        Self::from_canonical_bytes_with_context(&decode_hex(value)?, context)
+    }
+
+    /// The exact checked definition artifacts required by this submission.
+    pub fn dependencies(&self) -> &[ArtifactId] {
+        &self.dependencies
+    }
+
+    /// Compiles a compact definition-aware formula to its exact resolution targets.
+    pub fn from_defined_formula(
+        formula: DefinedFormula,
+        context: &dyn crate::ContextView,
+    ) -> Result<Self, QuestionError> {
+        Self::compile_defined(formula, Some(context))
+    }
+
+    fn compile_defined(
+        formula: DefinedFormula,
+        context: Option<&dyn crate::ContextView>,
+    ) -> Result<Self, QuestionError> {
+        let references = formula.definition_references();
+        if references.is_empty() {
+            return Self::from_formula(
+                formula
+                    .into_primitive()
+                    .map_err(|e| QuestionError::Mathematical(e.to_string()))?,
+            );
         }
-        if !value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(QuestionError::Invalid("question hex"));
+        let context = context.ok_or(QuestionError::Invalid(
+            "question needs a checked definition context",
+        ))?;
+        let (bytes, dependencies) = Self::definition_source(&formula, references)?;
+        let context = crate::context::cache::ReadContext::new(context);
+        let (expanded, _) = formula
+            .expand_with_node_limit(&context, QUESTION_EXPANSION_MAX_NODES - 1)
+            .map_err(|error| match error {
+                naome_proof::DefinitionExpansionError::UnknownDefinition { definition_id } => {
+                    QuestionError::MissingDefinition(definition_id)
+                }
+                _ => QuestionError::Mathematical(error.to_string()),
+            })?;
+        let target = QuestionTarget::from_expanded_formula(expanded)?;
+        Self::new(bytes, target, dependencies)
+    }
+
+    fn definition_source(
+        formula: &DefinedFormula,
+        references: Vec<naome_proof::DefinitionId>,
+    ) -> Result<(Vec<u8>, Vec<ArtifactId>), QuestionError> {
+        let bytes = formula
+            .encode_canonical_with_limits(
+                QUESTION_TARGET_MAX_NODES - 1,
+                QUESTION_TARGET_MAX_DEPTH as u32 - 1,
+            )
+            .map_err(|error| QuestionError::Mathematical(error.to_string()))?
+            .0;
+        if bytes.len() > QUESTION_BYTES {
+            return Err(QuestionError::Limit("question bytes"));
         }
-        let bytes = hex::decode(value).map_err(|_| QuestionError::Invalid("question hex"))?;
-        Self::from_canonical_bytes(&bytes)
+        if !formula.is_closed() {
+            return Err(QuestionError::Invalid("question has free variables"));
+        }
+        let dependencies = references
+            .into_iter()
+            .map(ArtifactId::from_definition_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        if dependencies.len() > super::AssessmentLimits::MAXIMUM.dependencies {
+            return Err(QuestionError::Limit("question dependencies"));
+        }
+        Ok((bytes, dependencies.into_iter().collect()))
+    }
+
+    /// Checks question syntax without a checked context, returning whether
+    /// semantic validation still requires checked definitions.
+    pub fn source_requires_definitions(value: &str) -> Result<bool, QuestionError> {
+        let bytes = decode_hex(value)?;
+        if let Ok(formula) = Formula::decode_canonical(&bytes) {
+            QuestionTarget::from_formula(formula)?;
+            return Ok(false);
+        }
+        let formula = decode_formula(&bytes)?;
+        let references = formula.definition_references();
+        let (canonical, _) = Self::definition_source(&formula, references)?;
+        if canonical != bytes {
+            return Err(QuestionError::Invalid("noncanonical question formula"));
+        }
+        Ok(true)
     }
 
     pub const fn record_id(&self) -> &[u8; 32] {
@@ -205,19 +302,56 @@ impl ResearchQuestion {
         }
     }
 
-    /// Decodes exactly one canonical Foundation formula and rederives its targets.
+    /// Decodes a canonical question that requires no checked definitions.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, QuestionError> {
+        Self::decode(bytes, None)
+    }
+
+    /// Decodes a canonical question and checks its exact definition references.
+    pub fn from_canonical_bytes_with_context(
+        bytes: &[u8],
+        context: &dyn crate::ContextView,
+    ) -> Result<Self, QuestionError> {
+        Self::decode(bytes, Some(context))
+    }
+
+    fn decode(
+        bytes: &[u8],
+        context: Option<&dyn crate::ContextView>,
+    ) -> Result<Self, QuestionError> {
         if bytes.len() > QUESTION_BYTES {
             return Err(QuestionError::Limit("encoded question bytes"));
         }
-        let formula = Formula::decode_canonical(bytes)
-            .map_err(|error| QuestionError::Mathematical(error.to_string()))?;
-        let question = Self::from_formula(formula)?;
+        let question = match Formula::decode_canonical(bytes) {
+            Ok(formula) => Self::from_formula(formula)?,
+            Err(error) if context.is_none() => {
+                return Err(QuestionError::Mathematical(error.to_string()));
+            }
+            Err(_) => Self::compile_defined(decode_formula(bytes)?, context)?,
+        };
         if question.canonical_bytes() != bytes {
             return Err(QuestionError::Invalid("noncanonical question formula"));
         }
         Ok(question)
     }
+}
+
+fn decode_formula(bytes: &[u8]) -> Result<DefinedFormula, QuestionError> {
+    DefinedFormula::decode_canonical(bytes)
+        .map_err(|error| QuestionError::Mathematical(error.to_string()))
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, QuestionError> {
+    if value.len() > 2 * QUESTION_BYTES {
+        return Err(QuestionError::Limit("encoded question bytes"));
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(QuestionError::Invalid("question hex"));
+    }
+    hex::decode(value).map_err(|_| QuestionError::Invalid("question hex"))
 }
 
 #[cfg(test)]

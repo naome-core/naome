@@ -145,6 +145,10 @@ pub struct LocalQuestionContext {
 pub(crate) enum Command {
     Assess(ResearchQuestion, oneshot::Sender<QuestionAssessment>),
     Admit(ResearchQuestion, oneshot::Sender<QuestionAdmission>),
+    AdmitBytes(
+        Vec<u8>,
+        oneshot::Sender<Result<QuestionAdmission, naome_checker::question::QuestionError>>,
+    ),
     ImportBaseline(
         ResearchQuestion,
         oneshot::Sender<Result<(), RejectionReason>>,
@@ -229,6 +233,27 @@ impl QuestionHandle {
         send(&self.sender, Command::Admit(question, sender), reply).await
     }
 
+    /// Resolves a binary question against the receiving node's checked definitions
+    /// before running its ordinary local admission policy.
+    pub async fn admit_question_bytes(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Result<QuestionAdmission, naome_checker::question::QuestionError>, IntakeError>
+    {
+        if bytes.len() > naome_checker::question::QUESTION_BYTES {
+            return Ok(Err(naome_checker::question::QuestionError::Limit(
+                "encoded question bytes",
+            )));
+        }
+        let (sender, reply) = oneshot::channel();
+        send(
+            &self.sender,
+            Command::AdmitBytes(bytes.to_vec(), sender),
+            reply,
+        )
+        .await
+    }
+
     pub async fn context(&self) -> Result<LocalQuestionContext, IntakeError> {
         let (sender, reply) = oneshot::channel();
         send(&self.sender, Command::Context(sender), reply).await
@@ -265,6 +290,9 @@ impl QuestionAdminHandle {
 enum Reply {
     Assessment(oneshot::Sender<QuestionAssessment>),
     Admission(oneshot::Sender<QuestionAdmission>),
+    BinaryAdmission(
+        oneshot::Sender<Result<QuestionAdmission, naome_checker::question::QuestionError>>,
+    ),
     Exchange {
         reply: oneshot::Sender<QuestionAssessment>,
         deadline: Instant,
@@ -278,11 +306,12 @@ impl Reply {
         match self {
             Self::Assessment(reply) | Self::Exchange { reply, .. } => reply.is_closed(),
             Self::Admission(reply) => reply.is_closed(),
+            Self::BinaryAdmission(reply) => reply.is_closed(),
         }
     }
 
     fn admission(&self) -> bool {
-        matches!(self, Self::Admission(_))
+        matches!(self, Self::Admission(_) | Self::BinaryAdmission(_))
     }
 
     fn exchange(&self) -> bool {
@@ -299,6 +328,12 @@ impl Reply {
                     assessment,
                     outcome,
                 })
+                .is_ok(),
+            Self::BinaryAdmission(reply) => reply
+                .send(Ok(QuestionAdmission {
+                    assessment,
+                    outcome,
+                }))
                 .is_ok(),
         }
     }
@@ -404,15 +439,20 @@ where
         client: crate::jobs::Client,
         directory: &std::path::Path,
         horizon: Duration,
+        graph: &Graph,
     ) -> Result<Self, String> {
         let mut local = Self::new(None);
-        local.attach_persistence(directory)?;
+        local.attach_persistence(directory, graph)?;
         local.managed = Some(client);
         local.selection_horizon = horizon;
         Ok(local)
     }
 
-    pub(crate) fn attach_persistence(&mut self, directory: &std::path::Path) -> Result<(), String> {
+    pub(crate) fn attach_persistence(
+        &mut self,
+        directory: &std::path::Path,
+        graph: &Graph,
+    ) -> Result<(), String> {
         if self.persistence.is_some() {
             return Ok(());
         }
@@ -422,7 +462,7 @@ where
         let persistence = persistence::Persistence::open(directory, self.policy)?;
         let storage = crate::index_storage::IndexStorage::open(directory, "questions")?;
         self.registry = QuestionRegistry::with_storage(storage.clone());
-        persistence.replay(|entry,question|{
+        persistence.replay(graph.checked_context(), |entry,question|{
             let record=*question.record_id();
             self.registry.insert(RegisteredQuestion::new(record,question.core()).map_err(|e|format!("recovered question: {e:?}"))?).map_err(|e|format!("recovered registry: {e:?}"))?;
             if entry.kind==persistence::Kind::Prepared {crate::network::emit(serde_json::json!({"event":"question_recovery_hold","source_id":crate::hex(&record),"reason":"original admission delivery is uncertain"}));}
@@ -563,19 +603,19 @@ where
             );
         }
     }
-    fn provenance(&self, resolution: &Identity) -> Option<AdmittedProvenance> {
+    fn provenance(&self, graph: &Graph, resolution: &Identity) -> Option<AdmittedProvenance> {
         if let Some(persistence) = &self.persistence {
             return persistence
-                .admitted(resolution)
+                .admitted(resolution, graph.checked_context())
                 .ok()
                 .flatten()
                 .map(|(question, record)| AdmittedProvenance { question, record });
         }
         self.admitted.get(resolution).cloned()
     }
-    pub(crate) fn next_backlog(&mut self) -> Option<ResearchQuestion> {
+    pub(crate) fn next_backlog(&mut self, graph: &Graph) -> Option<ResearchQuestion> {
         let persistence = self.persistence.as_mut()?;
-        match persistence.next_backlog() {
+        match persistence.next_backlog(graph.checked_context()) {
             Ok(question) => question,
             Err(error) => {
                 self.storage_error = Some(error);
@@ -599,7 +639,7 @@ where
                     FOUNDATION_ID,
                     entry.question.core(),
                     entry.question.canonical_bytes(),
-                    &[],
+                    entry.question.dependencies(),
                     Some(entry.record),
                 )
                 .ok()?;
@@ -736,7 +776,7 @@ where
             FOUNDATION_ID,
             question.core(),
             question.canonical_bytes(),
-            &[],
+            question.dependencies(),
             record,
         )
         .expect("bounded parser-validated question input");
@@ -770,8 +810,8 @@ where
         self.evaluate(graph, question, true)
     }
 
-    fn exchange_record(&self, question: &ResearchQuestion) -> Option<Identity> {
-        self.provenance(question.resolution_id())
+    fn exchange_record(&self, graph: &Graph, question: &ResearchQuestion) -> Option<Identity> {
+        self.provenance(graph, question.resolution_id())
             .filter(|entry| entry.question == *question)
             .map(|entry| entry.record)
     }
@@ -808,7 +848,7 @@ where
         graph: &Graph,
         question: &ResearchQuestion,
     ) -> PrefilterDecision {
-        let record = self.exchange_record(question);
+        let record = self.exchange_record(graph, question);
         self.evaluate_record(graph, question, false, record)
     }
 
@@ -821,7 +861,7 @@ where
         // Family equality is only a lookup. The original source, orientation,
         // record and delivered first-admission evidence remain unchanged.
         let question = self
-            .provenance(derived.resolution_id())
+            .provenance(graph, derived.resolution_id())
             .filter(|entry| {
                 entry.question.core() == derived.core()
                     && entry.question.canonical_core() == derived.canonical_core()
@@ -851,7 +891,7 @@ where
         deadline: Instant,
     ) -> (ResearchQuestion, oneshot::Receiver<QuestionAssessment>) {
         let question = self
-            .provenance(derived.resolution_id())
+            .provenance(graph, derived.resolution_id())
             .filter(|entry| {
                 entry.question.core() == derived.core()
                     && entry.question.canonical_core() == derived.canonical_core()
@@ -874,6 +914,7 @@ where
 
     pub(crate) fn exchange_eligible(
         &self,
+        graph: &Graph,
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> bool {
@@ -883,7 +924,7 @@ where
             && assessment.selection == self.selection
             && assessment.selection_result == SelectionAssessment::Assessed(true)
             && assessment.selected == self.selection_context(question)
-            && (assessment.novelty().is_some() || self.exchange_record(question).is_some())
+            && (assessment.novelty().is_some() || self.exchange_record(graph, question).is_some())
     }
 
     /// Reuse only sealed positive selection for the exact unchanged selection
@@ -894,10 +935,15 @@ where
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
-        if !self.exchange_eligible(question, assessment) {
+        if !self.exchange_eligible(graph, question, assessment) {
             return Err("stale or declined question selection".into());
         }
-        let fresh = self.evaluate_record(graph, question, false, self.exchange_record(question));
+        let fresh = self.evaluate_record(
+            graph,
+            question,
+            false,
+            self.exchange_record(graph, question),
+        );
         if fresh.inconclusive() {
             return Err(crate::Error::ExecutionLimit);
         }
@@ -916,7 +962,7 @@ where
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionDelta, crate::Error> {
-        let record = self.exchange_record(question);
+        let record = self.exchange_record(graph, question);
         let fresh = self
             .refresh_exchange(graph, question, assessment)?
             .prefilter;
@@ -1005,7 +1051,7 @@ where
     pub(crate) fn recover_publications(&mut self, graph: &Graph) -> Result<(), String> {
         loop {
             let entries = match &self.persistence {
-                Some(p) => p.publications()?,
+                Some(p) => p.publications(graph.checked_context())?,
                 None => return Ok(()),
             };
             if entries.is_empty() {
@@ -1013,13 +1059,7 @@ where
             }
             for (root, question) in entries {
                 if graph.contains(root)? {
-                    let metadata = graph
-                        .describe(root)?
-                        .ok_or("publication root description missing")?;
-                    let (_, _, recovered) = metadata.compile()?;
-                    if recovered.canonical_core() != question.canonical_core()
-                        || recovered.resolution_id() != question.resolution_id()
-                    {
+                    if !graph.resolves_question(root, &question)? {
                         return Err("publication recovery target differs from checked graph".into());
                     }
                     let mut registry = self.registry.clone();
@@ -1052,7 +1092,12 @@ where
             return;
         }
         let mut prefilter = if reply.exchange() {
-            self.evaluate_record(graph, &question, false, self.exchange_record(&question))
+            self.evaluate_record(
+                graph,
+                &question,
+                false,
+                self.exchange_record(graph, &question),
+            )
         } else {
             self.assess(graph, &question)
         };
@@ -1102,7 +1147,9 @@ where
         {
             let (purpose, root) = match &reply {
                 Reply::Assessment(_) => (crate::jobs::Purpose::Assessment, None),
-                Reply::Admission(_) => (crate::jobs::Purpose::Admission, None),
+                Reply::Admission(_) | Reply::BinaryAdmission(_) => {
+                    (crate::jobs::Purpose::Admission, None)
+                }
                 Reply::Exchange { purpose, root, .. } => {
                     (*purpose, root.map(|id| crate::hex(id.as_bytes())))
                 }
@@ -1197,10 +1244,32 @@ where
                 self.begin(graph, question, Reply::Assessment(reply))
             }
             Command::Admit(question, reply) => self.begin(graph, question, Reply::Admission(reply)),
+            Command::AdmitBytes(bytes, reply) if !reply.is_closed() => {
+                match ResearchQuestion::from_canonical_bytes_with_context(
+                    &bytes,
+                    graph.checked_context(),
+                ) {
+                    Ok(question) => self.begin(graph, question, Reply::BinaryAdmission(reply)),
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+            Command::AdmitBytes(_, _) => {}
             Command::ImportBaseline(question, reply) => {
                 if !reply.is_closed() {
                     let previous = self.registry.clone();
-                    let outcome = if self.registry.contains(question.core()).unwrap_or(true) {
+                    let dependencies = question
+                        .dependencies()
+                        .iter()
+                        .try_fold(true, |present, id| {
+                            graph.contains(*id).map(|next| present && next)
+                        });
+                    let outcome = if dependencies.is_err() {
+                        Err(RejectionReason::InvalidRegistry)
+                    } else if dependencies == Ok(false) {
+                        Err(RejectionReason::MissingDependency)
+                    } else if self.registry.contains(question.core()).unwrap_or(true) {
                         Err(RejectionReason::ExactDuplicate)
                     } else if !self.registry_capacity(&question) {
                         Err(RejectionReason::ReceivingLimit)
@@ -1293,7 +1362,7 @@ where
                 graph,
                 &pending.question,
                 false,
-                self.exchange_record(&pending.question),
+                self.exchange_record(graph, &pending.question),
             )
         } else {
             self.evaluate(graph, &pending.question, !pending.reply.admission())

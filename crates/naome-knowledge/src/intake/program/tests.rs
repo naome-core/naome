@@ -161,7 +161,12 @@ fn typed_program_description_and_transfer_preserve_manifest_and_avoid_duplicate_
     };
     assert_eq!(crate::store::manifest_reads() - before, 1);
     assert_eq!(description.manifest, manifest);
-    assert!(description.question().unwrap().is_some());
+    assert!(
+        description
+            .question(graph.checked_context())
+            .unwrap()
+            .is_some()
+    );
     let before = crate::store::manifest_reads();
     let Some(crate::object::ArtifactTransfer::Program(transfer)) =
         graph.transfer(manifest.artifact_id()).unwrap()

@@ -192,7 +192,9 @@ pub fn select(graph: &Graph, request: &Request) -> Result<Batch, Error> {
 fn question(graph: &Graph, root: &str) -> Result<ResearchQuestion, Error> {
     let id = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
     let metadata = describe(graph, id)?.ok_or("training target is not a checked proof")?;
-    metadata.compile().map(|(_, _, question)| question)
+    metadata
+        .compile(graph.checked_context())
+        .map(|(_, _, question)| question)
 }
 
 struct Observation {

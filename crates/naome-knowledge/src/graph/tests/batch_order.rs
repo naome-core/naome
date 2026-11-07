@@ -16,7 +16,7 @@ fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() 
     else {
         panic!("certificate description missing")
     };
-    let (described, statement, question) = description.compile().unwrap();
+    let (described, statement, question) = description.compile(graph.checked_context()).unwrap();
     assert_eq!(described, id);
     assert_eq!(
         statement.as_bytes(),
