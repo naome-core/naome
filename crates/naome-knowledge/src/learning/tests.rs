@@ -1134,6 +1134,11 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     progress.model.model = Some(Blob::of(&[1; 32]));
     progress.model.optimizer = Some(Blob::of(&[2; 32]));
     progress.promotions += 1;
+    progress.transfer = transfer::Summary {
+        before: 1,
+        after: 3,
+        observed: transfer::Summary::prefix(transfer::CASES),
+    };
     progress.development_after.checkpoint = digest(&progress.model);
     let selected = progress.model.clone();
     let expanded = crate::checkpoint::encode(&selected).unwrap().len()
