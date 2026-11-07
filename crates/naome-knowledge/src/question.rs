@@ -20,7 +20,6 @@ use naome_checker::question::{
     AssessmentQuestion, Identity, KnowledgeSnapshot, NodeLocalNovelty, PrefilterDecision,
     PrefilterPolicy, QuestionRegistry, RegisteredQuestion, RejectionReason, assess_question,
 };
-use naome_foundation::FOUNDATION_ID;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::Graph;
@@ -462,11 +461,21 @@ where
         let persistence = persistence::Persistence::open(directory, self.policy)?;
         let storage = crate::index_storage::IndexStorage::open(directory, "questions")?;
         self.registry = QuestionRegistry::with_storage(storage.clone());
-        persistence.replay(graph.checked_context(), |entry,question|{
-            let record=*question.record_id();
-            self.registry.insert(RegisteredQuestion::new(record,question.core()).map_err(|e|format!("recovered question: {e:?}"))?).map_err(|e|format!("recovered registry: {e:?}"))?;
-            if entry.kind==persistence::Kind::Prepared {crate::network::emit(serde_json::json!({"event":"question_recovery_hold","source_id":crate::hex(&record),"reason":"original admission delivery is uncertain"}));}
-            self.remember(question,entry.kind==persistence::Kind::Admitted);Ok(())
+        persistence.replay(graph.checked_context(), |entry, question| {
+            let registered = RegisteredQuestion::from_research_question(&question)
+                .map_err(|error| format!("recovered question: {error:?}"))?;
+            self.registry
+                .insert(registered)
+                .map_err(|error| format!("recovered registry: {error:?}"))?;
+            if entry.kind == persistence::Kind::Prepared {
+                crate::network::emit(serde_json::json!({
+                    "event": "question_recovery_hold",
+                    "source_id": crate::hex(question.record_id()),
+                    "reason": "original admission delivery is uncertain",
+                }));
+            }
+            self.remember(question, entry.kind == persistence::Kind::Admitted);
+            Ok(())
         })?;
         self.persistence = Some(persistence);
         self.index_storage = Some(storage);
@@ -635,14 +644,9 @@ where
         self.admitted
             .values()
             .filter_map(|entry| {
-                let request = AssessmentQuestion::new(
-                    FOUNDATION_ID,
-                    entry.question.core(),
-                    entry.question.canonical_bytes(),
-                    entry.question.dependencies(),
-                    Some(entry.record),
-                )
-                .ok()?;
+                let request =
+                    AssessmentQuestion::from_research_question(&entry.question, Some(entry.record))
+                        .ok()?;
                 let decision = assess_question(&request, &self.snapshot(graph), &self.policy);
                 (decision.passed() || decision.inconclusive()).then(|| entry.question.clone())
             })
@@ -772,14 +776,8 @@ where
             graph.checked_context(),
             &self.registry,
         );
-        let request = AssessmentQuestion::new(
-            FOUNDATION_ID,
-            question.core(),
-            question.canonical_bytes(),
-            question.dependencies(),
-            record,
-        )
-        .expect("bounded parser-validated question input");
+        let request = AssessmentQuestion::from_research_question(question, record)
+            .expect("bounded parser-validated question input");
         if !crate::resources::adaptive::work_available() {
             return naome_checker::question::defer_question(&request, &snapshot, &self.policy);
         }
@@ -975,7 +973,7 @@ where
             if fresh.novelty().is_none() {
                 return Err("missing fresh node-local novelty".into());
             }
-            let entry = RegisteredQuestion::new(*question.record_id(), question.core())
+            let entry = RegisteredQuestion::from_research_question(question)
                 .map_err(|reason| format!("question registration: {reason:?}"))?;
             registry
                 .insert(entry)
@@ -1069,7 +1067,7 @@ where
                     {
                         registry
                             .insert(
-                                RegisteredQuestion::new(*question.record_id(), question.core())
+                                RegisteredQuestion::from_research_question(&question)
                                     .map_err(|e| format!("publication recovery: {e:?}"))?,
                             )
                             .map_err(|e| format!("publication recovery: {e:?}"))?;
@@ -1274,7 +1272,7 @@ where
                     } else if !self.registry_capacity(&question) {
                         Err(RejectionReason::ReceivingLimit)
                     } else {
-                        RegisteredQuestion::new(*question.record_id(), question.core())
+                        RegisteredQuestion::from_research_question(&question)
                             .and_then(|entry| self.registry.insert(entry))
                     };
                     let inserted = outcome.is_ok();
@@ -1394,7 +1392,7 @@ where
             let previous = self.registry.clone();
             let registry_before = previous.identity();
             let record = *pending.question.record_id();
-            let inserted = RegisteredQuestion::new(record, pending.question.core())
+            let inserted = RegisteredQuestion::from_research_question(&pending.question)
                 .and_then(|entry| self.registry.insert(entry));
             match inserted {
                 Ok(()) => {

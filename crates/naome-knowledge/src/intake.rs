@@ -284,6 +284,7 @@ impl Intake {
             return Ok(false);
         }
         // Reapply the same ingress accounting and checks under the new grant.
+        let _envelope = crate::resources::MemoryLease::acquire(saved.record.bytes.len() * 2 + 512)?;
         self.payload(peer, root, id, saved.record.envelope(), graph)?;
         Ok(true)
     }
