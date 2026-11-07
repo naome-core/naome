@@ -1156,9 +1156,7 @@ fn solve_with_report(
         && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
     {
         let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
-        if let Some(packet) =
-            inputs.native_conjunction(question.proved_target(), context.required)?
-        {
+        if let Some(packet) = inputs.native_proof(question.proved_target(), context.required)? {
             return program_generation(
                 packet,
                 Vec::new(),

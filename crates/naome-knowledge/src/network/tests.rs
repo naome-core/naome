@@ -738,3 +738,133 @@ fn shutdown_receivers_capture_signals_before_the_future_is_polled() {
         assert!(output.status.success(), "{signal}: {output:?}");
     }
 }
+
+#[tokio::test]
+async fn oversized_learning_context_advances_the_durable_cursor() {
+    const CASE: &str = "network::tests::oversized_learning_context_advances_the_durable_cursor";
+    if std::env::var("NAOME_PEER_LEARNING_CAPACITY_CASE").as_deref() != Ok(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env("NAOME_PEER_LEARNING_CAPACITY_CASE", CASE)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::resources::configure(crate::resources::ResourceProfile {
+        memory_bytes: 2 * 1024 * 1024 * 1024,
+        ..Default::default()
+    })
+    .unwrap();
+
+    use naome_foundation::Formula;
+    use naome_proof::{DefinedFormula, DefinitionCertificate, ProofFormula, ProofStep};
+    let directory = ConfigFile::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let x = crate::test_inputs::variable(0);
+    let mut body = Formula::member(x, x);
+    let mut relations = Vec::new();
+    for _ in 0..=crate::learning::definitions::CAPACITY {
+        let certificate =
+            DefinitionCertificate::relation(1, DefinedFormula::from_primitive(&body).unwrap())
+                .unwrap();
+        graph
+            .produce(&crate::test_inputs::definition(&certificate))
+            .unwrap();
+        relations.push(DefinedFormula::defined_relation(
+            certificate.definition_id(),
+            [x],
+        ));
+        body = Formula::negate(body);
+    }
+    let antecedent = relations
+        .into_iter()
+        .reduce(DefinedFormula::conjunction)
+        .unwrap();
+    let source = crate::test_inputs::proof(vec![ProofStep::Simplification {
+        antecedent: ProofFormula::from_defined(DefinedFormula::for_all(x, antecedent)).unwrap(),
+        consequent: crate::test_inputs::member_self().into(),
+    }]);
+    let peer = PeerId::random();
+    graph.set_commit_guard(
+        crate::publication::CommitGuard::new(Arc::default(), 0, None, None)
+            .with_peer(crate::publication::PeerGrant::new().with_origin(peer)),
+    );
+    let oversized = graph.produce(&source).unwrap().1.id;
+    assert_eq!(
+        graph.direct_dependencies(oversized).unwrap().len(),
+        crate::learning::definitions::CAPACITY + 1
+    );
+    assert!(graph.learning_certificate(oversized).unwrap().is_none());
+
+    let settings = crate::jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let skipped_ordinal = graph.accepted_count() as u64;
+    assert_eq!(
+        graph.peer_learning_page(skipped_ordinal - 1).unwrap(),
+        vec![(skipped_ordinal, oversized, Some(peer))],
+    );
+    let binding = crate::jobs::Binding::new([0; 32], [0; 32]);
+    let (mut service, client, recovery) =
+        crate::jobs::Service::open(&directory.0, settings, 0, Arc::default()).unwrap();
+    let mut learning = PeerLearning {
+        client,
+        cursor: recovery.peer_cursor,
+    };
+    for _ in 0..skipped_ordinal {
+        if learning.cursor == skipped_ordinal {
+            break;
+        }
+        learning.advance(&graph, binding.clone()).unwrap();
+        // The response follows any queued observations on the journal owner.
+        learning
+            .client
+            .recover(0, recovery.archive_end)
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(learning.cursor, skipped_ordinal);
+    service.shutdown().await.unwrap();
+    drop(graph);
+
+    let mut graph = Graph::open(&directory.0).unwrap();
+    assert!(graph.contains(oversized).unwrap());
+    let later = graph
+        .produce(&crate::learning::tests::own_solution().source)
+        .unwrap()
+        .1
+        .id;
+    assert!(graph.learning_certificate(later).unwrap().is_some());
+    let (mut service, client, recovery) =
+        crate::jobs::Service::open(&directory.0, settings, 0, Arc::default()).unwrap();
+    assert_eq!(recovery.peer_cursor, skipped_ordinal);
+    let mut learning = PeerLearning {
+        client,
+        cursor: recovery.peer_cursor,
+    };
+    learning.advance(&graph, binding).unwrap();
+    learning
+        .client
+        .recover(0, recovery.archive_end)
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(learning.cursor, skipped_ordinal + 1);
+    service.shutdown().await.unwrap();
+
+    let (mut service, _, recovery) =
+        crate::jobs::Service::open(&directory.0, settings, 0, Arc::default()).unwrap();
+    assert_eq!(recovery.peer_cursor, skipped_ordinal + 1);
+    service.shutdown().await.unwrap();
+}

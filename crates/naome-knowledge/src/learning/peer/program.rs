@@ -162,6 +162,90 @@ fn evaluate(
     Ok(checked)
 }
 
+struct InputChecker {
+    context: DiskArtifactState,
+    steps: usize,
+    work: usize,
+    objects: usize,
+}
+
+impl InputChecker {
+    fn new(steps: usize) -> Self {
+        let limits = crate::resources::limits();
+        Self {
+            context: DiskArtifactState::new(Arc::new(ReplayStorage {
+                limit: 24 * limits.closure_bytes,
+                records: Mutex::default(),
+            })),
+            steps,
+            work: 0,
+            objects: 0,
+        }
+    }
+
+    fn register(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let limits = crate::resources::limits();
+        self.objects += 1;
+        if self.objects >= limits.closure_objects {
+            return Err("peer program context capacity".into());
+        }
+        if let Some(mut inner) = bytes.strip_prefix(MANIFEST_MAGIC) {
+            let manifest = Manifest::from_canonical_bytes(take(&mut inner)?)?;
+            let commands = read_commands(&manifest, &mut inner)?;
+            if !inner.is_empty() {
+                return Err("peer program dependency trailing bytes".into());
+            }
+            self.steps = self
+                .steps
+                .checked_add(commands.len())
+                .ok_or("peer program context step overflow")?;
+            if self.steps > limits.closure_steps {
+                return Err("peer program context step capacity".into());
+            }
+            let checked = evaluate(&manifest, &commands, &self.context, &mut self.work)?;
+            let mut registration = self
+                .context
+                .begin_program_registration(&checked)
+                .map_err(|error| error.to_string())?;
+            while !registration.complete() {
+                registration
+                    .advance(&checked, 64)
+                    .map_err(|error| error.to_string())?;
+            }
+            self.context = registration.finish().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        if bytes.len() > limits.proof_bytes {
+            return Err("peer program context object capacity".into());
+        }
+        match ArtifactPayload::from_canonical_bytes(bytes).map_err(|error| error.to_string())? {
+            ArtifactPayload::Proof(certificate) => {
+                self.steps = self
+                    .steps
+                    .checked_add(certificate.steps().len())
+                    .ok_or("peer program context step overflow")?;
+                if self.steps > limits.closure_steps {
+                    return Err("peer program context step capacity".into());
+                }
+                let checked =
+                    proof::check(certificate, &self.context).map_err(|error| error.to_string())?;
+                self.context
+                    .register_proof_for_replication(checked)
+                    .map_err(|error| error.to_string())?;
+            }
+            ArtifactPayload::Definition(certificate) => {
+                let checked =
+                    naome_checker::check_definition_with_state(certificate, &self.context)
+                        .map_err(|error| error.to_string())?;
+                self.context
+                    .register_definition(checked)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct Replay {
     pub target: Formula,
     pub graphs: Vec<Graph>,
@@ -311,29 +395,98 @@ impl Packet {
             conclusion: formula_hash(target),
             statement: *statement.as_bytes(),
         };
+        let context = Self::ordered_inputs(programs, artifacts)?;
+        let packet = Self::pack(manifest, commands, &context)?
+            .ok_or("native program replay packet capacity")?;
+        packet.replay(target)?;
+        Ok(packet)
+    }
+
+    fn ordered_inputs(
+        programs: &[Self],
+        artifacts: impl IntoIterator<Item = Arc<[u8]>>,
+    ) -> Result<Vec<Arc<[u8]>>, String> {
         let mut context = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
-        let mut append = |bytes: Arc<[u8]>| {
+        let mut extent = 0usize;
+        let mut append = |bytes: Arc<[u8]>| -> Result<(), String> {
             if seen.insert(crate::learning::digest(&bytes.as_ref())) {
+                extent = extent
+                    .checked_add(bytes.len() + 4)
+                    .ok_or("peer program context byte overflow")?;
+                if extent > crate::resources::limits().closure_bytes {
+                    return Err("peer program context byte capacity".into());
+                }
                 context.push(bytes);
             }
+            Ok(())
         };
-        for artifact in artifacts {
-            append(artifact);
-        }
+        // Each program carries its own checked prefix in postorder. Register
+        // that prefix before processing certificates that cite the program.
         for program in programs {
             let raw = program.decoded()?;
             let mut tail = raw.as_slice();
             let records = read_commands(&program.manifest, &mut tail)?;
             while !tail.is_empty() {
-                append(take(&mut tail)?.into());
+                append(take(&mut tail)?.into())?;
             }
-            append(Self::context_record(&program.manifest, &records)?);
+            append(Self::context_record(&program.manifest, &records)?)?;
         }
-        let packet = Self::pack(manifest, commands, &context)?
-            .ok_or("native program replay packet capacity")?;
-        packet.replay(target)?;
-        Ok(packet)
+        for artifact in artifacts {
+            append(artifact)?;
+        }
+        Ok(context)
+    }
+
+    pub(crate) fn checked_inputs(
+        programs: &[Self],
+        artifacts: &[crate::object::Candidate],
+    ) -> Result<DiskArtifactState, String> {
+        let mut inputs = InputChecker::new(0);
+        for record in Self::ordered_inputs(programs, artifacts.iter().map(|a| a.bytes.clone()))? {
+            inputs.register(&record)?;
+        }
+        for artifact in artifacts {
+            match &artifact.payload {
+                crate::object::CandidatePayload::Proof(_) => {
+                    let header = inputs
+                        .context
+                        .artifact_proof_header(artifact.id)
+                        .map_err(|error| error.to_string())?
+                        .ok_or("temporary prerequisite checked binding differs")?;
+                    if Some(header.statement_id()) != artifact.statement {
+                        return Err("temporary prerequisite checked statement differs".into());
+                    }
+                }
+                crate::object::CandidatePayload::Definition(definition) => {
+                    let id = definition.definition_id();
+                    if inputs
+                        .context
+                        .definition_canonical_length(id)
+                        .map_err(|error| error.to_string())?
+                        .is_none()
+                    {
+                        return Err("temporary definition checked binding differs".into());
+                    }
+                    if let Some(obligation) = artifact.obligation {
+                        let header = inputs
+                            .context
+                            .proof_header(obligation)
+                            .map_err(|error| error.to_string())?
+                            .ok_or("temporary definition checked obligation is missing")?;
+                        let checked = naome_checker::check_definition_with_state(
+                            definition.clone(),
+                            &inputs.context,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        if Some(header.statement_id()) != checked.obligation_statement_id() {
+                            return Err("temporary definition checked obligation differs".into());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(inputs.context)
     }
 
     fn check(&self) -> Result<Replay, String> {
@@ -343,71 +496,13 @@ impl Packet {
         let raw = self.decoded()?;
         let mut tail = raw.as_slice();
         let commands = read_commands(&self.manifest, &mut tail)?;
-        let mut context = DiskArtifactState::new(Arc::new(ReplayStorage {
-            limit: 24 * limits.closure_bytes,
-            records: Mutex::default(),
-        }));
-        let mut steps = commands.len();
-        let mut work = 0;
-        let mut objects = 0;
-        let mut definitions = Vec::new();
+        let mut inputs = InputChecker::new(commands.len());
         while !tail.is_empty() {
-            objects += 1;
-            let bytes = take(&mut tail)?;
-            if objects >= limits.closure_objects {
-                return Err("peer program context capacity".into());
-            }
-            if let Some(mut inner) = bytes.strip_prefix(MANIFEST_MAGIC) {
-                let manifest = Manifest::from_canonical_bytes(take(&mut inner)?)?;
-                let commands = read_commands(&manifest, &mut inner)?;
-                if !inner.is_empty() {
-                    return Err("peer program dependency trailing bytes".into());
-                }
-                steps = steps
-                    .checked_add(commands.len())
-                    .ok_or("peer program context step overflow")?;
-                if steps > limits.closure_steps {
-                    return Err("peer program context step capacity".into());
-                }
-                let checked = evaluate(&manifest, &commands, &context, &mut work)?;
-                let mut registration = context
-                    .begin_program_registration(&checked)
-                    .map_err(|error| error.to_string())?;
-                while !registration.complete() {
-                    registration
-                        .advance(&checked, 64)
-                        .map_err(|error| error.to_string())?;
-                }
-                context = registration.finish().map_err(|error| error.to_string())?;
-                continue;
-            }
-            if bytes.len() > limits.proof_bytes {
-                return Err("peer program context object capacity".into());
-            }
-            match ArtifactPayload::from_canonical_bytes(bytes).map_err(|error| error.to_string())? {
-                ArtifactPayload::Proof(certificate) => {
-                    steps = steps
-                        .checked_add(certificate.steps().len())
-                        .ok_or("peer program context step overflow")?;
-                    if steps > limits.closure_steps {
-                        return Err("peer program context step capacity".into());
-                    }
-                    let checked =
-                        proof::check(certificate, &context).map_err(|error| error.to_string())?;
-                    context
-                        .register_proof_for_replication(checked)
-                        .map_err(|error| error.to_string())?;
-                }
-                ArtifactPayload::Definition(certificate) => {
-                    let checked = naome_checker::check_definition_with_state(certificate, &context)
-                        .map_err(|error| error.to_string())?;
-                    context
-                        .register_definition(checked)
-                        .map_err(|error| error.to_string())?;
-                }
-            }
+            inputs.register(take(&mut tail)?)?;
         }
-        let checked = evaluate(&self.manifest, &commands, &context, &mut work)?;
+        let context = inputs.context;
+        let checked = evaluate(&self.manifest, &commands, &context, &mut inputs.work)?;
+        let mut definitions = Vec::new();
         let target = checked
             .conclusion()
             .ok_or("peer replay formula capacity")?

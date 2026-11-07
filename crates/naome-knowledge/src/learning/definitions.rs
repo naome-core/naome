@@ -62,8 +62,12 @@ pub(super) fn append_artifacts(entries: &[Entry], sources: &mut Vec<String>) -> 
     Ok(())
 }
 
+pub(crate) fn fits(entries: &[Entry]) -> bool {
+    entries.len() <= CAPACITY && entries.iter().map(Entry::bytes).sum::<usize>() <= BYTES
+}
+
 pub fn context(entries: &[Entry]) -> Result<ArtifactState, String> {
-    if entries.len() > CAPACITY || entries.iter().map(Entry::bytes).sum::<usize>() > BYTES {
+    if !fits(entries) {
         return Err("definition reference snapshot capacity".into());
     }
     let mut context = ArtifactState::new();

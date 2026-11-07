@@ -815,7 +815,9 @@ where
             node.publish_admitted(&admitted,if node.learning.is_some(){"native_solver"}else{"mock_producer"});
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }
-        if !stopping && work.is_some() {node.advance_peer_learning(questions.formal_context(&node.graph).binding())?;}
+        if !stopping && work.is_some() && let Some(learning) = &mut node.learning {
+            learning.advance(&node.graph, questions.formal_context(&node.graph).binding())?;
+        }
         if let Some(error) = questions.storage_error() { return Err(error.to_owned()); }
         node.requests();
         published.count.store(node.graph.accepted_count(), Ordering::Release);
@@ -1024,27 +1026,24 @@ fn retryable_publication(error: &crate::Error) -> bool {
     error.retryable()
 }
 
-impl Node {
-    fn advance_peer_learning(&mut self, binding: crate::jobs::Binding) -> Result<(), String> {
-        let Some(learning) = &mut self.learning else {
-            return Ok(());
-        };
-        let page = match self.graph.peer_learning_page(learning.cursor) {
+impl PeerLearning {
+    fn advance(&mut self, graph: &Graph, binding: crate::jobs::Binding) -> Result<(), String> {
+        let page = match graph.peer_learning_page(self.cursor) {
             Ok(page) => page,
             Err(error) if error.retryable() => return Ok(()),
             Err(error) => return Err(error.to_string()),
         };
         for (ordinal, id, peer) in page {
-            match self.graph.learning_definition(id) {
+            match graph.learning_definition(id) {
                 Ok(Some(definition)) => {
-                    if learning
+                    if self
                         .client
                         .definition_verified(ordinal, definition)
                         .is_err()
                     {
                         break;
                     }
-                    learning.cursor = ordinal;
+                    self.cursor = ordinal;
                     continue;
                 }
                 Ok(None) => {}
@@ -1052,40 +1051,36 @@ impl Node {
                 Err(error) => return Err(error.to_string()),
             }
             let Some(peer) = peer else {
-                let packet = match self.graph.learning_certificate(id) {
+                let packet = match graph.learning_certificate(id) {
                     Ok(packet) => packet,
                     Err(error) if error.retryable() => break,
                     Err(error) => return Err(error.to_string()),
                 };
                 let observed = if let Some(packet) = packet {
-                    learning
-                        .client
+                    self.client
                         .theorem_verified(ordinal, crate::learning::knowledge::Entry { packet })
                 } else {
-                    learning.client.peer_cursor(ordinal)
+                    self.client.peer_cursor(ordinal)
                 };
                 if observed.is_err() {
                     break;
                 }
-                learning.cursor = ordinal;
+                self.cursor = ordinal;
                 continue;
             };
-            let question = match self.graph.learning_question(id) {
+            let question = match graph.learning_question(id) {
                 Ok(q) => q,
                 Err(error) if error.retryable() => break,
                 Err(error) => return Err(error.to_string()),
             };
             use crate::learning::peer::Source;
-            let evidence = self
-                .graph
+            let evidence = graph
                 .program_manifest(id)
                 .and_then(|manifest| match manifest {
-                    Some(manifest) => self
-                        .graph
+                    Some(manifest) => graph
                         .peer_program(manifest)
                         .map(|packet| packet.map(Box::new).map(Source::Program)),
-                    None => self
-                        .graph
+                    None => graph
                         .learning_certificate(id)
                         .map(|packet| packet.map(Source::Certificate)),
                 });
@@ -1102,14 +1097,16 @@ impl Node {
                 question: question.map(|q| q.to_hex()),
                 binding: binding.clone(),
             };
-            if learning.client.peer_verified(admission).is_err() {
+            if self.client.peer_verified(admission).is_err() {
                 break;
             }
-            learning.cursor = ordinal;
+            self.cursor = ordinal;
         }
         Ok(())
     }
+}
 
+impl Node {
     fn flight_count(&self, target: PeerId) -> usize {
         self.flights
             .values()

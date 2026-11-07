@@ -48,9 +48,6 @@ impl Graph {
                 }
                 if let Some(manifest) = crate::object::program_manifest(&object.bytes)? {
                     // Preserve the canonical program and its exact checked inputs.
-                    if self.active.len() != 1 {
-                        return Ok(false);
-                    }
                     let Some(packet) = self.graph.peer_program(manifest)? else {
                         return Ok(false);
                     };
@@ -376,6 +373,19 @@ impl Graph {
                 }
                 let certificate = naome_proof::ProofCertificate::from_canonical_bytes(payload)
                     .map_err(|error| crate::Error::from(error.to_string()))?;
+                // This theorem is already accepted by the graph. A smaller
+                // learning snapshot can skip it without classifying it as corrupt.
+                if !crate::learning::definitions::fits(&definitions)
+                    || certificate.steps().len()
+                        + definitions.len()
+                        + lemmas
+                            .iter()
+                            .map(|lemma| lemma.steps().len())
+                            .sum::<usize>()
+                        > limits.closure_steps
+                {
+                    return Ok(None);
+                }
                 let verified =
                     crate::learning::proof::verify_native(certificate, definitions, lemmas, None)?;
                 if ArtifactId::from(verified.native_id) != id {

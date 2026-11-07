@@ -1500,3 +1500,125 @@ fn historical_admission_must_still_exist_and_match_the_original_source_record() 
         assert_eq!(owner.journal.records[&id].reserved_units, 1);
     }
 }
+
+#[test]
+fn solve_handoff_rechecks_a_certificate_that_cites_a_checked_program() {
+    use naome_checker::question::ResearchQuestion;
+    use naome_foundation::{Formula, FreeVariable};
+    use naome_proof::program::{CHUNK_BYTES, Command};
+
+    let (_directory, mut owner) = native();
+    let mut graph = crate::Graph::default();
+    let mut work = crate::proof_work::Work::open(
+        &graph
+            .ownership()
+            .directory()
+            .join("mixed-prerequisite.sqlite3"),
+    )
+    .unwrap();
+    work.append_group(&[
+        Command::Reflexivity { variable: 0 },
+        Command::Generalization {
+            premise: 0,
+            variable: 0,
+        },
+        Command::Seal { proof: 1 },
+    ])
+    .unwrap();
+    let budget = crate::resources::tests::snapshot(false).budget;
+    while work.advance(&budget, graph.checked_context()).unwrap() {}
+    while !work.prepare_export(&budget).unwrap() {}
+    let checked = work.into_checked().unwrap();
+    let proof = checked.proof().unwrap();
+    let manifest = proof.manifest().clone();
+    let program_id = manifest.proof_id();
+    let store = graph.ownership();
+    store.start_program(&manifest).unwrap();
+    store
+        .append_program(&manifest, &proof.input_chunk(0, 3, CHUNK_BYTES).unwrap())
+        .unwrap();
+    let mut prepared = crate::graph::program::PreparedProgram::new(checked);
+    while !prepared.advance(&graph, 64).unwrap() {}
+    graph
+        .commit_batch(
+            manifest.artifact_id(),
+            prepared.take_batch().unwrap(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+    let x = FreeVariable::new(0);
+    let reflexivity = Formula::for_all(x, Formula::equal(x, x));
+    let other = naome_foundation::ZfcAxiom::Pairing.formula();
+    let mixed_source =
+        crate::test_inputs::weaken_citation(program_id, reflexivity.clone(), other.clone());
+    let (mixed, accepted) = graph.produce(&mixed_source).unwrap();
+    assert_eq!(
+        graph.direct_dependencies(accepted.id).unwrap().as_ref(),
+        &[naome_proof::ArtifactId::from(program_id)]
+    );
+    let (pairing, _) = graph
+        .produce(&crate::test_inputs::proof(vec![
+            naome_proof::ProofStep::ZfcAxiom(naome_foundation::ZfcAxiom::Pairing),
+        ]))
+        .unwrap();
+    let mixed_id = mixed.proof_id().unwrap().unwrap();
+    let pairing_id = pairing.proof_id().unwrap().unwrap();
+    let required = [mixed_id, pairing_id]
+        .map(|id| crate::hex(id.as_bytes()))
+        .to_vec();
+    let goal = ResearchQuestion::from_formula(Formula::conjunction(
+        Formula::implies(other.clone(), reflexivity),
+        other,
+    ))
+    .unwrap();
+    let source = goal.to_hex();
+    let input = Input::Solve {
+        question: source.clone(),
+    };
+    let prerequisites = graph.prerequisites(&required).unwrap().unwrap();
+    let (reply, _receive) = oneshot::channel();
+    let id = owner.journal.next_id;
+    owner
+        .submit_after(
+            input,
+            Binding::new([0; 32], [0; 32]),
+            required.clone(),
+            prerequisites,
+            reply,
+        )
+        .unwrap();
+    let snapshot = owner.journal.records[&id].native.as_ref().unwrap();
+    assert!(snapshot.base.require_theorems(&required).is_err());
+    assert_eq!(snapshot.required, required);
+    let mut worker: crate::learning::Job =
+        crate::checkpoint::decode(&crate::checkpoint::encode(snapshot).unwrap()).unwrap();
+    worker.validate().unwrap();
+    worker
+        .execute(
+            1,
+            Some(&source),
+            id,
+            &mut crate::learning::Engine::default(),
+            &mut crate::learning::tests::MemoryStore::default(),
+        )
+        .unwrap();
+    let candidate = worker.progress.unwrap().result.unwrap();
+    assert!(
+        candidate.source.is_empty(),
+        "mixed checked operands must remain native"
+    );
+    let program = crate::learning::program::Candidate::from_solution(&candidate, &goal).unwrap();
+    assert_eq!(
+        crate::hex(program.manifest.proof_id().as_bytes()),
+        candidate.proof_id
+    );
+    let cited: std::collections::BTreeSet<_> = program
+        .commands
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::ProofReference { proof_id } => Some(proof_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cited, [*mixed_id.as_bytes(), *pairing_id.as_bytes()].into());
+}

@@ -151,54 +151,86 @@ impl Prerequisites {
         !self.0.programs.is_empty()
     }
 
-    pub(super) fn native_conjunction(
+    pub(super) fn native_proof(
         &self,
         target: &naome_foundation::Formula,
         required: &[String],
     ) -> Result<Option<Packet>, String> {
-        let Some((left, right)) = super::conjunction_operands(target) else {
-            return Ok(None);
+        use naome_checker::ContextView;
+        use naome_proof::{
+            ProofId,
+            program::{Command, Projection},
         };
-        if left == right {
-            return Ok(None);
-        }
-        let mut sources = Vec::new();
-        let (certificates, definitions) = self.resolve(required)?;
-        for term in certificates {
-            let checked = proof::verify(&term, &term.formula())?;
-            sources.push((checked.native_id, checked.target));
-        }
-        for program in &self.0.programs {
-            let id = program.manifest.proof_id();
-            if required
-                .iter()
-                .any(|required| *required == crate::hex(id.as_bytes()))
-            {
-                sources.push((id, program.target()?));
-            }
-        }
-        let select = |formula: &naome_foundation::Formula| -> Result<Option<_>, String> {
-            sources
-                .iter()
-                .find(|(_, known)| known == formula)
-                .map(|(id, formula)| Ok((*id, definitions::represent(formula, &definitions)?)))
-                .transpose()
-        };
-        let (Some(left), Some(right)) = (select(&left)?, select(&right)?) else {
-            return Ok(None);
-        };
-        let commands = naome_proof::program::Projection::conjoin(&[left, right]);
+
+        let _work =
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)
+                .map_err(|error| error.to_string())?;
         let artifacts = self
             .0
             .artifacts
             .iter()
-            .map(|artifact| {
-                crate::unhex(&artifact.payload)
-                    .map(std::sync::Arc::from)
+            .map(|envelope| {
+                envelope
+                    .clone()
+                    .prepare()
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Packet::compose(target, &commands, &self.0.programs, artifacts).map(Some)
+        let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
+        let mut sources = Vec::new();
+        for id in required {
+            let id = ProofId::from_bytes(
+                crate::object::id_bytes(id).map_err(|error| error.to_string())?,
+            );
+            if let Some(header) = context
+                .proof_header(id)
+                .map_err(|error| error.to_string())?
+            {
+                let formula = context
+                    .proof_formula(header, header.canonical_length())
+                    .map_err(|error| error.to_string())?
+                    .ok_or("checked temporary prerequisite formula is missing")?;
+                sources.push((id, formula.into_owned()));
+            }
+        }
+        let select = |formula: &naome_foundation::Formula| {
+            sources
+                .iter()
+                .find(|(_, known)| known == formula)
+                .map(|(id, _)| *id)
+        };
+        let commands = if let Some(id) = select(target) {
+            vec![
+                Command::ProofReference {
+                    proof_id: *id.as_bytes(),
+                },
+                Command::Seal { proof: 0 },
+            ]
+        } else {
+            let Some((left, right)) = super::conjunction_operands(target) else {
+                return Ok(None);
+            };
+            if left == right {
+                return Ok(None);
+            }
+            let (Some(left_id), Some(right_id)) = (select(&left), select(&right)) else {
+                return Ok(None);
+            };
+            let definitions = self.definitions(&[], required)?;
+            Projection::conjoin(&[
+                (left_id, definitions::represent(&left, &definitions)?),
+                (right_id, definitions::represent(&right, &definitions)?),
+            ])
+        };
+        drop(context);
+        drop(_work);
+        Packet::compose(
+            target,
+            &commands,
+            &self.0.programs,
+            artifacts.iter().map(|a| a.bytes.clone()),
+        )
+        .map(Some)
     }
 
     pub fn require(&self, base: &State, required: &[String]) -> Result<(), String> {
@@ -243,8 +275,26 @@ impl Prerequisites {
         let mut lemmas = Vec::new();
         let mut terms = Vec::new();
         let mut steps = 0usize;
+        let mut program_dependent = self
+            .0
+            .programs
+            .iter()
+            .map(|program| program.manifest.artifact_id())
+            .collect::<BTreeSet<_>>();
         for envelope in &self.0.artifacts {
             let candidate = envelope.clone().prepare().map_err(|e| e.to_string())?;
+            // These inputs are checked by the mixed program context. They
+            // cannot be used as standalone Hilbert certificate terms.
+            if candidate
+                .dependencies
+                .iter()
+                .copied()
+                .chain(candidate.obligation.map(Into::into))
+                .any(|id| program_dependent.contains(&id))
+            {
+                program_dependent.insert(candidate.id);
+                continue;
+            }
             match &candidate.payload {
                 CandidatePayload::Proof(normal) => {
                     steps = steps
