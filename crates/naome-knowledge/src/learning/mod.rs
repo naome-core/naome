@@ -1359,7 +1359,12 @@ fn search_question_report(
                 search::ResultTree {
                     execution: None,
                     tree: Some(search::Tree::Constructed {
-                        packet: match evidence::pack(&verified) {
+                        packet: match construction::pack_candidate(
+                            &verified,
+                            selection.as_ref(),
+                            orientation_started,
+                            &mut remaining,
+                        ) {
                             Ok(bytes) => bytes,
                             Err(error) => {
                                 certificate_failures += 1;

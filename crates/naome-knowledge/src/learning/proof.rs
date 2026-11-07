@@ -2,7 +2,7 @@
 
 use naome_checker::ArtifactState;
 use naome_foundation::{Formula, FreeVariable};
-use naome_proof::{ProofCertificate, ProofId, ProofStep};
+use naome_proof::{ProofCertificate, ProofId, ProofNormalForm, ProofStep};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -31,14 +31,26 @@ pub fn check(
     certificate: ProofCertificate,
     context: &dyn naome_checker::ContextView,
 ) -> Result<naome_checker::CheckedProof, naome_checker::CheckError> {
+    record_checking_work(certificate.steps().len());
+    naome_checker::normalize_and_check_with_state(certificate, context)
+}
+
+pub(super) fn check_normal_form(
+    normal_form: ProofNormalForm,
+    context: &dyn naome_checker::ContextView,
+) -> Result<naome_checker::CheckedProof, naome_checker::CheckError> {
+    record_checking_work(normal_form.certificate().steps().len());
+    naome_checker::check_normal_form_with_state(normal_form, context)
+}
+
+fn record_checking_work(steps: usize) {
     CHECKING.with(|counter| {
         let old = counter.get();
         counter.set(CheckingWork {
             calls: old.calls.saturating_add(1),
-            steps: old.steps.saturating_add(certificate.steps().len() as u64),
+            steps: old.steps.saturating_add(steps as u64),
         });
     });
-    naome_checker::normalize_and_check_with_state(certificate, context)
 }
 
 pub const NATIVE_RESOURCE_LIMIT: &str =
@@ -503,9 +515,24 @@ fn render(
         return Err("exact native references cannot be replaced during source export".into());
     }
     let context = lemma_context(definitions, &proof.lemmas)?;
+    render_in_context(
+        &proof.certificate,
+        &proof.target,
+        definitions,
+        &context,
+        rewrite,
+    )
+}
+
+pub(super) fn render_in_context(
+    certificate: &ProofCertificate,
+    target: &Formula,
+    definitions: &[super::definitions::Entry],
+    context: &ArtifactState,
+    rewrite: bool,
+) -> Result<String, String> {
     let mut output = String::new();
-    write!(output, "\ngoal = {}\n\nproof:\n", proof.target.to_source())
-        .map_err(|e| e.to_string())?;
+    write!(output, "\ngoal = {}\n\nproof:\n", target.to_source()).map_err(|e| e.to_string())?;
     let mut bindings = String::new();
     let mut names = HashMap::new();
     fn bind(
@@ -557,7 +584,7 @@ fn render(
         }
         bind(
             value
-                .expand_with(&context)
+                .expand_with(context)
                 .map_err(|e| e.to_string())?
                 .as_ref(),
             &mut names,
@@ -565,7 +592,7 @@ fn render(
             if rewrite { definitions } else { &[] },
         )
     };
-    for (index, step) in proof.certificate.steps().iter().enumerate() {
+    for (index, step) in certificate.steps().iter().enumerate() {
         let rule = match step {
             ProofStep::Simplification {
                 antecedent,
@@ -659,12 +686,7 @@ fn render(
         };
         writeln!(output, "    p{index} = {rule}").map_err(|e| e.to_string())?;
     }
-    writeln!(
-        output,
-        "    return p{}",
-        proof.certificate.steps().len() - 1
-    )
-    .map_err(|e| e.to_string())?;
+    writeln!(output, "    return p{}", certificate.steps().len() - 1).map_err(|e| e.to_string())?;
     let output = if bindings.is_empty() {
         output
     } else {

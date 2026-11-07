@@ -1,9 +1,9 @@
 //! Goal-derived ZFC schema proposals and independently checked subgoal search.
 //! No theorem name, question identity, or natural-number recipe is recognized.
-#[cfg(test)]
 use super::evidence;
 pub(super) mod composition;
 mod logic;
+mod repair;
 mod representation;
 pub(super) mod selection;
 use super::{calculus as c, proof};
@@ -183,6 +183,33 @@ pub fn construct_with(
         }
     }
     Ok((None, work, None))
+}
+
+/// Preserve the original packet when it fits. Spend only the unused construction
+/// allowance to repair a checked proof with an oversized mathematical object.
+pub(super) fn pack_candidate(
+    verified: &proof::Verified,
+    selection: Option<&selection::Selection>,
+    started: std::time::Instant,
+    remaining: &mut usize,
+) -> Result<Vec<u8>, String> {
+    let error = match evidence::pack(verified) {
+        Ok(packet) => return Ok(packet),
+        Err(error) => error,
+    };
+    let limit = crate::resources::limits().proof_bytes;
+    if verified.payload_bytes <= limit
+        && verified
+            .lemmas
+            .iter()
+            .all(|lemma| lemma.to_canonical_bytes().len() <= limit)
+    {
+        return Err(error);
+    }
+    let mut budget = repair::Budget::new(started, *remaining);
+    let result = repair::portable_packet(verified, selection, &mut budget);
+    *remaining -= budget.spent();
+    result
 }
 
 #[cfg(test)]
