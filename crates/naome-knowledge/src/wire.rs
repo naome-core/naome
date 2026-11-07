@@ -24,6 +24,7 @@ pub(crate) struct Message {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Clone))]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum Body {
     Inventory {

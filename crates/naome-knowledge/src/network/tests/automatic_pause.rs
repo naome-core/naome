@@ -88,11 +88,10 @@ async fn connected(client: &mut Swarm<Behaviour>, server: PeerId, address: Multi
 }
 
 async fn request(client: &mut Swarm<Behaviour>, server: PeerId, body: Body) -> Body {
-    let body = serde_json::to_value(body).unwrap();
-    let mut id = client.behaviour_mut().exchange.send_request(
-        &server,
-        Frame::new(serde_json::from_value(body.clone()).unwrap()),
-    );
+    let mut id = client
+        .behaviour_mut()
+        .exchange
+        .send_request(&server, Frame::new(body.clone()));
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event = client.select_next_some().await;
@@ -120,10 +119,10 @@ async fn request(client: &mut Swarm<Behaviour>, server: PeerId, body: Body) -> B
                         };
                         if let Some(delay) = delay {
                             tokio::time::sleep(delay).await;
-                            id = client.behaviour_mut().exchange.send_request(
-                                &server,
-                                Frame::new(serde_json::from_value(body.clone()).unwrap()),
-                            );
+                            id = client
+                                .behaviour_mut()
+                                .exchange
+                                .send_request(&server, Frame::new(body.clone()));
                             continue;
                         }
                     }
