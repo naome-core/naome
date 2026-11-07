@@ -968,10 +968,8 @@ fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allow
     assert_eq!(after.native.as_ref().unwrap().io_bytes, 5);
 }
 
-#[test]
-fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
+fn binary_peer_admission() -> (PeerAdmission, String) {
     use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep, program::Command};
-    let (directory, mut owner) = native();
     let original = checked_solution();
     let question = crate::learning::tests::own_question();
     let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
@@ -1022,6 +1020,15 @@ fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
         question: Some(question),
         binding: Binding::new([1; 32], [2; 32]),
     };
+    (admission, proof)
+}
+
+#[test]
+fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
+    let (directory, mut owner) = native();
+    let original = checked_solution();
+    let (admission, proof) = binary_peer_admission();
+    let artifact = admission.artifact.clone();
     owner
         .disk
         .enqueue_peer(&mut owner.journal, admission)
@@ -1049,6 +1056,147 @@ fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
     assert_eq!(evidence.len(), 1);
     assert_eq!(evidence[0].proof_id, proof);
     assert!(restored.has_training_graphs(&evidence).unwrap());
+}
+
+#[test]
+fn peer_program_completion_retries_memory_pressure_after_worker_success() {
+    use crate::jobs::provider::{self, Probe, Supervisor};
+    use crate::resources::feedback::{Phase, Sample};
+
+    #[derive(Default)]
+    struct Checkpoint(Option<crate::learning::Progress>);
+    impl Supervisor for Checkpoint {
+        fn reserve(&mut self, unit: u32) -> Result<(), String> {
+            assert_eq!(unit, 1);
+            Ok(())
+        }
+        fn checkpoint(&mut self, unit: u32) -> Result<(), String> {
+            assert_eq!(self.0.as_ref().unwrap().unit, unit);
+            Ok(())
+        }
+        fn learning(
+            &mut self,
+            unit: u32,
+            progress: crate::learning::Progress,
+        ) -> Result<(), String> {
+            assert_eq!(unit, 1);
+            assert!(self.0.replace(progress).is_none());
+            Ok(())
+        }
+        fn probe(&mut self, _: Probe) -> Result<(), String> {
+            Ok(())
+        }
+        fn blocked_nanos(&self) -> u64 {
+            0
+        }
+        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let (directory, mut owner) = native();
+    // Fixture construction also rechecks its program. Keep its cache off
+    // the journal owner, as with a real separate worker.
+    let (admission, proof) = std::thread::spawn(binary_peer_admission).join().unwrap();
+    owner
+        .disk
+        .enqueue_peer(&mut owner.journal, admission)
+        .unwrap();
+    owner.fill_internal().unwrap();
+    let id = owner.journal.next_id - 1;
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    let record = owner.journal.records[&id].clone();
+    let (progress, output) = std::thread::spawn(move || {
+        let mut provider = provider::select(&record).unwrap();
+        let mut checkpoint = Checkpoint::default();
+        let output = provider::drive(provider.as_mut(), &mut checkpoint, 0).unwrap();
+        (checkpoint.0.unwrap(), output)
+    })
+    .join()
+    .unwrap();
+    let Output::Native {
+        solution: Some(solution),
+        ..
+    } = &output
+    else {
+        panic!("worker must return an independently checked program");
+    };
+    assert_eq!(solution.proof_id, proof);
+
+    let record = owner.journal.records.get_mut(&id).unwrap();
+    record
+        .native
+        .as_mut()
+        .unwrap()
+        .retain_progress(id, progress)
+        .unwrap();
+    record.checkpoint = 1;
+    let deadline = record.expires_ms;
+    owner.save().unwrap();
+    owner.running.insert(
+        id,
+        Running {
+            cancel: None,
+            clock: Instant::now(),
+        },
+    );
+
+    let mut invalid = output.clone();
+    if let Output::Native {
+        solution: Some(solution),
+        ..
+    } = &mut invalid
+    {
+        solution.proof_id = "00".repeat(32);
+    }
+    assert!(
+        owner
+            .complete(
+                id,
+                process::Outcome {
+                    state: State::Complete,
+                    result: Ok(invalid),
+                }
+            )
+            .is_err()
+    );
+
+    crate::resources::fail_next_memory_allocation();
+    owner
+        .complete(
+            id,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(output),
+            },
+        )
+        .unwrap();
+    assert!(!owner.running.contains_key(&id));
+    assert_eq!(owner.journal.records[&id].state, State::Complete);
+    assert!(!owner.journal.records[&id].acknowledged);
+    assert_eq!(learning(&owner)["peer_examples"], 0);
+
+    // Restart before retrying. The retained completion keeps its original
+    // job, deadline, and work unit without recreating the worker.
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
+    owner.recover_internal().unwrap();
+    owner.recover_internal().unwrap();
+    assert!(owner.journal.records[&id].acknowledged);
+    assert_eq!(owner.journal.records[&id].expires_ms, deadline);
+    assert_eq!(owner.journal.total_reserved_units, 1);
+    assert_eq!(owner.journal.next_id, id + 1);
+    assert_eq!(learning(&owner)["peer_examples"], 1);
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let state = journal.learning.as_ref().unwrap();
+    let replay = disk.replay_evidence(state).unwrap();
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].proof_id, proof);
 }
 
 #[test]

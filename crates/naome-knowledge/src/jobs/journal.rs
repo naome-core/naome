@@ -997,7 +997,9 @@ fn validate_record(
                 ..
             } => {
                 if let Some(solution) = native.progress.as_ref().and_then(|p| p.result.as_ref()) {
-                    crate::learning::peer::validate_source(question, artifact, evidence, solution)?;
+                    crate::learning::peer::validate_job_source(
+                        question, artifact, evidence, solution,
+                    )?;
                 }
             }
             _ => {}

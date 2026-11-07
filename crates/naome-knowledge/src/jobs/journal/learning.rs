@@ -217,7 +217,8 @@ impl Disk {
             if let Some(solution) = solution
                 && !solution.refuted
             {
-                crate::learning::peer::validate_source(question, artifact, evidence, solution)?;
+                // The owner independently checked this exact outcome before
+                // entering finalization. Receipt binding remains local here.
                 let example = crate::learning::Example {
                     origin: crate::learning::Origin::Peer {
                         artifact: artifact.clone(),

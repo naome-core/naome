@@ -394,7 +394,10 @@ impl Owner {
                 completion=self.tasks.next(),if !self.tasks.is_empty()=>if let Some((id,outcome))=completion {
                     self.complete(id,outcome)?;
                 },
-                _=tick.tick()=>self.reconcile()?,
+                _=tick.tick()=>{
+                    self.reconcile()?;
+                    self.recover_internal()?;
+                },
             }
             self.persist_learning()?;
             self.persist_programs()?;
@@ -419,15 +422,27 @@ impl Owner {
             .journal
             .records
             .values()
-            .filter(|r| r.input.internal() && !r.acknowledged && r.state.terminal())
+            .filter(|r| {
+                r.input.internal()
+                    && !r.acknowledged
+                    && r.state.terminal()
+                    && !self.running.contains_key(&r.id)
+            })
             .map(|r| r.id)
             .collect::<Vec<_>>();
         for id in ids {
-            let record = self
-                .journal
-                .records
-                .get(&id)
-                .expect("recovering internal result");
+            let record = &self.journal.records[&id];
+            if matches!(record.input, Input::Peer { .. }) {
+                if record.state != State::Complete || !allowance_expired(&self.journal, id)? {
+                    match check_peer_completion(record, record.result.as_ref()) {
+                        Ok(()) => {}
+                        Err(error) if error.retryable() => continue,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                self.finish_peer_completion(id)?;
+                continue;
+            }
             if record.state == State::Complete
                 && let (Some(native), Some(learning)) =
                     (&record.native, self.journal.learning.as_mut())
@@ -440,17 +455,12 @@ impl Owner {
             {
                 learning.attempted(epoch);
             }
-            let updates = if matches!(record.input, Input::Peer { .. }) {
-                self.disk.finish_peer(&mut self.journal, id)?
-            } else {
-                Vec::new()
-            };
             self.journal
                 .records
                 .get_mut(&id)
                 .expect("recovering internal result")
                 .acknowledged = true;
-            self.save_extra(updates)?;
+            self.save()?;
         }
         Ok(())
     }
@@ -774,6 +784,36 @@ impl Owner {
         Ok(())
     }
 
+    /// Atomically acknowledge the worker result and commit its replay receipt.
+    /// The exact source was rechecked by this owner before entering here.
+    fn finish_peer_completion(&mut self, id: u64) -> Result<(), String> {
+        self.charge(id)?;
+        if self.journal.records[&id].state == State::Complete
+            && allowance_expired(&self.journal, id)?
+        {
+            let record = self
+                .journal
+                .records
+                .get_mut(&id)
+                .expect("owned peer result");
+            record.state = State::Expired;
+            record.result = None;
+            record.failure = Some("peer replay finalization allowance expired".into());
+        }
+        let updates = self.disk.finish_peer(&mut self.journal, id)?;
+        self.journal
+            .records
+            .get_mut(&id)
+            .expect("owned peer result")
+            .acknowledged = true;
+        self.save_extra(updates)?;
+        self.running.remove(&id);
+        self.clocks.remove(&id);
+        self.deliver(id)?;
+        self.internal_receivers.remove(&id);
+        Ok(())
+    }
+
     fn complete(&mut self, id: u64, outcome: process::Outcome) -> Result<(), String> {
         if outcome.state == State::InDoubt {
             // The completed task has already left tasks. Retain uncertainty
@@ -802,6 +842,26 @@ impl Owner {
                 combine_outcomes(accounting, retained),
             );
         }
+        let record = self
+            .journal
+            .records
+            .get(&id)
+            .ok_or("unknown provider completion")?;
+        let peer = matches!(record.input, Input::Peer { .. });
+        let proposed = if record.state.terminal() {
+            record.result.as_ref()
+        } else {
+            outcome.result.as_ref().ok()
+        };
+        let defer_peer = if peer && !record.acknowledged && !allowance_expired(&self.journal, id)? {
+            match check_peer_completion(record, proposed) {
+                Ok(()) => false,
+                Err(error) if error.retryable() => true,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            false
+        };
         self.charge(id)?;
         let expired = allowance_expired(&self.journal, id)?;
         let record = self
@@ -820,6 +880,29 @@ impl Owner {
                 Ok(_) => record.result = None,
                 Err(error) => record.failure = Some(failure_detail(&error)),
             }
+        }
+        if let Some(cost) = record
+            .native
+            .as_ref()
+            .and_then(|n| n.progress.as_ref())
+            .and_then(|p| p.cost.as_ref())
+        {
+            crate::network::emit(
+                serde_json::json!({"event":"native_data_generation","job":id,"cost":cost}),
+            );
+        }
+        if peer {
+            if record.acknowledged {
+                return Ok(());
+            }
+            if defer_peer && record.state == State::Complete {
+                // Persist the completed worker and its existing reservation.
+                // The job owner retries the checker on its tick or after reopen.
+                self.save()?;
+                self.running.remove(&id);
+                return Ok(());
+            }
+            return self.finish_peer_completion(id);
         }
         if self
             .waiters
@@ -863,28 +946,13 @@ impl Owner {
                 );
             }
         }
-        if let Some(cost) = record
-            .native
-            .as_ref()
-            .and_then(|n| n.progress.as_ref())
-            .and_then(|p| p.cost.as_ref())
-        {
-            crate::network::emit(
-                serde_json::json!({"event":"native_data_generation","job":id,"cost":cost}),
-            );
-        }
         let internal = record.input.internal();
         if internal {
             record.acknowledged = true;
         }
-        let updates = if matches!(record.input, Input::Peer { .. }) {
-            self.disk.finish_peer(&mut self.journal, id)?
-        } else {
-            Vec::new()
-        };
         // Keep the completing job protected from terminal-history compaction
         // until its persisted outcome can be delivered, even if abandoned.
-        self.save_extra(updates)?;
+        self.save()?;
         if let Some(progress) = self.journal.records[&id]
             .native
             .as_ref()
@@ -1499,6 +1567,7 @@ impl Owner {
             .filter(|r| {
                 (r.state.terminal() || r.state == State::InDoubt)
                     && !self.running.contains_key(&r.id)
+                    && (!matches!(r.input, Input::Peer { .. }) || r.acknowledged)
             })
             .map(|r| r.id)
             .collect::<Vec<_>>();
@@ -1546,6 +1615,7 @@ impl Owner {
                 .find(|r| {
                     (r.state.terminal() || r.state == State::InDoubt)
                         && !self.running.contains_key(&r.id)
+                        && (!matches!(r.input, Input::Peer { .. }) || r.acknowledged)
                         && !self.journal.records.changed(&r.id)
                 })
                 .map(|r| r.id);
@@ -1687,6 +1757,29 @@ fn output_reservation(input: &Input) -> usize {
         Input::Select { .. } => 64,
     }
 }
+fn check_peer_completion(record: &Record, output: Option<&Output>) -> Result<(), crate::Error> {
+    if let (
+        Input::Peer {
+            question,
+            artifact,
+            evidence,
+            ..
+        },
+        Some(Output::Native {
+            solution: Some(solution),
+            ..
+        }),
+    ) = (&record.input, output)
+        && !solution.refuted
+    {
+        if matches!(evidence, crate::learning::peer::Source::Program(_)) {
+            crate::resources::require_work_admission()?;
+        }
+        crate::learning::peer::validate_source(question, artifact, evidence, solution)?;
+    }
+    Ok(())
+}
+
 fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
     let record = journal
         .records

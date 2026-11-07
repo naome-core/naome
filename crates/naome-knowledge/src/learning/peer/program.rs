@@ -317,7 +317,7 @@ impl Packet {
         Ok(self.rechecked()?.target.clone())
     }
 
-    pub(super) fn replay(&self, target: &Formula) -> Result<Arc<Replay>, String> {
+    pub(super) fn replay(&self, target: &Formula) -> Result<Arc<Replay>, crate::Error> {
         let replay = self.rechecked()?;
         if &replay.target != target {
             return Err("peer program conclusion differs".into());
@@ -325,7 +325,7 @@ impl Packet {
         Ok(replay)
     }
 
-    fn rechecked(&self) -> Result<Arc<Replay>, String> {
+    fn rechecked(&self) -> Result<Arc<Replay>, crate::Error> {
         self.validate_width()?;
         let key = crate::learning::digest(self);
         if let Some(value) = LAST.with(|last| {
@@ -489,10 +489,9 @@ impl Packet {
         Ok(inputs.context)
     }
 
-    fn check(&self) -> Result<Replay, String> {
+    fn check(&self) -> Result<Replay, crate::Error> {
         let limits = crate::resources::limits();
-        let _work = crate::resources::MemoryLease::acquire(32 * limits.closure_bytes)
-            .map_err(|error| error.to_string())?;
+        let _work = crate::resources::MemoryLease::acquire(32 * limits.closure_bytes)?;
         let raw = self.decoded()?;
         let mut tail = raw.as_slice();
         let commands = read_commands(&self.manifest, &mut tail)?;
@@ -516,8 +515,7 @@ impl Packet {
             }
         }
         let graph_memory =
-            crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)
-                .map_err(|error| error.to_string())?;
+            crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)?;
         let graphs = graphs(&checked, &target, &commands, &context)?;
         let retained = graphs.iter().map(Graph::work_bytes).sum::<usize>() + 4 * limits.proof_bytes;
         drop(graph_memory);
@@ -525,8 +523,7 @@ impl Packet {
             target,
             graphs,
             definitions,
-            _memory: crate::resources::MemoryLease::acquire(retained)
-                .map_err(|error| error.to_string())?,
+            _memory: crate::resources::MemoryLease::acquire(retained)?,
         })
     }
 }

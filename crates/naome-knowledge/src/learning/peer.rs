@@ -84,23 +84,58 @@ pub(crate) fn extract_source(
     })
 }
 
+fn program_binding(
+    question: &str,
+    artifact: &str,
+    packet: &Packet,
+    solution: &Solution,
+) -> Result<super::ResearchQuestion, crate::Error> {
+    let question = super::ResearchQuestion::from_hex(question)?;
+    if solution.refuted
+        || !solution.source.is_empty()
+        || !solution.helpers.is_empty()
+        || crate::hex(packet.manifest.artifact_id().as_bytes()) != artifact
+        || crate::hex(packet.manifest.proof_id().as_bytes()) != solution.proof_id
+        || packet.manifest.conclusion
+            != naome_proof::program::formula_hash(question.proved_target())
+        || !matches!(&solution.tree, Tree::Program(actual) if **actual == *packet)
+    {
+        return Err("peer replay source differs from checked program".into());
+    }
+    Ok(question)
+}
+
+/// A retained worker checkpoint binds the exact bytes and claimed result.
+/// The journal checks the proof independently before accepting replay.
+pub(crate) fn validate_job_source(
+    question: &str,
+    artifact: &str,
+    source: &Source,
+    solution: &Solution,
+) -> Result<(), crate::Error> {
+    match source {
+        Source::Program(packet) => {
+            program_binding(question, artifact, packet, solution).map(|_| ())
+        }
+        Source::Certificate(bytes) => {
+            validate_solution(question, artifact, bytes, solution).map_err(Into::into)
+        }
+    }
+}
+
 pub(crate) fn validate_source(
     question: &str,
     artifact: &str,
     source: &Source,
     solution: &Solution,
-) -> Result<(), String> {
-    if let Some(bytes) = source.certificate() {
-        return validate_solution(question, artifact, bytes, solution);
-    }
-    let expected = extract_source(question, artifact, source)?;
-    if solution.refuted
-        || !solution.source.is_empty()
-        || !solution.helpers.is_empty()
-        || solution.proof_id != expected.proof_id
-        || super::digest(&solution.tree) != super::digest(&expected.tree)
-    {
-        return Err("peer replay source differs from checked program".into());
+) -> Result<(), crate::Error> {
+    let Source::Program(packet) = source else {
+        return validate_job_source(question, artifact, source, solution);
+    };
+    let question = program_binding(question, artifact, packet, solution)?;
+    let replay = packet.replay(question.proved_target())?;
+    if replay.graphs.is_empty() {
+        return Err("peer program has no supported ambiguous inference".into());
     }
     Ok(())
 }
