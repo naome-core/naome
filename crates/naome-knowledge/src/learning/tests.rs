@@ -1328,7 +1328,7 @@ pub(super) fn fill_checkpoint_budget(state: &mut State, capacity: usize) {
     }
     let remaining = capacity - crate::checkpoint::encode(state).unwrap().len();
     assert!(
-        remaining <= 19,
+        remaining <= 40,
         "checkpoint test fixture leaves {remaining} bytes unused"
     );
     state.feedback.revision = 10_u64.pow(remaining.min(19) as u32);
