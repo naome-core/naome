@@ -4,13 +4,13 @@
 //! binding, structural properties and representation-independent recipes.
 use super::{Formula, FormulaView, Node as Tree, Variable as TreeVariable};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Variable {
     Free(u32),
     Bound(u64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Node<I> {
     Equal(Variable, Variable),
     Member(Variable, Variable),
@@ -34,13 +34,30 @@ impl Properties {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transform {
     Bind(u32),
-    Substitute { from: u32, to: u32 },
+    Substitute {
+        from: u32,
+        to: u32,
+    },
+    /// Remove the binder immediately outside this graph and replace its
+    /// occurrences with a free variable. Inner binders keep their indices.
+    Open(u32),
 }
 impl Transform {
+    pub const fn affects(self, properties: Properties, depth: u64) -> bool {
+        match self {
+            Self::Bind(_) | Self::Substitute { .. } => properties.has_free_variables,
+            Self::Open(_) => properties.required_binders > depth,
+        }
+    }
+
     pub fn variable(self, variable: Variable, depth: u64) -> Variable {
         match (self, variable) {
             (Self::Bind(target), Variable::Free(v)) if v == target => Variable::Bound(depth),
             (Self::Substitute { from, to }, Variable::Free(v)) if v == from => Variable::Free(to),
+            (Self::Open(replacement), Variable::Bound(index)) if index == depth => {
+                Variable::Free(replacement)
+            }
+            (Self::Open(_), Variable::Bound(index)) if index > depth => Variable::Bound(index - 1),
             _ => variable,
         }
     }

@@ -95,6 +95,14 @@ impl Programs {
                     || root.closure.busy())
         })
     }
+    pub(super) fn preparing_admission(&self) -> bool {
+        self.active.as_ref().is_some_and(|root| {
+            root.allowed
+                && !root.refresh
+                && root.offer.transfer.live(Instant::now())
+                && matches!(&root.stage, Stage::Prepare(prepared) if !prepared.pending())
+        })
+    }
     fn enqueue(
         &mut self,
         peer: PeerId,

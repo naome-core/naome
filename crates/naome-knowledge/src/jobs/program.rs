@@ -32,7 +32,10 @@ pub(super) fn mock_group(
     let mut commands = Vec::with_capacity(128);
     for position in start..start + 128 {
         commands.push(if position == 0 {
-            Command::Equal { left: 0, right: 0 }
+            use naome_foundation::graph::{Node, Variable};
+            Command::Graph {
+                node: Node::Equal(Variable::Free(0), Variable::Free(0)),
+            }
         } else if position == 1 {
             Command::Separation {
                 predicate: 0,

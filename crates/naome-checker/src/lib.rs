@@ -228,7 +228,7 @@ fn check_with_canonical_conclusion(
     artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
-    check_with_diagnostic_query(certificate, artifact_state, identity_mode, None)
+    check_with_diagnostic_query(certificate, artifact_state, identity_mode, None, None)
 }
 
 fn check_with_diagnostic_query(
@@ -236,6 +236,7 @@ fn check_with_diagnostic_query(
     artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
     query: Option<&diagnostics::FormulaQuery>,
+    mut step_digests: Option<&mut Vec<[u8; 32]>>,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let reads = context::cache::ReadContext::new(artifact_state);
     let artifact_state: &dyn ContextView = &reads;
@@ -341,6 +342,9 @@ fn check_with_diagnostic_query(
         if position == final_step {
             canonical_conclusion = canonical;
         }
+        if let Some(digests) = &mut step_digests {
+            digests.push(naome_proof::program::formula_hash(&formula));
+        }
         let retain = position == final_step || last_uses[position as usize].is_some();
         results.push(retain.then_some(CheckedStep {
             formula,
@@ -425,7 +429,19 @@ pub fn check_normal_form_with_state(
     normal_form: ProofNormalForm,
     artifact_state: &dyn ContextView,
 ) -> Result<CheckedProof, CheckError> {
-    check_normal_form_with_resolver(normal_form, artifact_state, None)
+    check_normal_form_with_resolver(normal_form, artifact_state, None, None)
+}
+
+/// Checks a bounded certificate and returns the exact Foundation graph digest
+/// of each normalized result, in order, for comparison with program replay.
+pub fn check_normal_form_with_step_digests(
+    normal_form: ProofNormalForm,
+    artifact_state: &dyn ContextView,
+) -> Result<(CheckedProof, Vec<[u8; 32]>), CheckError> {
+    let mut digests = Vec::with_capacity(normal_form.certificate().steps().len());
+    let proof =
+        check_normal_form_with_resolver(normal_form, artifact_state, None, Some(&mut digests))?;
+    Ok((proof, digests))
 }
 
 /// Uses the same checker and captures a requested bounded formula fragment if
@@ -436,7 +452,7 @@ pub fn check_normal_form_with_inspection(
     artifact_state: &dyn ContextView,
     query: &diagnostics::FormulaQuery,
 ) -> Result<CheckedProof, CheckError> {
-    check_normal_form_with_resolver(normal_form, artifact_state, Some(query))
+    check_normal_form_with_resolver(normal_form, artifact_state, Some(query), None)
 }
 
 /// Expands an authoring definition body and checks its canonical certificate.
@@ -568,12 +584,14 @@ fn check_normal_form_with_resolver(
     normal_form: ProofNormalForm,
     artifact_state: &dyn ContextView,
     query: Option<&diagnostics::FormulaQuery>,
+    step_digests: Option<&mut Vec<[u8; 32]>>,
 ) -> Result<CheckedProof, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_diagnostic_query(
         normal_form.certificate(),
         artifact_state,
         IdentityMode::Derive,
         query,
+        step_digests,
     )?;
     let derivation_id =
         derivation_id.expect("derivation mode computes the final derivation identity");

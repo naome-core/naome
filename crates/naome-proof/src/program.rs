@@ -18,7 +18,9 @@ pub const RECORD_BYTES: usize = 4096;
 pub const CHUNK_RECORDS: usize = 1024;
 pub const CHUNK_BYTES: usize = 32 * 1024;
 
+mod projection;
 mod stream;
+pub use projection::Projection;
 pub use stream::{
     ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_command, encode_command,
 };
@@ -266,9 +268,15 @@ pub fn bounded_formula<I: Copy>(
         .map_err(|e| e.to_string())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Add one primitive graph node. Child positions are local to the program.
+    /// Bound indices remain relative to this node's enclosing binders.
+    Graph {
+        #[serde(with = "NodeSource")]
+        node: Node<u64>,
+    },
     /// Expand a selected conservative definition into an unproved formula.
     DefinedRelation {
         definition_id: [u8; 32],
@@ -324,6 +332,12 @@ pub enum Command {
         replacement: u32,
         body: u64,
     },
+    /// Construct the Foundation instantiation axiom for the outer binder of
+    /// an earlier universal fact. Modus ponens with that fact yields the instance.
+    InstantiationFor {
+        premise: u64,
+        replacement: u32,
+    },
     Reflexivity {
         variable: u32,
     },
@@ -374,7 +388,31 @@ pub enum Command {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Keep serialization at the program boundary, not in Foundation.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Node", rename_all = "snake_case")]
+enum NodeSource<I> {
+    Equal(
+        #[serde(with = "VariableSource")] Variable,
+        #[serde(with = "VariableSource")] Variable,
+    ),
+    Member(
+        #[serde(with = "VariableSource")] Variable,
+        #[serde(with = "VariableSource")] Variable,
+    ),
+    Not(I),
+    Implies(I, I),
+    ForAll(I),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Variable", rename_all = "snake_case")]
+enum VariableSource {
+    Free(u32),
+    Bound(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Axiom {
     Extensionality,

@@ -151,3 +151,36 @@ fn prefix_overflow_leaves_the_previous_state_unchanged() {
         assert_eq!(prefix, before);
     }
 }
+
+#[test]
+fn typed_instantiation_has_one_canonical_encoding() {
+    let command = Command::InstantiationFor {
+        premise: 258,
+        replacement: 772,
+    };
+    let bytes = [0x80, 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 3, 4];
+    assert_eq!(encode_command(&command).unwrap(), bytes);
+    assert_eq!(decode_command(&bytes).unwrap(), command);
+    assert!(decode_command(&bytes[..12]).is_err());
+    let mut extra = bytes.to_vec();
+    extra.push(0);
+    assert!(decode_command(&extra).is_err());
+    assert!(decode_command(&serde_json::to_vec(&command).unwrap()).is_err());
+}
+
+#[test]
+fn graph_record_preserves_bound_scope_and_rejects_malformed_terms() {
+    let command = Command::Graph {
+        node: Node::Member(Variable::Bound(1), Variable::Free(9)),
+    };
+    let bytes = [0x82, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 9];
+    assert_eq!(encode_command(&command).unwrap(), bytes);
+    assert_eq!(decode_command(&bytes).unwrap(), command);
+    let mut wrong_kind = bytes;
+    wrong_kind[1] = 2;
+    assert!(decode_command(&wrong_kind).is_err());
+    let mut wrong_width = bytes;
+    wrong_width[11] = 1;
+    assert!(decode_command(&wrong_width).is_err());
+    assert!(decode_command(&bytes[..18]).is_err());
+}

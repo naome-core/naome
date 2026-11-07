@@ -79,3 +79,52 @@ async fn frame_custody_is_shared_and_released_after_handling() {
     retained.pop();
     assert!(other.read(&mut Cursor::new(encoded())).await.is_ok());
 }
+
+#[tokio::test]
+async fn program_data_uses_a_bounded_compressed_frame() {
+    use naome_proof::program::{Chunk, Command};
+    let chunk = Chunk {
+        start: 3,
+        previous: [7; 32],
+        next: [8; 32],
+        records: vec![
+            Command::InstantiationFor {
+                premise: 2,
+                replacement: 1
+            };
+            64
+        ],
+    };
+    let codec = Codec::default();
+    let frame = Frame::new(Body::ProgramData {
+        root: [1; 32],
+        id: [2; 32],
+        chunk: chunk.clone(),
+    });
+    let logical = serde_json::to_vec(&frame.message).unwrap();
+    let mut output = Cursor::new(Vec::new());
+    codec.write(&mut output, frame).await.unwrap();
+    let encoded = output.into_inner();
+    assert!(encoded.len() < logical.len());
+    let decoded = codec.read(&mut Cursor::new(&encoded)).await.unwrap();
+    assert!(matches!(decoded.message.body,
+        Body::ProgramData { root, id, chunk: decoded }
+            if root == [1; 32] && id == [2; 32] && decoded == chunk));
+
+    let mut oversized = encoded.clone();
+    oversized[4..8].copy_from_slice(&(frame_limit() as u32 + 1).to_le_bytes());
+    assert!(
+        codec
+            .read(&mut Cursor::new(oversized))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("expanded frame byte limit")
+    );
+    let mut wrong_size = encoded.clone();
+    wrong_size[4..8].copy_from_slice(&(logical.len() as u32 + 1).to_le_bytes());
+    assert!(codec.read(&mut Cursor::new(wrong_size)).await.is_err());
+    let mut uncompressed = (logical.len() as u32).to_be_bytes().to_vec();
+    uncompressed.extend(logical);
+    assert!(codec.read(&mut Cursor::new(uncompressed)).await.is_err());
+}

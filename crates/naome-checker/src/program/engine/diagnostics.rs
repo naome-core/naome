@@ -18,6 +18,17 @@ impl GraphRead for Engine {
 type CommandMetadata = (Rule, Vec<(R, u64)>, Vec<(R, u32)>);
 fn metadata(command: &Command) -> CommandMetadata {
     let (rule, references, variables) = match *command {
+        Command::Graph { node } => match node {
+            Node::Equal(..) => (Rule::Equal, vec![], vec![]),
+            Node::Member(..) => (Rule::Member, vec![], vec![]),
+            Node::Not(formula) => (Rule::Not, vec![(R::Formula, formula)], vec![]),
+            Node::Implies(a, b) => (
+                Rule::Implies,
+                vec![(R::Antecedent, a), (R::Consequent, b)],
+                vec![],
+            ),
+            Node::ForAll(body) => (Rule::ForAll, vec![(R::Body, body)], vec![]),
+        },
         Command::DefinedRelation { .. } => (Rule::DefinedRelation, vec![], vec![]),
         Command::Equal { left, right } => (
             Rule::Equal,
@@ -91,6 +102,14 @@ fn metadata(command: &Command) -> CommandMetadata {
             Rule::Instantiation,
             vec![(R::Body, body)],
             vec![(R::Variable, variable), (R::To, replacement)],
+        ),
+        Command::InstantiationFor {
+            premise,
+            replacement,
+        } => (
+            Rule::Instantiation,
+            vec![(R::Premise, premise)],
+            vec![(R::To, replacement)],
         ),
         Command::Reflexivity { variable } => {
             (Rule::Reflexivity, vec![], vec![(R::Variable, variable)])
@@ -230,7 +249,7 @@ impl Engine {
             let mut operand = Operand::new(role);
             operand.reference = Some(reference);
             if reference < self.cursor {
-                let value = checker::Context::previous(self, reference)?;
+                let value = checker::Context::previous_node(self, reference)?;
                 operand.proved = Some(value.proved);
                 let fragment = graph_fragment(self, value.formula, FORMULA_FRAGMENT_NODES, 0)?;
                 if let Some(query) = query

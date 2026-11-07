@@ -37,6 +37,7 @@ pub fn inspect_certificate(
         context,
         IdentityMode::OmitDerivation,
         Some(query),
+        None,
     ) {
         Err(error) => error,
         Ok((conclusion, _, _)) if matches!(diagnostic.failure, Failure::TargetMismatch) => {

@@ -3,6 +3,8 @@ use super::*;
 mod automatic_pause;
 #[cfg(feature = "system-tests")]
 mod definitions;
+#[cfg(unix)]
+mod typed_proof;
 use libp2p::tcp;
 use naome_authoring::CompiledQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};

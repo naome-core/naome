@@ -87,7 +87,17 @@ def verify_program_input(catalog,manifest):
     previous=bytes(32);count=0;size=0
     for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
         assert position==count and 0<len(command)<=4096
-        assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
+        tag = command[0]
+        if tag < 0x80:
+            assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
+        else:
+            assert len(command) == {0x80: 13, 0x81: 19, 0x82: 19, 0x83: 9, 0x84: 17, 0x85: 9}[tag]
+            if tag in (0x81, 0x82):
+                for offset in (1, 10):
+                    kind = command[offset]
+                    assert kind in (0, 1)
+                    if kind == 0:
+                        assert command[offset + 1:offset + 5] == bytes(4)
         previous=hashlib.sha256(b'naome:proof-program'+previous+len(command).to_bytes(8,'big')+command).digest()
         assert chain==previous
         count+=1;size+=len(command)

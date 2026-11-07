@@ -334,6 +334,13 @@ impl Graph {
     /// nodes only at completed handoff. Retained snapshots keep their storage;
     /// all generations share the single bounded cache.
     pub(crate) fn maintain_checked_storage(&mut self) -> Result<(), crate::Error> {
+        self.maintain_checked_storage_with_admission(false)
+    }
+
+    pub(crate) fn maintain_checked_storage_with_admission(
+        &mut self,
+        preparing_program: bool,
+    ) -> Result<(), crate::Error> {
         self.checked_storage.adapt_cache()?;
         let bytes = crate::resources::adaptive::cache(
             crate::resources::active_limits().checker_cache_bytes,
@@ -347,7 +354,13 @@ impl Graph {
         if self.context.read_cache_limits() != cache_limits {
             self.context = self.context.clone().with_read_cache_limits(cache_limits)?;
         }
-        if !crate::resources::adaptive::work_available() {
+        // The staging writes of one multi-quantum registration can cross the
+        // copy threshold before publication. Starting a copy then invalidates
+        // the registration's stamp, so retrying can repeat the same writes
+        // and restart the copy indefinitely. Finish any already active copy.
+        if !crate::resources::adaptive::work_available()
+            || preparing_program && self.compaction.is_none()
+        {
             return Ok(());
         }
         match self.maintain_checked_storage_at(self.next_compaction) {

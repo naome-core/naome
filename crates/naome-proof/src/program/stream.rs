@@ -3,11 +3,85 @@
 use super::{
     CHUNK_BYTES, CHUNK_RECORDS, Chunk, Command, Manifest, RECORD_BYTES, command_hash, stream_hash,
 };
+use naome_foundation::graph::{Node, Variable};
 use serde::{Deserialize, Serialize};
 
 pub const MANIFEST_BYTES: usize = 2048;
+const INSTANTIATION_FOR: u8 = 0x80;
+const GRAPH_EQUAL: u8 = 0x81;
+const GRAPH_MEMBER: u8 = 0x82;
+const GRAPH_NOT: u8 = 0x83;
+const GRAPH_IMPLIES: u8 = 0x84;
+const GRAPH_FOR_ALL: u8 = 0x85;
+
+fn encode_node(node: Node<u64>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(19);
+    bytes.push(match node {
+        Node::Equal(..) => GRAPH_EQUAL,
+        Node::Member(..) => GRAPH_MEMBER,
+        Node::Not(_) => GRAPH_NOT,
+        Node::Implies(..) => GRAPH_IMPLIES,
+        Node::ForAll(_) => GRAPH_FOR_ALL,
+    });
+    for child in node.children().into_iter().flatten() {
+        bytes.extend_from_slice(&child.to_be_bytes());
+    }
+    if let Node::Equal(a, b) | Node::Member(a, b) = node {
+        for variable in [a, b] {
+            let (tag, value) = match variable {
+                Variable::Free(id) => (0, u64::from(id)),
+                Variable::Bound(index) => (1, index),
+            };
+            bytes.push(tag);
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    bytes
+}
+
+fn decode_node(tag: u8, fields: &[u8]) -> Result<Node<u64>, String> {
+    let word = |offset| {
+        fields
+            .get(offset..offset + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or("graph record width")
+    };
+    let term = |offset| {
+        let value = word(offset + 1)?;
+        match fields[offset] {
+            0 => u32::try_from(value)
+                .map(Variable::Free)
+                .map_err(|_| "free term width"),
+            1 => Ok(Variable::Bound(value)),
+            _ => Err("graph term tag"),
+        }
+    };
+    match (tag, fields.len()) {
+        (GRAPH_EQUAL, 18) => Ok(Node::Equal(term(0)?, term(9)?)),
+        (GRAPH_MEMBER, 18) => Ok(Node::Member(term(0)?, term(9)?)),
+        (GRAPH_NOT, 8) => Ok(Node::Not(word(0)?)),
+        (GRAPH_IMPLIES, 16) => Ok(Node::Implies(word(0)?, word(8)?)),
+        (GRAPH_FOR_ALL, 8) => Ok(Node::ForAll(word(0)?)),
+        _ => Err("graph record tag or width".into()),
+    }
+}
 
 pub fn encode_command(command: &Command) -> Result<Vec<u8>, String> {
+    if let Command::InstantiationFor {
+        premise,
+        replacement,
+    } = command
+    {
+        let mut bytes = Vec::with_capacity(13);
+        bytes.push(INSTANTIATION_FOR);
+        bytes.extend_from_slice(&premise.to_be_bytes());
+        bytes.extend_from_slice(&replacement.to_be_bytes());
+        return Ok(bytes);
+    }
+    if let Command::Graph { node } = command {
+        return Ok(encode_node(*node));
+    }
     let bytes = serde_json::to_vec(command).map_err(|error| error.to_string())?;
     if bytes.len() > RECORD_BYTES {
         return Err("program command byte capacity".into());
@@ -19,7 +93,21 @@ pub fn decode_command(bytes: &[u8]) -> Result<Command, String> {
     if bytes.len() > RECORD_BYTES {
         return Err("program command byte capacity".into());
     }
-    let command = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let command = if let Some(fields) = bytes.strip_prefix(&[INSTANTIATION_FOR]) {
+        let fields: &[u8; 12] = fields
+            .try_into()
+            .map_err(|_| "instantiation record width")?;
+        Command::InstantiationFor {
+            premise: u64::from_be_bytes(fields[..8].try_into().expect("premise width")),
+            replacement: u32::from_be_bytes(fields[8..].try_into().expect("replacement width")),
+        }
+    } else if let Some((tag @ GRAPH_EQUAL..=GRAPH_FOR_ALL, fields)) = bytes.split_first() {
+        Command::Graph {
+            node: decode_node(*tag, fields)?,
+        }
+    } else {
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?
+    };
     if encode_command(&command)? != bytes {
         return Err("noncanonical program command".into());
     }

@@ -10,6 +10,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
+const COMPRESSED: u32 = 1 << 31;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +80,15 @@ pub(crate) enum Body {
     },
 }
 
+impl Body {
+    fn packed(&self) -> bool {
+        use naome_proof::program::Command;
+        matches!(self, Self::ProgramData { chunk, .. } if chunk.records.iter().any(|record| {
+            matches!(record, Command::Graph { .. } | Command::InstantiationFor { .. })
+        }))
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Frame {
     pub message: Message,
@@ -118,7 +128,9 @@ impl Codec {
     async fn read<T: AsyncRead + Unpin + Send>(&self, stream: &mut T) -> io::Result<Frame> {
         let mut header = [0; 4];
         stream.read_exact(&mut header).await?;
-        let length = u32::from_be_bytes(header) as usize;
+        let header = u32::from_be_bytes(header);
+        let compressed = header & COMPRESSED != 0;
+        let length = (header & !COMPRESSED) as usize;
         if length > frame_limit() {
             return Err(invalid("frame byte limit"));
         }
@@ -127,19 +139,34 @@ impl Codec {
             .clone()
             .try_acquire_owned()
             .map_err(|_| invalid("frame capacity"))?;
-        let memory = crate::resources::MemoryLease::acquire(
-            length
-                .checked_mul(4)
-                .ok_or_else(|| invalid("frame memory overflow"))?,
-        )
-        .map_err(invalid)?;
+        let memory = frame_memory(length)?;
         let mut bytes = vec![0; length];
         stream.read_exact(&mut bytes).await?;
         let mut trailing = [0];
         if stream.read(&mut trailing).await? != 0 {
             return Err(invalid("trailing frame bytes"));
         }
-        let message = serde_json::from_slice(&bytes).map_err(invalid)?;
+        let (message, memory) = if compressed {
+            let (size, block) = lz4_flex::block::uncompressed_size(&bytes).map_err(invalid)?;
+            if size > frame_limit() {
+                return Err(invalid("expanded frame byte limit"));
+            }
+            let expanded_memory = frame_memory(size)?;
+            let mut expanded = vec![0; size];
+            if lz4_flex::block::decompress_into(block, &mut expanded).map_err(invalid)? != size {
+                return Err(invalid("expanded frame size mismatch"));
+            }
+            (
+                serde_json::from_slice(&expanded).map_err(invalid)?,
+                expanded_memory,
+            )
+        } else {
+            (serde_json::from_slice(&bytes).map_err(invalid)?, memory)
+        };
+        let message: Message = message;
+        if message.body.packed() != compressed {
+            return Err(invalid("program data frame encoding mismatch"));
+        }
         Ok(Frame {
             message,
             _permit: Some(permit),
@@ -156,15 +183,39 @@ impl Codec {
         let mut output = BoundedOutput(Vec::new());
         serde_json::to_writer(&mut output, &frame.message).map_err(invalid)?;
         let bytes = output.0;
+        let packed = frame.message.body.packed();
+        let _packing = if packed {
+            Some(
+                crate::resources::MemoryLease::acquire(
+                    lz4_flex::block::get_maximum_output_size(bytes.len()) + 4,
+                )
+                .map_err(invalid)?,
+            )
+        } else {
+            None
+        };
+        let bytes = if packed {
+            lz4_flex::block::compress_prepend_size(&bytes)
+        } else {
+            bytes
+        };
         if bytes.len() > frame_limit() {
             return Err(invalid("frame byte limit"));
         }
-        stream
-            .write_all(&(bytes.len() as u32).to_be_bytes())
-            .await?;
+        let header = (bytes.len() as u32) | if packed { COMPRESSED } else { 0 };
+        stream.write_all(&header.to_be_bytes()).await?;
         stream.write_all(&bytes).await?;
         stream.close().await
     }
+}
+
+fn frame_memory(length: usize) -> io::Result<Arc<crate::resources::MemoryLease>> {
+    crate::resources::MemoryLease::acquire(
+        length
+            .checked_mul(4)
+            .ok_or_else(|| invalid("frame memory overflow"))?,
+    )
+    .map_err(invalid)
 }
 
 fn frame_limit() -> usize {

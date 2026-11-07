@@ -123,6 +123,17 @@ pub struct CompiledQuestion {
 }
 
 impl CompiledQuestion {
+    /// Render a bounded program conclusion as a readable `.nao` goal.
+    /// Graph-only conclusions may exceed the source formula limits.
+    pub fn from_checked_program(
+        proof: &naome_checker::program::CheckedProgram,
+    ) -> Result<Self, QuestionError> {
+        let formula = proof.conclusion().ok_or(QuestionError::Invalid(
+            "program conclusion exceeds the formula codec",
+        ))?;
+        Self::from_formula(formula.clone())
+    }
+
     /// Compiles a bounded obligation without accepting proof or definition input.
     pub fn compile(source: &str) -> Result<Self, QuestionError> {
         Self::compile_with_diagnostic(source).map_err(QuestionCompileError::into_error)

@@ -108,6 +108,12 @@ impl CompiledProof {
     pub const fn proof_id(&self) -> ProofId {
         self.checked.proof_id()
     }
+
+    /// Project the exact normalized steps and their references into a shared
+    /// Proof Program. Replay it with the same checked dependencies before use.
+    pub fn program_projection(&self) -> naome_proof::program::Projection {
+        naome_proof::program::Projection::from_normal_form(self.checked.normal_form())
+    }
 }
 
 impl CompiledProof {

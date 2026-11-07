@@ -278,6 +278,10 @@ impl Intake {
         }
     }
 
+    pub(crate) fn preparing_program_admission(&self) -> bool {
+        self.programs.preparing_admission()
+    }
+
     pub(crate) fn advance<F, Fut>(
         &mut self,
         graph: &mut Graph,

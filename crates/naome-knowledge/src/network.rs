@@ -725,7 +725,8 @@ where
         }
         // Reclaim caches even while productive work is suspended. These
         // maintenance owners check the same budget before starting compaction.
-        node.graph.maintain_checked_storage()?;
+        node.graph
+            .maintain_checked_storage_with_admission(node.intake.preparing_program_admission())?;
         questions.maintain_registry()?;
         if work.is_none() {
             continue;

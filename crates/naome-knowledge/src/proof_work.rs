@@ -1,6 +1,7 @@
 //! Native ownership and adaptive scheduling for the checker-owned evaluator.
 use crate::resources::adaptive::{Budget, Snapshot};
-use naome_checker::program::{CheckedProgram, Engine};
+use naome_checker::program::{CheckedFact, CheckedProgram, Engine, FactShape};
+use naome_foundation::FreeVariable;
 use naome_proof::program::{Command, RECORD_BYTES};
 use rusqlite::Connection;
 mod lifecycle;
@@ -142,6 +143,25 @@ impl Work {
     pub fn append(&mut self, command: &Command) -> Result<u64, crate::Error> {
         self.append_group(std::slice::from_ref(command))
             .map(|value| value.expect("one appended command"))
+    }
+    /// Read a proved fact from this owner's evaluated prefix.
+    pub fn checked_fact(&self, position: u64) -> Result<(CheckedFact, FactShape), crate::Error> {
+        self.live()?;
+        self.engine
+            .checked_fact(position)
+            .map_err(crate::Error::from)
+    }
+    /// Append the primitive steps of one typed instantiation action.
+    pub fn instantiate(
+        &mut self,
+        fact: &CheckedFact,
+        replacement: FreeVariable,
+    ) -> Result<u64, crate::Error> {
+        self.live()?;
+        let _disk = crate::resources::DiskLease::acquire(self.directory(), 2 * 32 * 1024)?;
+        self.engine
+            .instantiate(fact, replacement)
+            .map_err(crate::Error::from)
     }
     pub(crate) fn append_group(
         &mut self,

@@ -3,7 +3,7 @@
 use super::{self as checker, Error, Value};
 use crate::{ArtifactState, ContextView, context::ProgramSource};
 use naome_foundation::{
-    Formula,
+    Formula, FreeVariable,
     construction::Expression,
     graph::{Node, Properties, Transform, Variable},
 };
@@ -12,6 +12,7 @@ use naome_proof::program::{Command, RECORD_BYTES};
 use naome_proof::{DerivationId, ProofId, StatementId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
+use std::sync::Arc;
 
 fn sql<T>(value: rusqlite::Result<T>) -> Result<T, Error> {
     value.map_err(Error::Storage)
@@ -35,6 +36,8 @@ mod diagnostics;
 use definitions::DefinitionEvaluation;
 mod materialization;
 mod references;
+#[cfg(test)]
+mod typed_actions;
 use materialization::{Finalization, Shape};
 pub use references::ProgramDependency;
 
@@ -67,6 +70,24 @@ pub struct Engine {
     context_snapshot: Option<[u8; 32]>,
     context_consistent: bool,
     reference_snapshot: Option<[u8; 32]>,
+    handle_scope: Arc<()>,
+}
+
+/// A fact from the checked prefix of one live evaluator. Its position is
+/// portable only inside that evaluator's exact serialized program.
+#[derive(Clone, Debug)]
+pub struct CheckedFact {
+    position: u64,
+    scope: Arc<()>,
+}
+
+/// The outer connective of a checked fact, for selecting rule operands
+/// without materializing a possibly large formula tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactShape {
+    Universal,
+    Implication,
+    Other,
 }
 #[derive(Clone, Copy)]
 struct Export {
@@ -88,6 +109,10 @@ impl CheckedProgram {
     }
     pub fn conclusion(&self) -> Option<&Formula> {
         self.canonical.as_ref()
+    }
+    /// A checked result in the original command order.
+    pub fn result_digest(&self, position: u64) -> Result<([u8; 32], bool), Error> {
+        self.engine.result_digest(position)
     }
     /// Changes only volatile SQLite caches; the complete checked result remains immutable.
     pub fn restrict_cache(&mut self, bytes: u64) -> Result<(), Error> {
@@ -177,6 +202,7 @@ enum Operation {
     Definition,
     Reference(ProofId),
     Input(u64),
+    Graph(Node<u64>),
     Equal(u32, u32),
     Member(u32, u32),
     Not(usize),
@@ -184,6 +210,7 @@ enum Operation {
     Bind(usize, u32),
     Vacuous(usize),
     Substitute(usize, u32, u32),
+    Open(u64, u32),
     AssertEqual {
         register: usize,
         expected: u64,
@@ -386,6 +413,76 @@ impl Engine {
         let value = checker::Context::previous(self, position)?;
         Ok((self.load(value.formula)?.1, value.proved))
     }
+    /// Resolve an earlier checked, proved command and inspect its outer shape.
+    pub fn checked_fact(&self, position: u64) -> Result<(CheckedFact, FactShape), Error> {
+        self.live()?;
+        if position >= self.cursor {
+            return Err("fact is outside the checked program prefix".into());
+        }
+        let value = checker::Context::previous(self, position)?;
+        if !value.proved {
+            return Err("program result is not a proved fact".into());
+        }
+        let shape = match self.load(value.formula)?.0 {
+            Node::ForAll(_) => FactShape::Universal,
+            Node::Implies(..) => FactShape::Implication,
+            _ => FactShape::Other,
+        };
+        Ok((
+            CheckedFact {
+                position,
+                scope: Arc::clone(&self.handle_scope),
+            },
+            shape,
+        ))
+    }
+
+    /// Return the Foundation formula of an earlier result when it fits the
+    /// ordinary bounded tree codec. Graph-backed facts can still be used by
+    /// handle when no bounded tree exists.
+    pub fn result_formula(&self, position: u64) -> Result<Option<Formula>, Error> {
+        self.live()?;
+        let value = checker::Context::previous(self, position)?;
+        format::bounded_formula(value.formula, |id| {
+            self.load(id).map(|value| value.0).map_err(Into::into)
+        })
+        .map_err(Into::into)
+    }
+
+    /// Select a checked universal fact and a free local term. Append the
+    /// instantiation axiom and modus ponens as one durable input group.
+    /// The returned position becomes a fact only after ordinary evaluation.
+    pub fn instantiate(
+        &mut self,
+        fact: &CheckedFact,
+        replacement: FreeVariable,
+    ) -> Result<u64, Error> {
+        self.live()?;
+        if !Arc::ptr_eq(&self.handle_scope, &fact.scope) {
+            return Err("fact handle belongs to a different proof evaluator".into());
+        }
+        if self.checked_fact(fact.position)?.1 != FactShape::Universal {
+            return Err("instantiation requires a universal fact".into());
+        }
+        let position: u64 =
+            sql(self
+                .connection
+                .query_row("SELECT commands FROM state WHERE id=1", [], |row| {
+                    unsigned(row, 0)
+                }))?;
+        let commands = [
+            Command::InstantiationFor {
+                premise: fact.position,
+                replacement: replacement.identifier(),
+            },
+            Command::ModusPonens {
+                premise: fact.position,
+                implication: position,
+            },
+        ];
+        self.append_group(&commands)?;
+        Ok(position + 1)
+    }
     /// The caller owns file locks, native identity, resource leases and SQL
     /// connection configuration. Only this evaluator can issue CheckedProgram.
     pub fn open(mut connection: Connection) -> Result<Self, Error> {
@@ -416,6 +513,7 @@ impl Engine {
             context_snapshot: None,
             context_consistent: true,
             reference_snapshot: None,
+            handle_scope: Arc::new(()),
         })
     }
     fn live(&self) -> Result<(), Error> {
@@ -643,6 +741,18 @@ impl Engine {
                     checker::Construction::Formula(expression) => {
                         compile(expression, &mut operations);
                     }
+                    checker::Construction::Graph(node) => operations.push(Operation::Graph(node)),
+                    checker::Construction::Instantiation {
+                        universal,
+                        body,
+                        replacement,
+                    } => {
+                        operations.extend([
+                            Operation::Input(universal),
+                            Operation::Open(body, replacement),
+                            Operation::Implies(0, 1),
+                        ]);
+                    }
                     checker::Construction::Reference(proof) => {
                         operations.push(Operation::Reference(proof));
                     }
@@ -740,6 +850,7 @@ impl Engine {
                 self.load(id)?;
                 return Ok(Some(id));
             }
+            Operation::Graph(node) => node,
             Operation::Equal(a, b) => Node::Equal(Variable::Free(a), Variable::Free(b)),
             Operation::Member(a, b) => Node::Member(Variable::Free(a), Variable::Free(b)),
             Operation::Not(a) => Node::Not(r[a]),
@@ -773,6 +884,9 @@ impl Engine {
                 let source = r[a];
                 return self.transform(evaluation, source, Transform::Substitute { from, to });
             }
+            Operation::Open(source, replacement) => {
+                return self.transform(evaluation, source, Transform::Open(replacement));
+            }
         };
         self.intern(node).map(Some)
     }
@@ -794,8 +908,8 @@ impl Engine {
     ) -> Result<Option<Node<u64>>, Error> {
         let (node, _, properties) = self.load(source)?;
         // Properties come from this owner's replay, including authenticated
-        // children. These transforms only replace free variables.
-        if !properties.has_free_variables {
+        // children. An unaffected subgraph can be reused without descending.
+        if !transform.affects(properties, depth) {
             return Ok(Some(node));
         }
         let nested = node
@@ -1145,20 +1259,29 @@ impl checker::Context for Engine {
     type Formula = u64;
     type Error = Error;
     fn previous(&self, index: u64) -> Result<Value<u64>, Error> {
+        let value = self.previous_node(index)?;
+        if self.load(value.formula)?.2.required_binders != 0 {
+            return Err("program formula has dangling bound variables".into());
+        }
+        Ok(value)
+    }
+    fn previous_node(&self, index: u64) -> Result<Value<u64>, Error> {
         let (formula, proved) = sql(self.connection.query_row(
             "SELECT node,proved FROM checked WHERE position=?1",
             [number(index)?],
             |r| Ok((unsigned(r, 0)?, r.get(1)?)),
         ))?;
-        let (_, _, p) = self.load(formula)?;
-        if p.required_binders != 0 {
-            return Err("program formula has dangling bound variables".into());
-        }
         Ok(Value { formula, proved })
     }
     fn implication(&self, formula: u64) -> Result<Option<(u64, u64)>, Error> {
         Ok(match self.load(formula)?.0 {
             Node::Implies(a, b) => Some((a, b)),
+            _ => None,
+        })
+    }
+    fn universal_body(&self, formula: u64) -> Result<Option<u64>, Error> {
+        Ok(match self.load(formula)?.0 {
+            Node::ForAll(body) => Some(body),
             _ => None,
         })
     }

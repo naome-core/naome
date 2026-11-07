@@ -5,13 +5,14 @@ use crate::diagnostics::{Failure, OperandRole};
 use naome_foundation::{
     Formula, FreeVariable,
     construction::{self as recipe, Expression},
+    graph::Node,
 };
 use naome_proof::program::Command;
 
 mod engine;
 mod error;
 mod schema;
-pub use engine::{CheckedProgram, Engine, ProgramDependency, Status};
+pub use engine::{CheckedFact, CheckedProgram, Engine, FactShape, ProgramDependency, Status};
 pub use error::Error;
 pub use schema::{APPLICATION_ID, verify_database};
 
@@ -28,10 +29,13 @@ pub trait Context {
     type Formula: Copy + Eq;
     type Error;
     fn previous(&self, index: u64) -> Result<Value<Self::Formula>, Self::Error>;
+    /// Graph construction can use an open subtree. Inferences use `previous`.
+    fn previous_node(&self, index: u64) -> Result<Value<Self::Formula>, Self::Error>;
     fn implication(
         &self,
         formula: Self::Formula,
     ) -> Result<Option<Implication<Self::Formula>>, Self::Error>;
+    fn universal_body(&self, formula: Self::Formula) -> Result<Option<Self::Formula>, Self::Error>;
     fn closed(&self, formula: Self::Formula) -> Result<bool, Self::Error>;
     fn fixed(&mut self, formula: &Formula) -> Result<Self::Formula, Self::Error>;
 }
@@ -61,6 +65,12 @@ pub struct Plan<F> {
 
 pub enum Construction<F> {
     Formula(Expression<F>),
+    Graph(Node<F>),
+    Instantiation {
+        universal: F,
+        body: F,
+        replacement: u32,
+    },
     Reference(naome_proof::ProofId),
     Definition(naome_proof::DefinitionId, Vec<u32>),
 }
@@ -96,6 +106,34 @@ pub fn prepare<C: Context>(
     let mut is_proved = true;
     let mut seal = false;
     let expression = match *command {
+        Command::Graph { node } => {
+            let mut children = [None, None];
+            for (slot, child) in children.iter_mut().zip(node.children()) {
+                if let Some(reference) = child {
+                    if reference >= position {
+                        return Err(PrepareError::Check(Failure::ReferenceNotEarlier {
+                            operand: R::Input,
+                            reference,
+                        }));
+                    }
+                    *slot = Some(
+                        context
+                            .previous_node(reference)
+                            .map_err(PrepareError::Context)?
+                            .formula,
+                    );
+                }
+            }
+            let mut children = children.into_iter().flatten();
+            return Ok(Plan {
+                construction: Construction::Graph(
+                    node.map(|_| children.next().expect("graph child")),
+                ),
+                proved: false,
+                seal: false,
+                absent,
+            });
+        }
         Command::DefinedRelation {
             definition_id,
             ref arguments,
@@ -176,6 +214,28 @@ pub fn prepare<C: Context>(
             replacement,
             body,
         } => recipe::instantiation(variable(v), variable(replacement), formula(body, R::Body)?),
+        Command::InstantiationFor {
+            premise,
+            replacement,
+        } => {
+            let universal = proved(premise, R::Premise)?;
+            let body = context
+                .universal_body(universal)
+                .map_err(PrepareError::Context)?
+                .ok_or(PrepareError::Check(Failure::ExpectedUniversal {
+                    operand: R::Premise,
+                }))?;
+            return Ok(Plan {
+                construction: Construction::Instantiation {
+                    universal,
+                    body,
+                    replacement,
+                },
+                proved: true,
+                seal: false,
+                absent,
+            });
+        }
         Command::Reflexivity { variable: v } => Expression::Equal(variable(v), variable(v)),
         Command::Substitution { from, to, body } => {
             recipe::substitution(variable(from), variable(to), formula(body, R::Body)?)

@@ -9,6 +9,8 @@ use serde::Serialize;
 pub enum Failure {
     #[serde(rename = "mp.expected_implication")]
     ExpectedImplication { operand: OperandRole },
+    #[serde(rename = "instantiation.expected_universal")]
+    ExpectedUniversal { operand: OperandRole },
     #[serde(rename = "mp.antecedent_mismatch")]
     AntecedentMismatch,
     #[serde(rename = "inference.input_not_proved")]
@@ -71,6 +73,7 @@ impl Failure {
     pub fn code(&self) -> &'static str {
         match self {
             Self::ExpectedImplication { .. } => "mp.expected_implication",
+            Self::ExpectedUniversal { .. } => "instantiation.expected_universal",
             Self::AntecedentMismatch => "mp.antecedent_mismatch",
             Self::InputNotProved { .. } => "inference.input_not_proved",
             Self::ReferenceNotEarlier { .. } => "reference.not_earlier",
@@ -107,6 +110,7 @@ impl Failure {
     pub fn operand(&self) -> Option<OperandRole> {
         match self {
             Self::ExpectedImplication { operand }
+            | Self::ExpectedUniversal { operand }
             | Self::InputNotProved { operand, .. }
             | Self::ReferenceNotEarlier { operand, .. } => Some(*operand),
             Self::ForbiddenPredicateVariable { .. } | Self::UndeclaredPredicateVariable { .. } => {
