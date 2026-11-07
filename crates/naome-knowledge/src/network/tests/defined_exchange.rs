@@ -12,6 +12,28 @@ use naome_proof::{
     program::{CHUNK_BYTES, CHUNK_RECORDS, Projection},
 };
 
+// The governor samples process resources. Run each multi-peer scenario
+// outside the process containing the parallel library tests.
+fn isolated(case: &str) -> bool {
+    const ENV: &str = "NAOME_DEFINED_EXCHANGE_CASE";
+    let case = format!("{}::{case}", module_path!().split_once("::").unwrap().1);
+    if std::env::var(ENV).as_deref() == Ok(case.as_str()) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &case, "--nocapture"])
+        .env(ENV, &case)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("running 1 test"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 fn large_answer() -> (DefinitionCertificate, DefinedFormula, ProofCertificate) {
     let x = FreeVariable::new(0);
     let equality = Formula::equal(x, x);
@@ -156,7 +178,7 @@ async fn replicate(
         receiver_inbox,
         move |candidate| std::future::ready(Ok(select(candidate))),
     ));
-    tokio::time::timeout(Duration::from_secs(20), async {
+    let reached = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if receiver_handle.context().await.unwrap().checked_artifacts == expected_artifacts {
                 break;
@@ -164,8 +186,7 @@ async fn replicate(
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     receiver_admin.stop().await.unwrap();
     donor_admin.stop().await.unwrap();
     for task in [receiver_task, donor_task] {
@@ -175,6 +196,7 @@ async fn replicate(
             .unwrap()
             .unwrap();
     }
+    reached.expect("peer did not publish the expected checked closure");
 }
 
 async fn exchange_answer(program: bool) {
@@ -268,11 +290,17 @@ async fn exchange_answer(program: bool) {
 
 #[tokio::test]
 async fn checked_certificate_replicates_with_its_compact_definition_question() {
+    if isolated("checked_certificate_replicates_with_its_compact_definition_question") {
+        return;
+    }
     exchange_answer(false).await;
 }
 
 #[tokio::test]
 async fn checked_program_replicates_with_its_compact_definition_question() {
+    if isolated("checked_program_replicates_with_its_compact_definition_question") {
+        return;
+    }
     exchange_answer(true).await;
 }
 
@@ -380,16 +408,25 @@ async fn relay_helper(program: bool) {
 
 #[tokio::test]
 async fn compact_certificate_helper_survives_relay_and_restart() {
+    if isolated("compact_certificate_helper_survives_relay_and_restart") {
+        return;
+    }
     relay_helper(false).await;
 }
 
 #[tokio::test]
 async fn compact_program_helper_survives_relay_and_restart() {
+    if isolated("compact_program_helper_survives_relay_and_restart") {
+        return;
+    }
     relay_helper(true).await;
 }
 
 #[tokio::test]
 async fn cold_peer_checks_function_witness_before_selecting_compact_question() {
+    if isolated("cold_peer_checks_function_witness_before_selecting_compact_question") {
+        return;
+    }
     let directory = ConfigFile::new();
     let donor_path = directory.0.join("donor");
     let receiver_path = directory.0.join("receiver");
