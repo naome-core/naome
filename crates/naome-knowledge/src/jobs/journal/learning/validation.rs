@@ -10,7 +10,10 @@ fn refs(
     state: Option<&crate::learning::State>,
 ) -> Result<Vec<crate::learning::Blob>, String> {
     let mut refs = if owner == "global" {
-        state.into_iter().flat_map(|s| s.blobs().cloned()).collect()
+        state
+            .into_iter()
+            .flat_map(|s| s.retained_blobs().cloned())
+            .collect()
     } else {
         let id = owner
             .strip_prefix("job")

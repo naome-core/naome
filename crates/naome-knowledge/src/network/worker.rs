@@ -498,6 +498,7 @@ impl Controls {
     pub(super) fn spawn(
         control: Option<Arc<crate::runtime::Control>>,
         status: Arc<PublishedStatus>,
+        models: crate::model_exchange::control::Sender,
     ) -> Self {
         let (stop, mut halt) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -528,7 +529,8 @@ impl Controls {
                         let control = control.clone();
                         let count = status.count.load(Ordering::Acquire);
                         let ready = status.ready.load(Ordering::Acquire);
-                        pending.push(async move { control.respond(stream, count, ready).await });
+                        let models = models.clone();
+                        pending.push(async move { control.respond_with_models(stream, count, ready, Some(&models)).await });
                     },
                     response = pending.next(), if !pending.is_empty() => {
                         if let Some(Err(error)) = response { emit(json!({"event":"control_rejected", "error":error})); }

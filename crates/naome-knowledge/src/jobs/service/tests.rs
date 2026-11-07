@@ -4,6 +4,7 @@ mod checkpoint;
 mod fairness;
 mod learning;
 mod lifecycle;
+mod model_exchange;
 mod resource_calibration;
 use std::time::Duration;
 use std::{

@@ -44,7 +44,7 @@ fn recording_preserves_actual_neural_choices_exploration_and_optimizer_bytes() {
                     target,
                     &mut ranker,
                     128,
-                    Instant::now(),
+                    Some(Instant::now()),
                     &[],
                     capture,
                 )?;

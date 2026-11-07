@@ -29,6 +29,7 @@ use tokio::sync::mpsc;
 mod command;
 mod exchange;
 mod inventory;
+mod models;
 mod program_read;
 use inventory::response as inventory_response;
 use program_read::ProgramRead;
@@ -163,6 +164,12 @@ enum Flight {
         peer: PeerId,
         started: Instant,
     },
+    Model {
+        started: Instant,
+        peer: PeerId,
+        reply:
+            tokio::sync::oneshot::Sender<Result<crate::model_exchange::protocol::Packet, String>>,
+    },
     Program {
         started: Instant,
         read: ProgramRead,
@@ -179,6 +186,8 @@ struct PeerLearning {
     cursor: u64,
 }
 struct Node {
+    models: Option<models::Owner>,
+    model_read: Option<models::Outbound>,
     learning: Option<PeerLearning>,
     computation: Arc<crate::resources::Computation>,
     primary_listener: libp2p::core::transport::ListenerId,
@@ -419,6 +428,7 @@ where
     )?)
     .map_err(|error| error.to_string())?;
     let own_id = key.public().to_peer_id();
+    let model_signing = key.clone();
     #[cfg(unix)]
     let control = if autonomy.is_some() {
         Some(Arc::new(crate::runtime::Control::bind_owned(
@@ -579,6 +589,8 @@ where
     let (swarm, mut events, mut transport) = worker::Transport::spawn(swarm, primary_listener);
     let enabled = BTreeSet::new();
     let mut node = Node {
+        models: None,
+        model_read: None,
         learning: None,
         computation: control
             .as_ref()
@@ -613,6 +625,8 @@ where
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut command_input_open = true;
     let mut question_input_open = true;
+    let (model_outbox, mut model_reads) = mpsc::channel(1);
+    let (model_controls, mut model_commands) = mpsc::channel(1);
     let (mut research, mut autonomous, mut questions) = if let Some(intervals) = autonomy {
         use sha2::Digest;
         let entropy = sha2::Sha256::digest(own_id.to_bytes());
@@ -625,6 +639,13 @@ where
             node.computation.clone(),
         )?;
         if intervals.jobs.native_proof_learning {
+            node.models = Some(models::Owner::open(
+                &directory,
+                model_signing,
+                client.clone(),
+                node.computation.clone(),
+                model_outbox,
+            )?);
             node.learning = Some(PeerLearning {
                 client: client.clone(),
                 cursor: recovery.peer_cursor,
@@ -659,7 +680,7 @@ where
     if let Some(control) = &control {
         control.publish()?;
     }
-    let mut controls = worker::Controls::spawn(control.clone(), published.clone());
+    let mut controls = worker::Controls::spawn(control.clone(), published.clone(), model_controls);
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
@@ -725,6 +746,19 @@ where
                     },
                 }
             },
+            command = model_commands.recv(), if !stopping && control.is_some() => {
+                if let Some((request, reply)) = command
+                    && !reply.is_closed() {
+                    let result = match &mut node.models {
+                        Some(models) => models.control(request, autonomous.as_mut().and_then(crate::autonomous::Autonomous::model_frontier))?,
+                        None => Err("native model exchange is disabled".into()),
+                    };
+                    let _ = reply.send(result);
+                }
+            },
+            read = model_reads.recv(), if !stopping && node.models.is_some() && node.model_read.is_none() => {
+                node.model_read = read;
+            },
             _ = tick.tick() => { node.tick(); },
             command = inbox.receive(), if work.is_some() && question_input_open && !stopping => {
                 match command {
@@ -754,6 +788,10 @@ where
         }
         // Reclaim caches even while productive work is suspended. These
         // maintenance owners check the same budget before starting compaction.
+        if let Some(models) = &mut node.models {
+            models.completed().await?;
+        }
+        node.drive_model_read();
         node.graph.maintain_checked_storage()?;
         questions.maintain_registry()?;
         if work.is_none() {
@@ -806,6 +844,9 @@ where
     }).await;
     // Every ordinary loop/error path drains the owner before releasing Graph's
     // exclusive directory lock. Pending controls own no independent tasks.
+    if let Some(models) = &mut node.models {
+        models.shutdown().await;
+    }
     let control_cleanup = controls.shutdown().await;
     let transport_cleanup = transport.shutdown().await;
     let cleanup = match &mut research {
@@ -862,12 +903,18 @@ fn body_kind(body: &Body) -> &'static str {
         Body::ProgramOffer { .. } => "program_offer",
         Body::ProgramGet { .. } => "program_get",
         Body::ProgramData { .. } => "program_data",
+        Body::Model { packet } => packet.kind(),
     }
 }
 fn body_position(body: &Body) -> Option<u64> {
     match body {
         Body::ProgramGet { start, .. } => Some(*start),
         Body::ProgramData { chunk, .. } => Some(chunk.start),
+        Body::Model {
+            packet:
+                crate::model_exchange::protocol::Packet::Chunk { offset, .. }
+                | crate::model_exchange::protocol::Packet::ChunkData { offset, .. },
+        } => u64::try_from(*offset).ok(),
         _ => None,
     }
 }
@@ -1078,7 +1125,8 @@ impl Node {
                 | Flight::Get { peer, .. }
                 | Flight::Describe { peer, .. }
                 | Flight::Program { peer, .. }
-                | Flight::Offer { peer, .. } => *peer == target,
+                | Flight::Offer { peer, .. }
+                | Flight::Model { peer, .. } => *peer == target,
             })
             .count()
     }
@@ -1463,6 +1511,35 @@ impl Node {
                 < crate::resources::adaptive::network(crate::resources::limits().flights)
             && self.flight_count(peer) < crate::resources::limits().flights_per_peer
             && self.outgoing_ready(peer, now)
+    }
+
+    fn drive_model_read(&mut self) {
+        let Some(read) = &self.model_read else {
+            return;
+        };
+        if read.reply.is_closed() {
+            self.model_read = None;
+        } else {
+            let now = Instant::now();
+            if self.request_ready(read.peer, now) {
+                let models::Outbound { peer, body, reply } =
+                    self.model_read.take().expect("pending model read");
+                self.charge_outgoing(peer, now);
+                let id = self
+                    .swarm
+                    .behaviour_mut()
+                    .exchange
+                    .send_request(&peer, Frame::new(body));
+                self.flights.insert(
+                    id,
+                    Flight::Model {
+                        started: now,
+                        peer,
+                        reply,
+                    },
+                );
+            }
+        }
     }
 
     fn requests(&mut self) {
@@ -1860,7 +1937,7 @@ impl Node {
                         .swarm
                         .behaviour_mut()
                         .exchange
-                        .send_response(channel, Frame::new(body));
+                        .send_response(channel, Frame::response(body));
                 }
                 request_response::Message::Response {
                     request_id,
@@ -1877,14 +1954,34 @@ impl Node {
                             | Flight::Get { started, .. }
                             | Flight::Describe { started, .. }
                             | Flight::Offer { started, .. }
-                            | Flight::Program { started, .. } => *started,
+                            | Flight::Program { started, .. }
+                            | Flight::Model { started, .. } => *started,
                         };
                         crate::resources::feedback::record(
                             crate::resources::feedback::Kind::Network,
                             1,
                             started.elapsed(),
                         );
-                        if self.enabled.contains(&peer)
+                        if let Flight::Model {
+                            peer: expected,
+                            reply,
+                            ..
+                        } = flight
+                        {
+                            let result = if peer != expected
+                                || !self.enabled.contains(&peer)
+                                || response.message.compatibility != crate::compatibility()
+                            {
+                                Err("model response peer or compatibility revoked".into())
+                            } else {
+                                match response.message.body {
+                                    Body::Model { packet } => Ok(packet),
+                                    Body::Error { reason } => Err(reason),
+                                    _ => Err("unexpected model response".into()),
+                                }
+                            };
+                            let _ = reply.send(result);
+                        } else if self.enabled.contains(&peer)
                             && response.message.compatibility == crate::compatibility()
                         {
                             self.response(peer, flight, response.message.body, grant)?;
@@ -1903,6 +2000,14 @@ impl Node {
                 },
             )) => {
                 crate::resources::feedback::network_failure();
+                if self
+                    .flights
+                    .get(&request_id)
+                    .is_some_and(|flight| matches!(flight, Flight::Model { .. }))
+                    && let Some(Flight::Model { reply, .. }) = self.flights.remove(&request_id)
+                {
+                    let _ = reply.send(Err(format!("model peer request failed: {error}")));
+                }
                 if let Some(Flight::Program { read, peer, .. }) = self.flights.get(&request_id) {
                     self.intake.program_failed(*peer, read.id);
                 }
@@ -1941,6 +2046,15 @@ impl Node {
             None
         };
         let response = match body {
+            Body::Model { packet } => match self
+                .models
+                .as_mut()
+                .ok_or_else(|| "native model exchange is disabled".to_owned())
+                .and_then(|owner| owner.request(peer, packet))
+            {
+                Ok(packet) => Body::Model { packet },
+                Err(reason) => Body::Error { reason },
+            },
             Body::Inventory {
                 known,
                 after,
@@ -2089,7 +2203,8 @@ impl Node {
             | Flight::Get { peer, .. }
             | Flight::Describe { peer, .. }
             | Flight::Program { peer, .. }
-            | Flight::Offer { peer, .. } => *peer,
+            | Flight::Offer { peer, .. }
+            | Flight::Model { peer, .. } => *peer,
         };
         if peer != expected_peer {
             emit(json!({"event":"rejected", "error":"response peer mismatch"}));

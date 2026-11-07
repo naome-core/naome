@@ -165,6 +165,24 @@ struct OwnedAttempt {
     feedback: feedback::Attempt,
 }
 
+pub(crate) fn spawn_in_slot(
+    command: &mut tokio::process::Command,
+    slot: &std::fs::File,
+) -> Result<(std::io::Result<tokio::process::Child>, nix::Result<i32>), String> {
+    let _spawn = SPAWN.lock().map_err(|_| "provider spawn owner poisoned")?;
+    nix::fcntl::fcntl(
+        slot,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
+    )
+    .map_err(|e| e.to_string())?;
+    let spawned = command.spawn();
+    let restored = nix::fcntl::fcntl(
+        slot,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+    );
+    Ok((spawned, restored))
+}
+
 pub(super) async fn run(
     record: Record,
     remaining_ms: u64,
@@ -242,20 +260,7 @@ async fn run_owned(
     })
     .map_err(|e| e.to_string())?;
     start.push(b'\n');
-    let (spawned, restored) = {
-        let _spawn = SPAWN.lock().map_err(|_| "provider spawn owner poisoned")?;
-        nix::fcntl::fcntl(
-            &slot,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
-        )
-        .map_err(|e| e.to_string())?;
-        let spawned = command.spawn();
-        let restored = nix::fcntl::fcntl(
-            &slot,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-        );
-        (spawned, restored)
-    };
+    let (spawned, restored) = spawn_in_slot(&mut command, &slot)?;
     let mut child = spawned.map_err(|e| format!("provider supervisor spawn: {e}"))?;
     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
     if let Err(error) = restored {

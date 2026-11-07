@@ -54,6 +54,9 @@ pub(super) fn sealed_family(family: &str) -> bool {
 }
 pub fn case(question: &str) -> Option<Case> {
     let q = CompiledQuestion::compile(question).ok()?;
+    if crate::model_exchange::reserved(&q) {
+        return None;
+    }
     let id = crate::hex(q.resolution_id());
     if let Some(case) = super::learning(&id) {
         return Some(case.clone());

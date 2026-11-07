@@ -40,7 +40,22 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Its small predictor learns search outcomes, cost and checked reuse\n\
              in earlier unresolved goals. These observations guide exploration\n\
              and never establish mathematical truth or research novelty.\n\
-             Model, optimizer and replay remain local. Only checked mathematics is shared.\n\
+             Training replay stays local. Model and Adam bytes are shared only by\n\
+             operator action. Shared snapshots and pending transfers end at restart.\n\
+             \nModel comparison (profile is solver or finder):\n\
+             naome models share <profile> | unshare <profile> | status <profile>\n\
+             naome models peer <profile> <peer>\n\
+             naome models compare <profile> <peer> [expected-model-id]\n\
+             naome models extend <profile> | audit <profile> | cancel <profile>\n\
+             naome models offer <profile> <peer> <comparison-id>\n\
+             naome models adopt <profile> <comparison-id> | rollback <profile> <model-id>\n\
+             Commands queue bounded work; poll models status for its result.\n\
+             The verifier draws held-out tasks after pinning both checkpoints.\n\
+             Scores count independently checked successes on the same plan. The\n\
+             finder selects a question per family for a fixed reference solver.\n\
+             An offer can be audited against its signed challenge. Adoption uses\n\
+             a fresh local comparison. Compare again after restart to stage bytes.\n\
+             Comparison IDs refer to one reference target and two registrations.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\
              mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\

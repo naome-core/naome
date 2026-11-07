@@ -12,19 +12,19 @@ mod graph;
 pub(crate) mod history;
 pub(crate) mod knowledge;
 pub(crate) mod meta;
-mod model;
+pub(crate) mod model;
 pub(crate) mod peer;
 mod pool;
 mod prerequisites;
 pub(crate) use prerequisites::Prerequisites;
 pub(crate) mod program;
 pub(crate) mod proof;
-mod search;
+pub(crate) mod search;
 pub(crate) use search::frontier::Frontier as SearchFrontier;
 pub(crate) use search::trace::Trace as SearchTrace;
 mod state;
 mod transfer;
-pub(crate) use artifact::{ArtifactIo, Blob};
+pub(crate) use artifact::{ArtifactIo, Blob, load as load_artifact};
 use model::Checkpoint;
 
 /// Bind scheduling observations to the installed native input/optimizer contract.
@@ -145,6 +145,8 @@ impl Example {
 #[serde(deny_unknown_fields)]
 pub(crate) struct State {
     model: Checkpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exchanged_model: Option<ExchangeRollback>,
     definitions: Vec<definitions::Entry>,
     definition_uses: BTreeMap<String, u64>,
     knowledge: Vec<knowledge::Entry>,
@@ -165,6 +167,13 @@ pub(crate) struct State {
     preparation: Preparation,
     meta: meta::State,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeRollback {
+    previous: Checkpoint,
+    selected: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Progress {

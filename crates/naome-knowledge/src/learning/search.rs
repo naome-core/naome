@@ -456,7 +456,7 @@ pub struct ResultTree {
 struct Search<'a> {
     ranker: &'a mut dyn Ranker,
     goal: Formula,
-    started: Instant,
+    started: Option<Instant>,
     expansions: usize,
     maximum: usize,
     failure: Option<String>,
@@ -466,6 +466,11 @@ struct Search<'a> {
     recorder: Option<trace::Recorder>,
 }
 impl Search<'_> {
+    fn timed_out(&self) -> bool {
+        self.started
+            .is_some_and(|start| start.elapsed() > Duration::from_millis(2500))
+    }
+
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
         self.branch(state, depth, None, None)
     }
@@ -476,7 +481,7 @@ impl Search<'_> {
         parent: Option<trace::Branch>,
         memory: Option<&super::model::Memory>,
     ) -> Result<Option<Tree>, String> {
-        if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
+        if self.timed_out() || depth > 32 {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
@@ -612,10 +617,7 @@ impl Search<'_> {
                 }));
             }
         }
-        if self.expansions < self.maximum
-            && self.started.elapsed() <= Duration::from_millis(2500)
-            && self.exhausted.len() < 256
-        {
+        if self.expansions < self.maximum && !self.timed_out() && self.exhausted.len() < 256 {
             self.exhausted.insert(key);
         }
         if let Some(report) = &mut self.frontier {
@@ -649,13 +651,23 @@ pub fn solve_with_knowledge(
     started: Instant,
     knowledge: &[super::knowledge::Entry],
 ) -> Result<ResultTree, String> {
-    solve_recording(target, ranker, maximum, started, knowledge, true)
+    solve_recording(target, ranker, maximum, Some(started), knowledge, true)
 }
+/// Deterministic reference work. The parent watchdog can abort the whole
+/// comparison, while local elapsed time never changes a task's score.
+pub(crate) fn solve_reference(
+    target: &Formula,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+) -> Result<ResultTree, String> {
+    solve_recording(target, ranker, maximum, None, &[], false)
+}
+
 fn solve_recording(
     target: &Formula,
     ranker: &mut dyn Ranker,
     maximum: usize,
-    started: Instant,
+    started: Option<Instant>,
     knowledge: &[super::knowledge::Entry],
     capture: bool,
 ) -> Result<ResultTree, String> {
@@ -1223,7 +1235,7 @@ mod transposition_tests {
             terminal: TerminalEvidence::Unknown,
             ranker: &mut Ordered,
             goal: q,
-            started: Instant::now(),
+            started: Some(Instant::now()),
             expansions: 0,
             maximum: 16,
             failure: None,

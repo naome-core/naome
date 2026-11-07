@@ -1304,3 +1304,43 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
             .is_empty()
     );
 }
+
+#[test]
+fn finder_checkpoint_selection_is_exact_and_rollback_survives_reopen() {
+    use crate::model_exchange::{Bundle, Model, Registration, encode_finder};
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut owner = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+    let original = owner.model_snapshot().unwrap().registration;
+    let candidate = RankingModel::seeded(42);
+    let (checkpoint, bytes) = encode_finder(&candidate).unwrap();
+    let registration = Registration::new(Model::Finder { checkpoint });
+    let memory = Bundle::reserve(&registration).unwrap();
+    let candidate = Bundle::new(registration.clone(), vec![bytes], memory).unwrap();
+
+    assert_eq!(
+        owner
+            .select_model(&original.id(), Some(&candidate))
+            .unwrap(),
+        registration
+    );
+    assert!(
+        owner
+            .select_model(&original.id(), Some(&candidate))
+            .is_err()
+    );
+    drop(owner);
+    let mut owner = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+    assert_eq!(owner.model_snapshot().unwrap().registration, registration);
+    assert_eq!(
+        owner.select_model(&registration.id(), None).unwrap(),
+        original
+    );
+    drop(owner);
+    let owner = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+    assert_eq!(owner.model_snapshot().unwrap().registration, original);
+}

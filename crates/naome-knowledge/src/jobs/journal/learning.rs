@@ -1,5 +1,8 @@
 //! Native learning rows share the canonical job checkpoint and transactions.
+mod exchange;
 use super::*;
+#[cfg(all(feature = "developer-tools", feature = "system-tests"))]
+pub(crate) use exchange::model_fixture;
 mod history;
 mod validation;
 pub(super) use validation::validate_rows;

@@ -38,6 +38,13 @@ async fn execute() -> Result<(), String> {
                 "discovery":network::DiscoveryConfig::default(),"producer_sources":[]}}));
             Ok(())
         },
+        #[cfg(all(unix, feature = "system-tests"))]
+        ["model-exchange-fixture", directory, seed, material] => {
+            let seed = seed.parse::<u64>().map_err(|e| e.to_string())?;
+            let materialize = material.parse::<bool>().map_err(|e| e.to_string())?;
+            println!("{}", naome_knowledge::model_exchange_fixture(Path::new(directory), seed, materialize)?);
+            Ok(())
+        }
         ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
         ["run", config, options @ ..] => {
             let test_controls = match options {

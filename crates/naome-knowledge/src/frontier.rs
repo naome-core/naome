@@ -10,6 +10,7 @@ use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
 mod finder;
+pub(crate) use finder::Model as RankingModel;
 mod looping;
 use evidence::{Evidence, Outcome};
 pub(crate) const PROVIDER: &str = "naome-structural-finder";
@@ -233,6 +234,18 @@ impl Frontier {
         }
         goals.push_back(question);
     }
+    pub(crate) fn model_snapshot(&self) -> Result<crate::model_exchange::Bundle, String> {
+        self.evidence.exchange_snapshot()
+    }
+
+    pub(crate) fn select_model(
+        &mut self,
+        expected: &str,
+        candidate: Option<&crate::model_exchange::Bundle>,
+    ) -> Result<crate::model_exchange::Registration, crate::Error> {
+        self.evidence.exchange_select(expected, candidate)
+    }
+
     pub(crate) fn focus(&mut self, question: CompiledQuestion) {
         Self::retain_goal(&mut self.goals, question);
     }
@@ -885,8 +898,11 @@ impl Frontier {
             weight = weight.saturating_mul(self.evidence.model().weight_from(&analysis.descriptor))
                 / 1024;
             if self.evidence.learning().utility_current() {
-                let utility = self.evidence.model().utility(&analysis.descriptor);
-                weight = weight.saturating_mul(512 + (utility * 1024.) as u64) / 1024;
+                let utility = self
+                    .evidence
+                    .model()
+                    .utility_multiplier(&analysis.descriptor);
+                weight = weight.saturating_mul(utility) / 1024;
             }
             let mut relevance = 0;
             for goal in &self.goals {

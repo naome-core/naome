@@ -122,11 +122,51 @@ impl State {
     pub fn blobs(&self) -> impl Iterator<Item = &Blob> {
         self.model.blobs().chain(self.meta.model.blobs())
     }
+    pub(crate) fn retained_blobs(&self) -> impl Iterator<Item = &Blob> {
+        self.blobs().chain(
+            self.exchanged_model
+                .iter()
+                .flat_map(|record| record.previous.blobs()),
+        )
+    }
+    pub(crate) fn exchange_model(&self) -> &Checkpoint {
+        &self.model
+    }
+    pub(crate) fn adopt_model(&mut self, candidate: Checkpoint) -> Result<(), String> {
+        candidate.validate()?;
+        if candidate == self.model {
+            return Err("model is already selected".into());
+        }
+        self.exchanged_model = Some(ExchangeRollback {
+            previous: self.model.clone(),
+            selected: digest(&candidate),
+        });
+        self.replace_model(candidate);
+        Ok(())
+    }
+    pub(crate) fn rollback_model(&mut self) -> Result<(), String> {
+        let record = self
+            .exchanged_model
+            .take()
+            .ok_or("no model exchange to roll back")?;
+        if record.selected != digest(&self.model) {
+            return Err("selected model advanced after exchange".into());
+        }
+        self.replace_model(record.previous);
+        Ok(())
+    }
+    fn replace_model(&mut self, model: Checkpoint) {
+        let mut feedback = crate::training::ability::Feedback::fresh(digest(&model));
+        feedback.revision = self.feedback.revision.saturating_add(1);
+        self.feedback = feedback;
+        self.model = model;
+    }
     pub fn fresh() -> Self {
         let model = Checkpoint::fresh();
         let feedback = crate::training::ability::Feedback::fresh(digest(&model));
         Self {
             model,
+            exchanged_model: None,
             definitions: Vec::new(),
             definition_uses: BTreeMap::new(),
             knowledge: Vec::new(),
@@ -150,6 +190,10 @@ impl State {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.model.validate()?;
+        if let Some(record) = &self.exchanged_model {
+            record.previous.validate()?;
+            crate::object::id_bytes(&record.selected)?;
+        }
         self.meta.validate()?;
         self.history_cursor.validate()?;
         knowledge::validate(&self.knowledge)?;

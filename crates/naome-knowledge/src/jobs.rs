@@ -584,7 +584,25 @@ enum PeerStatus {
         reason: String,
     },
 }
+#[cfg(all(feature = "developer-tools", feature = "system-tests"))]
+pub(crate) use journal::model_fixture;
+pub(crate) use process::spawn_in_slot;
+
+pub(crate) struct ModelLease {
+    pub(crate) slot: std::fs::File,
+    _admission: std::sync::Arc<()>,
+    _computation: crate::resources::ComputationPermit,
+    _memory: std::sync::Arc<crate::resources::MemoryLease>,
+}
+
 enum Command {
+    ModelLease(oneshot::Sender<Result<ModelLease, String>>),
+    ModelSnapshot(oneshot::Sender<Result<crate::model_exchange::Bundle, String>>),
+    SelectModel {
+        expected: String,
+        candidate: Option<std::sync::Arc<crate::model_exchange::Bundle>>,
+        reply: oneshot::Sender<Result<crate::model_exchange::Registration, String>>,
+    },
     TheoremVerified {
         ordinal: u64,
         theorem: crate::learning::knowledge::Entry,
@@ -636,6 +654,43 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) async fn model_lease(&self) -> Result<ModelLease, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .try_send(Command::ModelLease(reply))
+            .map_err(|_| "model reference slot owner unavailable")?;
+        receiver
+            .await
+            .map_err(|_| "model reference slot owner stopped")?
+    }
+
+    pub(crate) async fn model_snapshot(&self) -> Result<crate::model_exchange::Bundle, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .try_send(Command::ModelSnapshot(reply))
+            .map_err(|_| "solver snapshot owner unavailable")?;
+        receiver
+            .await
+            .map_err(|_| "solver snapshot owner stopped")?
+    }
+    pub(crate) async fn select_model(
+        &self,
+        expected: String,
+        candidate: Option<std::sync::Arc<crate::model_exchange::Bundle>>,
+    ) -> Result<crate::model_exchange::Registration, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .try_send(Command::SelectModel {
+                expected,
+                candidate,
+                reply,
+            })
+            .map_err(|_| "solver selection owner unavailable")?;
+        receiver
+            .await
+            .map_err(|_| "solver selection owner stopped")?
+    }
+
     pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
         self.feedback
             .lock()

@@ -574,3 +574,44 @@ mod developer_transport {
         );
     }
 }
+
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn ordinary_peers_compare_offer_and_adopt_a_verified_checkpoint() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let directory = root.join(".local/proof-network").join(format!(
+        "model-exchange-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new("python3")
+        .arg(root.join("crates/naome-knowledge/tests/support/model_exchange.py"))
+        .args(["--binary", env!("CARGO_BIN_EXE_naome")])
+        .args(["--developer", env!("CARGO_BIN_EXE_naome-knowledge-dev")])
+        .arg("--output")
+        .arg(&directory)
+        .args([
+            "--profile",
+            if cfg!(debug_assertions) {
+                "test"
+            } else {
+                "release"
+            },
+        ])
+        .output()
+        .expect("ordinary model exchange process driver");
+    assert!(
+        output.status.success(),
+        "model exchange evidence at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

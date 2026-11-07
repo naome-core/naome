@@ -10,7 +10,7 @@ const ROLE_START: usize = INPUTS * HIDDEN + HIDDEN + HIDDEN * OUTPUTS + OUTPUTS;
 const PARAMETERS: usize = ROLE_START + BINDINGS * OUTPUTS;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::frontier) struct Model {
+pub(crate) struct Model {
     #[cfg(test)]
     #[serde(skip)]
     frozen: bool,
@@ -126,7 +126,15 @@ impl Model {
     pub fn weight(&self, question: &CompiledQuestion) -> u64 {
         self.weight_from(&Descriptor::of(question))
     }
-    pub fn weight_from(&self, descriptor: &Descriptor) -> u64 {
+    /// Fixed reference context uses both heads with the utility gate open.
+    pub(crate) fn reference_weight(&self, question: &CompiledQuestion) -> u64 {
+        let descriptor = Descriptor::of(question);
+        (self.weight_from(&descriptor) * self.utility_multiplier(&descriptor) / 1024).max(1)
+    }
+    pub(in crate::frontier) fn utility_multiplier(&self, descriptor: &Descriptor) -> u64 {
+        512 + (self.utility(descriptor) * 1024.) as u64
+    }
+    pub(in crate::frontier) fn weight_from(&self, descriptor: &Descriptor) -> u64 {
         let [resolved, cost, useful] = self.predictions_from(descriptor);
         let frontier = 0.25 + 4. * resolved * (1. - resolved);
         (1024. * (0.05 + 4. * useful * useful) * frontier / (1. + cost)) as u64 + 1
@@ -135,7 +143,7 @@ impl Model {
     pub fn predictions(&self, question: &CompiledQuestion) -> [f32; OUTPUTS] {
         self.predictions_from(&Descriptor::of(question))
     }
-    pub fn predictions_from(&self, descriptor: &Descriptor) -> [f32; OUTPUTS] {
+    pub(in crate::frontier) fn predictions_from(&self, descriptor: &Descriptor) -> [f32; OUTPUTS] {
         self.forward(&input(descriptor), &descriptor.bindings).1
     }
     fn train(&mut self, question: &CompiledQuestion, labels: [Option<f32>; OUTPUTS]) {
@@ -186,7 +194,7 @@ impl Model {
             update(&mut self.weights[INPUTS * HIDDEN + h], error);
         }
     }
-    pub fn utility(&self, descriptor: &Descriptor) -> f32 {
+    pub(in crate::frontier) fn utility(&self, descriptor: &Descriptor) -> f32 {
         let mut features = input(descriptor).to_vec();
         features.extend(descriptor.bindings);
         features.push(1.);
@@ -201,7 +209,11 @@ impl Model {
             *weight = (*weight - 0.05 * error * value).clamp(-4., 4.);
         }
     }
-    pub fn observe_utility(&mut self, descriptor: &Descriptor, target: f32) -> Result<(), String> {
+    pub(in crate::frontier) fn observe_utility(
+        &mut self,
+        descriptor: &Descriptor,
+        target: f32,
+    ) -> Result<(), String> {
         if !target.is_finite() || !(0.0..=1.0).contains(&target) {
             return Err("finder utility label differs".into());
         }
@@ -217,7 +229,7 @@ impl Model {
             .ok_or("finder utility count overflow")?;
         self.validate()
     }
-    pub fn rehearse(
+    pub(in crate::frontier) fn rehearse(
         &mut self,
         descriptor: &Descriptor,
         resolved: Option<bool>,

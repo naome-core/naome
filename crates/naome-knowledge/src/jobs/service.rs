@@ -188,6 +188,7 @@ struct Owner {
     next_lane: usize,
     recovery_skip: std::collections::BTreeSet<u64>,
     flushed: Instant,
+    reference: std::sync::Weak<()>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +230,7 @@ impl Owner {
             tasks: FuturesUnordered::new(),
             next_lane: 0,
             flushed: Instant::now(),
+            reference: std::sync::Weak::new(),
         };
         for record in owner
             .journal
@@ -280,6 +282,32 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
+                    Some(Command::ModelLease(reply)) => {
+                        if !reply.is_closed() {
+                            let _ = reply.send(self.reserve_reference());
+                        }
+                    }
+                    Some(Command::ModelSnapshot(reply)) => {
+                        if !reply.is_closed() {
+                            let _ = reply.send(self.disk.solver_snapshot(&self.journal));
+                        }
+                    }
+                    Some(Command::SelectModel { expected, candidate, reply }) => {
+                        if reply.is_closed() { continue; }
+                        let work = self.computation.try_enter();
+                        let result = if work.is_none() {
+                            Err(crate::Error::from("computation paused"))
+                        } else if self.journal.records.values().any(|record| {
+                            !record.state.terminal() && record.native.as_ref().is_some_and(|native| native.training)
+                        }) {
+                            Err(crate::Error::from("native solver training has an active reservation"))
+                        } else {
+                            self.disk.select_solver(&mut self.journal, &expected, candidate)
+                        };
+                        let fatal = result.as_ref().err().filter(|error| error.fatal()).cloned();
+                        let _ = reply.send(result.map_err(String::from));
+                        if let Some(error) = fatal { return Err(error.to_string()); }
+                    }
                     Some(Command::TheoremVerified{ordinal,theorem})=>{
                         if ordinal==0 {return Err("theorem learning ordinal is zero".into());}
                         if let Some(learning)=self.journal.learning.as_mut(){
@@ -1293,6 +1321,32 @@ impl Owner {
         Ok(Reservation::Granted)
     }
 
+    fn reserve_reference(&mut self) -> Result<ModelLease, String> {
+        if !self.settings.native_proof_learning
+            || self.reference.strong_count() != 0
+            || crate::resources::adaptive::slots(lanes().iter().sum()) <= self.running.len()
+        {
+            return Err("model reference capacity unavailable".into());
+        }
+        let computation = self.computation.try_enter().ok_or("computation paused")?;
+        let memory = crate::resources::MemoryLease::acquire(
+            crate::resources::limits().native_model_work_bytes,
+        )
+        .map_err(|e| e.to_string())?;
+        let slot = self
+            .disk
+            .slot(1)?
+            .ok_or("no native solving worker slot available")?;
+        let admission = Arc::new(());
+        self.reference = Arc::downgrade(&admission);
+        Ok(ModelLease {
+            slot,
+            _admission: admission,
+            _computation: computation,
+            _memory: memory,
+        })
+    }
+
     fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
         let mut queued = [0; 4];
         let mut running = [0; 4];
@@ -1313,8 +1367,9 @@ impl Owner {
                 .keys()
                 .filter(|id| self.journal.records[id].input.lane() == lane)
                 .count();
-            let available = crate::resources::adaptive::slots(lanes().iter().sum())
-                .saturating_sub(self.running.len());
+            let available = crate::resources::adaptive::slots(lanes().iter().sum()).saturating_sub(
+                self.running.len() + usize::from(self.reference.strong_count() != 0),
+            );
             if active >= lanes()[lane] || available == 0 {
                 continue;
             }

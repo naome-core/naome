@@ -207,6 +207,9 @@ impl Autonomous {
         Ok(())
     }
 
+    pub(crate) fn model_frontier(&mut self) -> Option<&mut crate::frontier::Frontier> {
+        self.frontier.as_mut()
+    }
     pub(crate) fn program_busy(&self) -> bool {
         self.publications.iter().any(|publication| {
             matches!(publication.candidate, Candidate::Program(_))
