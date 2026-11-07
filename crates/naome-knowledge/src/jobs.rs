@@ -366,18 +366,6 @@ pub(crate) enum Output {
 }
 
 impl Output {
-    pub(crate) fn candidate(self) -> Self {
-        match self {
-            Self::Native {
-                solution: Some(s), ..
-            } => Self::Proof {
-                proof: s.source,
-                helpers: s.helpers,
-            },
-            Self::Native { solution: None, .. } => Self::NoCandidate,
-            other => other,
-        }
-    }
     fn validate(&self, input: &Input) -> Result<(), String> {
         self.validate_with_limits(
             input,
@@ -730,7 +718,10 @@ impl Client {
             return Err("required theorem role or capacity".into());
         }
         prerequisites.validate()?;
-        if required.is_empty() && !prerequisites.is_empty() {
+        if !prerequisites.is_empty()
+            && (!matches!(input, Input::Solve { .. })
+                || required.is_empty() && !prerequisites.has_definitions())
+        {
             return Err("temporary prerequisites lack required roots".into());
         }
         for id in &required {

@@ -1333,3 +1333,159 @@ pub(super) fn fill_checkpoint_budget(state: &mut State, capacity: usize) {
     );
     state.feedback.revision = 10_u64.pow(remaining.min(19) as u32);
 }
+
+pub(crate) fn typed_scope_candidate(conjoin: bool) -> (ResearchQuestion, Solution) {
+    let [element, set, binder] = [0, 1, 2].map(FreeVariable::new);
+    let rule = Formula::for_all(
+        binder,
+        Formula::implies(
+            Formula::member(binder, binder),
+            Formula::member(binder, set),
+        ),
+    );
+    let instance = Formula::member(element, set);
+    let premise = Formula::member(element, element);
+    let consequence = if conjoin {
+        Formula::conjunction(instance, premise.clone())
+    } else {
+        instance
+    };
+    let target = Formula::for_all(
+        element,
+        Formula::for_all(
+            set,
+            Formula::implies(rule, Formula::implies(premise, consequence)),
+        ),
+    );
+    let question = ResearchQuestion::from_formula(target).unwrap();
+    let source = question.to_hex();
+    let mut engine = Engine::default();
+    let mut store = MemoryStore::default();
+    let generation = engine
+        .with(&model::Checkpoint::fresh(), &mut store, |runtime| {
+            solve_with_report(&source, runtime, 32, 1, SolveContext::default())
+        })
+        .unwrap();
+    let solution = generation
+        .solution
+        .unwrap_or_else(|| panic!("typed scope: {}", generation.diagnostic));
+    let search::Tree::Scoped { target, actions } = &solution.tree else {
+        panic!("native scope action trace absent");
+    };
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        naome_proof::program::ScopedAction::Instantiate { premises, .. } if !premises.is_empty()
+    )));
+    if conjoin {
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, naome_proof::program::ScopedAction::Conjoin { .. }))
+        );
+    }
+    assert!(solution.cost.search_expansions <= 32);
+    let (term, training) = search::compile(question.proved_target(), &solution.tree).unwrap();
+    assert!(
+        !training.is_empty(),
+        "the scored typed menu must reach training input"
+    );
+    assert_eq!(
+        proof::verify(&term, question.proved_target())
+            .unwrap()
+            .native_id
+            .as_bytes(),
+        &crate::object::id_bytes(&solution.proof_id).unwrap()
+    );
+    let mut invalid = actions.clone();
+    invalid[0] = naome_proof::program::ScopedAction::Conjoin {
+        left: 0,
+        right: u32::MAX,
+    };
+    assert!(
+        search::compile(
+            question.proved_target(),
+            &search::Tree::Scoped {
+                target: target.clone(),
+                actions: invalid
+            }
+        )
+        .is_err()
+    );
+    (question, solution)
+}
+
+pub(crate) fn typed_definition_consumer(
+    graph: &crate::Graph,
+    first: &ResearchQuestion,
+    second: &ResearchQuestion,
+) -> (
+    ResearchQuestion,
+    Solution,
+    Vec<String>,
+    naome_proof::DefinitionId,
+) {
+    let relation = naome_proof::DefinitionCertificate::relation(
+        2,
+        naome_proof::DefinedFormula::member(FreeVariable::new(0), FreeVariable::new(1)),
+    )
+    .unwrap();
+    let definition = definitions::Entry {
+        certificate: relation.to_canonical_bytes(),
+        obligation: None,
+    };
+    let target = Formula::conjunction(first.formula().clone(), second.formula().clone());
+    let compact = definitions::represent(&target, &[definition]).unwrap();
+    let question = ResearchQuestion::from_defined_formula(
+        compact.as_defined().unwrap().clone(),
+        graph.checked_context(),
+    )
+    .unwrap();
+    assert_eq!(question.dependencies(), &[relation.definition_id().into()]);
+    let directory = crate::checkpoint::tests::Directory::new();
+    let frontier = crate::frontier::Frontier::open(
+        &directory.0,
+        graph,
+        41,
+        crate::jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (required, inputs) = frontier.solving_inputs(graph, &question, &[]).unwrap();
+    assert_eq!(
+        required.len(),
+        2,
+        "both checked closed subgoals must be offered"
+    );
+    let source = ResearchQuestion::from_formula(target).unwrap().to_hex();
+    let mut engine = Engine::default();
+    let mut store = MemoryStore::default();
+    let result = engine
+        .with(&model::Checkpoint::fresh(), &mut store, |runtime| {
+            solve_with_report(
+                &source,
+                runtime,
+                128,
+                8,
+                SolveContext {
+                    required: &required,
+                    prerequisites: Some(&inputs),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let solution = result
+        .solution
+        .unwrap_or_else(|| panic!("typed context: {}", result.diagnostic));
+    assert!(
+        solution.cost.definition_references > 0,
+        "{:?}",
+        solution.cost
+    );
+    assert!(solution.tree.composition().is_some(), "{:?}", solution.cost);
+    let verified = solution.checked().unwrap();
+    question.classify_checked_proof(&verified).unwrap();
+    (question, solution, required, relation.definition_id())
+}

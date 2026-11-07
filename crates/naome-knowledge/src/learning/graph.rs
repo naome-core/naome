@@ -3,7 +3,7 @@
 use super::model::Decision;
 use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
 use naome_foundation::{
-    Formula, FormulaView,
+    FormulaView,
     graph::{Node as FormulaNode, Variable},
 };
 use serde::{Deserialize, Serialize};
@@ -31,13 +31,13 @@ pub struct Graph {
     pub successes: Vec<usize>,
 }
 
-struct Builder {
+struct Builder<'a> {
     nodes: Vec<Node>,
-    formulas: HashMap<(Formula, Vec<usize>, u8), usize>,
+    formulas: HashMap<(FormulaView<'a>, Vec<usize>), usize>,
     variables: HashMap<(u8, u64), usize>,
 }
 
-impl Builder {
+impl<'a> Builder<'a> {
     fn push(&mut self, node: Node) -> Result<usize, String> {
         if self.nodes.len() >= MAX_NODES {
             return Err("formula_graph_capacity".into());
@@ -86,8 +86,8 @@ impl Builder {
         Ok(index)
     }
 
-    fn formula(&mut self, formula: FormulaView<'_>, binders: &[usize]) -> Result<usize, String> {
-        let key = (formula.to_owned(), binders.to_vec(), 0);
+    fn formula(&mut self, formula: FormulaView<'a>, binders: &[usize]) -> Result<usize, String> {
+        let key = (formula, binders.to_vec());
         if let Some(index) = self.formulas.get(&key) {
             return Ok(*index);
         }
@@ -237,6 +237,32 @@ impl Graph {
     }
 }
 
+enum ContextMask {
+    Packed(Vec<bool>),
+    #[cfg(test)]
+    Dense(Vec<f32>),
+}
+
+impl ContextMask {
+    fn include(&mut self, index: usize, _multiplicity: usize) {
+        match self {
+            Self::Packed(rows) => rows[index] = false,
+            #[cfg(test)]
+            Self::Dense(rows) => rows[index] += 1. / _multiplicity as f32,
+        }
+    }
+
+    fn tensor(self, shape: [usize; 2], device: &Device) -> Tensor<2, Bool> {
+        match self {
+            Self::Packed(rows) => Tensor::from_data(TensorData::new(rows, shape), device),
+            #[cfg(test)]
+            Self::Dense(rows) => {
+                Tensor::<2>::from_data(TensorData::new(rows, shape), device).equal_elem(0.)
+            }
+        }
+    }
+}
+
 pub struct Batch {
     pub kinds: Tensor<2, Int>,
     pub roles: Tensor<2, Int>,
@@ -245,16 +271,41 @@ pub struct Batch {
     pub parent_scale: Tensor<3>,
     pub valid: Tensor<3>,
     pub goal: Tensor<2, Int>,
-    pub context: Tensor<3>,
+    context_mask: Tensor<2, Bool>,
     pub candidates: Tensor<2, Int>,
     pub invalid: Tensor<2, Bool>,
     pub successes: Tensor<2>,
 }
 
 impl Batch {
+    pub fn context_mask(&self) -> Tensor<2, Bool> {
+        self.context_mask.clone()
+    }
+
     pub fn from_graphs<G: std::borrow::Borrow<Graph>>(
         graphs: &[G],
         device: &Device,
+    ) -> Result<Self, String> {
+        Self::pack(
+            graphs,
+            device,
+            #[cfg(test)]
+            false,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn from_dense_context<G: std::borrow::Borrow<Graph>>(
+        graphs: &[G],
+        device: &Device,
+    ) -> Result<Self, String> {
+        Self::pack(graphs, device, true)
+    }
+
+    fn pack<G: std::borrow::Borrow<Graph>>(
+        graphs: &[G],
+        device: &Device,
+        #[cfg(test)] dense: bool,
     ) -> Result<Self, String> {
         let graphs = graphs
             .iter()
@@ -285,7 +336,16 @@ impl Batch {
         let mut parents = vec![0f32; n];
         let mut valid = vec![0f32; n];
         let mut goal = vec![0i32; b];
-        let mut context = vec![0f32; b * n];
+        // Attention uses only membership. Build the bool mask directly
+        // from indexed context handles without materializing float weights.
+        #[cfg(test)]
+        let mut context = if dense {
+            ContextMask::Dense(vec![0.; b * n])
+        } else {
+            ContextMask::Packed(vec![true; b * n])
+        };
+        #[cfg(not(test))]
+        let mut context = ContextMask::Packed(vec![true; b * n]);
         let mut candidates = vec![0i32; b * c];
         let mut invalid = vec![true; b * c];
         let mut successes = vec![0f32; b * c];
@@ -311,7 +371,7 @@ impl Batch {
             }
             goal[batch] = index(graph.goal)? as i32;
             for root in &graph.context {
-                context[batch * n + index(*root)?] += 1. / graph.context.len() as f32;
+                context.include(batch * n + index(*root)?, graph.context.len());
             }
             for (i, root) in graph.candidates.iter().enumerate() {
                 candidates[batch * c + i] = index(*root)? as i32;
@@ -340,7 +400,7 @@ impl Batch {
             parent_scale: Tensor::from_data(TensorData::new(parents, [1, n, 1]), device),
             valid: Tensor::from_data(TensorData::new(valid, [1, n, 1]), device),
             goal: Tensor::from_data(TensorData::new(goal, [b, 1]), device),
-            context: Tensor::from_data(TensorData::new(context, [b, 1, n]), device),
+            context_mask: context.tensor([b, n], device),
             candidates: Tensor::from_data(TensorData::new(candidates, [b, c]), device),
             invalid: Tensor::from_data(TensorData::new(invalid, [b, c]), device),
             successes: Tensor::from_data(TensorData::new(successes, [b, c]), device),

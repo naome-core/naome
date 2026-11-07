@@ -69,6 +69,9 @@ impl Policy {
         self.readout(self.encode(batch), memory).0
     }
     pub(super) fn encode(&self, batch: &Batch) -> Encoded {
+        self.encode_with_context(batch, batch.context_mask())
+    }
+    fn encode_with_context(&self, batch: &Batch, context_mask: Tensor<2, Bool>) -> Encoded {
         let [_, n] = batch.kinds.dims();
         let left = batch.left.clone().reshape([n]);
         let right = batch.right.clone().reshape([n]);
@@ -82,7 +85,7 @@ impl Policy {
             .clone()
             .unsqueeze_dim::<3>(2)
             .expand([1, n, WIDTH]);
-        self.encode_using(batch, |h| {
+        self.encode_using(batch, context_mask, |h| {
             if h.is_autodiff() {
                 // Preserve the original autodiff graph and accumulation order.
                 Tensor::zeros([1, n, WIDTH], &h.device())
@@ -101,7 +104,12 @@ impl Policy {
             }
         })
     }
-    fn encode_using(&self, batch: &Batch, parents: impl Fn(Tensor<3>) -> Tensor<3>) -> Encoded {
+    fn encode_using(
+        &self,
+        batch: &Batch,
+        context_mask: Tensor<2, Bool>,
+        parents: impl Fn(Tensor<3>) -> Tensor<3>,
+    ) -> Encoded {
         let [_, n] = batch.kinds.dims();
         let b = batch.goal.dims()[0];
         let c = batch.candidates.dims()[1];
@@ -165,7 +173,6 @@ impl Policy {
                     .reshape([b, c, WIDTH]),
             )
         };
-        let context_mask = batch.context.clone().squeeze_dim::<2>(1).equal_elem(0.);
         let query = goal
             .clone()
             .slice([0..b, 0..1, 0..WIDTH])
@@ -285,7 +292,7 @@ impl Policy {
         let memory =
             recurrent.then(|| Tensor::zeros([batch.goal.dims()[0], WIDTH], &batch.kinds.device()));
         self.readout(
-            self.encode_using(batch, |h| weights.clone().matmul(h)),
+            self.encode_using(batch, batch.context_mask(), |h| weights.clone().matmul(h)),
             memory,
         )
         .0

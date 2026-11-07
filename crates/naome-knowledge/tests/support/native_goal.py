@@ -53,7 +53,7 @@ def run(trial):
     for node, other in ((a, b), (b, a)):
         node.config["peers"] = [{"id": other.peer, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}]
     goal = GOAL
-    (trial.output / "goal.nao").write_text(goal + "\n")
+    (trial.output / "goal.nao").write_bytes(bytes.fromhex(goal))
     a.config["formal_goal"] = goal
     a.config["runtime"]["question_interval_ms"] = 1000
     for node in trial.nodes:
@@ -95,10 +95,16 @@ def run(trial):
     }
     public = trial.output / "generated"
     public.mkdir()
-    (public / "proof.nao").write_text(solution["source"])
+    (public / "certificate.nao").write_bytes(bytes.fromhex(solution["source"]))
     for index, helper in enumerate(solution["helpers"]):
-        (public / f"helper-{index:02}.nao").write_text(helper)
+        (public / f"helper-{index:02}.nao").write_bytes(bytes.fromhex(helper))
     objects = stored_objects(SimpleNamespace(directory=a.directory))
+    program = next(o["program_manifest"] for o in objects if o["artifact_id"] == root)
+    checked_program = next(e for e in a.logs()
+        if e.get("event") == "native_program_checked" and e.get("id") == root)
+    assert checked_program["job"] == produced["job"]
+    assert checked_program["input_bytes"] == program["input_bytes"]
+    assert checked_program["checker_work"] > 0
     definitions = [o["artifact_id"] for o in objects if o["statement_id"] is None]
     proofs = [o["artifact_id"] for o in objects if o["statement_id"] is not None]
     assert len(definitions) >= 2 and len(proofs) >= 3
@@ -111,8 +117,9 @@ def run(trial):
         "root": root, "proof_id": solution["proof_id"], "definitions": definitions,
         "proofs": proofs, "cost": solution["cost"], "job": produced["job"],
         "reserved_units": source_record["reserved_units"],
-        "source_bytes": len(solution["source"]),
-        "closure_source_bytes": len(solution["source"]) + sum(map(len, solution["helpers"])),
+        "program": program, "program_check": checked_program,
+        "certificate_bytes": len(solution["source"]) // 2,
+        "closure_certificate_bytes": (len(solution["source"]) + sum(map(len, solution["helpers"]))) // 2,
         "all_artifacts": sorted(all_ids), "actual_peer_closure": sorted(b.ids()),
     }
     for node in trial.nodes:

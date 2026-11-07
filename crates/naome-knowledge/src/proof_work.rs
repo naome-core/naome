@@ -344,7 +344,6 @@ impl Work {
         );
         result.map_err(crate::Error::from)
     }
-    #[cfg(test)]
     pub(crate) fn last_quantum_steps(&self) -> usize {
         self.engine.last_quantum_steps()
     }

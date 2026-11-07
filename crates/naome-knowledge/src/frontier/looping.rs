@@ -114,6 +114,48 @@ impl Frontier {
     pub(crate) fn support_updates(&self) -> u64 {
         self.evidence.model().supports
     }
+    /// Exact checked inputs available to this open goal. Question definition
+    /// references retain their artifact identity through the job snapshot.
+    pub(crate) fn solving_inputs(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+        planned: &[String],
+    ) -> Result<(Vec<String>, crate::learning::Prerequisites), crate::Error> {
+        use naome_checker::ContextView;
+        use naome_proof::StatementId;
+        let definitions = question.dependencies();
+        if planned.is_empty()
+            && let Some((left, right)) =
+                crate::learning::conjunction_operands(question.proved_target())
+            && left != right
+            && left.is_closed()
+            && right.is_closed()
+        {
+            // The Solver can directly compose these two closed operands.
+            let mut witnesses = Vec::with_capacity(2);
+            for operand in [left, right] {
+                let bytes = operand
+                    .encode_canonical()
+                    .map_err(|error| error.to_string())?;
+                let statement = StatementId::of_canonical_formula(&bytes)
+                    .ok_or("checked Finder operand statement width")?;
+                if let Some(header) = graph.checked_context().statement_header(statement)? {
+                    witnesses.push(crate::hex(header.proof_id().as_bytes()));
+                }
+            }
+            if witnesses.len() == 2
+                && let Some(inputs) = graph.solving_inputs(&witnesses, definitions)?
+            {
+                return Ok((witnesses, inputs));
+            }
+        }
+        let inputs = graph
+            .solving_inputs(planned, definitions)?
+            .unwrap_or_default();
+        Ok((planned.to_vec(), inputs))
+    }
+
     pub(crate) fn loop_focus(
         &mut self,
         graph: &Graph,

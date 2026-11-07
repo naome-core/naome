@@ -71,7 +71,7 @@ impl Policy {
             .reshape([b, 1, WIDTH])
             .expand([b, c, WIDTH]);
         let candidate = flat.gather(0, candidate_indices).reshape([b, c, WIDTH]);
-        let context_mask = batch.context.clone().squeeze_dim::<2>(1).equal_elem(0.);
+        let context_mask = batch.context_mask();
         let query = goal
             .clone()
             .slice([0..b, 0..1, 0..WIDTH])

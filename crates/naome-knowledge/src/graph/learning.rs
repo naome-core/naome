@@ -3,15 +3,25 @@ use super::*;
 impl Graph {
     /// Capture exact canonical inputs; mathematical checking belongs to the
     /// granted worker, rather than this graph/async scheduling path.
+    #[cfg(test)]
     pub(crate) fn prerequisites(
         &self,
         required: &[String],
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        self.solving_inputs(required, &[])
+    }
+
+    pub(crate) fn solving_inputs(
+        &self,
+        required: &[String],
+        definitions: &[ArtifactId],
     ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
         struct Capture<'a> {
             graph: &'a Graph,
             active: std::collections::BTreeSet<ArtifactId>,
             seen: std::collections::BTreeSet<ArtifactId>,
             artifacts: Vec<Envelope>,
+            programs: Vec<crate::learning::knowledge::Entry>,
             bytes: usize,
         }
         impl Capture<'_> {
@@ -33,10 +43,30 @@ impl Graph {
                     .bytes
                     .checked_add(object.bytes.len())
                     .ok_or("prerequisite closure byte overflow")?;
-                if self.bytes > crate::resources::limits().closure_bytes
-                    || crate::object::program_manifest(&object.bytes)?.is_some()
-                {
+                if self.bytes > crate::resources::limits().closure_bytes {
                     return Ok(false);
+                }
+                if crate::object::program_manifest(&object.bytes)?.is_some() {
+                    // Preserve the actual program ID through its independently
+                    // checked, bounded learning projection.
+                    if self.active.len() != 1 {
+                        return Ok(false);
+                    }
+                    let Some(packet) = self.graph.learning_certificate(id)? else {
+                        return Ok(false);
+                    };
+                    self.bytes = self
+                        .bytes
+                        .checked_add(packet.len())
+                        .ok_or("prerequisite packet width")?;
+                    if self.bytes > crate::resources::limits().closure_bytes {
+                        return Ok(false);
+                    }
+                    self.programs
+                        .push(crate::learning::knowledge::Entry { packet });
+                    self.active.remove(&id);
+                    self.seen.insert(id);
+                    return Ok(true);
                 }
                 for dependency in &object.dependencies {
                     if !self.visit(*dependency)? {
@@ -57,14 +87,24 @@ impl Graph {
             active: Default::default(),
             seen: Default::default(),
             artifacts: Vec::new(),
+            programs: Vec::new(),
             bytes: 0,
         };
+        for &id in definitions {
+            if self
+                .cold(self.context.artifact_definition_id(id))?
+                .is_none()
+                || !capture.visit(id)?
+            {
+                return Ok(None);
+            }
+        }
         for id in required {
             if !capture.visit(crate::object::proof_address(id)?)? {
                 return Ok(None);
             }
         }
-        crate::learning::Prerequisites::new(capture.artifacts)
+        crate::learning::Prerequisites::from_inputs(capture.artifacts, capture.programs)
             .map(Some)
             .map_err(Into::into)
     }
@@ -268,6 +308,15 @@ impl Graph {
                                 })?
                                 .ok_or_else(|| "learning program reference capacity".into())
                         },
+                        |definition| {
+                            graph
+                                .learning_definition(definition.into())
+                                .map_err(|error| {
+                                    let message = error.to_string();
+                                    *source_error.borrow_mut() = Some(error);
+                                    message
+                                })
+                        },
                         definitions,
                     );
                     if let Some(error) = source_error.into_inner() {
@@ -343,7 +392,12 @@ impl Graph {
             return Ok(None);
         };
         let origin = snapshot.proofs.get(&id).map(|p| p.origin.clone());
-        let packet = crate::learning::evidence::pack_with_program(&verified, origin)?;
-        Ok((packet.len() <= 8 * 1024).then_some(packet))
+        match crate::learning::evidence::pack_with_program(&verified, origin) {
+            Ok(packet) => Ok((packet.len() <= crate::learning::knowledge::BYTES).then_some(packet)),
+            // A checked program can project to a certificate larger than a
+            // learning object. The network still serves its checked program.
+            Err(error) if error.ends_with(" capacity") => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 }

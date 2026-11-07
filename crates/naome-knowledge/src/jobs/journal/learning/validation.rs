@@ -67,11 +67,10 @@ pub(super) fn validate_source(
         (crate::learning::Origin::Local, Input::Solve { question })
             if question == &example.question =>
         {
+            let root = crate::learning::program::Candidate::artifact(solution, question)?;
             if c.get::<String>("learned", &example.job.to_string(), 256)?
-                .as_ref()
-                != Some(&crate::hex(
-                    crate::object::proof_address(&example.proof_id)?.as_bytes(),
-                ))
+                .as_deref()
+                != Some(&crate::hex(root.as_bytes()))
             {
                 return Err("native replay lacks admitted own receipt".into());
             }
@@ -167,9 +166,10 @@ pub(in crate::jobs::journal) fn validate_rows(
                         certificate,
                         solution,
                     )?,
-                    Input::Solve { .. } => {
+                    Input::Solve { question } => {
                         let expected = crate::hex(
-                            crate::object::proof_address(&evidence.proof_id)?.as_bytes(),
+                            crate::learning::program::Candidate::artifact(solution, question)?
+                                .as_bytes(),
                         );
                         if c.get::<String>("learned", &origin.id.to_string(), 256)?
                             .as_deref()
@@ -329,7 +329,19 @@ fn validate_learned(
     let root: String = crate::checkpoint::decode(bytes)?;
     crate::object::id_bytes(&root)?;
     let source = record(c, id)?;
-    let matching = matches!(source.result, Some(Output::Native{solution:Some(ref solution),..}) if crate::object::proof_address(&solution.proof_id).is_ok_and(|id| crate::hex(id.as_bytes())==root));
+    let matching = if let (
+        Some(Output::Native {
+            solution: Some(solution),
+            ..
+        }),
+        Input::Solve { question },
+    ) = (&source.result, &source.input)
+    {
+        let expected = crate::learning::program::Candidate::artifact(solution, question)?;
+        crate::hex(expected.as_bytes()) == root
+    } else {
+        false
+    };
     if id == 0
         || key != id.to_string()
         || !source.acknowledged

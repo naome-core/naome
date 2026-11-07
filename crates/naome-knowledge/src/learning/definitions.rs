@@ -99,6 +99,10 @@ pub fn register(context: &mut ArtifactState, entry: &Entry) -> Result<(), String
 pub fn proof_context(tree: &super::search::Tree) -> Result<ArtifactState, String> {
     use super::search::Tree;
     match tree {
+        Tree::Scoped { target, actions } => {
+            let verified = super::search::scope::verified(target, actions)?;
+            super::proof::lemma_context(&verified.definitions, &verified.lemmas)
+        }
         Tree::Knowledge { .. } => {
             let verified = super::knowledge::verified(tree)?;
             super::proof::lemma_context(&verified.definitions, &verified.lemmas)
@@ -346,7 +350,11 @@ fn features(target: &Formula, entries: &[Entry], selected: usize) -> Result<Deci
             .collect::<Result<Vec<_>, String>>()?,
     })
 }
-pub fn choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> {
+pub fn choices(
+    target: &Formula,
+    known: &[Entry],
+    available_only: bool,
+) -> Result<Vec<Entry>, String> {
     let fragments = super::knowledge::fragments(target);
     let mut ranked = Vec::new();
     for (i, entry) in known.iter().enumerate() {
@@ -364,7 +372,8 @@ pub fn choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> 
         .take(CAPACITY - 1)
         .map(|(_, _, entry)| entry.clone())
         .collect::<Vec<_>>();
-    if let Some(proposed) = discover(target)?
+    if !available_only
+        && let Some(proposed) = discover(target)?
         && !entries.contains(&proposed)
         && entries.iter().map(Entry::bytes).sum::<usize>() + proposed.bytes() <= BYTES
     {
@@ -373,7 +382,7 @@ pub fn choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> 
     Ok(entries)
 }
 pub fn construction_choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> {
-    let mut entries = choices(target, known)?;
+    let mut entries = choices(target, known, false)?;
     for entry in discover_many(target, CAPACITY)? {
         if !entries.contains(&entry)
             && entries.len() < CAPACITY
@@ -387,9 +396,10 @@ pub fn construction_choices(target: &Formula, known: &[Entry]) -> Result<Vec<Ent
 pub fn choose(
     target: &Formula,
     known: &[Entry],
+    available_only: bool,
     ranker: &mut dyn Ranker,
 ) -> Result<Option<(Vec<Entry>, usize)>, String> {
-    let entries = choices(target, known)?;
+    let entries = choices(target, known, available_only)?;
     if entries.is_empty() {
         return Ok(None);
     }
@@ -409,6 +419,9 @@ pub fn choose(
 }
 
 pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
+    if let super::search::Tree::Scoped { target, actions } = tree {
+        return super::knowledge::helpers(&super::search::scope::verified(target, actions)?);
+    }
     if matches!(tree, super::search::Tree::Knowledge { .. }) {
         return super::knowledge::helpers(&super::knowledge::verified(tree)?);
     }

@@ -130,6 +130,47 @@ impl<I: Copy> Node<I> {
 }
 
 impl Formula {
+    /// Materializes a bounded primitive graph with its exact relative binders.
+    /// The reader owns the graph and checks its reference identities.
+    pub fn from_graph<I: Copy>(
+        root: I,
+        mut read: impl FnMut(I) -> Result<Node<I>, String>,
+    ) -> Result<Self, String> {
+        fn visit<I: Copy>(
+            handle: I,
+            read: &mut impl FnMut(I) -> Result<Node<I>, String>,
+            depth: u32,
+            binders: u32,
+            remaining: &mut usize,
+        ) -> Result<Tree, String> {
+            if depth > super::canonical::FORMULA_MAX_DEPTH || *remaining == 0 {
+                return Err("materialized formula graph capacity".into());
+            }
+            *remaining -= 1;
+            let variable = |variable| match variable {
+                Variable::Free(id) => Ok(TreeVariable::Free(super::FreeVariable::new(id))),
+                Variable::Bound(index) if index < u64::from(binders) => {
+                    Ok(TreeVariable::Bound(index as u32))
+                }
+                Variable::Bound(_) => Err("formula graph has a dangling binder".to_owned()),
+            };
+            let node = read(handle)?;
+            let mut child =
+                |handle, binders| visit(handle, read, depth + 1, binders, remaining).map(Box::new);
+            Ok(match node {
+                Node::Equal(left, right) => Tree::Equal(variable(left)?, variable(right)?),
+                Node::Member(left, right) => Tree::Member(variable(left)?, variable(right)?),
+                Node::Not(body) => Tree::Not(child(body, binders)?),
+                Node::Implies(left, right) => {
+                    Tree::Implies(child(left, binders)?, child(right, binders)?)
+                }
+                Node::ForAll(body) => Tree::ForAll(child(body, binders + 1)?),
+            })
+        }
+        let mut remaining = super::canonical::FORMULA_MAX_NODES;
+        visit(root, &mut read, 0, 0, &mut remaining).map(Self)
+    }
+
     /// Consumes a bounded tree as a sequence of postorder graph operations.
     pub fn into_graph_cursor<I: Copy>(self) -> FormulaGraphCursor<I> {
         FormulaGraphCursor {

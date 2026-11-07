@@ -3,6 +3,15 @@ use super::*;
 use crate::{graph::program::PreparedProgram, proof_work::Work, resources::adaptive::Observer};
 use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, Prefix};
 
+struct Native {
+    candidate: crate::learning::program::Candidate,
+    helpers: Vec<String>,
+    staged: Option<crate::graph::CheckedBatch>,
+    checker_work: usize,
+    checker_time: Duration,
+    _memory: std::sync::Arc<crate::resources::MemoryLease>,
+}
+
 pub(super) struct Generated {
     job: u64,
     units: u32,
@@ -12,6 +21,7 @@ pub(super) struct Generated {
     work: Option<Work>,
     checked: Option<PreparedProgram>,
     budget: Observer,
+    native: Option<Native>,
 }
 impl Generated {
     pub(super) fn new(job: u64, units: u32) -> Self {
@@ -24,8 +34,59 @@ impl Generated {
             work: None,
             checked: None,
             budget: Observer::default(),
+            native: None,
         }
     }
+    pub(super) fn native(
+        job: u64,
+        solution: crate::learning::Solution,
+        question: &ResearchQuestion,
+    ) -> Result<Self, crate::Error> {
+        let candidate = crate::learning::program::Candidate::from_solution(&solution, question)?;
+        let mut generated = Self::new(job, 0);
+        let helpers = candidate.helpers(&solution)?;
+        let retained = candidate.commands.capacity() * std::mem::size_of::<Command>()
+            + candidate.manifest.input_bytes as usize
+            + helpers.iter().map(String::capacity).sum::<usize>();
+        let memory = crate::resources::MemoryLease::acquire(retained)?;
+        generated.native = Some(Native {
+            candidate,
+            helpers,
+            staged: None,
+            checker_work: 0,
+            checker_time: Duration::ZERO,
+            _memory: memory,
+        });
+        Ok(generated)
+    }
+
+    fn append(
+        work: &mut Work,
+        prefix: &mut Prefix,
+        records: &[Command],
+    ) -> Result<(), crate::Error> {
+        let before = *prefix;
+        let mut next = before;
+        for command in records {
+            next.append(&naome_proof::program::encode_command(command)?)?;
+        }
+        let status = work.status()?;
+        if status.commands == before.commands {
+            if status.program_hash != crate::hex(&before.hash) {
+                return Err("candidate retained prefix differs".into());
+            }
+            work.append_group(records)?;
+        } else if status.commands < next.commands {
+            return Err("candidate checkpoint ends inside a provider group".into());
+        }
+        let status = work.status()?;
+        if status.commands == next.commands && status.program_hash != crate::hex(&next.hash) {
+            return Err("candidate input differs from its retained program".into());
+        }
+        *prefix = next;
+        Ok(())
+    }
+
     pub(super) fn restrict_cache(&mut self, graph: &Graph) -> Result<(), crate::Error> {
         let cache = self
             .budget
@@ -63,34 +124,36 @@ impl Generated {
         }
         if let Some(work) = self.work.as_mut() {
             work.record_budget(&snapshot)?;
+            if let Some(native) = &mut self.native {
+                let commands = &native.candidate.commands[self.prefix.commands as usize..];
+                if !commands.is_empty() {
+                    let mut bytes = 0;
+                    let mut count = 0;
+                    for command in commands.iter().take(CHUNK_RECORDS) {
+                        bytes += naome_proof::program::encode_command(command)?.len();
+                        if bytes > CHUNK_BYTES {
+                            break;
+                        }
+                        count += 1;
+                    }
+                    Self::append(work, &mut self.prefix, &commands[..count])?;
+                    return Ok(None);
+                }
+                if let Some(staged) = &native.staged
+                    && !graph.batch_current(staged)?
+                {
+                    native.staged = None;
+                }
+                if native.staged.is_none() && !native.helpers.is_empty() {
+                    native.staged = Some(graph.prepare_generated_helpers(&native.helpers)?);
+                }
+            }
             if self.unit <= self.units {
                 if let Some(mut pending) = self.pending.take() {
                     match pending.try_recv() {
                         Ok(result) => {
                             let records = result?;
-                            let before = self.prefix;
-                            let mut prefix = before;
-                            for command in &records {
-                                prefix.append(&naome_proof::program::encode_command(command)?)?;
-                            }
-                            let status = work.status()?;
-                            if status.commands == before.commands {
-                                work.append_group(&records)?;
-                            } else if status.commands < prefix.commands {
-                                return Err(
-                                    "candidate checkpoint ends inside a provider group".into()
-                                );
-                            }
-                            let status = work.status()?;
-                            if status.commands == prefix.commands
-                                && status.program_hash != crate::hex(&prefix.hash)
-                            {
-                                return Err(
-                                    "candidate input differs from its retained provider stream"
-                                        .into(),
-                                );
-                            }
-                            self.prefix = prefix;
+                            Self::append(work, &mut self.prefix, &records)?;
                             self.unit = self
                                 .unit
                                 .checked_add(1)
@@ -111,9 +174,20 @@ impl Generated {
                 return Err("candidate retained stream differs".into());
             }
             if !status.fully_checked {
-                if !work.advance(&snapshot.budget, graph.checked_context())?
-                    && !work.status()?.fully_checked
-                {
+                let context = self
+                    .native
+                    .as_ref()
+                    .and_then(|native| native.staged.as_ref())
+                    .map_or_else(|| graph.checked_context(), |batch| batch.context());
+                let start = Instant::now();
+                let progress = work.advance(&snapshot.budget, context);
+                if let Some(native) = &mut self.native {
+                    native.checker_work = native
+                        .checker_work
+                        .saturating_add(work.last_quantum_steps());
+                    native.checker_time += start.elapsed();
+                }
+                if !progress? && !work.status()?.fully_checked {
                     return Err("candidate has no completely checked seal".into());
                 }
                 return Ok(None);
@@ -122,9 +196,25 @@ impl Generated {
                 return Ok(None);
             }
             let checked = self.work.take().expect("candidate work").into_checked()?;
+            if let Some(native) = &self.native {
+                checked
+                    .proof()?
+                    .check_manifest(&native.candidate.manifest)?;
+            }
             question
                 .classify_checked_program(checked.proof()?)
                 .map_err(crate::Error::from)?;
+            if let Some(native) = &self.native {
+                emit(json!({
+                    "event": "native_program_checked",
+                    "job": self.job,
+                    "id": crate::hex(native.candidate.manifest.artifact_id().as_bytes()),
+                    "input_bytes": native.candidate.manifest.input_bytes,
+                    "commands": native.candidate.manifest.commands,
+                    "checker_work": native.checker_work,
+                    "checker_micros": native.checker_time.as_micros(),
+                }));
+            }
             self.checked = Some(PreparedProgram::new(checked));
         }
         let checked = self.checked.as_mut().ok_or("checked candidate absent")?;
@@ -143,7 +233,33 @@ impl Generated {
             store.append_program(&manifest, &chunk)?;
             return Ok(None);
         }
-        if checked.advance(graph, snapshot.budget.batch_steps.max(1))? {
+        let prefix = if checked.pending() {
+            if let Some(native) = &mut self.native {
+                if let Some(staged) = native.staged.take() {
+                    if graph.batch_current(&staged)? {
+                        Some(staged)
+                    } else if native.helpers.is_empty() {
+                        None
+                    } else {
+                        Some(graph.prepare_generated_helpers(&native.helpers)?)
+                    }
+                } else if native.helpers.is_empty() {
+                    None
+                } else {
+                    Some(graph.prepare_generated_helpers(&native.helpers)?)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let quantum = snapshot.budget.batch_steps.max(1);
+        let ready = match prefix {
+            Some(prefix) => checked.advance_after(graph, quantum, Some(prefix))?,
+            None => checked.advance(graph, quantum)?,
+        };
+        if ready {
             Ok(Some((
                 manifest.artifact_id(),
                 checked.take_batch().expect("prepared candidate"),

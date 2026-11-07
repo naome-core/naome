@@ -112,7 +112,9 @@ impl Disk {
                         read_bytes += bytes.len();
                         read_operations += 1;
                         let root: String = crate::checkpoint::decode(&bytes)?;
-                        if root != crate::hex(crate::object::proof_address(&key)?.as_bytes()) {
+                        let expected =
+                            crate::learning::program::Candidate::artifact(solution, question)?;
+                        if root != crate::hex(expected.as_bytes()) {
                             return Err("historical own admission identity differs".into());
                         }
                         (question.clone(), crate::learning::Origin::Local, None)

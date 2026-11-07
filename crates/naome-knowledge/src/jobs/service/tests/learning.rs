@@ -262,7 +262,45 @@ fn accepted(owner: &mut Owner) -> u64 {
     );
     let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
     let mut graph = crate::Graph::default();
-    let (root, batch) = graph.prepare_generated(&solution.source, &[], &q).unwrap();
+    let program = crate::learning::program::Candidate::from_solution(&solution, &q).unwrap();
+    let mut work = crate::proof_work::Work::open(
+        &graph
+            .ownership()
+            .directory()
+            .join("own-native-program.sqlite3"),
+    )
+    .unwrap();
+    for group in program.commands.chunks(naome_proof::program::CHUNK_RECORDS) {
+        work.append_group(group).unwrap();
+    }
+    let budget = crate::resources::adaptive::Budget {
+        memory_bytes: 8 * 1024 * 1024,
+        cache_bytes: 32768,
+        concurrency: 1,
+        batch_steps: 128,
+        network_requests: 1,
+        yield_ms: 0,
+        paused: None,
+    };
+    while work.advance(&budget, graph.checked_context()).unwrap() {}
+    while !work.prepare_export(&budget).unwrap() {}
+    let checked = work.into_checked().unwrap();
+    let proof = checked.proof().unwrap();
+    assert_eq!(proof.manifest(), &program.manifest);
+    q.classify_checked_program(proof).unwrap();
+    let root = proof.manifest().artifact_id();
+    let store = graph.ownership();
+    let mut progress = store.start_program(proof.manifest()).unwrap();
+    while progress.commands < proof.manifest().commands {
+        let chunk = proof
+            .input_chunk(progress.commands, 128, naome_proof::program::CHUNK_BYTES)
+            .unwrap();
+        store.append_program(proof.manifest(), &chunk).unwrap();
+        progress = store.program_progress(proof.manifest()).unwrap();
+    }
+    let mut preparation = graph.begin_program_admission(&checked).unwrap();
+    while !preparation.advance(&graph, &checked, 128).unwrap() {}
+    let batch = preparation.finish(&graph, &checked).unwrap();
     graph
         .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
         .unwrap();
@@ -291,11 +329,13 @@ fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
     let (directory, mut owner) = native();
     let id = accepted(&mut owner);
     let before = learning(&owner);
-    let root = crate::hex(
-        crate::object::proof_address(&checked_solution().proof_id)
-            .unwrap()
-            .as_bytes(),
-    );
+    let question = naome_checker::question::ResearchQuestion::from_hex(
+        &crate::learning::tests::own_question(),
+    )
+    .unwrap();
+    let program =
+        crate::learning::program::Candidate::from_solution(&checked_solution(), &question).unwrap();
+    let root = crate::hex(program.manifest.artifact_id().as_bytes());
     owner
         .disk
         .accept_learning(&mut owner.journal, id, &root)
@@ -997,6 +1037,7 @@ fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_
                 &known.target,
             )
         },
+        |_| Ok(None),
         vec![],
     )
     .unwrap();

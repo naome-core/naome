@@ -230,6 +230,7 @@ pub fn validate_offered(
     tree: &Tree,
     known: &[Entry],
     definitions: &[super::definitions::Entry],
+    available_only: bool,
     required: &[String],
 ) -> Result<(), String> {
     match tree {
@@ -237,7 +238,7 @@ pub fn validate_offered(
             if *entries != offer(target, known, required)? {
                 return Err("theorem availability differs from owner snapshot".into());
             }
-            validate_offered(target, proof, known, definitions, required)?;
+            validate_offered(target, proof, known, definitions, available_only, required)?;
         }
         Tree::Constructed {
             selection: Some(selection),
@@ -255,7 +256,7 @@ pub fn validate_offered(
             proof,
             ..
         } => {
-            if *entries != super::definitions::choices(target, definitions)?
+            if *entries != super::definitions::choices(target, definitions, available_only)?
                 || *available
                     != entries
                         .iter()
@@ -264,7 +265,7 @@ pub fn validate_offered(
             {
                 return Err("definition availability differs from owner snapshot".into());
             }
-            validate_offered(target, proof, known, definitions, required)?;
+            validate_offered(target, proof, known, definitions, available_only, required)?;
         }
         _ => {}
     }
@@ -278,7 +279,7 @@ pub fn validate_availability(
     known: &[Entry],
     definitions: &[super::definitions::Entry],
 ) -> Result<(), String> {
-    validate_offered(target, tree, known, definitions, &[])
+    validate_offered(target, tree, known, definitions, false, &[])
 }
 
 #[cfg(test)]

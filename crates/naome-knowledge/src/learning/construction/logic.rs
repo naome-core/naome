@@ -88,7 +88,7 @@ fn project(value: Term, second: bool, names: &mut Names) -> Result<Term, String>
     }
     Ok(result)
 }
-fn join(a: Term, b: Term, names: &mut Names) -> Result<Term, String> {
+pub(in crate::learning) fn join(a: Term, b: Term, names: &mut Names) -> Result<Term, String> {
     let af = a.formula();
     let bf = b.formula();
     let (i, av) = names.assumption(af.clone());

@@ -2,6 +2,7 @@
 mod artifact;
 mod calculus;
 mod construction;
+pub(crate) use construction::logic::conjunction as conjunction_operands;
 mod coverage;
 mod curriculum;
 pub(crate) mod definitions;
@@ -420,6 +421,7 @@ impl Job {
                     packet,
                     inputs,
                     work,
+                    ..
                 } => construction::composition::validate(packet, inputs, *work).is_ok(),
                 search::Tree::Certificate(_)
                 | search::Tree::Stored { .. }
@@ -448,7 +450,9 @@ impl Job {
             return Err("learning parent snapshot differs".into());
         }
         self.base.validate()?;
-        if !self.prerequisites.is_empty() && (self.required.is_empty() || self.training) {
+        if !self.prerequisites.is_empty()
+            && (self.training || self.required.is_empty() && !self.prerequisites.has_definitions())
+        {
             return Err("temporary prerequisites lack a solving role".into());
         }
         if self.required.len() > knowledge::CAPACITY
@@ -635,16 +639,30 @@ impl Job {
             }
             if let Some(solution) = &p.result {
                 let checked = solution.checked()?;
-                if let search::Tree::Composed { inputs, .. } = &solution.tree
-                    && inputs.iter().any(|id| !self.required.contains(id))
-                {
-                    return Err("composition differs from requested prerequisites".into());
+                if let Some((inputs, references)) = solution.tree.composition() {
+                    let aliases = self.prerequisites.aliases(&self.required)?;
+                    if references
+                        .iter()
+                        .any(|reference| !aliases.contains(reference))
+                        || inputs.iter().any(|id| {
+                            !self.required.contains(id)
+                                && !references
+                                    .iter()
+                                    .any(|reference| crate::hex(&reference.projection) == *id)
+                        })
+                    {
+                        return Err("composition differs from requested prerequisites".into());
+                    }
                 }
+                let definitions = self
+                    .prerequisites
+                    .definitions(&self.base.definitions, &self.required)?;
                 knowledge::validate_offered(
                     checked.conclusion(),
                     &solution.tree,
                     &self.base.knowledge,
-                    &self.base.definitions,
+                    &definitions,
+                    self.prerequisites.has_definitions(),
                     &self.required,
                 )?;
             }
@@ -1057,6 +1075,14 @@ fn solve_with_report(
     job: u64,
     context: SolveContext<'_>,
 ) -> Result<Generation, String> {
+    let definitions = context
+        .prerequisites
+        .map(|inputs| inputs.definitions(context.definitions, context.required))
+        .transpose()?;
+    let context = SolveContext {
+        definitions: definitions.as_deref().unwrap_or(context.definitions),
+        ..context
+    };
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
     let mut ranker = Exploring {
@@ -1075,7 +1101,7 @@ fn solve_with_report(
     if let Some(solution) = &mut solution {
         if matches!(
             solution.tree,
-            search::Tree::Constructed { .. } | search::Tree::Composed { .. }
+            search::Tree::Constructed { .. } | search::Tree::Scoped { .. }
         ) {
             return Ok(Generation {
                 solution: Some(solution.clone()),
@@ -1093,8 +1119,14 @@ fn solve_with_report(
         } else {
             question.proved_target()
         };
-        if let Some((entries, selected)) = definitions::choose(target, context.definitions, model)?
-        {
+        if let Some((entries, selected)) = definitions::choose(
+            target,
+            context.definitions,
+            context
+                .prerequisites
+                .is_some_and(Prerequisites::has_definitions),
+            model,
+        )? {
             cost.definition_candidates = entries.len();
             let available = entries
                 .iter()
@@ -1127,8 +1159,25 @@ fn solve_with_report(
                             .certificate
                             .steps()
                             .iter()
-                            .map(|s| s.definition_references().len())
+                            .map(|step| step.definition_references().len())
                             .sum();
+                        if let search::Tree::Definitions {
+                            entries,
+                            selected,
+                            proof,
+                            ..
+                        } = &solution.tree
+                            && let Some(operands) = construction::composition::scoped_operands(
+                                target,
+                                proof,
+                                &entries[*selected],
+                            )?
+                        {
+                            cost.definition_references = operands
+                                .iter()
+                                .map(|(_, formula)| formula.definition_references().len())
+                                .sum();
+                        }
                     } else {
                         cost.definition_failure =
                             Some("definition certificate or helper capacity".into());
@@ -1252,6 +1301,21 @@ fn search_question_report(
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
+    let aliases = context
+        .prerequisites
+        .map(|inputs| inputs.aliases(context.required))
+        .transpose()?
+        .unwrap_or_default();
+    let composition_required = context
+        .required
+        .iter()
+        .map(|id| {
+            aliases
+                .iter()
+                .find(|reference| crate::hex(&reference.proof) == *id)
+                .map_or_else(|| id.clone(), |reference| crate::hex(&reference.projection))
+        })
+        .collect::<Vec<_>>();
     for refuted in [false, true] {
         if remaining == 0 {
             break;
@@ -1263,7 +1327,13 @@ fn search_question_report(
         };
         let orientation_started = std::time::Instant::now();
         let retrieval_started = std::time::Instant::now();
-        let composed = if terms.is_empty() || remaining == 0 {
+        let (scoped, scoped_work) = if context.required.is_empty() {
+            search::scope::search(&target, ranker, remaining, orientation_started)?
+        } else {
+            (None, 0)
+        };
+        remaining = remaining.saturating_sub(scoped_work);
+        let composed = if scoped.is_some() || terms.is_empty() || remaining == 0 {
             None
         } else {
             let attempt = construction::composition::construct(
@@ -1284,14 +1354,24 @@ fn search_question_report(
             };
             remaining = remaining.saturating_sub(work);
             verified.and_then(|verified| {
-                let inputs = construction::composition::used(&verified, context.required).ok()?;
+                let inputs =
+                    construction::composition::used(&verified, &composition_required).ok()?;
                 if inputs.is_empty() {
                     return None;
                 }
                 Some((verified, inputs, work))
             })
         };
-        let found = if let Some((verified, inputs, work)) = composed {
+        let found = if let Some(tree) = scoped {
+            search::ResultTree {
+                execution: None,
+                tree: Some(tree),
+                expansions: 0,
+                failure: None,
+                frontier: None,
+                terminal: experience::TerminalEvidence::Unknown,
+            }
+        } else if let Some((verified, inputs, work)) = composed {
             search::ResultTree {
                 execution: None,
                 tree: Some(search::Tree::Composed {
@@ -1306,6 +1386,11 @@ fn search_question_report(
                             continue;
                         }
                     },
+                    references: aliases
+                        .iter()
+                        .filter(|reference| inputs.contains(&crate::hex(&reference.projection)))
+                        .cloned()
+                        .collect(),
                     inputs,
                     work,
                 }),

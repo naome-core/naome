@@ -1,4 +1,4 @@
-use super::{Axiom, Command};
+use super::{Axiom, Command, ScopedAction};
 use crate::{
     ProofFormula, ProofNormalForm, ProofStep,
     defined_formula::{Node as Defined, Variable as DefinedVariable},
@@ -94,6 +94,95 @@ impl Projection {
             commands: builder.commands,
             results,
         })
+    }
+
+    /// Use a direct typed instantiation where the normalized axiom has only
+    /// its adjacent application as a consumer.
+    pub fn with_native_instantiations(proof: &ProofNormalForm) -> Result<Self, String> {
+        let steps = proof.certificate().steps();
+        let mut uses = vec![0u32; steps.len()];
+        for step in steps {
+            for reference in step.local_references().into_iter().flatten() {
+                let count = uses
+                    .get_mut(reference as usize)
+                    .ok_or("invalid projection reference")?;
+                *count = count.saturating_add(1);
+            }
+        }
+        let sites = steps
+            .windows(2)
+            .enumerate()
+            .filter_map(|(index, pair)| {
+                let [
+                    ProofStep::UniversalInstantiation { body, .. },
+                    ProofStep::ModusPonens { implication, .. },
+                ] = pair
+                else {
+                    return None;
+                };
+                (*implication as usize == index && uses[index] == 1 && body.as_defined().is_none())
+                    .then_some(index + 1)
+            })
+            .collect::<Vec<_>>();
+        Self::with_instantiations(proof, &sites)
+    }
+
+    /// Build one scoped deduction, exposing only its discharged conclusion.
+    pub fn scoped(
+        assumptions: &[ProofFormula],
+        actions: &[ScopedAction],
+        result: u32,
+        binders: &[FreeVariable],
+    ) -> Vec<Command> {
+        let mut builder = Builder::default();
+        let assumptions = assumptions
+            .iter()
+            .map(|formula| builder.formula(formula))
+            .collect();
+        let mut proof = builder.push(Command::Deduce {
+            assumptions,
+            actions: actions.to_vec(),
+            result,
+        });
+        for variable in binders.iter().rev() {
+            proof = builder.push(Command::Generalization {
+                premise: proof,
+                variable: variable.identifier(),
+            });
+        }
+        builder.push(Command::Seal { proof });
+        builder.commands
+    }
+
+    /// Construct a checked conjunction from two actual proof references.
+    /// Formula operands describe the discharged assumptions, while the
+    /// references supply the proofs used to apply them.
+    pub fn conjoin(operands: &[(crate::ProofId, ProofFormula); 2]) -> Vec<Command> {
+        let mut builder = Builder::default();
+        let assumptions = operands
+            .iter()
+            .map(|(_, formula)| builder.formula(formula))
+            .collect();
+        let mut proof = builder.push(Command::Deduce {
+            assumptions,
+            actions: vec![ScopedAction::Conjoin { left: 0, right: 1 }],
+            result: 2,
+        });
+        for (id, _) in operands {
+            let premise = builder.push(Command::ProofReference {
+                proof_id: *id.as_bytes(),
+            });
+            proof = builder.push(Command::ModusPonens {
+                premise,
+                implication: proof,
+            });
+        }
+        builder.push(Command::Seal { proof });
+        builder.commands
+    }
+
+    pub fn into_commands(self) -> Vec<Command> {
+        self.commands
     }
 
     pub fn commands(&self) -> &[Command] {

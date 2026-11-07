@@ -493,8 +493,9 @@ impl Catalog {
         } = commit;
         self.replay_summary.set(None);
         let prepared = prepare(objects.iter().copied())?;
-        let questions = root.questions;
-        let root = *root.root.as_bytes();
+        let publication = root;
+        let questions = publication.questions;
+        let root = *publication.root.as_bytes();
         if questions
             .keys()
             .any(|id| !prepared.contains_key(id.as_bytes()))
@@ -523,11 +524,10 @@ impl Catalog {
         let inserted = insert_commit(
             &transaction,
             commit,
-            root,
+            &publication,
             &prepared,
             meta.count,
             cut,
-            questions,
             peer.as_deref(),
         )?;
         let summary = if inserted {
@@ -1296,13 +1296,14 @@ fn commit_summary(
 fn insert_commit(
     connection: &Connection,
     commit: [u8; 32],
-    root: [u8; 32],
+    publication: &Publication<'_>,
     objects: &BTreeMap<[u8; 32], Prepared>,
     preceding_count: usize,
     cut: Option<BatchCut>,
-    questions: &BTreeMap<ArtifactId, Vec<u8>>,
     peer: Option<&str>,
 ) -> Result<bool, crate::Error> {
+    let root = *publication.root.as_bytes();
+    let questions = publication.questions;
     let existing: Option<i64> = connection
         .query_row(
             "SELECT 1 FROM commits WHERE id = ?1",

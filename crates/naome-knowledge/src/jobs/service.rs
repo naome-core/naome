@@ -975,7 +975,7 @@ impl Owner {
         if reply.is_closed() {
             return Ok(());
         }
-        if !required.is_empty() {
+        if !required.is_empty() || !prerequisites.is_empty() {
             if !matches!(input, Input::Solve { .. })
                 || self
                     .journal
@@ -994,7 +994,8 @@ impl Owner {
                 r.input == input
                     && !r.acknowledged
                     && r.native.as_ref().is_none_or(|n| {
-                        n.prerequisites.require(&n.base, &required).is_err()
+                        !n.prerequisites.contains_inputs(&prerequisites)
+                            || n.prerequisites.require(&n.base, &required).is_err()
                             || required.iter().any(|id| !n.required.contains(id))
                     })
             }) {
@@ -1058,9 +1059,10 @@ impl Owner {
             return Ok(());
         }
         if let Some(record) = self.disk.request(&input, &binding, settings)? {
-            if !required.is_empty()
+            if (!required.is_empty() || !prerequisites.is_empty())
                 && record.native.as_ref().is_none_or(|n| {
-                    n.prerequisites.require(&n.base, &required).is_err()
+                    !n.prerequisites.contains_inputs(&prerequisites)
+                        || n.prerequisites.require(&n.base, &required).is_err()
                         || required.iter().any(|id| !n.required.contains(id))
                 })
             {

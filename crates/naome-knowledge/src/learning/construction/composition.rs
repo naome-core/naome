@@ -72,6 +72,43 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
     Ok(())
 }
 
+/// A conjunction of two already checked premises can use the same
+/// conservative representations directly in the program's deduction scope.
+pub(in crate::learning) type ScopedOperands =
+    [(naome_proof::ProofId, naome_proof::ProofFormula); 2];
+
+pub(in crate::learning) fn scoped_operands(
+    target: &Formula,
+    tree: &super::super::search::Tree,
+    selected: &super::super::definitions::Entry,
+) -> Result<Option<ScopedOperands>, String> {
+    let super::super::search::Tree::Composed { packet, inputs, .. } = tree else {
+        return Ok(None);
+    };
+    let Some((left, right)) = logic::conjunction(target) else {
+        return Ok(None);
+    };
+    let verified = super::super::evidence::checked(packet)?;
+    let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
+    let find = |wanted: &Formula| {
+        context
+            .proof_conclusions()
+            .find_map(|(id, _, conclusion, _)| {
+                (conclusion == wanted && inputs.contains(&crate::hex(id.as_bytes()))).then_some(id)
+            })
+    };
+    let (Some(left_id), Some(right_id)) = (find(&left), find(&right)) else {
+        return Ok(None);
+    };
+    let selected = std::slice::from_ref(selected);
+    let left = super::super::definitions::represent(&left, selected)?;
+    let right = super::super::definitions::represent(&right, selected)?;
+    if left.as_defined().is_none() && right.as_defined().is_none() {
+        return Ok(None);
+    }
+    Ok(Some([(left_id, left), (right_id, right)]))
+}
+
 /// Reuse only an actual checker-issued positive certificate for an internal
 /// obligation. This neither registers a research question nor changes intake.
 fn deductions(

@@ -11,6 +11,7 @@ pub struct Cost {
 }
 pub fn steps(tree: &Tree) -> usize {
     match tree {
+        Tree::Scoped { actions, .. } => actions.len(),
         Tree::Knowledge { proof, .. } | Tree::Definitions { proof, .. } => 1 + steps(proof),
         Tree::Step { children, .. } => 1 + children.iter().map(steps).sum::<usize>(),
         Tree::Certificate(bytes) => super::super::peer::step_count(bytes),
@@ -68,7 +69,8 @@ fn rebase(
             position(*a, from, to)?,
             position(*b, from, to)?,
         )),
-        Tree::Axiom(_)
+        Tree::Scoped { .. }
+        | Tree::Axiom(_)
         | Tree::Certificate(_)
         | Tree::Composed { .. }
         | Tree::Constructed { .. }
@@ -164,6 +166,7 @@ pub fn checked(
     } else if matches!(
         tree,
         Tree::Axiom(_)
+            | Tree::Scoped { .. }
             | Tree::Certificate(_)
             | Tree::Composed { .. }
             | Tree::Constructed { .. }

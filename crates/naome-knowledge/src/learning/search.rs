@@ -2,6 +2,7 @@
 pub mod core;
 pub(crate) mod derivation;
 pub(crate) mod frontier;
+pub(super) mod scope;
 pub(crate) mod trace;
 use super::calculus::{self as c, Names};
 use super::{
@@ -31,6 +32,10 @@ pub enum Action {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Tree {
+    Scoped {
+        target: Vec<u8>,
+        actions: Vec<naome_proof::program::ScopedAction>,
+    },
     Knowledge {
         entries: Vec<super::knowledge::Entry>,
         target: Vec<u8>,
@@ -44,6 +49,7 @@ pub enum Tree {
         packet: Vec<u8>,
         inputs: Vec<String>,
         work: usize,
+        references: Box<[super::program::Reference]>,
     },
     Definitions {
         entries: Vec<super::definitions::Entry>,
@@ -65,6 +71,18 @@ pub enum Tree {
         children: Vec<Self>,
     },
 }
+impl Tree {
+    pub(crate) fn composition(&self) -> Option<(&[String], &[super::program::Reference])> {
+        match self {
+            Self::Composed {
+                inputs, references, ..
+            } => Some((inputs, references)),
+            Self::Definitions { proof, .. } => proof.composition(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct State {
     facts: Vec<Formula>,
@@ -880,6 +898,16 @@ fn replay(
 }
 
 pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), String> {
+    if let Tree::Scoped {
+        target: encoded,
+        actions,
+    } = tree
+    {
+        if target.encode_canonical().map_err(|e| e.to_string())? != *encoded {
+            return Err("scope trace target binding differs".into());
+        }
+        return scope::compile(target, actions);
+    }
     if let Tree::Knowledge {
         entries,
         target: encoded,
@@ -905,6 +933,12 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         let entry = entries.get(*selected).ok_or("definition selection index")?;
         let _ = super::definitions::context(entries)?;
         let (term, mut graphs) = compile(target, proof)?;
+        if super::construction::composition::scoped_operands(target, proof, entry)?.is_some() {
+            if entries.len() > 1 {
+                graphs.push(super::definitions::decision(target, entries, *selected)?);
+            }
+            return Ok((term, graphs));
+        }
         let verified = super::proof::verify(&term, target)?;
         let mut definitions = verified.definitions.clone();
         if !definitions.contains(entry) {
@@ -940,6 +974,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         packet,
         inputs,
         work,
+        ..
     } = tree
     {
         super::construction::composition::validate(packet, inputs, *work)?;

@@ -251,11 +251,12 @@ impl Autonomous {
             ..
         }) = &record.result
         {
-            match crate::object::id_bytes(&solution.proof_id)
-                .map(naome_proof::ProofId::from_bytes)
-                .map(ArtifactId::from_proof_id)
-                .and_then(|root| graph.contains(root).map(|yes| (root, yes)))
-            {
+            let jobs::Input::Solve { question } = &record.input else {
+                return true;
+            };
+            let candidate = crate::learning::program::Candidate::artifact(solution, question)
+                .map_err(crate::Error::from);
+            match candidate.and_then(|root| graph.contains(root).map(|yes| (root, yes))) {
                 Ok((root, true)) => return self.accepted_learning(record.id, root),
                 Ok(_) => {}
                 Err(error) => {
@@ -662,7 +663,45 @@ impl Autonomous {
                         return accepted;
                     }
                 }
-                Ok(completion) => match completion.result.clone().map(jobs::Output::candidate) {
+                Ok(completion) => match completion.result.clone() {
+                    Ok(jobs::Output::Native {
+                        solution: Some(solution),
+                        ..
+                    }) => {
+                        match program::Generated::native(completion.id, solution, &solving.question)
+                        {
+                            Ok(program) => self.publications.push_back(Publication {
+                                question: solving.question,
+                                job: completion.id,
+                                candidate: Candidate::Program(Box::new(program)),
+                                batch: None,
+                                announced: false,
+                                assessment: None,
+                                reply: None,
+                                attempts: 0,
+                                retry: now,
+                                expires: now
+                                    + Duration::from_millis(
+                                        self.intervals.jobs.selection.limits.horizon_ms,
+                                    ),
+                                seen: None,
+                                eligible: false,
+                            }),
+                            Err(error) if error.retryable() => {
+                                solving.completion = Some(completion);
+                                self.solving.insert(id, solving);
+                            }
+                            Err(error) => {
+                                emit(
+                                    json!({"event":"proof_candidate_rejected","job":completion.id,"error":error.to_string()}),
+                                );
+                                self.retry(solving.question, questions, graph);
+                                if !self.acknowledge(completion.id) {
+                                    return accepted;
+                                }
+                            }
+                        }
+                    }
                     Ok(jobs::Output::Proof { proof, helpers }) => {
                         match graph.prepare_generated(&proof, &helpers, &solving.question) {
                             Ok((root, batch)) => {
@@ -1165,9 +1204,14 @@ impl Autonomous {
                     } else {
                         Vec::new()
                     };
-                    let prerequisites = match graph.prerequisites(&required) {
-                        Ok(Some(inputs)) => inputs,
-                        Ok(None) => Default::default(),
+                    let inputs = match &self.frontier {
+                        Some(frontier) => frontier.solving_inputs(graph, &question, &required),
+                        None => graph
+                            .solving_inputs(&required, &[])
+                            .map(|inputs| (required, inputs.unwrap_or_default())),
+                    };
+                    let (required, prerequisites) = match inputs {
+                        Ok(selected) => selected,
                         Err(error) => {
                             if error.fatal() {
                                 self.error = Some(error.to_string());
@@ -1176,6 +1220,14 @@ impl Autonomous {
                             return accepted;
                         }
                     };
+                    if !required.is_empty() || !question.dependencies().is_empty() {
+                        emit(json!({
+                            "event": "finder_checked_inputs",
+                            "resolution_id": crate::hex(question.resolution_id()),
+                            "proofs": required,
+                            "definitions": question.dependencies().iter().map(|id| crate::hex(id.as_bytes())).collect::<Vec<_>>(),
+                        }));
+                    }
                     // Solver workers receive the checked primitive target. Keep the
                     // original question here for the graph's checked publication metadata.
                     let solving = if question.dependencies().is_empty() {

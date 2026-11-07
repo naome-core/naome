@@ -2,7 +2,7 @@
 //! No theorem name, question identity, or natural-number recipe is recognized.
 use super::evidence;
 pub(super) mod composition;
-mod logic;
+pub(in crate::learning) mod logic;
 mod repair;
 mod representation;
 pub(super) mod selection;

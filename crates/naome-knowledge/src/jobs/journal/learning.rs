@@ -604,16 +604,19 @@ impl Disk {
             self.acknowledge(journal, id)?;
             return Ok(());
         };
-        if crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes()) != root {
-            return Err("accepted native proof identity differs".into());
-        }
         let Input::Solve { question } = &record.input else {
             return Err("learning source role differs".into());
         };
-        let compiled = solution.checked()?;
-        if crate::hex(compiled.artifact_id().as_bytes()) != root {
-            return Err("accepted source checker identity differs".into());
+        let target = naome_checker::question::ResearchQuestion::from_hex(question)
+            .map_err(|error| error.to_string())?;
+        let program = crate::learning::program::Candidate::from_solution(solution, &target)?;
+        if crate::hex(program.manifest.artifact_id().as_bytes()) != root {
+            return Err("accepted native program identity differs".into());
         }
+        let compiled = solution.checked()?;
+        target
+            .classify_checked_proof(&compiled)
+            .map_err(|error| error.to_string())?;
         let example = crate::learning::Example {
             origin: crate::learning::Origin::Local,
             job: id,

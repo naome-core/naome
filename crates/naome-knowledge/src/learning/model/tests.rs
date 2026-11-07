@@ -341,3 +341,50 @@ fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
         started.elapsed().as_secs_f64()
     );
 }
+
+#[test]
+#[ignore = "Matched inference-only context measurement with exact checked Solver decision graphs"]
+fn indexed_context_inference_on_a_checked_scope() {
+    let mode = std::env::var("NAOME_TYPED_CONTEXT_MODE").unwrap();
+    assert!(matches!(mode.as_str(), "packed" | "dense"));
+    let (question, solution) = crate::learning::tests::typed_scope_candidate(false);
+    let (_, graphs) =
+        crate::learning::search::compile(question.proved_target(), &solution.tree).unwrap();
+    let repeated = graphs.iter().cycle().take(16).cloned().collect::<Vec<_>>();
+    let mut io = MemoryStore::default();
+    let runtime = Runtime::load(&Checkpoint::fresh(), &mut io).unwrap();
+    let policy = runtime.policy.valid();
+    let device = runtime.device.clone().inner();
+    let b = repeated.len();
+    let n = 1 + repeated.iter().map(|g| g.nodes.len() - 1).sum::<usize>();
+    let meter = crate::resources::feedback::Meter::start();
+    let start = std::time::Instant::now();
+    let mut actual = None;
+    for _ in 0..16 {
+        let batch = match mode.as_str() {
+            "packed" => Batch::from_graphs(&repeated, &device),
+            _ => Batch::from_dense_context(&repeated, &device),
+        }
+        .unwrap();
+        let scores = policy
+            .forward(&batch)
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap();
+        assert!(scores.iter().all(|value| value.is_finite()));
+        let bits = scores.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+        if let Some(previous) = &actual {
+            assert_eq!(previous, &bits);
+        }
+        actual = Some(bits);
+    }
+    let wall = start.elapsed().as_micros();
+    let sample = meter.finish(0, true);
+    let dense = 4 * b * n;
+    let packed = b * n;
+    eprintln!(
+        "typed_context mode={mode} graphs={b} nodes={n} dense_host_bytes={dense} packed_host_bytes={packed} wall_micros={wall} peak_process_rss_bytes={:?} score_digest={}",
+        sample.peak_rss_bytes,
+        crate::learning::digest(&actual)
+    );
+}
