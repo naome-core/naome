@@ -1306,32 +1306,46 @@ pub(super) fn fill_checkpoint_budget(state: &mut State, capacity: usize) {
         state.definitions.push(entry);
     }
 
-    let question = ResearchQuestion::from_hex(&own_question()).unwrap();
-    for allowance in 256..384 {
+    // Add small, valid observations independently of the completion under test.
+    // Grow the final observation's decimal cost and the revision to hit the
+    // exact encoded limit despite the coarser sizing of the checked entries.
+    let question = crate::test_inputs::question(crate::test_inputs::member_self());
+    state.feedback.revision = 1;
+    let mut last_allowance = None;
+    for allowance in 1..64 {
         let previous = state.feedback.development.clone();
-        for digits in (0..20).rev() {
-            state.feedback.development = previous.clone();
-            state.feedback.development.observe(
-                &question,
-                allowance,
-                Some(true),
-                10_u64.pow(digits),
-            );
-            if crate::checkpoint::encode(state).unwrap().len() <= capacity {
-                break;
-            }
-        }
+        state
+            .feedback
+            .development
+            .observe(&question, allowance, Some(true), 1);
         if crate::checkpoint::encode(state).unwrap().len() > capacity {
             state.feedback.development = previous;
+            break;
+        }
+        last_allowance = Some(allowance);
+    }
+
+    let allowance = last_allowance.expect("checkpoint fixture needs an ability observation");
+    let previous = state.feedback.development.clone();
+    for digits in (0..20).rev() {
+        state.feedback.development = previous.clone();
+        state.feedback.development.observe(
+            &question,
+            allowance,
+            Some(true),
+            10_u64.pow(digits) - 1,
+        );
+        if crate::checkpoint::encode(state).unwrap().len() <= capacity {
             break;
         }
     }
     let remaining = capacity - crate::checkpoint::encode(state).unwrap().len();
     assert!(
-        remaining <= 40,
-        "checkpoint test fixture leaves {remaining} bytes unused"
+        remaining <= 19,
+        "checkpoint fixture leaves {remaining} bytes unused"
     );
-    state.feedback.revision = 10_u64.pow(remaining.min(19) as u32);
+    state.feedback.revision = 10_u64.pow(remaining as u32);
+    assert_eq!(crate::checkpoint::encode(state).unwrap().len(), capacity);
 }
 
 pub(crate) fn typed_scope_candidate(conjoin: bool) -> (ResearchQuestion, Solution) {

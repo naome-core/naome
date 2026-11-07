@@ -1,23 +1,31 @@
 use super::*;
+// These tests install a process-wide resource snapshot.
+fn isolated(case: &str) -> bool {
+    if std::env::var("NAOME_AUTONOMOUS_PROGRAM_CASE").as_deref() == Ok(case) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", case, "--nocapture"])
+        .env("NAOME_AUTONOMOUS_PROGRAM_CASE", case)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 #[test]
 fn disk_pressure_at_work_creation_and_append_retains_the_completed_provider_candidate() {
-    const CASE: &str = "autonomous::program::tests::disk_pressure_at_work_creation_and_append_retains_the_completed_provider_candidate";
-    if std::env::var_os("NAOME_PROGRAM_CREATION_CASE").is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", CASE, "--nocapture"])
-            .env("NAOME_PROGRAM_CREATION_CASE", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    if isolated(
+        "autonomous::program::tests::disk_pressure_at_work_creation_and_append_retains_the_completed_provider_candidate",
+    ) {
         return;
     }
-
     // This case tests disk deferral, not the host's current pressure state.
     crate::resources::tests::budget(false);
     let graph = Graph::default();
@@ -88,6 +96,11 @@ fn disk_pressure_at_work_creation_and_append_retains_the_completed_provider_cand
 
 #[test]
 fn native_scoped_solver_result_publishes_and_reopens_with_its_exact_program_trace() {
+    if isolated(
+        "autonomous::program::tests::native_scoped_solver_result_publishes_and_reopens_with_its_exact_program_trace",
+    ) {
+        return;
+    }
     crate::resources::tests::budget(false);
     let directory = crate::checkpoint::tests::Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -185,6 +198,11 @@ fn native_scoped_solver_result_publishes_and_reopens_with_its_exact_program_trac
 
 #[test]
 fn finder_and_solver_bind_a_checked_program_and_definition_through_publication() {
+    if isolated(
+        "autonomous::program::tests::finder_and_solver_bind_a_checked_program_and_definition_through_publication",
+    ) {
+        return;
+    }
     crate::resources::tests::budget(false);
     let mut graph = Graph::default();
     let owner = jobs::tests::Manual::new();
