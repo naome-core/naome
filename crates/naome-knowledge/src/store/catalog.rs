@@ -1,4 +1,4 @@
-use super::{BatchCut, COMMIT_DEADLINE_ERROR};
+use super::{BatchCut, COMMIT_DEADLINE_ERROR, PublicationRoot};
 use crate::object::BinaryArtifact;
 use naome_proof::ArtifactId;
 use rusqlite::{
@@ -62,6 +62,7 @@ const TABLES: [(&str, &str); 7] = [
         id BLOB PRIMARY KEY CHECK(length(id) = 32),
         root BLOB NOT NULL CHECK(length(root) = 32),
         member_count INTEGER NOT NULL CHECK(member_count >= 1),
+        question BLOB CHECK(question IS NULL OR length(question) BETWEEN 1 AND 16384),
         FOREIGN KEY(root) REFERENCES artifacts(id) DEFERRABLE INITIALLY DEFERRED
     ) STRICT, WITHOUT ROWID",
     ),
@@ -374,6 +375,28 @@ impl Catalog {
         Ok(present)
     }
 
+    pub(super) fn exchange_question(
+        &self,
+        id: ArtifactId,
+        expected: Summary,
+    ) -> Result<Option<Vec<u8>>, crate::Error> {
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
+        check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
+        self.require_validated_version(&transaction)?;
+        let bytes = transaction
+            .query_row(
+                "SELECT substr(c.question,1,16385) FROM artifacts a JOIN commits c ON c.id=a.origin_commit
+                 WHERE a.id=?1 AND c.root=a.id",
+                [id.as_bytes().as_slice()],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .flatten();
+        transaction.commit().map_err(sql_error)?;
+        Ok(bytes)
+    }
+
     /// The enclosing Graph calls this only after complete mathematical replay.
     pub(super) fn activate(&self, root: [u8; 32]) -> Result<(), crate::Error> {
         let transaction = self.begin(TransactionBehavior::Immediate)?;
@@ -412,7 +435,7 @@ impl Catalog {
 
     pub(super) fn persist(
         &self,
-        root: ArtifactId,
+        root: PublicationRoot<'_>,
         objects: &[&BinaryArtifact],
         commit: Commit<'_>,
     ) -> Result<Summary, crate::Error> {
@@ -425,8 +448,13 @@ impl Catalog {
         } = commit;
         self.replay_summary.set(None);
         let prepared = prepare(objects.iter().copied())?;
-        let root = *root.as_bytes();
-        let commit = commit_digest(root, prepared.values().map(|object| &object.member))?;
+        let question = root.question;
+        let root = *root.artifact.as_bytes();
+        let commit = commit_digest(
+            root,
+            prepared.values().map(|object| &object.member),
+            question,
+        )?;
         fail_at(cut, BatchCut::BeforeWrite)?;
         let transaction = self.begin(TransactionBehavior::Immediate)?;
         let meta = read_meta(&transaction, Some(self.database_id))?;
@@ -440,9 +468,17 @@ impl Catalog {
                 program::require_complete(&transaction, &manifest)?;
             }
         }
-        let inserted = insert_commit(&transaction, commit, root, &prepared, meta.count, cut)?;
+        let inserted = insert_commit(
+            &transaction,
+            commit,
+            root,
+            &prepared,
+            meta.count,
+            cut,
+            question,
+        )?;
         let summary = if inserted {
-            verify_commit(&transaction, commit, root, &prepared)?;
+            verify_commit(&transaction, commit, root, &prepared, question)?;
             commit_summary(&transaction, expected, &prepared, next_root)?
         } else {
             expected
@@ -1204,6 +1240,7 @@ fn insert_commit(
     objects: &BTreeMap<[u8; 32], Prepared>,
     preceding_count: usize,
     cut: Option<BatchCut>,
+    question: Option<&[u8]>,
 ) -> Result<bool, crate::Error> {
     let existing: Option<i64> = connection
         .query_row(
@@ -1214,7 +1251,7 @@ fn insert_commit(
         .optional()
         .map_err(sql_error)?;
     if existing.is_some() {
-        verify_commit(connection, commit, root, objects)?;
+        verify_commit(connection, commit, root, objects, question)?;
         fail_at(cut, BatchCut::DuringWrite)?;
         return Ok(false);
     }
@@ -1223,11 +1260,12 @@ fn insert_commit(
     }
     connection
         .execute(
-            "INSERT INTO commits(id, root, member_count) VALUES(?1, ?2, ?3)",
+            "INSERT INTO commits(id, root, member_count, question) VALUES(?1, ?2, ?3, ?4)",
             params![
                 commit.as_slice(),
                 root.as_slice(),
-                sql_width(objects.len())?
+                sql_width(objects.len())?,
+                question
             ],
         )
         .map_err(sql_error)?;
@@ -1275,12 +1313,13 @@ fn verify_commit(
     commit: [u8; 32],
     root: [u8; 32],
     objects: &BTreeMap<[u8; 32], Prepared>,
+    question: Option<&[u8]>,
 ) -> Result<(), crate::Error> {
-    let (stored_root, stored_count): (Vec<u8>, i64) = connection
+    let (stored_root, stored_count, stored_question): (Vec<u8>, i64, Option<Vec<u8>>) = connection
         .query_row(
-            "SELECT substr(root,1,33), member_count FROM commits WHERE id = ?1",
+            "SELECT substr(root,1,33), member_count, substr(question,1,16385) FROM commits WHERE id = ?1",
             params![commit.as_slice()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(sql_error)?;
     let mut expected = objects.keys();
@@ -1291,6 +1330,7 @@ fn verify_commit(
         Ok(())
     })?;
     if key(stored_root)? != root
+        || stored_question.as_deref() != question
         || usize::try_from(stored_count).ok() != Some(objects.len())
         || members != objects.len()
         || !objects.contains_key(&root)
@@ -1379,7 +1419,7 @@ fn visit_members(
 
 fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
     let mut statement = connection
-        .prepare("SELECT substr(id,1,33), substr(root,1,33), member_count FROM commits ORDER BY id")
+        .prepare("SELECT substr(id,1,33), substr(root,1,33), member_count, substr(question,1,16385) FROM commits ORDER BY id")
         .map_err(sql_error)?;
     let mut rows = statement.query([]).map_err(sql_error)?;
     while let Some(row) = rows.next().map_err(sql_error)? {
@@ -1387,7 +1427,8 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
         let root = key(row.get(1).map_err(sql_error)?)?;
         let count = usize::try_from(row.get::<_, i64>(2).map_err(sql_error)?)
             .map_err(|_| "catalog commit count width")?;
-        let mut digest = CommitDigest::new(root, count)?;
+        let question: Option<Vec<u8>> = row.get(3).map_err(sql_error)?;
+        let mut digest = CommitDigest::new(root, count, question.as_deref())?;
         visit_members(connection, id, |member| {
             let record = read_record(connection, member, ReadAdmission::Work)?
                 .ok_or("missing catalog commit proof")?;
@@ -1411,8 +1452,9 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
 fn commit_digest<'a>(
     root: [u8; 32],
     members: impl ExactSizeIterator<Item = &'a Member>,
+    question: Option<&[u8]>,
 ) -> Result<[u8; 32], crate::Error> {
-    let mut digest = CommitDigest::new(root, members.len())?;
+    let mut digest = CommitDigest::new(root, members.len(), question)?;
     for member in members {
         digest.push(member)?;
     }

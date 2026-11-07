@@ -1222,7 +1222,8 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
             .unwrap();
         let delta = QuestionDelta {
             registry,
-            question: Some(question.clone()),
+            question: question.clone(),
+            insert: true,
         };
         local
             .persistence
@@ -1363,7 +1364,8 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
                 batch,
                 QuestionDelta {
                     registry,
-                    question: Some(selected.clone())
+                    question: selected.clone(),
+                    insert: true,
                 },
                 None,
                 Instant::now() + Duration::from_secs(5)

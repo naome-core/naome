@@ -167,11 +167,19 @@ impl Graph {
         question: &naome_checker::question::ResearchQuestion,
     ) -> Result<bool, crate::Error> {
         self.ensure_live()?;
-        let Some(proof) = self.cold(self.context.artifact_proof_id(id))? else {
+        self.cold(Self::context_resolves_question(&self.context, id, question))
+    }
+
+    fn context_resolves_question(
+        context: &DiskArtifactState,
+        id: ArtifactId,
+        question: &naome_checker::question::ResearchQuestion,
+    ) -> Result<bool, crate::Error> {
+        let Some(proof) = context.artifact_proof_id(id)? else {
             return Ok(false);
         };
-        let header = self
-            .cold(self.context.proof_header(proof))?
+        let header = context
+            .proof_header(proof)?
             .ok_or("checked proof header missing")?;
         for formula in [question.positive_target(), question.negative_target()] {
             let target = if header.canonical_length() == usize::MAX {
@@ -187,7 +195,34 @@ impl Graph {
         Ok(false)
     }
 
+    fn exchange_question(&self, id: ArtifactId) -> Result<Option<String>, crate::Error> {
+        let Some(bytes) = self.cold(self.store.exchange_question(id, self.fixed_summary()))? else {
+            return Ok(None);
+        };
+        let question = self.cold(
+            naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
+                &bytes,
+                &self.context,
+            )
+            .map_err(|error| crate::Error::CorruptStorage(error.to_string())),
+        )?;
+        if question.dependencies().is_empty() || !self.resolves_question(id, &question)? {
+            return self.cold(Err(crate::Error::CorruptStorage(
+                "stored exchange question does not bind the checked proof".into(),
+            )));
+        }
+        Ok(Some(question.to_hex()))
+    }
+
     pub(crate) fn describe(&self, id: ArtifactId) -> Result<Option<Metadata>, crate::Error> {
+        self.describe_with_question(id, self.exchange_question(id)?)
+    }
+
+    fn describe_with_question(
+        &self,
+        id: ArtifactId,
+        question: Option<String>,
+    ) -> Result<Option<Metadata>, crate::Error> {
         self.ensure_live()?;
         let Some(proof_id) = self.cold(self.context.artifact_proof_id(id))? else {
             return Ok(None);
@@ -201,6 +236,14 @@ impl Graph {
             return Ok(None);
         };
         let statement = header.statement_id();
+        if let Some(question) = question {
+            return Ok(Some(Metadata {
+                artifact_id: crate::hex(id.as_bytes()),
+                proof_id: crate::hex(proof_id.as_bytes()),
+                statement_id: crate::hex(statement.as_bytes()),
+                question,
+            }));
+        }
         let conclusion = self
             .cold(
                 self.context
@@ -953,7 +996,10 @@ impl Graph {
         let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
         let persisted = self.store.persist_binary_batch(
-            id,
+            crate::store::PublicationRoot {
+                artifact: id,
+                question: None,
+            },
             batch.entries.iter().map(|(_, record)| record),
             self.fixed_summary(),
             None,

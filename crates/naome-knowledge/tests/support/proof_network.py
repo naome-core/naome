@@ -365,11 +365,14 @@ def stored_objects(node):
         assert len(by_id) == count and payload_bytes == total
         assert bytes.fromhex(content_root(format_bytes[8:40].hex(), [object["artifact_id"] for object in objects])) == root
         represented = set()
-        for commit, batch_root, members in catalog.execute("SELECT id,root,member_count FROM commits ORDER BY id"):
+        for commit, batch_root, members, question in catalog.execute("SELECT id,root,member_count,question FROM commits ORDER BY id"):
             ids = [row[0] for row in catalog.execute("SELECT artifact_id FROM members WHERE commit_id=? ORDER BY artifact_id", (commit,))]
             assert 1 <= len(ids) == members <= 4096 and batch_root in ids
             assert sum(by_id[id][2] for id in ids) <= 64 * 1024 * 1024, "per-commit payload bound"
             framed = b"naome:knowledge:catalog-commit:v1\0" + batch_root + len(ids).to_bytes(4, "big")
+            assert question is None or 1 <= len(question) <= 16384
+            source = question or b""
+            framed += len(source).to_bytes(4, "big") + source
             for id in ids:
                 assert id in by_id and id not in represented
                 represented.add(id)

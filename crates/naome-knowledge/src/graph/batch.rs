@@ -220,7 +220,7 @@ impl Graph {
         batch: CheckedBatch,
         deadline: Instant,
     ) -> Result<Vec<ArtifactId>, crate::Error> {
-        self.commit_batch_granted(root, batch, deadline, None)
+        self.commit_batch_granted(root, batch, deadline, None, None)
     }
 
     pub(crate) fn commit_batch_granted(
@@ -229,6 +229,7 @@ impl Graph {
         batch: CheckedBatch,
         deadline: Instant,
         peer: Option<PeerGrant>,
+        question: Option<&ResearchQuestion>,
     ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         self.publication_current()?;
@@ -252,12 +253,25 @@ impl Graph {
         }
         batch._disk.recheck(self.store.directory())?;
         batch.require_closure(self, root)?;
+        if let Some(question) = question
+            && (question.dependencies().is_empty()
+                || !self.cold(Self::context_resolves_question(
+                    &batch.context,
+                    root,
+                    question,
+                ))?)
+        {
+            return Err("exchange question does not bind the checked root".into());
+        }
         let storage = self.checked_storage.clone();
         let gate = self.cold(storage.write_gate())?;
         batch.stamp.check_at_gate(self, gate.epoch())?;
         let admitted: Vec<_> = batch.entries.iter().map(|(id, _)| *id).collect();
         let result = self.store.persist_binary_batch(
-            root,
+            crate::store::PublicationRoot {
+                artifact: root,
+                question: question.map(ResearchQuestion::canonical_bytes),
+            },
             batch.entries.iter().map(|(_, object)| object),
             self.fixed_summary(),
             Some(deadline),

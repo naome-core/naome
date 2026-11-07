@@ -1050,6 +1050,7 @@ fn a_peer_root_grant_revokes_only_its_publication() {
             batch,
             Instant::now() + Duration::from_secs(5),
             Some(related),
+            None,
         );
         if revoked {
             assert_eq!(result.unwrap_err(), crate::Error::StaleAuthority);

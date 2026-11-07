@@ -23,6 +23,10 @@ pub(crate) use naome_proof::program::Progress as ProgramProgress;
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
 pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;
+pub(crate) struct PublicationRoot<'a> {
+    pub artifact: ArtifactId,
+    pub question: Option<&'a [u8]>,
+}
 const FORMAT_FILE: &str = "proof-corpus.format";
 const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP\0";
 const INITIAL_DATABASE: &str = ".proof-corpus-initializing.sqlite3";
@@ -250,6 +254,19 @@ impl Store {
         catalog.contains(id, expected)
     }
 
+    pub(crate) fn exchange_question(
+        &self,
+        id: ArtifactId,
+        expected: Summary,
+    ) -> Result<Option<Vec<u8>>, crate::Error> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
+        catalog.exchange_question(id, expected)
+    }
+
     /// Small test fixtures may collect a corpus; production callers use pages.
     #[cfg(test)]
     pub(crate) fn load(&self) -> Result<Vec<Envelope>, crate::Error> {
@@ -311,12 +328,22 @@ impl Store {
         let objects = objects
             .map(|object| object.clone().prepare().map(|c| c.record()))
             .collect::<Result<Vec<_>, _>>()?;
-        self.persist_records(root, objects.iter(), expected, deadline, None, None)
+        self.persist_records(
+            PublicationRoot {
+                artifact: root,
+                question: None,
+            },
+            objects.iter(),
+            expected,
+            deadline,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn persist_binary_batch<'a>(
         &self,
-        root: ArtifactId,
+        root: PublicationRoot<'_>,
         objects: impl Iterator<Item = &'a BinaryArtifact>,
         expected: Summary,
         deadline: Option<Instant>,
@@ -328,7 +355,7 @@ impl Store {
 
     fn persist_records<'a>(
         &self,
-        root: ArtifactId,
+        root: PublicationRoot<'_>,
         objects: impl Iterator<Item = &'a BinaryArtifact>,
         expected: Summary,
         deadline: Option<Instant>,

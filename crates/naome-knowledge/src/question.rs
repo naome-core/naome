@@ -361,7 +361,8 @@ struct AdmittedProvenance {
 
 pub(crate) struct QuestionDelta {
     registry: QuestionRegistry,
-    question: Option<ResearchQuestion>,
+    question: ResearchQuestion,
+    insert: bool,
 }
 
 struct RegistryCompaction {
@@ -965,8 +966,8 @@ where
             .refresh_exchange(graph, question, assessment)?
             .prefilter;
         let mut registry = self.registry.clone();
-        let mut inserted = None;
-        if record.is_none() {
+        let insert = record.is_none();
+        if insert {
             if !self.registry_capacity(question) {
                 return Err(crate::Error::ExecutionLimit);
             }
@@ -978,11 +979,11 @@ where
             registry
                 .insert(entry)
                 .map_err(|reason| format!("question registration: {reason:?}"))?;
-            inserted = Some(question.clone());
         }
         Ok(QuestionDelta {
             registry,
-            question: inserted,
+            question: question.clone(),
+            insert,
         })
     }
 
@@ -997,15 +998,22 @@ where
         peer: Option<crate::publication::PeerGrant>,
         deadline: Instant,
     ) -> Result<Vec<naome_proof::ArtifactId>, crate::Error> {
-        if let (Some(persistence), Some(question)) = (&mut self.persistence, &delta.question)
-            && let Err(error) = persistence.stage_publication(root, question)
+        if delta.insert
+            && let Some(persistence) = &mut self.persistence
+            && let Err(error) = persistence.stage_publication(root, &delta.question)
         {
             if error.fatal() {
                 self.storage_error = Some(error.to_string());
             }
             return Err(error);
         }
-        let admitted = match graph.commit_batch_granted(root, batch, deadline, peer) {
+        let admitted = match graph.commit_batch_granted(
+            root,
+            batch,
+            deadline,
+            peer,
+            (!delta.question.dependencies().is_empty()).then_some(&delta.question),
+        ) {
             Ok(admitted) => admitted,
             Err(error) => {
                 if !error.fatal() {
@@ -1031,16 +1039,17 @@ where
     }
 
     pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) -> Result<(), String> {
-        if let Some(question) = &delta.question
+        if delta.insert
             && let Some(persistence) = &mut self.persistence
-            && let Err(error) = persistence.retain(question, persistence::Kind::Exchange, None)
+            && let Err(error) =
+                persistence.retain(&delta.question, persistence::Kind::Exchange, None)
         {
             self.storage_error = Some(error.clone());
             return Err(error);
         }
         self.registry = delta.registry;
-        if let Some(question) = delta.question {
-            self.remember(question, false);
+        if delta.insert {
+            self.remember(delta.question, false);
         }
         self.cache.clear();
         Ok(())
@@ -1074,7 +1083,8 @@ where
                     }
                     self.apply_exchange(QuestionDelta {
                         registry,
-                        question: Some(question),
+                        question,
+                        insert: true,
                     })?;
                 }
                 self.persistence

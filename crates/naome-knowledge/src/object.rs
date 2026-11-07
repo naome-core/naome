@@ -104,19 +104,27 @@ impl ProgramMetadata {
         &self,
         context: &dyn naome_checker::ContextView,
     ) -> Result<Option<naome_checker::question::ResearchQuestion>, crate::Error> {
-        self.question
-            .as_ref()
-            .map(|question| {
-                Metadata {
-                    artifact_id: hex(self.manifest.artifact_id().as_bytes()),
-                    proof_id: hex(self.manifest.proof_id().as_bytes()),
-                    statement_id: hex(self.manifest.statement_id().as_bytes()),
-                    question: question.clone(),
-                }
-                .compile(context)
-                .map(|(_, _, question)| question)
-            })
-            .transpose()
+        use naome_proof::program::{formula_hash, graph_statement_id};
+        let Some(source) = &self.question else {
+            return Ok(None);
+        };
+        let question =
+            naome_checker::question::ResearchQuestion::from_hex_with_context(source, context)?;
+        let mut matches = false;
+        for target in [question.positive_target(), question.negative_target()] {
+            let hash = formula_hash(target);
+            let statement = self.manifest.statement_id();
+            if hash == self.manifest.conclusion
+                && (statement == graph_statement_id(hash) || statement == target_id(target)?)
+            {
+                matches = true;
+                break;
+            }
+        }
+        if !matches {
+            return Err("description statement does not match a question target".into());
+        }
+        Ok(Some(question))
     }
 }
 

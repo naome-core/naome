@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(feature = "system-tests")]
 mod automatic_pause;
+mod defined_exchange;
 #[cfg(feature = "system-tests")]
 mod definitions;
 #[cfg(unix)]
