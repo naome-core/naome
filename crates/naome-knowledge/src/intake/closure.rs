@@ -342,35 +342,6 @@ impl Closure {
         // before decoding allocates their trees. Rejected payloads change nothing.
         let usage = self.usage.add(&object)?;
         let candidate = object.prepare()?;
-        self.stage_certificate(id, candidate.clone(), usage, graph, transfer)?;
-        Ok(candidate)
-    }
-    pub(in crate::intake) fn reuse_certificate(
-        &mut self,
-        candidate: crate::object::Candidate,
-        graph: &Graph,
-        transfer: &TransferGrant,
-    ) -> Result<(), crate::Error> {
-        self.synchronize(graph)?;
-        let id = candidate.id;
-        if !self.needs(id) {
-            return Ok(());
-        }
-        let steps = match &candidate.payload {
-            crate::object::CandidatePayload::Proof(proof) => proof.certificate().steps().len(),
-            crate::object::CandidatePayload::Definition(_) => 1,
-        };
-        let usage = self.usage.charge(candidate.bytes.len(), steps)?;
-        self.stage_certificate(id, candidate.for_admission()?, usage, graph, transfer)
-    }
-    fn stage_certificate(
-        &mut self,
-        id: ArtifactId,
-        candidate: crate::object::Candidate,
-        usage: certificate::Usage,
-        graph: &Graph,
-        transfer: &TransferGrant,
-    ) -> Result<(), crate::Error> {
         transfer.check(Instant::now())?;
         if id == self.root
             && self
@@ -406,9 +377,9 @@ impl Closure {
             self.schedule.declare(dependency);
         }
         self.track(id, &candidate.dependencies, graph)?;
-        self.certificates.insert(id, candidate);
+        self.certificates.insert(id, candidate.clone());
         self.usage = usage;
-        Ok(())
+        Ok(candidate)
     }
     pub(in crate::intake) fn request(
         &self,

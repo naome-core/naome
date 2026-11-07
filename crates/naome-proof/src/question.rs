@@ -68,12 +68,12 @@ impl QuestionTarget {
         max_nodes: usize,
         max_depth: usize,
     ) -> Result<Self, QuestionError> {
-        if !formula.is_closed() {
-            return Err(QuestionError::Invalid("question has free variables"));
-        }
         let encoded = formula
             .encode_canonical()
             .map_err(|e| QuestionError::Mathematical(e.to_string()))?;
+        if !formula.is_closed() {
+            return Err(QuestionError::Invalid("question has free variables"));
+        }
         let (nodes, depth) = formula.view().node_count_and_depth();
         // 0x02 is the existing Foundation canonical NOT tag. Removing only
         // leading NOT tags preserves all internal structure and De Bruijn binders.

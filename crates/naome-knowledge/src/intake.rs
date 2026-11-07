@@ -64,6 +64,11 @@ struct DeclineContext {
     until: Instant,
 }
 
+struct CachedCertificate {
+    record: crate::object::BinaryArtifact,
+    charged: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct Intake {
     queue: VecDeque<Description>,
@@ -72,7 +77,7 @@ pub(crate) struct Intake {
     waiting: VecDeque<managed::Waiting>,
     managed_context: Option<(FormalContext, crate::question::Revision)>,
     programs: program::Programs,
-    certificates: VecDeque<crate::object::Candidate>,
+    certificates: VecDeque<CachedCertificate>,
     certificate_bytes: usize,
 }
 
@@ -252,16 +257,7 @@ impl Intake {
         };
         // A function's untrusted witness route is outside its artifact hash.
         // Only candidates with fully bound dependency routing can be shared.
-        if candidate.obligation.is_none()
-            && !self
-                .certificates
-                .iter()
-                .any(|saved| saved.id == candidate.id)
-        {
-            self.certificate_bytes += candidate.bytes.len();
-            self.certificates.push_back(candidate);
-            self.trim_certificates();
-        }
+        self.cache_certificate(&candidate);
         Ok(())
     }
 
@@ -272,50 +268,66 @@ impl Intake {
         id: ArtifactId,
         graph: &Graph,
     ) -> Result<bool, crate::Error> {
-        let Some(candidate) = self
-            .certificates
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .cloned()
-        else {
+        let Some(saved) = self.certificates.iter().find(|saved| saved.record.id == id) else {
             return Ok(false);
         };
-        if self
-            .programs
-            .reuse_certificate(peer, root, candidate.clone(), graph)?
-        {
-            return Ok(true);
+        let needed = self.programs.needs_certificate(peer, root, id)
+            || self.active.as_ref().is_some_and(|active| {
+                active.fetching()
+                    && active.closure.needs(id)
+                    && active
+                        .description
+                        .transfer
+                        .authorizes(peer, root, Instant::now())
+            });
+        if !needed {
+            return Ok(false);
         }
-        if let Some(active) = &mut self.active
-            && active.fetching()
-            && active.closure.needs(id)
-            && active
-                .description
-                .transfer
-                .authorizes(peer, root, Instant::now())
+        // Reapply the same ingress accounting and checks under the new grant.
+        self.payload(peer, root, id, saved.record.envelope(), graph)?;
+        Ok(true)
+    }
+
+    fn cache_certificate(&mut self, candidate: &crate::object::Candidate) {
+        if candidate.obligation.is_some()
+            || self
+                .certificates
+                .iter()
+                .any(|saved| saved.record.id == candidate.id)
         {
-            active
-                .closure
-                .reuse_certificate(candidate, graph, &active.description.transfer)?;
-            return Ok(true);
+            return;
         }
-        Ok(false)
+        let charged = candidate.bytes.len() + candidate.dependencies.len() * 128 + 512;
+        if charged > Self::certificate_cache_capacity() {
+            return;
+        }
+        let Ok(memory) = crate::resources::MemoryLease::acquire(charged) else {
+            return;
+        };
+        let mut record = candidate.record();
+        // Keep only the immutable bytes and routing, releasing the expensive
+        // decoded-tree lease when its original closure drops the candidate.
+        record._memory = Some(memory);
+        self.certificate_bytes += charged;
+        self.certificates
+            .push_back(CachedCertificate { record, charged });
+        self.trim_certificates();
+    }
+
+    fn certificate_cache_capacity() -> usize {
+        crate::resources::adaptive::cache(crate::resources::limits().closure_bytes)
     }
 
     pub(crate) fn trim_certificates(&mut self) {
-        // Candidate leases charge 64 times their wire bytes. Leave the shared
-        // allocation budget available for active checks and shrink under load.
-        let bytes = crate::resources::adaptive::cache(
-            crate::resources::active_limits().checked_cache_bytes / 8,
-        ) / 64;
-        while self.certificate_bytes > bytes
+        let capacity = Self::certificate_cache_capacity();
+        while self.certificate_bytes > capacity
             || self.certificates.len() > crate::resources::limits().closure_objects
         {
             let oldest = self
                 .certificates
                 .pop_front()
                 .expect("nonempty certificate cache");
-            self.certificate_bytes -= oldest.bytes.len();
+            self.certificate_bytes -= oldest.charged;
         }
     }
 

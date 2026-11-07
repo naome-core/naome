@@ -135,18 +135,16 @@ impl ResearchQuestion {
         formula: DefinedFormula,
         context: Option<&dyn crate::ContextView>,
     ) -> Result<Self, QuestionError> {
-        let references = formula.definition_references();
-        if references.is_empty() {
+        let (bytes, dependencies) = Self::definition_source(&formula)?;
+        if dependencies.is_empty() {
             return Self::from_formula(
-                formula
-                    .into_primitive()
+                Formula::decode_canonical(&bytes)
                     .map_err(|e| QuestionError::Mathematical(e.to_string()))?,
             );
         }
         let context = context.ok_or(QuestionError::Invalid(
             "question needs a checked definition context",
         ))?;
-        let (bytes, dependencies) = Self::definition_source(&formula, references)?;
         let context = crate::context::cache::ReadContext::new(context);
         let (expanded, _) = formula
             .expand_with_node_limit(&context, QUESTION_EXPANSION_MAX_NODES - 1)
@@ -162,7 +160,6 @@ impl ResearchQuestion {
 
     fn definition_source(
         formula: &DefinedFormula,
-        references: Vec<naome_proof::DefinitionId>,
     ) -> Result<(Vec<u8>, Vec<ArtifactId>), QuestionError> {
         let bytes = formula
             .encode_canonical_with_limits(
@@ -177,7 +174,8 @@ impl ResearchQuestion {
         if !formula.is_closed() {
             return Err(QuestionError::Invalid("question has free variables"));
         }
-        let dependencies = references
+        let dependencies = formula
+            .definition_references()
             .into_iter()
             .map(ArtifactId::from_definition_id)
             .collect::<std::collections::BTreeSet<_>>();
@@ -196,12 +194,11 @@ impl ResearchQuestion {
             return Ok(false);
         }
         let formula = decode_formula(&bytes)?;
-        let references = formula.definition_references();
-        let (canonical, _) = Self::definition_source(&formula, references)?;
+        let (canonical, dependencies) = Self::definition_source(&formula)?;
         if canonical != bytes {
             return Err(QuestionError::Invalid("noncanonical question formula"));
         }
-        Ok(true)
+        Ok(!dependencies.is_empty())
     }
 
     pub const fn record_id(&self) -> &[u8; 32] {

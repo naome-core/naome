@@ -12,9 +12,6 @@ pub(in crate::intake) struct Usage {
 impl Usage {
     pub(in crate::intake) fn add(self, object: &Envelope) -> Result<Self, Error> {
         let (bytes, steps) = resources(object)?;
-        self.charge(bytes, steps)
-    }
-    pub(in crate::intake) fn charge(self, bytes: usize, steps: usize) -> Result<Self, Error> {
         let next = Self {
             count: self
                 .count

@@ -86,21 +86,14 @@ impl Programs {
             .certificate_payload(id, object, graph, &active.offer.transfer)
     }
 
-    pub(in crate::intake) fn reuse_certificate(
-        &mut self,
+    pub(in crate::intake) fn needs_certificate(
+        &self,
         peer: PeerId,
         root: ArtifactId,
-        candidate: crate::object::Candidate,
-        graph: &Graph,
-    ) -> Result<bool, crate::Error> {
-        if !self.authorizes(peer, root, candidate.id) {
-            return Ok(false);
-        }
-        let active = self.active.as_mut().expect("selected program parent");
-        active
-            .closure
-            .reuse_certificate(candidate, graph, &active.offer.transfer)?;
-        Ok(true)
+        id: ArtifactId,
+    ) -> bool {
+        self.helper_root(peer, root)
+            .is_some_and(|root| root.closure.needs(id))
     }
 }
 
