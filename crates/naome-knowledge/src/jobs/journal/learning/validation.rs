@@ -81,10 +81,10 @@ pub(super) fn validate_source(
                 question,
                 artifact: actual,
                 peer: supplier,
-                certificate,
+                evidence,
             },
         ) if question == &example.question && artifact == actual && peer == supplier => {
-            crate::learning::peer::validate_solution(question, artifact, certificate, solution)?;
+            crate::learning::peer::validate_source(question, artifact, evidence, solution)?;
             let receipt: PeerReceipt = c
                 .get(
                     "peer_receipt",
@@ -158,13 +158,10 @@ pub(in crate::jobs::journal) fn validate_rows(
                     Input::Peer {
                         question,
                         artifact,
-                        certificate,
+                        evidence,
                         ..
-                    } => crate::learning::peer::validate_solution(
-                        question,
-                        artifact,
-                        certificate,
-                        solution,
+                    } => crate::learning::peer::validate_source(
+                        question, artifact, evidence, solution,
                     )?,
                     Input::Solve { question } => {
                         let expected = crate::hex(
@@ -371,8 +368,8 @@ fn validate_peer(
     {
         return Err("peer admission source differs".into());
     }
-    if a.certificate.as_ref().is_some_and(|b| b.len() > 8 * 1024) {
-        return Err("peer admission compressed capacity".into());
+    if let Some(evidence) = &a.evidence {
+        evidence.validate_width()?;
     }
     if let Some(question) = &a.question {
         naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
@@ -405,7 +402,7 @@ fn validate_peer(
     };
     if let Some((id, proof)) = job {
         let source = record(c, id)?;
-        let matching = matches!(&source.input,Input::Peer{question,artifact,peer,certificate} if Some(question)==a.question.as_ref() && artifact==&a.artifact && peer==&a.peer && Some(certificate)==a.certificate.as_ref());
+        let matching = matches!(&source.input,Input::Peer{question,artifact,peer,evidence} if Some(question)==a.question.as_ref() && artifact==&a.artifact && peer==&a.peer && Some(evidence)==a.evidence.as_ref());
         if !matching {
             return Err("peer conversion job source differs".into());
         }

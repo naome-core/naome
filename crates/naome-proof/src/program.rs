@@ -400,6 +400,62 @@ pub enum Command {
     },
 }
 
+impl Command {
+    /// Earlier top-level operands. A deduction scope keeps its private
+    /// addresses separate from these program-level references.
+    pub fn operands(&self) -> Vec<u64> {
+        match self {
+            Self::Graph { node } => node.children().into_iter().flatten().collect(),
+            Self::Not { formula } | Self::Vacuous { formula } => vec![*formula],
+            Self::Implies {
+                antecedent,
+                consequent,
+            }
+            | Self::Simplification {
+                antecedent,
+                consequent,
+            }
+            | Self::Contraposition {
+                antecedent,
+                consequent,
+            }
+            | Self::Distribution {
+                antecedent,
+                consequent,
+                ..
+            } => vec![*antecedent, *consequent],
+            Self::Frege {
+                first,
+                second,
+                third,
+            } => vec![*first, *second, *third],
+            Self::ForAll { body, .. }
+            | Self::Substitute { body, .. }
+            | Self::Instantiation { body, .. }
+            | Self::Substitution { body, .. } => vec![*body],
+            Self::Separation { predicate, .. } | Self::Replacement { predicate, .. } => {
+                vec![*predicate]
+            }
+            Self::ModusPonens {
+                premise,
+                implication,
+            } => vec![*premise, *implication],
+            Self::Generalization { premise, .. } | Self::Instantiate { premise, .. } => {
+                vec![*premise]
+            }
+            Self::Alias { input } => vec![*input],
+            Self::Seal { proof } => vec![*proof],
+            Self::Deduce { assumptions, .. } => assumptions.clone(),
+            Self::DefinedRelation { .. }
+            | Self::Equal { .. }
+            | Self::Member { .. }
+            | Self::Reflexivity { .. }
+            | Self::Axiom { .. }
+            | Self::ProofReference { .. } => Vec::new(),
+        }
+    }
+}
+
 /// One inference inside a `Deduce` scope. Operands address earlier facts
 /// within that scope only.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

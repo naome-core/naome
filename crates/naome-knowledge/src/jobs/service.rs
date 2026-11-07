@@ -480,20 +480,17 @@ impl Owner {
                 .question
                 .as_ref()
                 .is_some_and(|q| crate::learning::State::eligible(q));
-            if !eligible || admission.certificate.is_none() {
+            if !eligible || admission.evidence.is_none() {
                 self.disk.peer_status(
                     &mut self.journal,
                     &admission,
                     PeerStatus::Unsupported {
-                        reason: "reserved question or unsupported certificate/DAG capacity".into(),
+                        reason: "reserved question or unsupported replay capacity".into(),
                     },
                 )?;
             } else {
                 let input = Input::Peer {
-                    certificate: admission
-                        .certificate
-                        .clone()
-                        .expect("supported certificate"),
+                    evidence: admission.evidence.clone().expect("supported replay source"),
                     question: admission.question.clone().expect("eligible question"),
                     artifact: admission.artifact.clone(),
                     peer: admission.peer.clone(),

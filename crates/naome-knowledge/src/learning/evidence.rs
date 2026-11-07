@@ -8,7 +8,6 @@ use naome_proof::ProofCertificate;
 
 pub(crate) struct Evidence {
     pub certificate: Vec<u8>,
-    pub program: Option<super::program::Origin>,
     pub lemmas: Vec<Vec<u8>>,
     pub definitions: Vec<definitions::Entry>,
 }
@@ -69,13 +68,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Evidence, String> {
         return Err("construction definition framing capacity".into());
     }
     let definitions = serde_json::from_slice(&definition_bytes).map_err(|e| e.to_string())?;
-    let program =
-        serde_json::from_slice(&field(&decoded, &mut cursor)?).map_err(|e| e.to_string())?;
     if cursor != decoded.len() {
         return Err("construction evidence trailing bytes".into());
     }
     let evidence = Evidence {
-        program,
         certificate,
         lemmas,
         definitions,
@@ -91,17 +87,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Evidence, String> {
     Ok(evidence)
 }
 pub fn pack(proof: &proof::Verified) -> Result<Vec<u8>, String> {
-    pack_with_program(proof, None)
-}
-pub fn pack_with_program(
-    proof: &proof::Verified,
-    program: Option<super::program::Origin>,
-) -> Result<Vec<u8>, String> {
-    if let Some(origin) = &program {
-        super::program::validate(origin, proof)?;
-    }
     let evidence = Evidence {
-        program,
         certificate: proof
             .certificate
             .clone()
@@ -137,10 +123,6 @@ pub fn pack_with_program(
         &mut decoded,
         &serde_json::to_vec(&evidence.definitions).map_err(|e| e.to_string())?,
     )?;
-    field(
-        &mut decoded,
-        &serde_json::to_vec(&evidence.program).map_err(|e| e.to_string())?,
-    )?;
     if decoded.len() > crate::resources::limits().closure_bytes {
         return Err("construction decoded capacity".into());
     }
@@ -165,7 +147,7 @@ pub fn checked(bytes: &[u8]) -> Result<proof::Verified, String> {
         return Err("construction checker work capacity".into());
     }
     let checked = proof::verify_native(certificate, evidence.definitions, lemmas, None)?;
-    if pack_with_program(&checked, evidence.program)? != bytes {
+    if pack(&checked)? != bytes {
         return Err("construction evidence canonical binding".into());
     }
     Ok(checked)

@@ -1484,8 +1484,95 @@ pub(crate) fn typed_definition_consumer(
         "{:?}",
         solution.cost
     );
-    assert!(solution.tree.composition().is_some(), "{:?}", solution.cost);
-    let verified = solution.checked().unwrap();
-    question.classify_checked_proof(&verified).unwrap();
+    assert!(matches!(solution.tree, search::Tree::Program(_)));
+    solution.check_target(&question).unwrap();
     (question, solution, required, relation.definition_id())
+}
+
+/// Use a stopped receiver from the native-goal process test. The ordinary
+/// Finder and Solver must cite its checked program under the original ID.
+#[test]
+#[ignore = "Requires the checked receiver catalog from the two-node Nat process test"]
+fn native_nat_program_reuse_from_a_received_catalog() {
+    use naome_checker::ContextView;
+    crate::resources::tests::budget(false);
+    let directory = std::path::PathBuf::from(std::env::var_os("NAOME_TEST_NAT_CATALOG").unwrap());
+    let question =
+        ResearchQuestion::from_hex(&std::env::var("NAOME_TEST_NAT_QUESTION").unwrap()).unwrap();
+    let graph = crate::Graph::open(&directory).unwrap();
+    let target = question.proved_target().encode_canonical().unwrap();
+    let statement = naome_proof::StatementId::of_canonical_formula(&target).unwrap();
+    let id = graph
+        .checked_context()
+        .statement_header(statement)
+        .unwrap()
+        .unwrap()
+        .proof_id();
+    let manifest = graph
+        .program_manifest(id.into())
+        .unwrap()
+        .expect("received Nat program");
+    assert_eq!(manifest.proof_id(), id);
+    let target = graph
+        .ids_page(None, 16)
+        .unwrap()
+        .into_iter()
+        .filter(|artifact| *artifact != manifest.artifact_id())
+        .filter_map(|artifact| graph.learning_question(artifact).unwrap())
+        .find_map(|other| {
+            ResearchQuestion::from_formula(Formula::conjunction(
+                question.formula().clone(),
+                other.formula().clone(),
+            ))
+            .ok()
+        })
+        .expect("second already checked operand within the question limits");
+    let runtime = crate::checkpoint::tests::Directory::new();
+    let frontier = crate::frontier::Frontier::open(
+        &runtime.0,
+        &graph,
+        41,
+        crate::jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let meter = crate::resources::feedback::Meter::start();
+    let (required, inputs) = frontier.solving_inputs(&graph, &target, &[]).unwrap();
+    assert!(required.contains(&crate::hex(id.as_bytes())));
+    let mut engine = Engine::default();
+    let mut store = MemoryStore::default();
+    let result = engine
+        .with(&model::Checkpoint::fresh(), &mut store, |runtime| {
+            solve_with_report(
+                &target.to_hex(),
+                runtime,
+                128,
+                8,
+                SolveContext {
+                    required: &required,
+                    prerequisites: Some(&inputs),
+                    native_programs: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let solution = result.solution.expect("checked native composition");
+    assert!(solution.source.is_empty() && solution.helpers.is_empty());
+    let candidate = super::program::Candidate::from_solution(&solution, &target).unwrap();
+    assert!(candidate.commands.iter().any(|command| matches!(
+        command, naome_proof::program::Command::ProofReference { proof_id }
+            if proof_id == id.as_bytes()
+    )));
+    let sample = meter.finish(0, true);
+    eprintln!(
+        "native_nat_prerequisite proof_id={} source_bytes={} result_bytes={} elapsed_micros={} peak_rss_bytes={:?}",
+        crate::hex(id.as_bytes()),
+        manifest.input_bytes,
+        candidate.manifest.input_bytes,
+        sample.elapsed_nanos / 1000,
+        sample.peak_rss_bytes
+    );
 }

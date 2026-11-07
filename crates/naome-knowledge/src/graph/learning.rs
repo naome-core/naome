@@ -21,7 +21,7 @@ impl Graph {
             active: std::collections::BTreeSet<ArtifactId>,
             seen: std::collections::BTreeSet<ArtifactId>,
             artifacts: Vec<Envelope>,
-            programs: Vec<crate::learning::knowledge::Entry>,
+            programs: Vec<crate::learning::peer::Packet>,
             bytes: usize,
         }
         impl Capture<'_> {
@@ -46,24 +46,22 @@ impl Graph {
                 if self.bytes > crate::resources::limits().closure_bytes {
                     return Ok(false);
                 }
-                if crate::object::program_manifest(&object.bytes)?.is_some() {
-                    // Preserve the actual program ID through its independently
-                    // checked, bounded learning projection.
+                if let Some(manifest) = crate::object::program_manifest(&object.bytes)? {
+                    // Preserve the canonical program and its exact checked inputs.
                     if self.active.len() != 1 {
                         return Ok(false);
                     }
-                    let Some(packet) = self.graph.learning_certificate(id)? else {
+                    let Some(packet) = self.graph.peer_program(manifest)? else {
                         return Ok(false);
                     };
                     self.bytes = self
                         .bytes
-                        .checked_add(packet.len())
+                        .checked_add(packet.retained_bytes())
                         .ok_or("prerequisite packet width")?;
                     if self.bytes > crate::resources::limits().closure_bytes {
                         return Ok(false);
                     }
-                    self.programs
-                        .push(crate::learning::knowledge::Entry { packet });
+                    self.programs.push(packet);
                     self.active.remove(&id);
                     self.seen.insert(id);
                     return Ok(true);
@@ -202,6 +200,115 @@ impl Graph {
         let _ = crate::learning::definitions::context(std::slice::from_ref(&entry))?;
         Ok(Some(entry))
     }
+    /// Snapshot the exact checked input and its ordered proof and definition dependencies.
+    /// A replay worker rechecks these objects and the original program seal.
+    pub(crate) fn peer_program(
+        &self,
+        manifest: naome_proof::program::Manifest,
+    ) -> Result<Option<crate::learning::peer::Packet>, crate::Error> {
+        use naome_proof::{
+            DefinitionId, ProofId,
+            program::{CHUNK_BYTES, CHUNK_RECORDS, Command, Manifest},
+        };
+        use std::collections::BTreeSet;
+        fn references(commands: &[Command]) -> impl Iterator<Item = ArtifactId> + '_ {
+            commands.iter().filter_map(|command| match command {
+                Command::ProofReference { proof_id } => Some(ProofId::from_bytes(*proof_id).into()),
+                Command::DefinedRelation { definition_id, .. } => {
+                    Some(DefinitionId::from_bytes(*definition_id).into())
+                }
+                _ => None,
+            })
+        }
+        let limits = crate::resources::limits();
+        let bounded = |m: &Manifest| {
+            m.commands <= limits.closure_steps as u64
+                && m.input_bytes <= limits.closure_bytes as u64
+        };
+        if !bounded(&manifest) {
+            return Ok(None);
+        }
+        let _memory = crate::resources::MemoryLease::acquire(8 * limits.closure_bytes)?;
+        let read = |manifest: &Manifest| -> Result<Vec<Command>, crate::Error> {
+            let id = manifest.artifact_id();
+            let mut commands = Vec::new();
+            while (commands.len() as u64) < manifest.commands {
+                let chunk = self
+                    .program_chunk(id, commands.len() as u64, CHUNK_RECORDS, CHUNK_BYTES)?
+                    .ok_or("checked peer program missing")?;
+                if chunk.records.is_empty() {
+                    return Err("checked peer program chunk is empty".into());
+                }
+                commands.extend(chunk.records);
+            }
+            Ok(commands)
+        };
+        let commands = read(&manifest)?;
+        let mut pending = references(&commands)
+            .map(|id| (id, None))
+            .collect::<Vec<_>>();
+        let mut active = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut context = Vec::new();
+        let mut bytes = manifest.input_bytes as usize;
+        // Iterative postorder over the checked certificate closure. No source
+        // is exposed until the entire bounded context is available.
+        while let Some((id, payload)) = pending.pop() {
+            if let Some(payload) = payload {
+                active.remove(&id);
+                seen.insert(id);
+                context.push(payload);
+                continue;
+            }
+            if seen.contains(&id) {
+                continue;
+            }
+            if !active.insert(id) {
+                return Err("checked peer program context cycle".into());
+            }
+            if active.len() + seen.len() >= limits.closure_objects {
+                return Ok(None);
+            }
+            let object = self
+                .binary_object(id)?
+                .ok_or("checked peer program operand missing")?;
+            let (record, dependencies) = if let Some(dependency) =
+                crate::object::program_manifest(&object.bytes)?
+            {
+                if !bounded(&dependency)
+                    || bytes.saturating_add(dependency.input_bytes as usize) > limits.closure_bytes
+                {
+                    return Ok(None);
+                }
+                let records = read(&dependency)?;
+                let children = references(&records).collect::<Vec<_>>();
+                (
+                    crate::learning::peer::Packet::context_record(&dependency, &records)?,
+                    children,
+                )
+            } else {
+                let mut children = object.dependencies.into_iter().collect::<Vec<_>>();
+                if let Some(proof) = object.obligation {
+                    children.push(proof.into());
+                }
+                (object.bytes, children)
+            };
+            bytes = bytes
+                .checked_add(record.len())
+                .ok_or("peer program context byte overflow")?;
+            if bytes > limits.closure_bytes {
+                return Ok(None);
+            }
+            pending.push((id, Some(record)));
+            pending.extend(
+                dependencies
+                    .into_iter()
+                    .map(|dependency| (dependency, None)),
+            );
+        }
+        crate::learning::peer::Packet::pack(manifest, &commands, &context).map_err(Into::into)
+    }
+
     pub(crate) fn learning_certificate(
         &self,
         id: ArtifactId,
@@ -210,7 +317,6 @@ impl Graph {
             graph: &'a Graph,
             active: std::collections::BTreeSet<ArtifactId>,
             seen: std::collections::BTreeSet<ArtifactId>,
-            proofs: std::collections::BTreeMap<ArtifactId, crate::learning::program::Projection>,
             bytes: usize,
         }
         impl Snapshot<'_> {
@@ -218,161 +324,62 @@ impl Graph {
                 &mut self,
                 id: ArtifactId,
             ) -> Result<Option<crate::learning::proof::Verified>, crate::Error> {
-                if let Some(p) = self.proofs.get(&id) {
-                    let context = crate::learning::proof::lemma_context(&p.definitions, &p.lemmas)?;
-                    let checked = crate::learning::proof::check(p.certificate.clone(), &context)
-                        .map_err(|e| crate::Error::from(e.to_string()))?;
-                    return crate::learning::proof::verify(
-                        &crate::learning::proof::Term::Native {
-                            certificate: p.certificate.clone(),
-                            lemmas: p.lemmas.clone(),
-                            definitions: p.definitions.clone(),
-                            target: checked.conclusion().clone(),
-                        },
-                        checked.conclusion(),
-                    )
-                    .map(Some)
-                    .map_err(Into::into);
-                }
                 if !self.active.insert(id) {
-                    return Err("checked learning dependency cycle".into());
+                    return Err("checked learning closure cycle".into());
                 }
                 self.seen.insert(id);
-                if self.seen.len() > crate::resources::limits().closure_objects {
+                let limits = crate::resources::limits();
+                if self.seen.len() > limits.closure_objects {
                     return Ok(None);
                 }
                 let Some(object) = self.graph.binary_object(id)? else {
+                    return Ok(None);
+                };
+                let Some((&naome_proof::ArtifactPayload::PROOF_TAG, payload)) =
+                    object.bytes.split_first()
+                else {
                     return Ok(None);
                 };
                 self.bytes = self
                     .bytes
                     .checked_add(object.bytes.len())
                     .ok_or("learning closure byte overflow")?;
-                if self.bytes > crate::resources::limits().closure_bytes {
+                if self.bytes > limits.closure_bytes {
                     return Ok(None);
                 }
                 let mut definitions = Vec::new();
                 let mut lemmas = Vec::new();
-                let manifest = crate::object::program_manifest(&object.bytes)?;
                 for dependency in &object.dependencies {
                     if let Some(definition) = self.graph.learning_definition(*dependency)? {
                         if !definitions.contains(&definition) {
                             definitions.push(definition);
                         }
-                    } else if manifest.is_none() {
-                        let Some(verified) = self.visit(*dependency)? else {
-                            return Ok(None);
-                        };
-                        for d in verified.definitions {
-                            if !definitions.contains(&d) {
-                                definitions.push(d);
-                            }
+                        continue;
+                    }
+                    let Some(verified) = self.visit(*dependency)? else {
+                        return Ok(None);
+                    };
+                    for definition in verified.definitions {
+                        if !definitions.contains(&definition) {
+                            definitions.push(definition);
                         }
-                        for c in verified
-                            .lemmas
-                            .into_iter()
-                            .chain(std::iter::once(verified.certificate))
-                        {
-                            if !lemmas.contains(&c) {
-                                lemmas.push(c);
-                            }
+                    }
+                    for certificate in verified
+                        .lemmas
+                        .into_iter()
+                        .chain(std::iter::once(verified.certificate))
+                    {
+                        if !lemmas.contains(&certificate) {
+                            lemmas.push(certificate);
                         }
                     }
                 }
-                let (certificate, origin) = if let Some(manifest) = manifest {
-                    let graph = self.graph;
-                    let source_error = std::cell::RefCell::new(None);
-                    let projection = crate::learning::program::project(
-                        manifest,
-                        |position| {
-                            let chunk = graph
-                                .program_chunk(id, position, 1, naome_proof::program::RECORD_BYTES)
-                                .map_err(|e| {
-                                    let message = e.to_string();
-                                    *source_error.borrow_mut() = Some(e);
-                                    message
-                                })?
-                                .ok_or("learning program source absent")?;
-                            chunk
-                                .records
-                                .into_iter()
-                                .next()
-                                .ok_or_else(|| "learning program command absent".into())
-                        },
-                        |proof| {
-                            self.visit(proof.into())
-                                .map_err(|e| {
-                                    let message = e.to_string();
-                                    *source_error.borrow_mut() = Some(e);
-                                    message
-                                })?
-                                .ok_or_else(|| "learning program reference capacity".into())
-                        },
-                        |definition| {
-                            graph
-                                .learning_definition(definition.into())
-                                .map_err(|error| {
-                                    let message = error.to_string();
-                                    *source_error.borrow_mut() = Some(error);
-                                    message
-                                })
-                        },
-                        definitions,
-                    );
-                    if let Some(error) = source_error.into_inner() {
-                        return Err(error);
-                    }
-                    let projection = match projection {
-                        Ok(p) => p,
-                        Err(error) if error.contains("capacity") || error.contains("limit") => {
-                            return Ok(None);
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-                    self.bytes = self
-                        .bytes
-                        .checked_add(projection.certificate.to_canonical_bytes().len())
-                        .and_then(|bytes| {
-                            serde_json::to_vec(&projection.origin)
-                                .ok()
-                                .and_then(|origin| bytes.checked_add(origin.len()))
-                        })
-                        .ok_or("learning projection byte overflow")?;
-                    if self.bytes > crate::resources::limits().closure_bytes {
-                        return Ok(None);
-                    }
-                    definitions = projection.definitions.clone();
-                    lemmas = projection.lemmas.clone();
-                    let certificate = projection.certificate.clone();
-                    let origin = projection.origin.clone();
-                    self.proofs.insert(id, projection);
-                    (certificate, Some(origin))
-                } else {
-                    let Some((&naome_proof::ArtifactPayload::PROOF_TAG, payload)) =
-                        object.bytes.split_first()
-                    else {
-                        return Ok(None);
-                    };
-                    (
-                        naome_proof::ProofCertificate::from_canonical_bytes(payload)
-                            .map_err(|e| crate::Error::from(e.to_string()))?,
-                        None,
-                    )
-                };
-                let context = crate::learning::proof::lemma_context(&definitions, &lemmas)?;
-                let checked = crate::learning::proof::check(certificate, &context)
-                    .map_err(|e| crate::Error::from(e.to_string()))?;
-                let verified = crate::learning::proof::verify(
-                    &crate::learning::proof::Term::Native {
-                        certificate: checked.normal_form().certificate().clone(),
-                        lemmas,
-                        definitions,
-                        target: checked.conclusion().clone(),
-                    },
-                    checked.conclusion(),
-                )?;
-                if let Some(origin) = origin {
-                    crate::learning::program::validate(&origin, &verified)?;
+                let certificate = naome_proof::ProofCertificate::from_canonical_bytes(payload)
+                    .map_err(|error| crate::Error::from(error.to_string()))?;
+                let verified =
+                    crate::learning::proof::verify_native(certificate, definitions, lemmas, None)?;
+                if ArtifactId::from(verified.native_id) != id {
+                    return Err("learning certificate identity differs".into());
                 }
                 self.active.remove(&id);
                 Ok(Some(verified))
@@ -385,17 +392,13 @@ impl Graph {
             graph: self,
             active: Default::default(),
             seen: Default::default(),
-            proofs: Default::default(),
             bytes: 0,
         };
         let Some(verified) = snapshot.visit(id)? else {
             return Ok(None);
         };
-        let origin = snapshot.proofs.get(&id).map(|p| p.origin.clone());
-        match crate::learning::evidence::pack_with_program(&verified, origin) {
+        match crate::learning::evidence::pack(&verified) {
             Ok(packet) => Ok((packet.len() <= crate::learning::knowledge::BYTES).then_some(packet)),
-            // A checked program can project to a certificate larger than a
-            // learning object. The network still serves its checked program.
             Err(error) if error.ends_with(" capacity") => Ok(None),
             Err(error) => Err(error.into()),
         }

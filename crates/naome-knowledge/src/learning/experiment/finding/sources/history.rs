@@ -231,7 +231,7 @@ impl ArtifactIo for Io<'_> {
                             origin: Origin::Local,
                             question: episode.observation.question,
                             solution,
-                            peer_certificate: None,
+                            peer_evidence: None,
                         });
                     }
                     Lane::Records => page.records.push(Record {

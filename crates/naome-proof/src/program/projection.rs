@@ -29,7 +29,10 @@ impl Projection {
     /// other consumers or definition references. Independently replay the
     /// result and compare the checked trace before treating it as equivalent.
     pub fn with_instantiations(proof: &ProofNormalForm, sites: &[usize]) -> Result<Self, String> {
-        let steps = proof.certificate().steps();
+        Self::lower_steps(proof.certificate().steps(), sites)
+    }
+
+    fn lower_steps(steps: &[ProofStep], sites: &[usize]) -> Result<Self, String> {
         let mut folds = vec![None; steps.len()];
         if !sites.is_empty() {
             let mut uses = vec![0u32; steps.len()];
@@ -99,10 +102,21 @@ impl Projection {
     /// Use a direct typed instantiation where the normalized axiom has only
     /// its adjacent application as a consumer.
     pub fn with_native_instantiations(proof: &ProofNormalForm) -> Result<Self, String> {
-        let steps = proof.certificate().steps();
+        Self::from_inference_steps(proof.certificate().steps())
+    }
+
+    /// Lower an untrusted, dependency-ordered inference recipe directly into
+    /// typed commands. The independent program checker validates the result.
+    pub fn from_inference_steps(steps: &[ProofStep]) -> Result<Self, String> {
+        if steps.is_empty() {
+            return Err("program inference recipe is empty".into());
+        }
         let mut uses = vec![0u32; steps.len()];
-        for step in steps {
+        for (position, step) in steps.iter().enumerate() {
             for reference in step.local_references().into_iter().flatten() {
+                if reference as usize >= position {
+                    return Err("program inference recipe has a forward reference".into());
+                }
                 let count = uses
                     .get_mut(reference as usize)
                     .ok_or("invalid projection reference")?;
@@ -124,7 +138,7 @@ impl Projection {
                     .then_some(index + 1)
             })
             .collect::<Vec<_>>();
-        Self::with_instantiations(proof, &sites)
+        Self::lower_steps(steps, &sites)
     }
 
     /// Build one scoped deduction, exposing only its discharged conclusion.

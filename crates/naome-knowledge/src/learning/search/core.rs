@@ -15,6 +15,7 @@ pub fn steps(tree: &Tree) -> usize {
         Tree::Knowledge { proof, .. } | Tree::Definitions { proof, .. } => 1 + steps(proof),
         Tree::Step { children, .. } => 1 + children.iter().map(steps).sum::<usize>(),
         Tree::Certificate(bytes) => super::super::peer::step_count(bytes),
+        Tree::Program(packet) => packet.manifest.commands as usize,
         Tree::Constructed { packet, .. } | Tree::Composed { packet, .. } => {
             super::super::evidence::steps(packet).unwrap_or(0)
         }
@@ -72,6 +73,7 @@ fn rebase(
         Tree::Scoped { .. }
         | Tree::Axiom(_)
         | Tree::Certificate(_)
+        | Tree::Program(_)
         | Tree::Composed { .. }
         | Tree::Constructed { .. }
         | Tree::Stored { .. }

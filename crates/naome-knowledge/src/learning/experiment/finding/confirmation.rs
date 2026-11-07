@@ -153,6 +153,7 @@ fn evaluate_frozen_confirmation_models() {
                                 theorems: &[],
                                 required: &[],
                                 prerequisites: None,
+                                native_programs: false,
                             },
                         )
                     })

@@ -1,5 +1,5 @@
 //! Temporary job inputs from the graph, independent of the bounded neural view.
-use super::{State, definitions, knowledge, proof};
+use super::{State, definitions, knowledge, peer::Packet, proof};
 use crate::object::{CandidatePayload, Envelope};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{collections::BTreeSet, sync::Arc};
@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, sync::Arc};
 #[serde(deny_unknown_fields)]
 struct Data {
     artifacts: Vec<Envelope>,
-    programs: Vec<knowledge::Entry>,
+    programs: Vec<Packet>,
     #[serde(skip)]
     _memory: Option<Arc<crate::resources::MemoryLease>>,
 }
@@ -34,10 +34,7 @@ impl Prerequisites {
         Self::from_inputs(artifacts, Vec::new())
     }
 
-    pub fn from_inputs(
-        artifacts: Vec<Envelope>,
-        programs: Vec<knowledge::Entry>,
-    ) -> Result<Self, String> {
+    pub fn from_inputs(artifacts: Vec<Envelope>, programs: Vec<Packet>) -> Result<Self, String> {
         let mut value = Self(Arc::new(Data {
             artifacts,
             programs,
@@ -48,7 +45,7 @@ impl Prerequisites {
             .0
             .programs
             .iter()
-            .map(|entry| entry.packet.capacity())
+            .map(Packet::retained_bytes)
             .sum::<usize>();
         let bytes = program_bytes
             + value
@@ -115,15 +112,14 @@ impl Prerequisites {
             .0
             .programs
             .iter()
-            .map(|entry| entry.packet.len())
+            .map(Packet::retained_bytes)
             .sum::<usize>();
         if self.0.artifacts.len() + self.0.programs.len() >= limits.closure_objects
             || self.0.programs.len() > knowledge::CAPACITY
-            || self
-                .0
-                .programs
-                .iter()
-                .any(|entry| entry.packet.len() > knowledge::BYTES)
+            || self.0.programs.iter().any(|entry| {
+                entry.validate_width().is_err()
+                    || !ids.insert(*entry.manifest.artifact_id().as_bytes())
+            })
         {
             return Err("temporary prerequisite object capacity".into());
         }
@@ -151,32 +147,58 @@ impl Prerequisites {
         }
         Ok(())
     }
-    pub fn aliases(&self, required: &[String]) -> Result<Vec<super::program::Reference>, String> {
-        let mut aliases = Vec::new();
-        for entry in &self.0.programs {
-            let data = super::evidence::decode(&entry.packet)?;
-            let origin = data.program.ok_or("temporary program origin missing")?;
-            let proof = origin.manifest.proof_id();
-            if !required
-                .iter()
-                .any(|id| *id == crate::hex(proof.as_bytes()))
-            {
-                return Err("temporary program is outside the selected proof set".into());
-            }
-            let checked = entry.verified()?;
-            super::program::validate(&origin, &checked)?;
-            let reference = super::program::Reference {
-                proof: *proof.as_bytes(),
-                projection: *checked.native_id.as_bytes(),
-            };
-            if aliases.iter().any(|entry: &super::program::Reference| {
-                entry.proof == reference.proof || entry.projection == reference.projection
-            }) {
-                return Err("temporary program projection is ambiguous".into());
-            }
-            aliases.push(reference);
+    pub fn has_programs(&self) -> bool {
+        !self.0.programs.is_empty()
+    }
+
+    pub(super) fn native_conjunction(
+        &self,
+        target: &naome_foundation::Formula,
+        required: &[String],
+    ) -> Result<Option<Packet>, String> {
+        let Some((left, right)) = super::conjunction_operands(target) else {
+            return Ok(None);
+        };
+        if left == right {
+            return Ok(None);
         }
-        Ok(aliases)
+        let mut sources = Vec::new();
+        let (certificates, definitions) = self.resolve(required)?;
+        for term in certificates {
+            let checked = proof::verify(&term, &term.formula())?;
+            sources.push((checked.native_id, checked.target));
+        }
+        for program in &self.0.programs {
+            let id = program.manifest.proof_id();
+            if required
+                .iter()
+                .any(|required| *required == crate::hex(id.as_bytes()))
+            {
+                sources.push((id, program.target()?));
+            }
+        }
+        let select = |formula: &naome_foundation::Formula| -> Result<Option<_>, String> {
+            sources
+                .iter()
+                .find(|(_, known)| known == formula)
+                .map(|(id, formula)| Ok((*id, definitions::represent(formula, &definitions)?)))
+                .transpose()
+        };
+        let (Some(left), Some(right)) = (select(&left)?, select(&right)?) else {
+            return Ok(None);
+        };
+        let commands = naome_proof::program::Projection::conjoin(&[left, right]);
+        let artifacts = self
+            .0
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                crate::unhex(&artifact.payload)
+                    .map(std::sync::Arc::from)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Packet::compose(target, &commands, &self.0.programs, artifacts).map(Some)
     }
 
     pub fn require(&self, base: &State, required: &[String]) -> Result<(), String> {
@@ -186,7 +208,6 @@ impl Prerequisites {
         {
             return Err("required theorem capacity or duplicate".into());
         }
-        let aliases = self.aliases(required)?;
         let mut missing = Vec::new();
         for id in required {
             let address = crate::hex(
@@ -195,9 +216,11 @@ impl Prerequisites {
                     .as_bytes(),
             );
             if !self.0.artifacts.iter().any(|a| a.artifact_id == address)
-                && !aliases
+                && !self
+                    .0
+                    .programs
                     .iter()
-                    .any(|reference| crate::hex(&reference.proof) == *id)
+                    .any(|program| crate::hex(program.manifest.proof_id().as_bytes()) == *id)
             {
                 missing.push(id.clone());
             }
@@ -285,9 +308,6 @@ impl Prerequisites {
                     definitions::register(&mut context, &entry)?;
                 }
             }
-        }
-        for entry in &self.0.programs {
-            terms.push(entry.term()?);
         }
         Ok((terms, definitions))
     }

@@ -54,10 +54,20 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
     } else {
         q.proved_target().clone()
     };
-    let (term, _) = search::compile(&target, &e.tree)?;
-    let verified = proof::verify(&term, &target)?;
-    if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
-        return Err("learning proof provenance differs".into());
+    if let search::Tree::Program(packet) = &e.tree {
+        if matches!(&e.origin, Origin::Peer { artifact, .. }
+            if artifact != &crate::hex(packet.manifest.artifact_id().as_bytes()) || e.refuted)
+            || e.proof_id != crate::hex(packet.manifest.proof_id().as_bytes())
+            || packet.target()? != target
+        {
+            return Err("learning program provenance differs".into());
+        }
+    } else {
+        let (term, _) = search::compile(&target, &e.tree)?;
+        let verified = proof::verify(&term, &target)?;
+        if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
+            return Err("learning proof provenance differs".into());
+        }
     }
     VERIFIED.with(|known| {
         let mut known = known.borrow_mut();
@@ -77,6 +87,10 @@ pub(super) fn proof_steps(
 ) -> Result<usize, String> {
     if let search::Tree::Stored { steps, .. } = tree {
         return Ok(*steps);
+    }
+    if let search::Tree::Program(packet) = tree {
+        peer::program_graphs(target, packet)?;
+        return Ok(packet.manifest.commands as usize);
     }
     let checked = search::core::checked(target, tree)?.2;
     Ok(checked.certificate.steps().len()
@@ -584,22 +598,38 @@ impl State {
                 q.proved_target()
             };
             let tree = e.trajectory(evidence)?;
-            let (core, _, verified) = search::core::checked(target, tree)?;
-            if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
-                return Err("peer replay snapshot proof differs".into());
-            }
-            let graphs = search::compile(target, &core)?.1;
-            let proof = crate::hex(verified.native_id.as_bytes());
+            let (core, graphs) = if let search::Tree::Program(packet) = tree {
+                if e.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
+                    return Err("peer replay snapshot program differs".into());
+                }
+                (None, peer::program_graphs(target, packet)?)
+            } else {
+                let (core, _, verified) = search::core::checked(target, tree)?;
+                if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
+                    return Err("peer replay snapshot proof differs".into());
+                }
+                let graphs = search::compile(target, &core)?.1;
+                (Some(core), graphs)
+            };
             pool.add(
                 matches!(e.origin, Origin::Peer { .. }),
                 &case.dependency,
                 &case.family,
-                &proof,
+                &e.proof_id,
                 graphs,
             )?;
-            pool.add_derivation(search::derivation::checked(target, &core, &proof)?, true)?;
+            if let Some(core) = core {
+                pool.add_derivation(
+                    search::derivation::checked(target, &core, &e.proof_id)?,
+                    true,
+                )?;
+            }
         }
         Ok(pool)
+    }
+    #[cfg(test)]
+    pub(crate) fn has_training_graphs(&self, evidence: &[Evidence]) -> Result<bool, String> {
+        Ok(!self.training_pool(evidence)?.graphs().is_empty())
     }
     #[cfg(test)]
     pub(super) fn training_graphs(&self) -> Result<Vec<graph::Graph>, String> {
@@ -642,14 +672,26 @@ impl State {
         } else {
             q.proved_target()
         };
-        let (_, _, checked) = search::core::checked(target, &example.tree)?;
-        let native_steps = checked.certificate.steps().len()
-            + checked
-                .lemmas
-                .iter()
-                .map(|c| c.steps().len())
-                .sum::<usize>();
-        let (_, graphs) = search::compile(target, &example.tree)?;
+        let (native_steps, graphs, checked) = if let search::Tree::Program(packet) = &example.tree {
+            (
+                packet.manifest.commands as usize,
+                peer::program_graphs(target, packet)?,
+                None,
+            )
+        } else {
+            let (_, _, checked) = search::core::checked(target, &example.tree)?;
+            let steps = checked.certificate.steps().len()
+                + checked
+                    .lemmas
+                    .iter()
+                    .map(|c| c.steps().len())
+                    .sum::<usize>();
+            (
+                steps,
+                search::compile(target, &example.tree)?.1,
+                Some(checked),
+            )
+        };
         if graphs.is_empty() {
             return Ok(false);
         }
@@ -671,7 +713,12 @@ impl State {
                 if matches!(e.tree, search::Tree::Stored { .. }) {
                     continue;
                 }
-                for g in search::compile(target, &e.tree)?.1 {
+                let decisions = if let search::Tree::Program(packet) = &e.tree {
+                    peer::program_graphs(target, packet)?
+                } else {
+                    search::compile(target, &e.tree)?.1
+                };
+                for g in decisions {
                     for action in &g.successes {
                         witnessed.insert((g.key(), *action));
                     }
@@ -701,31 +748,34 @@ impl State {
             // Count new, checker-admitted goal uses of an already available
             // meaning. Its initial creation and repeated references do not win
             // future utility merely by inflating a certificate.
-            let mut used = checked
-                .lemmas
-                .iter()
-                .chain(std::iter::once(&checked.certificate))
-                .flat_map(|certificate| certificate.steps().iter())
-                .flat_map(naome_proof::ProofStep::definition_references)
-                .collect::<std::collections::BTreeSet<_>>();
-            loop {
-                let before = used.len();
-                for entry in &checked.definitions {
-                    let certificate = entry.certificate()?;
-                    if used.contains(&certificate.definition_id()) {
-                        used.extend(certificate.body().definition_references());
+            let mut used = std::collections::BTreeSet::new();
+            if let Some(checked) = checked {
+                used = checked
+                    .lemmas
+                    .iter()
+                    .chain(std::iter::once(&checked.certificate))
+                    .flat_map(|certificate| certificate.steps().iter())
+                    .flat_map(naome_proof::ProofStep::definition_references)
+                    .collect::<std::collections::BTreeSet<_>>();
+                loop {
+                    let before = used.len();
+                    for entry in &checked.definitions {
+                        let certificate = entry.certificate()?;
+                        if used.contains(&certificate.definition_id()) {
+                            used.extend(certificate.body().definition_references());
+                        }
+                    }
+                    if used.len() == before {
+                        break;
                     }
                 }
-                if used.len() == before {
-                    break;
-                }
+            } else if let search::Tree::Program(packet) = &example.tree {
+                used.extend(peer::program_definitions(target, packet)?);
             }
-            for entry in definitions::selected(&example.tree)? {
-                if used.contains(&entry.certificate()?.definition_id()) {
-                    let id = crate::hex(entry.address()?.as_bytes());
-                    if let Some(uses) = next.definition_uses.get_mut(&id) {
-                        *uses = uses.saturating_add(1);
-                    }
+            for definition in used {
+                let id = crate::hex(naome_proof::ArtifactId::from(definition).as_bytes());
+                if let Some(uses) = next.definition_uses.get_mut(&id) {
+                    *uses = uses.saturating_add(1);
                 }
             }
             match &example.origin {

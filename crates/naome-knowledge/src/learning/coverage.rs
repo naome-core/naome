@@ -115,14 +115,56 @@ impl Profile {
         } else {
             q.proved_target()
         };
-        let (core, _, checked) = search::core::checked(target, &example.tree)?;
-        if crate::hex(checked.native_id.as_bytes()) != example.proof_id {
-            return Err("replay coverage proof identity differs".into());
-        }
         let mut features = BTreeSet::new();
+        let graphs = if let search::Tree::Program(packet) = &example.tree {
+            if example.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
+                return Err("replay coverage program identity differs".into());
+            }
+            super::peer::program_graphs(target, packet)?
+        } else {
+            let (core, _, checked) = search::core::checked(target, &example.tree)?;
+            if crate::hex(checked.native_id.as_bytes()) != example.proof_id {
+                return Err("replay coverage proof identity differs".into());
+            }
+            for certificate in checked
+                .lemmas
+                .iter()
+                .chain(std::iter::once(&checked.certificate))
+            {
+                let steps = certificate.steps();
+                let mut depths = Vec::<usize>::new();
+                for (index, step) in steps.iter().enumerate() {
+                    let references = step.local_references();
+                    let mut depth = 0;
+                    for (role, reference) in references.into_iter().enumerate() {
+                        if let Some(reference) = reference {
+                            let reference = reference as usize;
+                            if reference >= index {
+                                return Err("coverage dependency order differs".into());
+                            }
+                            depth = depth.max(depths[reference] + 1);
+                            features.insert(Feature::Dependency(
+                                step.canonical_tag(),
+                                role,
+                                steps[reference].canonical_tag(),
+                            ));
+                        }
+                    }
+                    features.insert(Feature::Rule(step.canonical_tag()));
+                    if !step.definition_references().is_empty() {
+                        features.insert(Feature::Definition(step.canonical_tag()));
+                    }
+                    depths.push(depth);
+                }
+                // The normal-form certificate contains only ancestors of its result.
+                features.insert(Feature::Depth(depths.last().copied().unwrap_or(0)));
+            }
+            branches(&core, &mut features);
+            search::compile(target, &core)?.1
+        };
         // Canonical traversal preserves shared variables and binder backlinks.
         // Irrelevant context, offered alternatives and artifact IDs are omitted.
-        for graph in search::compile(target, &core)?.1 {
+        for graph in graphs {
             for action in &graph.successes {
                 let selected = *graph
                     .candidates
@@ -131,40 +173,6 @@ impl Profile {
                 features.insert(Feature::Action(digest(&structure(&graph, &[selected])?)));
             }
         }
-        for certificate in checked
-            .lemmas
-            .iter()
-            .chain(std::iter::once(&checked.certificate))
-        {
-            let steps = certificate.steps();
-            let mut depths = Vec::<usize>::new();
-            for (index, step) in steps.iter().enumerate() {
-                let references = step.local_references();
-                let mut depth = 0;
-                for (role, reference) in references.into_iter().enumerate() {
-                    if let Some(reference) = reference {
-                        let reference = reference as usize;
-                        if reference >= index {
-                            return Err("coverage dependency order differs".into());
-                        }
-                        depth = depth.max(depths[reference] + 1);
-                        features.insert(Feature::Dependency(
-                            step.canonical_tag(),
-                            role,
-                            steps[reference].canonical_tag(),
-                        ));
-                    }
-                }
-                features.insert(Feature::Rule(step.canonical_tag()));
-                if !step.definition_references().is_empty() {
-                    features.insert(Feature::Definition(step.canonical_tag()));
-                }
-                depths.push(depth);
-            }
-            // The normal-form certificate contains only ancestors of its result.
-            features.insert(Feature::Depth(depths.last().copied().unwrap_or(0)));
-        }
-        branches(&core, &mut features);
         let mut profile = Self {
             features: features.len(),
             bits: vec![0; PROFILE_BYTES],

@@ -982,20 +982,22 @@ fn validate_record(
             return Err("meta experience source job identity differs".into());
         }
         match &r.input {
-            Input::Solve { .. } => native.validate_generated_trace()?,
+            Input::Solve { question } => {
+                native.validate_generated_trace()?;
+                if let Some(solution) = native.progress.as_ref().and_then(|p| p.result.as_ref()) {
+                    let target = naome_checker::question::ResearchQuestion::from_hex(question)
+                        .map_err(|error| error.to_string())?;
+                    solution.check_target(&target)?;
+                }
+            }
             Input::Peer {
                 question,
                 artifact,
-                certificate,
+                evidence,
                 ..
             } => {
                 if let Some(solution) = native.progress.as_ref().and_then(|p| p.result.as_ref()) {
-                    crate::learning::peer::validate_solution(
-                        question,
-                        artifact,
-                        certificate,
-                        solution,
-                    )?;
+                    crate::learning::peer::validate_source(question, artifact, evidence, solution)?;
                 }
             }
             _ => {}

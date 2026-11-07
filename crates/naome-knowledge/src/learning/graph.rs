@@ -33,7 +33,7 @@ pub struct Graph {
 
 struct Builder<'a> {
     nodes: Vec<Node>,
-    formulas: HashMap<(FormulaView<'a>, Vec<usize>), usize>,
+    formulas: HashMap<(FormulaView<'a>, Vec<usize>, usize), usize>,
     variables: HashMap<(u8, u64), usize>,
 }
 
@@ -86,8 +86,21 @@ impl<'a> Builder<'a> {
         Ok(index)
     }
 
-    fn formula(&mut self, formula: FormulaView<'a>, binders: &[usize]) -> Result<usize, String> {
-        let key = (formula, binders.to_vec());
+    fn formula(
+        &mut self,
+        formula: FormulaView<'a>,
+        binders: &[usize],
+        depth: usize,
+    ) -> Result<usize, String> {
+        if depth == 0 {
+            return Ok(0);
+        }
+        let key = (formula, binders.to_vec(), depth);
+        let children = if depth == usize::MAX {
+            depth
+        } else {
+            depth - 1
+        };
         if let Some(index) = self.formulas.get(&key) {
             return Ok(*index);
         }
@@ -102,7 +115,7 @@ impl<'a> Builder<'a> {
             let index = self.push(node)?;
             let mut nested = binders.to_vec();
             nested.push(index);
-            self.nodes[index].left = self.formula(body, &nested)?;
+            self.nodes[index].left = self.formula(body, &nested, children)?;
             self.formulas.insert(key, index);
             return Ok(index);
         }
@@ -118,12 +131,12 @@ impl<'a> Builder<'a> {
             }
             FormulaNode::Not(body) => {
                 node.kind = 3;
-                node.left = self.formula(body, binders)?;
+                node.left = self.formula(body, binders, children)?;
             }
             FormulaNode::Implies(left, right) => {
                 node.kind = 4;
-                node.left = self.formula(left, binders)?;
-                node.right = self.formula(right, binders)?;
+                node.left = self.formula(left, binders, children)?;
+                node.right = self.formula(right, binders, children)?;
             }
             FormulaNode::ForAll(_) => unreachable!(),
         }
@@ -152,6 +165,12 @@ impl Graph {
         ))
     }
     pub fn encode(decision: &Decision) -> Result<Self, String> {
+        Self::encode_at_depth(decision, usize::MAX)
+    }
+
+    /// A bounded view of existing checked operands, for replay choices whose
+    /// full formulas cannot jointly fit the model's graph.
+    pub(super) fn encode_at_depth(decision: &Decision, depth: usize) -> Result<Self, String> {
         if decision.context.len() > MAX_CONTEXT || decision.candidates.is_empty() {
             return Err("decision_capacity".into());
         }
@@ -188,10 +207,10 @@ impl Graph {
             formulas: HashMap::new(),
             variables: HashMap::new(),
         };
-        let goal = builder.formula(decision.goal.view(), &[])?;
+        let goal = builder.formula(decision.goal.view(), &[], depth)?;
         let mut context = Vec::new();
         for binding in &decision.context {
-            let root = builder.formula(binding.formula.view(), &[])?;
+            let root = builder.formula(binding.formula.view(), &[], depth)?;
             builder.nodes[root].role |= 2;
             context.push(root);
         }
@@ -214,7 +233,7 @@ impl Graph {
             let conclusions = candidate
                 .consequences
                 .iter()
-                .map(|formula| builder.formula(formula.view(), &[]))
+                .map(|formula| builder.formula(formula.view(), &[], depth))
                 .collect::<Result<Vec<_>, _>>()?;
             let left = builder.pair(&premises)?;
             let right = builder.pair(&conclusions)?;

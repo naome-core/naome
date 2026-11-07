@@ -49,7 +49,6 @@ pub enum Tree {
         packet: Vec<u8>,
         inputs: Vec<String>,
         work: usize,
-        references: Box<[super::program::Reference]>,
     },
     Definitions {
         entries: Vec<super::definitions::Entry>,
@@ -59,6 +58,7 @@ pub enum Tree {
     },
     Axiom(u8),
     Certificate(Vec<u8>),
+    Program(Box<super::peer::Packet>),
     Stored {
         coverage: super::coverage::Profile,
         steps: usize,
@@ -72,11 +72,9 @@ pub enum Tree {
     },
 }
 impl Tree {
-    pub(crate) fn composition(&self) -> Option<(&[String], &[super::program::Reference])> {
+    pub(crate) fn composition(&self) -> Option<&[String]> {
         match self {
-            Self::Composed {
-                inputs, references, ..
-            } => Some((inputs, references)),
+            Self::Composed { inputs, .. } => Some(inputs),
             Self::Definitions { proof, .. } => proof.composition(),
             _ => None,
         }

@@ -43,8 +43,8 @@ def run(trial):
         "search and checked definitions/lemmas; ordinary loopback peers and "
         "restart, no supplied proof or trained checkpoint; no Peano qualification")
     a, b = Node(trial, 0), Node(trial, 1)
-    a.config["runtime"]["jobs"] = {"native_proof_learning": True}
     for node in trial.nodes:
+        node.config["runtime"]["jobs"] = {"native_proof_learning": True}
         node.config["discovery"] = {"mdns": False, "dht": False, "internet": False}
         node.write_config()
         node.start()
@@ -74,7 +74,7 @@ def run(trial):
         if r["id"] == produced["job"] and r["native"]["progress"]["result"]), None))
     assert source_record["input"] == {"role": "solve", "question": goal}
     solution = source_record["native"]["progress"]["result"]
-    assert "Constructed" in solution["tree"]
+    assert "Program" in solution["tree"] and solution["source"] == ""
     assert not solution["refuted"]
     assert solution["cost"]["search_expansions"] <= 128
     assert source_record["reserved_units"] == source_record["checkpoint"] == 1
@@ -95,7 +95,6 @@ def run(trial):
     }
     public = trial.output / "generated"
     public.mkdir()
-    (public / "certificate.nao").write_bytes(bytes.fromhex(solution["source"]))
     for index, helper in enumerate(solution["helpers"]):
         (public / f"helper-{index:02}.nao").write_bytes(bytes.fromhex(helper))
     objects = stored_objects(SimpleNamespace(directory=a.directory))
@@ -113,13 +112,39 @@ def run(trial):
     all_ids = a.ids()
     trial.wait(lambda: root in b.ids(), maximum=45)
     assert b.ids() == all_ids, "the exact checked dependency closure must cross peers"
+
+    def peer_replay():
+        current = snapshot(b)
+        if not current:
+            return None
+        return next((example for example in current["learning"]["replay"]
+                     if isinstance(example["origin"], dict)
+                     and example["origin"].get("Peer", {}).get("artifact") == root), None)
+
+    received = trial.wait(peer_replay, maximum=30)
+    receiver_record = next(record for record in records(b) if record["id"] == received["job"])
+    receiver_result = receiver_record["native"]["progress"]["result"]
+    assert receiver_record["input"]["evidence"]["program"]["manifest"] == program
+    assert receiver_result["tree"]["Program"]["manifest"] == program
+    assert receiver_result["source"] == "" and receiver_result["helpers"] == []
+    assert receiver_result["proof_id"] == received["proof_id"] == solution["proof_id"]
+    assert receiver_record["input"]["artifact"] == root
+    assert receiver_result["cost"]["unique_states"] > 0
+    assert receiver_result["cost"]["search_expansions"] == 0
+    assert snapshot(b)["learning"]["model"]["updates"] == 0
+    trial.summary["scenarios"]["peer_program_replay"] = {
+        "artifact": root, "proof_id": received["proof_id"],
+        "decision_states": receiver_result["cost"]["unique_states"],
+        "replay_wall_micros": receiver_result["cost"]["generation_micros"],
+        "worker_peak_rss_bytes": receiver_result["cost"].get("process_peak_rss_bytes"),
+        "model_updates": 0,
+    }
     trial.summary["scenarios"]["construction"] = {
         "root": root, "proof_id": solution["proof_id"], "definitions": definitions,
         "proofs": proofs, "cost": solution["cost"], "job": produced["job"],
         "reserved_units": source_record["reserved_units"],
         "program": program, "program_check": checked_program,
-        "certificate_bytes": len(solution["source"]) // 2,
-        "closure_certificate_bytes": (len(solution["source"]) + sum(map(len, solution["helpers"]))) // 2,
+        "helper_artifact_bytes": sum(map(len, solution["helpers"])) // 2,
         "all_artifacts": sorted(all_ids), "actual_peer_closure": sorted(b.ids()),
     }
     for node in trial.nodes:
@@ -127,6 +152,7 @@ def run(trial):
         status = node.start()
         assert status["artifact_verification"] == "checked"
         assert node.ids() == all_ids
+    assert peer_replay() == received, "the exact peer program replay must survive restart"
     a.stop()
     a.config["formal_goal"] = GOAL
     a.write_config()

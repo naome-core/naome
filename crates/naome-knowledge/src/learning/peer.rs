@@ -10,6 +10,111 @@ use naome_foundation::Formula;
 use naome_proof::{ProofCertificate, ProofStep};
 use sha2::{Digest, Sha256};
 
+mod program;
+pub(crate) use program::Packet;
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Source {
+    Certificate(Vec<u8>),
+    Program(Box<Packet>),
+}
+impl Source {
+    pub(crate) fn validate_width(&self) -> Result<(), String> {
+        match self {
+            Self::Certificate(bytes) if bytes.len() > super::knowledge::BYTES => {
+                Err("peer compressed admission capacity".into())
+            }
+            Self::Certificate(_) => Ok(()),
+            Self::Program(packet) => packet.validate_width(),
+        }
+    }
+    pub(crate) fn certificate(&self) -> Option<&[u8]> {
+        match self {
+            Self::Certificate(bytes) => Some(bytes),
+            Self::Program(_) => None,
+        }
+    }
+}
+
+pub(crate) fn extract_source(
+    question: &str,
+    artifact: &str,
+    source: &Source,
+) -> Result<Solution, String> {
+    let Source::Program(packet) = source else {
+        return extract(
+            question,
+            artifact,
+            source.certificate().expect("certificate source"),
+        );
+    };
+    let meter = crate::resources::feedback::Meter::start();
+    let question =
+        super::ResearchQuestion::from_hex(question).map_err(|error| error.to_string())?;
+    if crate::hex(packet.manifest.artifact_id().as_bytes()) != artifact {
+        return Err("peer program artifact identity differs".into());
+    }
+    let replay = packet.replay(question.proved_target())?;
+    if replay.graphs.is_empty() {
+        return Err("peer program has no supported ambiguous inference".into());
+    }
+    let sample = meter.finish(0, true);
+    let steps = packet.manifest.commands as usize;
+    Ok(Solution {
+        cost: Box::new(super::GenerationCost {
+            original_steps: steps,
+            useful_steps: steps,
+            unique_states: replay
+                .graphs
+                .iter()
+                .map(Graph::key)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            core_work: steps,
+            generation_micros: sample.elapsed_nanos / 1000,
+            process_peak_rss_bytes: sample.peak_rss_bytes,
+            ..super::GenerationCost::default()
+        }),
+        source: String::new(),
+        helpers: Vec::new(),
+        proof_id: crate::hex(packet.manifest.proof_id().as_bytes()),
+        refuted: false,
+        tree: Tree::Program(packet.clone()),
+    })
+}
+
+pub(crate) fn validate_source(
+    question: &str,
+    artifact: &str,
+    source: &Source,
+    solution: &Solution,
+) -> Result<(), String> {
+    if let Some(bytes) = source.certificate() {
+        return validate_solution(question, artifact, bytes, solution);
+    }
+    let expected = extract_source(question, artifact, source)?;
+    if solution.refuted
+        || !solution.source.is_empty()
+        || !solution.helpers.is_empty()
+        || solution.proof_id != expected.proof_id
+        || super::digest(&solution.tree) != super::digest(&expected.tree)
+    {
+        return Err("peer replay source differs from checked program".into());
+    }
+    Ok(())
+}
+
+pub(super) fn program_graphs(target: &Formula, packet: &Packet) -> Result<Vec<Graph>, String> {
+    Ok(packet.replay(target)?.graphs.clone())
+}
+pub(super) fn program_definitions(
+    target: &Formula,
+    packet: &Packet,
+) -> Result<Vec<naome_proof::DefinitionId>, String> {
+    Ok(packet.replay(target)?.definitions.clone())
+}
+
 std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::BTreeSet<String>> = const { std::cell::RefCell::new(std::collections::BTreeSet::new()) }; }
 pub fn validate_solution(
     question: &str,
@@ -152,6 +257,7 @@ fn replay_steps(
     let mut graph_bytes = 0usize;
     let mut prefix = Sha256::new();
     prefix.update(target.encode_canonical().map_err(|e| e.to_string())?);
+    let goal_parts = super::knowledge::fragments(target);
     for step in steps {
         let formula = match step {
             ProofStep::ModusPonens {
@@ -169,76 +275,26 @@ fn replay_steps(
                     return Err("peer MP premise differs".into());
                 }
                 let conclusion = consequent.to_owned();
-                // Only already checked earlier conclusions are available. The
-                // witness and the final conclusion are never candidate features.
                 let first = formulas.len().saturating_sub(32);
-                let context: Vec<_> = formulas[first..]
-                    .iter()
-                    .map(|f| Binding { formula: f.clone() })
-                    .collect();
-                let mut offered = Vec::new();
-                let goal_parts = super::knowledge::fragments(target);
-                let mut relevance = std::collections::HashMap::new();
-                for (i, f) in context.iter().enumerate() {
-                    if let Some((antecedent, consequent)) = f.formula.view().implication_parts() {
-                        for (j, p) in context.iter().enumerate() {
-                            if antecedent == p.formula.view() {
-                                let consequence = consequent.to_owned();
-                                let score =
-                                    *relevance.entry(consequence.clone()).or_insert_with(|| {
-                                        super::knowledge::fragments(&consequence)
-                                            .intersection(&goal_parts)
-                                            .map(Vec::len)
-                                            .sum::<usize>()
-                                    });
-                                let rule = match &steps[first + i] {
-                                    ProofStep::UniversalInstantiation { .. } => {
-                                        Rule::UniversalInstance
-                                    }
-                                    ProofStep::EqualitySubstitution { .. } => {
-                                        Rule::EqualitySubstitution
-                                    }
-                                    ProofStep::ProofReference { .. } => Rule::LemmaReference,
-                                    _ => Rule::ModusPonens,
-                                };
-                                offered.push((
-                                    score,
-                                    first + i,
-                                    first + j,
-                                    Candidate {
-                                        rule,
-                                        premises: vec![i, j],
-                                        consequences: vec![consequence],
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                }
-                offered.sort_by(|a, b| b.0.cmp(&a.0).then((a.1, a.2).cmp(&(b.1, b.2))));
-                offered.truncate(16);
-                let witness = offered.iter().position(|(_, i, j, _)| *i == b && *j == a);
-                let candidates = offered
-                    .into_iter()
-                    .map(|(_, _, _, c)| c)
-                    .collect::<Vec<_>>();
-                if let Some(expert) = witness.filter(|_| candidates.len() > 1) {
-                    let decision = Decision {
-                        goal: target.clone(),
-                        context,
-                        candidates,
-                        expert,
+                let earlier = formulas[first..].iter().enumerate().map(|(i, formula)| {
+                    let index = first + i;
+                    let rule = match &steps[index] {
+                        ProofStep::UniversalInstantiation { .. } => Rule::UniversalInstance,
+                        ProofStep::EqualitySubstitution { .. } => Rule::EqualitySubstitution,
+                        ProofStep::ProofReference { .. } => Rule::LemmaReference,
+                        _ => Rule::ModusPonens,
                     };
-                    if let Ok(mut graph) = Graph::encode(&decision) {
-                        graph.binding = crate::hex(&prefix.clone().finalize());
-                        graph_bytes = graph_bytes
-                            .checked_add(graph.work_bytes())
-                            .ok_or("peer graph work overflow")?;
-                        if graph_bytes > super::MODEL_REQUIREMENTS.work_bytes / 16 {
-                            return Err("peer graph work capacity".into());
-                        }
-                        graphs.push(graph);
+                    (index, formula, rule)
+                });
+                if let Some(mut graph) = checked_mp(target, &goal_parts, earlier, (a, b))? {
+                    graph.binding = crate::hex(&prefix.clone().finalize());
+                    graph_bytes = graph_bytes
+                        .checked_add(graph.work_bytes())
+                        .ok_or("peer graph work overflow")?;
+                    if graph_bytes > super::MODEL_REQUIREMENTS.work_bytes / 16 {
+                        return Err("peer graph work capacity".into());
                     }
+                    graphs.push(graph);
                 }
                 conclusion
             }
@@ -309,6 +365,72 @@ fn replay_steps(
     }
     Ok(graphs)
 }
+// Only earlier proved facts contribute candidate features. The observed
+// inference supplies the label only if it is present in the bounded offer.
+fn checked_mp<'a>(
+    target: &Formula,
+    goal_parts: &std::collections::BTreeSet<Vec<u8>>,
+    facts: impl Iterator<Item = (usize, &'a Formula, Rule)>,
+    observed: (usize, usize),
+) -> Result<Option<Graph>, String> {
+    let facts = facts.collect::<Vec<_>>();
+    if !facts.iter().any(|fact| fact.0 == observed.0)
+        || !facts.iter().any(|fact| fact.0 == observed.1)
+    {
+        return Ok(None);
+    }
+    let mut offered = Vec::new();
+    let mut relevance = std::collections::HashMap::new();
+    for (i, (implication, formula, rule)) in facts.iter().enumerate() {
+        if let Some((antecedent, consequent)) = formula.view().implication_parts() {
+            for (j, (premise, other, _)) in facts.iter().enumerate() {
+                if antecedent == other.view() {
+                    let consequence = consequent.to_owned();
+                    let score = *relevance.entry(consequence.clone()).or_insert_with(|| {
+                        super::knowledge::fragments(&consequence)
+                            .intersection(goal_parts)
+                            .map(Vec::len)
+                            .sum::<usize>()
+                    });
+                    offered.push((
+                        score,
+                        *implication,
+                        *premise,
+                        Candidate {
+                            rule: *rule,
+                            premises: vec![i, j],
+                            consequences: vec![consequence],
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    offered.sort_by(|a, b| b.0.cmp(&a.0).then((a.1, a.2).cmp(&(b.1, b.2))));
+    offered.truncate(16);
+    let witness = offered
+        .iter()
+        .position(|(_, implication, premise, _)| (*premise, *implication) == observed);
+    let Some(expert) = witness.filter(|_| offered.len() > 1) else {
+        return Ok(None);
+    };
+    let decision = Decision {
+        goal: target.clone(),
+        context: facts
+            .into_iter()
+            .map(|(_, formula, _)| Binding {
+                formula: formula.clone(),
+            })
+            .collect(),
+        candidates: offered
+            .into_iter()
+            .map(|(_, _, _, candidate)| candidate)
+            .collect(),
+        expert,
+    };
+    Ok(Graph::encode(&decision).ok())
+}
+
 pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution, String> {
     let started = std::time::Instant::now();
     let q =
@@ -343,8 +465,7 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
     })
 }
 
-/// Native certificates keep identity; projected programs retain their source
-/// identity and a separately checked translated certificate identity.
+/// A certificate retains its own checked artifact identity.
 pub fn matches_artifact(proof_id: &str, artifact: &str, bytes: &[u8]) -> Result<bool, String> {
     let evidence = super::evidence::decode(bytes)?;
     let certificate =
@@ -354,17 +475,7 @@ pub fn matches_artifact(proof_id: &str, artifact: &str, bytes: &[u8]) -> Result<
     if crate::hex(checked.proof_id().as_bytes()) != proof_id {
         return Ok(false);
     }
-    let term = super::evidence::compile(checked.conclusion(), bytes)?;
-    let verified = proof::verify(&term, checked.conclusion())?;
-    if let Some(origin) = evidence.program {
-        super::program::validate(&origin, &verified)?;
-        Ok(crate::hex(origin.manifest.artifact_id().as_bytes()) == artifact)
-    } else {
-        Ok(
-            crate::hex(naome_proof::ArtifactId::from_proof_id(verified.native_id).as_bytes())
-                == artifact,
-        )
-    }
+    Ok(crate::hex(checked.artifact_id().as_bytes()) == artifact)
 }
 
 #[cfg(test)]

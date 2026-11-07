@@ -26,11 +26,11 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
     let solution = if let Input::Peer {
         question,
         artifact,
-        certificate,
+        evidence,
         ..
     } = &owner.journal.records.get(&id).unwrap().input
     {
-        crate::learning::peer::extract(question, artifact, certificate).unwrap()
+        crate::learning::peer::extract_source(question, artifact, evidence).unwrap()
     } else {
         solution
     };
@@ -522,7 +522,7 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
     let solution = checked_solution();
     let peer = libp2p::PeerId::random().to_string();
     let admission = PeerAdmission {
-        certificate: Some(
+        evidence: Some(crate::learning::peer::Source::Certificate(
             crate::learning::peer::pack(
                 crate::learning::proof::check_artifact(
                     &checked_solution().source,
@@ -534,7 +534,7 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
                 &[],
             )
             .unwrap(),
-        ),
+        )),
         ordinal: 1,
         artifact: crate::hex(
             crate::object::proof_address(&solution.proof_id)
@@ -635,7 +635,7 @@ fn reserved_or_unclassified_peer_admissions_have_one_durable_unsupported_disposi
     for question in [None, Some(reserved)] {
         let (directory, mut owner) = native();
         let admission = PeerAdmission {
-            certificate: Some(
+            evidence: Some(crate::learning::peer::Source::Certificate(
                 crate::learning::peer::pack(
                     crate::learning::proof::check_artifact(
                         &checked_solution().source,
@@ -647,7 +647,7 @@ fn reserved_or_unclassified_peer_admissions_have_one_durable_unsupported_disposi
                     &[],
                 )
                 .unwrap(),
-            ),
+            )),
             ordinal: 1,
             artifact: "a1".repeat(32),
             peer: libp2p::PeerId::random().to_string(),
@@ -687,7 +687,7 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
     let before = learning(&owner);
     let solution = checked_solution();
     let admission = PeerAdmission {
-        certificate: Some(
+        evidence: Some(crate::learning::peer::Source::Certificate(
             crate::learning::peer::pack(
                 crate::learning::proof::check_artifact(
                     &checked_solution().source,
@@ -699,7 +699,7 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
                 &[],
             )
             .unwrap(),
-        ),
+        )),
         ordinal: 1,
         artifact: crate::hex(
             crate::object::proof_address(&solution.proof_id)
@@ -969,97 +969,55 @@ fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allow
 }
 
 #[test]
-fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_reopen() {
+fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
+    use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep, program::Command};
     let (directory, mut owner) = native();
     let original = checked_solution();
     let question = crate::learning::tests::own_question();
     let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
-    let known = crate::learning::proof::verify(
-        &crate::learning::evidence::compile(
-            q.proved_target(),
-            &crate::learning::peer::pack(
-                crate::learning::proof::check_artifact(
-                    &original.source,
-                    &naome_checker::ArtifactState::new(),
-                )
-                .unwrap()
-                .normal_form()
-                .canonical_bytes(),
-                &[],
-            )
-            .unwrap(),
-        )
-        .unwrap(),
-        q.proved_target(),
-    )
+    let axiom = ProofCertificate::new(vec![ProofStep::ZfcAxiom(
+        naome_foundation::ZfcAxiom::Pairing,
+    )])
     .unwrap();
-    let mut context = naome_checker::ArtifactState::new();
-    context.register_proof(original.checked().unwrap()).unwrap();
+    let second =
+        crate::learning::proof::check(axiom.clone(), &naome_checker::ArtifactState::new()).unwrap();
     let commands = vec![
-        naome_proof::program::Command::ProofReference {
-            proof_id: *known.native_id.as_bytes(),
+        Command::ProofReference {
+            proof_id: crate::object::id_bytes(&original.proof_id).unwrap(),
         },
-        naome_proof::program::Command::Seal { proof: 0 },
+        Command::ProofReference {
+            proof_id: *second.proof_id().as_bytes(),
+        },
+        Command::Simplification {
+            antecedent: 0,
+            consequent: 1,
+        },
+        Command::ModusPonens {
+            premise: 0,
+            implication: 2,
+        },
+        Command::ModusPonens {
+            premise: 1,
+            implication: 3,
+        },
+        Command::Seal { proof: 4 },
     ];
-    let mut work =
-        crate::proof_work::Work::open(&directory.0.join("peer-program.sqlite3")).unwrap();
-    work.append_group(&commands).unwrap();
-    let budget = crate::resources::adaptive::Budget {
-        memory_bytes: 256 * 1024 * 1024,
-        concurrency: 1,
-        cache_bytes: 32768,
-        batch_steps: 128,
-        network_requests: 1,
-        yield_ms: 0,
-        paused: None,
-    };
-    while work.advance(&budget, &context).unwrap() {}
-    while !work.prepare_export(&budget).unwrap() {}
-    let checked = work.into_checked().unwrap();
-    let manifest = checked.proof().unwrap().manifest().clone();
-    let projected = crate::learning::program::project(
-        manifest.clone(),
-        |i| {
-            commands
-                .get(i as usize)
-                .cloned()
-                .ok_or_else(|| "command missing".into())
-        },
-        |id| {
-            assert_eq!(id, known.native_id);
-            crate::learning::proof::verify(
-                &crate::learning::proof::Term::Native {
-                    certificate: known.certificate.clone(),
-                    lemmas: known.lemmas.clone(),
-                    definitions: known.definitions.clone(),
-                    target: known.target.clone(),
-                },
-                &known.target,
-            )
-        },
-        |_| Ok(None),
-        vec![],
-    )
-    .unwrap();
-    let verified = crate::learning::proof::verify(
-        &crate::learning::proof::Term::Native {
-            certificate: projected.certificate,
-            lemmas: projected.lemmas,
-            definitions: projected.definitions,
-            target: q.proved_target().clone(),
-        },
-        q.proved_target(),
-    )
-    .unwrap();
+    let mut artifacts = original
+        .helpers
+        .iter()
+        .chain(std::iter::once(&original.source))
+        .map(|hex| std::sync::Arc::from(crate::unhex(hex).unwrap()))
+        .collect::<Vec<_>>();
+    artifacts.push(ArtifactPayload::Proof(axiom).to_canonical_bytes().into());
     let packet =
-        crate::learning::evidence::pack_with_program(&verified, Some(projected.origin)).unwrap();
-    let source_artifact = crate::hex(manifest.artifact_id().as_bytes());
-    let translated = crate::hex(verified.native_id.as_bytes());
-    assert_ne!(translated, crate::hex(manifest.proof_id().as_bytes()));
+        crate::learning::peer::Packet::compose(q.proved_target(), &commands, &[], artifacts)
+            .unwrap();
+    let artifact = crate::hex(packet.manifest.artifact_id().as_bytes());
+    let proof = crate::hex(packet.manifest.proof_id().as_bytes());
     let admission = PeerAdmission {
-        certificate: Some(packet),
+        evidence: Some(crate::learning::peer::Source::Program(Box::new(packet))),
         ordinal: 1,
-        artifact: source_artifact.clone(),
+        artifact: artifact.clone(),
         peer: libp2p::PeerId::random().to_string(),
         question: Some(question),
         binding: Binding::new([1; 32], [2; 32]),
@@ -1073,30 +1031,24 @@ fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_
         .journal
         .records
         .values()
-        .find(|r| matches!(r.input, Input::Peer { .. }))
+        .find(|record| matches!(record.input, Input::Peer { .. }))
         .unwrap()
         .id;
     finish(&mut owner, id, original);
     let state = learning(&owner);
     assert_eq!(state["peer_examples"], 1);
     assert_eq!(state["local_examples"], 0);
-    assert_eq!(state["replay"][0]["proof_id"], translated);
-    assert_eq!(
-        state["replay"][0]["origin"]["Peer"]["artifact"],
-        source_artifact
-    );
+    assert_eq!(state["replay"][0]["proof_id"], proof);
+    assert_eq!(state["replay"][0]["origin"]["Peer"]["artifact"], artifact);
     let settings = owner.settings;
     drop(owner);
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    assert_eq!(
-        serde_json::to_value(journal.learning.as_ref().unwrap()).unwrap(),
-        state
-    );
-    let evidence = disk
-        .replay_evidence(journal.learning.as_ref().unwrap())
-        .unwrap();
+    let restored = journal.learning.as_ref().unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), state);
+    let evidence = disk.replay_evidence(restored).unwrap();
     assert_eq!(evidence.len(), 1);
-    assert_eq!(evidence[0].proof_id, translated);
+    assert_eq!(evidence[0].proof_id, proof);
+    assert!(restored.has_training_graphs(&evidence).unwrap());
 }
 
 #[test]
@@ -1383,7 +1335,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             .as_bytes(),
     );
     let admission = PeerAdmission {
-        certificate: Some(
+        evidence: Some(crate::learning::peer::Source::Certificate(
             crate::learning::peer::pack(
                 crate::learning::proof::check_artifact(
                     &solution.source,
@@ -1395,7 +1347,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
                 &[],
             )
             .unwrap(),
-        ),
+        )),
         ordinal: 1,
         artifact: artifact.clone(),
         peer: libp2p::PeerId::random().to_string(),

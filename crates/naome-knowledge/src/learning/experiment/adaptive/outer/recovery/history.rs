@@ -22,7 +22,7 @@ pub(super) fn persist(source: &super::super::Source, path: &Path) {
             origin: Origin::Local,
             question: row["question"].as_str().unwrap().into(),
             solution,
-            peer_certificate: None,
+            peer_evidence: None,
         });
     }
     let mut entries = Vec::new();

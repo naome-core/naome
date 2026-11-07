@@ -293,10 +293,6 @@ pub(crate) fn verify_native(
 }
 
 /// No typed term is accepted as evidence until the existing checker accepts it.
-#[expect(
-    clippy::mutable_key_type,
-    reason = "OnceLock memoizes immutable structure; hash and equality never change."
-)]
 pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     if term.formula() != *expected {
         return Err("search term differs from the requested target".into());
@@ -314,6 +310,84 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
             lemmas.clone(),
             Some(expected),
         );
+    }
+    let Recipe {
+        steps,
+        lemmas,
+        definitions,
+    } = recipe(term, expected)?;
+    let certificate = ProofCertificate::new(steps).map_err(|error| match error {
+        naome_proof::ProofCertificateError::TooManySteps { .. }
+        | naome_proof::ProofCertificateError::InputTooLong { .. }
+        | naome_proof::ProofCertificateError::FormulaNodeLimitExceeded { .. } => {
+            NATIVE_RESOURCE_LIMIT.into()
+        }
+        naome_proof::ProofCertificateError::Formula(
+            naome_foundation::FormulaCodecError::NodeLimitExceeded { .. }
+            | naome_foundation::FormulaCodecError::DepthLimitExceeded { .. },
+        ) => NATIVE_RESOURCE_LIMIT.into(),
+        error => error.to_string(),
+    })?;
+    let checked =
+        crate::learning::proof::check(certificate.clone(), &lemma_context(&definitions, &lemmas)?)
+            .map_err(|error| match error.kind() {
+                naome_checker::CheckErrorKind::DerivedFormula {
+                    source:
+                        naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
+                        | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
+                    ..
+                }
+                | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
+                    NATIVE_RESOURCE_LIMIT.to_owned()
+                }
+                _ => error.to_string(),
+            })?;
+    let target = close(expected.clone());
+    if checked.conclusion() != &target {
+        return Err("checked certificate proves a different target".into());
+    }
+    // Internal closed lemmas are Foundation theorems, not new user questions.
+    // Exact conclusion equality above and the independent checker establish
+    // their claim; question-intake depth limits belong to the final question.
+    let lemmas = lemmas::retain(&checked, &definitions, &lemmas)?;
+    Ok(Verified {
+        lemmas,
+        definitions,
+        certificate: checked.normal_form().certificate().clone(),
+        target,
+        native_id: checked.proof_id(),
+        payload_bytes: checked.normal_form().canonical_bytes().len(),
+    })
+}
+
+pub(super) struct Recipe {
+    pub steps: Vec<ProofStep>,
+    pub lemmas: Vec<ProofCertificate>,
+    pub definitions: Vec<super::definitions::Entry>,
+}
+
+/// Lower the actual search term into bounded inference operands. A program
+/// consumer can keep these as typed commands without a certificate round trip.
+#[expect(
+    clippy::mutable_key_type,
+    reason = "OnceLock memoizes immutable structure; hash and equality never change."
+)]
+pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> {
+    if term.formula() != *expected {
+        return Err("search term differs from the requested target".into());
+    }
+    if let Term::Native {
+        certificate,
+        definitions,
+        lemmas,
+        ..
+    } = term
+    {
+        return Ok(Recipe {
+            steps: certificate.steps().to_vec(),
+            lemmas: lemmas.clone(),
+            definitions: definitions.clone(),
+        });
     }
     let root = lower(term)?;
     let mut steps = Vec::new();
@@ -448,47 +522,10 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         });
         index = (steps.len() - 1) as u32;
     }
-    let certificate = ProofCertificate::new(steps).map_err(|error| match error {
-        naome_proof::ProofCertificateError::TooManySteps { .. }
-        | naome_proof::ProofCertificateError::InputTooLong { .. }
-        | naome_proof::ProofCertificateError::FormulaNodeLimitExceeded { .. } => {
-            NATIVE_RESOURCE_LIMIT.into()
-        }
-        naome_proof::ProofCertificateError::Formula(
-            naome_foundation::FormulaCodecError::NodeLimitExceeded { .. }
-            | naome_foundation::FormulaCodecError::DepthLimitExceeded { .. },
-        ) => NATIVE_RESOURCE_LIMIT.into(),
-        error => error.to_string(),
-    })?;
-    let checked =
-        crate::learning::proof::check(certificate.clone(), &lemma_context(&definitions, &lemmas)?)
-            .map_err(|error| match error.kind() {
-                naome_checker::CheckErrorKind::DerivedFormula {
-                    source:
-                        naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
-                        | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
-                    ..
-                }
-                | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
-                    NATIVE_RESOURCE_LIMIT.to_owned()
-                }
-                _ => error.to_string(),
-            })?;
-    let target = close(expected.clone());
-    if checked.conclusion() != &target {
-        return Err("checked certificate proves a different target".into());
-    }
-    // Internal closed lemmas are Foundation theorems, not new user questions.
-    // Exact conclusion equality above and the independent checker establish
-    // their claim; question-intake depth limits belong to the final question.
-    let lemmas = lemmas::retain(&checked, &definitions, &lemmas)?;
-    Ok(Verified {
+    Ok(Recipe {
+        steps,
         lemmas,
         definitions,
-        certificate: checked.normal_form().certificate().clone(),
-        target,
-        native_id: checked.proof_id(),
-        payload_bytes: checked.normal_form().canonical_bytes().len(),
     })
 }
 
@@ -515,17 +552,10 @@ pub(crate) fn check_artifact(
         .map_err(|error| error.to_string())
 }
 
-pub fn source_with_definitions(
-    proof: &Verified,
+pub(super) fn define_steps(
+    steps: &[ProofStep],
     definitions: &[super::definitions::Entry],
-) -> Result<String, String> {
-    if proof
-        .definitions
-        .iter()
-        .any(|entry| !definitions.contains(entry))
-    {
-        return Err("exact native references cannot be replaced during proof encoding".into());
-    }
+) -> Result<Vec<ProofStep>, String> {
     let rewrite = |value: &naome_proof::ProofFormula| {
         if value.as_defined().is_some() {
             return Ok(value.clone());
@@ -535,9 +565,7 @@ pub fn source_with_definitions(
             .map_err(|error| error.to_string())?;
         super::definitions::represent(primitive.as_ref(), definitions)
     };
-    let steps = proof
-        .certificate
-        .steps()
+    steps
         .iter()
         .map(|step| {
             Ok(match step {
@@ -607,7 +635,21 @@ pub fn source_with_definitions(
                 _ => step.clone(),
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, String>>()
+}
+
+pub fn source_with_definitions(
+    proof: &Verified,
+    definitions: &[super::definitions::Entry],
+) -> Result<String, String> {
+    if proof
+        .definitions
+        .iter()
+        .any(|entry| !definitions.contains(entry))
+    {
+        return Err("exact native references cannot be replaced during proof encoding".into());
+    }
+    let steps = define_steps(proof.certificate.steps(), definitions)?;
     let certificate = ProofCertificate::new(steps).map_err(|error| error.to_string())?;
     let context = lemma_context(definitions, &proof.lemmas)?;
     let checked = check(certificate, &context).map_err(|error| error.to_string())?;

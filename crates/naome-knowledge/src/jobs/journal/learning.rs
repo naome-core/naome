@@ -58,12 +58,8 @@ impl Disk {
         if peer.to_string() != admission.peer {
             return Err("peer learning source encoding".into());
         }
-        if admission
-            .certificate
-            .as_ref()
-            .is_some_and(|b| b.len() > 8 * 1024)
-        {
-            return Err("peer compressed admission capacity".into());
+        if let Some(evidence) = &admission.evidence {
+            evidence.validate_width()?;
         }
         if let Some(question) = &admission.question {
             naome_checker::question::ResearchQuestion::from_hex(question)
@@ -73,14 +69,19 @@ impl Disk {
             .learning
             .as_mut()
             .ok_or("peer learning owner is disabled")?;
-        if let Some(packet) = admission.certificate.as_ref().filter(|_| {
-            admission
-                .question
-                .as_deref()
-                .is_some_and(crate::learning::State::eligible)
-        }) {
+        if let Some(packet) = admission
+            .evidence
+            .as_ref()
+            .and_then(crate::learning::peer::Source::certificate)
+            .filter(|_| {
+                admission
+                    .question
+                    .as_deref()
+                    .is_some_and(crate::learning::State::eligible)
+            })
+        {
             let entry = crate::learning::knowledge::Entry {
-                packet: packet.clone(),
+                packet: packet.to_vec(),
             };
             let verified = entry.verified()?;
             if !crate::learning::peer::matches_artifact(
@@ -171,7 +172,7 @@ impl Disk {
             question,
             artifact,
             peer,
-            certificate,
+            evidence,
         } = &record.input
         else {
             return Ok(Vec::new());
@@ -190,7 +191,9 @@ impl Disk {
         ) {
             return Ok(Vec::new());
         }
-        if receipt.admission.peer != *peer || receipt.admission.question.as_ref() != Some(question)
+        if receipt.admission.peer != *peer
+            || receipt.admission.question.as_ref() != Some(question)
+            || receipt.admission.evidence.as_ref() != Some(evidence)
         {
             return Err("peer conversion origin differs".into());
         }
@@ -214,22 +217,7 @@ impl Disk {
             if let Some(solution) = solution
                 && !solution.refuted
             {
-                let checked = solution.checked()?;
-                if crate::hex(checked.proof_id().as_bytes()) != solution.proof_id
-                    || !crate::learning::peer::matches_artifact(
-                        &solution.proof_id,
-                        artifact,
-                        certificate,
-                    )?
-                {
-                    return Err("peer reconstructed proof checker identity differs".into());
-                }
-                let extracted = crate::learning::peer::extract(question, artifact, certificate)?;
-                if crate::learning::digest(&extracted.tree)
-                    != crate::learning::digest(&solution.tree)
-                {
-                    return Err("peer replay did not extract the admitted native DAG".into());
-                }
+                crate::learning::peer::validate_source(question, artifact, evidence, solution)?;
                 let example = crate::learning::Example {
                     origin: crate::learning::Origin::Peer {
                         artifact: artifact.clone(),
@@ -613,10 +601,7 @@ impl Disk {
         if crate::hex(program.manifest.artifact_id().as_bytes()) != root {
             return Err("accepted native program identity differs".into());
         }
-        let compiled = solution.checked()?;
-        target
-            .classify_checked_proof(&compiled)
-            .map_err(|error| error.to_string())?;
+        solution.check_target(&target)?;
         let example = crate::learning::Example {
             origin: crate::learning::Origin::Local,
             job: id,

@@ -200,6 +200,19 @@ pub(super) fn compile(
     target: &Formula,
     actions: &[ScopedAction],
 ) -> Result<(Term, Vec<Graph>), String> {
+    let (scope, graphs) = decision_graphs(target, actions)?;
+    let result = scope.assumptions.len() + actions.len() - 1;
+    let mut term = deduce(&scope.assumptions, actions, result as u32)?;
+    for variable in scope.binders.into_iter().rev() {
+        term = Term::Generalize(variable, Box::new(term));
+    }
+    Ok((term, graphs))
+}
+
+fn decision_graphs(
+    target: &Formula,
+    actions: &[ScopedAction],
+) -> Result<(Scope, Vec<Graph>), String> {
     let scope = Scope::open(target)?.ok_or("scope trace target differs")?;
     if actions.is_empty() || actions.len() > ACTIONS {
         return Err("scope trace action capacity".into());
@@ -225,11 +238,24 @@ pub(super) fn compile(
     if facts.last() != Some(&scope.goal) {
         return Err("scope trace conclusion differs".into());
     }
-    let mut term = deduce(&scope.assumptions, actions, (facts.len() - 1) as u32)?;
-    for variable in scope.binders.into_iter().rev() {
-        term = Term::Generalize(variable, Box::new(term));
+    Ok((scope, graphs))
+}
+
+pub(crate) fn program_graphs(target: &Formula, records: &[Command]) -> Result<Vec<Graph>, String> {
+    let Some(actions) = records.iter().find_map(|record| match record {
+        Command::Deduce { actions, .. } => Some(actions),
+        _ => None,
+    }) else {
+        return Ok(Vec::new());
+    };
+    if actions.is_empty()
+        || actions.len() > ACTIONS
+        || Scope::open(target)?.is_none()
+        || commands(target, actions)? != records
+    {
+        return Ok(Vec::new());
     }
-    Ok((term, graphs))
+    Ok(decision_graphs(target, actions)?.1)
 }
 
 pub(crate) fn verified(

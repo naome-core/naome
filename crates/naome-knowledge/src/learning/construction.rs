@@ -124,6 +124,192 @@ pub fn construct_with(
     known: &[super::knowledge::Entry],
     definitions: &[super::definitions::Entry],
 ) -> Result<(Option<proof::Verified>, usize, Option<selection::Selection>), String> {
+    let choices = super::definitions::construction_choices(target, definitions)?;
+    let protected = super::knowledge::proof_ids(known)?;
+    construct_candidate(
+        target,
+        maximum,
+        started,
+        ranker,
+        known,
+        definitions,
+        |term, offer, direct| {
+            let verified = proof::verify(term, target)?;
+            if !direct && !selection::used(offer, &verified)? {
+                return Ok(None);
+            }
+            if direct || verified.definitions.is_empty() {
+                return representation::apply(verified, &choices, &protected).map(Some);
+            }
+            Ok(Some(verified))
+        },
+    )
+}
+
+pub(super) struct ProgramCandidate {
+    pub packet: super::peer::Packet,
+    pub helpers: Vec<String>,
+}
+
+pub(super) fn construct_program(
+    target: &Formula,
+    maximum: usize,
+    started: std::time::Instant,
+    ranker: &mut dyn super::model::Ranker,
+    known: &[super::knowledge::Entry],
+    definitions: &[super::definitions::Entry],
+) -> Result<(Option<ProgramCandidate>, usize), String> {
+    let choices = super::definitions::construction_choices(target, definitions)?;
+    let (candidate, work, _) = construct_candidate(
+        target,
+        maximum,
+        started,
+        ranker,
+        known,
+        definitions,
+        |term, offer, direct| {
+            let mut recipe = proof::recipe(term, target)?;
+            if !direct && !selection::used_recipe(offer, &recipe)? {
+                return Ok(None);
+            }
+            for entry in &choices {
+                if !recipe.definitions.contains(entry) {
+                    recipe.definitions.push(entry.clone());
+                }
+            }
+            program_from_recipe(target, recipe).map(Some)
+        },
+    )?;
+    Ok((candidate, work))
+}
+
+pub(super) fn program_from_recipe(
+    target: &Formula,
+    recipe: proof::Recipe,
+) -> Result<ProgramCandidate, String> {
+    let (steps, helpers) = program_recipe(recipe)?;
+    let commands = naome_proof::program::Projection::from_inference_steps(&steps)?.into_commands();
+    let artifacts = helpers
+        .iter()
+        .map(|source| {
+            crate::unhex(source)
+                .map(std::sync::Arc::from)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let packet = super::peer::Packet::compose(target, &commands, &[], artifacts)?;
+    Ok(ProgramCandidate { packet, helpers })
+}
+
+// Newly synthesized helper derivations can share the root's native command
+// graph. Original bounded artifact references keep their concrete identity.
+fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+    fn append(
+        output: &mut Vec<ProofStep>,
+        input: &[ProofStep],
+        aliases: &BTreeMap<naome_proof::ProofId, u32>,
+    ) -> Result<u32, String> {
+        let mut positions = Vec::with_capacity(input.len());
+        for step in input {
+            let at = |index: u32| {
+                positions
+                    .get(index as usize)
+                    .copied()
+                    .ok_or("native helper forward operand")
+            };
+            let step = match step {
+                ProofStep::ProofReference { proof_id } if aliases.contains_key(proof_id) => {
+                    positions.push(aliases[proof_id]);
+                    continue;
+                }
+                ProofStep::ModusPonens {
+                    premise,
+                    implication,
+                } => ProofStep::ModusPonens {
+                    premise: at(*premise)?,
+                    implication: at(*implication)?,
+                },
+                ProofStep::Generalization { premise, variable } => ProofStep::Generalization {
+                    premise: at(*premise)?,
+                    variable: *variable,
+                },
+                other => other.clone(),
+            };
+            positions.push(u32::try_from(output.len()).map_err(|_| "native helper operand width")?);
+            output.push(step);
+        }
+        positions
+            .last()
+            .copied()
+            .ok_or("empty native helper recipe".into())
+    }
+    let mut context = super::definitions::context(&recipe.definitions)?;
+    let mut output = Vec::new();
+    let mut aliases = BTreeMap::new();
+    let mut kept = Vec::new();
+    for certificate in recipe.lemmas {
+        let checked = proof::check(certificate, &context).map_err(|error| error.to_string())?;
+        let id = checked.proof_id();
+        if context.contains_proof(id) {
+            continue;
+        }
+        let certificate = checked.normal_form().certificate();
+        let needs_inlined = certificate.steps().iter().any(|step| {
+            matches!(step, ProofStep::ProofReference { proof_id } if aliases.contains_key(proof_id))
+        });
+        if needs_inlined
+            || checked.normal_form().canonical_bytes().len() + 1
+                > crate::resources::limits().proof_bytes
+        {
+            let commands = proof::define_steps(certificate.steps(), &recipe.definitions)?;
+            let position = append(&mut output, &commands, &aliases)?;
+            aliases.insert(id, position);
+        } else {
+            kept.push(certificate.clone());
+        }
+        context
+            .register_proof_for_replication(checked)
+            .map_err(|error| error.to_string())?;
+    }
+    let root = proof::define_steps(&recipe.steps, &recipe.definitions)?;
+    let conclusion = append(&mut output, &root, &aliases)?;
+    if conclusion as usize + 1 != output.len() {
+        return Err("native helper root differs".into());
+    }
+    let used = output
+        .iter()
+        .chain(kept.iter().flat_map(|proof| proof.steps()))
+        .flat_map(ProofStep::definition_references)
+        .collect::<BTreeSet<_>>();
+    let definitions = recipe
+        .definitions
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .certificate()
+                .is_ok_and(|definition| used.contains(&definition.definition_id()))
+        })
+        .collect::<Vec<_>>();
+    let mut helpers = Vec::new();
+    super::definitions::append_artifacts(&definitions, &mut helpers)?;
+    for lemma in proof::lemma_sources(&definitions, &kept)? {
+        if !helpers.contains(&lemma) {
+            helpers.push(lemma);
+        }
+    }
+    Ok((output, helpers))
+}
+
+fn construct_candidate<T>(
+    target: &Formula,
+    maximum: usize,
+    started: std::time::Instant,
+    ranker: &mut dyn super::model::Ranker,
+    known: &[super::knowledge::Entry],
+    definitions: &[super::definitions::Entry],
+    mut finish: impl FnMut(&proof::Term, &selection::Offer, bool) -> Result<Option<T>, String>,
+) -> Result<(Option<T>, usize, Option<selection::Selection>), String> {
     if maximum == 0 {
         return Ok((None, 0, None));
     }
@@ -131,8 +317,6 @@ pub fn construct_with(
     if offers.is_empty() {
         return Ok((None, 0, None));
     }
-    let choices = super::definitions::construction_choices(target, definitions)?;
-    let protected = super::knowledge::proof_ids(known)?;
     let mut assumptions = target.clone();
     while let Some(body) = assumptions.open_outer_universal(fresh(&assumptions, &[])) {
         assumptions = body;
@@ -152,9 +336,10 @@ pub fn construct_with(
             definitions: definitions.to_vec(),
             selected,
         };
-        if let Some(term) = offer.context.iter().find(|t| t.formula() == *target) {
-            let proof = representation::apply(proof::verify(term, target)?, &choices, &protected)?;
-            return Ok((Some(proof), work + 1, Some(selection)));
+        if let Some(term) = offer.context.iter().find(|t| t.formula() == *target)
+            && let Some(candidate) = finish(term, offer, true)?
+        {
+            return Ok((Some(candidate), work + 1, Some(selection)));
         }
         let allowance = if offer.schema_only && !has_bound {
             16.min(maximum.saturating_sub(work))
@@ -164,19 +349,10 @@ pub fn construct_with(
         let mut search = logic::Search::new(allowance, started);
         let found = search.prove(target, &offer.context)?;
         work += search.work;
-        if let Some(term) = found {
-            let verified = proof::verify(&term, target)?;
-            if !selection::used(offer, &verified)? {
-                continue;
-            }
-            // A theorem's existing meanings stay identity-bound. New goal-only
-            // meanings may rewrite a wholly primitive generated derivation.
-            let proof = if verified.definitions.is_empty() {
-                representation::apply(verified, &choices, &protected)?
-            } else {
-                verified
-            };
-            return Ok((Some(proof), work, Some(selection)));
+        if let Some(term) = found
+            && let Some(candidate) = finish(&term, offer, false)?
+        {
+            return Ok((Some(candidate), work, Some(selection)));
         }
         if work >= maximum {
             break;

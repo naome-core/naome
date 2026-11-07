@@ -95,7 +95,7 @@ impl Disk {
                 {
                     return Err("historical source identity differs".into());
                 }
-                let (question, origin, peer_certificate) = match &source.input {
+                let (question, origin, peer_evidence) = match &source.input {
                     Input::Solve { question } => {
                         let bytes = self
                             .checkpoint
@@ -123,7 +123,7 @@ impl Disk {
                         question,
                         artifact,
                         peer,
-                        certificate,
+                        evidence,
                     } => {
                         let bytes = self
                             .checkpoint
@@ -143,7 +143,7 @@ impl Disk {
                         // replay_seen owns checked conversions, including ones
                         // declined by the bounded working selector. A terminal
                         // disposition is not proof authority: the worker still
-                        // reconstructs this exact admitted native certificate.
+                        // reconstructs this exact admitted native evidence.
                         let terminal = match &receipt.status {
                             PeerStatus::Learned {
                                 conversion_job,
@@ -155,7 +155,7 @@ impl Disk {
                         if receipt.admission.artifact != *artifact
                             || receipt.admission.peer != *peer
                             || receipt.admission.question.as_ref() != Some(question)
-                            || receipt.admission.certificate.as_ref() != Some(certificate)
+                            || receipt.admission.evidence.as_ref() != Some(evidence)
                             || !terminal
                         {
                             return Err("historical peer provenance differs".into());
@@ -166,7 +166,7 @@ impl Disk {
                                 artifact: artifact.clone(),
                                 peer: peer.clone(),
                             },
-                            Some(certificate.clone()),
+                            Some(evidence.clone()),
                         )
                     }
                     _ => return Err("historical source role differs".into()),
@@ -176,7 +176,7 @@ impl Disk {
                     origin,
                     question,
                     solution: solution.clone(),
-                    peer_certificate,
+                    peer_evidence,
                 });
             }
             page.examined.push((key.clone(), source_id));

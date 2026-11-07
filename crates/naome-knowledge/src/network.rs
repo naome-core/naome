@@ -1075,13 +1075,27 @@ impl Node {
                 Err(error) if error.retryable() => break,
                 Err(error) => return Err(error.to_string()),
             };
-            let certificate = match self.graph.learning_certificate(id) {
+            use crate::learning::peer::Source;
+            let evidence = self
+                .graph
+                .program_manifest(id)
+                .and_then(|manifest| match manifest {
+                    Some(manifest) => self
+                        .graph
+                        .peer_program(manifest)
+                        .map(|packet| packet.map(Box::new).map(Source::Program)),
+                    None => self
+                        .graph
+                        .learning_certificate(id)
+                        .map(|packet| packet.map(Source::Certificate)),
+                });
+            let evidence = match evidence {
                 Ok(value) => value,
                 Err(error) if error.retryable() => break,
                 Err(error) => return Err(error.to_string()),
             };
             let admission = crate::jobs::PeerAdmission {
-                certificate,
+                evidence,
                 ordinal,
                 artifact: hex(id.as_bytes()),
                 peer: peer.to_string(),

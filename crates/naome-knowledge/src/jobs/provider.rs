@@ -224,7 +224,7 @@ impl Provider for Native {
             owner,
         )?;
         if let Input::Peer {
-            certificate,
+            evidence,
             question,
             artifact,
             ..
@@ -234,7 +234,7 @@ impl Provider for Native {
                 .progress
                 .as_mut()
                 .ok_or("peer extraction progress missing")?;
-            match crate::learning::peer::extract(question, artifact, certificate) {
+            match crate::learning::peer::extract_source(question, artifact, evidence) {
                 Ok(solution) => {
                     p.cost = Some((*solution.cost).clone());
                     p.terminal =

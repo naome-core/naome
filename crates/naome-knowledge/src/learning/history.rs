@@ -131,26 +131,20 @@ pub struct Source {
     pub origin: Origin,
     pub question: String,
     pub solution: Solution,
-    pub peer_certificate: Option<Vec<u8>>,
+    pub peer_evidence: Option<peer::Source>,
 }
 impl Source {
     fn example(&self) -> Result<Example, String> {
-        match (&self.origin, &self.peer_certificate) {
-            (Origin::Local, None) => {}
-            (Origin::Peer { artifact, .. }, Some(certificate)) => {
-                peer::validate_solution(&self.question, artifact, certificate, &self.solution)?;
+        match (&self.origin, &self.peer_evidence) {
+            (Origin::Local, None) => {
+                let question =
+                    ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
+                self.solution.check_target(&question)?;
+            }
+            (Origin::Peer { artifact, .. }, Some(evidence)) => {
+                peer::validate_source(&self.question, artifact, evidence, &self.solution)?;
             }
             _ => return Err("historical origin lacks its exact admission evidence".into()),
-        }
-        let question = ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
-        let checked = self.solution.checked()?;
-        let target = if self.solution.refuted {
-            question.refuted_target()
-        } else {
-            question.proved_target()
-        };
-        if checked.conclusion() != target {
-            return Err("historical proof conclusion differs from its question".into());
         }
         let example = Example {
             origin: self.origin.clone(),

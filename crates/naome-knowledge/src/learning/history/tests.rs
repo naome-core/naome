@@ -20,7 +20,7 @@ fn fixture() -> (Job, Page, Receipt) {
             origin: Origin::Local,
             question: crate::learning::tests::own_question(),
             solution,
-            peer_certificate: None,
+            peer_evidence: None,
         }],
         records: Vec::new(),
     };

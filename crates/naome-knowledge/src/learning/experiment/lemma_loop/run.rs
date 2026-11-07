@@ -54,6 +54,7 @@ impl Session<'_> {
                         theorems: &self.state.knowledge,
                         required,
                         prerequisites: full.as_ref(),
+                        native_programs: false,
                     },
                 )
             })
@@ -68,6 +69,7 @@ impl Session<'_> {
                 theorems: &self.state.knowledge,
                 required,
                 prerequisites: full.as_ref(),
+                native_programs: false,
             },
             allowance,
             generated.cost.generation_micros / 1000,

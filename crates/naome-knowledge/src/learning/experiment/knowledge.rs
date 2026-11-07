@@ -100,6 +100,7 @@ pub(super) fn acquire(
                     theorems: &state.knowledge,
                     required: &[],
                     prerequisites: None,
+                    native_programs: false,
                 },
             )
         })
@@ -114,6 +115,7 @@ pub(super) fn acquire(
             theorems: &state.knowledge,
             required: &[],
             prerequisites: None,
+            native_programs: false,
         },
         128,
         started.elapsed().as_millis() as u64,

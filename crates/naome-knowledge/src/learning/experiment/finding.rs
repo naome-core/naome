@@ -286,6 +286,7 @@ fn solve(
                     theorems: &state.knowledge,
                     required: &[],
                     prerequisites: None,
+                    native_programs: false,
                 },
             )
         })
@@ -392,6 +393,7 @@ fn evaluation(state: &State, engine: &mut Engine, io: &mut Store, job: u64) -> V
                         theorems: &[],
                         required: &[],
                         prerequisites: None,
+                        native_programs: false,
                     },
                 )
             })
@@ -631,6 +633,7 @@ fn arm(
                     theorems: &state.knowledge,
                     required: &[],
                     prerequisites: None,
+                    native_programs: false,
                 },
                 SEARCH,
                 label_micros / 1000,

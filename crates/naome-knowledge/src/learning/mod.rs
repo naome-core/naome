@@ -265,6 +265,8 @@ pub(crate) struct GenerationCost {
     pub unique_states: usize,
     pub core_work: usize,
     pub generation_micros: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_peak_rss_bytes: Option<u64>,
     pub definition_candidates: usize,
     pub definition_references: usize,
     pub definition_check_steps: usize,
@@ -286,6 +288,9 @@ impl Solution {
     /// The local acceptance receipt publishes this bounded hint atomically
     /// with replay; the canonical graph remains the mathematical owner.
     pub fn theorem(&self, question: &ResearchQuestion) -> Result<Option<knowledge::Entry>, String> {
+        if matches!(self.tree, search::Tree::Program(_)) {
+            return Ok(None);
+        }
         let target = if self.refuted {
             question.refuted_target()
         } else {
@@ -298,6 +303,25 @@ impl Solution {
         let packet = evidence::pack(&verified)?;
         Ok((packet.len() <= knowledge::BYTES).then_some(knowledge::Entry { packet }))
     }
+    pub fn check_target(&self, question: &ResearchQuestion) -> Result<(), String> {
+        let target = if self.refuted {
+            question.refuted_target()
+        } else {
+            question.proved_target()
+        };
+        if let search::Tree::Program(packet) = &self.tree {
+            if !self.source.is_empty()
+                || self.proof_id != crate::hex(packet.manifest.proof_id().as_bytes())
+                || &packet.target()? != target
+            {
+                return Err("native program source or conclusion differs".into());
+            }
+        } else if self.checked()?.conclusion() != target {
+            return Err("native certificate conclusion differs".into());
+        }
+        Ok(())
+    }
+
     pub fn checked(&self) -> Result<naome_checker::CheckedProof, String> {
         if self.helpers != definitions::helpers(&self.tree)? {
             return Err("definition helper source binding differs".into());
@@ -637,22 +661,14 @@ impl Job {
             if p.development_before.checkpoint != digest(&self.base.model) {
                 return Err("development observations differ from their incumbent".into());
             }
-            if let Some(solution) = &p.result {
+            if let Some(solution) = &p.result
+                && !matches!(&solution.tree, search::Tree::Program(_))
+            {
                 let checked = solution.checked()?;
-                if let Some((inputs, references)) = solution.tree.composition() {
-                    let aliases = self.prerequisites.aliases(&self.required)?;
-                    if references
-                        .iter()
-                        .any(|reference| !aliases.contains(reference))
-                        || inputs.iter().any(|id| {
-                            !self.required.contains(id)
-                                && !references
-                                    .iter()
-                                    .any(|reference| crate::hex(&reference.projection) == *id)
-                        })
-                    {
-                        return Err("composition differs from requested prerequisites".into());
-                    }
+                if let Some(inputs) = solution.tree.composition()
+                    && inputs.iter().any(|id| !self.required.contains(id))
+                {
+                    return Err("composition differs from requested prerequisites".into());
                 }
                 let definitions = self
                     .prerequisites
@@ -965,6 +981,7 @@ impl Job {
                                 theorems: &self.base.knowledge,
                                 required: &self.required,
                                 prerequisites: Some(&self.prerequisites),
+                                native_programs: true,
                             },
                         )
                     })?;
@@ -1067,6 +1084,51 @@ struct SolveContext<'a> {
     theorems: &'a [knowledge::Entry],
     required: &'a [String],
     prerequisites: Option<&'a Prerequisites>,
+    native_programs: bool,
+}
+fn program_generation(
+    packet: peer::Packet,
+    helpers: Vec<String>,
+    target: &naome_foundation::Formula,
+    refuted: bool,
+    mut cost: GenerationCost,
+    executions: Vec<search::trace::Trace>,
+) -> Result<Generation, String> {
+    let steps = packet.manifest.commands as usize;
+    cost.original_steps = steps;
+    cost.useful_steps = steps;
+    cost.core_work = steps;
+    cost.unique_states = peer::program_graphs(target, &packet)?
+        .iter()
+        .map(graph::Graph::key)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    cost.definition_references = packet
+        .commands()?
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                naome_proof::program::Command::DefinedRelation { .. }
+            )
+        })
+        .count();
+    let proof_id = crate::hex(packet.manifest.proof_id().as_bytes());
+    Ok(Generation {
+        solution: Some(Solution {
+            cost: Box::new(cost.clone()),
+            source: String::new(),
+            helpers,
+            proof_id: proof_id.clone(),
+            refuted,
+            tree: search::Tree::Program(Box::new(packet)),
+        }),
+        diagnostic: "certified_program_candidate".into(),
+        cost,
+        frontier: None,
+        executions,
+        terminal: experience::TerminalEvidence::CertifiedCandidate { proof_id, refuted },
+    })
 }
 fn solve_with_report(
     source: &str,
@@ -1090,6 +1152,28 @@ fn solve_with_report(
         seed: job.max(1),
         explore: budget >= 128,
     };
+    if budget != 0
+        && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
+    {
+        let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+        if let Some(packet) =
+            inputs.native_conjunction(question.proved_target(), context.required)?
+        {
+            return program_generation(
+                packet,
+                Vec::new(),
+                question.proved_target(),
+                false,
+                GenerationCost {
+                    search_expansions: 1,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                },
+                Vec::new(),
+            );
+        }
+    }
     let Generation {
         mut solution,
         diagnostic,
@@ -1101,7 +1185,9 @@ fn solve_with_report(
     if let Some(solution) = &mut solution {
         if matches!(
             solution.tree,
-            search::Tree::Constructed { .. } | search::Tree::Scoped { .. }
+            search::Tree::Constructed { .. }
+                | search::Tree::Scoped { .. }
+                | search::Tree::Program(_)
         ) {
             return Ok(Generation {
                 solution: Some(solution.clone()),
@@ -1301,21 +1387,6 @@ fn search_question_report(
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
-    let aliases = context
-        .prerequisites
-        .map(|inputs| inputs.aliases(context.required))
-        .transpose()?
-        .unwrap_or_default();
-    let composition_required = context
-        .required
-        .iter()
-        .map(|id| {
-            aliases
-                .iter()
-                .find(|reference| crate::hex(&reference.proof) == *id)
-                .map_or_else(|| id.clone(), |reference| crate::hex(&reference.projection))
-        })
-        .collect::<Vec<_>>();
     for refuted in [false, true] {
         if remaining == 0 {
             break;
@@ -1333,35 +1404,93 @@ fn search_question_report(
             (None, 0)
         };
         remaining = remaining.saturating_sub(scoped_work);
-        let composed = if scoped.is_some() || terms.is_empty() || remaining == 0 {
-            None
-        } else {
-            let attempt = construction::composition::construct(
+        if context.native_programs
+            && let Some(search::Tree::Scoped { actions, .. }) = &scoped
+        {
+            let commands = search::scope::commands(&target, actions)?;
+            let packet = peer::Packet::compose(&target, &commands, &[], [])?;
+            return program_generation(
+                packet,
+                Vec::new(),
+                &target,
+                refuted,
+                GenerationCost {
+                    search_expansions: budget - remaining,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                },
+                executions,
+            );
+        }
+        if context.native_programs && !terms.is_empty() && scoped.is_none() && remaining != 0 {
+            let (term, work) = construction::composition::construct_term(
                 &target,
                 &terms,
                 remaining,
                 orientation_started,
-            );
-            let (verified, work) = match attempt {
-                Ok(result) => result,
-                Err(error) => {
-                    certificate_failures += 1;
-                    failure = format!("composition_unresolved: {error}");
-                    terminal = experience::TerminalEvidence::TechnicalFailure;
-                    // An interrupted generator cannot claim unused allowance.
-                    (None, remaining.min(16))
-                }
-            };
+            )?;
             remaining = remaining.saturating_sub(work);
-            verified.and_then(|verified| {
-                let inputs =
-                    construction::composition::used(&verified, &composition_required).ok()?;
-                if inputs.is_empty() {
-                    return None;
+            if let Some(term) = term {
+                let recipe = proof::recipe(&term, &target)?;
+                if recipe.steps.iter().any(|step| {
+                    matches!(step,
+                    naome_proof::ProofStep::ProofReference { proof_id }
+                        if context.required.contains(&crate::hex(proof_id.as_bytes())))
+                }) {
+                    let candidate = construction::program_from_recipe(&target, recipe)?;
+                    return program_generation(
+                        candidate.packet,
+                        candidate.helpers,
+                        &target,
+                        refuted,
+                        GenerationCost {
+                            search_expansions: budget - remaining,
+                            retrieved_lemmas: retrieved,
+                            retrieval_micros,
+                            dependency_check_steps: dependency_steps,
+                            generation_micros: started
+                                .elapsed()
+                                .as_micros()
+                                .min(u128::from(u64::MAX))
+                                as u64,
+                            ..GenerationCost::default()
+                        },
+                        executions,
+                    );
                 }
-                Some((verified, inputs, work))
-            })
-        };
+            }
+        }
+        let composed =
+            if context.native_programs || scoped.is_some() || terms.is_empty() || remaining == 0 {
+                None
+            } else {
+                let attempt = construction::composition::construct(
+                    &target,
+                    &terms,
+                    remaining,
+                    orientation_started,
+                );
+                let (verified, work) = match attempt {
+                    Ok(result) => result,
+                    Err(error) => {
+                        certificate_failures += 1;
+                        failure = format!("composition_unresolved: {error}");
+                        terminal = experience::TerminalEvidence::TechnicalFailure;
+                        // An interrupted generator cannot claim unused allowance.
+                        (None, remaining.min(16))
+                    }
+                };
+                remaining = remaining.saturating_sub(work);
+                verified.and_then(|verified| {
+                    let inputs =
+                        construction::composition::used(&verified, context.required).ok()?;
+                    if inputs.is_empty() {
+                        return None;
+                    }
+                    Some((verified, inputs, work))
+                })
+            };
         let found = if let Some(tree) = scoped {
             search::ResultTree {
                 execution: None,
@@ -1386,11 +1515,6 @@ fn search_question_report(
                             continue;
                         }
                     },
-                    references: aliases
-                        .iter()
-                        .filter(|reference| inputs.contains(&crate::hex(&reference.projection)))
-                        .cloned()
-                        .collect(),
                     inputs,
                     work,
                 }),
@@ -1422,21 +1546,57 @@ fn search_question_report(
                 .elapsed()
                 .as_micros()
                 .min(u128::from(u64::MAX)) as u64;
-            let (constructed, work, selection) = match construction::construct_with(
-                &target,
-                remaining,
-                orientation_started,
-                ranker,
-                &selected,
-                context.definitions,
-            ) {
-                Ok(result) => result,
-                Err(error) => {
-                    certificate_failures += 1;
-                    remaining = 0;
-                    failure = format!("construction_unresolved: {error}");
-                    terminal = experience::TerminalEvidence::TechnicalFailure;
-                    break;
+            if context.native_programs && context.required.is_empty() {
+                let (candidate, work) = construction::construct_program(
+                    &target,
+                    remaining,
+                    orientation_started,
+                    ranker,
+                    &selected,
+                    context.definitions,
+                )?;
+                remaining = remaining.saturating_sub(work);
+                if let Some(candidate) = candidate {
+                    return program_generation(
+                        candidate.packet,
+                        candidate.helpers,
+                        &target,
+                        refuted,
+                        GenerationCost {
+                            search_expansions: budget - remaining,
+                            retrieved_lemmas: retrieved,
+                            retrieval_micros,
+                            dependency_check_steps: dependency_steps,
+                            generation_micros: started
+                                .elapsed()
+                                .as_micros()
+                                .min(u128::from(u64::MAX))
+                                as u64,
+                            ..GenerationCost::default()
+                        },
+                        executions,
+                    );
+                }
+            }
+            let (constructed, work, selection) = if context.native_programs {
+                (None, 0, None)
+            } else {
+                match construction::construct_with(
+                    &target,
+                    remaining,
+                    orientation_started,
+                    ranker,
+                    &selected,
+                    context.definitions,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        certificate_failures += 1;
+                        remaining = 0;
+                        failure = format!("construction_unresolved: {error}");
+                        terminal = experience::TerminalEvidence::TechnicalFailure;
+                        break;
+                    }
                 }
             };
             remaining = remaining.saturating_sub(work);
@@ -1485,6 +1645,43 @@ fn search_question_report(
             frontier = found.frontier;
         }
         if let Some(tree) = found.tree {
+            if context.native_programs {
+                let (term, _) = search::compile(&target, &tree)?;
+                let mut recipe = proof::recipe(&term, &target)?;
+                for entry in definitions::construction_choices(&target, context.definitions)? {
+                    if !recipe.definitions.contains(&entry) {
+                        recipe.definitions.push(entry);
+                    }
+                }
+                match construction::program_from_recipe(&target, recipe) {
+                    Ok(candidate) => {
+                        return program_generation(
+                            candidate.packet,
+                            candidate.helpers,
+                            &target,
+                            refuted,
+                            GenerationCost {
+                                search_expansions: budget - remaining,
+                                retrieved_lemmas: retrieved,
+                                retrieval_micros,
+                                dependency_check_steps: dependency_steps,
+                                generation_micros: started
+                                    .elapsed()
+                                    .as_micros()
+                                    .min(u128::from(u64::MAX))
+                                    as u64,
+                                ..GenerationCost::default()
+                            },
+                            executions,
+                        );
+                    }
+                    Err(error) => {
+                        failure = format!("program_unresolved: {error}");
+                        terminal = experience::TerminalEvidence::CheckerRejected;
+                        continue;
+                    }
+                }
+            }
             let (tree, cost, verified) = match search::core::checked(&target, &tree) {
                 Ok(checked) => checked,
                 Err(error) => {

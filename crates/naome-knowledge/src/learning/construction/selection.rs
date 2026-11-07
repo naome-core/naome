@@ -224,6 +224,36 @@ pub fn used(selected: &Offer, verified: &proof::Verified) -> Result<bool, String
     Ok(true)
 }
 
+pub(super) fn used_recipe(selected: &Offer, recipe: &proof::Recipe) -> Result<bool, String> {
+    let context = proof::lemma_context(&recipe.definitions, &recipe.lemmas)?;
+    let steps = || {
+        recipe
+            .steps
+            .iter()
+            .chain(recipe.lemmas.iter().flat_map(|proof| proof.steps()))
+    };
+    for term in &selected.context {
+        let used = match term {
+            proof::Term::Kernel(kernel) => {
+                let wanted = key(&kernel.formula());
+                steps().any(|step| {
+                    proof::Kernel::with_context(step.clone(), &context)
+                        .is_ok_and(|kernel| key(&kernel.formula()) == wanted)
+                })
+            }
+            proof::Term::Native { target, .. } => {
+                let id = proof::verify(term, target)?.native_id;
+                steps().any(|step| matches!(step, ProofStep::ProofReference { proof_id } if *proof_id == id))
+            }
+            _ => return Err("construction plan source is not closed".into()),
+        };
+        if !used {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn graph(
     target: &Formula,
     selection: &Selection,

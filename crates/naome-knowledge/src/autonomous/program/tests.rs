@@ -159,17 +159,12 @@ fn native_scoped_solver_result_publishes_and_reopens_with_its_exact_program_trac
         Some(candidate.manifest.clone())
     );
     let packet = graph
-        .learning_certificate(root)
+        .peer_program(candidate.manifest.clone())
         .unwrap()
         .expect("typed scope replay packet");
-    assert_eq!(
-        crate::learning::evidence::decode(&packet)
-            .unwrap()
-            .program
-            .unwrap()
-            .manifest,
-        candidate.manifest
-    );
+    assert_eq!(packet.manifest, candidate.manifest);
+    assert_eq!(packet.commands().unwrap(), candidate.commands);
+    assert_eq!(packet.target().unwrap(), *question.proved_target());
     let scope = generated.native.as_ref().unwrap();
     assert!(scope.checker_work > 0 && candidate.manifest.input_bytes < baseline_bytes as u64);
     eprintln!(

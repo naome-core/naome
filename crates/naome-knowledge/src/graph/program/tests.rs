@@ -135,7 +135,7 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
 }
 
 #[test]
-fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
+fn learning_keeps_the_exact_checked_program_without_projecting_a_certificate() {
     let mut graph = Graph::default();
     let source = crate::learning::tests::own_solution();
     let question = crate::learning::tests::own_question();
@@ -207,53 +207,22 @@ fn learning_projects_only_the_used_checked_program_dag_and_keeps_peer_origin() {
             Instant::now() + Duration::from_secs(10),
         )
         .unwrap();
-    let packet = graph
-        .learning_certificate(manifest.artifact_id())
-        .unwrap()
-        .expect("bounded useful DAG despite large unused history");
-    let origin = crate::learning::evidence::decode(&packet)
-        .unwrap()
-        .program
-        .unwrap();
-    assert_eq!(origin.records.len(), 2);
-    assert_eq!(origin.manifest, manifest);
-    let extracted = crate::learning::peer::extract(
-        &question,
-        &crate::hex(manifest.artifact_id().as_bytes()),
-        &packet,
-    )
-    .unwrap();
-    assert_ne!(
-        extracted.proof_id,
-        crate::hex(manifest.proof_id().as_bytes())
-    );
-    crate::learning::peer::validate_solution(
-        &question,
-        &crate::hex(manifest.artifact_id().as_bytes()),
-        &packet,
-        &extracted,
-    )
-    .unwrap();
-    let mut damaged = origin;
-    damaged.records.pop();
     assert!(
-        crate::learning::program::validate(
-            &damaged,
-            &crate::learning::proof::verify(
-                &crate::learning::evidence::compile(q.proved_target(), &packet).unwrap(),
-                q.proved_target()
-            )
+        graph
+            .learning_certificate(manifest.artifact_id())
             .unwrap()
-        )
-        .is_err()
+            .is_none()
     );
-    eprintln!(
-        "program_learning source_commands={} source_bytes={} projected_commands={} packet_bytes={}",
-        manifest.commands,
-        manifest.input_bytes,
-        2,
-        packet.len()
-    );
+    let packet = graph
+        .peer_program(manifest.clone())
+        .unwrap()
+        .expect("bounded native program");
+    assert_eq!(packet.manifest, manifest);
+    assert_eq!(packet.commands().unwrap().len(), 1802);
+    assert_eq!(packet.target().unwrap(), *q.proved_target());
+    let mut damaged = packet;
+    damaged.manifest.stream_root[0] ^= 1;
+    assert!(damaged.target().is_err());
 }
 
 #[test]
