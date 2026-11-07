@@ -76,8 +76,8 @@ fn elementary_answers_have_independently_rechecked_certificates_without_stored_p
         assert_eq!(
             decision.reason,
             Some(RejectionReason::KnownProof),
-            "{}: {decision:?}",
-            target.to_source()
+            "{:?}: {decision:?}",
+            target
         );
         assert_eq!(decision.rule, "Q07_ELEMENTARY_CERTIFICATE");
         assert!(verify(&decision, &target, &state).is_empty());

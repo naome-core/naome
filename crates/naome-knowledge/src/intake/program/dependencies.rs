@@ -115,7 +115,7 @@ impl Intake {
         questions: &mut LocalQuestions<F>,
     ) -> Result<(), crate::Error>
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let Some(root) = &mut self.active else {

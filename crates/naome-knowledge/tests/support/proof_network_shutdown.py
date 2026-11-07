@@ -64,7 +64,7 @@ def trial(driver, role, stop_signal, index):
         if role == "node":
             driver.nodes = [subject]
             subject.start(test_controls=False)
-            produced = subject.command("produce", source=source(3))
+            produced = subject.command("produce", artifact=source(3))
             assert produced["result"]["status"] == "accepted"
 
             def commands():

@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 use naome_checker::question::{
     AssessmentQuestion, Identity, KnowledgeSnapshot, NodeLocalNovelty, PrefilterDecision,
     PrefilterPolicy, QuestionRegistry, RegisteredQuestion, RejectionReason, assess_question,
@@ -26,7 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::Graph;
 
 // Worst-case JSON escaping of one protocol-bounded source plus its receipt.
-const QUESTION_ENTRY_MAX_BYTES: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 2048;
+const QUESTION_ENTRY_MAX_BYTES: usize = 6 * naome_checker::question::QUESTION_BYTES + 2048;
 mod cache;
 mod context;
 mod persistence;
@@ -143,10 +143,10 @@ pub struct LocalQuestionContext {
 }
 
 pub(crate) enum Command {
-    Assess(CompiledQuestion, oneshot::Sender<QuestionAssessment>),
-    Admit(CompiledQuestion, oneshot::Sender<QuestionAdmission>),
+    Assess(ResearchQuestion, oneshot::Sender<QuestionAssessment>),
+    Admit(ResearchQuestion, oneshot::Sender<QuestionAdmission>),
     ImportBaseline(
-        CompiledQuestion,
+        ResearchQuestion,
         oneshot::Sender<Result<(), RejectionReason>>,
     ),
     Policy(PrefilterPolicy, oneshot::Sender<()>),
@@ -158,7 +158,7 @@ pub(crate) enum Command {
 ///
 /// ```compile_fail
 /// fn bypass(handle: &naome_knowledge::question::QuestionHandle,
-///           question: naome_authoring::CompiledQuestion) {
+///           question: naome_checker::question::ResearchQuestion) {
 ///     let _ = handle.import_baseline(question);
 /// }
 /// ```
@@ -212,7 +212,7 @@ async fn send<T>(
 impl QuestionHandle {
     pub async fn assess(
         &self,
-        question: CompiledQuestion,
+        question: ResearchQuestion,
     ) -> Result<QuestionAssessment, IntakeError> {
         let (sender, reply) = oneshot::channel();
         send(&self.sender, Command::Assess(question, sender), reply).await
@@ -223,7 +223,7 @@ impl QuestionHandle {
     /// the exact question, policy and owner/provider epoch independently.
     pub async fn admit_question(
         &self,
-        question: CompiledQuestion,
+        question: ResearchQuestion,
     ) -> Result<QuestionAdmission, IntakeError> {
         let (sender, reply) = oneshot::channel();
         send(&self.sender, Command::Admit(question, sender), reply).await
@@ -240,7 +240,7 @@ impl QuestionAdminHandle {
     /// questions. This deliberate owner operation has no formal-admission claim.
     pub async fn import_baseline(
         &self,
-        question: CompiledQuestion,
+        question: ResearchQuestion,
     ) -> Result<Result<(), RejectionReason>, IntakeError> {
         let (sender, reply) = oneshot::channel();
         send(
@@ -305,7 +305,7 @@ impl Reply {
 }
 
 struct Pending {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     prefilter: PrefilterDecision,
     reply: Reply,
     future: Pin<Box<dyn Future<Output = ProviderResult> + Send>>,
@@ -321,13 +321,13 @@ struct ProviderResult {
 
 #[derive(Clone)]
 struct AdmittedProvenance {
-    question: CompiledQuestion,
+    question: ResearchQuestion,
     record: Identity,
 }
 
 pub(crate) struct QuestionDelta {
     registry: QuestionRegistry,
-    question: Option<CompiledQuestion>,
+    question: Option<ResearchQuestion>,
 }
 
 struct RegistryCompaction {
@@ -362,14 +362,14 @@ pub(crate) struct LocalQuestions<F> {
     cache: cache::DecisionCache,
     /// Only successful local admission with an actually delivered receipt.
     admitted: BTreeMap<Identity, AdmittedProvenance>,
-    known: BTreeMap<Identity, CompiledQuestion>,
+    known: BTreeMap<Identity, ResearchQuestion>,
     #[cfg(test)]
     computations: usize,
 }
 
 impl<F, Fut> LocalQuestions<F>
 where
-    F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     pub(crate) fn new(provider: Option<F>) -> Self {
@@ -423,7 +423,7 @@ where
         let storage = crate::index_storage::IndexStorage::open(directory, "questions")?;
         self.registry = QuestionRegistry::with_storage(storage.clone());
         persistence.replay(|entry,question|{
-            let record=*question.source_hash();
+            let record=*question.record_id();
             self.registry.insert(RegisteredQuestion::new(record,question.core()).map_err(|e|format!("recovered question: {e:?}"))?).map_err(|e|format!("recovered registry: {e:?}"))?;
             if entry.kind==persistence::Kind::Prepared {crate::network::emit(serde_json::json!({"event":"question_recovery_hold","source_id":crate::hex(&record),"reason":"original admission delivery is uncertain"}));}
             self.remember(question,entry.kind==persistence::Kind::Admitted);Ok(())
@@ -519,12 +519,12 @@ where
         Ok(())
     }
 
-    fn remember(&mut self, question: CompiledQuestion, admitted: bool) {
-        fn bytes(q: &CompiledQuestion) -> usize {
-            q.source()
+    fn remember(&mut self, question: ResearchQuestion, admitted: bool) {
+        fn bytes(q: &ResearchQuestion) -> usize {
+            q.to_hex()
                 .len()
                 .saturating_add(q.canonical_core().len().saturating_mul(256))
-                .saturating_add(std::mem::size_of::<CompiledQuestion>() + 512)
+                .saturating_add(std::mem::size_of::<ResearchQuestion>() + 512)
         }
         let needed = bytes(&question);
         let budget = crate::resources::active_limits().checked_cache_bytes / 8;
@@ -539,7 +539,7 @@ where
                 break;
             }
         }
-        self.known.insert(*question.source_hash(), question.clone());
+        self.known.insert(*question.record_id(), question.clone());
         if admitted {
             while self.admitted.len() >= limit
                 || self
@@ -557,7 +557,7 @@ where
             self.admitted.insert(
                 *question.resolution_id(),
                 AdmittedProvenance {
-                    record: *question.source_hash(),
+                    record: *question.record_id(),
                     question,
                 },
             );
@@ -573,7 +573,7 @@ where
         }
         self.admitted.get(resolution).cloned()
     }
-    pub(crate) fn next_backlog(&mut self) -> Option<CompiledQuestion> {
+    pub(crate) fn next_backlog(&mut self) -> Option<ResearchQuestion> {
         let persistence = self.persistence.as_mut()?;
         match persistence.next_backlog() {
             Ok(question) => question,
@@ -591,14 +591,14 @@ where
         }
     }
 
-    pub(crate) fn restored_unanswered(&self, graph: &Graph) -> Vec<CompiledQuestion> {
+    pub(crate) fn restored_unanswered(&self, graph: &Graph) -> Vec<ResearchQuestion> {
         self.admitted
             .values()
             .filter_map(|entry| {
                 let request = AssessmentQuestion::new(
                     FOUNDATION_ID,
                     entry.question.core(),
-                    entry.question.source().as_bytes(),
+                    entry.question.canonical_bytes(),
                     &[],
                     Some(entry.record),
                 )
@@ -659,16 +659,16 @@ where
         true
     }
 
-    fn registry_capacity(&self, question: &CompiledQuestion) -> bool {
+    fn registry_capacity(&self, question: &ResearchQuestion) -> bool {
         self.storage_error().is_none()
             && (self.persistence.is_some()
-                || self.known.contains_key(question.source_hash())
+                || self.known.contains_key(question.record_id())
                 || self
                     .known
                     .values()
-                    .map(|q| q.source().len() + q.canonical_core().len() * 64)
+                    .map(|q| q.canonical_bytes().len() + q.canonical_core().len() * 64)
                     .sum::<usize>()
-                    + question.source().len()
+                    + question.canonical_bytes().len()
                     + question.canonical_core().len() * 64
                     <= crate::resources::active_limits().checked_cache_bytes)
     }
@@ -695,9 +695,9 @@ where
             selection: self.selection,
         }
     }
-    fn selection_context(&self, question: &CompiledQuestion) -> Option<SelectionContext> {
+    fn selection_context(&self, question: &ResearchQuestion) -> Option<SelectionContext> {
         Some(SelectionContext {
-            source: *question.source_hash(),
+            source: *question.record_id(),
             policy: self.policy.identity(),
             owner: self.selection?,
         })
@@ -710,7 +710,7 @@ where
     fn evaluate(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         reuse: bool,
     ) -> PrefilterDecision {
         self.evaluate_record(graph, question, reuse, None)
@@ -719,7 +719,7 @@ where
     fn evaluate_record(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         reuse: bool,
         record: Option<Identity>,
     ) -> PrefilterDecision {
@@ -735,7 +735,7 @@ where
         let request = AssessmentQuestion::new(
             FOUNDATION_ID,
             question.core(),
-            question.source().as_bytes(),
+            question.canonical_bytes(),
             &[],
             record,
         )
@@ -765,12 +765,12 @@ where
     pub(crate) fn assess(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> PrefilterDecision {
         self.evaluate(graph, question, true)
     }
 
-    fn exchange_record(&self, question: &CompiledQuestion) -> Option<Identity> {
+    fn exchange_record(&self, question: &ResearchQuestion) -> Option<Identity> {
         self.provenance(question.resolution_id())
             .filter(|entry| entry.question == *question)
             .map(|entry| entry.record)
@@ -806,7 +806,7 @@ where
     pub(crate) fn generation_decision(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> PrefilterDecision {
         let record = self.exchange_record(question);
         self.evaluate_record(graph, question, false, record)
@@ -815,9 +815,9 @@ where
     pub(crate) fn begin_exchange(
         &mut self,
         graph: &Graph,
-        derived: CompiledQuestion,
+        derived: ResearchQuestion,
         deadline: Instant,
-    ) -> (CompiledQuestion, oneshot::Receiver<QuestionAssessment>) {
+    ) -> (ResearchQuestion, oneshot::Receiver<QuestionAssessment>) {
         // Family equality is only a lookup. The original source, orientation,
         // record and delivered first-admission evidence remain unchanged.
         let question = self
@@ -845,11 +845,11 @@ where
     pub(crate) fn begin_peer_exchange(
         &mut self,
         graph: &Graph,
-        derived: CompiledQuestion,
+        derived: ResearchQuestion,
         root: naome_proof::ArtifactId,
         purpose: crate::jobs::Purpose,
         deadline: Instant,
-    ) -> (CompiledQuestion, oneshot::Receiver<QuestionAssessment>) {
+    ) -> (ResearchQuestion, oneshot::Receiver<QuestionAssessment>) {
         let question = self
             .provenance(derived.resolution_id())
             .filter(|entry| {
@@ -874,7 +874,7 @@ where
 
     pub(crate) fn exchange_eligible(
         &self,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> bool {
         self.storage_error().is_none()
@@ -891,7 +891,7 @@ where
     pub(crate) fn refresh_exchange(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
         if !self.exchange_eligible(question, assessment) {
@@ -913,7 +913,7 @@ where
     pub(crate) fn prepare_exchange(
         &mut self,
         graph: &Graph,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionDelta, crate::Error> {
         let record = self.exchange_record(question);
@@ -929,7 +929,7 @@ where
             if fresh.novelty().is_none() {
                 return Err("missing fresh node-local novelty".into());
             }
-            let entry = RegisteredQuestion::new(*question.source_hash(), question.core())
+            let entry = RegisteredQuestion::new(*question.record_id(), question.core())
                 .map_err(|reason| format!("question registration: {reason:?}"))?;
             registry
                 .insert(entry)
@@ -1024,12 +1024,12 @@ where
                     }
                     let mut registry = self.registry.clone();
                     if !registry
-                        .contains_record(question.source_hash())
+                        .contains_record(question.record_id())
                         .map_err(|e| e.to_string())?
                     {
                         registry
                             .insert(
-                                RegisteredQuestion::new(*question.source_hash(), question.core())
+                                RegisteredQuestion::new(*question.record_id(), question.core())
                                     .map_err(|e| format!("publication recovery: {e:?}"))?,
                             )
                             .map_err(|e| format!("publication recovery: {e:?}"))?;
@@ -1047,7 +1047,7 @@ where
         }
     }
 
-    fn begin(&mut self, graph: &Graph, question: CompiledQuestion, reply: Reply) {
+    fn begin(&mut self, graph: &Graph, question: ResearchQuestion, reply: Reply) {
         if reply.is_closed() {
             return;
         }
@@ -1111,7 +1111,7 @@ where
                 .binding()
                 .with_selection(self.selection.expect("available selection epoch"));
             let request = crate::jobs::Input::Select {
-                question: question.source().to_owned(),
+                question: question.to_hex(),
                 purpose,
                 root,
             };
@@ -1205,7 +1205,7 @@ where
                     } else if !self.registry_capacity(&question) {
                         Err(RejectionReason::ReceivingLimit)
                     } else {
-                        RegisteredQuestion::new(*question.source_hash(), question.core())
+                        RegisteredQuestion::new(*question.record_id(), question.core())
                             .and_then(|entry| self.registry.insert(entry))
                     };
                     let inserted = outcome.is_ok();
@@ -1324,7 +1324,7 @@ where
         {
             let previous = self.registry.clone();
             let registry_before = previous.identity();
-            let record = *pending.question.source_hash();
+            let record = *pending.question.record_id();
             let inserted = RegisteredQuestion::new(record, pending.question.core())
                 .and_then(|entry| self.registry.insert(entry));
             match inserted {

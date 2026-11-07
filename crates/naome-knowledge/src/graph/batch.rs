@@ -1,5 +1,5 @@
 use super::*;
-use naome_authoring::CompiledQuestion;
+use naome_checker::question::ResearchQuestion;
 #[cfg(test)]
 thread_local! { static DEPENDENCY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]
@@ -27,48 +27,45 @@ impl CheckedBatch {
 }
 
 impl Graph {
-    /// Check returned native sources in one bounded temporary context, then
+    /// Check returned canonical artifacts in one bounded temporary context, then
     /// require the exact root and its complete actual cited closure. No helper
     /// is published or persisted before the final checked batch commit.
     pub(crate) fn prepare_generated(
         &self,
         source: &str,
         helpers: &[String],
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<(ArtifactId, CheckedBatch), crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
         // Capture before helper preparation can write immutable staged nodes.
         // The shared batch path must never refresh this token after a copy starts.
-        if source.len() > crate::resources::limits().proof_bytes
+        if source.len() > 2 * crate::resources::limits().proof_bytes
             || helpers.len() >= crate::resources::limits().closure_objects
             || helpers
                 .iter()
-                .any(|s| s.len() > crate::resources::limits().proof_bytes)
+                .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
             || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                > crate::resources::limits().closure_bytes
+                > 2 * crate::resources::limits().closure_bytes
         {
-            return Err("generated closure source capacity".into());
+            return Err("generated closure input capacity".into());
         }
         let mut preparation = Preparation::new(
             self,
             None,
-            source.len() + helpers.iter().map(String::len).sum::<usize>(),
+            (source.len() + helpers.iter().map(String::len).sum::<usize>()) / 2,
             helpers.len() + 1,
         )?;
         let mut steps = 0usize;
         let mut bytes = 0usize;
         let mut root = None;
-        // Compilation returns a sealed CheckedProof. Keep that result rather
-        // than converting it to transport syntax and invoking Checker again.
         for (position, source) in helpers
             .iter()
             .map(String::as_str)
             .chain(std::iter::once(source))
             .enumerate()
         {
-            let checked =
-                CheckedArtifact::from_compiled(self.compile_source(source, preparation.context())?);
+            let checked = self.check_input(source, preparation.context())?;
             let record = checked.record(preparation.context())?;
             let id = record.id;
             steps = steps
@@ -88,7 +85,7 @@ impl Graph {
                 return Err("generated closure checker work capacity".into());
             }
             root = Some(id);
-            // The final compilation is the root. All helpers must belong to
+            // The last checked artifact is the root. All helpers must belong to
             // its actual cited closure; no unrelated checked helper is admitted.
             if position == helpers.len() {
                 question
@@ -113,7 +110,7 @@ impl Graph {
         &self,
         root: ArtifactId,
         candidates: BTreeMap<ArtifactId, Candidate>,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
@@ -124,7 +121,7 @@ impl Graph {
         &self,
         root: ArtifactId,
         mut candidates: BTreeMap<ArtifactId, Candidate>,
-        question: &CompiledQuestion,
+        question: &ResearchQuestion,
         prefix: Option<CheckedBatch>,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;

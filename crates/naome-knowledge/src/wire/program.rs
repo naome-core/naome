@@ -42,10 +42,10 @@ fn write_metadata(metadata: &ProgramMetadata, bytes: &mut Vec<u8>) -> Result<(),
     bytes.extend(manifest);
     bytes.push(u8::from(metadata.question.is_some()));
     if let Some(question) = &metadata.question {
-        if question.len() > naome_authoring::QUESTION_SOURCE_MAX_BYTES {
+        if question.len() > 2 * naome_checker::question::QUESTION_BYTES {
             return Err("program question byte capacity".into());
         }
-        bytes.extend_from_slice(question.as_bytes());
+        bytes.extend(crate::unhex(question).map_err(|error| error.to_string())?);
     }
     Ok(())
 }
@@ -87,14 +87,10 @@ fn read_metadata(mut bytes: &[u8]) -> Result<ProgramMetadata, String> {
         .ok_or("truncated program manifest")?;
     let manifest = Manifest::from_canonical_bytes(manifest)?;
     let question = if flag(&mut remainder)? {
-        if remainder.len() > naome_authoring::QUESTION_SOURCE_MAX_BYTES {
+        if remainder.len() > naome_checker::question::QUESTION_BYTES {
             return Err("program question byte capacity".into());
         }
-        Some(
-            std::str::from_utf8(remainder)
-                .map_err(|e| e.to_string())?
-                .to_owned(),
-        )
+        Some(crate::hex(remainder))
     } else if remainder.is_empty() {
         None
     } else {

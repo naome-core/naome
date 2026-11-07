@@ -223,7 +223,6 @@ impl Engine {
             format: InputFormat::Program,
             digest: Digest(hash.try_into().map_err(|_| crate::ContextError::Corrupt)?),
             commands,
-            source_digest: None,
         })
     }
     pub(super) fn current_command(&self) -> Result<Command, Error> {

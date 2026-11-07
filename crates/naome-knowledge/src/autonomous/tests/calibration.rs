@@ -19,10 +19,10 @@ async fn finding_feedback_tracks_admitted_questions_instead_of_raw_provider_outp
     }
     let mut graph = Graph::default();
     graph
-        .produce("goal=all(x,eq(x,x)) proof:p0=refl(x) p1=gen(p0,x) return p1")
+        .produce("00000000020600000000210000000000000000")
         .unwrap();
     let mut questions =
-        LocalQuestions::new(Some(|_: CompiledQuestion| std::future::ready(Ok(true))));
+        LocalQuestions::new(Some(|_: ResearchQuestion| std::future::ready(Ok(true))));
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(
         Intervals {
@@ -34,7 +34,7 @@ async fn finding_feedback_tracks_admitted_questions_instead_of_raw_provider_outp
         owner.recovery(),
         vec![],
     );
-    let outcomes = ["goal=all(x,eq(x,x))", "goal=all(x,mem(x,x))"];
+    let outcomes = ["040001000000000100000000", "040101000000000100000000"];
     for (index, source) in outcomes.into_iter().enumerate() {
         autonomous.next_question = Instant::now();
         autonomous.advance(&mut graph, &mut questions);

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 #[tokio::test]
 async fn every_catalog_pair_is_formally_admissible_and_really_checked() {
     for cursor in 0..CATALOG_SIZE {
-        let question = CompiledQuestion::compile(&create_question(cursor as u64)).unwrap();
+        let question = ResearchQuestion::from_hex(&create_question(cursor as u64)).unwrap();
         let mut graph = Graph::default();
         let mut questions = question::LocalQuestions::new(Some(select_question));
         let (_, receiver) = questions.begin_exchange(
@@ -49,7 +49,7 @@ async fn catalog_remains_admissible_in_every_cyclic_order_as_knowledge_grows() {
         let mut graph = Graph::default();
         let mut questions = question::LocalQuestions::new(Some(select_question));
         for cursor in offset..offset + CATALOG_SIZE {
-            let question = CompiledQuestion::compile(&create_question(cursor as u64)).unwrap();
+            let question = ResearchQuestion::from_hex(&create_question(cursor as u64)).unwrap();
             let (_, receiver) = questions.begin_exchange(
                 &graph,
                 question.clone(),

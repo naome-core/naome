@@ -6,8 +6,8 @@ use crate::{
     question::{FormalContext, LocalQuestions, QuestionAssessment},
 };
 use libp2p::PeerId;
-use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
+use naome_checker::question::ResearchQuestion;
 use naome_proof::{ArtifactId, StatementId};
 #[cfg(test)]
 use std::time::Duration;
@@ -34,7 +34,7 @@ mod tests;
 struct Description {
     transfer: TransferGrant,
     statement: StatementId,
-    question: CompiledQuestion,
+    question: ResearchQuestion,
 }
 
 enum Phase {
@@ -171,7 +171,7 @@ impl Intake {
         }
         if self
             .declined
-            .contains_key(&(peer, id, statement, *question.source_hash()))
+            .contains_key(&(peer, id, statement, *question.record_id()))
         {
             return Ok("declined");
         }
@@ -288,7 +288,7 @@ impl Intake {
         questions: &mut LocalQuestions<F>,
     ) -> Progress
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         if self.active.as_ref().is_some_and(|root| {

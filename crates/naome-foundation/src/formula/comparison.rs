@@ -1,4 +1,4 @@
-//! Bounded, presentation-only explanations of structural formula differences.
+//! The first structural difference between two formulas.
 
 use super::{Formula, Node};
 use std::fmt;
@@ -27,12 +27,9 @@ impl FormulaPathSegment {
     }
 }
 
-/// Diagnostic previews and the exact first structural difference. Previews
-/// are bounded independently of formula size and never establish an identity.
+/// The exact first structural difference in primitive formula paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormulaMismatch {
-    expected: Box<str>,
-    actual: Box<str>,
     path: Box<[FormulaPathSegment]>,
 }
 
@@ -40,18 +37,8 @@ impl FormulaMismatch {
     pub fn between(expected: &Formula, actual: &Formula) -> Option<Self> {
         let mut path = Vec::new();
         different(&expected.0, &actual.0, &mut path).then(|| Self {
-            expected: expected.to_source_with_limit(256).into_boxed_str(),
-            actual: actual.to_source_with_limit(256).into_boxed_str(),
             path: path.into_boxed_slice(),
         })
-    }
-
-    pub fn expected(&self) -> &str {
-        &self.expected
-    }
-
-    pub fn actual(&self) -> &str {
-        &self.actual
     }
 
     pub fn path(&self) -> &[FormulaPathSegment] {
@@ -61,11 +48,7 @@ impl FormulaMismatch {
 
 impl fmt::Display for FormulaMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "expected {}; actual {}; first difference at root",
-            self.expected, self.actual
-        )?;
+        f.write_str("first difference at root")?;
         for segment in &self.path {
             write!(f, ".{}", segment.as_str())?;
         }

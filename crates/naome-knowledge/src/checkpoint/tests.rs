@@ -191,14 +191,16 @@ fn row_binding_deletion_external_mutation_and_file_aliases_fail_closed() {
 /// Equal-length sources bind different canonical closed targets, so the
 /// lifetime screens exercise distinct obligations rather than whitespace aliases.
 pub(crate) fn question_source(index: usize) -> String {
-    let mut formula = "eq(x,x)".to_owned();
+    use naome_foundation::{Formula, FreeVariable};
+    let x = FreeVariable::new(0);
+    let mut formula = Formula::equal(x, x);
     for bit in 0..12 {
         let atom = if index & (1 << bit) == 0 {
-            "eq (x,x)"
+            Formula::equal(x, x)
         } else {
-            "mem(x,x)"
+            Formula::member(x, x)
         };
-        formula = format!("imp({atom},{formula})");
+        formula = Formula::implies(atom, formula);
     }
-    format!("goal = all(x,{formula})")
+    crate::test_inputs::question(Formula::for_all(x, formula)).to_hex()
 }

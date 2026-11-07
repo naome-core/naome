@@ -1,12 +1,10 @@
 use super::*;
 
-fn input(index: usize) -> CompiledQuestion {
-    CompiledQuestion::compile(&format!(
-        "goal=all(x,{}mem(x,x){})",
-        "not(".repeat(index),
-        ")".repeat(index)
-    ))
-    .unwrap()
+fn input(index: usize) -> ResearchQuestion {
+    use naome_foundation::{Formula, FreeVariable};
+    let x = FreeVariable::new(0);
+    let formula = (0..index).fold(Formula::member(x, x), |f, _| Formula::negate(f));
+    crate::test_inputs::question(Formula::for_all(x, formula))
 }
 
 #[test]
@@ -42,7 +40,7 @@ fn byte_limit_evicts_least_recent_use_and_live_reduction_releases_entries() {
     let request = AssessmentQuestion::new(
         FOUNDATION_ID,
         first.core(),
-        first.source().as_bytes(),
+        first.canonical_bytes(),
         &[],
         None,
     )
@@ -72,13 +70,15 @@ fn certificate_payloads_are_charged_before_the_cache_clones_them() {
     let graph = Graph::default();
     let mut local = LocalQuestions::new(Some(|_| async { Ok(true) }));
     let existing =
-        CompiledQuestion::compile("goal=and(all(x,mem(x,x)),all(y,not(mem(y,y))))").unwrap();
+        ResearchQuestion::from_hex("02030401010000000001000000000204020101000000000100000000")
+            .unwrap();
     local
         .registry
         .insert(RegisteredQuestion::new([1; 32], existing.core()).unwrap())
         .unwrap();
     let exchanged =
-        CompiledQuestion::compile("goal=and(all(y,not(mem(y,y))),all(x,mem(x,x)))").unwrap();
+        ResearchQuestion::from_hex("02030402010100000000010000000002040101000000000100000000")
+            .unwrap();
     let result = local.assess(&graph, &exchanged);
     assert_eq!(result.reason, Some(RejectionReason::ProvenEquivalent));
     let certificates = result.equivalence.as_ref().unwrap();

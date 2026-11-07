@@ -231,7 +231,7 @@ impl Programs {
         questions: &mut LocalQuestions<F>,
     ) -> Progress
     where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         self.declined.retain(|_, until| *until > Instant::now());

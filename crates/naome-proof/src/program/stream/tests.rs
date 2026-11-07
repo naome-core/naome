@@ -164,7 +164,6 @@ fn typed_instantiation_has_one_canonical_encoding() {
     let mut extra = bytes.to_vec();
     extra.push(0);
     assert!(decode_command(&extra).is_err());
-    assert!(decode_command(&serde_json::to_vec(&command).unwrap()).is_err());
 }
 
 #[test]

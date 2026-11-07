@@ -13,6 +13,8 @@ mod program;
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_PROGRAM: u32 = 1 << 31;
+pub(crate) const FRAME_CONTRACT: &str =
+    "naome:frames:json-control,binary-program,binary-formula-question";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,10 +57,12 @@ pub(crate) enum Body {
         root: [u8; 32],
         object: Envelope,
     },
+    #[serde(skip)]
     ProgramDescription {
         root: Option<[u8; 32]>,
         metadata: crate::object::ProgramMetadata,
     },
+    #[serde(skip)]
     ProgramOffer {
         metadata: crate::object::ProgramMetadata,
     },
@@ -68,6 +72,7 @@ pub(crate) enum Body {
         start: u64,
         limit: usize,
     },
+    #[serde(skip)]
     ProgramData {
         root: [u8; 32],
         id: [u8; 32],
@@ -150,11 +155,7 @@ impl Codec {
         let message: Message = if binary {
             program::decode(&bytes).map_err(invalid)?
         } else {
-            let message: Message = serde_json::from_slice(&bytes).map_err(invalid)?;
-            if program::binary(&message.body) {
-                return Err(invalid("program data frame encoding mismatch"));
-            }
-            message
+            serde_json::from_slice(&bytes).map_err(invalid)?
         };
         Ok(Frame {
             message,

@@ -16,8 +16,8 @@ fn sparse_maps_are_charged_for_nodes_and_rejected_before_tree_allocation() {
     drop(memory);
 }
 #[test]
-fn maximum_escaped_sources_remain_supported_and_syntax_stays_strict() {
-    let value = serde_json::json!({"command":"produce","source":"\u{1}".repeat(crate::resources::limits().producer_bytes),"request":"escaped"});
+fn maximum_hex_artifact_fits_and_json_syntax_stays_strict() {
+    let value = serde_json::json!({"command":"produce","artifact":"00".repeat(crate::resources::limits().producer_bytes),"request":"artifact"});
     let command = QueuedCommand::from_value(value.clone());
     assert!(command.bytes.len() < crate::resources::limits().command_bytes);
     let (parsed, _memory) = command.parse().unwrap();

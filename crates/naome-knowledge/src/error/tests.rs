@@ -5,25 +5,9 @@ use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{ProofCertificate, ProofStep, StatementId};
 
 #[test]
-fn source_and_certificate_api_errors_preserve_the_report_through_json_serialization() {
+fn local_and_peer_certificate_errors_preserve_the_report_through_json_serialization() {
     let mut graph = Graph::default();
     let before = graph.content_root();
-    let source = "goal=all(x,eq(x,x)) proof: a=refl(x) b=mp(a,a) return b";
-    let error = graph.author(source).unwrap_err();
-    assert_eq!(
-        error.diagnostic().unwrap().failure,
-        Failure::ExpectedImplication {
-            operand: OperandRole::Implication
-        }
-    );
-    let source_json = serde_json::to_value(&error).unwrap();
-    assert_eq!(source_json["code"], "source.compile");
-    assert_eq!(
-        source_json["diagnostic"]["failure"]["code"],
-        "mp.expected_implication"
-    );
-    assert!(source_json["source_diagnostic"]["operand_span"].is_object());
-    assert!(!error.retryable() && !error.fatal());
     let v = FreeVariable::new(0);
     let statement = StatementId::of_canonical_formula(
         &Formula::for_all(v, Formula::equal(v, v))
@@ -40,6 +24,17 @@ fn source_and_certificate_api_errors_preserve_the_report_through_json_serializat
     ])
     .unwrap()
     .into_unchecked_normal_form();
+    let local_error = graph
+        .author(&format!("00{}", hex(normal.canonical_bytes())))
+        .unwrap_err();
+    assert_eq!(
+        local_error.diagnostic().unwrap().failure,
+        Failure::ExpectedImplication {
+            operand: OperandRole::Implication,
+        }
+    );
+    assert!(!local_error.retryable() && !local_error.fatal());
+    let local_json = serde_json::to_value(&local_error).unwrap();
     let envelope = Envelope {
         compatibility: hex(&crate::compatibility()),
         artifact_id: hex(crate::object::content_id(statement, normal.canonical_bytes()).as_bytes()),
@@ -58,7 +53,7 @@ fn source_and_certificate_api_errors_preserve_the_report_through_json_serializat
     assert_eq!(binary_json["code"], "proof.check");
     assert_eq!(
         binary_json["diagnostic"]["failure"],
-        source_json["diagnostic"]["failure"]
+        local_json["diagnostic"]["failure"]
     );
     assert_eq!(graph.content_root(), before);
     assert_eq!(graph.accepted_count(), 0);
@@ -111,12 +106,4 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
     assert!(stored.fatal() && !stored.retryable());
     assert_eq!(stored_json["code"], "storage.invalid_record");
     assert_eq!(stored_json["format_error"], json["format_error"]);
-    let source_error = Error::from(
-        naome_authoring::compile("goal=all(x,eq(x,x)) proof: a=refl(x) b=mp(a,a) return b")
-            .unwrap_err(),
-    )
-    .storage();
-    assert!(source_error.fatal());
-    assert!(source_error.diagnostic().is_some());
-    assert!(source_error.compile_diagnostic().is_some());
 }

@@ -160,7 +160,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
     let manifest = program(&mut graph);
     let root = graph.content_root();
     let candidate = graph
-        .author("goal=all(x,eq(x,x)) proof:p0=refl(x) p1=gen(p0,x) return p1")
+        .author("00000000020600000000210000000000000000")
         .unwrap();
     drop(graph);
     let key = identity::Keypair::generate_ed25519();
@@ -194,7 +194,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
             internet: false,
             ..Default::default()
         }),
-        producer_sources: Vec::new(),
+        producer_artifacts: Vec::new(),
     };
     let (_handle, _admin, inbox) = crate::question::channel();
     let (commands, input) = mpsc::channel(4);
@@ -202,7 +202,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
         config,
         false,
         inbox,
-        Some(|_: CompiledQuestion| std::future::ready(Ok(true))),
+        Some(|_: ResearchQuestion| std::future::ready(Ok(true))),
         input,
         None,
     ));
@@ -286,7 +286,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
                 proof_id: crate::hex(candidate.proof_id().unwrap().unwrap().as_bytes()),
                 artifact_id: candidate.artifact_id,
                 statement_id: candidate.statement_id.unwrap(),
-                question: "goal=all(x,eq(x,x))".into(),
+                question: "040001000000000100000000".into(),
             },
         },
     ] {

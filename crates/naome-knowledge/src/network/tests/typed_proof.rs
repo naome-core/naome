@@ -16,14 +16,16 @@ use naome_proof::{
 use serde_json::json;
 use std::collections::BTreeSet;
 
-const HELPERS: [&str; 4] = [
-    include_str!("../../../tests/fixtures/typed-membership/helper-01.nao"),
-    include_str!("../../../tests/fixtures/typed-membership/helper-02.nao"),
-    include_str!("../../../tests/fixtures/typed-membership/helper-03.nao"),
-    include_str!("../../../tests/fixtures/typed-membership/helper-04.nao"),
+const HELPERS: [&[u8]; 4] = [
+    include_bytes!("../../../tests/fixtures/typed-membership/helper-01.proof"),
+    include_bytes!("../../../tests/fixtures/typed-membership/helper-02.proof"),
+    include_bytes!("../../../tests/fixtures/typed-membership/helper-03.proof"),
+    include_bytes!("../../../tests/fixtures/typed-membership/helper-04.proof"),
 ];
-const SOURCE: &str = include_str!("../../../tests/fixtures/typed-membership/proof.nao");
-const QUESTION: &str = include_str!("../../../tests/fixtures/typed-membership/question.nao");
+const CERTIFICATE: &[u8] =
+    include_bytes!("../../../tests/fixtures/typed-membership/membership.proof");
+const QUESTION: &[u8] =
+    include_bytes!("../../../tests/fixtures/typed-membership/membership.question");
 
 #[derive(Default)]
 struct Phase {
@@ -53,7 +55,7 @@ fn helpers(graph: &mut Graph) -> Vec<crate::Envelope> {
     HELPERS
         .iter()
         .map(|source| {
-            let (object, receipt) = graph.produce(source).unwrap();
+            let (object, receipt) = graph.produce(&format!("00{}", hex(source))).unwrap();
             assert_eq!(receipt.status, "accepted");
             object
         })
@@ -84,7 +86,7 @@ async fn frame_bytes(body: wire::Body) -> usize {
 fn compare_results(
     proof: &naome_checker::program::CheckedProgram,
     authored: &naome_checker::CheckedProof,
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     results: &[StepResult],
     digests: &[[u8; 32]],
 ) {
@@ -92,10 +94,10 @@ fn compare_results(
     assert_eq!(proof.manifest().statement_id(), authored.statement_id());
     assert_eq!(
         question.classify_checked_program(proof).unwrap(),
-        naome_authoring::QuestionOutcome::Proved
+        naome_checker::question::QuestionOutcome::Proved
     );
     assert_eq!(
-        CompiledQuestion::from_checked_program(proof).unwrap(),
+        ResearchQuestion::from_checked_program(proof).unwrap(),
         *question
     );
     for (&position, digest) in results.iter().zip(digests) {
@@ -181,13 +183,13 @@ async fn publish_program(graph: &mut Graph, checked: &CheckedWork) -> serde_json
 }
 
 #[tokio::test]
-async fn membership_source_and_typed_actions_replay_the_same_derivation() {
+async fn membership_certificate_and_typed_actions_replay_the_same_derivation() {
     let output = std::env::var_os("NAOME_TYPED_PAIR_OUTPUT").map(PathBuf::from);
     if output.is_none() && std::env::var_os("NAOME_TYPED_MEMBERSHIP_TEST").is_none() {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "network::tests::typed_proof::membership_source_and_typed_actions_replay_the_same_derivation",
+                "network::tests::typed_proof::membership_certificate_and_typed_actions_replay_the_same_derivation",
                 "--nocapture",
             ])
             .env("NAOME_TYPED_MEMBERSHIP_TEST", "1")
@@ -212,16 +214,15 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
     let mut helper_storage = Phase::default();
     let deps = helper_storage.measure(|| helpers(&mut graph));
     let mut source_phase = Phase::default();
-    let authored = source_phase.measure(|| {
-        naome_authoring::compile_against_proof_context(SOURCE, graph.checked_context()).unwrap()
-    });
+    let authored =
+        source_phase.measure(|| checked_certificate(CERTIFICATE, graph.checked_context()));
     let mut projection_phase = Phase::default();
-    let projection = projection_phase.measure(|| authored.program_projection());
-    let authored = authored.into_checked_proof();
-    let question = CompiledQuestion::compile(QUESTION).unwrap();
+    let projection =
+        projection_phase.measure(|| Projection::from_normal_form(authored.normal_form()));
+    let question = ResearchQuestion::from_canonical_bytes(QUESTION).unwrap();
     assert_eq!(
         question.classify_checked_proof(&authored).unwrap(),
-        naome_authoring::QuestionOutcome::Proved
+        naome_checker::question::QuestionOutcome::Proved
     );
     let mut oracle_phase = Phase::default();
     let (_, digests) = oracle_phase.measure(|| {
@@ -401,11 +402,10 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
         "typed_universal_actions": selected.len(),
         "exact_helper_artifacts": deps.iter().map(|object| &object.artifact_id).collect::<Vec<_>>(),
         "exact_helper_proofs": deps.iter().map(|object| hex(object.proof_id().unwrap().unwrap().as_bytes())).collect::<Vec<_>>(),
-        "source_bytes": SOURCE.len(), "question_source_bytes": QUESTION.len(),
-        "helper_source_bytes": HELPERS.iter().map(|source| source.len()).sum::<usize>(),
+        "question_bytes": QUESTION.len(),
         "helper_canonical_payload_bytes": helper_bytes, "helper_object_frame_bytes": helper_packet_bytes,
         "source_certificate": {"artifact_id": hex(source_root.as_bytes()), "proof_id":hex(authored.proof_id().as_bytes()), "canonical_bytes": authored.normal_form().canonical_bytes().len(),
-            "object_frame_bytes":source_packet_bytes, "parse_normalize_check":source_phase.json(),
+            "object_frame_bytes":source_packet_bytes, "decode_normalize_check":source_phase.json(),
             "recheck_and_register":source_registration.json()},
         "source_program": projected_report,
         "typed_program": typed_report,
@@ -421,9 +421,14 @@ async fn membership_source_and_typed_actions_replay_the_same_derivation() {
     .unwrap();
 }
 
+fn checked_certificate(bytes: &[u8], context: &dyn ContextView) -> naome_checker::CheckedProof {
+    let certificate = naome_proof::ProofCertificate::from_canonical_bytes(bytes).unwrap();
+    naome_checker::normalize_and_check_with_state(certificate, context).unwrap()
+}
+
 async fn publish_witness(
     directory: &Path,
-    question: &CompiledQuestion,
+    question: &ResearchQuestion,
     budget: &Budget,
 ) -> serde_json::Value {
     let mut decode = Phase::default();
@@ -473,7 +478,7 @@ async fn publish_witness(
     let proof = checked.proof().unwrap();
     assert_eq!(
         question.classify_checked_program(proof).unwrap(),
-        naome_authoring::QuestionOutcome::Proved
+        naome_checker::question::QuestionOutcome::Proved
     );
     assert!(proof.dependencies_after(None, 1).unwrap().is_empty());
     assert!(
@@ -519,35 +524,38 @@ fn natural_number_projection_preserves_the_binder_and_exact_definition() {
         .open_outer_universal(FreeVariable::new(0))
         .unwrap();
     let inductive = body.view().negated().unwrap().to_owned();
-    let definition = format!("def inductive = relation(f0): {}", inductive.to_source());
-    let naome_authoring::CompiledArtifact::Definition(checked) =
-        naome_authoring::compile_artifact(&definition).unwrap()
-    else {
-        panic!("expected definition");
-    };
-    let id = checked.definition_id();
+    use naome_proof::{DefinedFormula, DefinitionCertificate, ProofCertificate, ProofFormula};
+    let definition =
+        DefinitionCertificate::relation(1, DefinedFormula::from_primitive(&inductive).unwrap())
+            .unwrap();
+    let id = definition.definition_id();
     let mut context = ArtifactState::new();
-    context
-        .register_definition(checked.into_checked_definition())
-        .unwrap();
+    let checked = naome_checker::check_definition_with_state(definition, &context).unwrap();
+    context.register_definition(checked).unwrap();
 
-    let source = format!(
-        r#"
-        defs: inductive = "{}"
-        goal = all(n, all(i, imp(
-            all(j, imp(inductive(j), mem(n,j))),
-            imp(inductive(i), mem(n,i)))))
-        proof:
-            p0 = inst(j, i, imp(inductive(j), mem(n,j)))
-            p1 = gen(p0, i)
-            p2 = gen(p1, n)
-            return p2
-    "#,
-        hex(id.as_bytes())
+    let [j, i, n] = [0, 1, 2].map(FreeVariable::new);
+    let body = DefinedFormula::implies(
+        DefinedFormula::defined_relation(id, [j]),
+        DefinedFormula::member(n, j),
     );
-    let authored = naome_authoring::compile_against_proof_context(&source, &context).unwrap();
-    let projection = authored.program_projection();
-    let authored = authored.into_checked_proof();
+    let certificate = ProofCertificate::new(vec![
+        ProofStep::UniversalInstantiation {
+            variable: j,
+            replacement: i,
+            body: ProofFormula::from_defined(body).unwrap(),
+        },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: i,
+        },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: n,
+        },
+    ])
+    .unwrap();
+    let authored = naome_checker::normalize_and_check_with_state(certificate, &context).unwrap();
+    let projection = Projection::from_normal_form(authored.normal_form());
     let (_, digests) =
         check_normal_form_with_step_digests(authored.normal_form().clone(), &context).unwrap();
 
@@ -565,16 +573,11 @@ fn natural_number_projection_preserves_the_binder_and_exact_definition() {
     assert_eq!(proof.conclusion(), Some(authored.conclusion()));
     assert_eq!(proof.definition_dependencies_after(None, 2).unwrap(), [id]);
 
-    let naome_authoring::CompiledArtifact::Definition(substitute) =
-        naome_authoring::compile_artifact("def other = relation(x): eq(x,x)").unwrap()
-    else {
-        panic!("expected alternate definition");
-    };
-    assert_ne!(substitute.definition_id(), id);
+    let other = DefinitionCertificate::relation(1, DefinedFormula::equal(j, j)).unwrap();
+    assert_ne!(other.definition_id(), id);
     let mut wrong_context = ArtifactState::new();
-    wrong_context
-        .register_definition(substitute.into_checked_definition())
-        .unwrap();
+    let substitute = naome_checker::check_definition_with_state(other, &wrong_context).unwrap();
+    wrong_context.register_definition(substitute).unwrap();
     for state in [&ArtifactState::new(), &wrong_context] {
         let mut rejected = Engine::open(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
         rejected.append_group(projection.commands()).unwrap();
@@ -586,18 +589,18 @@ fn natural_number_projection_preserves_the_binder_and_exact_definition() {
         assert!(!rejected.status().unwrap().fully_checked);
     }
 
-    let scoped_source = format!(
-        r#"
-        defs: inductive = "{}"
-        goal = imp(all(i, inductive(i)), imp(all(i, inductive(i)), all(i, inductive(i))))
-        proof:
-            p0 = simp(all(i, inductive(i)), all(i, inductive(i)))
-            return p0
-    "#,
-        hex(id.as_bytes())
-    );
-    let checked = naome_authoring::compile_against_proof_context(&scoped_source, &context).unwrap();
-    let scoped = checked.program_projection();
+    let premise = ProofFormula::from_defined(DefinedFormula::for_all(
+        i,
+        DefinedFormula::defined_relation(id, [i]),
+    ))
+    .unwrap();
+    let scoped = ProofCertificate::new(vec![ProofStep::Simplification {
+        antecedent: premise.clone(),
+        consequent: premise,
+    }])
+    .unwrap();
+    let checked = naome_checker::normalize_and_check_with_state(scoped, &context).unwrap();
+    let scoped = Projection::from_normal_form(checked.normal_form());
     assert_eq!(
         scoped
             .commands()
@@ -615,6 +618,6 @@ fn natural_number_projection_preserves_the_binder_and_exact_definition() {
     while !engine.prepare_export(64).unwrap() {}
     assert_eq!(
         engine.checked().unwrap().conclusion(),
-        Some(checked.into_checked_proof().conclusion())
+        Some(checked.conclusion())
     );
 }

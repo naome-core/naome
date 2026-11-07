@@ -43,8 +43,8 @@ fn elementary_equivalence_rejects_without_stored_bridges_and_rechecks_both_direc
         assert_eq!(
             result.reason,
             Some(RejectionReason::ProvenEquivalent),
-            "{}: {result:?}",
-            question.to_source()
+            "{:?}: {result:?}",
+            question
         );
         assert_eq!(result.rule, "Q05_ELEMENTARY_EQUIVALENCE");
         assert_eq!(result.related_record, Some([1; 32]));
@@ -100,7 +100,7 @@ fn nonvacuous_quantifiers_wrong_polarity_and_different_atoms_remain_distinct() {
             &KnowledgeSnapshot::new([8; 32], &state, &registry),
             &PrefilterPolicy::default(),
         );
-        assert!(decision.passed(), "{}: {decision:?}", question.to_source());
+        assert!(decision.passed(), "{:?}: {decision:?}", question);
     }
 }
 

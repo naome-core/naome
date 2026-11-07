@@ -1,7 +1,7 @@
 use super::*;
 
 static CALLS: AtomicUsize = AtomicUsize::new(0);
-fn counted(_: CompiledQuestion) -> Ready<Result<bool, String>> {
+fn counted(_: ResearchQuestion) -> Ready<Result<bool, String>> {
     CALLS.fetch_add(1, Ordering::SeqCst);
     ready(Ok(true))
 }

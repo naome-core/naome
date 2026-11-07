@@ -1,16 +1,8 @@
 use super::*;
 
 fn add(graph: &mut Graph, depth: usize) -> ArtifactId {
-    let mut goal = "eq(x0,x0)".to_owned();
-    for v in (0..depth).rev() {
-        goal = format!("all(x{v},{goal})");
-    }
-    let mut source = format!("goal={goal} proof: p0=refl(x0)");
-    for (step, v) in (0..depth).rev().enumerate() {
-        source.push_str(&format!(" p{}=gen(p{step},x{v})", step + 1));
-    }
-    source.push_str(&format!(" return p{depth}"));
-    let (_, result) = graph.produce(&source).unwrap();
+    let artifact = crate::test_inputs::proof(crate::test_inputs::reflexivity((0..depth).rev()));
+    let (_, result) = graph.produce(&artifact).unwrap();
     assert_eq!(result.status, "accepted");
     result.id
 }

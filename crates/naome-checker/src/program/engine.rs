@@ -210,6 +210,7 @@ struct Evaluation {
     reference_depth: u64,
     definition: Option<DefinitionEvaluation>,
     instantiation_axiom: Option<usize>,
+    deduction: Option<scoped::Preparation>,
 }
 enum Operation {
     Definition,
@@ -743,6 +744,7 @@ impl Engine {
                 }
                 let mut definition = None;
                 let mut instantiation_axiom = None;
+                let mut deduction = None;
                 match plan.construction {
                     checker::Construction::Definition(definition_id, arguments) => {
                         definition = Some(self.begin_definition(
@@ -773,7 +775,7 @@ impl Engine {
                         actions,
                         result,
                     } => {
-                        scoped::compile_scope(&mut operations, &assumptions, &actions, result)?;
+                        deduction = Some(scoped::Preparation::new(assumptions, actions, result));
                     }
                     checker::Construction::Reference(proof) => {
                         operations.push(Operation::Reference(proof));
@@ -792,6 +794,7 @@ impl Engine {
                     reference_depth: 0,
                     definition,
                     instantiation_axiom,
+                    deduction,
                 });
                 sql(self
                     .connection
@@ -799,6 +802,14 @@ impl Engine {
             }
             self.last_quantum_steps += 1;
             let mut active = self.active.take().expect("active command");
+            if let Some(mut deduction) = active.deduction.take() {
+                if !deduction.advance(self, &mut active.operations)? {
+                    active.deduction = Some(deduction);
+                }
+                self.active = Some(active);
+                progress = true;
+                continue;
+            }
             if let Some(value) = self.operation(&mut active, context, query)? {
                 active.registers.push(value);
                 active.position += 1;

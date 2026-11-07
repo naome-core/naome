@@ -5,10 +5,10 @@ fn original_source_orientation_and_first_admission_survive_row_updates_and_resta
     let directory = crate::checkpoint::tests::Directory::new();
     let root = crate::storage::research_directory(&directory.0).unwrap();
     let policy = PrefilterPolicy::default();
-    let question = CompiledQuestion::compile("goal = not(all(x,eq(x,x)))").unwrap();
-    let key = crate::hex(question.source_hash());
+    let question = ResearchQuestion::from_hex("02040001000000000100000000").unwrap();
+    let key = crate::hex(question.record_id());
     let entry = Entry {
-        source: question.source().to_owned(),
+        encoded: question.to_hex(),
         kind: Kind::Prepared,
         first: Some(FirstAdmission {
             record: key.clone(),
@@ -38,7 +38,7 @@ fn original_source_orientation_and_first_admission_survive_row_updates_and_resta
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].kind, Kind::Prepared);
     assert!(
-        CompiledQuestion::compile(&restored[0].source)
+        ResearchQuestion::from_hex(&restored[0].encoded)
             .unwrap()
             .negation_parity()
     );
@@ -56,7 +56,7 @@ fn original_source_orientation_and_first_admission_survive_row_updates_and_resta
         .map(|(_, entry)| entry)
         .collect::<Vec<_>>();
     assert_eq!(restored[0].kind, Kind::Admitted);
-    assert_eq!(restored[0].source, question.source());
+    assert_eq!(restored[0].encoded, question.to_hex());
     assert_eq!(
         crate::checkpoint::encode(restored[0].first.as_ref().unwrap()).unwrap(),
         expected
@@ -87,9 +87,9 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
             let mut updates = Vec::new();
             for index in chunk {
                 let question =
-                    CompiledQuestion::compile(&crate::checkpoint::tests::question_source(*index))
+                    ResearchQuestion::from_hex(&crate::checkpoint::tests::question_source(*index))
                         .unwrap();
-                let key = crate::hex(question.source_hash());
+                let key = crate::hex(question.record_id());
                 // Synthetic receipts test provenance custody only; registry
                 // replay still recompiles every source and grants no admission.
                 let first = FirstAdmission {
@@ -102,7 +102,7 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
                     registry_after: "05".repeat(32),
                 };
                 let entry = Entry {
-                    source: question.source().to_owned(),
+                    encoded: question.to_hex(),
                     kind: Kind::Admitted,
                     first: Some(first),
                 };
@@ -126,20 +126,20 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
         let persistence = questions.persistence.as_mut().unwrap();
         for index in phase * 16..(phase + 1) * 16 {
             assert_eq!(
-                persistence.next_backlog().unwrap().unwrap().source(),
+                persistence.next_backlog().unwrap().unwrap().to_hex(),
                 crate::checkpoint::tests::question_source(index)
             );
         }
         let first =
-            CompiledQuestion::compile(&crate::checkpoint::tests::question_source(0)).unwrap();
+            ResearchQuestion::from_hex(&crate::checkpoint::tests::question_source(0)).unwrap();
         assert_eq!(
             persistence
                 .admitted(first.resolution_id())
                 .unwrap()
                 .unwrap()
                 .0
-                .source(),
-            first.source()
+                .to_hex(),
+            first.to_hex()
         );
         let peak = crate::checkpoint::tests::image_peak_rss_bytes();
         assert!(peak < 192 * 1024 * 1024, "isolated question RSS: {peak}");
@@ -184,7 +184,7 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
 fn stricter_assessment_policy_preserves_current_sources_and_first_policy_identity() {
     let directory = crate::checkpoint::tests::Directory::new();
     let old = PrefilterPolicy::default();
-    let question = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     let mut persistence = Persistence::open(&directory.0, old).unwrap();
     persistence.retain(&question, Kind::Baseline, None).unwrap();
     drop(persistence);
@@ -195,9 +195,9 @@ fn stricter_assessment_policy_preserves_current_sources_and_first_policy_identit
     let mut sources = Vec::new();
     persistence
         .replay(|_, question| {
-            sources.push(question.source().to_owned());
+            sources.push(question.to_hex());
             Ok(())
         })
         .unwrap();
-    assert_eq!(sources, [question.source()]);
+    assert_eq!(sources, [question.to_hex()]);
 }

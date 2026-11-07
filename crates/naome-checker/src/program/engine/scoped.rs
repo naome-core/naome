@@ -2,8 +2,9 @@
 //! assumptions are open the available rules are axiom instances and modus
 //! ponens. The deduction theorem then gives the ordered implication chain.
 //! No local assumption or result gets a position in the checked program.
-use super::{Error, Operation, compile, push};
+use super::{Engine, Error, Operation, compile, push};
 use crate::derived::{COMMUTATION, Step, Term};
+use crate::program::Context;
 use naome_foundation::construction::{self as recipe, Expression};
 use naome_proof::program::ScopedAction;
 
@@ -17,41 +18,78 @@ pub(super) fn instantiate(
     (axiom, apply(operations, universal, axiom))
 }
 
-pub(super) fn compile_scope(
-    operations: &mut Vec<Operation>,
-    assumptions: &[u64],
-    actions: &[ScopedAction],
-    result: u32,
-) -> Result<(), Error> {
-    let mut facts: Vec<_> = assumptions
-        .iter()
-        .map(|&node| push(operations, Operation::Input(node)))
-        .collect();
-    for action in actions {
-        let next = match action {
-            ScopedAction::Instantiate {
-                universal,
-                replacement,
-                premises,
-            } => {
-                let universal = fact(&facts, *universal)?;
-                let (_, mut result) = instantiate(operations, universal, *replacement);
-                for &premise in premises {
-                    result = apply(operations, fact(&facts, premise)?, result);
+pub(super) struct Preparation {
+    assumptions: Vec<u64>,
+    actions: std::vec::IntoIter<ScopedAction>,
+    selected: u32,
+    facts: Vec<usize>,
+    discharge: usize,
+    result: Option<usize>,
+}
+
+impl Preparation {
+    pub(super) fn new(assumptions: Vec<u64>, actions: Vec<ScopedAction>, selected: u32) -> Self {
+        Self {
+            discharge: assumptions.len(),
+            assumptions,
+            actions: actions.into_iter(),
+            selected,
+            facts: Vec::new(),
+            result: None,
+        }
+    }
+
+    /// Resolve one assumption, lower one bounded action, or discharge one
+    /// assumption. Execution of every lowered operation is charged separately.
+    pub(super) fn advance(
+        &mut self,
+        engine: &Engine,
+        operations: &mut Vec<Operation>,
+    ) -> Result<bool, Error> {
+        if let Some(&position) = self.assumptions.get(self.facts.len()) {
+            if position >= engine.cursor {
+                return Err("deduction assumption is not in the checked prefix".into());
+            }
+            self.facts.push(push(
+                operations,
+                Operation::Input(engine.previous(position)?.formula),
+            ));
+            return Ok(false);
+        }
+        if let Some(action) = self.actions.next() {
+            let result = match action {
+                ScopedAction::Instantiate {
+                    universal,
+                    replacement,
+                    premises,
+                } => {
+                    let universal = fact(&self.facts, universal)?;
+                    let (_, mut result) = instantiate(operations, universal, replacement);
+                    for premise in premises {
+                        result = apply(operations, fact(&self.facts, premise)?, result);
+                    }
+                    result
                 }
-                result
-            }
-            ScopedAction::Conjoin { left, right } => {
-                conjoin(operations, fact(&facts, *left)?, fact(&facts, *right)?)
-            }
+                ScopedAction::Conjoin { left, right } => conjoin(
+                    operations,
+                    fact(&self.facts, left)?,
+                    fact(&self.facts, right)?,
+                ),
+            };
+            self.facts.push(result);
+            return Ok(false);
+        }
+        let result = match self.result {
+            Some(result) => result,
+            None => fact(&self.facts, self.selected)?,
         };
-        facts.push(next);
+        self.discharge -= 1;
+        self.result = Some(push(
+            operations,
+            Operation::Implies(self.facts[self.discharge], result),
+        ));
+        Ok(self.discharge == 0)
     }
-    let mut result = fact(&facts, result)?;
-    for &assumption in facts[..assumptions.len()].iter().rev() {
-        result = push(operations, Operation::Implies(assumption, result));
-    }
-    Ok(())
 }
 
 fn fact(facts: &[usize], position: u32) -> Result<usize, Error> {

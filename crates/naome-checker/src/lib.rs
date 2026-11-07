@@ -939,10 +939,6 @@ impl CheckError {
     pub fn into_diagnostic(self) -> std::sync::Arc<diagnostics::ProofDiagnostic> {
         self.diagnostic
     }
-    /// Authoring attaches source origins without changing mathematical evidence.
-    pub fn diagnostic_mut(&mut self) -> &mut diagnostics::ProofDiagnostic {
-        std::sync::Arc::make_mut(&mut self.diagnostic)
-    }
     pub fn step(&self) -> u32 {
         self.kind.step()
     }

@@ -53,7 +53,7 @@ pub struct Config {
     pub discovery: Option<discovery::Config>,
     /// A finite independently operated source queue, attempted once per second.
     #[serde(default)]
-    pub producer_sources: Vec<String>,
+    pub producer_artifacts: Vec<String>,
 }
 pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 
@@ -65,7 +65,7 @@ pub fn routing_contract() -> Value {
         "question_exchange":{
             "protocol":crate::wire::PROTOCOL.as_ref(), "topic":crate::wire::TOPIC,
             "selection":"Explicit local positive selection before root fetch and before commit",
-            "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
+            "metadata":"Newly derived resolution obligation; derived canonical question without proof bytes",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::active_limits().queued_metadata,
                 "closure_objects":crate::resources::limits().closure_objects,"closure_bytes":crate::resources::limits().closure_bytes,
                 "closure_steps":crate::resources::limits().closure_steps,"checker_work_bytes":crate::resources::limits().closure_work_bytes,
@@ -195,7 +195,7 @@ struct Node {
     intake: crate::intake::Intake,
     test_objects: BTreeMap<ArtifactId, (Metadata, Option<Envelope>)>,
     test_controls: bool,
-    producer_sources: VecDeque<String>,
+    producer_artifacts: VecDeque<String>,
     next_production: Instant,
 }
 
@@ -217,7 +217,11 @@ pub(crate) async fn run_autonomous(
         config,
         false,
         inbox,
-        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
+        None::<
+            fn(
+                naome_checker::question::ResearchQuestion,
+            ) -> std::future::Ready<Result<bool, String>>,
+        >,
         commands,
         Some((intervals, startup)),
     )
@@ -255,7 +259,7 @@ pub async fn run_with_questions<F, Fut>(
     selection: F,
 ) -> Result<(), String>
 where
-    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
@@ -285,7 +289,11 @@ pub async fn run_with_questions_without_selection(
         config,
         test_controls,
         inbox,
-        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
+        None::<
+            fn(
+                naome_checker::question::ResearchQuestion,
+            ) -> std::future::Ready<Result<bool, String>>,
+        >,
         commands,
         None,
     )
@@ -301,7 +309,7 @@ pub(crate) async fn run_inner<F, Fut>(
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
 ) -> Result<(), String>
 where
-    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
     let (stop, cancel) = tokio::sync::oneshot::channel();
@@ -351,7 +359,7 @@ pub(crate) async fn run_owner<F, Fut>(
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String>
 where
-    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
     // Register before publishing readiness or performing synchronous owner work.
@@ -364,13 +372,13 @@ where
     if config.peers.len() > crate::resources::limits().configured_peers {
         return Err("peer count limit".into());
     }
-    if config.producer_sources.len() > crate::resources::limits().producer_sources
+    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
         || config
-            .producer_sources
+            .producer_artifacts
             .iter()
             .map(String::len)
             .sum::<usize>()
-            > crate::resources::limits().producer_bytes
+            > 2 * crate::resources::limits().producer_bytes
     {
         return Err("producer queue capacity".into());
     }
@@ -584,7 +592,7 @@ where
         intake: crate::intake::Intake::default(),
         test_objects: BTreeMap::new(),
         test_controls,
-        producer_sources: config.producer_sources.into(),
+        producer_artifacts: config.producer_artifacts.into(),
         next_production: Instant::now() + crate::resources::active_limits().production_interval,
     };
     let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
@@ -1082,9 +1090,9 @@ impl Node {
                 }
                 "produce" => {
                     let source = value
-                        .get("source")
+                        .get("artifact")
                         .and_then(Value::as_str)
-                        .ok_or("source missing")?;
+                        .ok_or("artifact missing")?;
                     let (object, ingestion) = self.graph.produce(source)?;
                     let id = ingestion.id;
                     let result = self.ingested(ingestion, "producer")?;
@@ -1106,12 +1114,12 @@ impl Node {
                 "object" => Ok(
                     json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
                 ),
-                "test_compile" => {
+                "test_check" => {
                     if !self.test_controls {
                         return Err("test controls disabled".into());
                     }
                     Ok(
-                        json!({"object":self.graph.author(value.get("source").and_then(Value::as_str).ok_or("source missing")?)?}),
+                        json!({"object":self.graph.author(value.get("artifact").and_then(Value::as_str).ok_or("artifact missing")?)?}),
                     )
                 }
                 "test_descriptor" => {
@@ -1298,7 +1306,7 @@ impl Node {
         if work.is_some()
             && crate::resources::adaptive::batch(1) > 0
             && now >= self.next_production
-            && let Some(source) = self.producer_sources.pop_front()
+            && let Some(source) = self.producer_artifacts.pop_front()
         {
             self.next_production = now + crate::resources::active_limits().production_interval;
             let result = self
@@ -1308,7 +1316,7 @@ impl Node {
             match result {
                 Ok(result) => emit(json!({"event":"producer_result", "result":result})),
                 Err(error) if retryable_publication(&error) => {
-                    self.producer_sources.push_back(source);
+                    self.producer_artifacts.push_back(source);
                     emit(json!({"event":"producer_deferred", "error":error}));
                 }
                 Err(error) => emit(json!({"event":"producer_rejected", "error":error})),

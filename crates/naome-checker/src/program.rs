@@ -71,7 +71,7 @@ pub enum Construction<F> {
         replacement: u32,
     },
     Deduction {
-        assumptions: Vec<F>,
+        assumptions: Vec<u64>,
         actions: Vec<ScopedAction>,
         result: u32,
     },
@@ -244,13 +244,9 @@ pub fn prepare<C: Context>(
             ref actions,
             result,
         } => {
-            let assumptions = assumptions
-                .iter()
-                .map(|&index| formula(index, R::Input))
-                .collect::<Result<Vec<_>, _>>()?;
             return Ok(Plan {
                 construction: Construction::Deduction {
-                    assumptions,
+                    assumptions: assumptions.clone(),
                     actions: actions.clone(),
                     result,
                 },

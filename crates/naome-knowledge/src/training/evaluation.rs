@@ -119,7 +119,7 @@ pub fn compare(
             match probe.result {
                 Outcome::Verified { .. } => {
                     results.verified += 1;
-                    groups.insert(group(&CompiledQuestion::compile(&probe.question)?));
+                    groups.insert(group(&ResearchQuestion::from_hex(&probe.question)?));
                 }
                 Outcome::Exhausted => results.exhausted += 1,
                 Outcome::Unavailable => results.unavailable += 1,
@@ -139,7 +139,7 @@ pub fn compare(
     let groups = baseline
         .probes
         .iter()
-        .map(|p| CompiledQuestion::compile(&p.question).map(|q| group(&q)))
+        .map(|p| ResearchQuestion::from_hex(&p.question).map(|q| group(&q)))
         .collect::<Result<BTreeSet<_>, _>>()?;
     Ok(Comparison {
         baseline: summarize(baseline)?,

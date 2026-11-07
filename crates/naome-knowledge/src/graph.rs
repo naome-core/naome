@@ -181,8 +181,9 @@ impl Graph {
                     .map_err(crate::Error::from),
             )?
             .ok_or("checked proof conclusion missing")?;
-        let derived = naome_authoring::CompiledQuestion::from_formula(conclusion.into_owned())
-            .map_err(crate::Error::from)?;
+        let derived =
+            naome_checker::question::ResearchQuestion::from_formula(conclusion.into_owned())
+                .map_err(crate::Error::from)?;
         if derived.formula() != derived.positive_target()
             && derived.formula() != derived.negative_target()
         {
@@ -192,7 +193,10 @@ impl Graph {
             artifact_id: crate::hex(id.as_bytes()),
             proof_id: crate::hex(proof_id.as_bytes()),
             statement_id: crate::hex(statement.as_bytes()),
-            question: format!("goal = {}", derived.core().to_source()),
+            question: naome_checker::question::ResearchQuestion::from_formula(
+                derived.core().clone(),
+            )?
+            .to_hex(),
         };
         Ok(Some(metadata))
     }
@@ -527,26 +531,28 @@ impl Graph {
         Ok(Some(live))
     }
 
-    pub fn author(&self, source: &str) -> Result<Envelope, crate::Error> {
+    /// Check a tagged canonical proof or definition in lowercase hex against
+    /// the current context and return its authenticated envelope.
+    pub fn author(&self, encoded: &str) -> Result<Envelope, crate::Error> {
         self.ensure_live()?;
-        if source.len() > crate::resources::limits().proof_bytes {
-            return Err("producer source byte limit".into());
+        if encoded.len() > 2 * crate::resources::limits().proof_bytes {
+            return Err("producer artifact byte limit".into());
         }
-        let checked = CheckedArtifact::from_compiled(self.compile_source(source, &self.context)?);
+        let checked = self.check_input(encoded, &self.context)?;
         self.cold(checked.record(&self.context))
             .map(|record| record.envelope())
     }
 
-    /// Compile and publish local source while retaining its sealed checker result.
+    /// Check and publish a canonical artifact input from the local producer.
     /// Local owner ingestion has its own authority; peer selection stays separate.
-    pub(crate) fn produce(&mut self, source: &str) -> Result<(Envelope, Ingest), crate::Error> {
+    pub(crate) fn produce(&mut self, encoded: &str) -> Result<(Envelope, Ingest), crate::Error> {
         crate::resources::require_work_admission()?;
         self.maintain_checked_storage()?;
-        if source.len() > crate::resources::limits().proof_bytes {
-            return Err("producer source byte limit".into());
+        if encoded.len() > 2 * crate::resources::limits().proof_bytes {
+            return Err("producer artifact byte limit".into());
         }
-        let disk = self.reserve_publication(source.len(), 1)?;
-        let checked = CheckedArtifact::from_compiled(self.compile_source(source, &self.context)?);
+        let disk = self.reserve_publication(encoded.len() / 2, 1)?;
+        let checked = self.check_input(encoded, &self.context)?;
         let record = self.cold(checked.record(&self.context))?;
         if record.bytes.len() > crate::resources::limits().proof_bytes {
             return Err("proof byte limit".into());
@@ -720,22 +726,38 @@ impl Graph {
         Ok(true)
     }
 
-    fn compile_source(
+    fn check_input(
         &self,
-        source: &str,
+        encoded: &str,
         context: &DiskArtifactState,
-    ) -> Result<naome_authoring::CompiledArtifact, crate::Error> {
+    ) -> Result<CheckedArtifact, crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
+        let _memory = crate::resources::MemoryLease::acquire(encoded.len() / 2)?;
         #[cfg(test)]
-        {
-            self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bytes = crate::unhex(encoded)?;
+        let checked = match bytes.split_first() {
+            Some((&naome_proof::ArtifactPayload::PROOF_TAG, payload)) => {
+                let certificate = naome_proof::ProofCertificate::from_canonical_bytes(payload)
+                    .map_err(|error| crate::object::certificate_error(payload, error))?;
+                check_normal_form_with_state(certificate.into_unchecked_normal_form(), context)
+                    .map(CheckedArtifact::Proof)
+                    .map_err(crate::Error::from)
+            }
+            Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, payload)) => {
+                let certificate = naome_proof::DefinitionCertificate::from_canonical_bytes(payload)
+                    .map_err(|error| error.to_string())?;
+                naome_checker::check_definition_with_state(certificate, context)
+                    .map(CheckedArtifact::Definition)
+                    .map_err(crate::Error::from)
+            }
+            _ => Err("unknown artifact input tag".into()),
+        };
+        if let Err(error) = &checked {
+            self.record_check_failure(error);
         }
-        naome_authoring::compile_artifact_against_proof_context(source, context).map_err(|error| {
-            let error = crate::Error::from(error);
-            self.record_check_failure(&error);
-            error
-        })
+        checked
     }
 
     fn check_normal(

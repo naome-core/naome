@@ -285,3 +285,39 @@ fn deduction_returns_only_the_discharged_fact_after_its_quantum() {
     );
     assert_eq!(engine.result_formula(2).unwrap(), Some(expected));
 }
+
+#[test]
+fn deduction_preparation_yields_and_charges_the_rejected_action() {
+    use naome_proof::program::ScopedAction;
+
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    engine
+        .append(&Command::Equal { left: 0, right: 0 })
+        .unwrap();
+    drain(&mut engine);
+    let mut actions = vec![ScopedAction::Conjoin { left: 0, right: 0 }; 31];
+    actions.push(ScopedAction::Conjoin { left: 0, right: 32 });
+    engine
+        .append(&Command::Deduce {
+            assumptions: vec![0],
+            actions,
+            result: 32,
+        })
+        .unwrap();
+    let context = ArtifactState::new();
+
+    for _ in 0..32 {
+        assert!(engine.advance(1, 32768, &context).unwrap());
+        assert_eq!(engine.last_quantum_steps(), 1);
+        assert_eq!(engine.status().unwrap().checked_commands, 1);
+    }
+    let error = engine.advance(1, 32768, &context).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("outside the earlier deduction scope")
+    );
+    assert_eq!(engine.last_quantum_steps(), 1);
+    assert_eq!(engine.status().unwrap().checked_commands, 1);
+    assert!(engine.checked_fact(1).is_err());
+}

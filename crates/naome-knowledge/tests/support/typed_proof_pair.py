@@ -203,7 +203,7 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True)
     seeds = output / "seeds"
-    seed(args.fixture.resolve(), "membership_source_and_typed_actions_replay_the_same_derivation",
+    seed(args.fixture.resolve(), "membership_certificate_and_typed_actions_replay_the_same_derivation",
          "NAOME_TYPED_PAIR_OUTPUT", seeds)
     metadata = json.loads((seeds / "seed.json").read_text())
     pairs = []
