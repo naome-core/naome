@@ -10,11 +10,7 @@ pub(super) struct CommitDigest {
 }
 
 impl CommitDigest {
-    pub(super) fn new(
-        root: [u8; 32],
-        count: usize,
-        question: Option<&[u8]>,
-    ) -> Result<Self, crate::Error> {
+    pub(super) fn new(root: [u8; 32], count: usize) -> Result<Self, crate::Error> {
         let width = u32::try_from(count).map_err(|_| "catalog commit count width")?;
         if count == 0 {
             return Err("invalid catalog commit membership".into());
@@ -23,14 +19,6 @@ impl CommitDigest {
         hash.update(b"naome:knowledge:catalog-commit:v1\0");
         hash.update(root);
         hash.update(width.to_be_bytes());
-        if question.is_some_and(|bytes| {
-            bytes.is_empty() || bytes.len() > naome_checker::question::QUESTION_BYTES
-        }) {
-            return Err("catalog exchange question width differs".into());
-        }
-        let source = question.unwrap_or_default();
-        hash.update((source.len() as u32).to_be_bytes());
-        hash.update(source);
         Ok(Self {
             hash,
             root,
@@ -40,7 +28,11 @@ impl CommitDigest {
         })
     }
 
-    pub(super) fn push(&mut self, member: &Member) -> Result<(), crate::Error> {
+    pub(super) fn push(
+        &mut self,
+        member: &Member,
+        question: Option<&[u8]>,
+    ) -> Result<(), crate::Error> {
         if self.remaining == 0 || self.previous.is_some_and(|id| id >= member.id) {
             return Err("catalog commit members are not uniquely sorted".into());
         }
@@ -51,6 +43,14 @@ impl CommitDigest {
             return Err("catalog commit member width differs".into());
         }
         self.hash.update(member.id);
+        if question.is_some_and(|bytes| {
+            bytes.is_empty() || bytes.len() > naome_checker::question::QUESTION_BYTES
+        }) {
+            return Err("catalog exchange question width differs".into());
+        }
+        let source = question.unwrap_or_default();
+        self.hash.update((source.len() as u32).to_be_bytes());
+        self.hash.update(source);
         for value in [member.statement, member.obligation] {
             self.hash.update([u8::from(value.is_some())]);
             if let Some(value) = value {

@@ -18,6 +18,7 @@ pub(crate) struct CheckedBatch {
     pub(super) context_bytes: usize,
     pub(super) _disk: crate::resources::DiskLease,
     pub(super) payload_bytes: usize,
+    pub(super) questions: BTreeMap<ArtifactId, Vec<u8>>,
 }
 
 impl CheckedBatch {
@@ -211,6 +212,36 @@ impl Graph {
         Ok(preparation.into_prefix())
     }
 
+    /// Bind optional peer metadata to each independently checked member. A
+    /// bad hint has no effect on mathematical admission of its parent.
+    pub(crate) fn retain_helper_questions<'a>(
+        &self,
+        batch: &mut CheckedBatch,
+        sources: impl IntoIterator<Item = (ArtifactId, &'a str)>,
+    ) -> Result<(), crate::Error> {
+        for (id, source) in sources {
+            if !batch.edges.contains_key(&id) {
+                continue;
+            }
+            let Ok(question) = ResearchQuestion::from_hex_with_context(source, &batch.context)
+            else {
+                continue;
+            };
+            if !question.dependencies().is_empty()
+                && self.cold(Self::context_resolves_question(
+                    &batch.context,
+                    id,
+                    &question,
+                ))?
+            {
+                batch
+                    .questions
+                    .insert(id, question.canonical_bytes().to_vec());
+            }
+        }
+        self.ensure_live()
+    }
+
     /// Commit a prepared delta against its exact checked base, then publish
     /// only infallible roots/scalars. No caller can apply an uncommitted batch.
     #[cfg(test)]
@@ -226,7 +257,7 @@ impl Graph {
     pub(crate) fn commit_batch_granted(
         &mut self,
         root: ArtifactId,
-        batch: CheckedBatch,
+        mut batch: CheckedBatch,
         deadline: Instant,
         peer: Option<PeerGrant>,
         question: Option<&ResearchQuestion>,
@@ -263,14 +294,19 @@ impl Graph {
         {
             return Err("exchange question does not bind the checked root".into());
         }
+        if let Some(question) = question {
+            batch
+                .questions
+                .insert(root, question.canonical_bytes().to_vec());
+        }
         let storage = self.checked_storage.clone();
         let gate = self.cold(storage.write_gate())?;
         batch.stamp.check_at_gate(self, gate.epoch())?;
         let admitted: Vec<_> = batch.entries.iter().map(|(id, _)| *id).collect();
         let result = self.store.persist_binary_batch(
-            crate::store::PublicationRoot {
-                artifact: root,
-                question: question.map(ResearchQuestion::canonical_bytes),
+            crate::store::Publication {
+                root,
+                questions: &batch.questions,
             },
             batch.entries.iter().map(|(_, object)| object),
             self.fixed_summary(),

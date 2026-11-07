@@ -14,7 +14,7 @@ pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledg
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_PROGRAM: u32 = 1 << 31;
 pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:json-control,binary-program,binary-defined-formula-question";
+    "naome:frames:json-control,binary-program,defined-question-per-proof";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +57,8 @@ pub(crate) enum Body {
     Object {
         root: [u8; 32],
         object: Envelope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        question: Option<String>,
     },
     #[serde(skip)]
     ProgramDescription {
@@ -204,7 +206,7 @@ fn frame_memory(
 }
 
 fn frame_limit() -> usize {
-    2 * crate::resources::limits().proof_bytes + 1024
+    2 * (crate::resources::limits().proof_bytes + naome_checker::question::QUESTION_BYTES) + 1024
 }
 
 struct BoundedOutput(Vec<u8>);

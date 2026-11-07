@@ -463,7 +463,7 @@ async fn receive(
                 ArtifactTransfer::Program(metadata) => intake
                     .enqueue_program_helper(peer, root, metadata, &graph)
                     .unwrap(),
-                ArtifactTransfer::Certificate(object) => {
+                ArtifactTransfer::Certificate { object, .. } => {
                     fetched.insert(id);
                     intake.payload(peer, root, id, object, &graph).unwrap()
                 }

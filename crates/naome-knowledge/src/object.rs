@@ -95,7 +95,10 @@ pub(crate) enum ProofDescription {
     Program(ProgramMetadata),
 }
 pub(crate) enum ArtifactTransfer {
-    Certificate(Envelope),
+    Certificate {
+        object: Envelope,
+        question: Option<String>,
+    },
     Program(ProgramMetadata),
 }
 

@@ -94,6 +94,7 @@ pub enum Error {
     StaleAuthority,
     Deadline,
     InvalidInput(String),
+    MissingQuestionDefinition(naome_proof::DefinitionId),
     Proof {
         message: String,
         diagnostic: std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>,
@@ -124,6 +125,7 @@ impl Error {
             Self::StaleAuthority => "publication.stale_authority",
             Self::Deadline => "publication.deadline",
             Self::InvalidInput(_) => "input.invalid",
+            Self::MissingQuestionDefinition(_) => "question.missing_definition",
             Self::Proof { .. } => "proof.check",
             Self::DiagnosticInspection(_) => "diagnostic.inspection",
             Self::CertificateFormat(_) => "certificate.format",
@@ -220,6 +222,9 @@ impl fmt::Display for Error {
             Self::ExecutionLimit => f.write_str("operation execution resources exhausted"),
             Self::InputLimit(message) => f.write_str(message),
             Self::InvalidInput(message) => f.write_str(message),
+            Self::MissingQuestionDefinition(id) => {
+                write!(f, "question definition unavailable: {id:?}")
+            }
             Self::Proof { message, .. } => f.write_str(message),
             Self::DiagnosticInspection(error) => error.fmt(f),
             Self::CertificateFormat(error) => f.write_str(&error.message),
@@ -378,7 +383,12 @@ impl From<naome_foundation::FormulaCodecError> for Error {
 }
 impl From<naome_proof::QuestionError> for Error {
     fn from(error: naome_proof::QuestionError) -> Self {
-        Self::InvalidInput(error.to_string())
+        match error {
+            naome_proof::QuestionError::MissingDefinition(id) => {
+                Self::MissingQuestionDefinition(id)
+            }
+            error => Self::InvalidInput(error.to_string()),
+        }
     }
 }
 impl From<naome_checker::ArtifactStateError> for Error {

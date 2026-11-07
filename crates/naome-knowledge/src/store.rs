@@ -4,6 +4,7 @@ use crate::object::BinaryArtifact;
 use naome_proof::ArtifactId;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -23,9 +24,9 @@ pub(crate) use naome_proof::program::Progress as ProgramProgress;
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
 pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;
-pub(crate) struct PublicationRoot<'a> {
-    pub artifact: ArtifactId,
-    pub question: Option<&'a [u8]>,
+pub(crate) struct Publication<'a> {
+    pub root: ArtifactId,
+    pub questions: &'a BTreeMap<ArtifactId, Vec<u8>>,
 }
 const FORMAT_FILE: &str = "proof-corpus.format";
 const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP\0";
@@ -329,9 +330,9 @@ impl Store {
             .map(|object| object.clone().prepare().map(|c| c.record()))
             .collect::<Result<Vec<_>, _>>()?;
         self.persist_records(
-            PublicationRoot {
-                artifact: root,
-                question: None,
+            Publication {
+                root,
+                questions: &BTreeMap::new(),
             },
             objects.iter(),
             expected,
@@ -343,7 +344,7 @@ impl Store {
 
     pub(crate) fn persist_binary_batch<'a>(
         &self,
-        root: PublicationRoot<'_>,
+        root: Publication<'_>,
         objects: impl Iterator<Item = &'a BinaryArtifact>,
         expected: Summary,
         deadline: Option<Instant>,
@@ -355,7 +356,7 @@ impl Store {
 
     fn persist_records<'a>(
         &self,
-        root: PublicationRoot<'_>,
+        root: Publication<'_>,
         objects: impl Iterator<Item = &'a BinaryArtifact>,
         expected: Summary,
         deadline: Option<Instant>,

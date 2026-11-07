@@ -996,9 +996,9 @@ impl Graph {
         let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
         let persisted = self.store.persist_binary_batch(
-            crate::store::PublicationRoot {
-                artifact: id,
-                question: None,
+            crate::store::Publication {
+                root: id,
+                questions: &BTreeMap::new(),
             },
             batch.entries.iter().map(|(_, record)| record),
             self.fixed_summary(),

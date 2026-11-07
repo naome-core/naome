@@ -352,9 +352,10 @@ impl Graph {
                 .describe_program(id, manifest)
                 .map(crate::object::ArtifactTransfer::Program)
                 .map(Some),
-            None => Ok(Some(crate::object::ArtifactTransfer::Certificate(
-                record.envelope(),
-            ))),
+            None => Ok(Some(crate::object::ArtifactTransfer::Certificate {
+                object: record.envelope(),
+                question: self.exchange_question(id)?,
+            })),
         }
     }
 

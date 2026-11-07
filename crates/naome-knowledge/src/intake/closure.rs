@@ -21,11 +21,20 @@ struct Helper {
     checking: Option<ProgramCheck>,
     checked: Option<CheckedWork>,
 }
+struct HelperQuestion {
+    source: String,
+    _memory: std::sync::Arc<crate::resources::MemoryLease>,
+    last_requested: Option<naome_proof::DefinitionId>,
+    resolved: bool,
+}
+
 pub(in crate::intake) struct Closure {
     root: ArtifactId,
     statement: Option<StatementId>,
+    question_proof: Option<ArtifactId>,
     items: BTreeMap<ArtifactId, Helper>,
     certificates: BTreeMap<ArtifactId, crate::object::Candidate>,
+    questions: BTreeMap<ArtifactId, HelperQuestion>,
     needed: BTreeSet<ArtifactId>,
     usage: certificate::Usage,
     prefix: Option<CheckedBatch>,
@@ -42,8 +51,10 @@ impl Closure {
         Self {
             root,
             statement,
+            question_proof: None,
             items: BTreeMap::new(),
             certificates: BTreeMap::new(),
+            questions: BTreeMap::new(),
             needed: BTreeSet::new(),
             usage: certificate::Usage::default(),
             prefix: None,
@@ -55,6 +66,11 @@ impl Closure {
             receiving: BTreeSet::new(),
             budget: Observer::default(),
         }
+    }
+    pub(in crate::intake) fn for_definition(root: ArtifactId, question_proof: ArtifactId) -> Self {
+        let mut closure = Self::new(root, None);
+        closure.question_proof = Some(question_proof);
+        closure
     }
     pub(in crate::intake) fn require_root(&mut self, graph: &Graph) -> Result<(), crate::Error> {
         self.synchronize(graph)?;
@@ -86,7 +102,12 @@ impl Closure {
             .filter(|(id, _)| !self.schedule.is_complete(**id))
             .map(|(id, candidate)| candidate.for_admission().map(|candidate| (*id, candidate)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let result = graph.prepare_batch_after(self.root, candidates, question, self.prefix.take());
+        let result = graph
+            .prepare_batch_after(self.root, candidates, question, self.prefix.take())
+            .and_then(|mut batch| {
+                self.attach_questions(graph, &mut batch)?;
+                Ok(batch)
+            });
         if result.is_err() {
             self.invalidate_prefix();
         }
@@ -162,6 +183,9 @@ impl Closure {
         }
     }
     fn require(&mut self, id: ArtifactId, graph: &Graph) -> Result<(), crate::Error> {
+        if self.question_proof == Some(id) && !graph.contains(id)? {
+            return Err("definition depends on the unselected question proof".into());
+        }
         if id == self.root {
             return Err("cited closure has cyclic dependencies".into());
         }
@@ -313,6 +337,9 @@ impl Closure {
             self.scan_ready.insert(id);
         }
         self.needed.remove(&id);
+        if let Some(source) = metadata.question {
+            self.remember_question(id, source);
+        }
         self.items.insert(
             id,
             Helper {
@@ -342,6 +369,21 @@ impl Closure {
         // before decoding allocates their trees. Rejected payloads change nothing.
         let usage = self.usage.add(&object)?;
         let candidate = object.prepare()?;
+        if let Some(question_proof) = self.question_proof {
+            if id == self.root
+                && !matches!(
+                    candidate.payload,
+                    crate::object::CandidatePayload::Definition(_)
+                )
+            {
+                return Err("requested definition payload differs".into());
+            }
+            if candidate.dependencies.contains(&question_proof)
+                && !graph.contains(question_proof)?
+            {
+                return Err("definition depends on the unselected question proof".into());
+            }
+        }
         transfer.check(Instant::now())?;
         if id == self.root
             && self
@@ -381,6 +423,87 @@ impl Closure {
         self.usage = usage;
         Ok(candidate)
     }
+    pub(in crate::intake) fn prepare_definition(
+        &mut self,
+        graph: &Graph,
+    ) -> Result<CheckedBatch, crate::Error> {
+        let candidate = self
+            .certificates
+            .get(&self.root)
+            .ok_or("missing staged definition")?;
+        if !matches!(
+            candidate.payload,
+            crate::object::CandidatePayload::Definition(_)
+        ) {
+            return Err("requested definition payload differs".into());
+        }
+        let candidate = candidate.for_admission()?;
+        let result = graph.prepare_helper_after(candidate, self.prefix.take());
+        if result.is_err() {
+            self.invalidate_prefix();
+        }
+        result
+    }
+
+    pub(in crate::intake) fn remember_question(&mut self, id: ArtifactId, source: String) {
+        if id == self.root
+            || self.questions.contains_key(&id)
+            || source.len() > 2 * naome_checker::question::QUESTION_BYTES
+        {
+            return;
+        }
+        if let Ok(lease) = crate::resources::MemoryLease::acquire(2 * source.len() + 256) {
+            self.questions.insert(
+                id,
+                HelperQuestion {
+                    source,
+                    _memory: lease,
+                    last_requested: None,
+                    resolved: false,
+                },
+            );
+        }
+    }
+
+    pub(in crate::intake) fn missing_question_definition(
+        &mut self,
+        graph: &Graph,
+    ) -> Option<naome_proof::DefinitionId> {
+        if self.questions.is_empty() {
+            return None;
+        }
+        let context = self.context(graph).clone();
+        for question in self
+            .questions
+            .values_mut()
+            .filter(|question| !question.resolved)
+        {
+            match ResearchQuestion::from_hex_with_context(&question.source, &context) {
+                Err(naome_proof::QuestionError::MissingDefinition(id))
+                    if question.last_requested != Some(id) =>
+                {
+                    question.last_requested = Some(id);
+                    return Some(id);
+                }
+                _ => question.resolved = true,
+            }
+        }
+        None
+    }
+
+    pub(in crate::intake) fn attach_questions(
+        &self,
+        graph: &Graph,
+        batch: &mut CheckedBatch,
+    ) -> Result<(), crate::Error> {
+        graph.retain_helper_questions(
+            batch,
+            self.questions
+                .iter()
+                .map(|(id, question)| (*id, question.source.as_str())),
+        )
+    }
+
     pub(in crate::intake) fn request(
         &self,
         graph: &Graph,

@@ -5,8 +5,10 @@ fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() 
     let mut graph = Graph::default();
     let object = introduce(&mut graph);
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
-    let Some(crate::object::ArtifactTransfer::Certificate(transferred)) =
-        graph.transfer(id).unwrap()
+    let Some(crate::object::ArtifactTransfer::Certificate {
+        object: transferred,
+        ..
+    }) = graph.transfer(id).unwrap()
     else {
         panic!("certificate transfer missing")
     };

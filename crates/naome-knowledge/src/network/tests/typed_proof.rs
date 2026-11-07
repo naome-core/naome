@@ -379,6 +379,7 @@ async fn membership_certificate_and_typed_actions_replay_the_same_derivation() {
     });
 
     let source_packet_bytes = frame_bytes(wire::Body::Object {
+        question: None,
         root: *source_root.as_bytes(),
         object: envelope,
     })
@@ -386,6 +387,7 @@ async fn membership_certificate_and_typed_actions_replay_the_same_derivation() {
     let mut helper_packet_bytes = 0;
     for dependency in deps.iter().cloned() {
         helper_packet_bytes += frame_bytes(wire::Body::Object {
+            question: None,
             root: *source_root.as_bytes(),
             object: dependency,
         })

@@ -173,7 +173,7 @@ async fn expired_queued_program_metadata_cannot_start_selection_or_input_staging
     programs.queue.push_back(Offer { metadata, transfer });
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
     assert!(
-        matches!(programs.advance(&mut graph, &mut questions), Progress::Skipped(skipped, _) if skipped == id)
+        matches!(programs.advance(&mut graph, &mut questions, None), Progress::Skipped(skipped, _) if skipped == id)
     );
     assert!(programs.active.is_none());
     assert!(questions.available());

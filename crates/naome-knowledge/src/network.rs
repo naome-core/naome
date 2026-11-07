@@ -64,8 +64,8 @@ pub fn routing_contract() -> Value {
         "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
             "protocol":crate::wire::PROTOCOL.as_ref(), "topic":crate::wire::TOPIC,
-            "selection":"Explicit local positive selection before root fetch and before commit",
-            "metadata":"Newly derived resolution obligation; derived canonical question without proof bytes",
+            "selection":"Exact checked definitions and their required witnesses may be fetched to compile a question. Explicit local positive selection precedes its proof fetch and commit.",
+            "metadata":"Canonical question with exact definition references when available. The description carries no proof bytes.",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::active_limits().queued_metadata,
                 "closure_objects":crate::resources::limits().closure_objects,"closure_bytes":crate::resources::limits().closure_bytes,
                 "closure_steps":crate::resources::limits().closure_steps,"checker_work_bytes":crate::resources::limits().closure_work_bytes,
@@ -746,6 +746,13 @@ where
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));
         questions.cancel_closed();
+        if let Some(request) = node.intake.helper_definition_request(&node.graph) {
+            let id = ArtifactId::from_definition_id(request.definition);
+            let grant = node.swarm.grant(request.peer, id);
+            if let Err(error) = node.intake.request_question_definition(request, &node.graph, Some(grant)) {
+                node.graph.program_failure(&error);
+            }
+        }
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
             crate::intake::Progress::Skipped(id, error) => {
@@ -1374,6 +1381,40 @@ impl Node {
             && self.outgoing_ready(peer, now)
     }
 
+    fn finish_description(
+        &mut self,
+        peer: PeerId,
+        artifact: ArtifactId,
+        grant: Option<crate::publication::PeerGrant>,
+        result: Result<&'static str, crate::Error>,
+    ) -> Result<&'static str, crate::Error> {
+        let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
+            return result;
+        };
+        // Retain only the ordinary bounded inventory hint. After each checked
+        // definition is admitted, a fresh description supplies the next one.
+        if !self.want(artifact)? {
+            return Err(crate::Error::ExecutionLimit);
+        }
+        self.intake.request_question_definition(
+            crate::intake::DefinitionRequest {
+                peer,
+                definition,
+                question_proof: artifact,
+                helper_deadline: None,
+            },
+            &self.graph,
+            grant,
+        )?;
+        Ok("awaiting_definition")
+    }
+
+    fn fetch_grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
+        self.intake
+            .definition_capability(peer, root)
+            .unwrap_or_else(|| self.swarm.grant(peer, root))
+    }
+
     fn proof_fetch_error(&mut self, root: ArtifactId, error: crate::Error) {
         self.graph.program_failure(&error);
         let event = if error.retryable() {
@@ -1442,7 +1483,7 @@ impl Node {
                 let frame = Frame::new(read.body());
                 let request = self
                     .swarm
-                    .request_granted(peer, frame, self.swarm.grant(peer, root));
+                    .request_granted(peer, frame, self.fetch_grant(peer, root));
                 self.flights.insert(
                     request,
                     Flight::Program {
@@ -1481,8 +1522,8 @@ impl Node {
                 self.charge_outgoing(peer, now);
             }
         }
-        // The sole path to Get consumes a private approved root's actual
-        // committed dependency closure. Hints and Graph.pending never issue Get.
+        // Get consumes a selected proof's checked closure or an exact question
+        // definition's bounded preflight. Graph.pending never issues Get.
         for (peer, root, id) in self.intake.needed() {
             match self.intake.reuse_certificate(peer, root, id, &self.graph) {
                 Ok(true) => continue,
@@ -1495,7 +1536,7 @@ impl Node {
             if self.request_ready(peer, now) && self.automatic_request_ready(peer, now) && self.intake.authorizes(peer, root, id)
                 && !self.flights.values().any(|flight| matches!(flight, Flight::Get { id: requested, .. } if *requested == id))
             {
-                let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.swarm.grant(peer, root));
+                let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.fetch_grant(peer, root));
                 self.flights.insert(request, Flight::Get { started: Instant::now(), root, id, peer });
                 self.charge_automatic_request(peer, now);
                 self.charge_outgoing(peer, now);
@@ -1937,10 +1978,11 @@ impl Node {
                 }
             }
             Body::ProgramOffer { metadata } => {
-                match self
-                    .intake
-                    .enqueue_program(peer, metadata, &self.graph, grant)
-                {
+                let id = metadata.manifest.artifact_id();
+                let queued =
+                    self.intake
+                        .enqueue_program(peer, metadata, &self.graph, grant.clone());
+                match self.finish_description(peer, id, grant, queued) {
                     Ok(status) => Body::Receipt {
                         status: status.into(),
                     },
@@ -1956,8 +1998,12 @@ impl Node {
                         metadata,
                     }
                 }
-                Some(crate::object::ArtifactTransfer::Certificate(object)) => {
-                    Body::Object { root, object }
+                Some(crate::object::ArtifactTransfer::Certificate { object, question }) => {
+                    Body::Object {
+                        root,
+                        object,
+                        question: question.filter(|_| root != id),
+                    }
                 }
                 None => self
                     .test_controls
@@ -1967,14 +2013,21 @@ impl Node {
                             .and_then(|(_, object)| object.clone())
                     })
                     .flatten()
-                    .map(|object| Body::Object { root, object })
+                    .map(|object| Body::Object {
+                        root,
+                        object,
+                        question: None,
+                    })
                     .unwrap_or(Body::Missing),
             },
             Body::Offer { metadata } => {
-                match self
-                    .intake
-                    .enqueue_with_grant(peer, metadata.clone(), &self.graph, grant)
-                {
+                let queued = id_bytes(&metadata.artifact_id).and_then(|id| {
+                    let queued =
+                        self.intake
+                            .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
+                    self.finish_description(peer, ArtifactId::from_bytes(id), grant, queued)
+                });
+                match queued {
                     Ok(status) => Body::Receipt {
                         status: status.into(),
                     },
@@ -2035,10 +2088,10 @@ impl Node {
                 if metadata.manifest.artifact_id() != id {
                     emit(json!({"event":"rejected","error":"program description ID mismatch"}));
                 } else {
-                    match self
-                        .intake
-                        .enqueue_program(peer, metadata, &self.graph, grant)
-                    {
+                    let queued =
+                        self.intake
+                            .enqueue_program(peer, metadata, &self.graph, grant.clone());
+                    match self.finish_description(peer, id, grant, queued) {
                         Ok("duplicate") => {
                             self.wanted.remove(&id);
                         }
@@ -2155,10 +2208,10 @@ impl Node {
                     emit(json!({"event":"rejected","error":"description ID mismatch"}));
                     return Ok(());
                 }
-                match self
-                    .intake
-                    .enqueue_with_grant(peer, metadata.clone(), &self.graph, grant)
-                {
+                let queued =
+                    self.intake
+                        .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
+                match self.finish_description(peer, id, grant, queued) {
                     Ok("duplicate") => {
                         self.wanted.remove(&id);
                     }
@@ -2175,13 +2228,23 @@ impl Node {
                     id,
                     ..
                 },
-                Body::Object { root, object },
+                Body::Object {
+                    root,
+                    object,
+                    question,
+                },
             ) => {
                 let result = if root != *expected_root.as_bytes() {
                     Err("response root mismatch".into())
                 } else {
-                    self.intake
-                        .payload(peer, expected_root, id, object, &self.graph)
+                    self.intake.payload_with_question(
+                        peer,
+                        expected_root,
+                        id,
+                        object,
+                        question,
+                        &self.graph,
+                    )
                 };
                 if let Err(error) = result {
                     self.proof_fetch_error(expected_root, error);

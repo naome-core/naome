@@ -93,7 +93,7 @@ fn stage_program(
     )
 }
 
-fn init_peer(path: &Path, definition: &DefinitionCertificate) -> PeerId {
+fn init_peer(path: &Path, definition: Option<&DefinitionCertificate>) -> PeerId {
     std::fs::create_dir(path).unwrap();
     let key = identity::Keypair::generate_ed25519();
     std::fs::write(
@@ -102,10 +102,12 @@ fn init_peer(path: &Path, definition: &DefinitionCertificate) -> PeerId {
     )
     .unwrap();
     let mut graph = Graph::open(path).unwrap();
-    let (_, receipt) = graph
-        .produce(&crate::test_inputs::definition(definition))
-        .unwrap();
-    assert_eq!(receipt.status, "accepted");
+    if let Some(definition) = definition {
+        let (_, receipt) = graph
+            .produce(&crate::test_inputs::definition(definition))
+            .unwrap();
+        assert_eq!(receipt.status, "accepted");
+    }
     key.public().to_peer_id()
 }
 
@@ -126,13 +128,62 @@ fn config(directory: PathBuf, port: u16, remote: PeerId, remote_port: u16) -> Co
     }
 }
 
+async fn replicate(
+    (donor_path, donor_id): (&Path, PeerId),
+    (receiver_path, receiver_id): (&Path, PeerId),
+    expected_artifacts: usize,
+    select: impl Fn(ResearchQuestion) -> bool + Send + Sync + 'static,
+) {
+    let listeners = [
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    ];
+    let ports = listeners
+        .each_ref()
+        .map(|listener| listener.local_addr().unwrap().port());
+    drop(listeners);
+    let (_, donor_admin, donor_inbox) = crate::question::channel();
+    let donor_task = tokio::spawn(run_with_questions(
+        config(donor_path.to_path_buf(), ports[0], receiver_id, ports[1]),
+        false,
+        donor_inbox,
+        crate::mocks::select_question,
+    ));
+    let (receiver_handle, receiver_admin, receiver_inbox) = crate::question::channel();
+    let receiver_task = tokio::spawn(run_with_questions(
+        config(receiver_path.to_path_buf(), ports[1], donor_id, ports[0]),
+        false,
+        receiver_inbox,
+        move |candidate| std::future::ready(Ok(select(candidate))),
+    ));
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if receiver_handle.context().await.unwrap().checked_artifacts == expected_artifacts {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    receiver_admin.stop().await.unwrap();
+    donor_admin.stop().await.unwrap();
+    for task in [receiver_task, donor_task] {
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}
+
 async fn exchange_answer(program: bool) {
     let directory = ConfigFile::new();
     let donor_path = directory.0.join("donor");
     let receiver_path = directory.0.join("receiver");
     let (definition, source, answer) = large_answer();
-    let donor_id = init_peer(&donor_path, &definition);
-    let receiver_id = init_peer(&receiver_path, &definition);
+    let donor_id = init_peer(&donor_path, Some(&definition));
+    let receiver_id = init_peer(&receiver_path, None);
     let mut donor = Graph::open(&donor_path).unwrap();
     let question = ResearchQuestion::from_defined_formula(source, donor.checked_context()).unwrap();
     assert!(ResearchQuestion::from_formula(question.formula().clone()).is_err());
@@ -188,52 +239,20 @@ async fn exchange_answer(program: bool) {
     drop(publisher);
     drop(donor);
 
-    let listeners = [
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-    ];
-    let ports = listeners
-        .each_ref()
-        .map(|listener| listener.local_addr().unwrap().port());
-    drop(listeners);
-    let (_, donor_admin, donor_inbox) = crate::question::channel();
-    let donor_task = tokio::spawn(run_with_questions(
-        config(donor_path, ports[0], receiver_id, ports[1]),
-        false,
-        donor_inbox,
-        crate::mocks::select_question,
-    ));
-    let (receiver_handle, receiver_admin, receiver_inbox) = crate::question::channel();
     let expected_source = compact.clone();
-    let receiver_task = tokio::spawn(run_with_questions(
-        config(receiver_path.clone(), ports[1], donor_id, ports[0]),
-        false,
-        receiver_inbox,
-        move |candidate| {
-            assert_eq!(candidate.to_hex(), expected_source);
-            std::future::ready(Ok(true))
-        },
-    ));
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if receiver_handle.context().await.unwrap().checked_artifacts == 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
-    receiver_admin.stop().await.unwrap();
-    donor_admin.stop().await.unwrap();
-    for task in [receiver_task, donor_task] {
-        tokio::time::timeout(Duration::from_secs(5), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    }
+    replicate(
+        (&donor_path, donor_id),
+        (&receiver_path, receiver_id),
+        2,
+        move |candidate| candidate.to_hex() == expected_source,
+    )
+    .await;
     let reopened = Graph::open(&receiver_path).unwrap();
+    assert!(
+        reopened
+            .contains(ArtifactId::from_definition_id(definition.definition_id()))
+            .unwrap()
+    );
     assert!(reopened.resolves_question(root, &question).unwrap());
     match reopened.description(root).unwrap().unwrap() {
         ProofDescription::Program(metadata) => {
@@ -255,4 +274,182 @@ async fn checked_certificate_replicates_with_its_compact_definition_question() {
 #[tokio::test]
 async fn checked_program_replicates_with_its_compact_definition_question() {
     exchange_answer(true).await;
+}
+
+async fn relay_helper(program: bool) {
+    let directory = ConfigFile::new();
+    let donor_path = directory.0.join("donor");
+    let relay_path = directory.0.join("relay");
+    let receiver_path = directory.0.join("receiver");
+    let (definition, source, answer) = large_answer();
+    let donor_id = init_peer(&donor_path, Some(&definition));
+    let relay_id = init_peer(&relay_path, None);
+    let receiver_id = init_peer(&receiver_path, None);
+
+    let mut donor = Graph::open(&donor_path).unwrap();
+    let helper_question =
+        ResearchQuestion::from_defined_formula(source.clone(), donor.checked_context()).unwrap();
+    let (helper, batch) = if program {
+        stage_program(&donor, answer, &helper_question)
+    } else {
+        let input = crate::test_inputs::proof(answer.steps().to_vec());
+        donor
+            .prepare_generated(&input, &[], &helper_question)
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    donor
+        .commit_batch_granted(helper, batch, deadline, None, Some(&helper_question))
+        .unwrap();
+
+    // Only the helper's source refers to the first definition. The parent's
+    // compact source names a different relation with the same primitive body
+    // it would have used without abbreviations.
+    let x = FreeVariable::new(0);
+    let extra = Formula::member(x, x);
+    let body = Formula::implies(extra.clone(), helper_question.formula().clone());
+    let parent_definition =
+        DefinitionCertificate::relation(1, DefinedFormula::from_primitive(&body).unwrap()).unwrap();
+    donor
+        .produce(&crate::test_inputs::definition(&parent_definition))
+        .unwrap();
+    let parent_question = ResearchQuestion::from_defined_formula(
+        DefinedFormula::for_all(
+            x,
+            DefinedFormula::defined_relation(parent_definition.definition_id(), [x]),
+        ),
+        donor.checked_context(),
+    )
+    .unwrap();
+    let proof = donor
+        .checked_context()
+        .artifact_proof_id(helper)
+        .unwrap()
+        .unwrap();
+    let mut steps = crate::test_inputs::weaken(
+        vec![ProofStep::ProofReference { proof_id: proof }],
+        helper_question.formula().clone(),
+        extra,
+    );
+    steps.push(ProofStep::Generalization {
+        premise: (steps.len() - 1) as u32,
+        variable: x,
+    });
+    let input = crate::test_inputs::proof(steps);
+    let (parent, batch) = donor
+        .prepare_generated(&input, &[], &parent_question)
+        .unwrap();
+    donor
+        .commit_batch_granted(parent, batch, deadline, None, Some(&parent_question))
+        .unwrap();
+    drop(donor);
+
+    // The relay selects only the parent, so it must acquire the other proof
+    // under the parent's closure grant and keep its independently bound source.
+    let parent_source = parent_question.to_hex();
+    replicate(
+        (&donor_path, donor_id),
+        (&relay_path, relay_id),
+        4,
+        move |question| question.to_hex() == parent_source,
+    )
+    .await;
+    let relay = Graph::open(&relay_path).unwrap();
+    assert!(relay.resolves_question(parent, &parent_question).unwrap());
+    assert!(relay.resolves_question(helper, &helper_question).unwrap());
+    drop(relay);
+
+    // The final peer selects only the former helper and knows no definitions.
+    // The middle peer restarts before it serves this standalone request.
+    let helper_source = helper_question.to_hex();
+    replicate(
+        (&relay_path, relay_id),
+        (&receiver_path, receiver_id),
+        3,
+        move |question| question.to_hex() == helper_source,
+    )
+    .await;
+    let receiver = Graph::open(&receiver_path).unwrap();
+    assert!(!receiver.contains(parent).unwrap());
+    assert!(
+        receiver
+            .resolves_question(helper, &helper_question)
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn compact_certificate_helper_survives_relay_and_restart() {
+    relay_helper(false).await;
+}
+
+#[tokio::test]
+async fn compact_program_helper_survives_relay_and_restart() {
+    relay_helper(true).await;
+}
+
+#[tokio::test]
+async fn cold_peer_checks_function_witness_before_selecting_compact_question() {
+    let directory = ConfigFile::new();
+    let donor_path = directory.0.join("donor");
+    let receiver_path = directory.0.join("receiver");
+    let (relation, source, answer) = large_answer();
+    let donor_id = init_peer(&donor_path, Some(&relation));
+    let receiver_id = init_peer(&receiver_path, None);
+    let mut donor = Graph::open(&donor_path).unwrap();
+
+    let digits: String =
+        include_str!("../../../../naome-checker/src/tests/fixtures/identity_unique.proof.hex")
+            .split_whitespace()
+            .collect();
+    let witness = ProofCertificate::from_canonical_bytes(&crate::unhex(&digits).unwrap()).unwrap();
+    let witness_input = crate::test_inputs::proof(witness.steps().to_vec());
+    let (_, witness) = donor.produce(&witness_input).unwrap();
+    let (function, function_receipt) = donor
+        .produce(&crate::test_inputs::identity_function())
+        .unwrap();
+    let function = function.definition_id().unwrap().unwrap();
+
+    let x = FreeVariable::new(0);
+    let extra = DefinedFormula::for_all(x, DefinedFormula::defined_relation(function, [x, x]));
+    let antecedent =
+        ResearchQuestion::from_defined_formula(extra.clone(), donor.checked_context()).unwrap();
+    let consequent =
+        ResearchQuestion::from_defined_formula(source.clone(), donor.checked_context()).unwrap();
+    let question = ResearchQuestion::from_defined_formula(
+        DefinedFormula::implies(extra, source),
+        donor.checked_context(),
+    )
+    .unwrap();
+    let input = crate::test_inputs::proof(crate::test_inputs::weaken(
+        answer.steps().to_vec(),
+        consequent.formula().clone(),
+        antecedent.formula().clone(),
+    ));
+    let (root, batch) = donor.prepare_generated(&input, &[], &question).unwrap();
+    donor
+        .commit_batch_granted(
+            root,
+            batch,
+            Instant::now() + Duration::from_secs(15),
+            None,
+            Some(&question),
+        )
+        .unwrap();
+    drop(donor);
+
+    // The receiver's selection explicitly excludes the standalone witness.
+    // Its only source of authority is checking the exact function obligation.
+    let expected_source = question.to_hex();
+    replicate(
+        (&donor_path, donor_id),
+        (&receiver_path, receiver_id),
+        4,
+        move |candidate| candidate.to_hex() == expected_source,
+    )
+    .await;
+    let receiver = Graph::open(&receiver_path).unwrap();
+    assert!(receiver.contains(witness.id).unwrap());
+    assert!(receiver.contains(function_receipt.id).unwrap());
+    assert!(receiver.resolves_question(root, &question).unwrap());
 }
