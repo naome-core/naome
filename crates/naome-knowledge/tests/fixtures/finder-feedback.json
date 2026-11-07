@@ -1,0 +1,1985 @@
+{
+  "provenance": [
+    {
+      "path": "target/runtime-speed-study/composition-run-bce55366/results.json",
+      "sha256": "f57621622e78f962a9750f9ac72e7578258b6a883dceedb538dac771af4a773f",
+      "solver_commit": "bce553662e4c5eae50e5fb1da36f2a0c0e3b96ef"
+    },
+    {
+      "path": "target/research-mechanism-study/fresh-current-bce55366/results.json",
+      "sha256": "43f014804998b64b4787b11ff18477e74065abc7dbd45d29efb945cd847a5116",
+      "solver_commit": "bce553662e4c5eae50e5fb1da36f2a0c0e3b96ef"
+    }
+  ],
+  "contract": "Archived fixed native direct-search observations at 512 expansions, identical bce55366 solver source and empty initial hints. Censored/over-budget observations are retained and excluded from complete-outcome training. All variants and five model seeds remain in their conservative family. This is development comparison data, not fresh independent qualification.",
+  "cases": [
+    {
+      "source": "goal=and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(mem(x,b)))))))))",
+      "family": "separation",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 560,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 554,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 564,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 559,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 572,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(and(all(x,mem(x,a)),all(x,mem(x,b))),all(x,and(mem(x,a),mem(x,b)))))),and(all(a,all(b,imp(all(x,imp(mem(x,a),mem(x,b))),imp(ex(x,mem(x,a)),ex(x,mem(x,b)))))),all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b))))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 597,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 654,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 613,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 556,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 552,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d)))))))),all(a,all(b,all(c,imp(eq(a,b),imp(not(mem(a,c)),not(mem(b,c)))))))),all(a,all(b,all(c,imp(eq(a,b),iff(mem(c,a),mem(c,b)))))))",
+      "family": "equality_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 394,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 379,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 269,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 444,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 262,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(mem(x,b))))))))),and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),eq(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(eq(x,b))))))))))",
+      "family": "separation",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 443,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 442,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 449,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 445,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 454,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d)))))))),all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(c,d),imp(mem(a,c),mem(b,d)))))))))",
+      "family": "equality_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 361,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": true,
+          "millis": 71,
+          "usable": true,
+          "proof_id": "4c3276948a51de985a700afd3f4e5ccb6e92fbf7873937721c413e734d456212"
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 343,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 393,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": true,
+          "millis": 77,
+          "usable": true,
+          "proof_id": "d27fdb12b6b020db7f5014cfa07f6ebfdcebfe9f2d85cab5b72c73d5cfab99dd"
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a))))))),all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(not(mem(b,c)),not(mem(a,b))))))))",
+      "family": "relational_boolean",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 342,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 337,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 370,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 367,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 291,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),ex(y,and(mem(y,c),mem(x,y))))))))),and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,c),mem(x,a))),all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y)))))),all(x,imp(mem(x,c),ex(y,and(mem(y,b),mem(x,y))))))))),all(a,all(b,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),ex(x,mem(x,a))),ex(y,mem(y,b)))))))",
+      "family": "total_relation_restriction",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 187,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 189,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 182,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 186,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 187,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(not(mem(b,c)),not(mem(a,b))))))),and(all(a,all(b,all(c,imp(not(and(mem(a,b),mem(b,c))),or(not(mem(a,b)),not(mem(b,c))))))),all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a)))))))))",
+      "family": "relational_boolean",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 304,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 387,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 373,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 374,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 478,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,a),mem(x,c)))),all(x,imp(mem(x,a),and(mem(x,b),mem(x,c))))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,c))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(or(mem(x,a),mem(x,b)),mem(x,c))))))))",
+      "family": "inclusion",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 565,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 673,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 649,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 414,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 586,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(eq(a,b),ex(x,and(mem(x,c),eq(x,a)))),mem(b,c))))),all(a,all(b,imp(all(x,imp(mem(x,a),eq(x,b))),imp(ex(x,mem(x,a)),mem(b,a))))))",
+      "family": "equality_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 480,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 449,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 498,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 494,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 488,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(ex(x,mem(x,a)),or(ex(x,and(mem(x,a),mem(x,b))),ex(x,and(mem(x,a),not(mem(x,b)))))))),all(a,all(b,imp(not(all(x,not(and(mem(x,a),mem(x,b))))),ex(x,and(mem(x,a),mem(x,b)))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": true,
+          "millis": 417,
+          "usable": true,
+          "proof_id": "6960346d51fbff6ddd4fe326eec640c58b1b9515f0ba47aa09e728ff999dc9aa"
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 377,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 336,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": true,
+          "millis": 307,
+          "usable": true,
+          "proof_id": "6960346d51fbff6ddd4fe326eec640c58b1b9515f0ba47aa09e728ff999dc9aa"
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 367,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c))))))),all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,a)))))))",
+      "family": "inclusion",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 602,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 647,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 593,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 613,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 859,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(eq(a,b))))),all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(and(all(x,imp(mem(x,b),mem(x,a))),ex(x,and(mem(x,a),not(mem(x,b))))))))))",
+      "family": "strict_containment",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 473,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 530,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 529,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 469,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 391,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(not(ex(x,and(mem(x,a),not(mem(x,b))))),all(x,imp(mem(x,a),mem(x,b)))))),and(all(a,all(b,imp(not(all(x,imp(mem(x,a),mem(x,b)))),ex(x,and(mem(x,a),not(mem(x,b))))))),all(a,all(b,imp(not(ex(x,or(mem(x,a),mem(x,b)))),and(all(x,not(mem(x,a))),all(x,not(mem(x,b)))))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 594,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 831,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 842,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 598,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 699,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),eq(a,b)))),and(all(a,all(b,imp(eq(a,b),all(x,iff(mem(x,b),mem(x,a)))))),all(a,all(b,iff(all(x,iff(mem(x,a),mem(x,b))),eq(a,b))))))",
+      "family": "extensional_sets",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 305,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 300,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 319,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 307,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 307,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,a)))))),and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,a),mem(x,c)))),all(x,imp(mem(x,a),and(mem(x,b),mem(x,c)))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c)))))))))",
+      "family": "inclusion",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 412,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 332,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 362,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 582,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 573,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,imp(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,a),all(y,imp(mem(y,a),eq(x,y))))))),and(all(a,all(b,imp(and(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,b),mem(x,a)))),all(x,all(y,imp(and(mem(x,b),mem(y,b)),eq(x,y))))))),all(a,imp(and(ex(x,mem(x,a)),all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y))))),ex(x,all(y,iff(mem(y,a),eq(y,x))))))))",
+      "family": "unique_member_logic",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 266,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 708,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 253,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 263,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 664,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),ex(y,and(mem(y,c),mem(x,y)))))),all(x,imp(mem(x,a),ex(y,ex(z,and(and(mem(y,b),mem(z,c)),and(mem(x,y),mem(y,z))))))))))),and(all(a,all(b,imp(ex(x,and(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),ex(y,and(mem(y,b),ex(x,and(mem(x,a),mem(x,y)))))))),all(a,all(b,imp(all(x,imp(mem(x,a),all(y,imp(mem(y,b),mem(x,y))))),imp(and(ex(x,mem(x,a)),ex(y,mem(y,b))),ex(x,ex(y,and(and(mem(x,a),mem(y,b)),mem(x,y))))))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 12,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 13,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 13,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 13,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 13,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,ex(x,imp(mem(x,a),all(y,mem(y,a))))),and(all(a,ex(x,imp(ex(y,mem(y,a)),mem(x,a)))),all(a,all(b,ex(x,imp(and(mem(x,a),mem(x,b)),all(y,and(mem(y,a),mem(y,b)))))))))",
+      "family": "classical_global_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": true,
+          "millis": 97,
+          "usable": true,
+          "proof_id": "c66a8bf926f1666b7170823b90891b0fde328c60191799dfc00aaf557cbd70d9"
+        },
+        {
+          "seed": 73,
+          "resolved": true,
+          "millis": 122,
+          "usable": true,
+          "proof_id": "c66a8bf926f1666b7170823b90891b0fde328c60191799dfc00aaf557cbd70d9"
+        },
+        {
+          "seed": 101,
+          "resolved": true,
+          "millis": 110,
+          "usable": true,
+          "proof_id": "97f4323a0ea4fc433543964fdb9c27b9e60c7728fa6cef2b9ec913154b962f83"
+        },
+        {
+          "seed": 137,
+          "resolved": true,
+          "millis": 110,
+          "usable": true,
+          "proof_id": "c66a8bf926f1666b7170823b90891b0fde328c60191799dfc00aaf557cbd70d9"
+        },
+        {
+          "seed": 211,
+          "resolved": true,
+          "millis": 96,
+          "usable": true,
+          "proof_id": "c66a8bf926f1666b7170823b90891b0fde328c60191799dfc00aaf557cbd70d9"
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,imp(mem(a,b),ex(x,mem(x,b))))),all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),ex(x,and(eq(x,b),mem(x,c))))))))),and(all(a,all(b,imp(ex(x,and(mem(x,a),not(mem(x,b)))),not(all(x,imp(mem(x,a),mem(x,b))))))),all(a,all(b,imp(ex(x,ex(y,and(mem(x,a),mem(y,b)))),ex(y,ex(x,and(mem(x,a),mem(y,b)))))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 448,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 425,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 817,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 839,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 464,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(mem(x,b)))))))),and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),eq(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b)))))))))",
+      "family": "separation",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 549,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 543,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 548,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 540,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 568,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d)))))))),all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(c,d),imp(mem(a,c),mem(b,d))))))))),and(all(a,all(b,all(c,imp(eq(a,b),imp(not(mem(a,c)),not(mem(b,c))))))),all(a,all(b,all(c,imp(eq(a,b),iff(mem(c,a),mem(c,b))))))))",
+      "family": "equality_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 552,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 460,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 377,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 428,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 494,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(ex(x,mem(x,a)),or(ex(x,and(mem(x,a),mem(x,b))),ex(x,and(mem(x,a),not(mem(x,b)))))))),and(all(a,all(b,imp(not(all(x,not(and(mem(x,a),mem(x,b))))),ex(x,and(mem(x,a),mem(x,b)))))),all(a,all(b,iff(all(x,imp(mem(x,a),not(mem(x,b)))),not(ex(x,and(mem(x,a),mem(x,b)))))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 665,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 435,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 394,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 690,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 439,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a))))))),all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(not(mem(b,c)),not(mem(a,b)))))))),and(all(a,all(b,all(c,imp(not(and(mem(a,b),mem(b,c))),or(not(mem(a,b)),not(mem(b,c))))))),all(a,all(b,all(c,imp(and(mem(a,b),or(mem(b,c),mem(c,a))),or(and(mem(a,b),mem(b,c)),and(mem(a,b),mem(c,a)))))))))",
+      "family": "relational_boolean",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 662,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 541,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 667,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 619,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 775,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),eq(x,b)))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(eq(x,b)))))))))",
+      "family": "separation",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 332,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 340,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 341,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 336,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 341,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),ex(x,and(eq(x,b),mem(x,c)))))))),and(all(a,all(b,imp(ex(x,and(mem(x,a),not(mem(x,b)))),not(all(x,imp(mem(x,a),mem(x,b))))))),all(a,all(b,imp(mem(a,b),ex(x,mem(x,b)))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 561,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 544,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 436,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 563,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 575,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),ex(y,and(mem(y,c),mem(x,y)))))),all(x,imp(mem(x,a),ex(y,ex(z,and(and(mem(y,b),mem(z,c)),and(mem(x,y),mem(y,z))))))))))),all(a,all(b,imp(ex(x,and(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),ex(y,and(mem(y,b),ex(x,and(mem(x,a),mem(x,y)))))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 33,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 33,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 33,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 34,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 33,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(and(all(x,not(mem(x,a))),all(x,not(mem(x,b)))),eq(a,b)))),all(a,all(b,imp(and(eq(a,b),all(x,not(mem(x,a)))),all(x,not(mem(x,b)))))))",
+      "family": "extensional_sets",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 236,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 240,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 242,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 227,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 240,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),eq(a,b)))),all(a,all(b,imp(eq(a,b),all(x,iff(mem(x,b),mem(x,a)))))))",
+      "family": "extensional_sets",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 246,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 244,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 246,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 236,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 247,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b)))))),all(a,all(b,imp(and(all(x,mem(x,a)),all(x,mem(x,b))),all(x,and(mem(x,a),mem(x,b)))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": true,
+          "millis": 138,
+          "usable": true,
+          "proof_id": "37587002bcc9529c4157e90c34da54321e61dbc00c14970211d0429b3080d1c2"
+        },
+        {
+          "seed": 73,
+          "resolved": true,
+          "millis": 140,
+          "usable": true,
+          "proof_id": "37587002bcc9529c4157e90c34da54321e61dbc00c14970211d0429b3080d1c2"
+        },
+        {
+          "seed": 101,
+          "resolved": true,
+          "millis": 151,
+          "usable": true,
+          "proof_id": "0ff192aac6b763f887fbd5c2af7107496f4a835408dee6ec852088030db6edd4"
+        },
+        {
+          "seed": 137,
+          "resolved": true,
+          "millis": 131,
+          "usable": true,
+          "proof_id": "37587002bcc9529c4157e90c34da54321e61dbc00c14970211d0429b3080d1c2"
+        },
+        {
+          "seed": 211,
+          "resolved": true,
+          "millis": 134,
+          "usable": true,
+          "proof_id": "0ff192aac6b763f887fbd5c2af7107496f4a835408dee6ec852088030db6edd4"
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,ex(x,imp(mem(x,a),all(y,mem(y,a))))),all(a,ex(x,imp(ex(y,mem(y,a)),mem(x,a)))))",
+      "family": "classical_global_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": true,
+          "millis": 40,
+          "usable": true,
+          "proof_id": "2c4c8cd8567ee7b74c85dae4c0dbf4143202cda35d52d126c5a9512070555988"
+        },
+        {
+          "seed": 73,
+          "resolved": true,
+          "millis": 39,
+          "usable": true,
+          "proof_id": "2c4c8cd8567ee7b74c85dae4c0dbf4143202cda35d52d126c5a9512070555988"
+        },
+        {
+          "seed": 101,
+          "resolved": true,
+          "millis": 38,
+          "usable": true,
+          "proof_id": "2c4c8cd8567ee7b74c85dae4c0dbf4143202cda35d52d126c5a9512070555988"
+        },
+        {
+          "seed": 137,
+          "resolved": true,
+          "millis": 40,
+          "usable": true,
+          "proof_id": "2c4c8cd8567ee7b74c85dae4c0dbf4143202cda35d52d126c5a9512070555988"
+        },
+        {
+          "seed": 211,
+          "resolved": true,
+          "millis": 40,
+          "usable": true,
+          "proof_id": "2c4c8cd8567ee7b74c85dae4c0dbf4143202cda35d52d126c5a9512070555988"
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,not(and(mem(x,a),mem(x,b)))),all(x,not(and(mem(x,b),mem(x,a))))))),and(all(a,all(b,all(c,imp(and(all(x,not(and(mem(x,a),mem(x,b)))),all(x,imp(mem(x,c),mem(x,b)))),all(x,not(and(mem(x,a),mem(x,c)))))))),all(a,all(b,imp(all(x,not(and(mem(x,a),mem(x,b)))),not(ex(x,and(mem(x,a),mem(x,b)))))))))",
+      "family": "disjointness_restriction",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 420,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 608,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 370,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 502,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 499,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,all(y,imp(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,all(x,imp(mem(y,b),imp(mem(x,a),mem(x,y)))))))),and(all(a,all(b,imp(ex(x,all(y,and(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,ex(x,and(mem(x,a),imp(mem(y,b),mem(x,y)))))))),all(a,all(b,imp(all(x,all(y,iff(mem(x,a),mem(y,b)))),iff(ex(x,mem(x,a)),all(y,mem(y,b))))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 432,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 641,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 566,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 332,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 323,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(mem(a,b),ex(x,mem(x,b))))),all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),ex(x,and(eq(x,b),mem(x,c)))))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": true,
+          "millis": 76,
+          "usable": true,
+          "proof_id": "0af56b390e706c70dc7dd5ba334f77ff3b90c53ae24b2904ea84a029e27dbe6a"
+        },
+        {
+          "seed": 73,
+          "resolved": true,
+          "millis": 82,
+          "usable": true,
+          "proof_id": "514456bf7510f9c1a40bcfee551bc08b88cfbe6c11815054778e56ff5a77b9df"
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 256,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": true,
+          "millis": 119,
+          "usable": true,
+          "proof_id": "ccd1cf2c9544ff569e1cfcf0d317d98e5139abf7a0b5d5c383536f53870d2ae6"
+        },
+        {
+          "seed": 211,
+          "resolved": true,
+          "millis": 82,
+          "usable": true,
+          "proof_id": "ccd1cf2c9544ff569e1cfcf0d317d98e5139abf7a0b5d5c383536f53870d2ae6"
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(eq(a,b))))),and(all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(and(all(x,imp(mem(x,b),mem(x,a))),ex(x,and(mem(x,a),not(mem(x,b))))))))),all(a,all(b,all(c,imp(and(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),all(x,imp(mem(x,b),mem(x,c)))),and(all(x,imp(mem(x,a),mem(x,c))),ex(x,and(mem(x,c),not(mem(x,a)))))))))))",
+      "family": "strict_containment",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 736,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 748,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 751,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 726,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 738,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,imp(mem(a,b),ex(x,mem(x,b))))),all(a,all(b,imp(ex(x,and(mem(x,a),not(mem(x,b)))),not(all(x,imp(mem(x,a),mem(x,b)))))))),all(a,all(b,imp(ex(x,ex(y,and(mem(x,a),mem(y,b)))),ex(y,ex(x,and(mem(x,a),mem(y,b))))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 464,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 338,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 302,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 657,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 420,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(not(ex(x,and(mem(x,a),not(mem(x,b))))),all(x,imp(mem(x,a),mem(x,b)))))),all(a,all(b,imp(not(all(x,imp(mem(x,a),mem(x,b)))),ex(x,and(mem(x,a),not(mem(x,b))))))))",
+      "family": "existential_duality",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": true,
+          "millis": 196,
+          "usable": true,
+          "proof_id": "09270b65fa14cd5abeebec864aace1e80ffaa793947e5f886815f24095c5e358"
+        },
+        {
+          "seed": 73,
+          "resolved": true,
+          "millis": 163,
+          "usable": true,
+          "proof_id": "09270b65fa14cd5abeebec864aace1e80ffaa793947e5f886815f24095c5e358"
+        },
+        {
+          "seed": 101,
+          "resolved": true,
+          "millis": 184,
+          "usable": true,
+          "proof_id": "09270b65fa14cd5abeebec864aace1e80ffaa793947e5f886815f24095c5e358"
+        },
+        {
+          "seed": 137,
+          "resolved": true,
+          "millis": 173,
+          "usable": true,
+          "proof_id": "09270b65fa14cd5abeebec864aace1e80ffaa793947e5f886815f24095c5e358"
+        },
+        {
+          "seed": 211,
+          "resolved": true,
+          "millis": 179,
+          "usable": true,
+          "proof_id": "09270b65fa14cd5abeebec864aace1e80ffaa793947e5f886815f24095c5e358"
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,imp(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,a),all(y,imp(mem(y,a),eq(x,y))))))),all(a,all(b,imp(and(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,b),mem(x,a)))),all(x,all(y,imp(and(mem(x,b),mem(y,b)),eq(x,y))))))))",
+      "family": "unique_member_logic",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 214,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 540,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 229,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 246,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 509,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(eq(a,b),ex(x,and(mem(x,c),eq(x,a)))),mem(b,c))))),and(all(a,all(b,imp(all(x,imp(mem(x,a),eq(x,b))),imp(ex(x,mem(x,a)),mem(b,a))))),all(a,all(b,imp(and(all(x,imp(mem(x,a),eq(x,b))),mem(b,a)),all(x,iff(mem(x,a),eq(x,b))))))))",
+      "family": "equality_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 510,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 612,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 630,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 632,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 508,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(c,d),imp(mem(a,c),mem(b,d)))))))),and(all(a,all(b,all(c,imp(eq(a,b),imp(not(mem(a,c)),not(mem(b,c))))))),all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d))))))))))",
+      "family": "equality_witnesses",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 478,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 372,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 358,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 511,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 589,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b)))))),all(a,all(b,imp(all(x,imp(mem(x,a),mem(x,b))),imp(ex(x,mem(x,a)),ex(x,mem(x,b))))))),all(a,all(b,imp(ex(x,and(mem(x,a),mem(x,b))),and(ex(x,mem(x,a)),ex(x,mem(x,b)))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 601,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 636,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 681,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 634,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 913,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),ex(y,and(mem(y,c),mem(x,y))))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,c),mem(x,a))),all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y)))))),all(x,imp(mem(x,c),ex(y,and(mem(y,b),mem(x,y))))))))))",
+      "family": "total_relation_restriction",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 186,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 188,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 178,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 186,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 186,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a))))))),all(a,all(b,all(c,imp(not(and(mem(a,b),mem(b,c))),or(not(mem(a,b)),not(mem(b,c)))))))),all(a,all(b,all(c,imp(and(mem(a,b),or(mem(b,c),mem(c,a))),or(and(mem(a,b),mem(b,c)),and(mem(a,b),mem(c,a))))))))",
+      "family": "relational_boolean",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 519,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 662,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 764,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 543,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 571,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,all(y,imp(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,all(x,imp(mem(y,b),imp(mem(x,a),mem(x,y)))))))),all(a,all(b,imp(ex(x,all(y,and(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,ex(x,and(mem(x,a),imp(mem(y,b),mem(x,y)))))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 230,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 838,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 557,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 283,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 288,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(and(all(x,not(mem(x,a))),all(x,not(mem(x,b)))),eq(a,b)))),and(all(a,all(b,imp(and(eq(a,b),all(x,not(mem(x,a)))),all(x,not(mem(x,b)))))),all(a,all(b,imp(eq(a,b),iff(all(x,not(mem(x,a))),all(x,not(mem(x,b)))))))))",
+      "family": "extensional_sets",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 295,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 304,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 311,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 292,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 304,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c))))))),all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,a))))))),and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,a),mem(x,c)))),all(x,imp(mem(x,a),and(mem(x,b),mem(x,c)))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,c))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(or(mem(x,a),mem(x,b)),mem(x,c)))))))))",
+      "family": "inclusion",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 588,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 536,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 411,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 409,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 665,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(and(all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b)))))),all(a,all(b,imp(and(all(x,mem(x,a)),all(x,mem(x,b))),all(x,and(mem(x,a),mem(x,b))))))),and(all(a,all(b,imp(all(x,imp(mem(x,a),mem(x,b))),imp(ex(x,mem(x,a)),ex(x,mem(x,b)))))),all(a,all(b,imp(ex(x,and(mem(x,a),mem(x,b))),and(ex(x,mem(x,a)),ex(x,mem(x,b))))))))",
+      "family": "quantified_relations",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 896,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 656,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 763,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 918,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 968,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    },
+    {
+      "source": "goal=and(all(a,all(b,imp(all(x,not(and(mem(x,a),mem(x,b)))),all(x,not(and(mem(x,b),mem(x,a))))))),all(a,all(b,all(c,imp(and(all(x,not(and(mem(x,a),mem(x,b)))),all(x,imp(mem(x,c),mem(x,b)))),all(x,not(and(mem(x,a),mem(x,c)))))))))",
+      "family": "disjointness_restriction",
+      "observations": [
+        {
+          "seed": 41,
+          "resolved": false,
+          "millis": 482,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 73,
+          "resolved": false,
+          "millis": 404,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 101,
+          "resolved": false,
+          "millis": 387,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 137,
+          "resolved": false,
+          "millis": 515,
+          "usable": true,
+          "proof_id": null
+        },
+        {
+          "seed": 211,
+          "resolved": false,
+          "millis": 497,
+          "usable": true,
+          "proof_id": null
+        }
+      ]
+    }
+  ]
+}

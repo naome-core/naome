@@ -103,6 +103,9 @@ pub enum RecoveryPolicy {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// Enable the bounded local graph solver and learning loop at node start.
+    /// Weights, optimizer and replay stay in the local job journal.
+    pub native_proof_learning: bool,
     pub finding: RoleSettings,
     pub solving: RoleSettings,
     pub selection: RoleSettings,
@@ -136,6 +139,18 @@ impl RoleSettings {
 
 impl Settings {
     pub(crate) fn validate(self) -> Result<Self, String> {
+        if self.native_proof_learning {
+            crate::resources::limits().native_model_capacity()?;
+            if [self.finding, self.solving]
+                .iter()
+                .any(|role| role.mock != MockWork::default())
+            {
+                return Err(
+                    "native proof learning and controlled mock workloads are separate providers"
+                        .into(),
+                );
+            }
+        }
         for role in [self.finding, self.solving, self.selection] {
             if role.limits.horizon_ms == 0
                 || role.limits.work_units == 0
@@ -169,7 +184,7 @@ impl Settings {
     fn for_input(&self, input: &Input) -> RoleSettings {
         match input {
             Input::Find { .. } => self.finding,
-            Input::Solve { .. } => self.solving,
+            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => self.solving,
             Input::Select { .. } => self.selection,
         }
     }
@@ -228,6 +243,15 @@ pub(crate) enum Purpose {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Input {
+    Peer {
+        certificate: Vec<u8>,
+        question: String,
+        artifact: String,
+        peer: String,
+    },
+    Train {
+        epoch: u64,
+    },
     Find {
         cursor: u64,
         question: String,
@@ -243,6 +267,9 @@ pub(crate) enum Input {
 }
 
 impl Input {
+    fn internal(&self) -> bool {
+        matches!(self, Self::Peer { .. } | Self::Train { .. })
+    }
     #[cfg(test)]
     pub(crate) fn find(cursor: u64) -> Self {
         Self::Find {
@@ -255,7 +282,7 @@ impl Input {
         use crate::resources::feedback::Role;
         match self {
             Self::Find { .. } => Role::Finding,
-            Self::Solve { .. } => Role::Solving,
+            Self::Solve { .. } | Self::Peer { .. } | Self::Train { .. } => Role::Solving,
             Self::Select { root: None, .. } => Role::LocalSelection,
             Self::Select { root: Some(_), .. } => Role::PeerSelection,
         }
@@ -264,6 +291,28 @@ impl Input {
         match self {
             Self::Find { question, .. } => {
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+            }
+            Self::Train { epoch } => {
+                if *epoch == 0 {
+                    return Err("empty native learning epoch".into());
+                }
+            }
+            Self::Peer {
+                certificate,
+                question,
+                artifact,
+                peer,
+            } => {
+                if certificate.len() > 8 * 1024 {
+                    return Err("peer extraction input capacity".into());
+                }
+                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+                crate::object::id_bytes(artifact)?;
+                let parsed: libp2p::PeerId =
+                    peer.parse().map_err(|_| "native peer origin syntax")?;
+                if parsed.to_string() != *peer {
+                    return Err("native peer origin encoding".into());
+                }
             }
             Self::Solve { question } | Self::Select { question, .. } => {
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
@@ -295,6 +344,12 @@ impl Input {
     deny_unknown_fields
 )]
 pub(crate) enum Output {
+    Native {
+        solution: Option<crate::learning::Solution>,
+        diagnostic: String,
+        frontier: Option<crate::learning::SearchFrontier>,
+        terminal: Box<crate::learning::experience::TerminalEvidence>,
+    },
     Question(String),
     Proof {
         source: String,
@@ -308,6 +363,18 @@ pub(crate) enum Output {
 }
 
 impl Output {
+    pub(crate) fn candidate(self) -> Self {
+        match self {
+            Self::Native {
+                solution: Some(s), ..
+            } => Self::Proof {
+                source: s.source,
+                helpers: s.helpers,
+            },
+            Self::Native { solution: None, .. } => Self::NoCandidate,
+            other => other,
+        }
+    }
     fn validate(&self, input: &Input) -> Result<(), String> {
         self.validate_with_limits(
             input,
@@ -332,8 +399,40 @@ impl Output {
         bytes: usize,
     ) -> Result<(), String> {
         match (self, input) {
-            (Self::Question(source), Input::Find { .. })
-                if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES =>
+            (
+                Self::Native {
+                    solution,
+                    diagnostic,
+                    frontier,
+                    terminal,
+                },
+                Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
+            ) if diagnostic.len() <= 4096
+                && solution.as_ref().is_none_or(|s| {
+                    s.source.len() <= source_bytes
+                        && s.helpers.len() < objects
+                        && s.helpers.iter().all(|source| source.len() <= source_bytes)
+                })
+                && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
+            {
+                terminal.validate(solution.as_ref())?;
+                if let Some(report) = frontier {
+                    let Input::Solve { question } = input else {
+                        return Err("open branches outside solve".into());
+                    };
+                    if solution.is_some() {
+                        return Err("resolved output contains open branches".into());
+                    }
+                    report.validate(
+                        &naome_authoring::CompiledQuestion::compile(question)
+                            .map_err(|e| e.to_string())?,
+                    )?;
+                }
+                Ok(())
+            }
+            (Self::Question(source), Input::Find { question, .. })
+                if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES
+                    && source == question =>
             {
                 Ok(())
             }
@@ -382,6 +481,7 @@ pub(crate) struct Record {
     pub input: Input,
     pub binding: Binding,
     pub provider: String,
+    pub native: Option<Box<crate::learning::Job>>,
     pub configuration: String,
     pub settings: RoleSettings,
     pub created_ms: u64,
@@ -399,7 +499,10 @@ pub(crate) struct Record {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Completion {
+    pub experience: Option<crate::learning::experience::ExperienceSummary>,
     pub id: u64,
+    /// Actual selected native model used by this job, including warm jobs.
+    pub model_checkpoint: Option<String>,
     pub binding: Binding,
     pub spent_ms: u64,
     pub reserved_units: u32,
@@ -451,13 +554,63 @@ pub(crate) struct RecoveryPage {
     pub next: Option<u64>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PeerAdmission {
+    pub certificate: Option<Vec<u8>>,
+    pub ordinal: u64,
+    pub artifact: String,
+    pub peer: String,
+    pub question: Option<String>,
+    pub binding: Binding,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerReceipt {
+    admission: PeerAdmission,
+    status: PeerStatus,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum PeerStatus {
+    Queued,
+    Running {
+        job: u64,
+    },
+    Learned {
+        conversion_job: u64,
+        trace_proof: String,
+    },
+    Unsupported {
+        reason: String,
+    },
+}
 enum Command {
+    TheoremVerified {
+        ordinal: u64,
+        theorem: crate::learning::knowledge::Entry,
+    },
+    DefinitionVerified {
+        ordinal: u64,
+        definition: crate::learning::definitions::Entry,
+    },
+    PeerVerified(PeerAdmission),
+    PeerCursor(u64),
+    Accepted {
+        id: u64,
+        root: String,
+    },
     Program {
         id: u64,
         unit: u32,
         reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, String>>,
     },
-    Submit(Input, Binding, oneshot::Sender<Completion>),
+    Submit(
+        Input,
+        Binding,
+        Vec<String>,
+        crate::learning::Prerequisites,
+        oneshot::Sender<Completion>,
+    ),
     Acknowledge(u64),
     Discard(Input, Binding),
     Recover {
@@ -467,12 +620,76 @@ enum Command {
     },
 }
 
+/// A completed owner's bounded receipt; queue pressure never changes its job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Receipt {
+    Acknowledge(u64),
+    Accepted { id: u64, root: String },
+    Discard(Input, Binding),
+}
+
 #[derive(Clone)]
 pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
+    // Derived read-only mirror. The jobs journal remains the sole state owner.
+    feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
 }
 
 impl Client {
+    pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
+        self.feedback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    pub(crate) fn theorem_verified(
+        &self,
+        ordinal: u64,
+        theorem: crate::learning::knowledge::Entry,
+    ) -> Result<(), String> {
+        self.sender
+            .try_send(Command::TheoremVerified { ordinal, theorem })
+            .map_err(|_| "theorem observation capacity or stopped service".into())
+    }
+    pub(crate) fn definition_verified(
+        &self,
+        ordinal: u64,
+        definition: crate::learning::definitions::Entry,
+    ) -> Result<(), String> {
+        self.sender
+            .try_send(Command::DefinitionVerified {
+                ordinal,
+                definition,
+            })
+            .map_err(|_| "definition learning command capacity or stopped service".into())
+    }
+    pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), String> {
+        self.sender
+            .try_send(Command::PeerCursor(ordinal))
+            .map_err(|_| "peer cursor capacity or stopped service".into())
+    }
+    pub(crate) fn peer_verified(&self, admission: PeerAdmission) -> Result<(), String> {
+        self.sender
+            .try_send(Command::PeerVerified(admission))
+            .map_err(|_| "peer learning command capacity or stopped service".into())
+    }
+    pub(crate) fn try_receipt(&self, receipt: &Receipt) -> Result<bool, String> {
+        let command = match receipt {
+            Receipt::Acknowledge(id) => Command::Acknowledge(*id),
+            Receipt::Accepted { id, root } => Command::Accepted {
+                id: *id,
+                root: root.clone(),
+            },
+            Receipt::Discard(input, binding) => Command::Discard(input.clone(), binding.clone()),
+        };
+        match self.sender.try_send(command) {
+            Ok(()) => Ok(true),
+            Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err("research receipt service stopped".into())
+            }
+        }
+    }
     pub(crate) fn program(
         &self,
         id: u64,
@@ -485,11 +702,43 @@ impl Client {
         Ok(receive)
     }
     pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
+        self.submit_after(input, binding, Vec::new(), Default::default())
+    }
+    pub(crate) fn submit_after(
+        &self,
+        input: Input,
+        binding: Binding,
+        required: Vec<String>,
+        prerequisites: crate::learning::Prerequisites,
+    ) -> Result<Ticket, String> {
         input.validate()?;
         binding.validate()?;
+        if required.len() > crate::learning::knowledge::CAPACITY
+            || required
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != required.len()
+            || !required.is_empty() && !matches!(input, Input::Solve { .. })
+        {
+            return Err("required theorem role or capacity".into());
+        }
+        prerequisites.validate()?;
+        if required.is_empty() && !prerequisites.is_empty() {
+            return Err("temporary prerequisites lack required roots".into());
+        }
+        for id in &required {
+            crate::object::id_bytes(id)?;
+        }
         let (sender, receiver) = oneshot::channel();
         self.sender
-            .try_send(Command::Submit(input.clone(), binding.clone(), sender))
+            .try_send(Command::Submit(
+                input.clone(),
+                binding.clone(),
+                required,
+                prerequisites,
+                sender,
+            ))
             .map_err(|_| "research command capacity or stopped service")?;
         Ok(Ticket {
             receiver,
@@ -515,14 +764,11 @@ impl Client {
         Ok(receive)
     }
     pub(crate) fn acknowledge(&self, id: u64) -> Result<(), String> {
-        self.sender
-            .try_send(Command::Acknowledge(id))
-            .map_err(|_| "research acknowledgement capacity or stopped service".into())
-    }
-    pub(crate) fn discard(&self, input: Input, binding: Binding) -> Result<(), String> {
-        self.sender
-            .try_send(Command::Discard(input, binding))
-            .map_err(|_| "research retirement command capacity or stopped service".into())
+        if self.try_receipt(&Receipt::Acknowledge(id))? {
+            Ok(())
+        } else {
+            Err("research acknowledgement capacity".into())
+        }
     }
 }
 
@@ -533,8 +779,16 @@ pub(crate) fn declared_solver_support(
     settings.mock.outcome == MockOutcome::Success && crate::mocks::supports_question(question)
 }
 
-pub(crate) fn solver_identity(settings: RoleSettings) -> String {
-    identity(&(provider::DEFAULT_PROVIDER, settings))
+pub(crate) fn solver_identity(settings: Settings) -> String {
+    if settings.native_proof_learning {
+        identity(&(
+            crate::learning::PROVIDER,
+            crate::learning::input_specification(),
+            settings.solving,
+        ))
+    } else {
+        identity(&(provider::DEFAULT_PROVIDER, settings.solving))
+    }
 }
 
 fn identity(value: &impl Serialize) -> String {

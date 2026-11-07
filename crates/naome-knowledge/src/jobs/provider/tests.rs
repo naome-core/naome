@@ -39,6 +39,32 @@ impl Supervisor for Grants {
         Ok(())
     }
 }
+
+#[test]
+fn structural_finding_finalizes_the_exact_selected_source_under_one_owned_quantum() {
+    let question = "goal=all(x,all(y,imp(mem(x,y),mem(y,x))))".to_owned();
+    let mut grants = Grants::default();
+    let result = drive(
+        &mut Finding {
+            question: question.clone(),
+        },
+        &mut grants,
+        0,
+    )
+    .unwrap();
+    assert!(matches!(result, Output::Question(source) if source == question));
+    assert_eq!(grants.0, [(false, 1), (true, 1)]);
+    assert!(
+        drive(
+            &mut Finding {
+                question: "invalid".into()
+            },
+            &mut Grants::default(),
+            0
+        )
+        .is_err()
+    );
+}
 #[test]
 fn another_provider_resumes_through_the_same_reservations_and_preserves_uncertainty() {
     let mut grants = Grants::default();

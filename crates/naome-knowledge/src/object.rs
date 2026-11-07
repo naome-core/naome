@@ -60,6 +60,12 @@ pub(crate) fn record_content_id(
     }
 }
 
+pub(crate) fn proof_address(proof: &str) -> Result<ArtifactId, crate::Error> {
+    Ok(ArtifactId::from_proof_id(ProofId::from_bytes(id_bytes(
+        proof,
+    )?)))
+}
+
 /// Untrusted typed artifact envelope. Construction grants no validity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +127,20 @@ impl ProgramMetadata {
 }
 
 impl Metadata {
+    /// Restore the described statement's sign. This establishes an identity
+    /// binding only; callers still require the canonical checked graph.
+    pub(crate) fn statement_question(
+        &self,
+    ) -> Result<naome_authoring::CompiledQuestion, crate::Error> {
+        let (_, statement, question) = self.compile()?;
+        let target = if target_id(question.positive_target())? == statement {
+            question.positive_target()
+        } else {
+            question.negative_target()
+        };
+        naome_authoring::CompiledQuestion::from_formula(target.clone())
+            .map_err(|e| crate::Error::from(e.to_string()))
+    }
     pub(crate) fn compile(
         &self,
     ) -> Result<(ArtifactId, StatementId, naome_authoring::CompiledQuestion), crate::Error> {

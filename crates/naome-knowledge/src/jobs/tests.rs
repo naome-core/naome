@@ -11,13 +11,17 @@ pub(crate) struct Manual {
     recovery_pages: VecDeque<RecoveryPage>,
     recovery_requests: Vec<(u64, u64)>,
     discarded: Vec<Input>,
+    receipts: Vec<Receipt>,
 }
 
 impl Manual {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = mpsc::channel(crate::resources::limits().job_commands);
         Self {
-            client: Client { sender },
+            client: Client {
+                sender,
+                feedback: Default::default(),
+            },
             receiver,
             next: 1,
             waiting: BTreeMap::new(),
@@ -25,27 +29,40 @@ impl Manual {
             recovery_pages: VecDeque::new(),
             recovery_requests: Vec::new(),
             discarded: Vec::new(),
+            receipts: Vec::new(),
         }
     }
     pub(crate) fn requests(&mut self) -> Vec<(u64, Input)> {
         let mut requests = Vec::new();
         while let Ok(command) = self.receiver.try_recv() {
             match command {
+                Command::Accepted { id, root } => {
+                    self.receipts.push(Receipt::Accepted { id, root })
+                }
+                Command::PeerVerified(_)
+                | Command::PeerCursor(_)
+                | Command::DefinitionVerified { .. }
+                | Command::TheoremVerified { .. } => {}
                 Command::Program { reply, .. } => {
                     let _ = reply.send(Err("manual provider has no retained program".into()));
                 }
-                Command::Submit(input, binding, reply) => {
+                Command::Submit(input, binding, _required, _prerequisites, reply) => {
                     let id = self.next;
                     self.next += 1;
                     requests.push((id, input.clone()));
                     self.waiting.insert(id, (input, binding, reply));
                 }
                 Command::Discard(input, binding) => {
+                    self.receipts
+                        .push(Receipt::Discard(input.clone(), binding.clone()));
                     self.waiting
                         .retain(|_, (i, b, _)| i != &input || b != &binding);
                     self.discarded.push(input);
                 }
-                Command::Acknowledge(id) => self.acknowledged.push(id),
+                Command::Acknowledge(id) => {
+                    self.receipts.push(Receipt::Acknowledge(id));
+                    self.acknowledged.push(id);
+                }
                 Command::Recover {
                     after,
                     before,
@@ -71,6 +88,8 @@ impl Manual {
             State::Failed
         };
         let _ = reply.send(Completion {
+            experience: None,
+            model_checkpoint: None,
             id,
             binding,
             spent_ms: 0,
@@ -83,6 +102,7 @@ impl Manual {
         Recovery {
             archive_end: 0,
             next_cursor: 0,
+            peer_cursor: 0,
             records: Vec::new(),
         }
     }
@@ -93,6 +113,10 @@ impl Manual {
     pub(crate) fn queue_recovery(&mut self, records: Vec<Record>, next: Option<u64>) {
         self.recovery_pages
             .push_back(RecoveryPage { records, next });
+    }
+    pub(crate) fn receipts(&mut self) -> Vec<Receipt> {
+        self.requests();
+        std::mem::take(&mut self.receipts)
     }
     pub(crate) fn recovery_requests(&self) -> &[(u64, u64)] {
         &self.recovery_requests
@@ -149,4 +173,19 @@ fn ordinary_product_rejects_developer_workloads_before_spawning() {
         "controlled mock workloads require developer-tools"
     );
     assert!(Settings::default().validate().is_ok());
+}
+
+#[test]
+fn selected_finding_question_binds_the_returned_question() {
+    let supplied = "goal=all(x,eq(x,x))".to_owned();
+    let input = Input::Find {
+        cursor: 1,
+        question: supplied.clone(),
+    };
+    assert!(Output::Question(supplied).validate(&input).is_ok());
+    assert!(
+        Output::Question("goal=all(x,eq(x,x)) ".into())
+            .validate(&input)
+            .is_err()
+    );
 }

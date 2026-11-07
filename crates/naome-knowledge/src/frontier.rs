@@ -9,11 +9,33 @@ use sha2::Digest;
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
+mod finder;
+mod looping;
 use evidence::{Evidence, Outcome};
+pub(crate) const PROVIDER: &str = "naome-structural-finder";
 #[cfg(test)]
 mod comparison;
 #[cfg(test)]
+mod experiment;
+#[cfg(test)]
+mod temporal;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Treatment {
+    Previous,
+    Uniform,
+    NoGeneration,
+    NoUtility,
+    NoReplay,
+    FamilyReplay,
+    FamilyReplayNoUtility,
+    OutcomeReplay,
+    CensoredReplay,
+    #[default]
+    Full,
+}
 
 use crate::structure::{Features, SCALE, SIGNALS};
 
@@ -25,13 +47,19 @@ struct AttemptHint {
     last_draw: u64,
     unverified_attempts: u64,
     verified: bool,
+    last_attempt_at: u64,
 }
 
 pub(crate) struct Frontier {
     evidence: Evidence,
+    native: bool,
+    feedback: Option<crate::training::ability::Feedback>,
+    solver_contract: String,
     // Bounded scheduling hints. Durable writes evict the affected entry;
     // selection still crosses the generation-checked checkpoint before work.
     recent: VecDeque<([u8; 32], Option<AttemptHint>)>,
+    analyses: finder::Cache,
+    recipes: VecDeque<([u8; 32], finder::Recipe)>,
     random: Random,
     coverage: [u64; SIGNALS],
     building: [u64; SIGNALS],
@@ -42,22 +70,47 @@ pub(crate) struct Frontier {
     knowledge: VecDeque<Features>,
     proposals: VecDeque<CompiledQuestion>,
     predicates: VecDeque<Formula>,
+    goals: VecDeque<CompiledQuestion>,
     after: Option<ArtifactId>,
     observed_root: Option<[u8; 32]>,
     _memory: Arc<crate::resources::MemoryLease>,
+    #[cfg(test)]
+    treatment: Treatment,
 }
 impl Frontier {
+    #[cfg(test)]
+    pub(crate) fn learning_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"model":self.evidence.model(),"curriculum":self.evidence.learning()})
+    }
+    #[cfg(test)]
+    pub(crate) fn initial_parameters(&mut self, seed: u64) -> Result<(), crate::Error> {
+        self.evidence.initial_parameters(seed)
+    }
+    #[cfg(test)]
+    pub(crate) fn freeze_parameters(&mut self) {
+        self.evidence.freeze_parameters();
+    }
+    #[cfg(test)]
+    pub(crate) fn treatment(&mut self, treatment: Treatment) {
+        self.treatment = treatment;
+        self.evidence.treatment(treatment);
+    }
     pub(crate) fn open(
         directory: &Path,
         graph: &Graph,
         seed: u64,
-        settings: jobs::RoleSettings,
+        settings: jobs::Settings,
     ) -> Result<Self, String> {
         let evidence = Evidence::open(directory, seed, settings)?;
         let random = Random::new(evidence.random());
         let mut local = Self {
             evidence,
+            native: settings.native_proof_learning,
+            feedback: None,
+            solver_contract: jobs::solver_identity(settings),
             recent: VecDeque::new(),
+            analyses: finder::Cache::default(),
+            recipes: VecDeque::new(),
             random,
             coverage: [0; SIGNALS],
             building: [0; SIGNALS],
@@ -68,10 +121,21 @@ impl Frontier {
             knowledge: VecDeque::new(),
             proposals: VecDeque::new(),
             predicates: VecDeque::new(),
+            goals: VecDeque::new(),
             after: None,
+            #[cfg(test)]
+            treatment: Treatment::Full,
             observed_root: None,
             _memory: crate::resources::MemoryLease::acquire(
-                crate::resources::active_limits().question_cache_bytes,
+                // Resident goals, proposals and returned candidate copies have
+                // separate lifetimes. Reserve their bounded working sets.
+                crate::resources::active_limits()
+                    .question_cache_bytes
+                    .saturating_mul(4)
+                    .saturating_add(std::mem::size_of::<Self>())
+                    .saturating_add(32 * std::mem::size_of::<Features>())
+                    .saturating_add(finder::Model::memory_bytes())
+                    .saturating_add(finder::Learning::reservation()),
             )
             .map_err(|e| e.to_string())?,
         };
@@ -80,9 +144,13 @@ impl Frontier {
         let mut attempts = [0u64; SIGNALS];
         let mut success_units = [0u64; SIGNALS];
         let mut success_millis = [0u64; SIGNALS];
+        let mut goals = VecDeque::new();
         local.evidence.replay(|record| {
             let question =
                 CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
+            if record.first_unresolved_job > 0 && record.verified.is_none() {
+                Self::retain_goal(&mut goals, question.clone());
+            }
             for (total, count) in attempts.iter_mut().zip(Features::of(&question).counts) {
                 if count > 0 {
                     *total = total.saturating_add(record.substantive_attempts());
@@ -112,7 +180,86 @@ impl Frontier {
         local.attempts = attempts;
         local.success_units = success_units;
         local.success_millis = success_millis;
+        local.goals = goals;
+        // A crash may separate the resolution receipt from its utility credit.
+        // Replay checked dependency edges in bounded pages; receipts make this
+        // idempotent even when the last commit acknowledgement was uncertain.
+        if local.native {
+            let mut after = None;
+            loop {
+                let page = local.evidence.page(after.as_deref())?;
+                if page.is_empty() {
+                    break;
+                }
+                for (key, record) in page {
+                    if let Some(root) = &record.verified
+                        && record.solver == local.solver_contract
+                    {
+                        let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
+                        let question = CompiledQuestion::compile(&record.question)
+                            .map_err(|e| e.to_string())?;
+                        if Self::checked_target(graph, root, &question)
+                            .map_err(|e| e.to_string())?
+                        {
+                            local
+                                .verified(&question, graph, record.verified_job, root)
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+                    after = Some(key);
+                }
+            }
+        }
         Ok(local)
+    }
+    fn retain_goal(goals: &mut VecDeque<CompiledQuestion>, question: CompiledQuestion) {
+        let limits = crate::resources::active_limits();
+        let bytes = |q: &CompiledQuestion| q.source().len() * 8 + 256;
+        let cost = bytes(&question);
+        if limits.question_page == 0
+            || cost > limits.question_cache_bytes
+            || !crate::learning::State::eligible(question.source())
+            || goals
+                .iter()
+                .any(|q| q.resolution_id() == question.resolution_id())
+        {
+            return;
+        }
+        while !goals.is_empty()
+            && (goals.len() >= limits.question_page.min(8)
+                || goals.iter().map(bytes).sum::<usize>() + cost > limits.question_cache_bytes)
+        {
+            goals.pop_front();
+        }
+        goals.push_back(question);
+    }
+    pub(crate) fn focus(&mut self, question: CompiledQuestion) {
+        Self::retain_goal(&mut self.goals, question);
+    }
+    pub(crate) fn helpers_needed(&self, question: &CompiledQuestion) -> Result<bool, crate::Error> {
+        Ok(self
+            .evidence
+            .get(question)?
+            .is_some_and(|record| record.first_unresolved_job > 0 && record.verified.is_none()))
+    }
+    pub(crate) fn retain_goals(&mut self, mut open: impl FnMut(&CompiledQuestion) -> bool) {
+        self.goals.retain(|q| open(q));
+    }
+    pub(crate) fn feedback(&mut self, feedback: Option<crate::training::ability::Feedback>) {
+        if !self.native {
+            return;
+        }
+        if let Some(current) = &feedback
+            && self
+                .feedback
+                .as_ref()
+                .is_none_or(|p| p.checkpoint != current.checkpoint)
+        {
+            let solver = crate::learning::digest(&(&self.solver_contract, &current.checkpoint));
+            self.evidence.bind_solver(solver);
+            self.recent.clear();
+        }
+        self.feedback = feedback;
     }
     fn checked_target(
         graph: &Graph,
@@ -153,6 +300,15 @@ impl Frontier {
                 .proposals
                 .iter()
                 .any(|q| q.resolution_id() == question.resolution_id())
+        {
+            return;
+        }
+        if self.native
+            && (!finder::meaningful(&question)
+                || self
+                    .proposals
+                    .iter()
+                    .any(|q| finder::key(q) == finder::key(&question)))
         {
             return;
         }
@@ -215,22 +371,7 @@ impl Frontier {
                 );
                 self.conjecture(Formula::implies(formula.clone(), previous), eligible);
             }
-            let cost = formula.view().node_count_and_depth().0 * 64;
-            while !self.predicates.is_empty()
-                && (self.predicates.len() >= 8
-                    || self
-                        .predicates
-                        .iter()
-                        .map(|p| p.view().node_count_and_depth().0 * 64)
-                        .sum::<usize>()
-                        + cost
-                        > crate::resources::active_limits().question_cache_bytes / 8)
-            {
-                self.predicates.pop_front();
-            }
-            if cost <= crate::resources::active_limits().question_cache_bytes / 8 {
-                self.predicates.push_back(formula.clone());
-            }
+            self.retain_predicate(formula.clone());
         }
         self.conjecture(formula.clone(), eligible);
         let free = formula.free_variables();
@@ -258,7 +399,9 @@ impl Frontier {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        if let Some(result) = next.checked_add(1) {
+        if !self.native
+            && let Some(result) = next.checked_add(1)
+        {
             let element = free.first().copied().unwrap_or(FreeVariable::new(0));
             if let Ok(schema) = (Separation {
                 predicate: formula,
@@ -273,6 +416,25 @@ impl Frontier {
             }
         }
     }
+    fn retain_predicate(&mut self, formula: Formula) {
+        let cost = formula.view().node_count_and_depth().0 * 64;
+        let budget = crate::resources::active_limits().question_cache_bytes / 8;
+        if cost > budget || self.predicates.contains(&formula) {
+            return;
+        }
+        while self.predicates.len() >= 8
+            || self
+                .predicates
+                .iter()
+                .map(|p| p.view().node_count_and_depth().0 * 64)
+                .sum::<usize>()
+                + cost
+                > budget
+        {
+            self.predicates.pop_front();
+        }
+        self.predicates.push_back(formula);
+    }
     /// Mine bounded, capture-free subproblems from checked structure. Dropping
     /// a connective or opening a binder proposes a conjecture, never a theorem.
     fn explore_parts(
@@ -285,6 +447,9 @@ impl Frontier {
         let _memory = crate::resources::MemoryLease::acquire(
             nodes.saturating_mul(64).saturating_mul(PARTS + 1),
         )?;
+        let original = CompiledQuestion::from_formula(formula.clone())
+            .ok()
+            .filter(|q| q.formula().is_closed());
         let mut pending = vec![formula];
         for _ in 0..PARTS {
             let Some(part) = pending.pop() else {
@@ -298,7 +463,27 @@ impl Frontier {
                 pending.push(right);
                 pending.push(left);
             }
-            self.explore(part, eligible);
+            if self.native {
+                // A proved relation is universally true; wrapping it in new
+                // quantifiers or relation laws creates cheap posthoc variants.
+                // Keep proper relation fragments for goal-directed generation.
+                if part.free_variables().len() == 2 && part.view().node_count_and_depth().0 <= 24 {
+                    let mut closed = part.clone();
+                    for variable in closed.free_variables().into_iter().rev() {
+                        closed = Formula::for_all(variable, closed);
+                    }
+                    if let Ok(question) = CompiledQuestion::from_formula(closed)
+                        && finder::meaningful(&question)
+                        && original
+                            .as_ref()
+                            .is_none_or(|source| finder::key(source) != finder::key(&question))
+                    {
+                        self.retain_predicate(part);
+                    }
+                }
+            } else {
+                self.explore(part, eligible);
+            }
         }
         Ok(())
     }
@@ -309,7 +494,11 @@ impl Frontier {
         graph: &Graph,
         mut eligible: impl FnMut(&CompiledQuestion) -> bool,
     ) -> Result<(), crate::Error> {
+        self.analyses.trim();
         crate::resources::require_work_admission()?;
+        if let Some(feedback) = &self.feedback {
+            self.evidence.feedback(feedback)?;
+        }
         self.proposals.retain(|question| eligible(question));
         let root = graph.content_root();
         if self.observed_root == Some(root) && !self.proposals.is_empty() {
@@ -360,6 +549,11 @@ impl Frontier {
             };
             if let Some(metadata) = description {
                 let (_, _, question) = metadata.compile()?;
+                // A development/reserved source cannot create trainable
+                // descendants through a newly spelled graph projection.
+                if self.native && !crate::learning::State::eligible(question.source()) {
+                    continue;
+                }
                 let features = Features::of(&question);
                 for (total, count) in self.building.iter_mut().zip(features.counts) {
                     *total = total.saturating_add(u64::from(count > 0));
@@ -389,21 +583,163 @@ impl Frontier {
         }
         Ok(())
     }
-    pub(crate) fn candidates(&self) -> Vec<CompiledQuestion> {
-        let mut candidates = (0..3)
-            .filter_map(|cursor| {
-                CompiledQuestion::compile(&crate::mocks::create_question(cursor)).ok()
-            })
-            .collect::<Vec<_>>();
-        for question in &self.proposals {
-            if !candidates
+    pub(crate) fn goal_candidates(
+        &self,
+        cursor: u64,
+        goal: &CompiledQuestion,
+    ) -> Vec<CompiledQuestion> {
+        if !crate::learning::State::eligible(goal.source()) {
+            return vec![goal.clone()];
+        }
+        let limits = crate::resources::active_limits();
+        if let Ok(Some(record)) = self.evidence.get(goal)
+            && record.frontier.is_some()
+        {
+            return record
+                .helpers
                 .iter()
-                .any(|q| q.resolution_id() == question.resolution_id())
+                .filter_map(|s| CompiledQuestion::compile(s).ok())
+                .chain(std::iter::once(goal.clone()))
+                .collect();
+        }
+        let nodes = goal.formula().view().node_count_and_depth().0;
+        let mut candidates = if let Ok(_scratch) =
+            crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))
+        {
+            finder::for_goal(
+                cursor,
+                goal,
+                limits.question_page,
+                limits.question_cache_bytes / 2,
+            )
+        } else {
+            Vec::new()
+        };
+        if !candidates
+            .iter()
+            .any(|q| q.resolution_id() == goal.resolution_id())
+        {
+            candidates.push(goal.clone());
+        }
+        candidates
+    }
+    #[cfg(test)]
+    pub(crate) fn candidates(&self, cursor: u64) -> Vec<CompiledQuestion> {
+        self.page(cursor, &mut |_| true)
+            .into_iter()
+            .map(|p| p.question)
+            .collect()
+    }
+    pub(crate) fn candidate_page(
+        &mut self,
+        cursor: u64,
+        mut eligible: impl FnMut(&CompiledQuestion) -> bool,
+    ) -> Vec<CompiledQuestion> {
+        let page = self.page(cursor, &mut eligible);
+        for proposal in &page {
+            if let Some(recipe) = proposal.recipe {
+                self.recipes
+                    .retain(|(id, _)| id != proposal.question.resolution_id());
+                self.recipes
+                    .push_back((*proposal.question.resolution_id(), recipe));
+            }
+        }
+        while self.recipes.len()
+            > (crate::resources::active_limits().question_cache_bytes / 512).min(128)
+        {
+            self.recipes.pop_front();
+        }
+        page.into_iter().map(|p| p.question).collect()
+    }
+    fn page(
+        &self,
+        cursor: u64,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) -> Vec<finder::Proposal> {
+        let mut candidates = if self.native {
+            let limits = crate::resources::active_limits();
+            let nodes = self
+                .goals
+                .iter()
+                .map(|q| q.formula().view().node_count_and_depth().0)
+                .sum::<usize>()
+                .saturating_add(
+                    self.predicates
+                        .iter()
+                        .map(|p| p.view().node_count_and_depth().0)
+                        .sum::<usize>(),
+                )
+                .saturating_add(32);
+            let Ok(_scratch) =
+                crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))
+            else {
+                return Vec::new();
+            };
+            self.generate(
+                cursor,
+                finder::PageBudget {
+                    questions: limits.question_page,
+                    bytes: limits.question_cache_bytes / 2,
+                },
+                eligible,
+            )
+        } else {
+            (0..3)
+                .filter_map(|index| {
+                    CompiledQuestion::compile(&crate::mocks::create_question(index)).ok()
+                })
+                .map(|question| finder::Proposal {
+                    question,
+                    recipe: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for question in self.goals.iter().chain(&self.proposals) {
+            if eligible(question)
+                && !candidates
+                    .iter()
+                    .any(|p| p.question.resolution_id() == question.resolution_id())
             {
-                candidates.push(question.clone());
+                candidates.push(finder::Proposal {
+                    question: question.clone(),
+                    recipe: None,
+                });
             }
         }
         candidates
+    }
+    fn generate(
+        &self,
+        cursor: u64,
+        budget: finder::PageBudget,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) -> Vec<finder::Proposal> {
+        #[cfg(test)]
+        if self.treatment == Treatment::Previous {
+            return finder::reference::questions(
+                cursor,
+                &self.predicates,
+                &self.goals,
+                budget.questions,
+                budget.bytes,
+                eligible,
+            )
+            .into_iter()
+            .map(|question| finder::Proposal {
+                question,
+                recipe: None,
+            })
+            .collect();
+        }
+        finder::proposals(
+            cursor,
+            &self.predicates,
+            &self.goals,
+            self.evidence.learning(),
+            self.evidence.draws(),
+            budget,
+            eligible,
+        )
     }
     fn previous(
         &mut self,
@@ -426,6 +762,7 @@ impl Frontier {
                     last_draw: record.last_draw,
                     unverified_attempts: record.unverified_attempts(),
                     verified: record.verified.is_some(),
+                    last_attempt_at: record.last_attempt_at,
                 })
             })
             .transpose()?;
@@ -439,13 +776,46 @@ impl Frontier {
     fn forget_hint(&mut self, question: &CompiledQuestion) {
         self.recent.retain(|(id, _)| id != question.resolution_id());
     }
+    fn retry_ready(
+        &mut self,
+        question: &CompiledQuestion,
+        graph: &Graph,
+    ) -> Result<bool, crate::Error> {
+        let Some(record) = self.previous(question)? else {
+            return Ok(true);
+        };
+        if record.verified
+            || self.evidence.draws().saturating_sub(record.last_draw)
+                >= 1u64 << record.unverified_attempts.min(8)
+        {
+            return Ok(true);
+        }
+        if record.knowledge != graph.content_root()
+            && let Some(current) = self.evidence.get(question)?
+        {
+            for source in current.helpers {
+                let helper = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                if let Some(producer) = self.evidence.get(&helper)?
+                    && producer.verified_at > record.last_attempt_at
+                    && let Some(root) = producer.verified
+                {
+                    let root = ArtifactId::from_bytes(crate::object::id_bytes(&root)?);
+                    if Self::checked_target(graph, root, &helper)? {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
     fn weight(
         &mut self,
         question: &CompiledQuestion,
         graph: &Graph,
         settings: jobs::RoleSettings,
     ) -> Result<u64, crate::Error> {
-        let features = Features::of(question);
+        let analysis = self.analyses.get(question)?;
+        let features = &analysis.descriptor.features;
         let mut novelty = 0u64;
         let mut ability = 0u64;
         let mut cost = u64::from(features.nodes).div_ceil(64).max(1);
@@ -469,6 +839,17 @@ impl Frontier {
                 );
             }
         }
+        if self.native {
+            ability = self
+                .feedback
+                .as_ref()
+                .map_or(SCALE, |feedback| feedback.priority(question, 128))
+                .saturating_mul(signals.max(1));
+            // Native costs and abilities come from the current checkpoint view,
+            // not the historical non-neural evidence replay above.
+            cost = u64::from(features.nodes).div_ceil(64).max(1);
+            millis = 1;
+        }
         let similarity = self
             .knowledge
             .iter()
@@ -485,7 +866,8 @@ impl Frontier {
         if cost > u64::from(settings.limits.work_units) || millis > settings.limits.horizon_ms {
             weight /= 8;
         }
-        if let Some(record) = self.previous(question)?
+        if !self.native
+            && let Some(record) = self.previous(question)?
             && record.knowledge == graph.content_root()
             && !record.verified
         {
@@ -499,6 +881,25 @@ impl Frontier {
         if jobs::declared_solver_support(question, settings) {
             weight = weight.saturating_mul(8);
         }
+        if self.native {
+            weight = weight.saturating_mul(self.evidence.model().weight_from(&analysis.descriptor))
+                / 1024;
+            if self.evidence.learning().utility_current() {
+                let utility = self.evidence.model().utility(&analysis.descriptor);
+                weight = weight.saturating_mul(512 + (utility * 1024.) as u64) / 1024;
+            }
+            let mut relevance = 0;
+            for goal in &self.goals {
+                if goal.resolution_id() != question.resolution_id() {
+                    let other = self.analyses.get(goal)?;
+                    relevance = relevance.max(analysis.relevance(&other));
+                }
+            }
+            weight = weight.saturating_mul(1 + relevance.min(8) * 4);
+            if !analysis.meaningful() {
+                weight /= 64;
+            }
+        }
         Ok(weight.max(1))
     }
     /// Draw a family first, avoiding a flood of nearly identical candidates.
@@ -510,25 +911,79 @@ impl Frontier {
         settings: jobs::RoleSettings,
         random_only: bool,
     ) -> Result<Option<usize>, crate::Error> {
+        #[cfg(test)]
+        let random_only = random_only || self.treatment == Treatment::Uniform;
         if candidates.is_empty() {
             return Ok(None);
         }
-        if random_only {
-            let index = self.random.below(candidates.len() as u64) as usize;
+        if let Some(feedback) = &self.feedback {
+            self.evidence.feedback(feedback)?;
+        }
+        self.analyses.trim();
+        let mut indices = Vec::with_capacity(candidates.len());
+        for (index, question) in candidates.iter().enumerate() {
+            if !self.native || self.retry_ready(question, graph)? {
+                indices.push(index);
+            }
+        }
+        if indices.is_empty() {
+            // A persisted scheduling opportunity advances finite backoff even
+            // when every candidate is waiting. It grants no work or RNG draw.
             self.evidence.selected(self.random.0)?;
+            return Ok(None);
+        }
+        if random_only {
+            let index = indices[self.random.below(indices.len() as u64) as usize];
+            self.evidence.selected_question(
+                self.random.0,
+                candidates[index],
+                self.recipes
+                    .iter()
+                    .find(|(id, _)| id == candidates[index].resolution_id())
+                    .map(|(_, r)| *r),
+            )?;
             return Ok(Some(index));
         }
-        let weighted = candidates
+        let weighted = indices
             .iter()
-            .map(|question| {
+            .map(|index| {
+                let question = candidates[*index];
                 Ok((
-                    Features::of(question).family,
+                    self.analyses.get(question)?.descriptor.features.family,
                     self.weight(question, graph, settings)?,
                 ))
             })
             .collect::<Result<Vec<_>, crate::Error>>()?;
-        let index = crate::sampling::choose(&mut self.random, &weighted, random_only);
-        self.evidence.selected(self.random.0)?;
+        let position = crate::sampling::choose(&mut self.random, &weighted, random_only);
+        let index = indices[position];
+        self.evidence.selected_question(
+            self.random.0,
+            candidates[index],
+            self.recipes
+                .iter()
+                .find(|(id, _)| id == candidates[index].resolution_id())
+                .map(|(_, r)| *r),
+        )?;
+        if self.native
+            && let Some(feedback) = &self.feedback
+        {
+            crate::network::emit(
+                serde_json::json!({"event":"native_curriculum_selected", "checkpoint":feedback.checkpoint,
+                "feedback_revision":feedback.revision,"resolution_id":crate::hex(candidates[index].resolution_id()),
+                "priority":weighted[position].1,"candidates":candidates.len(),"structural_group":crate::training::group(candidates[index])}),
+            );
+        }
+        if self.native {
+            let model_weight = self.analyses.descriptor(candidates[index]).map_or_else(
+                || self.evidence.model().weight(candidates[index]),
+                |descriptor| self.evidence.model().weight_from(descriptor),
+            );
+            crate::network::emit(serde_json::json!({
+                "event":"finder_selected", "resolution_id":crate::hex(candidates[index].resolution_id()),
+                "question":candidates[index].source(), "model_updates":self.evidence.model().updates,
+                "model_weight":model_weight, "candidates":candidates.len()
+            }));
+        }
         Ok(Some(index))
     }
     pub(crate) fn prepared(
@@ -560,8 +1015,11 @@ impl Frontier {
                 .evidence
                 .get(question)?
                 .is_none_or(|record| completion.id > record.last_job);
-        self.evidence
-            .attempted(question, graph.content_root(), completion, outcome)?;
+        let before = self.evidence.model().updates;
+        let observed_search =
+            self.evidence
+                .attempted(question, graph.content_root(), completion, outcome)?;
+        self.learning_event(question, before, false);
         if new
             && matches!(
                 outcome,
@@ -571,17 +1029,21 @@ impl Frontier {
             for (total, count) in self.attempts.iter_mut().zip(Features::of(question).counts) {
                 *total = total.saturating_add(u64::from(count > 0));
             }
-            if outcome == Outcome::NoCandidate {
-                let mut open = question.core().clone();
-                for _ in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
-                    let Some(body) = Self::open_outer(&open) else {
-                        break;
-                    };
-                    open = body;
-                }
-                if let Some((left, right)) = open.implication_parts() {
-                    self.conjecture(left, &mut |_| true);
-                    self.conjecture(right, &mut |_| true);
+            if outcome == Outcome::NoCandidate && observed_search {
+                if self.native {
+                    self.focus(question.clone());
+                } else {
+                    let mut open = question.core().clone();
+                    for _ in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+                        let Some(body) = Self::open_outer(&open) else {
+                            break;
+                        };
+                        open = body;
+                    }
+                    if let Some((left, right)) = open.implication_parts() {
+                        self.conjecture(left, &mut |_| true);
+                        self.conjecture(right, &mut |_| true);
+                    }
                 }
             }
         }
@@ -600,10 +1062,55 @@ impl Frontier {
         if !Self::checked_target(graph, root, question)? {
             return Err("research evidence lacks a checked exact solution".into());
         }
+        let before = self.evidence.model().updates;
         if let Some((units, millis)) = self.evidence.verified(question, job, root)? {
             self.demonstrated(&Features::of(question), units, millis);
+            self.learning_event(question, before, true);
         }
+        if self.native {
+            let actual_goal = graph
+                .describe(root)?
+                .ok_or("checked goal disappeared")?
+                .statement_question()?;
+            for dependency in graph.direct_dependencies(root)? {
+                if let Some(lemma) = self.evidence.support(
+                    question,
+                    &actual_goal,
+                    job,
+                    root,
+                    dependency,
+                    |lemma| {
+                        if !Self::checked_target(graph, dependency, lemma)? {
+                            return Ok(None);
+                        }
+                        graph
+                            .describe(dependency)?
+                            .map(|metadata| metadata.statement_question())
+                            .transpose()
+                    },
+                )? {
+                    crate::network::emit(serde_json::json!({"event":"finder_goal_supported",
+                        "lemma":crate::hex(dependency.as_bytes()), "goal":crate::hex(root.as_bytes()),
+                        "lemma_resolution":crate::hex(lemma.resolution_id()), "goal_resolution":crate::hex(question.resolution_id()),
+                        "support_updates":self.evidence.model().supports}));
+                }
+            }
+        }
+        self.goals
+            .retain(|q| q.resolution_id() != question.resolution_id());
         self.forget_hint(question);
         Ok(())
+    }
+    fn learning_event(&self, question: &CompiledQuestion, before: u64, resolved: bool) {
+        let model = self.evidence.model();
+        if self.native && model.updates > before {
+            crate::network::emit(serde_json::json!({
+                "event":"finder_learned", "resolution_id":crate::hex(question.resolution_id()),
+                "outcome":if resolved { "checked_resolution" } else { "unresolved_search" },
+                "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
+                "supports":model.supports,"rehearsals":model.rehearsals,"utility_observations":model.utility_observations,
+                "model_weight":model.weight(question)
+            }));
+        }
     }
 }

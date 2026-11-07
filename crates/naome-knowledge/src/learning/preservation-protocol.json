@@ -1,0 +1,46 @@
+{
+  "purpose": "Test whether a verified-own-anchor CPL adaptation reduces complete-proof forgetting without suppressing new learning under the unchanged native qualification and resource limits.",
+  "baseline_source": "c86f96fe4d3e60857763493bbf34b9fc55e8e426",
+  "primary_sources": [
+    "https://arxiv.org/html/2609.32771v1",
+    "https://arxiv.org/html/2606.03087v2"
+  ],
+  "method": "Apply a bias-corrected coordinate EMA mask to the actual Adam parameter proposal. The preservation gradient is successful-action marginal cross entropy on one deterministic batch of16 previously accepted local training-anchor decision states, recompiled and independently checked by the existing training-pool owner. Refresh at each existing ten-update unit using the current candidate weights. Indicator is preservation_gradient times actual_delta <=0. EMA beta=.9, initial EMA=0. Clamp bias-corrected coefficients to[0,1]. Keep Adam moments from its original proposal. No pseudo-labels, generated self-probes, distillation targets or mathematical admission authority are introduced. This is an anchor-only CPL adaptation, not a reproduction of full CPLUS.",
+  "material": "Only Origin::Local examples in the existing bounded training-anchor set, validated by curriculum::owned::case and the existing exact native proof recheck. These are ordinary previously eligible training proofs. Dedicated protected, development, transfer, confirmation, retired-family questions and their proofs are excluded by the same curriculum owner. No selection by their outcomes, scores or traces. Cold training has no preservation mask; warm jobs use the incumbent's existing own training anchors.",
+  "sampling": "Preservation cursor starts at floor(candidate.updates/10)*16 each unit, separately from the unchanged training cursor. The ordinary hierarchical cyclic batch sampler is used without focus. No training examples or steps are replaced. If there is no eligible local anchor, use unmasked Adam and retain the previous EMA state.",
+  "checkpoint": "One current optimizer artifact contains namespaced Adam state, all parameter-shaped EMA tensors and the actual mask-step count. Strict current-format restoration binds shapes, finite bounded EMA, parameter identities, exact canonical serialization and step count <=total actual model updates. No old specification rewrite, imported historical weights or fallback. Rejection retains the exact incumbent weights and complete optimizer memory.",
+  "comparators": [
+    "Unmasked Adam with the same current artifact layout",
+    "Binary CPL indicator without temporal smoothing",
+    "CPL indicator with beta=.9 temporal smoothing"
+  ],
+  "engineering": "Before scientific comparisons: independent numeric vectors including Adam momentum opposing the current gradient; attenuation bounds; first-step bias correction; finite/current-artifact corruption rejection; exact model/Adam/EMA/cursor continuation across an existing ten-update checkpoint boundary; legal own-only native input provenance; parent immutability. Run the ordinary node learning, resource pause/recovery and restart paths when the unchanged OS resource gate permits work.",
+  "scientific": "Fresh model specification requires fresh initialization and new own-source acquisition. Fixed lower seeds2411,3203,3301 and all six existing outer contexts4507,4603,4703,4801,4903,5003 are retained. Shared per-seed inputs and acquisition order are frozen before the first optimizer call; each control starts from exact matched weights and Adam. Compare all three declared interventions with no coefficient sweep. Genuine multiple rounds must promote by the complete existing150-unit gate, with actual selected weights, Adam and EMA restored between rounds. All original primary/preparation/meta and coverage criteria remain mandatory. A subsequent confirmation bank must exclude all192 already revealed final questions and their whole construction families before any new main optimizer call; its exact input manifest must be frozen before execution. Development-only engineering results do not qualify independent-family learning.",
+  "cost": "All independent rechecks, source selection, reference forwards/backwards, EMA arithmetic, serialization, measured CPU/wall/RSS/IO and all qualification work count inside the original limits. Batch16,250 actual Adam proposals,25 units, native search limits and150-unit gate remain unchanged. Extra mask work is not free or an increase in the budget. Complete-experiment CPU and wall reduction >=20percent with no solution loss remains required; no claim from update-only timings. The unmasked comparator skips unused preservation selection and gradient work; its actual compute is reported separately. Training and preservation graphs share the original combined48MiB allowance. Historical timing comparisons must include the extra current optimizer-format serialization as real work, not assume it cancels against the older source.",
+  "outcomes": "Report per-question and equally weighted whole-family gains AND losses for every seed and round, complete checked proof success, candidate versus actually selected states, and exact original>=5pp/strict positive family-bootstrap/no-negative-seed criteria. Decision loss, mask activity, model predictions and a passed integration test are not proof-outcome improvements.",
+  "ReMind": "ReMind periodically replaces prompts before fresh GRPO rollouts and updates a mastery queue from those new outcomes. NAOME currently uses checked-trajectory cross entropy rather than GRPO. The prior static replay replacement was negative and is not relabelled ReMind. Do not combine a new review queue with this first isolated masking intervention. A separate rollout-based adaptation requires its own frozen comparison and cost accounting.",
+  "stop": "Preserve failed/incomplete checks and runs. Do not run learning while installed OS-pressure controls pause computation. Stop this fixed intervention on implementation failure or resource violation; fix a genuine defect with invalidated affected evidence. Negative proof outcomes reject the candidate, never relax protected quality or search/resource gates. Keep Draft PR332 unmerged. Do not claim the overall Goal complete without all original independent confirmations.",
+  "source_implementation": {
+    "commit": "39bf48e8114c98053681a11733812d3729bd093c",
+    "path": "jax_sft/cnl.py",
+    "sha256": "42979ed774c7ab05b78ab08b87c9526e6e470ba3f9176f02ef7eee0666c2eba5",
+    "procedure": "cnl_optax_step_mask_ema / mask_optax_updates_ema; actual optimizer proposals before attenuation, no-reference bypass, zero-initialized EMA and bias correction. Independently implemented native adaptation; no external code execution."
+  },
+  "engineering_comparison": {
+    "scope": "Development-only component evidence; no final inference or independent-quality claim.",
+    "contexts": [
+      4507,
+      4603,
+      4703,
+      4801,
+      4903,
+      5003
+    ],
+    "inputs": "Acquire and persist both original16/32 own-query source epochs for all six contexts from fresh zero-update current-specification models before the first optimizer call. No old weights, optimizer or proof-trace imports.",
+    "cold": "Two ordinary250-update/full150-unit unmasked meta-plan trials per context. Retain the first genuinely promoted parent or report missing warm coverage; never force a failed parent.",
+    "warm": "Branch unmasked Adam, binary CPL and smoothed CPL exactly once each from the same genuine250-update parent, exact upper model/Adam/RNG/history, later own-source snapshot and chosen plan. The parent state and complete blobs are saved and actually reloaded from disk before branching. Cyclic mode order rotates by context. Realized focused sampling may diverge as a consequence of model changes; unchanged source availability and starting cursor are not a claim of identical realized batches.",
+    "limits": "At most30 complete jobs, each original250 proposals/150 units/90CPU seconds/120wall seconds/2GiBIO/768MiBRSS. Full sources, recovery, all controls, checking and IO count within the unchanged7200CPU/10800wall outer allowance. Record all preparation and shared costs separately; no fictitious equal-actual-compute claim.",
+    "selection": "Complete original native predicate alone selects500 or retains the exact250 checkpoint, including Adam and mask. Record per-question gains/losses and whole-family transfer losses. All six contexts required for coverage. No best-of-method selection, coefficient sweep or use of these development outcomes as fresh final evidence.",
+    "stopping": "Finish the fixed methods even when native qualification rejects a candidate; stop on a genuine implementation/resource failure and preserve partial evidence. Independent original main qualification is still required after this component comparison."
+  }
+}

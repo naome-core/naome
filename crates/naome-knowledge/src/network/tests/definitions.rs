@@ -124,6 +124,7 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
     let receiver_port = second.local_addr().unwrap().port();
     drop((first, second));
     let config = |directory, port, peer: PeerId, remote_port| Config {
+        formal_goal: None,
         directory,
         listen: format!("/ip4/127.0.0.1/tcp/{port}"),
         peers: vec![Peer {

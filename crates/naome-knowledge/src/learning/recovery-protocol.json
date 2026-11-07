@@ -1,0 +1,57 @@
+{
+  "purpose": "Separate structural replay retention and bounded historical reload as causes of available/consumed own decision coverage and actual native warm-promotion outcomes.",
+  "scope": "Development-only component. No independent generalization, overall Goal or runtime-speed qualification from this experiment.",
+  "seeds": [
+    4507,
+    4603,
+    4703,
+    4801,
+    4903,
+    5003
+  ],
+  "sources": "Fresh zero-update current-specification models acquire both original16/32-query own-source epochs across all six contexts before any optimizer. Earlier models, Adam files, labels and descriptor rewrites are forbidden. Existing source generator and native checker remain unchanged. Preserve all actual source rows including unsuccessful queries as unknown outcomes.",
+  "common_parent": "Two original unmasked Meta-plan cold forks per context using origin/dependency/age eviction and the current shared artifact representation. Retain the first genuinely promoted250-update parent. Missing promotion is missing coverage, not permission to retry, force or substitute a parent. Save and actually restore the parent state/model/Adam from disk. Common source acquisitions and cold qualification are shared, measured costs, not free work.",
+  "arms": [
+    {
+      "name": "original",
+      "structural": false,
+      "history": false
+    },
+    {
+      "name": "coverage",
+      "structural": true,
+      "history": false
+    },
+    {
+      "name": "history",
+      "structural": false,
+      "history": true
+    },
+    {
+      "name": "coverage_history",
+      "structural": true,
+      "history": true
+    }
+  ],
+  "matched_inputs": "Each warm branch starts from the identical bounded stage0 working selection and consumes the same later chronological independently checked raw sources. Reapply the selected eviction criterion during admission, then bind the exact genuine parent model/Adam/controller/cursor. Keep knowledge, definitions and early own anchors identical. Report any real admissions/epoch or working-selection differences. A branch lacking the original training eligibility is incomplete, never forced. The later shared source snapshot generated without a training boundary is not assumed identical to this reconstructed post-boundary state.",
+  "retention": "A scoped test-only switch removes only structural-loss priority, leaving existing origin/dependency/age tie-breaking. Production uses structural priority. All arms keep the current identical stored-reference encoding and strict32KiB State/256KiB trace/32-replay limits. Filter collisions can underestimate distinct strategies: structural coverage is a lossy proxy, not competence or neural activation.",
+  "history": "One fixed bounded page sorted by exact proof ID, same initial cursor and current-job horizon. Source adapter reads immutable per-proof source files bound by a SHA256 manifest, including exact original question, complete solution/helper/definition closure and job ID. First source per unique native proof matches replay_seen ownership. Worker uses the production Page/Receipt/Working path and independently reconstructs every eligible source before learning. Missing/substituted sources fail closed. Read/selection/preparation/storage costs are inside the job limits. This file adapter does not claim to measure production SQLite/IPC overhead; ordinary two-node and unseeded process evidence is separate.",
+  "optimizer": "All warm branches use the existing fixed Targeted plan and unmasked Adam,250 actual proposals, batch16 and the original150-unit complete qualification. No masking/risk review/activation intervention. Starting model,Adam,seed,cursor,knowledge/definitions/anchors are identical. Source selection and later current-model focus may cause different realized batches, which are measured rather than claimed equal.",
+  "observation": "Reuse the bounded native model observer. After each ten-update unit, reconstruct sampled graph+positive-action identities from the actual focused pool using a copied original cursor; assert exact ending cursor. No extra neural calls, tensor changes or RNG consumption. Report many-to-many source association, empty-decision sources and shared positives explicitly. Record all4000 decision occurrences per warm job. Validate observer neutrality against exact resumed model+Adam/EMA/cursor/loss.",
+  "order": "Rotate the four warm arms cyclically by context; no outcome-dependent order or best-of selection. All six contexts and all eligible arms are required. Do not inspect partial results to tune source, hyperparameters or selection.",
+  "limits": {
+    "maximum_complete_jobs": 36,
+    "per_job_lower_updates": 250,
+    "per_job_units": 150,
+    "per_job_cpu_seconds": 90,
+    "per_job_wall_seconds": 120,
+    "per_job_io_bytes": 2147483648,
+    "rss_bytes": 805306368,
+    "outer_cpu_seconds": 7200,
+    "outer_wall_seconds": 10800
+  },
+  "costs": "Count fresh acquisition, native reconstruction/rechecks, source reads, preparation, training/focus, original qualification, actual disk restore, observation, and evidence output in complete process CPU/wall/RSS. Record per-job logical artifact+source IO and evidence output, shared costs separately. Equal maximum budgets are not equal measured compute. Engineering compilation and preflight costs are recorded separately from scientific comparison. Existing OS pressure gate must permit execution.",
+  "acceptance": "Keep the exact native promotion predicate: positive development gain; no lost dedicated protected or own-anchor solution; full transfer-family admission. Report actual proof IDs, per-question/family gains AND losses and selected500 vs retained250. All six genuine warm contexts are required. Coverage/decision loss gains alone are not quality evidence. The original main primary/preparation/meta >=5pp/no-negative-seed/strictly-positive whole-family bootstrap criteria, genuinely repeated promotions, fresh unseen whole families, independent positive confirmation and >=20percent complete CPU AND wall reduction without protected loss remain mandatory and are not tested fully here.",
+  "heldout": "Zero new final inference. All192 earlier revealed final cases remain retired diagnostic material. Dedicated protected/development/transfer/final/retired families never supply selection inputs, historical sources, reconstructed training decisions or teacher labels.",
+  "stopping": "Run the fixed comparison to completion despite negative native outcomes. Preserve every failed/incomplete attempt. Stop on genuine implementation failure or original resource exhaustion; correct only demonstrated defects before a new frozen run. No threshold/cap/deadline relaxation or lucky unchanged retries. Draft MR332 stays unmerged."
+}

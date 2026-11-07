@@ -11,10 +11,23 @@ pub(crate) const STALE_COMMIT: crate::Error = crate::Error::StaleAuthority;
 
 /// A concrete peer/root authorization, independent of other peer traffic.
 #[derive(Clone, Debug)]
-pub(crate) struct PeerGrant(pub(crate) Arc<std::sync::atomic::AtomicBool>);
+pub(crate) struct PeerGrant(
+    pub(crate) Arc<std::sync::atomic::AtomicBool>,
+    Option<libp2p::PeerId>,
+);
 impl PeerGrant {
+    pub(crate) fn from_lease(lease: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self(lease, None)
+    }
     pub(crate) fn new() -> Self {
-        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)), None)
+    }
+    pub(crate) fn with_origin(mut self, peer: libp2p::PeerId) -> Self {
+        self.1 = Some(peer);
+        self
+    }
+    pub(crate) fn origin(&self) -> Option<libp2p::PeerId> {
+        self.1
     }
     pub(crate) fn check(&self) -> Result<(), crate::Error> {
         if self.0.load(std::sync::atomic::Ordering::Acquire) {
@@ -49,6 +62,9 @@ impl CommitGuard {
             selection,
             peer: None,
         }
+    }
+    pub(crate) fn peer_origin(&self) -> Option<libp2p::PeerId> {
+        self.peer.as_ref().and_then(PeerGrant::origin)
     }
     pub(crate) fn with_peer(mut self, peer: PeerGrant) -> Self {
         self.peer = Some(peer);

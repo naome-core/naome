@@ -1,0 +1,131 @@
+{
+  "model_seeds": [
+    41,
+    73,
+    101,
+    137,
+    211
+  ],
+  "cases": [
+    {
+      "family": "extensional_characterizations",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),eq(a,b)))),all(a,all(b,imp(eq(a,b),all(x,iff(mem(x,b),mem(x,a)))))))"
+    },
+    {
+      "family": "extensional_characterizations",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),eq(a,b)))),and(all(a,all(b,imp(eq(a,b),all(x,iff(mem(x,b),mem(x,a)))))),all(a,all(b,iff(all(x,iff(mem(x,a),mem(x,b))),eq(a,b))))))"
+    },
+    {
+      "family": "empty_characterizations",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(and(all(x,not(mem(x,a))),all(x,not(mem(x,b)))),eq(a,b)))),all(a,all(b,imp(and(eq(a,b),all(x,not(mem(x,a)))),all(x,not(mem(x,b)))))))"
+    },
+    {
+      "family": "empty_characterizations",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(and(all(x,not(mem(x,a))),all(x,not(mem(x,b)))),eq(a,b)))),and(all(a,all(b,imp(and(eq(a,b),all(x,not(mem(x,a)))),all(x,not(mem(x,b)))))),all(a,all(b,imp(eq(a,b),iff(all(x,not(mem(x,a))),all(x,not(mem(x,b)))))))))"
+    },
+    {
+      "family": "strict_containment",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(eq(a,b))))),all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(and(all(x,imp(mem(x,b),mem(x,a))),ex(x,and(mem(x,a),not(mem(x,b))))))))))"
+    },
+    {
+      "family": "strict_containment",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(eq(a,b))))),and(all(a,all(b,imp(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),not(and(all(x,imp(mem(x,b),mem(x,a))),ex(x,and(mem(x,a),not(mem(x,b))))))))),all(a,all(b,all(c,imp(and(and(all(x,imp(mem(x,a),mem(x,b))),ex(x,and(mem(x,b),not(mem(x,a))))),all(x,imp(mem(x,b),mem(x,c)))),and(all(x,imp(mem(x,a),mem(x,c))),ex(x,and(mem(x,c),not(mem(x,a)))))))))))"
+    },
+    {
+      "family": "disjointness_restriction",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(all(x,not(and(mem(x,a),mem(x,b)))),all(x,not(and(mem(x,b),mem(x,a))))))),all(a,all(b,all(c,imp(and(all(x,not(and(mem(x,a),mem(x,b)))),all(x,imp(mem(x,c),mem(x,b)))),all(x,not(and(mem(x,a),mem(x,c)))))))))"
+    },
+    {
+      "family": "disjointness_restriction",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(all(x,not(and(mem(x,a),mem(x,b)))),all(x,not(and(mem(x,b),mem(x,a))))))),and(all(a,all(b,all(c,imp(and(all(x,not(and(mem(x,a),mem(x,b)))),all(x,imp(mem(x,c),mem(x,b)))),all(x,not(and(mem(x,a),mem(x,c)))))))),all(a,all(b,imp(all(x,not(and(mem(x,a),mem(x,b)))),not(ex(x,and(mem(x,a),mem(x,b)))))))))"
+    },
+    {
+      "family": "unique_member_logic",
+      "shape": "pair",
+      "source": "goal=and(all(a,imp(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,a),all(y,imp(mem(y,a),eq(x,y))))))),all(a,all(b,imp(and(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,b),mem(x,a)))),all(x,all(y,imp(and(mem(x,b),mem(y,b)),eq(x,y))))))))"
+    },
+    {
+      "family": "unique_member_logic",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,imp(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,a),all(y,imp(mem(y,a),eq(x,y))))))),and(all(a,all(b,imp(and(all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y)))),all(x,imp(mem(x,b),mem(x,a)))),all(x,all(y,imp(and(mem(x,b),mem(y,b)),eq(x,y))))))),all(a,imp(and(ex(x,mem(x,a)),all(x,all(y,imp(and(mem(x,a),mem(y,a)),eq(x,y))))),ex(x,all(y,iff(mem(y,a),eq(y,x))))))))"
+    },
+    {
+      "family": "total_relation_restriction",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),ex(y,and(mem(y,c),mem(x,y))))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,c),mem(x,a))),all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y)))))),all(x,imp(mem(x,c),ex(y,and(mem(y,b),mem(x,y))))))))))"
+    },
+    {
+      "family": "total_relation_restriction",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),ex(y,and(mem(y,c),mem(x,y))))))))),and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,c),mem(x,a))),all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y)))))),all(x,imp(mem(x,c),ex(y,and(mem(y,b),mem(x,y))))))))),all(a,all(b,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),ex(x,mem(x,a))),ex(y,mem(y,b)))))))"
+    },
+    {
+      "family": "quantified_exclusion_duality",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(not(ex(x,and(mem(x,a),not(mem(x,b))))),all(x,imp(mem(x,a),mem(x,b)))))),all(a,all(b,imp(not(all(x,imp(mem(x,a),mem(x,b)))),ex(x,and(mem(x,a),not(mem(x,b))))))))"
+    },
+    {
+      "family": "quantified_exclusion_duality",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(not(ex(x,and(mem(x,a),not(mem(x,b))))),all(x,imp(mem(x,a),mem(x,b)))))),and(all(a,all(b,imp(not(all(x,imp(mem(x,a),mem(x,b)))),ex(x,and(mem(x,a),not(mem(x,b))))))),all(a,all(b,imp(not(ex(x,or(mem(x,a),mem(x,b)))),and(all(x,not(mem(x,a))),all(x,not(mem(x,b)))))))))"
+    },
+    {
+      "family": "unique_equality_witnesses",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(eq(a,b),ex(x,and(mem(x,c),eq(x,a)))),mem(b,c))))),all(a,all(b,imp(all(x,imp(mem(x,a),eq(x,b))),imp(ex(x,mem(x,a)),mem(b,a))))))"
+    },
+    {
+      "family": "unique_equality_witnesses",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(eq(a,b),ex(x,and(mem(x,c),eq(x,a)))),mem(b,c))))),and(all(a,all(b,imp(all(x,imp(mem(x,a),eq(x,b))),imp(ex(x,mem(x,a)),mem(b,a))))),all(a,all(b,imp(and(all(x,imp(mem(x,a),eq(x,b))),mem(b,a)),all(x,iff(mem(x,a),eq(x,b))))))))"
+    },
+    {
+      "family": "quantifier_order_relations",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(all(x,all(y,imp(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,all(x,imp(mem(y,b),imp(mem(x,a),mem(x,y)))))))),all(a,all(b,imp(ex(x,all(y,and(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,ex(x,and(mem(x,a),imp(mem(y,b),mem(x,y)))))))))"
+    },
+    {
+      "family": "quantifier_order_relations",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(all(x,all(y,imp(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,all(x,imp(mem(y,b),imp(mem(x,a),mem(x,y)))))))),and(all(a,all(b,imp(ex(x,all(y,and(mem(x,a),imp(mem(y,b),mem(x,y))))),all(y,ex(x,and(mem(x,a),imp(mem(y,b),mem(x,y)))))))),all(a,all(b,imp(all(x,all(y,iff(mem(x,a),mem(y,b)))),iff(ex(x,mem(x,a)),all(y,mem(y,b))))))))"
+    },
+    {
+      "family": "inhabited_boolean_partition",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(ex(x,mem(x,a)),or(ex(x,and(mem(x,a),mem(x,b))),ex(x,and(mem(x,a),not(mem(x,b)))))))),all(a,all(b,imp(not(all(x,not(and(mem(x,a),mem(x,b))))),ex(x,and(mem(x,a),mem(x,b)))))))"
+    },
+    {
+      "family": "inhabited_boolean_partition",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,imp(ex(x,mem(x,a)),or(ex(x,and(mem(x,a),mem(x,b))),ex(x,and(mem(x,a),not(mem(x,b)))))))),and(all(a,all(b,imp(not(all(x,not(and(mem(x,a),mem(x,b))))),ex(x,and(mem(x,a),mem(x,b)))))),all(a,all(b,iff(all(x,imp(mem(x,a),not(mem(x,b)))),not(ex(x,and(mem(x,a),mem(x,b)))))))))"
+    },
+    {
+      "family": "dependent_witness_chains",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),ex(y,and(mem(y,c),mem(x,y)))))),all(x,imp(mem(x,a),ex(y,ex(z,and(and(mem(y,b),mem(z,c)),and(mem(x,y),mem(y,z))))))))))),all(a,all(b,imp(ex(x,and(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),ex(y,and(mem(y,b),ex(x,and(mem(x,a),mem(x,y)))))))))"
+    },
+    {
+      "family": "dependent_witness_chains",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),all(x,imp(mem(x,b),ex(y,and(mem(y,c),mem(x,y)))))),all(x,imp(mem(x,a),ex(y,ex(z,and(and(mem(y,b),mem(z,c)),and(mem(x,y),mem(y,z))))))))))),and(all(a,all(b,imp(ex(x,and(mem(x,a),ex(y,and(mem(y,b),mem(x,y))))),ex(y,and(mem(y,b),ex(x,and(mem(x,a),mem(x,y)))))))),all(a,all(b,imp(all(x,imp(mem(x,a),all(y,imp(mem(y,b),mem(x,y))))),imp(and(ex(x,mem(x,a)),ex(y,mem(y,b))),ex(x,ex(y,and(and(mem(x,a),mem(y,b)),mem(x,y))))))))))"
+    },
+    {
+      "family": "classical_global_witnesses",
+      "shape": "pair",
+      "source": "goal=and(all(a,ex(x,imp(mem(x,a),all(y,mem(y,a))))),all(a,ex(x,imp(ex(y,mem(y,a)),mem(x,a)))))"
+    },
+    {
+      "family": "classical_global_witnesses",
+      "shape": "nested_three",
+      "source": "goal=and(all(a,ex(x,imp(mem(x,a),all(y,mem(y,a))))),and(all(a,ex(x,imp(ex(y,mem(y,a)),mem(x,a)))),all(a,all(b,ex(x,imp(and(mem(x,a),mem(x,b)),all(y,and(mem(y,a),mem(y,b)))))))))"
+    }
+  ]
+}

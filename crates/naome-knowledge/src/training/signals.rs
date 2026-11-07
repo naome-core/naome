@@ -74,9 +74,8 @@ pub(crate) fn opportunity(successes: u64, attempts: u64) -> u64 {
 pub(super) struct Signals {
     covered: [u64; SIGNALS],
     rules: [u64; RULES],
-    attempts: [u64; SIGNALS],
-    solved: [u64; SIGNALS],
-    gains: [i64; SIGNALS],
+    ability: Option<(super::ability::Profile, u32)>,
+    regressions: [u16; super::ability::SKILLS],
 }
 impl Signals {
     pub(super) fn new(graph: &Graph, request: &Request) -> Result<Self, Error> {
@@ -124,21 +123,28 @@ impl Signals {
         } else {
             None
         };
+        let mut ability = super::ability::Profile::new(request.solver.checkpoint.clone());
         for (id, observed) in &current {
-            let features = &observed.features;
-            let outcome = observed.solved;
-            for (index, _) in features.counts.iter().enumerate().filter(|(_, n)| **n > 0) {
-                if let Some(solved) = outcome {
-                    signals.attempts[index] += 1;
-                    signals.solved[index] += u64::from(solved);
-                }
-                if let Some(before) = previous.as_ref().and_then(|p| p.get(id))
-                    && let (Some(before), Some(after)) = (before.solved, outcome)
-                {
-                    signals.gains[index] += i64::from(after) - i64::from(before);
+            ability.observe_features(
+                &observed.features,
+                &crate::hex(id),
+                request.solver.budget.work_units,
+                observed.solved,
+                observed.micros,
+            );
+            if let Some(before) = previous.as_ref().and_then(|p| p.get(id))
+                && before.solved == Some(true)
+                && observed.solved == Some(false)
+            {
+                let (skills, _) = super::ability::signature_features(&observed.features);
+                for (index, present) in skills.into_iter().enumerate() {
+                    if present {
+                        signals.regressions[index] += 1;
+                    }
                 }
             }
         }
+        signals.ability = Some((ability, request.solver.budget.work_units));
         Ok(signals)
     }
     pub(super) fn covered(&mut self, features: &Features, rules: &[bool; RULES]) {
@@ -154,20 +160,27 @@ impl Signals {
         let mut count = 0;
         for (index, _) in features.counts.iter().enumerate().filter(|(_, n)| **n > 0) {
             let scarcity = SCALE / (1 + self.covered[index]);
-            let weakness = SCALE
-                + SCALE * self.attempts[index].saturating_sub(self.solved[index])
-                    / (self.attempts[index] + 2);
-            let boundary = opportunity(self.solved[index], self.attempts[index]);
-            // Development progress is a prioritization hint, not a causal
-            // estimate. Matched reserved evaluation remains independent.
-            let gain = self.gains[index].clamp(-4, 4);
-            let improvement = (8 + gain) as u64;
-            value += scarcity * weakness / SCALE * boundary / SCALE * improvement / 8;
+            value += scarcity;
             count += 1;
         }
         for (index, _) in rules.iter().enumerate().filter(|(_, p)| **p) {
             value += SCALE / (1 + self.rules[index]);
             count += 1;
+        }
+        if let Some((ability, budget)) = &self.ability {
+            let readiness = ability.priority_features(features, *budget);
+            let (skills, _) = super::ability::signature_features(features);
+            let regression = skills
+                .into_iter()
+                .enumerate()
+                .filter(|(_, p)| *p)
+                .map(|(i, _)| u64::from(self.regressions[i].min(4)))
+                .max()
+                .unwrap_or(0);
+            value = value
+                .saturating_mul(readiness)
+                .saturating_mul(1 + regression)
+                / SCALE;
         }
         // Certificate steps approximate teaching/processing cost, not measured
         // search time. Expensive examples retain nonzero exploration mass.

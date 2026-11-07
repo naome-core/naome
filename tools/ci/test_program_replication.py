@@ -17,6 +17,8 @@ class ProgramObservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             node = AutonomousNode.__new__(AutonomousNode)
             node.directory = pathlib.Path(directory)
+            node._log_events = []
+            node._log_offsets = {}
             node.process = {"pid": 42}
             node.launch_hash = "current"
             log = node.directory / "node.log"
@@ -33,8 +35,11 @@ class ProgramObservationTests(unittest.TestCase):
             write(log, [marker, started])
             self.assertEqual(node.launch_events(), [])
 
-            write(previous, [marker, started, dict(marker, instance_sha256="current")])
+            with log.open("a") as output:
+                output.write(json.dumps(dict(marker, instance_sha256="current")) + "\n")
+            log.rename(previous)
             write(log, [started, accepted, stopped, dict(marker, phase="begin"), started])
+            self.assertEqual(node.launch_events(), [started, accepted, stopped])
             self.assertEqual(node.launch_events(), [started, accepted, stopped])
 
     def test_locked_observation_waits_for_the_same_published_program(self):

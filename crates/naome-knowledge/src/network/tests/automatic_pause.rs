@@ -178,6 +178,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
     let mut first = isolated_transport();
     let mut late = isolated_transport();
     let config = Config {
+        formal_goal: None,
         directory: directory.0.clone(),
         listen: address.to_string(),
         peers: [*first.local_peer_id(), *late.local_peer_id()]

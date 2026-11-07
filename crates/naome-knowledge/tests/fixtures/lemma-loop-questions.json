@@ -1,0 +1,14 @@
+[
+  "goal = all(b0, all(b1, not(not(all(b2, imp(mem(b2, b0), mem(b2, b1)))))))",
+  "goal = not(all(b0, not(all(b1, mem(b0, b1)))))",
+  "goal = all(b0, all(b1, not(mem(b1, b0))))",
+  "goal = all(b0, all(b1, eq(b1, b0)))",
+  "goal = all(b0, all(b1, imp(all(b2, not(imp(imp(all(b3, imp(eq(b3, b2), eq(b3, b0))), all(b3, imp(eq(b3, b2), eq(b3, b1)))), not(imp(all(b3, imp(eq(b3, b2), eq(b3, b1))), all(b3, imp(eq(b3, b2), eq(b3, b0)))))))), eq(b0, b1))))",
+  "goal = all(b0, all(b1, mem(b1, b0)))",
+  "goal=not(imp(all(a,all(b,imp(eq(a,b),eq(b,a)))),not(all(a,all(b,imp(all(z,imp(eq(a,z),eq(b,z))),all(z,imp(eq(b,z),eq(a,z)))))))))",
+  "goal=not(imp(all(a,all(b,imp(eq(a,b),eq(b,a)))),not(all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c)))))))))",
+  "goal=not(imp(all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c)))))),not(all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c)))))))))",
+  "goal=not(imp(all(a,all(b,imp(all(z,imp(eq(a,z),eq(b,z))),all(z,imp(eq(b,z),eq(a,z)))))),not(all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c)))))))))",
+  "goal=not(imp(not(imp(all(a,all(b,imp(eq(a,b),eq(b,a)))),not(all(a,all(b,imp(all(z,imp(eq(a,z),eq(b,z))),all(z,imp(eq(b,z),eq(a,z))))))))),not(all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c)))))))))",
+  "goal=not(imp(not(imp(all(a,all(b,imp(eq(a,b),eq(b,a)))),not(all(a,all(b,all(c,imp(eq(a,b),imp(eq(b,c),eq(a,c))))))))),not(not(imp(all(a,all(b,imp(all(z,imp(eq(a,z),eq(b,z))),all(z,imp(eq(b,z),eq(a,z)))))),not(all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))))))))"
+]

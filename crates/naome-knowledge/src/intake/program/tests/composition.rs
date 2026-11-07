@@ -684,6 +684,7 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
     let receiver_port = second.local_addr().unwrap().port();
     drop((first, second));
     let config = |directory: PathBuf, port, peer: PeerId, remote_port| network::Config {
+        formal_goal: None,
         directory,
         listen: format!("/ip4/127.0.0.1/tcp/{port}"),
         peers: vec![network::Peer {

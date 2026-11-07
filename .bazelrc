@@ -6,6 +6,21 @@ build --repository_cache=~/.cache/naome-bazel/repository
 build --verbose_failures
 test --test_output=errors
 test --test_summary=detailed
+# Build and test share numerical kernels; retain every runtime guard.
+build --@rules_rust//rust/settings:per_crate_rustc_flag=external/rules_rust++crate+crates__gemm@-Copt-level=2
+build --@rules_rust//rust/settings:per_crate_rustc_flag=external/rules_rust++crate+crates__gemm@-Cdebug-assertions=on
+build --@rules_rust//rust/settings:per_crate_rustc_flag=external/rules_rust++crate+crates__gemm@-Coverflow-checks=on
 
 build:ci --keep_going
+# Native-model regressions need optimized code, with all Rust runtime checks.
+build:ci --compilation_mode=opt
+build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Copt-level=1
+# Compile proc macros and build scripts quickly; product flags stay independent.
+build:ci --@rules_rust//rust/settings:extra_exec_rustc_flag=-Copt-level=1
+build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=yes
+build:ci --@rules_rust//rust/settings:extra_rustc_flag=-Coverflow-checks=yes
+# Keep aspect analysis consistent with the shared build and test configuration.
+build:ci --@rules_rust//rust/settings:clippy_flag=-Dwarnings
 test:ci --flaky_test_attempts=1
+# Keep CPU-heavy native-model tests from flooding timed async fixtures.
+test:ci --test_arg=--test-threads=2

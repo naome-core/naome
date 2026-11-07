@@ -1,6 +1,34 @@
 //! Prospective research shares the curriculum's measured deficits. Outputs are
 //! unproved obligations and must still pass the node's real admission path.
 use super::*;
+use naome_foundation::{Formula, FreeVariable};
+
+/// Propose a use of a checked, closed source as a subgoal. The result is an
+/// unproved obligation; construction and lineage recovery share this shape.
+#[cfg(test)]
+pub(crate) fn continuation(source: Formula) -> Option<Formula> {
+    if !source.free_variables().is_empty() || source.view().node_count_and_depth().0 > 64 {
+        return None;
+    }
+    let target = Formula::member(FreeVariable::new(0), FreeVariable::new(1));
+    Some(Formula::implies(
+        Formula::implies(source, target.clone()),
+        target,
+    ))
+}
+
+pub(crate) fn continuation_parent(formula: &Formula) -> Option<Formula> {
+    let mut open = formula.clone();
+    for variable in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+        let Some(body) = open.open_outer_universal(FreeVariable::new(variable as u32)) else {
+            break;
+        };
+        open = body;
+    }
+    let (conditional, conclusion) = open.implication_parts()?;
+    let (parent, repeated) = conditional.implication_parts()?;
+    (conclusion == repeated && parent.free_variables().is_empty()).then_some(parent)
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

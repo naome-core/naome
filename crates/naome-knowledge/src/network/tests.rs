@@ -185,6 +185,7 @@ async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
             ..Default::default()
         }),
         producer_sources: Vec::new(),
+        formal_goal: None,
     };
     let mut sender_graph = Graph::open(&sender_dir).unwrap();
     let object = sender_graph

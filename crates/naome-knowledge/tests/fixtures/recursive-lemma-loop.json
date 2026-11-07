@@ -1,0 +1,131 @@
+{
+  "model_seeds": [
+    41,
+    73,
+    101,
+    137,
+    211
+  ],
+  "cases": [
+    {
+      "family": "equality_transport",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d)))))))),all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(c,d),imp(mem(a,c),mem(b,d)))))))))"
+    },
+    {
+      "family": "equality_transport",
+      "shape": "left_three",
+      "source": "goal=and(and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d)))))))),all(a,all(b,all(c,imp(eq(a,b),imp(not(mem(a,c)),not(mem(b,c)))))))),all(a,all(b,all(c,imp(eq(a,b),iff(mem(c,a),mem(c,b)))))))"
+    },
+    {
+      "family": "equality_transport",
+      "shape": "right_three",
+      "source": "goal=and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(c,d),imp(mem(a,c),mem(b,d)))))))),and(all(a,all(b,all(c,imp(eq(a,b),imp(not(mem(a,c)),not(mem(b,c))))))),all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d))))))))))"
+    },
+    {
+      "family": "equality_transport",
+      "shape": "balanced_four",
+      "source": "goal=and(and(all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(b,c),imp(eq(c,d),eq(a,d)))))))),all(a,all(b,all(c,all(d,imp(eq(a,b),imp(eq(c,d),imp(mem(a,c),mem(b,d))))))))),and(all(a,all(b,all(c,imp(eq(a,b),imp(not(mem(a,c)),not(mem(b,c))))))),all(a,all(b,all(c,imp(eq(a,b),iff(mem(c,a),mem(c,b))))))))"
+    },
+    {
+      "family": "inclusion_composition",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c))))))),all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,a)))))))"
+    },
+    {
+      "family": "inclusion_composition",
+      "shape": "left_three",
+      "source": "goal=and(and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,a),mem(x,c)))),all(x,imp(mem(x,a),and(mem(x,b),mem(x,c))))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,c))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(or(mem(x,a),mem(x,b)),mem(x,c))))))))"
+    },
+    {
+      "family": "inclusion_composition",
+      "shape": "right_three",
+      "source": "goal=and(all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,a)))))),and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,a),mem(x,c)))),all(x,imp(mem(x,a),and(mem(x,b),mem(x,c)))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c)))))))))"
+    },
+    {
+      "family": "inclusion_composition",
+      "shape": "balanced_four",
+      "source": "goal=and(and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(mem(x,a),mem(x,c))))))),all(a,all(b,imp(all(x,iff(mem(x,a),mem(x,b))),all(x,imp(mem(x,b),mem(x,a))))))),and(all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,b))),all(x,imp(mem(x,a),mem(x,c)))),all(x,imp(mem(x,a),and(mem(x,b),mem(x,c)))))))),all(a,all(b,all(c,imp(and(all(x,imp(mem(x,a),mem(x,c))),all(x,imp(mem(x,b),mem(x,c)))),all(x,imp(or(mem(x,a),mem(x,b)),mem(x,c)))))))))"
+    },
+    {
+      "family": "quantified_transfer",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b)))))),all(a,all(b,imp(and(all(x,mem(x,a)),all(x,mem(x,b))),all(x,and(mem(x,a),mem(x,b)))))))"
+    },
+    {
+      "family": "quantified_transfer",
+      "shape": "left_three",
+      "source": "goal=and(and(all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b)))))),all(a,all(b,imp(all(x,imp(mem(x,a),mem(x,b))),imp(ex(x,mem(x,a)),ex(x,mem(x,b))))))),all(a,all(b,imp(ex(x,and(mem(x,a),mem(x,b))),and(ex(x,mem(x,a)),ex(x,mem(x,b)))))))"
+    },
+    {
+      "family": "quantified_transfer",
+      "shape": "right_three",
+      "source": "goal=and(all(a,all(b,imp(and(all(x,mem(x,a)),all(x,mem(x,b))),all(x,and(mem(x,a),mem(x,b)))))),and(all(a,all(b,imp(all(x,imp(mem(x,a),mem(x,b))),imp(ex(x,mem(x,a)),ex(x,mem(x,b)))))),all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b))))))))"
+    },
+    {
+      "family": "quantified_transfer",
+      "shape": "balanced_four",
+      "source": "goal=and(and(all(a,all(b,imp(all(x,and(mem(x,a),mem(x,b))),and(all(x,mem(x,a)),all(x,mem(x,b)))))),all(a,all(b,imp(and(all(x,mem(x,a)),all(x,mem(x,b))),all(x,and(mem(x,a),mem(x,b))))))),and(all(a,all(b,imp(all(x,imp(mem(x,a),mem(x,b))),imp(ex(x,mem(x,a)),ex(x,mem(x,b)))))),all(a,all(b,imp(ex(x,and(mem(x,a),mem(x,b))),and(ex(x,mem(x,a)),ex(x,mem(x,b))))))))"
+    },
+    {
+      "family": "separation_witnesses",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(mem(x,b)))))))))"
+    },
+    {
+      "family": "separation_witnesses",
+      "shape": "left_three",
+      "source": "goal=and(and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),eq(x,b)))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(eq(x,b)))))))))"
+    },
+    {
+      "family": "separation_witnesses",
+      "shape": "right_three",
+      "source": "goal=and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(mem(x,b)))))))),and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),eq(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b)))))))))"
+    },
+    {
+      "family": "separation_witnesses",
+      "shape": "balanced_four",
+      "source": "goal=and(and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),mem(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(mem(x,b))))))))),and(all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),eq(x,b))))))),all(a,all(b,ex(c,all(x,iff(mem(x,c),and(mem(x,a),not(eq(x,b))))))))))"
+    },
+    {
+      "family": "relational_boolean",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a))))))),all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(not(mem(b,c)),not(mem(a,b))))))))"
+    },
+    {
+      "family": "relational_boolean",
+      "shape": "left_three",
+      "source": "goal=and(and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a))))))),all(a,all(b,all(c,imp(not(and(mem(a,b),mem(b,c))),or(not(mem(a,b)),not(mem(b,c)))))))),all(a,all(b,all(c,imp(and(mem(a,b),or(mem(b,c),mem(c,a))),or(and(mem(a,b),mem(b,c)),and(mem(a,b),mem(c,a))))))))"
+    },
+    {
+      "family": "relational_boolean",
+      "shape": "right_three",
+      "source": "goal=and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(not(mem(b,c)),not(mem(a,b))))))),and(all(a,all(b,all(c,imp(not(and(mem(a,b),mem(b,c))),or(not(mem(a,b)),not(mem(b,c))))))),all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a)))))))))"
+    },
+    {
+      "family": "relational_boolean",
+      "shape": "balanced_four",
+      "source": "goal=and(and(all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(imp(mem(b,c),mem(c,a)),imp(mem(a,b),mem(c,a))))))),all(a,all(b,all(c,imp(imp(mem(a,b),mem(b,c)),imp(not(mem(b,c)),not(mem(a,b)))))))),and(all(a,all(b,all(c,imp(not(and(mem(a,b),mem(b,c))),or(not(mem(a,b)),not(mem(b,c))))))),all(a,all(b,all(c,imp(and(mem(a,b),or(mem(b,c),mem(c,a))),or(and(mem(a,b),mem(b,c)),and(mem(a,b),mem(c,a)))))))))"
+    },
+    {
+      "family": "existential_witnesses",
+      "shape": "pair",
+      "source": "goal=and(all(a,all(b,imp(mem(a,b),ex(x,mem(x,b))))),all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),ex(x,and(eq(x,b),mem(x,c)))))))))"
+    },
+    {
+      "family": "existential_witnesses",
+      "shape": "left_three",
+      "source": "goal=and(and(all(a,all(b,imp(mem(a,b),ex(x,mem(x,b))))),all(a,all(b,imp(ex(x,and(mem(x,a),not(mem(x,b)))),not(all(x,imp(mem(x,a),mem(x,b)))))))),all(a,all(b,imp(ex(x,ex(y,and(mem(x,a),mem(y,b)))),ex(y,ex(x,and(mem(x,a),mem(y,b))))))))"
+    },
+    {
+      "family": "existential_witnesses",
+      "shape": "right_three",
+      "source": "goal=and(all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),ex(x,and(eq(x,b),mem(x,c)))))))),and(all(a,all(b,imp(ex(x,and(mem(x,a),not(mem(x,b)))),not(all(x,imp(mem(x,a),mem(x,b))))))),all(a,all(b,imp(mem(a,b),ex(x,mem(x,b)))))))"
+    },
+    {
+      "family": "existential_witnesses",
+      "shape": "balanced_four",
+      "source": "goal=and(and(all(a,all(b,imp(mem(a,b),ex(x,mem(x,b))))),all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),ex(x,and(eq(x,b),mem(x,c))))))))),and(all(a,all(b,imp(ex(x,and(mem(x,a),not(mem(x,b)))),not(all(x,imp(mem(x,a),mem(x,b))))))),all(a,all(b,imp(ex(x,ex(y,and(mem(x,a),mem(y,b)))),ex(y,ex(x,and(mem(x,a),mem(y,b)))))))))"
+    }
+  ]
+}

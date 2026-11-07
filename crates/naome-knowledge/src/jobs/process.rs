@@ -9,6 +9,7 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 mod feedback;
+mod model_bytes;
 use crate::resources::feedback::{Phase, Sample};
 
 const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
@@ -29,6 +30,24 @@ struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum Frame {
+    History {
+        id: u64,
+        unit: u32,
+        request: crate::learning::history::Request,
+    },
+    Model {
+        id: u64,
+        unit: u32,
+        blob: crate::learning::Blob,
+        range: std::ops::Range<usize>,
+        #[serde(with = "model_bytes")]
+        bytes: Option<Vec<u8>>,
+    },
+    Learning {
+        id: u64,
+        unit: u32,
+        progress: Box<crate::learning::Progress>,
+    },
     Feedback {
         id: u64,
         phase: Phase,
@@ -93,9 +112,31 @@ enum Frame {
 struct Grant {
     id: u64,
     next: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "model_bytes")]
+    data: Option<Vec<u8>>,
 }
 
 pub(super) enum Event {
+    History {
+        id: u64,
+        unit: u32,
+        request: crate::learning::history::Request,
+        reply: oneshot::Sender<Result<crate::learning::history::Receipt, String>>,
+    },
+    Model {
+        id: u64,
+        unit: u32,
+        blob: crate::learning::Blob,
+        range: std::ops::Range<usize>,
+        bytes: Option<Vec<u8>>,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
+    Learning {
+        id: u64,
+        unit: u32,
+        progress: Box<crate::learning::Progress>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Program {
         id: u64,
         unit: u32,
@@ -330,11 +371,117 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| "research reservation owner stopped")??;
-                    let mut bytes =
-                        serde_json::to_vec(&Grant { id, next }).map_err(|e| e.to_string())?;
+                    let mut bytes = serde_json::to_vec(&Grant {
+                        id,
+                        next,
+                        data: None,
+                    })
+                    .map_err(|e| e.to_string())?;
                     bytes.push(b'\n');
                     input.write_all(&bytes).await.map_err(|e| e.to_string())?;
                     outstanding = Some(next);
+                }
+                Frame::History { id, unit, request }
+                    if ready
+                        && id == record.id
+                        && unit == 1
+                        && outstanding == Some(unit)
+                        && record.provider == crate::learning::PROVIDER =>
+                {
+                    let (reply, receipt) = oneshot::channel();
+                    events
+                        .send(Event::History {
+                            id,
+                            unit,
+                            request,
+                            reply,
+                        })
+                        .await
+                        .map_err(|_| "historical source owner stopped")?;
+                    let receipt = receipt.await.map_err(|_| "history checkpoint stopped")??;
+                    let mut response = serde_json::to_vec(&Grant {
+                        id,
+                        next: unit,
+                        data: Some(serde_json::to_vec(&receipt).map_err(|e| e.to_string())?),
+                    })
+                    .map_err(|e| e.to_string())?;
+                    response.push(b'\n');
+                    input
+                        .write_all(&response)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Frame::Model {
+                    id,
+                    unit,
+                    blob,
+                    range,
+                    bytes,
+                } if ready
+                    && id == record.id
+                    && outstanding == Some(unit)
+                    && record.provider == crate::learning::PROVIDER =>
+                {
+                    let length = blob.range_len(&range)?;
+                    if let Some(bytes) = &bytes
+                        && bytes.len() != length
+                    {
+                        return Err("native model chunk length differs".into());
+                    }
+                    let (reply, receipt) = oneshot::channel();
+                    events
+                        .send(Event::Model {
+                            id,
+                            unit,
+                            blob,
+                            range,
+                            bytes,
+                            reply,
+                        })
+                        .await
+                        .map_err(|_| "native artifact owner stopped")?;
+                    let data = receipt
+                        .await
+                        .map_err(|_| "native artifact checkpoint stopped")??;
+                    let mut response = serde_json::to_vec(&Grant {
+                        id,
+                        next: unit,
+                        data: Some(data),
+                    })
+                    .map_err(|e| e.to_string())?;
+                    response.push(b'\n');
+                    input
+                        .write_all(&response)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Frame::Learning { id, unit, progress }
+                    if ready
+                        && id == record.id
+                        && outstanding == Some(unit)
+                        && record.provider == crate::learning::PROVIDER =>
+                {
+                    let (reply, receipt) = oneshot::channel();
+                    events
+                        .send(Event::Learning {
+                            id,
+                            unit,
+                            progress,
+                            reply,
+                        })
+                        .await
+                        .map_err(|_| "learning owner stopped")?;
+                    receipt
+                        .await
+                        .map_err(|_| "learning checkpoint owner stopped")??;
+                    let mut bytes = serde_json::to_vec(&Grant {
+                        id,
+                        next: unit,
+                        data: None,
+                    })
+                    .map_err(|e| e.to_string())?;
+                    bytes.push(b'\n');
+                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
                 }
                 Frame::Program { id, unit, records }
                     if ready
@@ -356,8 +503,12 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| "research candidate owner stopped")??;
-                    let mut bytes =
-                        serde_json::to_vec(&Grant { id, next: unit }).map_err(|e| e.to_string())?;
+                    let mut bytes = serde_json::to_vec(&Grant {
+                        id,
+                        next: unit,
+                        data: None,
+                    })
+                    .map_err(|e| e.to_string())?;
                     bytes.push(b'\n');
                     input.write_all(&bytes).await.map_err(|e| e.to_string())?;
                 }
@@ -391,6 +542,7 @@ async fn run_owned(
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: checkpoint,
+                        data: None,
                     })
                     .map_err(|e| e.to_string())?;
                     bytes.push(b'\n');
@@ -475,6 +627,9 @@ async fn run_owned(
                 | Frame::ResultReady { id }
                 | Frame::Reserve { id, .. }
                 | Frame::Progress { id, .. }
+                | Frame::Model { id, .. }
+                | Frame::History { id, .. }
+                | Frame::Learning { id, .. }
                 | Frame::Result { id, .. }
                 | Frame::Failed { id, .. }
                 | Frame::Uncertain { id, .. }
@@ -573,7 +728,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
             if complete {
                 let program = matches!(
                     serde_json::from_slice::<Frame>(&self.partial),
-                    Ok(Frame::Program { .. })
+                    Ok(Frame::Program { .. } | Frame::Model { .. })
                 );
                 self.total = self
                     .total
@@ -730,7 +885,10 @@ fn supervise() -> Result<(), String> {
     let parent = sender.clone();
     std::thread::spawn(move || {
         loop {
-            match line(&mut reader, 256) {
+            match line(
+                &mut reader,
+                crate::resources::limits().native_model_chunk_bytes * 5 + 1024,
+            ) {
                 Ok(bytes) => {
                     if parent.send(Message::Parent(bytes)).is_err() {
                         break;
@@ -749,7 +907,7 @@ fn supervise() -> Result<(), String> {
         while let Ok(bytes) = line(&mut reader, max_frame_bytes()) {
             let program = matches!(
                 serde_json::from_slice::<Frame>(&bytes),
-                Ok(Frame::Program { .. })
+                Ok(Frame::Program { .. } | Frame::Model { .. })
             );
             total = total.saturating_add(if program { 0 } else { bytes.len() });
             if total > crate::resources::limits().provider_stream_bytes
@@ -895,7 +1053,10 @@ fn work() -> Result<(), String> {
     // still stop the group while the provider main thread is doing CPU work.
     std::thread::spawn(move || {
         loop {
-            match line(&mut reader, 256) {
+            match line(
+                &mut reader,
+                crate::resources::limits().native_model_chunk_bytes * 5 + 1024,
+            ) {
                 Ok(bytes) => {
                     if sender.send(bytes).is_err() {
                         break;
@@ -918,6 +1079,7 @@ fn work() -> Result<(), String> {
     })?;
     let mut provider = super::provider::select(&record)?;
     let mut owner = WorkerControl {
+        current_unit: record.checkpoint,
         id: record.id,
         receiver,
         descendants: Vec::new(),
@@ -941,12 +1103,13 @@ fn work() -> Result<(), String> {
 
 struct WorkerControl {
     id: u64,
+    current_unit: u32,
     receiver: sync_channel::Receiver<Vec<u8>>,
     descendants: Vec<Descendant>,
     blocked_nanos: u64,
 }
 impl WorkerControl {
-    fn grant(&mut self, next: u32) -> Result<(), String> {
+    fn grant_data(&mut self, next: u32) -> Result<Option<Vec<u8>>, String> {
         let waiting = Instant::now();
         let bytes = self.receiver.recv();
         self.blocked_nanos = self
@@ -958,10 +1121,71 @@ impl WorkerControl {
         if grant.id != self.id || grant.next != next {
             return Err("provider durable grant identity differs".into());
         }
-        Ok(())
+        Ok(grant.data)
+    }
+    fn grant(&mut self, next: u32) -> Result<(), String> {
+        self.grant_data(next).map(|_| ())
     }
 }
 impl super::provider::Supervisor for WorkerControl {
+    fn external_history_cpu(&self) -> bool {
+        true
+    }
+
+    fn history(
+        &mut self,
+        request: &crate::learning::history::Request,
+    ) -> Result<crate::learning::history::Receipt, String> {
+        emit(&Frame::History {
+            id: self.id,
+            unit: self.current_unit,
+            request: request.clone(),
+        })?;
+        serde_json::from_slice(
+            &self
+                .grant_data(self.current_unit)?
+                .ok_or("history receipt missing")?,
+        )
+        .map_err(|e| e.to_string())
+    }
+    fn read_model(
+        &mut self,
+        blob: crate::learning::Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, String> {
+        emit(&Frame::Model {
+            id: self.id,
+            unit: self.current_unit,
+            blob,
+            range,
+            bytes: None,
+        })?;
+        self.grant_data(self.current_unit)?
+            .ok_or("native model read response missing".into())
+    }
+    fn write_model(
+        &mut self,
+        blob: crate::learning::Blob,
+        range: std::ops::Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        emit(&Frame::Model {
+            id: self.id,
+            unit: self.current_unit,
+            blob,
+            range,
+            bytes: Some(bytes),
+        })?;
+        self.grant(self.current_unit)
+    }
+    fn learning(&mut self, unit: u32, progress: crate::learning::Progress) -> Result<(), String> {
+        emit(&Frame::Learning {
+            id: self.id,
+            unit,
+            progress: Box::new(progress),
+        })?;
+        self.grant(unit)
+    }
     fn blocked_nanos(&self) -> u64 {
         self.blocked_nanos
     }
@@ -987,7 +1211,9 @@ impl super::provider::Supervisor for WorkerControl {
     }
     fn reserve(&mut self, next: u32) -> Result<(), String> {
         emit(&Frame::Reserve { id: self.id, next })?;
-        self.grant(next)
+        self.grant(next)?;
+        self.current_unit = next;
+        Ok(())
     }
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String> {
         emit(&Frame::Progress {

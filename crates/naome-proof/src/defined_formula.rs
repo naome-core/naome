@@ -45,12 +45,61 @@ enum Node {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Variable {
+pub enum Variable {
+    /// A de Bruijn index into enclosing universal binders.
     Bound(u32),
+    /// A free formal or source variable.
     Free(FreeVariable),
 }
 
+/// An immutable view of one compact formula node, retaining exact references.
+#[derive(Clone, Copy, Debug)]
+pub enum DefinedFormulaNode<'a> {
+    /// Primitive equality operands.
+    Equal(Variable, Variable),
+    /// Primitive membership operands.
+    Member(Variable, Variable),
+    /// Negation body.
+    Not(DefinedFormulaView<'a>),
+    /// Ordered implication operands.
+    Implies(DefinedFormulaView<'a>, DefinedFormulaView<'a>),
+    /// Universally bound body, using de Bruijn variable indices.
+    ForAll(DefinedFormulaView<'a>),
+    /// Exact selected definition and ordered graph arguments.
+    DefinedRelation {
+        definition_id: DefinitionId,
+        arguments: &'a [Variable],
+    },
+}
+
+/// A borrowed compact subformula, including its existing binder indices.
+#[derive(Clone, Copy, Debug)]
+pub struct DefinedFormulaView<'a>(&'a Node);
+impl<'a> DefinedFormulaView<'a> {
+    /// Borrows one exact compact node without decoding or expanding it.
+    pub fn node(self) -> DefinedFormulaNode<'a> {
+        match self.0 {
+            Node::Equal(a, b) => DefinedFormulaNode::Equal(*a, *b),
+            Node::Member(a, b) => DefinedFormulaNode::Member(*a, *b),
+            Node::Not(body) => DefinedFormulaNode::Not(Self(body)),
+            Node::Implies(a, b) => DefinedFormulaNode::Implies(Self(a), Self(b)),
+            Node::ForAll(body) => DefinedFormulaNode::ForAll(Self(body)),
+            Node::DefinedRelation {
+                definition_id,
+                arguments,
+            } => DefinedFormulaNode::DefinedRelation {
+                definition_id: *definition_id,
+                arguments,
+            },
+        }
+    }
+}
+
 impl DefinedFormula {
+    /// Borrows the exact compact structure without expanding or authorizing references.
+    pub fn view(&self) -> DefinedFormulaView<'_> {
+        DefinedFormulaView(&self.0)
+    }
     /// Constructs equality between two free variables.
     #[must_use]
     pub const fn equal(left: FreeVariable, right: FreeVariable) -> Self {

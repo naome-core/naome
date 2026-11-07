@@ -135,7 +135,7 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut frontier =
-        Frontier::open(&directory.0, &graph, seed, jobs::RoleSettings::default()).unwrap();
+        Frontier::open(&directory.0, &graph, seed, jobs::Settings::default()).unwrap();
     let mut questions =
         crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
     let pool = pool();
@@ -190,6 +190,8 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
             })
             .unwrap_or(jobs::Output::NoCandidate);
         let completion = jobs::Completion {
+            experience: None,
+            model_checkpoint: None,
             id: attempts,
             binding: jobs::Binding::new([1; 32], [2; 32]),
             spent_ms: 0,

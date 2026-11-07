@@ -1,11 +1,56 @@
 use super::*;
 use crate::{checkpoint::tests::Directory, mocks};
+use std::time::{Duration, Instant};
+
+#[test]
+fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let target = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+    frontier.initial_parameters(91).unwrap();
+    frontier.freeze_parameters();
+    let initial = frontier.learning_snapshot()["model"].clone();
+    for job in 1..=5 {
+        frontier
+            .attempted(
+                &target,
+                &graph,
+                &native_failure(&target, job, None),
+                Outcome::NoCandidate,
+            )
+            .unwrap();
+        assert_eq!(frontier.learning_snapshot()["model"], initial);
+        assert!(frontier.initial_parameters(97).is_err());
+        drop(frontier);
+        frontier = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+        assert_eq!(
+            frontier.learning_snapshot()["model"],
+            initial,
+            "replay cannot silently alter a completed frozen control"
+        );
+        frontier.freeze_parameters();
+    }
+    assert!(
+        frontier.learning_snapshot()["curriculum"]["cursor"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "actual observations and bounded history still advance"
+    );
+}
 
 fn question(index: u64) -> CompiledQuestion {
     CompiledQuestion::compile(&mocks::create_question(index)).unwrap()
 }
 fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Completion {
     jobs::Completion {
+        experience: None,
+        model_checkpoint: None,
         id,
         binding: jobs::Binding::new([1; 32], [2; 32]),
         spent_ms: 7,
@@ -13,6 +58,195 @@ fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Comple
         state,
         result: Ok(result),
     }
+}
+
+fn native_failure(
+    question: &CompiledQuestion,
+    id: u64,
+    frontier: Option<crate::learning::SearchFrontier>,
+) -> jobs::Completion {
+    evidence::observed_completion(
+        question,
+        id,
+        crate::learning::experience::TerminalEvidence::Budget(
+            crate::learning::experience::Budget::Expansions,
+        ),
+        128,
+        frontier,
+    )
+}
+
+#[test]
+fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let target = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    frontier
+        .attempted(
+            &target,
+            &graph,
+            &native_failure(&target, 1, None),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    let candidates = [&target];
+    let random = frontier.random.0;
+    assert_eq!(
+        frontier
+            .choose(&candidates, &graph, settings.solving, false)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        frontier.random.0, random,
+        "abstention must not consume a random choice"
+    );
+    graph
+        .produce(&mocks::create_proof(&question(0)).unwrap())
+        .unwrap();
+    assert_eq!(
+        frontier
+            .choose(&candidates, &graph, settings.solving, false)
+            .unwrap(),
+        None
+    );
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert_eq!(
+        frontier
+            .choose(&candidates, &graph, settings.solving, false)
+            .unwrap(),
+        Some(0),
+        "bounded backoff must eventually release even a sole candidate after reopen"
+    );
+}
+
+#[test]
+fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_success() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let initial = frontier.evidence.model().clone();
+    assert!(!frontier.helpers_needed(&question).unwrap());
+    let unresolved = native_failure(&question, 1, None);
+    crate::checkpoint::fail_next_commit();
+    assert!(
+        frontier
+            .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
+            .is_err()
+    );
+    assert_eq!(frontier.evidence.model(), &initial);
+    assert!(!frontier.helpers_needed(&question).unwrap());
+    frontier
+        .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
+        .unwrap();
+    frontier
+        .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(frontier.evidence.model().updates, 1);
+    assert_eq!(frontier.evidence.model().unresolved, 1);
+    assert!(frontier.helpers_needed(&question).unwrap());
+    for (job, state, outcome) in [
+        (2, jobs::State::Expired, Outcome::Expired),
+        (3, jobs::State::Failed, Outcome::Failed),
+        (4, jobs::State::InDoubt, Outcome::InDoubt),
+    ] {
+        let result = completion(job, jobs::Output::NoCandidate, state);
+        frontier
+            .attempted(&question, &graph, &result, outcome)
+            .unwrap();
+    }
+    assert_eq!(frontier.evidence.model().updates, 1);
+    let solution = crate::learning::tests::own_solution();
+    let result = completion(
+        5,
+        jobs::Output::Proof {
+            source: solution.source.clone(),
+            helpers: vec![],
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(&question, &graph, &result, Outcome::Candidate)
+        .unwrap();
+    assert_eq!(frontier.evidence.model().resolved, 0);
+    assert!(
+        frontier
+            .verified(&question, &graph, 5, ArtifactId::from_bytes([0; 32]))
+            .is_err()
+    );
+    let root = graph.produce(&solution.source).unwrap().1.id;
+    frontier.prepared(&question, 5, root).unwrap();
+    assert_eq!(frontier.evidence.model().resolved, 0);
+    frontier.verified(&question, &graph, 5, root).unwrap();
+    frontier.verified(&question, &graph, 5, root).unwrap();
+    assert_eq!(
+        (
+            frontier.evidence.model().updates,
+            frontier.evidence.model().resolved
+        ),
+        (2, 1)
+    );
+    assert!(!frontier.helpers_needed(&question).unwrap());
+    let model = frontier.evidence.model().clone();
+    let generated = finder::questions(
+        17,
+        &frontier.predicates,
+        &frontier.goals,
+        12,
+        64 * 1024,
+        &mut |_| true,
+    );
+    let identities = |questions: Vec<CompiledQuestion>| {
+        questions
+            .into_iter()
+            .take(generated.len())
+            .map(|q| *q.resolution_id())
+            .collect::<Vec<_>>()
+    };
+    let page = identities(frontier.candidate_page(17, |_| true));
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert_eq!(frontier.evidence.model(), &model);
+    assert_eq!(identities(frontier.candidate_page(17, |_| true)), page);
+}
+
+#[test]
+fn finder_reopens_a_durable_observation_once_after_uncertain_acknowledgement() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let result = native_failure(&question, 1, None);
+    crate::checkpoint::fail_after_commit();
+    assert!(
+        frontier
+            .attempted(&question, &graph, &result, Outcome::NoCandidate)
+            .is_err()
+    );
+    assert_eq!(frontier.evidence.model().updates, 0);
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    assert_eq!(frontier.evidence.model().updates, 1);
+    frontier
+        .attempted(&question, &graph, &result, Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(frontier.evidence.model().updates, 1);
+    assert_eq!(frontier.evidence.model().resolved, 0);
 }
 fn checked(graph: &mut Graph, question: &CompiledQuestion) -> ArtifactId {
     graph
@@ -32,8 +266,7 @@ fn structure_ignores_spelling_and_preserves_generalizations_as_candidates() {
     assert_ne!(Features::of(&a), Features::of(&generalized));
     let directory = Directory::new();
     let graph = Graph::default();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 41, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::default()).unwrap();
     let candidates = [&a, &generalized];
     let mut observed = [false; 2];
     for _ in 0..128 {
@@ -49,8 +282,7 @@ fn structure_ignores_spelling_and_preserves_generalizations_as_candidates() {
 fn received_knowledge_changes_coverage_without_claiming_local_ability() {
     let directory = Directory::new();
     let mut graph = Graph::default();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 7, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 7, jobs::Settings::default()).unwrap();
     let _ = checked(&mut graph, &question(0));
     frontier.refresh(&graph, |_| true).unwrap();
     assert!(frontier.coverage.iter().any(|n| *n > 0));
@@ -69,11 +301,61 @@ fn received_knowledge_changes_coverage_without_claiming_local_ability() {
 }
 
 #[test]
+fn current_development_feedback_changes_the_actual_next_frontier_draw() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..jobs::Settings::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
+    let easy = CompiledQuestion::compile("goal=all(a,imp(mem(a,a),mem(a,a)))").unwrap();
+    let hard = CompiledQuestion::compile(
+        "goal=all(x,all(y,imp(mem(x,y),imp(mem(y,x),and(mem(x,y),mem(y,x))))))",
+    )
+    .unwrap();
+    let mut feedback = crate::training::ability::Feedback::fresh("11".repeat(32));
+    frontier.feedback(Some(feedback.clone()));
+    let before = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    for _ in 0..64 {
+        feedback.development.observe(&easy, 32, Some(true), 1_000);
+    }
+    feedback.revision += 1;
+    frontier.feedback(Some(feedback.clone()));
+    let after = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    assert_ne!(before, after);
+    let candidates = [&easy, &hard];
+    let index = frontier
+        .choose(&candidates, &graph, settings.solving, false)
+        .unwrap()
+        .unwrap();
+    let result = native_failure(candidates[index], 1, None);
+    frontier
+        .attempted(candidates[index], &graph, &result, Outcome::NoCandidate)
+        .unwrap();
+    assert!(frontier.evidence.get(candidates[index]).unwrap().is_some());
+    feedback.checkpoint = "22".repeat(32);
+    feedback.attempts = crate::training::ability::Profile::new(feedback.checkpoint.clone());
+    feedback.development = crate::training::ability::Profile::new(feedback.checkpoint.clone());
+    frontier.feedback(Some(feedback));
+    assert!(frontier.recent.is_empty());
+    assert!(
+        frontier.evidence.get(candidates[index]).unwrap().is_none(),
+        "old-model failures cannot cool down a new checkpoint"
+    );
+    frontier.refresh(&graph, |_| true).unwrap();
+    assert_eq!(
+        frontier.learning_snapshot()["curriculum"]["checkpoint"],
+        "22".repeat(32),
+        "construction must use the current checkpoint before generating its page"
+    );
+}
+
+#[test]
 fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     let directory = Directory::new();
     let graph = Graph::default();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 5, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 5, jobs::Settings::default()).unwrap();
     let target = question(0);
     let cost = frontier
         .weight(&target, &graph, jobs::RoleSettings::default())
@@ -132,8 +414,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     assert_eq!(record.units, 6);
     assert_eq!(record.spent_ms, 21);
     drop(frontier);
-    let frontier =
-        Frontier::open(&directory.0, &graph, 999, jobs::RoleSettings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &graph, 999, jobs::Settings::default()).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
     assert_eq!(
         frontier.evidence.get(&target).unwrap().unwrap().outcomes,
@@ -145,8 +426,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
 fn fresh_checked_exact_solutions_restore_ability_and_random_state_after_restart() {
     let directory = Directory::new();
     let mut graph = Graph::default();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 13, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 13, jobs::Settings::default()).unwrap();
     let target = question(0);
     let candidates = [&target];
     frontier
@@ -170,19 +450,18 @@ fn fresh_checked_exact_solutions_restore_ability_and_random_state_after_restart(
     frontier.prepared(&target, 1, root).unwrap();
     // Simulate the cut after graph publication and before the final evidence write.
     drop(frontier);
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 99, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, jobs::Settings::default()).unwrap();
     assert!(frontier.successes.iter().any(|n| *n > 0));
     assert_eq!(frontier.evidence.draws(), draw);
     assert_eq!(frontier.evidence.random(), random);
     frontier.verified(&target, &graph, 1, root).unwrap();
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 99, jobs::RoleSettings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &graph, 99, jobs::Settings::default()).unwrap();
     assert_eq!(frontier.successes.iter().copied().max(), Some(1));
     // An unverified saved success never transfers validity to another graph.
     let empty = Graph::default();
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &empty, 99, jobs::RoleSettings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &empty, 99, jobs::Settings::default()).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
 }
 
@@ -193,13 +472,12 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
     graph
         .produce("def member_self = relation(x): mem(x,x)")
         .unwrap();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
     let goal = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
     assert!(
         frontier
-            .candidates()
+            .candidate_page(0, |_| true)
             .iter()
             .any(|q| q.resolution_id() == goal.resolution_id())
     );
@@ -258,8 +536,7 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     let directory = Directory::new();
     let mut graph = Graph::default();
     let target = question(0);
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 41, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::default()).unwrap();
     let result = completion(
         1,
         jobs::Output::Proof {
@@ -275,13 +552,21 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     frontier.prepared(&target, 1, root).unwrap();
     frontier.verified(&target, &graph, 1, root).unwrap();
     drop(frontier);
-    let mut changed = jobs::RoleSettings::default();
-    changed.mock.outcome = jobs::MockOutcome::Failed;
+    let mut changed = jobs::Settings::default();
+    changed.solving.mock.outcome = jobs::MockOutcome::Failed;
     let frontier = Frontier::open(&directory.0, &graph, 41, changed).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
     assert!(frontier.evidence.get(&target).unwrap().is_none());
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 41, jobs::RoleSettings::default()).unwrap();
+    let native = jobs::Settings {
+        native_proof_learning: true,
+        ..jobs::Settings::default()
+    };
+    let frontier = Frontier::open(&directory.0, &graph, 41, native).unwrap();
+    assert_eq!(frontier.successes, [0; SIGNALS]);
+    assert!(frontier.evidence.get(&target).unwrap().is_none());
+    drop(frontier);
+    let frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::default()).unwrap();
     assert!(frontier.successes.iter().any(|count| *count > 0));
     assert_eq!(frontier.evidence.get(&target).unwrap().unwrap().units, 2);
 }
@@ -291,8 +576,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     let directory = Directory::new();
     let graph = Graph::default();
     let target = CompiledQuestion::compile("goal=all(x,imp(mem(x,x),eq(x,x)))").unwrap();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
     frontier
         .attempted(&target, &graph, &result, Outcome::NoCandidate)
@@ -304,13 +588,12 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     let helper = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
     assert!(
         frontier
-            .candidates()
+            .candidate_page(0, |_| true)
             .iter()
             .any(|q| q.resolution_id() == helper.resolution_id())
     );
     drop(frontier);
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
     let result = completion(2, jobs::Output::NoCandidate, jobs::State::Failed);
     frontier
@@ -318,8 +601,8 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
         .unwrap();
     assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
     drop(frontier);
-    let mut changed = jobs::RoleSettings::default();
-    changed.limits.work_units += 1;
+    let mut changed = jobs::Settings::default();
+    changed.solving.limits.work_units += 1;
     let frontier = Frontier::open(&directory.0, &graph, 11, changed).unwrap();
     assert_eq!(frontier.attempts, [0; SIGNALS]);
 }
@@ -331,12 +614,11 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
     for index in 0..3 {
         let _ = checked(&mut graph, &question(index));
     }
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
-    let candidates = frontier.candidates();
+    let candidates = frontier.candidate_page(0, |_| true);
     let eligible = candidates
         .iter()
         .filter(|q| formal.assess(&graph, q).passed())
@@ -358,8 +640,7 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
 fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjectures() {
     let directory = Directory::new();
     let graph = Graph::default();
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
     let x = FreeVariable::new(0);
     let y = FreeVariable::new(1);
     frontier.explore(
@@ -372,7 +653,7 @@ fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjecture
     let expected = CompiledQuestion::compile("goal=all(y,all(x,imp(eq(y,x),mem(x,y))))").unwrap();
     assert!(
         frontier
-            .candidates()
+            .candidate_page(0, |_| true)
             .iter()
             .any(|q| q.resolution_id() == expected.resolution_id())
     );
@@ -408,8 +689,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
     for index in 0..3 {
         let _ = checked(&mut graph, &question(index));
     }
-    let mut frontier =
-        Frontier::open(&directory.0, &graph, 17, jobs::RoleSettings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 17, jobs::Settings::default()).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
     let mut pending = std::collections::BTreeSet::new();
@@ -424,7 +704,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
         };
         frontier.refresh(&graph, &mut eligible).unwrap();
         let candidates = frontier
-            .candidates()
+            .candidate_page(0, |_| true)
             .into_iter()
             .filter(&mut eligible)
             .collect::<Vec<_>>();
@@ -495,4 +775,532 @@ async fn backlog_ranking_checks_only_the_selected_target_before_provider_work() 
     assert_eq!(requests.len(), 1);
     assert!(matches!(requests[0].1, jobs::Input::Solve { .. }));
     assert!(autonomous.error().is_none());
+}
+
+fn helper_use_fixture() -> (
+    Graph,
+    CompiledQuestion,
+    ArtifactId,
+    CompiledQuestion,
+    String,
+) {
+    let mut graph = Graph::default();
+    let lemma =
+        CompiledQuestion::compile("goal=all(a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))")
+            .unwrap();
+    let source = format!(
+        "{} proof: p0=subst(a,b,mem(a,c)) p1=gen(p0,c) p2=gen(p1,b) p3=gen(p2,a) return p3",
+        lemma.source()
+    );
+    let (artifact, admitted) = graph.produce(&source).unwrap();
+    let proof = crate::hex(artifact.proof_id().unwrap().unwrap().as_bytes());
+    let goal = CompiledQuestion::compile("goal=all(a,all(b,imp(eq(a,b),imp(mem(a,a),mem(b,a)))))")
+        .unwrap();
+    let consumer = format!(
+        r#"{} proof:
+        p0=cite("{}")
+        p1=inst(a,a,all(b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c))))))
+        p2=mp(p0,p1)
+        p3=inst(b,b,all(c,imp(eq(a,b),imp(mem(a,c),mem(b,c)))))
+        p4=mp(p2,p3)
+        p5=inst(c,a,imp(eq(a,b),imp(mem(a,c),mem(b,c))))
+        p6=mp(p4,p5) p7=gen(p6,b) p8=gen(p7,a) return p8"#,
+        goal.source(),
+        proof
+    );
+    assert!(
+        crate::learning::State::eligible(lemma.source()),
+        "lemma must be eligible"
+    );
+    assert!(
+        crate::learning::State::eligible(goal.source()),
+        "goal must be eligible"
+    );
+    (graph, lemma, admitted.id, goal, consumer)
+}
+fn record_checked(
+    frontier: &mut Frontier,
+    graph: &Graph,
+    question: &CompiledQuestion,
+    job: u64,
+    root: ArtifactId,
+) {
+    let result = completion(
+        job,
+        jobs::Output::Proof {
+            source: String::new(),
+            helpers: vec![],
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(question, graph, &result, Outcome::Candidate)
+        .unwrap();
+    frontier.prepared(question, job, root).unwrap();
+    frontier.verified(question, graph, job, root).unwrap();
+}
+#[test]
+fn checked_helper_support_is_durable_atomic_and_requires_an_earlier_unsolved_goal() {
+    let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let missed = native_failure(&goal, 1, None);
+    frontier
+        .attempted(&goal, &graph, &missed, Outcome::NoCandidate)
+        .unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+    let root = graph.produce(&consumer).unwrap().1.id;
+    assert_eq!(
+        graph.direct_dependencies(root).unwrap().as_ref(),
+        &[lemma_root]
+    );
+    let result = completion(
+        3,
+        jobs::Output::Proof {
+            source: consumer,
+            helpers: vec![],
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(&goal, &graph, &result, Outcome::Candidate)
+        .unwrap();
+    frontier.prepared(&goal, 3, root).unwrap();
+    // Commit the checked resolution first to isolate the utility transaction.
+    frontier.evidence.verified(&goal, 3, root).unwrap();
+    let before = frontier.evidence.model().clone();
+    crate::checkpoint::fail_next_commit();
+    assert!(frontier.verified(&goal, &graph, 3, root).is_err());
+    assert_eq!(frontier.evidence.model(), &before);
+    assert_eq!(frontier.evidence.get(&lemma).unwrap().unwrap().supports, 0);
+    frontier.verified(&goal, &graph, 3, root).unwrap();
+    frontier.verified(&goal, &graph, 3, root).unwrap();
+    assert_eq!(frontier.evidence.model().supports, 1);
+    assert_eq!(frontier.evidence.get(&lemma).unwrap().unwrap().supports, 1);
+    let model = frontier.evidence.model().clone();
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    frontier.verified(&goal, &graph, 3, root).unwrap();
+    assert_eq!(frontier.evidence.model(), &model);
+}
+#[test]
+fn expiry_or_posthoc_helper_use_never_earns_support() {
+    let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+    let root = graph.produce(&consumer).unwrap().1.id;
+    for (state, outcome) in [
+        (jobs::State::Expired, Outcome::Expired),
+        (jobs::State::Failed, Outcome::Failed),
+    ] {
+        let directory = Directory::new();
+        let settings = jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        };
+        let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        frontier
+            .attempted(
+                &goal,
+                &graph,
+                &completion(1, jobs::Output::NoCandidate, state),
+                outcome,
+            )
+            .unwrap();
+        record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+        record_checked(&mut frontier, &graph, &goal, 3, root);
+        assert_eq!(frontier.evidence.model().supports, 0);
+    }
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 1, lemma_root);
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &native_failure(&goal, 2, None),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    record_checked(&mut frontier, &graph, &goal, 3, root);
+    assert_eq!(frontier.evidence.model().supports, 0);
+}
+#[test]
+fn support_replay_recovers_a_missing_or_uncertain_credit_without_duplication() {
+    for uncertain in [false, true] {
+        let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+        let directory = Directory::new();
+        let settings = jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        };
+        let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        frontier
+            .attempted(
+                &goal,
+                &graph,
+                &native_failure(&goal, 1, None),
+                Outcome::NoCandidate,
+            )
+            .unwrap();
+        record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+        let root = graph.produce(&consumer).unwrap().1.id;
+        frontier
+            .attempted(
+                &goal,
+                &graph,
+                &completion(
+                    3,
+                    jobs::Output::Proof {
+                        source: consumer,
+                        helpers: vec![],
+                    },
+                    jobs::State::Complete,
+                ),
+                Outcome::Candidate,
+            )
+            .unwrap();
+        frontier.prepared(&goal, 3, root).unwrap();
+        frontier.evidence.verified(&goal, 3, root).unwrap();
+        if uncertain {
+            crate::checkpoint::fail_after_commit();
+            assert!(frontier.verified(&goal, &graph, 3, root).is_err());
+        }
+        assert_eq!(frontier.evidence.model().supports, 0);
+        drop(frontier);
+        let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+        assert_eq!(frontier.evidence.model().supports, 1);
+        let model = frontier.evidence.model().clone();
+        drop(frontier);
+        let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+        assert_eq!(frontier.evidence.model(), &model);
+    }
+}
+#[test]
+fn solving_a_goal_without_using_its_helper_cannot_earn_support() {
+    let (mut graph, lemma, lemma_root, goal, _) = helper_use_fixture();
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &native_failure(&goal, 1, None),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+    let source = format!(
+        "{} proof: p0=subst(a,b,mem(a,c)) p1=gen(p0,c) p2=inst(c,a,imp(eq(a,b),imp(mem(a,c),mem(b,c)))) p3=mp(p1,p2) p4=gen(p3,b) p5=gen(p4,a) return p5",
+        goal.source()
+    );
+    let root = graph.produce(&source).unwrap().1.id;
+    assert!(graph.direct_dependencies(root).unwrap().is_empty());
+    record_checked(&mut frontier, &graph, &goal, 3, root);
+    assert_eq!(frontier.evidence.model().supports, 0);
+}
+#[test]
+fn completion_observations_not_job_allocation_order_establish_helper_timing() {
+    let (mut graph, lemma, lemma_root, goal, consumer) = helper_use_fixture();
+    let root = graph.produce(&consumer).unwrap().1.id;
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    record_checked(&mut frontier, &graph, &lemma, 2, lemma_root);
+    // This lower-ID job finishes only after the lemma was already checked.
+    frontier
+        .attempted(
+            &goal,
+            &graph,
+            &native_failure(&goal, 1, None),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    record_checked(&mut frontier, &graph, &goal, 3, root);
+    assert_eq!(frontier.evidence.model().supports, 0);
+}
+
+#[test]
+fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
+    const TEST: &str =
+        "frontier::tests::small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers";
+    if std::env::var_os("NAOME_NATIVE_GOAL_CACHE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_NATIVE_GOAL_CACHE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let mut profile = crate::resources::ResourceProfile::default();
+    profile.tuning.question_cache_bytes = Some(4096);
+    profile.tuning.question_page = Some(1);
+    crate::resources::configure(profile).unwrap();
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    assert!(crate::learning::State::eligible(goal.source()));
+    let cost = goal.source().len() * 8 + 256;
+    assert!(
+        cost > 1024 && cost <= 4096,
+        "exercise the real cache partition boundary"
+    );
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier.focus(goal.clone());
+    assert_eq!(frontier.goals.len(), 1);
+    let candidates = (0..32)
+        .flat_map(|cursor| frontier.candidate_page(cursor, |_| true))
+        .collect::<Vec<_>>();
+    assert!(candidates.iter().any(|q| q.core() == goal.core()));
+    for helper in &helpers {
+        assert!(
+            candidates.iter().any(|q| q.core() == helper.core()),
+            "a prerequisite must fit a rotating one-item page"
+        );
+    }
+    assert!(
+        frontier
+            .goals
+            .iter()
+            .map(|q| q.source().len() * 8 + 256)
+            .sum::<usize>()
+            <= 4096
+    );
+}
+#[test]
+fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() {
+    let (graph, lemma, _, _, _) = helper_use_fixture();
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier.refresh(&graph, |_| true).unwrap();
+    assert!(
+        frontier.proposals.is_empty(),
+        "closed proofs must not create unconditional weakenings"
+    );
+    assert!(!frontier.predicates.is_empty());
+    for relation in &frontier.predicates {
+        assert_eq!(relation.free_variables().len(), 2);
+        let mut closed = relation.clone();
+        for variable in closed.free_variables().into_iter().rev() {
+            closed = Formula::for_all(variable, closed);
+        }
+        let question = CompiledQuestion::from_formula(closed).unwrap();
+        assert_ne!(finder::key(&question), finder::key(&lemma));
+    }
+}
+#[test]
+fn explicit_goal_exploration_contains_only_the_goal_and_its_conjunct_helpers() {
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier.focus(CompiledQuestion::compile("goal=all(a,mem(a,a))").unwrap());
+    let pool = (0..8)
+        .flat_map(|cursor| frontier.goal_candidates(cursor, &goal))
+        .collect::<Vec<_>>();
+    for question in &pool {
+        assert!(
+            question.resolution_id() == goal.resolution_id()
+                || helpers
+                    .iter()
+                    .any(|q| q.resolution_id() == question.resolution_id()),
+            "unrelated exploration cannot replace an explicit goal"
+        );
+    }
+    assert!(
+        helpers
+            .iter()
+            .all(|h| pool.iter().any(|q| q.core() == h.core()))
+    );
+    assert!(pool.iter().any(|q| q.core() == goal.core()));
+}
+
+#[test]
+fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    let report = crate::learning::tests::stalled_frontier(&goal);
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let failed = native_failure(&goal, 1, Some(report.clone()));
+    crate::checkpoint::fail_next_commit();
+    assert!(
+        frontier
+            .attempted(&goal, &graph, &failed, Outcome::NoCandidate)
+            .is_err()
+    );
+    assert!(
+        frontier
+            .loop_work(&goal, &graph, |_| true)
+            .unwrap()
+            .planned
+            .is_empty()
+    );
+    frontier
+        .attempted(&goal, &graph, &failed, Outcome::NoCandidate)
+        .unwrap();
+    let plan = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+    for helper in &helpers {
+        assert!(
+            plan.pending
+                .iter()
+                .any(|q| q.resolution_id() == helper.resolution_id())
+        );
+    }
+    let before = plan
+        .planned
+        .iter()
+        .map(|q| *q.resolution_id())
+        .collect::<Vec<_>>();
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert_eq!(
+        before,
+        frontier
+            .loop_work(&goal, &graph, |_| true)
+            .unwrap()
+            .planned
+            .iter()
+            .map(|q| *q.resolution_id())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        frontier
+            .loop_focus(&graph, |_| true)
+            .unwrap()
+            .unwrap()
+            .0
+            .resolution_id(),
+        goal.resolution_id()
+    );
+    for (i, helper) in helpers.iter().enumerate() {
+        let solution = crate::learning::tests::symbolic_solution(helper);
+        let job = 2 + i as u64;
+        let result = completion(
+            job,
+            jobs::Output::Native {
+                terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
+                    .into(),
+                solution: Some(solution.clone()),
+                diagnostic: "certified_candidate".into(),
+                frontier: None,
+            },
+            jobs::State::Complete,
+        );
+        frontier
+            .attempted(helper, &graph, &result, Outcome::Candidate)
+            .unwrap();
+        assert!(
+            frontier
+                .loop_work(&goal, &graph, |_| true)
+                .unwrap()
+                .required
+                .is_empty()
+                || i > 0
+        );
+        let (root, batch) = graph
+            .prepare_generated(&solution.source, &solution.helpers, helper)
+            .unwrap();
+        graph
+            .commit_batch(root, batch, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        frontier.prepared(helper, job, root).unwrap();
+        frontier.verified(helper, &graph, job, root).unwrap();
+    }
+    let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+    assert!(work.pending.is_empty());
+    assert_eq!(work.required.len(), 2);
+    assert_eq!(frontier.evidence.model().supports, 0);
+    frontier.exhaust_helpers(&goal).unwrap();
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+    assert!(work.planned.is_empty() && work.required.is_empty());
+}
+
+#[test]
+fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let (goal, helpers) = crate::learning::tests::helper_goal();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let failed = native_failure(
+        &goal,
+        1,
+        Some(crate::learning::tests::stalled_frontier(&goal)),
+    );
+    frontier
+        .attempted(&goal, &graph, &failed, Outcome::NoCandidate)
+        .unwrap();
+    for (i, helper) in helpers.iter().enumerate() {
+        let candidate = completion(
+            2 + i as u64,
+            jobs::Output::Proof {
+                source: crate::learning::tests::symbolic_solution(helper).source,
+                helpers: Vec::new(),
+            },
+            jobs::State::Complete,
+        );
+        frontier
+            .attempted(helper, &graph, &candidate, Outcome::Candidate)
+            .unwrap();
+        frontier.abandon_publication(helper, candidate.id).unwrap();
+    }
+    assert!(
+        frontier
+            .loop_work(&goal, &graph, |_| true)
+            .unwrap()
+            .pending
+            .is_empty()
+    );
+    assert_eq!(frontier.evidence.model().resolved, 0);
+    assert_eq!(frontier.evidence.model().unresolved, 1);
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert!(
+        frontier
+            .loop_work(&goal, &graph, |_| true)
+            .unwrap()
+            .pending
+            .is_empty()
+    );
 }
