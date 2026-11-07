@@ -14,6 +14,47 @@ impl GraphRead for Engine {
     }
 }
 
+/// The command pays for the first bounded group of diagnostic reads. Each
+/// subsequent group is reserved before any additional graph node is loaded.
+struct DiagnosticReader<'a> {
+    engine: &'a Engine,
+    reads: Cell<usize>,
+}
+
+enum DiagnosticReadError {
+    Budget,
+    Engine(Error),
+}
+
+impl GraphRead for DiagnosticReader<'_> {
+    type Handle = u64;
+    type Error = DiagnosticReadError;
+
+    fn read(&self, handle: u64) -> Result<(Node<u64>, Digest, Properties), Self::Error> {
+        const READS_PER_STEP: usize = 64;
+        let reads = self.reads.get();
+        let used = self.engine.last_quantum_steps.get();
+        if reads != 0 && reads.is_multiple_of(READS_PER_STEP) {
+            if used >= self.engine.quantum_limit {
+                return Err(DiagnosticReadError::Budget);
+            }
+            self.engine.last_quantum_steps.set(used + 1);
+        }
+        self.reads.set(reads + 1);
+        self.engine
+            .read(handle)
+            .map_err(DiagnosticReadError::Engine)
+    }
+}
+
+fn diagnostic_part<T>(value: Result<T, DiagnosticReadError>) -> Result<Option<T>, Error> {
+    match value {
+        Ok(value) => Ok(Some(value)),
+        Err(DiagnosticReadError::Budget) => Ok(None),
+        Err(DiagnosticReadError::Engine(error)) => Err(error),
+    }
+}
+
 /// Rule metadata describes the executed command; it contains no validity rule.
 type CommandMetadata = (Rule, Vec<(R, u64)>, Vec<(R, u32)>);
 fn metadata(command: &Command) -> CommandMetadata {
@@ -183,11 +224,11 @@ fn metadata(command: &Command) -> CommandMetadata {
 }
 
 impl Engine {
-    fn query_formula(
+    fn query_anchor(
         &self,
         anchor: u64,
         query: &FormulaQuery,
-    ) -> Result<Result<FormulaFragment, InspectionError>, Error> {
+    ) -> Result<Result<u64, InspectionError>, Error> {
         let root = if let Some(start) = query.start {
             let id: Option<u64> = sql(self
                 .connection
@@ -210,7 +251,18 @@ impl Engine {
         } else {
             anchor
         };
-        graph_query(self, root, query)
+        Ok(Ok(root))
+    }
+
+    fn query_formula(
+        &self,
+        anchor: u64,
+        query: &FormulaQuery,
+    ) -> Result<Result<FormulaFragment, InspectionError>, Error> {
+        match self.query_anchor(anchor, query)? {
+            Ok(root) => graph_query(self, root, query),
+            Err(error) => Ok(Err(error)),
+        }
     }
 
     fn diagnostic_binding(&self) -> Result<InputBinding, Error> {
@@ -252,6 +304,15 @@ impl Engine {
             && self
                 .reference_snapshot
                 .is_none_or(|snapshot| snapshot == context.snapshot_id());
+        let reader = DiagnosticReader {
+            engine: self,
+            reads: Cell::new(0),
+        };
+        let inspect = |anchor, query: &FormulaQuery| match self.query_anchor(anchor, query)? {
+            Ok(root) => diagnostic_part(graph_query(&reader, root, query))
+                .map(|part| part.and_then(Result::ok)),
+            Err(_) => Ok(None),
+        };
         let mut premise = None;
         let mut implication = None;
         for (role, reference) in references {
@@ -260,14 +321,22 @@ impl Engine {
             if reference < self.cursor {
                 let value = checker::Context::previous_node(self, reference)?;
                 operand.proved = Some(value.proved);
-                let fragment = graph_fragment(self, value.formula, FORMULA_FRAGMENT_NODES, 0)?;
+                operand.formula = diagnostic_part(graph_fragment(
+                    &reader,
+                    value.formula,
+                    FORMULA_FRAGMENT_NODES,
+                    0,
+                ))?;
+                diagnostic.operands_complete &= operand.formula.is_some();
                 if let Some(query) = query
                     && query.operand == role
-                    && fragment.root == query.root
+                    && operand
+                        .formula
+                        .as_ref()
+                        .is_some_and(|fragment| fragment.root == query.root)
                 {
-                    diagnostic.inspection = self.query_formula(value.formula, query)?.ok();
+                    diagnostic.inspection = inspect(value.formula, query)?;
                 }
-                operand.formula = Some(fragment);
                 if role == R::Premise {
                     premise = Some(value.formula);
                 }
@@ -281,19 +350,28 @@ impl Engine {
             && let Some((antecedent, _)) = checker::Context::implication(self, implication)?
         {
             let mut operand = Operand::new(R::Antecedent);
-            let fragment = graph_fragment(self, antecedent, FORMULA_FRAGMENT_NODES, 0)?;
+            operand.formula = diagnostic_part(graph_fragment(
+                &reader,
+                antecedent,
+                FORMULA_FRAGMENT_NODES,
+                0,
+            ))?;
+            diagnostic.operands_complete &= operand.formula.is_some();
             if let Some(query) = query
                 && query.operand == R::Antecedent
-                && fragment.root == query.root
+                && operand
+                    .formula
+                    .as_ref()
+                    .is_some_and(|fragment| fragment.root == query.root)
             {
-                diagnostic.inspection = self.query_formula(antecedent, query)?.ok();
+                diagnostic.inspection = inspect(antecedent, query)?;
             }
-            operand.formula = Some(fragment);
             diagnostic.operands.push(operand);
             if let Some(premise) = premise
                 && premise != antecedent
             {
-                diagnostic.difference = Some(graph_difference(self, antecedent, premise)?);
+                diagnostic.difference =
+                    diagnostic_part(graph_difference(&reader, antecedent, premise))?;
             }
         }
         for (role, variable) in variables {

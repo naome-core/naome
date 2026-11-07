@@ -12,7 +12,7 @@ use naome_proof::program::{Command, RECORD_BYTES};
 use naome_proof::{DerivationId, ProofId, StatementId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use std::sync::Arc;
+use std::{cell::Cell, sync::Arc};
 
 fn sql<T>(value: rusqlite::Result<T>) -> Result<T, Error> {
     value.map_err(Error::Storage)
@@ -65,7 +65,8 @@ pub struct Engine {
     active: Option<Evaluation>,
     accepted: Option<u64>,
     cache_budget: Option<u64>,
-    last_quantum_steps: usize,
+    last_quantum_steps: Cell<usize>,
+    quantum_limit: usize,
     export: Option<Export>,
     finalization: Option<Finalization>,
     context_snapshot: Option<[u8; 32]>,
@@ -560,7 +561,8 @@ impl Engine {
             active: None,
             accepted: None,
             cache_budget: None,
-            last_quantum_steps: 0,
+            last_quantum_steps: Cell::new(0),
+            quantum_limit: 0,
             export: None,
             finalization: None,
             context_snapshot: None,
@@ -669,7 +671,8 @@ impl Engine {
         context: &dyn ContextView,
         query: Option<&crate::diagnostics::FormulaQuery>,
     ) -> Result<bool, Error> {
-        self.last_quantum_steps = 0;
+        self.last_quantum_steps.set(0);
+        self.quantum_limit = steps;
         self.live()?;
         if cache_bytes < 4096 {
             return Err("invalid effective cache budget".into());
@@ -729,7 +732,7 @@ impl Engine {
     /// Operations actually executed by the most recent quantum, including a
     /// failed quantum. This observation grants no mathematical authority.
     pub fn last_quantum_steps(&self) -> usize {
-        self.last_quantum_steps
+        self.last_quantum_steps.get()
     }
 
     fn advance_batch(
@@ -745,6 +748,8 @@ impl Engine {
                 let Some((bytes, stored_hash)) = input else {
                     break;
                 };
+                self.last_quantum_steps
+                    .set(self.last_quantum_steps.get() + 1);
                 if bytes.len() > RECORD_BYTES {
                     return Err("stored command capacity".into());
                 }
@@ -828,8 +833,10 @@ impl Engine {
                     instantiation_axiom,
                     deduction,
                 });
+            } else {
+                self.last_quantum_steps
+                    .set(self.last_quantum_steps.get() + 1);
             }
-            self.last_quantum_steps += 1;
             let mut active = self.active.take().expect("active command");
             if let Some(mut deduction) = active.deduction.take() {
                 if !deduction.advance(self, &mut active.operations)? {
