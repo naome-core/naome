@@ -79,6 +79,7 @@ pub fn routing_contract() -> Value {
         "public_bootstrap":discovery::internet::bootstrap(),
         "participation_key":hex(discovery::provider_key().as_ref()),
         "privacy":{"proof_graph":"Public to compatible peers",
+            "research_offers":"Unresolved questions and participation are disclosed to contacted peers",
             "discovery":"Public IP/peer identity/participation metadata; mDNS is unencrypted LAN discovery",
             "transport":"Noise authenticated encryption, including relay circuits"},
         "defaults":DiscoveryConfig::default(),
@@ -152,6 +153,10 @@ fn description_supplier(
 }
 
 enum Flight {
+    Work {
+        started: Instant,
+        peer: PeerId,
+    },
     Inventory {
         started: Instant,
         peer: PeerId,
@@ -188,6 +193,41 @@ struct PeerLearning {
     client: crate::jobs::Client,
     cursor: u64,
 }
+struct WorkOffer {
+    peer: PeerId,
+    goal: naome_checker::question::Identity,
+    question: String,
+    expires: Instant,
+    _memory: Arc<crate::resources::MemoryLease>,
+}
+type WorkKey = (
+    PeerId,
+    naome_checker::question::Identity,
+    naome_checker::question::Identity,
+);
+fn update_work_status(
+    versions: &mut BTreeMap<WorkKey, u64>,
+    members: &mut BTreeMap<WorkKey, Instant>,
+    key: WorkKey,
+    sequence: u64,
+    active: bool,
+    expires: Instant,
+) -> bool {
+    if sequence == 0
+        || versions
+            .get(&key)
+            .is_some_and(|previous| *previous >= sequence)
+    {
+        return false;
+    }
+    versions.insert(key, sequence);
+    if active {
+        members.insert(key, expires);
+    } else {
+        members.remove(&key);
+    }
+    true
+}
 struct Node {
     learning: Option<PeerLearning>,
     computation: Arc<crate::resources::Computation>,
@@ -216,6 +256,12 @@ struct Node {
     test_controls: bool,
     producer_artifacts: VecDeque<String>,
     next_production: Instant,
+    cooperation_enabled: bool,
+    work_offers: VecDeque<WorkOffer>,
+    work_sent: BTreeMap<WorkKey, Instant>,
+    work_members: BTreeMap<WorkKey, Instant>,
+    work_versions: BTreeMap<WorkKey, u64>,
+    next_work_offer: Instant,
 }
 
 /// Autonomous ordinary operation owns its control, schedule and selection future.
@@ -635,6 +681,12 @@ where
         test_controls,
         producer_artifacts: config.producer_artifacts.into(),
         next_production: Instant::now() + crate::resources::active_limits().production_interval,
+        cooperation_enabled: autonomy.is_some(),
+        work_offers: VecDeque::new(),
+        work_sent: BTreeMap::new(),
+        work_members: BTreeMap::new(),
+        work_versions: BTreeMap::new(),
+        next_work_offer: Instant::now(),
     };
     let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -821,8 +873,20 @@ where
         }
         questions.cancel_closed();
         if let Some(autonomous) = &mut autonomous {
+            if let Some(offer) = node.work_offers.pop_front()
+                && Instant::now() < offer.expires
+            {
+                autonomous.offer_work(offer.peer, offer.goal, &offer.question, &node.graph, &mut questions);
+            }
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
             node.publish_admitted(&admitted,if node.learning.is_some(){"native_solver"}else{"mock_producer"});
+            if let Some((goal, question)) = autonomous.cooperation().wanted() {
+                node.offer_work(goal, question);
+            }
+            if let Some((peer, goal, question, active, sequence, expires)) = autonomous.cooperation().take_notice()
+                && !node.work_notice(peer, goal, question, active, sequence) {
+                autonomous.cooperation().defer_notice((peer, goal, question, active, sequence, expires));
+            }
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }
         if !stopping && work.is_some() && let Some(learning) = &mut node.learning {
@@ -884,6 +948,8 @@ pub(crate) fn yamux_config() -> yamux::Config {
 
 fn body_kind(body: &Body) -> &'static str {
     match body {
+        Body::WorkOffer { .. } => "work_offer",
+        Body::WorkStatus { .. } => "work_status",
         Body::Inventory { .. } => "inventory",
         Body::InventoryResult { .. } => "inventory_result",
         Body::InventoryUnchanged { .. } => "inventory_unchanged",
@@ -1117,11 +1183,99 @@ impl PeerLearning {
 }
 
 impl Node {
+    fn offer_work(
+        &mut self,
+        goal: naome_checker::question::Identity,
+        question: &naome_checker::question::ResearchQuestion,
+    ) {
+        let now = Instant::now();
+        if now < self.next_work_offer {
+            return;
+        }
+        self.work_sent.retain(|(peer, _, _), at| {
+            self.enabled.contains(peer)
+                && now.duration_since(*at) < crate::resources::limits().pending_retry
+        });
+        self.work_versions
+            .retain(|key, _| self.work_sent.contains_key(key));
+        self.work_members
+            .retain(|(peer, _, _), until| self.enabled.contains(peer) && *until > now);
+        if self.work_sent.len() >= crate::resources::active_limits().queued_metadata {
+            return;
+        }
+        if self
+            .work_members
+            .keys()
+            .filter(|(_, member_goal, id)| *member_goal == goal && id == question.resolution_id())
+            .count()
+            >= crate::resources::active_limits().queued_metadata.min(2)
+        {
+            return;
+        }
+        let peer = self.enabled.iter().copied().find(|peer| {
+            self.request_ready(*peer, now)
+                && self.automatic_request_ready(*peer, now)
+                && !self
+                    .work_sent
+                    .contains_key(&(*peer, goal, *question.resolution_id()))
+        });
+        let Some(peer) = peer else {
+            return;
+        };
+        let source = question.to_hex();
+        let id = *question.resolution_id();
+        let request = self.swarm.behaviour_mut().exchange.send_request(
+            &peer,
+            Frame::new(Body::WorkOffer {
+                goal,
+                question: source,
+            }),
+        );
+        self.flights
+            .insert(request, Flight::Work { started: now, peer });
+        self.work_sent.insert((peer, goal, id), now);
+        self.charge_automatic_request(peer, now);
+        self.charge_outgoing(peer, now);
+        self.next_work_offer = now + crate::resources::limits().automatic_request_interval;
+    }
+
+    fn work_notice(
+        &mut self,
+        peer: PeerId,
+        goal: naome_checker::question::Identity,
+        question: naome_checker::question::Identity,
+        active: bool,
+        sequence: u64,
+    ) -> bool {
+        let now = Instant::now();
+        if !self.enabled.contains(&peer) {
+            return true;
+        }
+        if !self.request_ready(peer, now) || !self.automatic_request_ready(peer, now) {
+            return false;
+        }
+        let request = self.swarm.behaviour_mut().exchange.send_request(
+            &peer,
+            Frame::new(Body::WorkStatus {
+                goal,
+                question,
+                active,
+                sequence,
+            }),
+        );
+        self.flights
+            .insert(request, Flight::Work { started: now, peer });
+        self.charge_automatic_request(peer, now);
+        self.charge_outgoing(peer, now);
+        true
+    }
+
     fn flight_count(&self, target: PeerId) -> usize {
         self.flights
             .values()
             .filter(|flight| match flight {
                 Flight::Inventory { peer, .. }
+                | Flight::Work { peer, .. }
                 | Flight::Get { peer, .. }
                 | Flight::Describe { peer, .. }
                 | Flight::Program { peer, .. }
@@ -1994,6 +2148,7 @@ impl Node {
                     if let Some(flight) = self.flights.remove(&request_id) {
                         let started = match &flight {
                             Flight::Inventory { started, .. }
+                            | Flight::Work { started, .. }
                             | Flight::Get { started, .. }
                             | Flight::Describe { started, .. }
                             | Flight::Offer { started, .. }
@@ -2061,6 +2216,71 @@ impl Node {
             None
         };
         let response = match body {
+            Body::WorkOffer { goal, question } => {
+                if !self.cooperation_enabled
+                    || question.len() > 2 * naome_checker::question::QUESTION_BYTES
+                    || self.work_offers.len() >= crate::resources::active_limits().queued_metadata
+                    || self.work_offers.iter().any(|offer| offer.peer == peer)
+                {
+                    Body::Error {
+                        reason: "work offer unavailable".into(),
+                    }
+                } else if let Ok(memory) = crate::resources::MemoryLease::acquire(
+                    question.len().saturating_mul(2).saturating_add(256),
+                ) {
+                    self.work_offers.push_back(WorkOffer {
+                        peer,
+                        goal,
+                        question,
+                        expires: Instant::now() + crate::resources::limits().selection_timeout,
+                        _memory: memory,
+                    });
+                    Body::Receipt {
+                        status: "queued".into(),
+                    }
+                } else {
+                    Body::Error {
+                        reason: "work offer capacity".into(),
+                    }
+                }
+            }
+            Body::WorkStatus {
+                goal,
+                question,
+                active,
+                sequence,
+            } => {
+                let key = (peer, goal, question);
+                if sequence > 0
+                    && self.work_sent.get(&key).is_some_and(|at| {
+                        Instant::now().duration_since(*at)
+                            < crate::resources::limits().pending_retry
+                    })
+                {
+                    if !update_work_status(
+                        &mut self.work_versions,
+                        &mut self.work_members,
+                        key,
+                        sequence,
+                        active,
+                        Instant::now() + crate::resources::limits().pending_retry,
+                    ) {
+                        return Ok(Body::Receipt {
+                            status: "stale".into(),
+                        });
+                    }
+                    emit(
+                        json!({"event":"workgroup_member", "peer":peer.to_string(), "goal":hex(&goal), "resolution_id":hex(&question), "active":active}),
+                    );
+                    Body::Receipt {
+                        status: "recorded".into(),
+                    }
+                } else {
+                    Body::Error {
+                        reason: "unknown work offer".into(),
+                    }
+                }
+            }
             Body::Inventory {
                 known,
                 after,
@@ -2218,6 +2438,7 @@ impl Node {
         };
         let expected_peer = match &flight {
             Flight::Inventory { peer, .. }
+            | Flight::Work { peer, .. }
             | Flight::Get { peer, .. }
             | Flight::Describe { peer, .. }
             | Flight::Program { peer, .. }

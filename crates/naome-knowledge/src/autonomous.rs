@@ -70,7 +70,12 @@ struct Solving {
     question: ResearchQuestion,
     ticket: jobs::Ticket,
     seen: question::Revision,
+    cooperative: bool,
+    member: Option<(libp2p::PeerId, Identity)>,
+    memory: Option<std::sync::Arc<crate::resources::MemoryLease>>,
+    cooperative_started: Option<Instant>,
 }
+mod cooperation;
 mod program;
 enum Candidate {
     Certificate { proof: String, helpers: Vec<String> },
@@ -104,6 +109,8 @@ struct Publication {
     expires: Instant,
     seen: Option<question::Revision>,
     eligible: bool,
+    cooperative: bool,
+    _memory: Option<std::sync::Arc<crate::resources::MemoryLease>>,
 }
 
 struct EvidencePublication {
@@ -143,6 +150,7 @@ pub(crate) struct Autonomous {
     pending_receipt: Option<jobs::Receipt>,
     frontier: Option<crate::frontier::Frontier>,
     evidence_publications: VecDeque<EvidencePublication>,
+    cooperation: cooperation::Cooperation,
 }
 
 impl Autonomous {
@@ -186,6 +194,7 @@ impl Autonomous {
             pending_receipt: None,
             frontier: None,
             evidence_publications: VecDeque::new(),
+            cooperation: cooperation::Cooperation::default(),
         }
     }
 
@@ -218,6 +227,31 @@ impl Autonomous {
     /// A canonical question fixed by the stopped node's start configuration.
     pub(crate) fn formal_goal(&mut self, source: Option<ResearchQuestion>) {
         self.formal_goal = source;
+    }
+
+    pub(crate) fn cooperation(&mut self) -> &mut cooperation::Cooperation {
+        &mut self.cooperation
+    }
+
+    pub(crate) fn offer_work<F, Fut>(
+        &mut self,
+        peer: libp2p::PeerId,
+        goal: Identity,
+        source: &str,
+        graph: &Graph,
+        questions: &mut question::LocalQuestions<F>,
+    ) -> bool
+    where
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    {
+        let primary = self
+            .formal_goal
+            .as_ref()
+            .filter(|question| !questions.generation_decision(graph, question).has_answer());
+        let own = primary.into_iter().chain(self.unanswered.iter()).cloned();
+        self.cooperation
+            .offer(peer, goal, source, graph, questions, own)
     }
 
     fn receipt(&mut self, receipt: jobs::Receipt) -> bool {
@@ -333,6 +367,32 @@ impl Autonomous {
             return accepted;
         }
         let now = Instant::now();
+        self.cooperation.poll(graph, questions);
+        if let Some(id) = self.cooperation.selected_id()
+            && self
+                .solving
+                .get(&id)
+                .is_some_and(|solving| !solving.cooperative && solving.member.is_none())
+            && let Some(selected) = self.cooperation.take()
+            && questions
+                .refresh_exchange(graph, &selected.question, &selected.assessment)
+                .is_ok()
+        {
+            self.solving
+                .get_mut(&id)
+                .expect("checked own solving job")
+                .member = Some((selected.peer, selected.goal));
+            self.cooperation
+                .notice(selected.peer, selected.goal, id, true);
+            emit(
+                json!({"event":"workgroup_joined", "peer":selected.peer.to_string(), "resolution_id":crate::hex(&id)}),
+            );
+        }
+        if let Some((_, wanted)) = self.cooperation.wanted()
+            && questions.generation_decision(graph, wanted).has_answer()
+        {
+            self.cooperation.clear_request();
+        }
         if (now >= self.next_question || now >= self.next_proof)
             && let Some(frontier) = &mut self.frontier
         {
@@ -411,6 +471,14 @@ impl Autonomous {
         // Selection is reacquired from current metadata/owner policy; solve
         // outputs remain untrusted and are resumed only for current obligations.
         if let Some(record) = self.recovered_other.pop_front() {
+            // A peer offer is a finite lease. After a restart the requester can
+            // re-offer it, causing fresh local selection before new work.
+            if record.binding.cooperative {
+                if !self.retire(record) {
+                    return accepted;
+                }
+                return accepted;
+            }
             if let jobs::Input::Solve { question: source } = &record.input {
                 if record.state != jobs::State::InDoubt
                     && (self.solving.len() >= crate::resources::active_limits().solving_jobs
@@ -474,6 +542,10 @@ impl Autonomous {
                                         question,
                                         ticket,
                                         seen: questions.revision(graph),
+                                        cooperative: false,
+                                        member: None,
+                                        memory: None,
+                                        cooperative_started: None,
                                     },
                                 );
                             }
@@ -588,6 +660,9 @@ impl Autonomous {
                 solving.seen = revision;
                 let fresh = questions.generation_decision(graph, &solving.question);
                 if fresh.has_answer() {
+                    if let Some((peer, goal)) = solving.member {
+                        self.cooperation.notice(peer, goal, id, false);
+                    }
                     emit(
                         json!({"event":"solve_cancelled_by_answer","resolution_id":crate::hex(&id)}),
                     );
@@ -599,6 +674,11 @@ impl Autonomous {
                 .take()
                 .map(Ok)
                 .unwrap_or_else(|| solving.ticket.try_recv());
+            if completion.is_ok()
+                && let Some((peer, goal)) = solving.member
+            {
+                self.cooperation.notice(peer, goal, id, false);
+            }
             if let (Some(frontier), Ok(observed)) = (&mut self.frontier, &completion) {
                 use crate::frontier::evidence::Outcome;
                 let outcome = match (observed.state, &observed.result) {
@@ -654,7 +734,9 @@ impl Autonomous {
                         jobs::State::Expired | jobs::State::InDoubt
                     ) =>
                 {
-                    questions.settle_backlog(&id);
+                    if !solving.cooperative {
+                        questions.settle_backlog(&id);
+                    }
                     emit(
                         json!({"event":"solve_obligation_held_or_expired","resolution_id":crate::hex(&id),
                         "state":format!("{:?}",completion.state)}),
@@ -686,6 +768,8 @@ impl Autonomous {
                                     ),
                                 seen: None,
                                 eligible: false,
+                                cooperative: solving.cooperative,
+                                _memory: solving.memory.clone(),
                             }),
                             Err(error) if error.retryable() => {
                                 solving.completion = Some(completion);
@@ -695,7 +779,10 @@ impl Autonomous {
                                 emit(
                                     json!({"event":"proof_candidate_rejected","job":completion.id,"error":error.to_string()}),
                                 );
-                                self.retry(solving.question, questions, graph);
+                                if !solving.cooperative {
+                                    self.cooperation.request(id, solving.question.clone());
+                                    self.retry(solving.question, questions, graph);
+                                }
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
@@ -721,6 +808,8 @@ impl Autonomous {
                                         ),
                                     seen: None,
                                     eligible: false,
+                                    cooperative: solving.cooperative,
+                                    _memory: solving.memory.clone(),
                                 });
                             }
                             Err(error) => {
@@ -740,7 +829,10 @@ impl Autonomous {
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
-                                self.retry(solving.question, questions, graph);
+                                if !solving.cooperative {
+                                    self.cooperation.request(id, solving.question.clone());
+                                    self.retry(solving.question, questions, graph);
+                                }
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
                                 }
@@ -767,23 +859,44 @@ impl Autonomous {
                                 ),
                             seen: None,
                             eligible: false,
+                            cooperative: solving.cooperative,
+                            _memory: solving.memory.clone(),
                         });
                     }
                     Ok(jobs::Output::NoCandidate) => {
-                        self.retry(solving.question, questions, graph);
+                        if !solving.cooperative {
+                            self.cooperation.request(id, solving.question.clone());
+                            self.retry(solving.question, questions, graph);
+                        }
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
                     }
                     _ => {
-                        self.retry(solving.question, questions, graph);
+                        if !solving.cooperative {
+                            self.cooperation.request(id, solving.question.clone());
+                            self.retry(solving.question, questions, graph);
+                        }
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
                     }
                 },
                 Err(oneshot::error::TryRecvError::Empty) => {
-                    self.solving.insert(id, solving);
+                    if solving.cooperative_started.is_some_and(|started| {
+                        now.duration_since(started) >= crate::resources::limits().pending_retry
+                    }) && !self.unanswered.is_empty()
+                        && self.solving.len() + 1 >= crate::resources::active_limits().solving_jobs
+                    {
+                        if let Some((peer, goal)) = solving.member {
+                            self.cooperation.notice(peer, goal, id, false);
+                        }
+                        emit(json!({"event":"workgroup_yielded", "resolution_id":crate::hex(&id)}));
+                        // Dropping the ticket requests cancellation; the job owner
+                        // retains spent allowance and supervises worker cleanup.
+                    } else {
+                        self.solving.insert(id, solving);
+                    }
                 }
                 Err(_) => self.error = Some("solving job owner stopped".into()),
             }
@@ -851,7 +964,9 @@ impl Autonomous {
                         emit(
                             json!({"event":"proof_candidate_rejected","job":pending.job,"error":error}),
                         );
-                        self.retain(pending.question);
+                        if !pending.cooperative {
+                            self.retain(pending.question);
+                        }
                         if !self.acknowledge(pending.job) {
                             return accepted;
                         }
@@ -1156,6 +1271,8 @@ impl Autonomous {
             });
             let waiting = !pending.is_empty();
             for helper in pending {
+                self.cooperation
+                    .request(*goal.resolution_id(), helper.clone());
                 if questions.generation_decision(graph, &helper).passed() {
                     self.retain(helper);
                 }
@@ -1169,6 +1286,88 @@ impl Autonomous {
                 }
             }
             goal_requirements = work.required;
+        }
+        // Give local work and accepted assistance alternating starts, even when
+        // the node only has one solver slot. An idle local queue lends its turn.
+        if now >= self.next_proof
+            && self.solving.len() < crate::resources::active_limits().solving_jobs
+            && self.publications.len() + self.solving.len() + self.evidence_publications.len()
+                < crate::resources::active_limits().publications
+            && self.cooperation.has_selected()
+            && !self
+                .unanswered
+                .iter()
+                .any(|question| self.cooperation.selected_is(question.resolution_id()))
+            && !self
+                .formal_goal
+                .as_ref()
+                .is_some_and(|question| self.cooperation.selected_is(question.resolution_id()))
+            && (self.cooperation.turn || self.unanswered.is_empty())
+            && let Some(selected) = self.cooperation.take()
+        {
+            let question = &selected.question;
+            if questions
+                .refresh_exchange(graph, question, &selected.assessment)
+                .is_ok()
+                && !self.solving.contains_key(question.resolution_id())
+                && !self
+                    .publications
+                    .iter()
+                    .any(|p| p.question.resolution_id() == question.resolution_id())
+            {
+                match graph.solving_inputs(&[], question.dependencies()) {
+                    Ok(Some(prerequisites)) => {
+                        let source = if question.dependencies().is_empty() {
+                            Some(question.to_hex())
+                        } else {
+                            ResearchQuestion::from_formula(question.formula().clone())
+                                .ok()
+                                .map(|q| q.to_hex())
+                        };
+                        if let Some(source) = source {
+                            let binding =
+                                questions.formal_context(graph).binding().for_cooperation();
+                            match self.client.submit_after(
+                                jobs::Input::Solve { question: source },
+                                binding,
+                                vec![],
+                                prerequisites,
+                            ) {
+                                Ok(ticket) => {
+                                    self.cooperation.notice(
+                                        selected.peer,
+                                        selected.goal,
+                                        *question.resolution_id(),
+                                        true,
+                                    );
+                                    emit(
+                                        json!({"event":"workgroup_joined", "peer":selected.peer.to_string(), "resolution_id":crate::hex(question.resolution_id())}),
+                                    );
+                                    self.solving.insert(
+                                        *question.resolution_id(),
+                                        Solving {
+                                            completion: None,
+                                            question: question.clone(),
+                                            ticket,
+                                            seen: questions.revision(graph),
+                                            cooperative: true,
+                                            member: Some((selected.peer, selected.goal)),
+                                            memory: Some(selected.memory.clone()),
+                                            cooperative_started: Some(now),
+                                        },
+                                    );
+                                    self.cooperation.turn = false;
+                                    self.next_proof =
+                                        now + Duration::from_millis(self.intervals.solving_ms());
+                                }
+                                Err(_) => self.cooperation.put_back(selected),
+                            }
+                        }
+                    }
+                    Err(error) if error.fatal() => self.error = Some(error.to_string()),
+                    _ => {}
+                }
+            }
         }
         if now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
@@ -1192,6 +1391,9 @@ impl Autonomous {
             } else {
                 (!self.unanswered.is_empty()).then_some(0)
             };
+            // A stale or deferred own candidate must not indefinitely hold the
+            // turn while an independently selected peer offer is waiting.
+            self.cooperation.turn = true;
             if let Some(question) = selected.and_then(|index| self.unanswered.remove(index)) {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
@@ -1245,6 +1447,17 @@ impl Autonomous {
                         prerequisites,
                     ) {
                         Ok(ticket) => {
+                            let member = if self.cooperation.selected_is(question.resolution_id()) {
+                                self.cooperation.take().and_then(|selected| {
+                                    if questions.refresh_exchange(graph, &selected.question, &selected.assessment).is_ok() {
+                                        self.cooperation.notice(selected.peer, selected.goal, *question.resolution_id(), true);
+                                        emit(json!({"event":"workgroup_joined", "peer":selected.peer.to_string(), "resolution_id":crate::hex(question.resolution_id())}));
+                                        Some((selected.peer, selected.goal))
+                                    } else { None }
+                                })
+                            } else {
+                                None
+                            };
                             self.solving.insert(
                                 *question.resolution_id(),
                                 Solving {
@@ -1252,8 +1465,13 @@ impl Autonomous {
                                     question,
                                     ticket,
                                     seen: questions.revision(graph),
+                                    cooperative: false,
+                                    member,
+                                    memory: None,
+                                    cooperative_started: None,
                                 },
                             );
+                            self.cooperation.turn = true;
                         }
                         Err(_) => self.retain(question),
                     }

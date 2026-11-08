@@ -11,7 +11,7 @@ mod learning;
 pub(super) use learning::{Learning, Recipe};
 #[cfg(test)]
 pub(in crate::frontier) mod reference;
-mod semantics;
+pub(super) mod semantics;
 #[cfg(test)]
 use semantics::relevance;
 pub(super) use semantics::{independent_goal, key, meaningful};

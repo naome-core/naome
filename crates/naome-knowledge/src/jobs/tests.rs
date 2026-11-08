@@ -189,3 +189,16 @@ fn selected_finding_question_binds_the_returned_question() {
             .is_err()
     );
 }
+
+#[test]
+fn cooperative_job_binding_is_limited_to_solving() {
+    let binding = Binding::new([1; 32], [2; 32]).for_cooperation();
+    assert!(
+        binding
+            .validate_role(&Input::Solve {
+                question: crate::mocks::create_question(0)
+            })
+            .is_ok()
+    );
+    assert!(binding.validate_role(&Input::find(0)).is_err());
+}
