@@ -760,13 +760,13 @@ impl Disk {
         let record = journal
             .records
             .get(&id)
-            .ok_or("provider program original job missing")?;
+            .ok_or(crate::ResearchFailure::ProviderProgramOriginalJobMissing)?;
         if unit == 0
             || unit > record.reserved_units
             || unit > record.checkpoint.saturating_add(1)
             || !matches!(record.input, Input::Solve { .. })
         {
-            return Err("provider program original reservation missing".into());
+            return Err(crate::ResearchFailure::ProviderProgramOriginalReservationMissing.into());
         }
         let key = format!("{id}:{unit}");
         if let Some(previous) =
@@ -776,7 +776,7 @@ impl Disk {
             return if previous == bytes {
                 Ok(())
             } else {
-                Err("resumed provider program group differs".into())
+                Err(crate::ResearchFailure::ResumedProviderProgramGroupDiffers.into())
             };
         }
         let _disk = crate::resources::DiskLease::acquire(

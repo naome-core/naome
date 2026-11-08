@@ -383,6 +383,99 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ProgramReservation => {
                     "program group lacks its original reservation"
                 }
+                crate::ResearchFailure::ExperienceJournalRecordIdentityDiffers => {
+                    "experience journal record identity differs"
+                }
+                crate::ResearchFailure::ExperiencePageIoOverflow => "experience page IO overflow",
+                crate::ResearchFailure::ExperienceRecordExceedsTheWorkingPageCapacity => {
+                    "experience record exceeds the working page capacity"
+                }
+                crate::ResearchFailure::HistoricalAdmittedSourceRecordMissing => {
+                    "historical admitted source record missing"
+                }
+                crate::ResearchFailure::HistoricalOwnAdmissionIdentityDiffers => {
+                    "historical own admission identity differs"
+                }
+                crate::ResearchFailure::HistoricalOwnAdmissionReceiptMissing => {
+                    "historical own admission receipt missing"
+                }
+                crate::ResearchFailure::HistoricalPageImmutableChunkDiffers => {
+                    "historical page immutable chunk differs"
+                }
+                crate::ResearchFailure::HistoricalPeerProvenanceDiffers => {
+                    "historical peer provenance differs"
+                }
+                crate::ResearchFailure::HistoricalPeerReceiptMissing => {
+                    "historical peer receipt missing"
+                }
+                crate::ResearchFailure::HistoricalSourceExceedsWorkingPageCapacity => {
+                    "historical source exceeds working page capacity"
+                }
+                crate::ResearchFailure::HistoricalSourceIdentityDiffers => {
+                    "historical source identity differs"
+                }
+                crate::ResearchFailure::HistoricalSourceRoleDiffers => {
+                    "historical source role differs"
+                }
+                crate::ResearchFailure::HistoricalSourceSolutionMissing => {
+                    "historical source solution missing"
+                }
+                crate::ResearchFailure::HistoryIoOperationOverflow => {
+                    "history IO operation overflow"
+                }
+                crate::ResearchFailure::HistoryIoOverflow => "history IO overflow",
+                crate::ResearchFailure::HistoryJobMissing => "history job missing",
+                crate::ResearchFailure::HistoryLifetimeIoOverflow => "history lifetime IO overflow",
+                crate::ResearchFailure::HistoryNativeOwnerMissing => "history native owner missing",
+                crate::ResearchFailure::HistoryOriginalJobMissing => "history original job missing",
+                crate::ResearchFailure::HistoryReadLacksItsOriginalTrainingReservation => {
+                    "history read lacks its original training reservation"
+                }
+                crate::ResearchFailure::HistorySourceHasNoJob => "history source has no job",
+                crate::ResearchFailure::NativeCheckpointWritesRequireTheReservedTrainingRole => {
+                    "native checkpoint writes require the reserved training role"
+                }
+                crate::ResearchFailure::NativeModelIoLacksOriginalReservation => {
+                    "native model IO lacks original reservation"
+                }
+                crate::ResearchFailure::NativeModelIoOperationsOverflow => {
+                    "native model IO operations overflow"
+                }
+                crate::ResearchFailure::NativeModelIoOverflow => "native model IO overflow",
+                crate::ResearchFailure::NativeModelArtifactCountExhausted => {
+                    "native model artifact count exhausted"
+                }
+                crate::ResearchFailure::NativeModelChunkLengthDiffers => {
+                    "native model chunk length differs"
+                }
+                crate::ResearchFailure::NativeModelChunkMissing => "native model chunk missing",
+                crate::ResearchFailure::NativeModelImmutableChunkDiffers => {
+                    "native model immutable chunk differs"
+                }
+                crate::ResearchFailure::NativeModelLifetimeIoAllowanceExhausted => {
+                    "native model lifetime IO allowance exhausted"
+                }
+                crate::ResearchFailure::NativeModelOriginalJobMissing => {
+                    "native model original job missing"
+                }
+                crate::ResearchFailure::NativeModelOriginalSnapshotMissing => {
+                    "native model original snapshot missing"
+                }
+                crate::ResearchFailure::NativeModelReadOutsideImmutableOwnedSnapshots => {
+                    "native model read outside immutable owned snapshots"
+                }
+                crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers => {
+                    "native model retained chunk length differs"
+                }
+                crate::ResearchFailure::ProviderProgramOriginalJobMissing => {
+                    "provider program original job missing"
+                }
+                crate::ResearchFailure::ProviderProgramOriginalReservationMissing => {
+                    "provider program original reservation missing"
+                }
+                crate::ResearchFailure::ResumedProviderProgramGroupDiffers => {
+                    "resumed provider program group differs"
+                }
             }),
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")

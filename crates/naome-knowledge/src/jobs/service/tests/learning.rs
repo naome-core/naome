@@ -734,7 +734,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
     accepted(&mut owner);
     let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
     let blob = crate::learning::Blob::of(b"bounded-model");
-    assert!(
+    assert_eq!(
         owner
             .disk
             .model_io(
@@ -745,7 +745,8 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
                 0..1,
                 Some(b"bounded-model".to_vec())
             )
-            .is_err()
+            .unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::NativeModelIoLacksOriginalReservation),
     );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
@@ -1419,11 +1420,14 @@ fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening(
         .history_request
         .clone()
         .unwrap();
-    assert!(
+    assert_eq!(
         owner
             .disk
             .history_page(&mut owner.journal, id, 1, &request)
-            .is_err()
+            .unwrap_err(),
+        crate::Error::Research(
+            crate::ResearchFailure::HistoryReadLacksItsOriginalTrainingReservation
+        ),
     );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();

@@ -286,53 +286,57 @@ impl Disk {
         let record = journal
             .records
             .get_mut(&id)
-            .ok_or("native model original job missing")?;
+            .ok_or(crate::ResearchFailure::NativeModelOriginalJobMissing)?;
         if record.state != State::Running
             || unit != record.checkpoint + 1
             || unit > record.reserved_units
             || record.provider != crate::learning::PROVIDER
         {
-            return Err("native model IO lacks original reservation".into());
+            return Err(crate::ResearchFailure::NativeModelIoLacksOriginalReservation.into());
         }
         let previous_native = record.native.clone();
         let native = record
             .native
             .as_mut()
-            .ok_or("native model original snapshot missing")?;
+            .ok_or(crate::ResearchFailure::NativeModelOriginalSnapshotMissing)?;
         let reading = bytes.is_none();
         if !reading && !native.training {
-            return Err("native checkpoint writes require the reserved training role".into());
+            return Err(
+                crate::ResearchFailure::NativeCheckpointWritesRequireTheReservedTrainingRole.into(),
+            );
         }
         if reading && !native.allows_read(blob) {
-            return Err("native model read outside immutable owned snapshots".into());
+            return Err(
+                crate::ResearchFailure::NativeModelReadOutsideImmutableOwnedSnapshots.into(),
+            );
         }
         let count = native
             .io_bytes
             .checked_add(length)
-            .ok_or("native model IO overflow")?;
+            .ok_or(crate::ResearchFailure::NativeModelIoOverflow)?;
         let operations = native
             .io_operations
             .checked_add(range.len())
-            .ok_or("native model IO operations overflow")?;
+            .ok_or(crate::ResearchFailure::NativeModelIoOperationsOverflow)?;
         if count > crate::resources::limits().native_model_io_bytes
             || operations
                 > crate::resources::limits().native_model_io_bytes
                     / crate::resources::limits().native_model_chunk_bytes
                     * 2
         {
-            return Err("native model lifetime IO allowance exhausted".into());
+            return Err(crate::ResearchFailure::NativeModelLifetimeIoAllowanceExhausted.into());
         }
         let mut updates = Vec::new();
         let output = if let Some(bytes) = bytes {
             if bytes.len() != length {
-                return Err("native model chunk length differs".into());
+                return Err(crate::ResearchFailure::NativeModelChunkLengthDiffers.into());
             }
             let new = !native
                 .written
                 .iter()
                 .any(|(owner, known)| *owner == unit && known == blob);
             if new && native.written.len() >= 2 * (crate::learning::TRAINING_UNITS as usize + 2) {
-                return Err("native model artifact count exhausted".into());
+                return Err(crate::ResearchFailure::NativeModelArtifactCountExhausted.into());
             }
             for (index, part) in
                 range.zip(bytes.chunks(crate::resources::limits().native_model_chunk_bytes))
@@ -344,7 +348,7 @@ impl Disk {
                     crate::resources::limits().native_model_chunk_bytes,
                 )? {
                     if previous != part {
-                        return Err("native model immutable chunk differs".into());
+                        return Err(crate::ResearchFailure::NativeModelImmutableChunkDiffers.into());
                     }
                 } else {
                     updates.push(crate::checkpoint::Update::Put {
@@ -368,16 +372,18 @@ impl Disk {
                         &blob.key(index),
                         crate::resources::limits().native_model_chunk_bytes,
                     )?
-                    .ok_or("native model chunk missing")?;
+                    .ok_or(crate::ResearchFailure::NativeModelChunkMissing)?;
                 if part.len() != blob.chunk_len(index)? {
-                    return Err("native model retained chunk length differs".into());
+                    return Err(
+                        crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into(),
+                    );
                 }
                 bytes.extend_from_slice(&part);
             }
             bytes
         };
         if reading && output.len() != length {
-            return Err("native model retained chunk length differs".into());
+            return Err(crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into());
         }
         native.io_bytes = count;
         native.io_operations = operations;

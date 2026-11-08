@@ -56,11 +56,12 @@ fn streamed_candidate_groups_keep_original_reservations_and_survive_restart() {
     owner.journal.records.get_mut(&1).unwrap().state = State::Running;
     owner.reserve(1, 1).unwrap();
     let group = vec![Command::Reflexivity { variable: 0 }];
-    assert!(
+    assert_eq!(
         owner
             .disk
             .save_program_group(&owner.journal, 1, 2, group.clone())
-            .is_err()
+            .unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ProviderProgramOriginalReservationMissing),
     );
     owner
         .disk
