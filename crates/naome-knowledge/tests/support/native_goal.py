@@ -151,7 +151,7 @@ def run(trial):
     for node in trial.nodes:
         node.stop()
         status = node.start()
-        assert status["artifact_verification"] == "checked"
+        assert status["artifact_verification"] == 0x0020_0001
         assert node.ids() == all_ids
     assert peer_replay() == received, "the exact peer program replay must survive restart"
     a.stop()

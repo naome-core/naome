@@ -43,10 +43,10 @@ def memory_recovery(trial, node, frozen, accepted):
         status = trial.call(node, "status")
         assert status["running"], status
         receipt["elapsed_seconds"] = time.monotonic() - started
-        if status["computation"] == "running":
+        if status["computation"] == 0x001f_0002:
             receipt["result"] = "native_resume_observed"
             return status
-        assert status["computation"] in {"pausing", "paused"}, status
+        assert status["computation"] in {0x001f_0003, 0x001f_0004}, status
         cpu_hold = status["computation_reason"] == 0x0004_0008
         receipt["native_cpu_hold_observed"] |= cpu_hold
         assert checkpoints(node) == frozen, "productive work advanced during resource pause"
@@ -79,7 +79,7 @@ def run(trial):
     # Lifecycle readiness can correctly precede compute admission. Honor the
     # existing 30-second pressure recovery before the work-progress oracle;
     # the whole-driver deadline and the controlled pause checks are unchanged.
-    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
+    trial.wait(lambda: state(trial, donor, 0x001f_0002), maximum=40)
     trial.wait(lambda: next((record for record in journal(donor)["records"].values()
         if record["state"] == 0x001d_0002 and record["input"]["role"] == "find"
         and record["checkpoint"] > 0), None), maximum=15)
@@ -88,7 +88,7 @@ def run(trial):
     original_peer = donor.peer
     endpoint = (donor.directory / "control.json").read_bytes()
     pressure(donor, True)
-    paused = trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
+    paused = trial.wait(lambda: state(trial, donor, 0x001f_0004), maximum=5)
     assert paused["computation_reason"], paused
     probe.observe(donor)
     before = journal(donor)
@@ -101,8 +101,8 @@ def run(trial):
     assert not accepted, "controlled finding job completed before the automatic pause"
     offset = len(donor.logs())
     pressure(donor, True)
-    assert state(trial, donor, "paused")
-    assert trial.call(donor, "start")["computation"] == "paused"
+    assert state(trial, donor, 0x001f_0004)
+    assert trial.call(donor, "start")["computation"] == 0x001f_0004
     assert (donor.directory / "control.json").read_bytes() == endpoint
     assert process_identity(original_process["pid"]) == original_process
 
@@ -111,7 +111,7 @@ def run(trial):
     # transport oracle, which tests new peering, gossip and checked delivery.
     for _ in range(3):
         status = trial.call(donor, "status")
-        assert status["running"] and status["computation"] == "paused"
+        assert status["running"] and status["computation"] == 0x001f_0004
         assert status["computation_reason"], status
         assert checkpoints(donor) == frozen, "productive work advanced during resource pause"
         assert donor.ids() == accepted, "paused node published or admitted new work"
@@ -137,7 +137,7 @@ def run(trial):
             return finding if finding["admission_wait_nanos"] >= 20_000_000_000 else None
         finding_feedback = trial.wait(observed_wait, maximum=5)
         pressure(donor, True)
-        trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
+        trial.wait(lambda: state(trial, donor, 0x001f_0004), maximum=5)
     probe.observe(donor)
     donor.stop()
     donor.config["runtime"]["question_interval_ms"] = 3600000
@@ -145,7 +145,7 @@ def run(trial):
     pressure(donor, False)
     donor.start()
     if recovered:
-        trial.wait(lambda: state(trial, donor, "running"), maximum=40)
+        trial.wait(lambda: state(trial, donor, 0x001f_0002), maximum=40)
     restored = journal(donor)["records"][str(retained["id"])]
     for key in ("created_ms", "expires_ms", "binding", "settings"):
         assert restored[key] == retained[key], key

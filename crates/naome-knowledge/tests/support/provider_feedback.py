@@ -51,7 +51,7 @@ def run(trial):
     source.start()
     # A ready native node may still be in the existing 30-second OS-pressure
     # recovery window. Wait for real admission without bypassing its sensors.
-    trial.wait(lambda: all(trial.call(node, "status")["computation"] == "running"
+    trial.wait(lambda: all(trial.call(node, "status")["computation"] == 0x001f_0002
                            for node in trial.nodes), maximum=40)
     budgets = {node.index: {} for node in trial.nodes}
 

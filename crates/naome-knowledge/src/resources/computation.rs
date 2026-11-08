@@ -1,19 +1,11 @@
 //! Per-node computation admission, independent of network and capacity budgets.
-use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
 /// Network readiness is reported separately from productive computation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ComputationState {
-    Stopped,
-    Running,
-    Pausing,
-    Paused,
-}
+pub use crate::outcome::ComputationState;
 
 /// Tracks admitted work; the shared adaptive budget is the only pause authority.
 #[derive(Default)]

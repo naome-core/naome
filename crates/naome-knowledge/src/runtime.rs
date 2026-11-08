@@ -173,12 +173,7 @@ pub fn report_error(error: &crate::Error) {
 }
 
 /// Whether this process reconstructed mathematical validity for the reported set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactVerification {
-    Checked,
-    NotRun,
-}
+pub use crate::outcome::ArtifactVerification;
 
 /// The ordinary status surface. Offline counts describe recorded admissions;
 /// only a live checked graph can report `ArtifactVerification::Checked`.

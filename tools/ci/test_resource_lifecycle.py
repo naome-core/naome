@@ -32,7 +32,7 @@ class RecoveryTrial:
     def call(self, node, command):
         running = self.clock.now >= self.resumes
         reason = self.reason(self.clock.now) if callable(self.reason) else self.reason
-        return {"running": True, "computation": "running" if running else "paused",
+        return {"running": True, "computation": 0x001f_0002 if running else 0x001f_0004,
                 "computation_reason": None if running else reason}
 
 
@@ -126,26 +126,26 @@ class WorkWindowTests(unittest.TestCase):
 class OwnerStatusTests(unittest.TestCase):
     def status(self, **changes):
         return {"running": True, "accepted_artifacts": 0,
-                "artifact_verification": "checked", "computation": "running",
+                "artifact_verification": 0x0020_0001, "computation": 0x001f_0002,
                 "computation_reason": None, **changes}
 
     def check(self, value):
         assert_node_status(value, running=True, accepted_artifacts=0)
 
     def test_pressure_transitions_preserve_the_owner_contract(self):
-        for computation in ("running", "pausing", "paused"):
+        for computation in (0x001f_0002, 0x001f_0003, 0x001f_0004):
             self.check(self.status(computation=computation,
-                computation_reason=None if computation == "running" else 0x0004_0008))
+                computation_reason=None if computation == 0x001f_0002 else 0x0004_0008))
 
     def test_pressure_cannot_excuse_an_owner_or_proof_state_change(self):
         for change in ({"running": False}, {"accepted_artifacts": 1},
-                       {"artifact_verification": "not_run"}, {"unknown": 1}):
+                       {"artifact_verification": 0x0020_0002}, {"unknown": 1}):
             with self.subTest(change=change), self.assertRaises(AssertionError):
-                self.check(self.status(computation="paused", computation_reason=0x0004_0001, **change))
+                self.check(self.status(computation=0x001f_0004, computation_reason=0x0004_0001, **change))
 
     def test_computation_state_and_reason_remain_validated(self):
-        for computation, reason in (("paused", None), ("pausing", ""), ("running", 0x0004_0001),
-                                    ("stopped", None), ("unknown", 0x0004_0001)):
+        for computation, reason in ((0x001f_0004, None), (0x001f_0003, ""), (0x001f_0002, 0x0004_0001),
+                                    (0x001f_0001, None), (0x001f_0005, 0x0004_0001)):
             with self.subTest(computation=computation, reason=reason), self.assertRaises(AssertionError):
                 self.check(self.status(computation=computation, computation_reason=reason))
 

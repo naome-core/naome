@@ -566,6 +566,10 @@ codes! {
         NotRun = 1, Accepted = 2, Rejected = 3, ProviderFailed = 4, TimedOut = 5, Stale = 6,
     }
 
+    pub enum ComputationState in 31 { Stopped = 1, Running = 2, Pausing = 3, Paused = 4 }
+
+    pub enum ArtifactVerification in 32 { Checked = 1, NotRun = 2 }
+
 }
 
 impl InputLimit {

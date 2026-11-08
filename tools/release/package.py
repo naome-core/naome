@@ -54,16 +54,16 @@ def lifecycle(run, directory):
         status = command("status")
         computation = status.get("computation")
         reason = status.get("computation_reason")
-        valid_computation = ((computation == "running" and reason is None)
-                             or (computation in ("pausing", "paused") and type(reason) is int and 0x0004_0001 <= reason <= 0x0004_000A))
-        if status.get("running") is not True or status.get("artifact_verification") != "checked" or not valid_computation:
+        valid_computation = ((computation == 0x001f_0002 and reason is None)
+                             or (computation in (0x001f_0003, 0x001f_0004) and type(reason) is int and 0x0004_0001 <= reason <= 0x0004_000A))
+        if status.get("running") is not True or status.get("artifact_verification") != 0x0020_0001 or not valid_computation:
             raise ValueError("extracted node is not ready with a valid computation state")
     finally:
         stopped = command("stop")
-        if stopped["running"] or stopped["computation"] != "stopped":
+        if stopped["running"] or stopped["computation"] != 0x001f_0001:
             raise ValueError("extracted node shutdown was not confirmed")
     persisted = command("status")
-    if persisted["running"] or persisted["artifact_verification"] != "not_run":
+    if persisted["running"] or persisted["artifact_verification"] != 0x0020_0002:
         raise ValueError("extracted node did not report stopped state after daemon shutdown")
 
 
@@ -75,7 +75,7 @@ def smoke(binary, version, *, start=False):
             return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=60).strip()
         if run("--version") != f"naome {version}" or "naome start" not in run("--help"):
             raise ValueError("packaged executable has incorrect version/help")
-        expected = {"running": False, "computation": "stopped", "artifact_verification": "not_run", "accepted_artifacts": 0}
+        expected = {"running": False, "computation": 0x001f_0001, "artifact_verification": 0x0020_0002, "accepted_artifacts": 0}
         status = json.loads(run("--json", "status"))
         if any(status.get(key) != value for key, value in expected.items()) or node.exists():
             raise ValueError("packaged status must not create state or start a node")

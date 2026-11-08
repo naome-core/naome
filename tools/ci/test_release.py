@@ -262,7 +262,7 @@ class PackageTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def payload(self, target):
-        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","artifact_verification":"not_run","accepted_artifacts":0}}\';;\n*) exit 1;;\nesac\n'.encode()
+        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":2031617,"artifact_verification":2097154,"accepted_artifacts":0}}\';;\n*) exit 1;;\nesac\n'.encode()
         lockfile = (ROOT / "Cargo.lock").read_bytes()
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
@@ -426,7 +426,7 @@ class PackageTests(unittest.TestCase):
                 package.verify_audit(broken)
 
     def test_lifecycle_preserves_automatic_computation_state_after_shutdown(self):
-        for computation in ("running", "pausing", "paused"):
+        for computation in (0x001f_0002, 0x001f_0003, 0x001f_0004):
             with self.subTest(computation=computation):
                 operations = []
                 running = False
@@ -439,23 +439,23 @@ class PackageTests(unittest.TestCase):
                         running = False
                     elif command != "status":
                         self.fail(f"unexpected lifecycle command: {command}")
-                    return json.dumps({"running": running, "computation": computation if running else "stopped",
-                                       "computation_reason": 0x0004_0003 if running and computation != "running" else None,
-                                       "artifact_verification": "checked" if running else "not_run"})
-                package.lifecycle(run, self.directory / computation)
+                    return json.dumps({"running": running, "computation": computation if running else 0x001f_0001,
+                                       "computation_reason": 0x0004_0003 if running and computation != 0x001f_0002 else None,
+                                       "artifact_verification": 0x0020_0001 if running else 0x0020_0002})
+                package.lifecycle(run, self.directory / str(computation))
                 self.assertEqual(operations, ["start", "status", "stop", "status"])
                 self.assertFalse(running)
 
     def test_lifecycle_rejects_unchecked_or_inconsistent_computation_and_still_stops(self):
-        for computation, reason, verification in [("stopped", None, "checked"), ("unknown", None, "checked"),
-                ("paused", None, "checked"), ("pausing", "", "checked"), ("paused", 1, "checked"),
-                ("running", "memory pressure", "checked"), ("running", None, "not_run")]:
+        for computation, reason, verification in [(0x001f_0001, None, 0x0020_0001), (0x001f_0005, None, 0x0020_0001),
+                (0x001f_0004, None, 0x0020_0001), (0x001f_0003, "", 0x0020_0001), (0x001f_0004, 1, 0x0020_0001),
+                (0x001f_0002, "memory pressure", 0x0020_0001), (0x001f_0002, None, 0x0020_0002)]:
             with self.subTest(computation=computation, reason=reason, verification=verification):
                 operations = []
                 def run(_json, command, *_arguments):
                     operations.append(command)
                     return json.dumps({"running": command != "stop",
-                        "computation": "stopped" if command == "stop" else computation,
+                        "computation": 0x001f_0001 if command == "stop" else computation,
                         "computation_reason": reason, "artifact_verification": verification})
                 with tempfile.TemporaryDirectory(dir=self.directory) as directory:
                     with self.assertRaisesRegex(ValueError, "valid computation state"):

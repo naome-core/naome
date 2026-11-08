@@ -542,3 +542,23 @@ async fn handoff_abort_handles_the_actual_setsid_race_while_original_child_is_he
 }
 
 mod offline;
+
+#[test]
+fn machine_status_uses_registered_computation_and_verification_codes() {
+    let status = Status {
+        running: true,
+        computation: crate::resources::ComputationState::Paused,
+        computation_reason: Some(crate::PauseReason::MemoryPressure),
+        accepted_artifacts: 3,
+        artifact_verification: ArtifactVerification::Checked,
+    };
+    let mut encoded = serde_json::to_value(&status).unwrap();
+    assert_eq!(encoded["computation"], 0x001f_0004u32);
+    assert_eq!(encoded["artifact_verification"], 0x0020_0001u32);
+    assert_eq!(
+        serde_json::from_value::<Status>(encoded.clone()).unwrap(),
+        status
+    );
+    encoded["computation"] = 0x001f_0005u32.into();
+    assert!(serde_json::from_value::<Status>(encoded).is_err());
+}

@@ -28,13 +28,13 @@ def assert_node_status(value, *, running, accepted_artifacts=None):
     assert type(value["accepted_artifacts"]) is int and value["accepted_artifacts"] >= 0, value
     if accepted_artifacts is not None:
         assert value["accepted_artifacts"] == accepted_artifacts, value
-    assert value["artifact_verification"] == ("checked" if running else "not_run"), value
+    assert value["artifact_verification"] == (0x0020_0001 if running else 0x0020_0002), value
     if not running:
-        assert value["computation"] == "stopped" and value["computation_reason"] is None, value
-    elif value["computation"] == "running":
+        assert value["computation"] == 0x001f_0001 and value["computation_reason"] is None, value
+    elif value["computation"] == 0x001f_0002:
         assert value["computation_reason"] is None, value
     else:
-        assert value["computation"] in {"pausing", "paused"}, value
+        assert value["computation"] in {0x001f_0003, 0x001f_0004}, value
         assert type(value["computation_reason"]) is int and 0x0004_0001 <= value["computation_reason"] <= 0x0004_000A, value
 
 
@@ -1164,22 +1164,22 @@ def main():
         sender, receiver = Node(trial, 0), Node(trial, 1)
         seed = Node(trial, 2) if args.mode == "dht" else None
         for node in trial.nodes:
-            assert trial.call(node, "status") == {"running": False, "accepted_artifacts": 0, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
-            assert node.start() == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(node, "status") == {"running": False, "accepted_artifacts": 0, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
+            assert node.start() == {"running": True, "accepted_artifacts": 0, "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
             key = node.directory / "identity.key"
             assert key.exists(), "first start failed to initialize identity"
             node.identity_sha256 = digest(key)
             original = dict(node.process)
-            assert trial.call(node, "start") == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(node, "start") == {"running": True, "accepted_artifacts": 0, "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
             assert process_identity(original["pid"]) == original, "duplicate start replaced the node owner"
             assert json.loads((node.directory / "control.json").read_text())["pid"] == original["pid"]
             alias = trial.output / f"alias-{node.index}"
             alias.symlink_to(node.directory, target_is_directory=True)
             alias_node = SimpleNamespace(directory=alias, index=node.index)
-            assert trial.call(alias_node, "status") == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
-            assert trial.call(alias_node, "start") == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(alias_node, "status") == {"running": True, "accepted_artifacts": 0, "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
+            assert trial.call(alias_node, "start") == {"running": True, "accepted_artifacts": 0, "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
             assert process_identity(original["pid"]) == original, "path alias created a second node owner"
-            assert trial.call(alias_node, "stop") == {"running": False, "accepted_artifacts": 0, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert trial.call(alias_node, "stop") == {"running": False, "accepted_artifacts": 0, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
             node.stop()
         trial.summary["scenarios"]["automatic_initialization_detached_start_and_single_owner"] = {"result": "pass"}
         for verb in ["run", "init", "relay", "contract", "proof", "question"]:
@@ -1223,7 +1223,7 @@ def main():
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
         def expected_status(node):
             return {"running": True, "accepted_artifacts": 3,
-                "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+                "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
 
         def converged():
             own, remote = sender.ids(), receiver.ids()
@@ -1295,7 +1295,7 @@ def main():
             "result": "pass", "unique_proofs": 3, "distinct_questions": len(generated),
             "unanswered_research_questions": len(generated - resolved)}
         for node in trial.nodes:
-            assert node.stop() == {"running": False, "accepted_artifacts": 3, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert node.stop() == {"running": False, "accepted_artifacts": 3, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
             assert digest(node.directory / "identity.key") == node.identity_sha256
             node.config["runtime"]["question_interval_ms"] = 3600000
             node.write_config()
@@ -1311,7 +1311,7 @@ def main():
         original = replace_catalog_payload(receiver, member, bytes([saved[0] ^ 1]) + saved[1:])
         try:
             assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3,
-                "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+                "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
             offset = len(receiver.logs())
             receiver.release_port()
             trial.call(receiver, "start", success=False)
@@ -1321,7 +1321,7 @@ def main():
         finally:
             replace_catalog_payload(receiver, member, original)
             receiver.reserve_port()
-        assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+        assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
         trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": "pass"}
         trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}
         trial.summary["result"] = "pass"

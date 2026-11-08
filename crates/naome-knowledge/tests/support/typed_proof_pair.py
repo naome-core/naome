@@ -180,7 +180,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         start = time.monotonic()
         reopened = receiver.start()
         report["offline_reopen_wall_seconds"] = time.monotonic() - start
-        assert reopened["artifact_verification"] == "checked" and reopened["accepted_artifacts"] == len(helpers) + 1
+        assert reopened["artifact_verification"] == 0x0020_0001 and reopened["accepted_artifacts"] == len(helpers) + 1
         assert set(receiver.ids()) == helpers | {root}
         receiver.stop()
         report["result"] = "pass"

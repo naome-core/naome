@@ -324,7 +324,7 @@ def limits(trial,probe):
             assert len(failures)==1 and failures[0].get('error', {}).get('code') == expected,(case,failures)
             assert not any(e.get('event') in {0x0017005f,0x00170060,0x0017005a} for e in events)
             recorded=trial.call(node,'status')
-            assert not recorded['running'] and recorded['artifact_verification']=='not_run'
+            assert not recorded['running'] and recorded['artifact_verification']==0x0020_0002
             assert not (node.directory/'control.json').exists()
             trial.summary.setdefault('startup_rejections',[]).append({'case':case,
                 'expected_error':expected,'fatal_error':failures[0]['error'],'research_process_started':False})

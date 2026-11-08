@@ -260,7 +260,7 @@ def run(trial):
                 trial.summary["owner_question_bootstrap"] = bootstrap
         record = trial.wait(active_candidate, maximum=180)
         pressure(node, True)
-        trial.wait(lambda: state(trial, node, "paused"), maximum=8)
+        trial.wait(lambda: state(trial, node, 0x001f_0004), maximum=8)
         # The current reserved quantum may finish before the next permit. Once
         # quiescent, every durable model IO/checkpoint and admitted set must hold.
         end = min(trial.deadline, time.monotonic() + 10)
@@ -278,7 +278,7 @@ def run(trial):
         blobs = verify_blobs(node, current)
         accepted = node.ids()
         for _ in range(3):
-            assert state(trial, node, "paused")
+            assert state(trial, node, 0x001f_0004)
             now = observe(node)["records"][current["id"]]
             assert (now["checkpoint"], now["reserved_units"], now["native"]["io_bytes"]) == frozen
             assert node.ids() == accepted
