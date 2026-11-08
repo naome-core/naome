@@ -7,7 +7,9 @@ mod advance;
 #[cfg(feature = "developer-tools")]
 mod continuation;
 
+#[cfg(feature = "developer-tools")]
 const ROUNDS: usize = 3;
+#[cfg(feature = "developer-tools")]
 const OPPORTUNITIES: usize = 24;
 
 pub(super) fn context(state: &State) -> SolveContext<'_> {
@@ -18,6 +20,7 @@ pub(super) fn context(state: &State) -> SolveContext<'_> {
     }
 }
 
+#[cfg(feature = "developer-tools")]
 pub(super) fn generate(
     state: &State,
     engine: &mut Engine,
