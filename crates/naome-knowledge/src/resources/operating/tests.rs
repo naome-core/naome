@@ -158,3 +158,14 @@ fn provider_cadence_uses_its_own_complete_cost_and_installed_role_lanes() {
     );
     assert_eq!(backoff.solving_interval, mixed.solving_interval);
 }
+
+#[test]
+fn live_work_limits_have_structured_machine_fields() {
+    let capacity = crate::resources::ResourceProfile::default()
+        .resolve()
+        .unwrap();
+    let work = OperatingLimits::at_capacity(&capacity);
+    let value = serde_json::to_value(&work).unwrap();
+    assert_eq!(value["fetches"], work.fetches);
+    assert!(value.is_object());
+}

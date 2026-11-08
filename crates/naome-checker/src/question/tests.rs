@@ -143,7 +143,10 @@ fn elementary_answers_survive_dense_implication_contexts() {
     let policy = PrefilterPolicy::default();
     let mut state = ArtifactState::new();
     let empty = decision(&target, &state, &[], &policy);
-    assert_eq!(empty.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    assert_eq!(
+        empty.rule,
+        crate::question::PrefilterRule::Q07ElementaryCertificate
+    );
 
     for index in 1..=512 {
         let mut pattern = unresolved();
@@ -165,7 +168,10 @@ fn elementary_answers_survive_dense_implication_contexts() {
     assert_eq!(state.proof_conclusions().count(), 512);
     let result = decision(&target, &state, &[], &policy);
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q07ElementaryCertificate
+    );
     let _ = verify_deduction(&result, &state, &target);
 
     let infinity = ZfcAxiom::Infinity.formula().encode_canonical().unwrap();
@@ -194,7 +200,7 @@ fn receiver_resource_deferral_binds_inputs_without_issuing_authority() {
     assert!(!deferred.has_answer());
     deferred.outcome = PrefilterOutcome::Pass;
     deferred.reason = None;
-    deferred.rule = "Q00_SUPPORTED_PREFILTER";
+    deferred.rule = crate::question::PrefilterRule::Q00SupportedPrefilter;
     assert!(deferred.novelty().is_none());
     assert!(assess_question(&request, &snapshot, &policy).passed());
 }
@@ -286,7 +292,7 @@ fn public_decision_mutation_cannot_mint_or_rebind_novelty() {
     let mutations: [fn(&mut PrefilterDecision); 10] = [
         |d| d.outcome = PrefilterOutcome::Reject,
         |d| d.reason = Some(RejectionReason::ExactDuplicate),
-        |d| d.rule = "Q09_STALE_CONTEXT",
+        |d| d.rule = crate::question::PrefilterRule::Q09StaleContext,
         |d| d.question = None,
         |d| d.input = [0; 32],
         |d| d.snapshot = [0; 32],
@@ -320,10 +326,12 @@ fn public_decision_mutation_cannot_mint_or_rebind_novelty() {
         RejectionReason::StaleContext,
         RejectionReason::ReceivingLimit,
     ] {
-        let mut forged = original.clone().reject(reason, "Q09_CONTEXT");
+        let mut forged = original
+            .clone()
+            .reject(reason, crate::question::PrefilterRule::Q09Context);
         forged.outcome = PrefilterOutcome::Pass;
         forged.reason = None;
-        forged.rule = "Q00_SUPPORTED_PREFILTER";
+        forged.rule = crate::question::PrefilterRule::Q00SupportedPrefilter;
         assert!(
             forged.novelty().is_none(),
             "restoring public fields cannot reissue removed evidence"
@@ -428,7 +436,10 @@ fn unanswered_equivalence_requires_both_actual_checked_implications() {
     let _ = register(&mut state, backward_steps);
     let result = decision(&a, &state, &registry, &policy);
     assert_eq!(result.reason, Some(RejectionReason::ProvenEquivalent));
-    assert_eq!(result.rule, "Q05_CHECKED_MUTUAL_IMPLICATIONS");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q05CheckedMutualImplications
+    );
     assert!(result.witness.is_some() && result.supporting_witness.is_some());
 }
 
@@ -452,7 +463,10 @@ fn checked_implication_transfer_requires_its_proven_premise() {
     let _ = schema_fact(&mut state, false);
     let result = decision(&b, &state, &[], &policy);
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q04CheckedMpClosure
+    );
     assert!(result.witness.is_some() && result.supporting_witness.is_some());
     assert!(
         decision(&Formula::implies(a, unresolved()), &state, &[], &policy).passed(),
@@ -508,7 +522,10 @@ fn elementary_priority_preserves_checked_answers_with_stored_general_results() {
     let policy = PrefilterPolicy::default();
     let elementary = decision(&diagonal, &state, &[], &policy);
     assert_eq!(elementary.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(elementary.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    assert_eq!(
+        elementary.rule,
+        crate::question::PrefilterRule::Q07ElementaryCertificate
+    );
     let _ = verify_deduction(&elementary, &state, &diagonal);
     let general = general_identity(&mut state);
     assert_ne!(
@@ -517,7 +534,10 @@ fn elementary_priority_preserves_checked_answers_with_stored_general_results() {
     );
     let result = decision(&diagonal, &state, &[], &policy);
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q07ElementaryCertificate
+    );
     let _ = verify_deduction(&result, &state, &diagonal);
     let changed_assumption = Formula::for_all(
         var(0),
@@ -924,7 +944,10 @@ fn complete_large_checked_context_approves_irrelevant_data_and_finds_late_witnes
         &policy,
     );
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q04CheckedMpClosure
+    );
 
     let mut equivalent = state.clone();
     let (related, forward_steps, backward_steps) = fixtures::guarded_equivalence(&unrelated);
@@ -984,7 +1007,7 @@ fn relevant_bucket_exhaustion_rejects_instead_of_approving_a_partial_query() {
     limited.limits.operations = 20;
     let result = indexed_decision(&target, &state, &registry, &limited);
     assert_eq!(result.reason, Some(RejectionReason::ExecutionLimit));
-    assert_eq!(result.rule, "Q08_EXECUTION");
+    assert_eq!(result.rule, crate::question::PrefilterRule::Q08Execution);
     assert!(!result.passed());
     limited = policy;
     limited.limits.formula_work_bytes = 1024;
@@ -1043,7 +1066,10 @@ fn elementary_refutations_and_indexed_vacuous_instances_preserve_checked_polarit
         let target = generalized_schema(&mut state, binders);
         let result = decision(&target, &state, &[], &policy);
         assert_eq!(result.reason, Some(RejectionReason::KnownLemmaInstance));
-        assert_eq!(result.rule, "Q06_CHECKED_UNIVERSAL_INSTANCE");
+        assert_eq!(
+            result.rule,
+            crate::question::PrefilterRule::Q06CheckedUniversalInstance
+        );
         let _ = verify_deduction(&result, &state, &target);
     }
     let intermediate = Formula::for_all(var(4), target);
@@ -1254,7 +1280,10 @@ fn dynamic_mp_bridge_requires_both_seeds_and_rechecks_all_original_citations() {
     let before = state.snapshot_id();
     let result = decision(&r, &state, &[], &policy);
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q04CheckedMpClosure
+    );
     let certificate = verify_deduction(&result, &state, &r);
     let expected: BTreeSet<_> = [first, second, bridge].into_iter().collect();
     assert_eq!(
@@ -1319,7 +1348,10 @@ fn elementary_refutation_priority_preserves_the_negative_mp_certificate() {
     let target = Formula::decode_canonical(&bytes[1..]).unwrap();
     let result = decision(&target, &state, &[], &PrefilterPolicy::default());
     assert_eq!(result.reason, Some(RejectionReason::KnownRefutation));
-    assert_eq!(result.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q07ElementaryCertificate
+    );
     let _ = verify_deduction(&result, &state, &negative);
     let limits = AssessmentLimits::MAXIMUM;
     let mut work = Work {
@@ -1534,4 +1566,46 @@ fn iterative_mp_long_constant_depth_chain_certifies_or_explicitly_exhausts() {
     assert_eq!(exhausted.reason, Some(RejectionReason::ExecutionLimit));
     assert!(exhausted.deduction.is_none());
     assert_eq!(state.snapshot_id(), before);
+}
+
+#[test]
+fn question_prefilter_codes_distinguish_outcomes_and_reasons() {
+    assert_eq!(PrefilterOutcome::Pass.code(), 0x0022_0001);
+    assert_eq!(PrefilterOutcome::Reject.code(), 0x0022_0002);
+    assert_eq!(PrefilterOutcome::Inconclusive.code(), 0x0022_0003);
+    let reasons = [
+        RejectionReason::InvalidPolicy,
+        RejectionReason::FoundationMismatch,
+        RejectionReason::InvalidTarget,
+        RejectionReason::MissingDependency,
+        RejectionReason::DuplicateDependency,
+        RejectionReason::InvalidRegistry,
+        RejectionReason::InvalidEvidence,
+        RejectionReason::InputLimit,
+        RejectionReason::DependencyLimit,
+        RejectionReason::ExecutionLimit,
+        RejectionReason::ExactDuplicate,
+        RejectionReason::KnownProof,
+        RejectionReason::KnownRefutation,
+        RejectionReason::ProvenEquivalent,
+        RejectionReason::KnownLemmaInstance,
+        RejectionReason::StaleContext,
+        RejectionReason::ReceivingLimit,
+    ];
+    for (index, reason) in reasons.into_iter().enumerate() {
+        assert_eq!(reason.code(), 0x0021_0001 + index as u32);
+    }
+}
+
+#[test]
+fn question_rule_codes_round_trip_and_reject_unknown_values() {
+    for &(_, _, code) in PREFILTER_RULE_CODES {
+        let rule = PrefilterRule::try_from(code).unwrap();
+        assert_eq!(serde_json::to_value(rule).unwrap(), code);
+        assert_eq!(
+            serde_json::from_value::<PrefilterRule>(code.into()).unwrap(),
+            rule
+        );
+    }
+    assert!(PrefilterRule::try_from(0x0023_ffff).is_err());
 }

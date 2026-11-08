@@ -14,8 +14,15 @@ mod discovery;
 mod error;
 mod outcome;
 pub use learning::evidence::{EvidenceLimit, Failure as EvidenceFailure};
+/// All node and checker outcomes for offline machine consumers.
 #[cfg(feature = "developer-tools")]
-pub use outcome::OUTCOME_CODES;
+pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)> {
+    outcome::OUTCOME_CODES
+        .iter()
+        .chain(naome_checker::question::PREFILTER_CODES.iter())
+        .chain(naome_checker::question::PREFILTER_RULE_CODES.iter())
+        .copied()
+}
 pub use outcome::{
     DurabilityCode, IngestStatus, InputFault, InputLimit, LearningGraphFailure, PauseReason,
     RuntimeFailure, StartupFailure,

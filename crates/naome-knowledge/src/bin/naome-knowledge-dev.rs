@@ -18,8 +18,7 @@ async fn main() {
 async fn execute() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["outcome-catalog"] {
-        let outcomes = naome_knowledge::OUTCOME_CODES
-            .iter()
+        let outcomes = naome_knowledge::outcome_codes()
             .map(|(domain, name, code)| json!({"domain": domain, "name": name, "code": code}))
             .collect::<Vec<_>>();
         println!("{}", json!(outcomes));

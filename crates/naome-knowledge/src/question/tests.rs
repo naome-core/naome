@@ -754,7 +754,7 @@ fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_reco
     for computation in 1..=2 {
         let decision = local.assess(&graph, &input);
         assert!(decision.inconclusive());
-        assert_eq!(decision.outcome.code(), "INCONCLUSIVE");
+        assert_eq!(decision.outcome.code(), 0x0022_0003);
         assert_eq!(decision.reason, Some(RejectionReason::ExecutionLimit));
         assert!(decision.novelty().is_none());
         assert_eq!(
@@ -781,7 +781,7 @@ fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_reco
     local.policy = PrefilterPolicy::default();
     let reassessed = local.evaluate_record(&graph, &input, true, Some(record));
     assert!(reassessed.passed());
-    assert_eq!(reassessed.outcome.code(), "PASS");
+    assert_eq!(reassessed.outcome.code(), 0x0022_0001);
 }
 
 #[cfg(feature = "system-tests")]
@@ -1150,7 +1150,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
         result.assessment.prefilter.reason,
         Some(RejectionReason::KnownProof)
     );
-    assert_eq!(result.assessment.prefilter.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.assessment.prefilter.rule,
+        naome_checker::question::PrefilterRule::Q04CheckedMpClosure
+    );
     assert_eq!(
         result.assessment.selection_result,
         SelectionAssessment::NotRun

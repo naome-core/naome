@@ -73,7 +73,7 @@ fn canonical_answer_readback() {
             );
             results.push(json!({"seed":seed,"id":id,"family":row["family"],"shape":row["shape"],"arm":name,
                 "explicit_root_solution":arm["counted_solution"],"canonical_answer":decision.has_answer(),
-                "counted_canonical_answer":counted,"answer_rule":decision.rule,"reason":format!("{:?}",decision.reason),
+                "counted_canonical_answer":counted,"answer_rule":decision.rule,"reason":decision.reason.map(|reason| reason.code()),
                 "within_total_with_query":within,"query_cpu_micros":query_cpu,"query_wall_micros":query_wall,
                 "original_cost":arm["cost"],"independently_admitted_solutions":admitted,
                 "diagnostic_reconstruction_cpu_micros":reconstruction_cpu,"diagnostic_reconstruction_wall_micros":reconstruction_wall}));

@@ -41,6 +41,8 @@ macro_rules! codes {
 
         const _: () = {
             assert!(Domain::$name as u16 > 0);
+            // The checker owns the question prefilter domains.
+            assert!(Domain::$name as u16 != 33 && Domain::$name as u16 != 34 && Domain::$name as u16 != 35);
             $(assert!($id > 0 && $id <= u16::MAX as u32);)+
         };
     };
@@ -600,5 +602,18 @@ impl InputLimit {
             Self::TrainingSelectionPageLimit => "training selection page limit",
             Self::TrainingSuitePageLimit => "training suite page limit",
         }
+    }
+}
+
+#[cfg(all(test, feature = "developer-tools"))]
+mod catalog_tests {
+    #[test]
+    fn combined_catalog_has_unique_nonzero_codes() {
+        let codes: Vec<_> = crate::outcome_codes().map(|(_, _, code)| code).collect();
+        let unique: std::collections::BTreeSet<_> = codes.iter().copied().collect();
+        assert!(!unique.contains(&0));
+        assert_eq!(unique.len(), codes.len());
+        assert!(unique.contains(&naome_checker::question::RejectionReason::KnownProof.code()));
+        assert!(unique.contains(&naome_checker::question::PrefilterOutcome::Inconclusive.code()));
     }
 }

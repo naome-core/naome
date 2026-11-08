@@ -1151,10 +1151,16 @@ where
             self.pending.is_empty()
         };
         if prefilter.passed() && !available {
-            prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT");
+            prefilter = prefilter.reject(
+                RejectionReason::ReceivingLimit,
+                naome_checker::question::PrefilterRule::Q08ReceivingLimit,
+            );
         }
         if prefilter.passed() && reply.admission() && !self.registry_capacity(&question) {
-            prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_REGISTRY_CAPACITY");
+            prefilter = prefilter.reject(
+                RejectionReason::ReceivingLimit,
+                naome_checker::question::PrefilterRule::Q08RegistryCapacity,
+            );
         }
         let remaining = match &reply {
             Reply::Exchange { deadline, .. } => deadline
@@ -1414,7 +1420,10 @@ where
             || pending.selection_context != self.selection_context(&pending.question)
         {
             if pending.prefilter.policy != prefilter.policy {
-                prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
+                prefilter = prefilter.reject(
+                    RejectionReason::StaleContext,
+                    naome_checker::question::PrefilterRule::Q09StaleContext,
+                );
             }
             SelectionAssessment::Stale
         } else {
@@ -1473,7 +1482,10 @@ where
                     self.cache.clear();
                 }
                 Err(reason) => {
-                    prefilter = prefilter.reject(reason, "Q02_REGISTRY_INSERTION");
+                    prefilter = prefilter.reject(
+                        reason,
+                        naome_checker::question::PrefilterRule::Q02RegistryInsertion,
+                    );
                 }
             }
         }
