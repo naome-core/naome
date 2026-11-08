@@ -380,6 +380,7 @@ impl fmt::Display for Error {
                 InputFault::FormalGoalRequiresNative => {
                     "formal goal requires native proof learning"
                 }
+                InputFault::QuestionRegistryPopulated => "question registry is already populated",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

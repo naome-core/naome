@@ -148,6 +148,7 @@ codes! {
         RelayListenAddress = 17,
         RelayExternalAddress = 18,
         FormalGoalRequiresNative = 19,
+        QuestionRegistryPopulated = 20,
     }
 
     pub enum InputLimit in 8 {
@@ -340,6 +341,12 @@ codes! {
         RelayBehaviour = 52,
         RelayListener = 53,
         PublicationRecoveryTarget = 54,
+        QuestionMarkerRead = 55,
+        QuestionCheckpointOpen = 56,
+        QuestionCheckpointHeader = 57,
+        QuestionRegistryMissing = 58,
+        QuestionRegistryCompatibility = 59,
+        QuestionMarkerWrite = 60,
     }
 
     pub enum StartupFailure in 13 {

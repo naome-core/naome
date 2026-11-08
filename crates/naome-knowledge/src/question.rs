@@ -471,10 +471,12 @@ where
             return Ok(());
         }
         if !self.registry.is_empty() {
-            return Err("cannot replace a populated local registry".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::QuestionRegistryPopulated,
+            ));
         }
         let persistence = persistence::Persistence::open(directory, self.policy)
-            .map_err(|_| crate::RuntimeFailure::QuestionStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         let storage = crate::index_storage::IndexStorage::open(directory, "questions")
             .map_err(|_| crate::RuntimeFailure::QuestionStorage)?;
         self.registry = QuestionRegistry::with_storage(storage.clone());

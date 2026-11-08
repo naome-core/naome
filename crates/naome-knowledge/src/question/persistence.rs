@@ -65,19 +65,18 @@ struct Backlog {
     resolution: String,
 }
 impl Persistence {
-    pub(super) fn open(directory: &Path, policy: PrefilterPolicy) -> Result<Self, String> {
+    pub(super) fn open(directory: &Path, policy: PrefilterPolicy) -> Result<Self, crate::Error> {
         let root = crate::storage::research_directory(directory)?;
         let path = root.join("questions.sqlite3");
         let marker = directory.join("question-registry.initialized");
-        let established = crate::storage::marker_valid(&marker, MARKER)?;
+        let established = crate::storage::marker_valid(&marker, MARKER)
+            .map_err(|_| crate::RuntimeFailure::QuestionMarkerRead)?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)
+                .map_err(|_| crate::RuntimeFailure::QuestionCheckpointOpen)?
         } else {
             if established {
-                return Err(
-                    "question registry checkpoint is missing; refusing to replace provenance"
-                        .into(),
-                );
+                return Err(crate::RuntimeFailure::QuestionRegistryMissing.into());
             }
             let header = Header {
                 compatibility: crate::hex(&crate::compatibility()),
@@ -85,14 +84,19 @@ impl Persistence {
                 backlog_sequence: 0,
                 backlog_cursor: None,
             };
-            crate::checkpoint::Checkpoint::create(&path, CHECKPOINT_DOMAIN, &header, vec![])?
+            crate::checkpoint::Checkpoint::create(&path, CHECKPOINT_DOMAIN, &header, vec![])
+                .map_err(|_| crate::RuntimeFailure::QuestionCheckpointOpen)?
         };
-        checkpoint.require_kinds(&["question", "admitted", "backlog", "queued", "publication"])?;
-        let header: Header = checkpoint.header()?;
+        checkpoint
+            .require_kinds(&["question", "admitted", "backlog", "queued", "publication"])
+            .map_err(|_| crate::RuntimeFailure::QuestionCheckpointHeader)?;
+        let header: Header = checkpoint
+            .header()
+            .map_err(|_| crate::RuntimeFailure::QuestionCheckpointHeader)?;
         if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.policy).is_err()
         {
-            return Err("question registry compatibility or policy identity differs".into());
+            return Err(crate::RuntimeFailure::QuestionRegistryCompatibility.into());
         }
         let persistence = Self {
             checkpoint,
@@ -100,7 +104,8 @@ impl Persistence {
             fault: std::sync::Mutex::new(None),
         };
         if !established {
-            crate::storage::write_marker(&marker, MARKER)?;
+            crate::storage::write_marker(&marker, MARKER)
+                .map_err(|_| crate::RuntimeFailure::QuestionMarkerWrite)?;
         }
         Ok(persistence)
     }
