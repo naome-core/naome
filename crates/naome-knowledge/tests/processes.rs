@@ -44,6 +44,17 @@ fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
 fn cold_helper_fetches_definitions_for_cooperative_work() {
+    defined_workgroup("native");
+}
+
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn cold_mock_helper_fetches_definitions_for_cooperative_work() {
+    defined_workgroup("mock");
+}
+
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+fn defined_workgroup(helper_provider: &str) {
     use naome_checker::question::ResearchQuestion;
     use naome_foundation::{Formula, FreeVariable};
     use naome_proof::{ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate};
@@ -88,6 +99,8 @@ fn cold_helper_fetches_definitions_for_cooperative_work() {
         .args([
             "--timeout",
             "120",
+            "--helper-provider",
+            helper_provider,
             "--definition-id",
             &naome_knowledge::hex(id.as_bytes()),
             "--question",

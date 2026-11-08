@@ -1325,6 +1325,13 @@ impl Autonomous {
                                 .map(|q| q.to_hex())
                         };
                         if let Some(source) = source {
+                            // The mock consumes only the already expanded primitive
+                            // target; the native solver also consumes checked inputs.
+                            let prerequisites = if self.intervals.jobs.native_proof_learning {
+                                prerequisites
+                            } else {
+                                Default::default()
+                            };
                             let binding =
                                 questions.formal_context(graph).binding().for_cooperation();
                             match self.client.submit_after(
