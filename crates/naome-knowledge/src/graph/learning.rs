@@ -127,7 +127,6 @@ impl Graph {
             offered.map(|p| *p.as_bytes()),
         )
         .map(Some)
-        .map_err(Into::into)
     }
     pub(crate) fn peer_learning_page(
         &self,

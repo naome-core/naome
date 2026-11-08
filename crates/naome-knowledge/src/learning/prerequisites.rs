@@ -32,7 +32,7 @@ impl<'de> Deserialize<'de> for Prerequisites {
 }
 impl Prerequisites {
     #[cfg(test)]
-    pub fn new(artifacts: Vec<Envelope>) -> Result<Self, String> {
+    pub fn new(artifacts: Vec<Envelope>) -> Result<Self, crate::Error> {
         Self::from_inputs(artifacts, Vec::new(), None)
     }
 
@@ -40,7 +40,7 @@ impl Prerequisites {
         artifacts: Vec<Envelope>,
         programs: Vec<Packet>,
         offered: Option<[u8; 32]>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let mut value = Self(Arc::new(Data {
             artifacts,
             programs,
@@ -63,7 +63,7 @@ impl Prerequisites {
                 .sum::<usize>();
         if bytes > 0 {
             Arc::get_mut(&mut value.0).expect("new inputs")._memory =
-                Some(crate::resources::MemoryLease::acquire(bytes).map_err(|e| e.to_string())?);
+                Some(crate::resources::MemoryLease::acquire(bytes)?);
         }
         Ok(value)
     }
