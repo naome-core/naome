@@ -414,6 +414,20 @@ where
     outcome
 }
 
+fn checked_formal_goal(
+    source: &str,
+    graph: &Graph,
+) -> Result<naome_checker::question::ResearchQuestion, crate::Error> {
+    let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
+        source,
+        graph.checked_context(),
+    )?;
+    if !question.dependencies().is_empty() {
+        naome_checker::question::ResearchQuestion::from_formula(question.formula().clone())?;
+    }
+    Ok(question)
+}
+
 pub(crate) async fn run_owner<F, Fut>(
     config: Config,
     test_controls: bool,
@@ -474,18 +488,7 @@ where
     let formal_goal = config
         .formal_goal
         .as_deref()
-        .map(|source| {
-            let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
-                source,
-                graph.checked_context(),
-            )
-            .map_err(|e| e.to_string())?;
-            if !question.dependencies().is_empty() {
-                naome_checker::question::ResearchQuestion::from_formula(question.formula().clone())
-                    .map_err(|e| e.to_string())?;
-            }
-            Ok::<_, String>(question)
-        })
+        .map(|source| checked_formal_goal(source, &graph))
         .transpose()?;
     if let Some(startup) = &startup {
         startup.phase(crate::outcome::StartupPhase::Checked);

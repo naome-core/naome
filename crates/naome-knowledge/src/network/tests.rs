@@ -178,6 +178,25 @@ fn oversized_configuration_still_rejects_before_decoding() {
 }
 
 #[test]
+fn formal_goal_keeps_the_question_checker_failure() {
+    let graph = Graph::default();
+    let valid = crate::mocks::create_question(0);
+    assert_eq!(checked_formal_goal(&valid, &graph).unwrap().to_hex(), valid);
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::from_hex_with_context(
+            "04",
+            graph.checked_context(),
+        )
+        .unwrap_err(),
+    );
+    let actual = checked_formal_goal("04", &graph).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}
+
+#[test]
 fn configuration_failures_preserve_read_and_parse_codes() {
     let file = ConfigFile::new();
     std::fs::write(file.path(), b"{").unwrap();
