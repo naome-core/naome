@@ -1003,11 +1003,9 @@ where
             if fresh.novelty().is_none() {
                 return Err("missing fresh node-local novelty".into());
             }
-            let entry = RegisteredQuestion::from_research_question(question)
-                .map_err(|reason| format!("question registration: {reason:?}"))?;
-            registry
-                .insert(entry)
-                .map_err(|reason| format!("question registration: {reason:?}"))?;
+            let entry =
+                RegisteredQuestion::from_research_question(question).map_err(crate::Error::from)?;
+            registry.insert(entry).map_err(crate::Error::from)?;
         }
         Ok(QuestionDelta {
             registry,

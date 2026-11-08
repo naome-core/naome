@@ -161,3 +161,35 @@ fn certificate_format_reasons_encode_domains_and_witnesses() {
     assert_eq!(value["tag"], 42);
     assert!(value.get("kind").is_none());
 }
+
+#[test]
+fn question_registry_failure_keeps_its_checker_reason() {
+    use naome_checker::question::{
+        QuestionRegistry, RegisteredQuestion, RejectionReason, ResearchQuestion,
+    };
+    let question = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
+    let mut registry = QuestionRegistry::new();
+    registry
+        .insert(RegisteredQuestion::from_research_question(&question).unwrap())
+        .unwrap();
+    let error = registry
+        .insert(RegisteredQuestion::from_research_question(&question).unwrap())
+        .map_err(Error::from)
+        .unwrap_err();
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(OperationCode::QuestionRegistration)
+    );
+    assert_eq!(value["reason"], RejectionReason::InvalidRegistry.code());
+    assert!(!error.retryable());
+    assert!(!error.fatal());
+    let stored = error.storage();
+    assert!(stored.fatal());
+    let value = serde_json::to_value(stored).unwrap();
+    assert_eq!(
+        value["cause_code"],
+        u32::from(OperationCode::QuestionRegistration)
+    );
+    assert_eq!(value["reason"], RejectionReason::InvalidRegistry.code());
+}

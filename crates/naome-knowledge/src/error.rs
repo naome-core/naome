@@ -193,6 +193,7 @@ pub enum Error {
     ProgramInput(naome_checker::program::ProgramFault),
     Formula(naome_foundation::FormulaCodecError),
     QuestionInput(Box<naome_proof::QuestionError>),
+    QuestionRegistration(naome_checker::question::RejectionReason),
     Runtime(crate::RuntimeFailure),
     Research(crate::ResearchFailure),
     ResearchCombined {
@@ -238,6 +239,7 @@ impl Error {
             Self::ProgramInput(_) => OperationCode::ProgramInput,
             Self::Formula(_) => OperationCode::Formula,
             Self::QuestionInput(_) => OperationCode::QuestionInput,
+            Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Research(failure) => return (*failure).into(),
             Self::ResearchCombined { .. } => {
@@ -268,6 +270,7 @@ impl Error {
             error @ (Self::InputFault(_)
             | Self::QuestionLimit(_)
             | Self::QuestionInput(_)
+            | Self::QuestionRegistration(_)
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
@@ -392,6 +395,7 @@ impl fmt::Display for Error {
             Self::ProgramInput(error) => error.fmt(f),
             Self::Formula(error) => error.fmt(f),
             Self::QuestionInput(error) => error.fmt(f),
+            Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
                 crate::ResearchFailure::ClockBeforeEpoch => "wall clock is before research epoch",
@@ -793,6 +797,9 @@ impl serde::Serialize for Error {
                 &naome_checker::diagnostics::FormulaFailure::from(reason),
             )?;
         }
+        if let Self::QuestionRegistration(reason) = cause {
+            value.serialize_entry("reason", &reason.code())?;
+        }
         if let Self::QuestionInput(reason) = cause {
             use naome_checker::diagnostics::{ExpansionFailure, FormulaFailure};
             use naome_proof::QuestionError;
@@ -877,6 +884,11 @@ impl From<naome_checker::question::ResolutionError> for Error {
 impl From<naome_foundation::FormulaCodecError> for Error {
     fn from(error: naome_foundation::FormulaCodecError) -> Self {
         Self::Formula(error)
+    }
+}
+impl From<naome_checker::question::RejectionReason> for Error {
+    fn from(reason: naome_checker::question::RejectionReason) -> Self {
+        Self::QuestionRegistration(reason)
     }
 }
 impl From<naome_proof::QuestionError> for Error {

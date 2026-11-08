@@ -129,6 +129,7 @@ codes! {
         ProgramInput = 17,
         Formula = 18,
         CheckedContext = 19,
+        QuestionRegistration = 20,
     }
 
     pub enum InputFault in 7 {
