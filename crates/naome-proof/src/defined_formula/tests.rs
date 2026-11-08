@@ -63,6 +63,29 @@ fn expansion_shifts_an_outer_bound_argument_beneath_body_binders() {
 }
 
 #[test]
+fn shared_definition_expansion_preserves_identity_and_logical_work() {
+    let x = FreeVariable::new(0);
+    let id = DefinitionId::from_bytes([0x3a; 32]);
+    let resolver = OneDefinition {
+        id,
+        arity: 1,
+        body: DefinedFormula::equal(x, x),
+    };
+    let application = DefinedFormula::defined_relation(id, [x]);
+    let source =
+        DefinedFormula::for_all(x, DefinedFormula::implies(application.clone(), application));
+    let atom = Formula::equal(x, x);
+    let expected = Formula::for_all(x, Formula::implies(atom.clone(), atom));
+    let (expanded, work) = source.expand_with_node_limit(&resolver, 6).unwrap();
+    assert_eq!(work, 6);
+    assert_eq!(expanded.encode_canonical(), expected.encode_canonical());
+    assert_eq!(
+        source.expand_with_node_limit(&resolver, 5),
+        Err(DefinitionExpansionError::NodeLimitExceeded { maximum: 5 })
+    );
+}
+
+#[test]
 fn expansion_rejects_unknown_wrong_arity_cycle_and_work_exhaustion() {
     let id = DefinitionId::from_bytes([0x22; 32]);
     let x = FreeVariable::new(0);

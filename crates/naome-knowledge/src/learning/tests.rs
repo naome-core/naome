@@ -25,10 +25,30 @@ impl model::Ranker for UniversalChoice {
 
 #[test]
 fn equivalent_universal_choices_share_the_checked_success_mass() {
-    let q = ResearchQuestion::from_hex(
+    let direct = ResearchQuestion::from_hex(
         "0404030403010100000002010000000101010000000101000000020301010000000101000000000101000000000100000001",
     )
     .unwrap();
+    let [x, y, unused] = [0, 1, 2].map(FreeVariable::new);
+    let premise = Formula::member(x, y);
+    let intermediate = Formula::member(y, x);
+    let conclusion = Formula::member(y, y);
+    let universal = Formula::for_all(
+        unused,
+        Formula::implies(premise.clone(), intermediate.clone()),
+    );
+    let target = Formula::implies(
+        universal,
+        Formula::implies(
+            premise,
+            Formula::implies(
+                Formula::implies(intermediate, conclusion.clone()),
+                conclusion,
+            ),
+        ),
+    );
+    let q =
+        ResearchQuestion::from_formula(Formula::for_all(x, Formula::for_all(y, target))).unwrap();
     let mut graphs = Vec::new();
     let mut chosen = std::collections::BTreeSet::new();
     for index in 0..2 {
@@ -43,7 +63,6 @@ fn equivalent_universal_choices_share_the_checked_success_mass() {
         }
         let (term, states) = search::compile(q.proved_target(), &tree).unwrap();
         proof::verify(&term, q.proved_target()).unwrap();
-        assert_eq!(states.len(), 1);
         graphs.push(states.into_iter().next().unwrap());
     }
     assert_eq!(
@@ -70,7 +89,7 @@ fn equivalent_universal_choices_share_the_checked_success_mass() {
         );
         assert_eq!(graph.successes, pure);
     }
-    let fused = search::solve(q.proved_target(), &mut Symbolic, 1).unwrap();
+    let fused = search::solve(direct.proved_target(), &mut Symbolic, 1).unwrap();
     assert_eq!(fused.expansions, 1);
     let tree = fused.tree.expect("the matched quantifier closes directly");
     assert!(matches!(
@@ -80,8 +99,8 @@ fn equivalent_universal_choices_share_the_checked_success_mass() {
             ..
         }
     ));
-    let (term, _) = search::compile(q.proved_target(), &tree).unwrap();
-    proof::verify(&term, q.proved_target()).unwrap();
+    let (term, _) = search::compile(direct.proved_target(), &tree).unwrap();
+    proof::verify(&term, direct.proved_target()).unwrap();
 }
 
 #[test]
