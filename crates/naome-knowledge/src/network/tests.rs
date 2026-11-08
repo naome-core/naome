@@ -178,6 +178,51 @@ fn oversized_configuration_still_rejects_before_decoding() {
 }
 
 #[test]
+fn node_config_rejects_each_bound_with_a_distinct_code() {
+    let mut config = Config {
+        directory: PathBuf::new(),
+        listen: String::new(),
+        peers: vec![],
+        discovery: None,
+        producer_artifacts: vec![],
+        formal_goal: None,
+    };
+    assert!(validate_config(&config, false).is_ok());
+    config.formal_goal = Some(crate::mocks::create_question(0));
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputFault(
+            crate::InputFault::FormalGoalRequiresNative
+        ))
+    ));
+    assert!(validate_config(&config, true).is_ok());
+    config.formal_goal = None;
+    config.peers = vec![
+        Peer {
+            id: String::new(),
+            address: String::new()
+        };
+        crate::resources::limits().configured_peers + 1
+    ];
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputLimit(crate::InputLimit::ConfiguredPeers))
+    ));
+    config.peers.clear();
+    config.producer_artifacts =
+        vec![String::new(); crate::resources::limits().producer_artifacts + 1];
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue))
+    ));
+    config.producer_artifacts = vec!["a".repeat(2 * crate::resources::limits().producer_bytes + 1)];
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue))
+    ));
+}
+
+#[test]
 fn formal_goal_keeps_the_question_checker_failure() {
     let graph = Graph::default();
     let valid = crate::mocks::create_question(0);

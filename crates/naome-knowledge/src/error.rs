@@ -370,6 +370,9 @@ impl fmt::Display for Error {
                 InputFault::RegularFileRequired => "regular file required",
                 InputFault::RelayListenAddress => "invalid relay listen address",
                 InputFault::RelayExternalAddress => "invalid relay external address",
+                InputFault::FormalGoalRequiresNative => {
+                    "formal goal requires native proof learning"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

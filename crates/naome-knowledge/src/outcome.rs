@@ -147,6 +147,7 @@ codes! {
         RegularFileRequired = 16,
         RelayListenAddress = 17,
         RelayExternalAddress = 18,
+        FormalGoalRequiresNative = 19,
     }
 
     pub enum InputLimit in 8 {
@@ -183,6 +184,8 @@ codes! {
         PrerequisiteDefinitionCapacity = 31,
         BoundedFileBytes = 32,
         RelayAddressCapacity = 33,
+        ConfiguredPeers = 34,
+        ProducerQueue = 35,
     }
 
     pub(crate) enum WorkerFailure in 9 {
@@ -828,6 +831,8 @@ impl InputLimit {
             Self::PrerequisiteDefinitionCapacity => "prerequisite definition capacity",
             Self::BoundedFileBytes => "bounded file byte limit",
             Self::RelayAddressCapacity => "relay advertised address capacity",
+            Self::ConfiguredPeers => "configured peer capacity",
+            Self::ProducerQueue => "producer queue capacity",
         }
     }
 }

@@ -414,6 +414,27 @@ where
     outcome
 }
 
+fn validate_config(config: &Config, native: bool) -> Result<(), crate::Error> {
+    if config.formal_goal.is_some() && !native {
+        return Err(crate::Error::InputFault(
+            crate::InputFault::FormalGoalRequiresNative,
+        ));
+    }
+    if config.peers.len() > crate::resources::limits().configured_peers {
+        return Err(crate::Error::InputLimit(crate::InputLimit::ConfiguredPeers));
+    }
+    let bytes = config
+        .producer_artifacts
+        .iter()
+        .try_fold(0usize, |total, source| total.checked_add(source.len()));
+    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
+        || bytes.is_none_or(|bytes| bytes > 2 * crate::resources::limits().producer_bytes)
+    {
+        return Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue));
+    }
+    Ok(())
+}
+
 fn checked_formal_goal(
     source: &str,
     graph: &Graph,
@@ -448,24 +469,10 @@ where
         Some((intervals, startup)) => (Some(intervals), Some(startup)),
         None => (None, None),
     };
-    if config.formal_goal.is_some()
-        && autonomy.is_none_or(|intervals| !intervals.jobs.native_proof_learning)
-    {
-        return Err("formal_goal requires native proof learning in the ordinary runtime".into());
-    }
-    if config.peers.len() > crate::resources::limits().configured_peers {
-        return Err("peer count limit".into());
-    }
-    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
-        || config
-            .producer_artifacts
-            .iter()
-            .map(String::len)
-            .sum::<usize>()
-            > 2 * crate::resources::limits().producer_bytes
-    {
-        return Err("producer queue capacity".into());
-    }
+    validate_config(
+        &config,
+        autonomy.is_some_and(|intervals| intervals.jobs.native_proof_learning),
+    )?;
     if let Some(startup) = &startup {
         startup.phase(crate::outcome::StartupPhase::Begin);
     }
