@@ -571,6 +571,9 @@ pub(crate) fn check_artifact(
                 ArtifactPayloadError::Proof(error) => {
                     crate::object::certificate_error(&bytes[1..], error)
                 }
+                ArtifactPayloadError::Definition(error) => {
+                    crate::object::definition_error(&bytes[1..], error)
+                }
                 ArtifactPayloadError::InputTooLong { actual, maximum } => {
                     format(crate::FormatFailure::Limit {
                         resource: crate::FormatResource::Bytes,

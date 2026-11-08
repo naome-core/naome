@@ -1865,6 +1865,14 @@ fn native_artifact_check_preserves_proof_and_format_diagnostics() {
             .is_some()
     );
 
+    let definition_error = proof::check_artifact("01ff", &context).unwrap_err();
+    assert!(
+        matches!(definition_error, crate::Error::CertificateFormat(ref value)
+        if matches!(value.reason, crate::FormatFailure::UnknownTag {
+            domain: crate::FormatTagClass::DefinitionKind, tag: 255
+        }))
+    );
+
     let error = proof::check_artifact("ff", &context).unwrap_err();
     assert!(matches!(error, crate::Error::CertificateFormat(ref value)
     if matches!(value.reason, crate::FormatFailure::UnknownTag {

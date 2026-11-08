@@ -51,7 +51,7 @@ pub(crate) fn record_content_id(
                 return Err("definition has a statement claim".into());
             }
             Ok(DefinitionCertificate::from_canonical_bytes(payload)
-                .map_err(|error| error.to_string())?
+                .map_err(|error| definition_error(payload, error))?
                 .definition_id()
                 .into())
         }
@@ -512,6 +512,16 @@ pub(crate) fn certificate_error(
     }))
 }
 
+pub(crate) fn definition_error(
+    bytes: &[u8],
+    error: naome_proof::DefinitionCertificateError,
+) -> crate::Error {
+    crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
+        input_digest: naome_checker::diagnostics::Digest::of(bytes),
+        reason: crate::FormatFailure::from(&error),
+    }))
+}
+
 fn prepare_candidate(
     id: ArtifactId,
     statement: Option<StatementId>,
@@ -535,7 +545,7 @@ fn prepare_candidate(
         }
         Some((&ArtifactPayload::DEFINITION_TAG, payload)) => {
             let definition = DefinitionCertificate::from_canonical_bytes(payload)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| definition_error(payload, error))?;
             if matches!(
                 definition.kind(),
                 naome_proof::DefinitionKind::Function { .. }

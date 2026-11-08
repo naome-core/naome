@@ -28,6 +28,19 @@ pub enum FormatFailure {
     TrailingBytes {
         remaining: usize,
     },
+    ZeroRelationArity,
+    ZeroFunctionArity,
+    DefinitionReference {
+        definition_id: naome_proof::DefinitionId,
+    },
+    UndeclaredFormalVariable {
+        identifier: u32,
+        arity: u32,
+    },
+    MissingFormalVariable {
+        identifier: u32,
+        arity: u32,
+    },
     Unsupported,
 }
 impl serde::Serialize for FormatFailure {
@@ -42,6 +55,11 @@ impl serde::Serialize for FormatFailure {
             Self::UnknownTag { .. } => FormatReasonCode::UnknownTag,
             Self::Formula { .. } => FormatReasonCode::Formula,
             Self::TrailingBytes { .. } => FormatReasonCode::TrailingBytes,
+            Self::ZeroRelationArity => FormatReasonCode::ZeroRelationArity,
+            Self::ZeroFunctionArity => FormatReasonCode::ZeroFunctionArity,
+            Self::DefinitionReference { .. } => FormatReasonCode::DefinitionReference,
+            Self::UndeclaredFormalVariable { .. } => FormatReasonCode::UndeclaredFormalVariable,
+            Self::MissingFormalVariable { .. } => FormatReasonCode::MissingFormalVariable,
             Self::Unsupported => FormatReasonCode::Unsupported,
         };
         value.serialize_entry("code", &code)?;
@@ -65,7 +83,19 @@ impl serde::Serialize for FormatFailure {
             }
             Self::Formula { reason } => value.serialize_entry("reason", reason)?,
             Self::TrailingBytes { remaining } => value.serialize_entry("remaining", remaining)?,
-            Self::EmptyCertificate | Self::UnexpectedEnd | Self::Unsupported => {}
+            Self::DefinitionReference { definition_id } => {
+                value.serialize_entry("definition", definition_id.as_bytes())?
+            }
+            Self::UndeclaredFormalVariable { identifier, arity }
+            | Self::MissingFormalVariable { identifier, arity } => {
+                value.serialize_entry("identifier", identifier)?;
+                value.serialize_entry("arity", arity)?;
+            }
+            Self::EmptyCertificate
+            | Self::UnexpectedEnd
+            | Self::ZeroRelationArity
+            | Self::ZeroFunctionArity
+            | Self::Unsupported => {}
         }
         value.end()
     }
@@ -110,6 +140,43 @@ impl From<&naome_proof::ProofCertificateError> for FormatFailure {
                 reason: reason.into(),
             },
             ProofCertificateError::TrailingBytes { remaining } => Self::TrailingBytes { remaining },
+            _ => Self::Unsupported,
+        }
+    }
+}
+
+impl From<&naome_proof::DefinitionCertificateError> for FormatFailure {
+    fn from(error: &naome_proof::DefinitionCertificateError) -> Self {
+        use naome_proof::DefinitionCertificateError as E;
+        match *error {
+            E::InputTooLong { actual, maximum } => Self::Limit {
+                resource: FormatResource::Bytes,
+                actual: Some(actual as u64),
+                maximum: maximum as u64,
+            },
+            E::UnexpectedEnd => Self::UnexpectedEnd,
+            E::UnknownKindTag(tag) => Self::UnknownTag {
+                domain: FormatTagClass::DefinitionKind,
+                tag,
+            },
+            E::ZeroRelationArity => Self::ZeroRelationArity,
+            E::ZeroFunctionArity => Self::ZeroFunctionArity,
+            E::ArityTooLarge { actual, maximum } => Self::Limit {
+                resource: FormatResource::Arity,
+                actual: Some(actual),
+                maximum: u64::from(maximum),
+            },
+            E::DefinitionReference { definition_id } => Self::DefinitionReference { definition_id },
+            E::UndeclaredFormalVariable { identifier, arity } => {
+                Self::UndeclaredFormalVariable { identifier, arity }
+            }
+            E::MissingFormalVariable { identifier, arity } => {
+                Self::MissingFormalVariable { identifier, arity }
+            }
+            E::Formula(ref reason) => Self::Formula {
+                reason: reason.into(),
+            },
+            E::TrailingBytes { remaining } => Self::TrailingBytes { remaining },
             _ => Self::Unsupported,
         }
     }

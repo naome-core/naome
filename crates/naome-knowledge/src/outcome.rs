@@ -659,9 +659,11 @@ codes! {
     pub(crate) enum FormatReasonCode in 42 {
         EmptyCertificate = 1, Limit = 2, ReferenceNotEarlier = 3, UnexpectedEnd = 4,
         UnknownTag = 5, Formula = 6, TrailingBytes = 7, Unsupported = 8,
+        ZeroRelationArity = 9, ZeroFunctionArity = 10, DefinitionReference = 11,
+        UndeclaredFormalVariable = 12, MissingFormalVariable = 13,
     }
-    pub enum FormatResource in 43 { Steps = 1, Bytes = 2, Nodes = 3 }
-    pub enum FormatTagClass in 44 { ProofStep = 1, ZfcAxiom = 2, ArtifactPayload = 3 }
+    pub enum FormatResource in 43 { Steps = 1, Bytes = 2, Nodes = 3, Arity = 4 }
+    pub enum FormatTagClass in 44 { ProofStep = 1, ZfcAxiom = 2, ArtifactPayload = 3, DefinitionKind = 4 }
 
     pub(crate) enum SelectionPurpose in 57 { Assessment = 1, Admission = 2, Initial = 3, Final = 4, Publication = 5 }
 

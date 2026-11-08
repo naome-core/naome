@@ -193,3 +193,25 @@ fn question_registry_failure_keeps_its_checker_reason() {
     );
     assert_eq!(value["reason"], RejectionReason::InvalidRegistry.code());
 }
+
+#[test]
+fn definition_format_reasons_retain_arity_and_formal_variable_witnesses() {
+    use naome_proof::DefinitionCertificateError as E;
+    let too_large = FormatFailure::from(&E::ArityTooLarge {
+        actual: 12,
+        maximum: 8,
+    });
+    let value = serde_json::to_value(too_large).unwrap();
+    assert_eq!(value["code"], 0x002a_0002_u32);
+    assert_eq!(value["resource"], u32::from(FormatResource::Arity));
+    assert_eq!(value["actual"], 12);
+    assert_eq!(value["maximum"], 8);
+    let missing = FormatFailure::from(&E::MissingFormalVariable {
+        identifier: 2,
+        arity: 3,
+    });
+    let value = serde_json::to_value(missing).unwrap();
+    assert_eq!(value["code"], 0x002a_000d_u32);
+    assert_eq!(value["identifier"], 2);
+    assert_eq!(value["arity"], 3);
+}

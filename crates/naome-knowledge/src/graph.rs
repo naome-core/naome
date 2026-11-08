@@ -820,7 +820,7 @@ impl Graph {
             }
             Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, payload)) => {
                 let certificate = naome_proof::DefinitionCertificate::from_canonical_bytes(payload)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| crate::object::definition_error(payload, error))?;
                 naome_checker::check_definition_with_state(certificate, context)
                     .map(CheckedArtifact::Definition)
                     .map_err(crate::Error::from)
