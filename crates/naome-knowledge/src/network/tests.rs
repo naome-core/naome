@@ -6,7 +6,7 @@ mod defined_exchange;
 mod definitions;
 #[cfg(unix)]
 mod typed_proof;
-use libp2p::tcp;
+use libp2p::{futures::StreamExt, tcp};
 use naome_checker::question::ResearchQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -46,6 +46,16 @@ fn suppliers() -> [PeerId; 3] {
         "12D3KooWN85tWa9uREnea7nhmAXr8a1Do4MipuBHWw5X9tdYno7E",
     ]
     .map(|peer| peer.parse().unwrap())
+}
+
+#[test]
+fn overdue_inventory_retains_a_request_window() {
+    let now = Instant::now();
+    let interval = crate::resources::limits().reconcile_interval;
+    assert!(inventory_preempts_description(None, now));
+    assert!(!inventory_preempts_description(Some(now + interval), now));
+    assert!(!inventory_preempts_description(Some(now), now));
+    assert!(inventory_preempts_description(Some(now - interval), now));
 }
 
 #[test]
@@ -867,4 +877,44 @@ async fn oversized_learning_context_advances_the_durable_cursor() {
         crate::jobs::Service::open(&directory.0, settings, 0, Arc::default()).unwrap();
     assert_eq!(recovery.peer_cursor, skipped_ordinal + 1);
     service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn control_remains_responsive_with_incomplete_clients() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let directory = ConfigFile::new();
+    let graph = Graph::open(&directory.0).unwrap();
+    let control =
+        Arc::new(crate::runtime::Control::bind_test(&directory.0, graph.ownership()).unwrap());
+    let endpoint: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.0.join("control.json")).unwrap()).unwrap();
+    let socket = endpoint["socket"].as_str().unwrap();
+    let status = Arc::new(worker::PublishedStatus::default());
+    status.ready.store(true, Ordering::Release);
+    let mut controls = worker::Controls::spawn(Some(control), status);
+    let mut slow = Vec::new();
+    for _ in 0..crate::resources::active_limits().control_clients {
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        stream.write_all(b"{").await.unwrap();
+        slow.push(stream);
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    let request = format!(
+        "{{\"version\":1,\"token\":\"{}\",\"operation\":\"status\"}}\n",
+        "01".repeat(32)
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_millis(700),
+        BufReader::new(stream).read_line(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(result["report"]["status"]["running"], true);
+    drop(slow);
+    controls.shutdown().await.unwrap();
 }
