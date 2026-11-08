@@ -248,9 +248,24 @@ impl Error {
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
-                    | Self::Research(_)
                     | Self::ResearchCombined { .. }
                     | Self::Startup { .. }
+            )
+            || matches!(
+                self,
+                Self::Research(
+                    crate::ResearchFailure::ClockBeforeEpoch
+                        | crate::ResearchFailure::ClockOverflow
+                        | crate::ResearchFailure::ClockRollback
+                        | crate::ResearchFailure::ElapsedOverflow
+                        | crate::ResearchFailure::AccountingRecordMissing
+                        | crate::ResearchFailure::MultipleFailures
+                        | crate::ResearchFailure::EffectsUnconfirmed
+                        | crate::ResearchFailure::DriverPanic
+                        | crate::ResearchFailure::StopReceiptUnavailable
+                        | crate::ResearchFailure::OwnerThreadPanic
+                        | crate::ResearchFailure::OwnerRuntimeUnavailable
+                )
             )
     }
     fn format_error(&self) -> Option<(naome_checker::diagnostics::Digest, &FormatFailure)> {
@@ -344,6 +359,29 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::OwnerThreadPanic => "research owner thread panicked",
                 crate::ResearchFailure::OwnerRuntimeUnavailable => {
                     "research owner runtime unavailable"
+                }
+                crate::ResearchFailure::OwnerCancelled => "research job cancelled or expired",
+                crate::ResearchFailure::WorkBudgetExhausted => "research work budget exhausted",
+                crate::ResearchFailure::DuplicateProgram => "duplicate outstanding program group",
+                crate::ResearchFailure::ReservationMissing => "research reservation record absent",
+                crate::ResearchFailure::ReservationSequence => {
+                    "research reservation lifecycle differs"
+                }
+                crate::ResearchFailure::ProgressMissing => "unknown provider progress",
+                crate::ResearchFailure::ProgressNotRunning => "research checkpoint cancelled",
+                crate::ResearchFailure::ProgressSequence => {
+                    "provider checkpoint differs from its durable reservation"
+                }
+                crate::ResearchFailure::LearningCheckpointMissing => "unknown learning checkpoint",
+                crate::ResearchFailure::LearningReservation => {
+                    "learning checkpoint lacks original reservation"
+                }
+                crate::ResearchFailure::LearningSnapshotMissing => {
+                    "learning checkpoint lacks snapshot"
+                }
+                crate::ResearchFailure::ProgramJobMissing => "unknown program job",
+                crate::ResearchFailure::ProgramReservation => {
+                    "program group lacks its original reservation"
                 }
             }),
             Self::ResearchCombined { primary, cleanup } => {

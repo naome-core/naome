@@ -116,7 +116,7 @@ pub(super) enum Event {
         id: u64,
         unit: u32,
         request: crate::learning::history::Request,
-        reply: oneshot::Sender<Result<crate::learning::history::Receipt, String>>,
+        reply: oneshot::Sender<Result<crate::learning::history::Receipt, crate::Error>>,
     },
     Model {
         id: u64,
@@ -124,29 +124,29 @@ pub(super) enum Event {
         blob: crate::learning::Blob,
         range: std::ops::Range<usize>,
         bytes: Option<Vec<u8>>,
-        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+        reply: oneshot::Sender<Result<Vec<u8>, crate::Error>>,
     },
     Learning {
         id: u64,
         unit: u32,
         progress: Box<crate::learning::Progress>,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
     Program {
         id: u64,
         unit: u32,
         records: Vec<naome_proof::program::Command>,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
     Reserve {
         id: u64,
         next: u32,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
     Progress {
         id: u64,
         checkpoint: u32,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
 }
 

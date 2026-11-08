@@ -577,6 +577,11 @@ codes! {
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
         MultipleFailures = 6, EffectsUnconfirmed = 7, DriverPanic = 8,
         StopReceiptUnavailable = 9, OwnerThreadPanic = 10, OwnerRuntimeUnavailable = 11,
+        OwnerCancelled = 12, WorkBudgetExhausted = 13, DuplicateProgram = 14,
+        ReservationMissing = 15, ReservationSequence = 16, ProgressMissing = 17,
+        ProgressNotRunning = 18, ProgressSequence = 19, LearningCheckpointMissing = 20,
+        LearningReservation = 21, LearningSnapshotMissing = 22,
+        ProgramJobMissing = 23, ProgramReservation = 24,
     }
 
 }

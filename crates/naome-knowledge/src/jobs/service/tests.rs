@@ -240,6 +240,7 @@ async fn reservation_events_keep_exhaustion_local_but_stop_on_persistence_failur
             .unwrap()
             .unwrap_err();
         if corrupt_storage {
+            assert!(rejection.fatal());
             assert!(
                 tokio::time::timeout(Duration::from_secs(2), task)
                     .await
@@ -249,9 +250,11 @@ async fn reservation_events_keep_exhaustion_local_but_stop_on_persistence_failur
             );
             assert!(commands.is_closed());
         } else {
-            // This diagnostic deliberately differs from the former control
-            // prefix. The normal outcome still leaves the real driver running.
-            assert_eq!(rejection, "research work budget exhausted");
+            assert_eq!(
+                rejection,
+                crate::Error::Research(crate::ResearchFailure::WorkBudgetExhausted)
+            );
+            assert!(!rejection.fatal());
             let (reply, page) = oneshot::channel();
             commands
                 .send(Command::Recover {
