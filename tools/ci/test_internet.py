@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check_internet import verify
+from check_internet import FixtureResult, verify
 from wait_internet_builds import BUILD, JOBS, built
 
 
@@ -13,7 +13,7 @@ class InternetReceiptTests(unittest.TestCase):
     def reports(self):
         return [{
             "participant": index, "environment": {"system": system, "node": f"host-{index}"},
-            "revision": "tested-commit", "result": "pass", "dirty": False,
+            "revision": "tested-commit", "result": FixtureResult.PASS, "dirty": False,
             "cleanup": {"all_processes_exited": True, "errors": []},
             "participant_roster_injected": False, "node_count": 1,
             "peer_ids": [f"peer-{index}"], "own_proof_id": f"proof-{index}",
@@ -38,6 +38,9 @@ class InternetReceiptTests(unittest.TestCase):
     def test_missing_or_misbound_evidence_cannot_qualify_public_discovery(self):
         mutations = [
             lambda reports: reports.pop(),
+            lambda reports: reports[0].update(result=float(FixtureResult.PASS)),
+            lambda reports: reports[0].update(result=FixtureResult.FAIL),
+            lambda reports: reports[0].update(result=0x003fffff),
             lambda reports: reports[0].update(dirty=True),
             lambda reports: reports[0].update(revision="other-commit"),
             lambda reports: [report.update(revision="stale-commit") for report in reports],

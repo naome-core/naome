@@ -5,6 +5,7 @@ Usage: typed_proof_pair.py NAOME KNOWLEDGE_UNIT_TEST_BINARY OUTPUT_DIRECTORY
 A transparent loopback forwarder counts delivered encrypted TCP payloads.
 It does not terminate Noise, decode yamux, or count TCP/IP headers.
 """
+from fixture_result import FixtureResult
 import argparse
 from collections import Counter
 import json
@@ -183,7 +184,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         assert reopened["artifact_verification"] == 0x0020_0001 and reopened["accepted_artifacts"] == len(helpers) + 1
         assert set(receiver.ids()) == helpers | {root}
         receiver.stop()
-        report["result"] = "pass"
+        report["result"] = FixtureResult.PASS
     finally:
         for meter in meters:
             meter.close()

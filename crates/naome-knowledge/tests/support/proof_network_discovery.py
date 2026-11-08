@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite real mDNS, bootstrap DHT, relay circuit and DCUtR process evidence."""
+from fixture_result import FixtureResult
 
 import argparse
 import json
@@ -140,7 +141,7 @@ class DiscoveryDriver(Driver):
                 other = self.nodes[3 - node.index].identity
                 node.wait_event(lambda event:event.get("event") == 0x0017000c and event.get("peer") == other, timeout=25)
                 node.wait_event(lambda event:event.get("event") == 0x0017001f and event.get("peer") == other, timeout=10)
-        self.summary["scenarios"]["peer_discovery_without_roster"] = {"result": "pass", "mechanism": expected_source,
+        self.summary["scenarios"]["peer_discovery_without_roster"] = {"result": FixtureResult.PASS, "mechanism": expected_source,
             "proof_ids": sorted(initial), "bootstrap_count_per_node": 0 if self.mode == "mdns" else 1,
             "configured_proof_peers": 0}
 
@@ -198,7 +199,7 @@ class DiscoveryDriver(Driver):
                 break
             time.sleep(0.5)
         assert retired == {0, 1, 3}, f"stale contact not retired on all active nodes: {sorted(retired)}"
-        self.summary["scenarios"]["disappearing_contact_retirement"] = {"result":"pass", "peer":stale_peer,
+        self.summary["scenarios"]["disappearing_contact_retirement"] = {"result":FixtureResult.PASS, "peer":stale_peer,
             "active_nodes":sorted(retired), "initially_known_on":sorted(initially_known),
             "observed_contact_on":sorted(observed), "deadline_seconds":45, "hint_ttl_seconds":30}
         self.convergence("retained_graph_after_contact_retirement", [0, 1, 3], initial, time.monotonic(), timeout=5)
@@ -239,7 +240,7 @@ class DiscoveryDriver(Driver):
         assert len(attacker_ids.intersection(victim.command("status")["connected"])) <= 4
         assert all(node.process.poll() is None for node in self.nodes)
         self.assert_caps()
-        self.summary["scenarios"]["authenticated_identity_flood"] = {"result": "pass",
+        self.summary["scenarios"]["authenticated_identity_flood"] = {"result": FixtureResult.PASS,
             "distinct_attacker_keys": len(attacker_ids), "default_network_group_limit": 4,
             "trusted_outbound_peer_connected": honest.identity in victim.command("status")["connected"]}
         assert self.summary["scenarios"]["authenticated_identity_flood"]["trusted_outbound_peer_connected"]
@@ -274,7 +275,7 @@ class DiscoveryDriver(Driver):
                 transfers.append({"node":node.index, "connections":connections, "object_responses":objects})
             assert any("CircuitReqAccepted" in event.get("detail", "") for event in self.relay.events)
             self.summary["scenarios"]["proof_payload_requires_relay_circuit"] = {
-                "result":"pass", "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
+                "result":FixtureResult.PASS, "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
             self.relay.stop()
             fresh = self.produce(0, 63, "relay-outage-proof")["artifact_id"]
             assert all(node.process.poll() is None for node in self.nodes)
@@ -315,7 +316,7 @@ class DiscoveryDriver(Driver):
                                      and connection.get("peer") == node.identity
                                      and connection.get("relayed") is False, timeout=5)
             self.summary["scenarios"]["bounded_dcutr_terminal_outcome"] = {
-                "result":"pass", "outcomes":results, "physical_nat_traversal_qualified":False,
+                "result":FixtureResult.PASS, "outcomes":results, "physical_nat_traversal_qualified":False,
                 "native_result_scope":"The pinned behaviour reports locally initiated outgoing upgrades; the counterpart is bound by its authenticated direct endpoint",
                 "evidence":"Real local circuit followed by a DCUtR terminal result; one host, zero physical NAT routers"}
         self.summary["accepted_ids"] = sorted(expected)
@@ -333,7 +334,7 @@ class DiscoveryDriver(Driver):
             "errors":errors, "process_exit_codes":[node.process.returncode if node.process is not None else None for node in processes],
             "relay_shutdown":"SIGTERM"}
         if errors:
-            self.summary["result"] = "fail"
+            self.summary["result"] = FixtureResult.FAIL
         self.summary["artifacts"] = {str(path):digest(path) for path in sorted(self.output.rglob("*"))
             if path.is_file() and path.name not in ["summary.json", "identity.key", "knowledge.lock"]}
         (self.output / "summary.json").write_text(json.dumps(self.summary, indent=2) + "\n")
@@ -363,15 +364,15 @@ def main():
             driver.discovery()
         else:
             driver.circuit()
-        driver.summary["result"] = "pass"
+        driver.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
         driver.summary["traceback"] = traceback.format_exc()
     finally:
         driver.finish()
     print(json.dumps({"result":driver.summary["result"], "output":str(driver.output), "error":driver.summary.get("error")}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

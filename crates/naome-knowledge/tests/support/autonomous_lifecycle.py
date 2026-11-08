@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Ordinary lifecycle and autonomous real direct, discovery and relay qualification."""
+from fixture_result import FixtureResult
 
 import argparse
 import ctypes
@@ -437,7 +438,7 @@ class Trial:
         finally:
             self.guardian_log.close()
         if failures or not self.summary["cleanup"]["all_owned_groups_empty"]:
-            self.summary["result"] = "fail"
+            self.summary["result"] = FixtureResult.FAIL
 
 
 def write_receipt(path, value):
@@ -1015,7 +1016,7 @@ def guardian_fixture_worker():
         })
         while time.monotonic() < trial.deadline:
             time.sleep(0.1)
-        trial.summary["result"] = "fail"
+        trial.summary["result"] = FixtureResult.FAIL
         trial.summary["error"] = "probe did not interrupt its driver within the bounded lifetime"
     finally:
         trial.close()
@@ -1110,14 +1111,14 @@ def guardian_loss_probe():
         assert relay.emergency_record["child_reaped"] and relay.emergency_record["owned_group_empty"]
         assert relay.process.returncode == -signal.SIGKILL
         summary["relay_timeout_parent_cleanup"] = relay.emergency_record
-        relay_trial.summary["result"] = "pass"
+        relay_trial.summary["result"] = FixtureResult.PASS
         relay_trial.close()
-        assert relay_trial.summary["result"] == "pass", relay_trial.summary
+        assert relay_trial.summary["result"] == FixtureResult.PASS, relay_trial.summary
         relay_trial = None
         assert time.monotonic() < deadline, "guardian qualification deadline exceeded"
-        summary["result"] = "pass"
+        summary["result"] = FixtureResult.PASS
     except Exception as error:
-        summary["result"] = "fail"
+        summary["result"] = FixtureResult.FAIL
         summary["error"] = str(error)
     finally:
         if worker.poll() is None:
@@ -1135,7 +1136,7 @@ def guardian_loss_probe():
                 pass
         summary["final_cleanup"] = [stop_owned_group(identity) for identity in identities]
         if not all(record["owned_group_empty"] for record in summary["final_cleanup"]):
-            summary["result"] = "fail"
+            summary["result"] = FixtureResult.FAIL
             summary.setdefault("cleanup_errors", []).append("a retained owned process group remains")
         if relay_trial is not None:
             relay_trial.close()
@@ -1143,7 +1144,7 @@ def guardian_loss_probe():
         summary["execution_seconds"] = time.monotonic() - started
         retain_evidence(output, summary, "guardian-probe", args.profile)
     print(json.dumps({"result": summary["result"], "output": str(output)}))
-    return 0 if summary["result"] == "pass" else 1
+    return 0 if summary["result"] == FixtureResult.PASS else 1
 
 
 def main():
@@ -1181,10 +1182,10 @@ def main():
             assert process_identity(original["pid"]) == original, "path alias created a second node owner"
             assert trial.call(alias_node, "stop") == {"running": False, "accepted_artifacts": 0, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
             node.stop()
-        trial.summary["scenarios"]["automatic_initialization_detached_start_and_single_owner"] = {"result": "pass"}
+        trial.summary["scenarios"]["automatic_initialization_detached_start_and_single_owner"] = {"result": FixtureResult.PASS}
         for verb in ["run", "init", "relay", "contract", "proof", "question"]:
             trial.call(sender, verb, success=False)
-        trial.summary["scenarios"]["ordinary_cli_excludes_developer_verbs"] = {"result": "pass"}
+        trial.summary["scenarios"]["ordinary_cli_excludes_developer_verbs"] = {"result": FixtureResult.PASS}
         if args.mode == "direct":
             for node, other in [(sender, receiver), (receiver, sender)]:
                 node.config["peers"] = [{"id": other.peer, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}]
@@ -1220,7 +1221,7 @@ def main():
         trial.wait(lambda: any(event.get("event") == 0x00170068 and event["peer_id"] == sender.peer
             for event in sender.logs()[sender.event_offset:]))
         assert sum(event.get("event") == 0x00170068 for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
-        trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
+        trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": FixtureResult.PASS, "pid": sender.process["pid"]}
         def expected_status(node):
             return {"running": True, "accepted_artifacts": 3,
                 "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
@@ -1267,7 +1268,7 @@ def main():
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
         trial.summary["accepted_ids"] = sorted(accepted)
         trial.summary["scenarios"][f"scheduled_mock_generation_real_validation_and_{args.mode}_exchange"] = {
-            "result": "pass", "root_proofs": 3, "receiver_generated_questions": 0,
+            "result": FixtureResult.PASS, "root_proofs": 3, "receiver_generated_questions": 0,
             "receiver_accepted_source": "fetch", "mocked": ["question generation", "proof generation"]}
         trial.wait(lambda: len({event["resolution_id"] for event in sender.logs()
             if event.get("event") == 0x0017004d}) >= 6, maximum=5)
@@ -1292,7 +1293,7 @@ def main():
                 generated.add(resolution)
         assert len(generated) >= 6 and len(generated - resolved) >= 3
         trial.summary["scenarios"]["new_obligations_continue_without_duplicate_admission_or_answers"] = {
-            "result": "pass", "unique_proofs": 3, "distinct_questions": len(generated),
+            "result": FixtureResult.PASS, "unique_proofs": 3, "distinct_questions": len(generated),
             "unanswered_research_questions": len(generated - resolved)}
         for node in trial.nodes:
             assert node.stop() == {"running": False, "accepted_artifacts": 3, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
@@ -1304,7 +1305,7 @@ def main():
             assert node.ids() == accepted
             assert trial.call(node, "status") == expected_status(node)
             node.stop()
-        trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": "pass", "unique_proofs": 3}
+        trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": FixtureResult.PASS, "unique_proofs": 3}
         member = sorted(accepted)[0]
         saved = bytes.fromhex(next(value["payload"] for value in stored_objects(receiver) if value["artifact_id"] == member))
         # Preserve SQL widths while invalidating the authenticated content.
@@ -1322,11 +1323,11 @@ def main():
             replace_catalog_payload(receiver, member, original)
             receiver.reserve_port()
         assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
-        trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": "pass"}
-        trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}
-        trial.summary["result"] = "pass"
+        trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": FixtureResult.PASS}
+        trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": FixtureResult.PASS}
+        trial.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        trial.summary["result"] = "fail"
+        trial.summary["result"] = FixtureResult.FAIL
         trial.summary["error"] = str(error)
         traceback.print_exc()
         trial.summary["failure_statuses"] = []
@@ -1340,7 +1341,7 @@ def main():
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)
     print(json.dumps({"result": trial.summary["result"], "output": str(trial.output)}))
-    return 0 if trial.summary["result"] == "pass" else 1
+    return 0 if trial.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

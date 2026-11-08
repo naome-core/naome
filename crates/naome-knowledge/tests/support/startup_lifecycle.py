@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite startup lifeline cases; internal custody is separate from ordinary CLI."""
+from fixture_result import FixtureResult
 import argparse
 import hashlib
 import json
@@ -148,10 +149,10 @@ def internal_case(trial, node, name, hold_seconds=0):
             assert record["actual_direct_child_reaped_during_stop"] and record["stop_cli"]["reaped"], "internal stop did not actually reap both direct children"
             assert child.returncode == 0, "acknowledged internal daemon did not stop normally"
         assert not process_group(identity), "internal owned group remained"
-        record.update(result="pass", actual_direct_child_reaped=True,
+        record.update(result=FixtureResult.PASS, actual_direct_child_reaped=True,
             exit_code=child.returncode, owned_group_empty=True)
     except BaseException as error:
-        record.update(result="fail", error_kind=type(error).__name__)
+        record.update(result=FixtureResult.FAIL, error_kind=type(error).__name__)
         raise
     finally:
         if child.stdin is not None and not child.stdin.closed:
@@ -171,7 +172,7 @@ def internal_case(trial, node, name, hold_seconds=0):
 def handoff_abort_case(trial, node, name, active_ns):
     """Real installed pipe/nonce/TERM controls; never a mock abort receipt."""
     node.release_port()
-    record = {"case": name, "result": "fail", "closure_errors": [],
+    record = {"case": name, "result": FixtureResult.FAIL, "closure_errors": [],
               "ownership_disposition": "NO_PYTHON_GROUP_AUTHORITY"}
     trial.summary.setdefault("handoff_abort_cases", []).append(record)
     assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) < active_ns, "original handoff control endpoint expired before launch"
@@ -403,7 +404,7 @@ def handoff_abort_case(trial, node, name, active_ns):
         "abort primary error does not prove the named control", fatal)
     control_request["causal_primary_abort"] = error
     assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) <= custodian_end, "original custodian endpoint expired before case completion"
-    record.update(result="pass", abort_elapsed_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - started,
+    record.update(result=FixtureResult.PASS, abort_elapsed_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - started,
                   native_runtime_qualification="THIS_EXACT_CASE_ONLY")
 
 
@@ -414,11 +415,11 @@ def run_handoff_abort_controls(trial, profile):
         for index, name in enumerate(("eof_after_offer", "wrong_nonce_after_offer", "term_after_offer")):
             node = Node(trial, index)
             handoff_abort_case(trial, node, name, active_ns)
-        trial.summary["result"] = "pass"
+        trial.summary["result"] = FixtureResult.PASS
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "startup-handoff", profile)
-    return 0 if trial.summary["result"] == "pass" else 1
+    return 0 if trial.summary["result"] == FixtureResult.PASS else 1
 
 
 def main():
@@ -451,15 +452,15 @@ def main():
         for name in trial.summary["internal_required_cases"]:
             internal_case(trial, node, name, 16 if name == "held_begin_after_old15s" else 0)
         assert len(trial.summary["internal_startup_cases"]) == 5
-        assert all(case["result"] == "pass" for case in trial.summary["internal_startup_cases"])
-        trial.summary["result"] = "pass"
+        assert all(case["result"] == FixtureResult.PASS for case in trial.summary["internal_startup_cases"])
+        trial.summary["result"] = FixtureResult.PASS
     except BaseException as error:
-        trial.summary.update(result="fail", error_kind=type(error).__name__)
+        trial.summary.update(result=FixtureResult.FAIL, error_kind=type(error).__name__)
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "startup", args.profile)
     print(json.dumps({"result": trial.summary["result"], "output": str(trial.output)}))
-    return 0 if trial.summary["result"] == "pass" else 1
+    return 0 if trial.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

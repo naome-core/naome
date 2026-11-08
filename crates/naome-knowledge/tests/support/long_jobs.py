@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite ordinary-node jobs, control, peer admission and restart qualification."""
+from fixture_result import FixtureResult
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -268,7 +269,7 @@ def roles(trial,probe):
     started=time.monotonic();busy.stop();assert time.monotonic()-started<5
     probe.ended()
     trial.summary['scenarios']['native_resource_admission_peer_control_and_group_cleanup']={
-        'result':'pass','three_role_overlap_observed':bool(overlap),'checked_peer_delivery_observed':bool(delivered)}
+        'result':FixtureResult.PASS,'three_role_overlap_observed':bool(overlap),'checked_peer_delivery_observed':bool(delivered)}
 
 
 def recovery(trial,probe):
@@ -293,7 +294,7 @@ def recovery(trial,probe):
     trial.wait(lambda:any(event.get('event')==0x0017005a for event in cpu.logs()),maximum=5)
     trial.wait(lambda:any(r['reserved_units']==1 and r['state']==0x001d_0002 for r in journal(cpu)['records'].values()),maximum=5)
     probe.crash(cpu);cpu.start();probe.observe(cpu);cpu.stop();probe.ended()
-    trial.summary['scenarios']['crash_resume_preserves_identity_progress_budgets_and_kills_cpu_descendants']={'result':'pass'}
+    trial.summary['scenarios']['crash_resume_preserves_identity_progress_budgets_and_kills_cpu_descendants']={'result':FixtureResult.PASS}
 
 
 def limits(trial,probe):
@@ -359,7 +360,7 @@ def limits(trial,probe):
     try:rejected_start('missing_research_directory',0x000C_0009)
     finally:restore_state(lambda:backup.rename(research))
     write_receipt(trial.output/'research-startup-rejection-witness.json',trial.summary['startup_rejections'])
-    trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':'pass'}
+    trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':FixtureResult.PASS}
 
 
 def faults(trial,probe):
@@ -383,7 +384,7 @@ def faults(trial,probe):
         'checkpoint':finished['checkpoint'],'reserved_units':finished['reserved_units'],'state':finished['state'],
         'supervisor_reaped_exit':reaped['exit'],'processes':retained,'remaining_groups':probe.remaining(retained)})
     completed.stop();probe.ended()
-    trial.summary['scenarios']['completed_provider_is_reaped_before_result_delivery']={'result':'pass'}
+    trial.summary['scenarios']['completed_provider_is_reaped_before_result_delivery']={'result':FixtureResult.PASS}
     trial.summary['node_count']=4
     # Lose only a currently identified supervisor while its owned CPU worker
     # and TERM-ignoring child are alive. EOF must end their separate group.
@@ -447,7 +448,7 @@ def faults(trial,probe):
     finally:
         if process_identity(original['pid'])==original:os.kill(original['pid'],signal.SIGCONT)
     output.start();probe.observe(output);output.stop();probe.ended()
-    trial.summary['scenarios']['supervisor_loss_unread_response_and_result_pipe_cleanup']={'result':'pass'}
+    trial.summary['scenarios']['supervisor_loss_unread_response_and_result_pipe_cleanup']={'result':FixtureResult.PASS}
 
 
 def basic(trial,probe):
@@ -461,7 +462,7 @@ def basic(trial,probe):
     trial.summary['convergence_seconds']=time.monotonic()-started
     trial.summary['status_seconds']={str(count):probe.statuses(first,count) for count in [2,8]}
     probe.observe(first);probe.observe(second);first.stop();second.stop();probe.ended()
-    trial.summary['scenarios']['matched_default_mock_workload_two_and_eight_control_clients']={'result':'pass'}
+    trial.summary['scenarios']['matched_default_mock_workload_two_and_eight_control_clients']={'result':FixtureResult.PASS}
 
 
 def main():
@@ -484,19 +485,19 @@ def main():
         claim='finite deterministic providers, native checking and local real transport; no model or multi-day uptime claim')
     started=time.monotonic()
     try:
-        globals()[args.mode](trial,probe);trial.summary['result']='pass'
+        globals()[args.mode](trial,probe);trial.summary['result']=FixtureResult.PASS
     except Exception as error:
-        trial.summary.update(result='fail',error=str(error));traceback.print_exc()
+        trial.summary.update(result=FixtureResult.FAIL,error=str(error));traceback.print_exc()
     finally:
         for node in trial.nodes:
             try:probe.observe(node)
-            except Exception as error:trial.summary.setdefault('observation_errors',[]).append(str(error));trial.summary['result']='fail'
+            except Exception as error:trial.summary.setdefault('observation_errors',[]).append(str(error));trial.summary['result']=FixtureResult.FAIL
         trial.summary['resource_peaks']=probe.peaks
         trial.summary['measurement_scope']='retained finite milestone samples, not complete lifetime maxima'
         trial.close()
         trial.summary['execution_seconds']=time.monotonic()-started
         retain_evidence(trial.output,trial.summary,'long-jobs-'+args.mode,args.profile)
     print(json.dumps({'result':trial.summary['result'],'output':str(trial.output)}),flush=True)
-    return 0 if trial.summary['result']=='pass' else 1
+    return 0 if trial.summary['result']==FixtureResult.PASS else 1
 
 if __name__=='__main__':raise SystemExit(main())

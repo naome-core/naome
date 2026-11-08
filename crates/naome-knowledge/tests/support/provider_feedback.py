@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Native provider-to-owner feedback with unchanged durable job allowances."""
+from fixture_result import FixtureResult
 import argparse
 import json
 import os
@@ -84,7 +85,7 @@ def run(trial):
     for node in trial.nodes:
         observe_budgets(budgets[node.index], journal(node))
         assert trial.call(node, "status")["running"]
-    trial.summary.update(result="pass", provider_feedback=reports,
+    trial.summary.update(result=FixtureResult.PASS, provider_feedback=reports,
         observed_job_budgets={index: len(records) for index, records in budgets.items()},
         claim="real isolated provider workers report all phases and roles to the node owner; telemetry does not change durable job limits or proof admission")
 
@@ -101,12 +102,12 @@ def main():
     try:
         run(trial)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         write_receipt(trial.output / "result.json", trial.summary)
-    assert trial.summary["result"] == "pass"
+    assert trial.summary["result"] == FixtureResult.PASS
 
 
 if __name__ == "__main__":

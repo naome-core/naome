@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite receiver-first selection evidence through real direct and relay links."""
+from fixture_result import FixtureResult
 import argparse
 from pathlib import Path
 import time
@@ -67,13 +68,13 @@ class QuestionDriver(DiscoveryDriver):
                        and event.get("peer") == receiver.identity and event.get("object_id") == first["object"]["artifact_id"]
                        for event in sender.events[offset:])
         self.summary["scenarios"]["automatic_receiver_selection_and_parent_closure"] = {
-            "result": "pass", "selected_ids": sorted(expected), "object_responses": responses,
+            "result": FixtureResult.PASS, "selected_ids": sorted(expected), "object_responses": responses,
             "duplicate_root_fetch_count": 0}
         receiver.stop()
         self.start_participant(receiver)
         self.wait_set(receiver, expected)
         assert len(stored_objects(receiver)) == 3
-        self.summary["scenarios"]["automatic_selection_restart"] = {"result": "pass", "ids": sorted(expected)}
+        self.summary["scenarios"]["automatic_selection_restart"] = {"result": FixtureResult.PASS, "ids": sorted(expected)}
         # An unrelated description must never establish the actual solution.
         # A second supplier remains eligible after the false one is declined.
         receiver.stop()
@@ -98,7 +99,7 @@ class QuestionDriver(DiscoveryDriver):
                      and event.get("peer") == receiver.identity and event.get("object_id") == actual["artifact_id"]]
         assert good_gets and len(stored_objects(receiver)) == 4
         self.summary["scenarios"]["false_description_preserves_correct_supplier_rotation"] = {
-            "result": "pass", "artifact_id": actual["artifact_id"], "bad_supplier": bad.identity,
+            "result": FixtureResult.PASS, "artifact_id": actual["artifact_id"], "bad_supplier": bad.identity,
             "good_supplier": good.identity, "good_gets": good_gets}
         if self.mode == "direct":
             sender.command("links", peers=[])
@@ -109,10 +110,10 @@ class QuestionDriver(DiscoveryDriver):
             assert error["limit"] == 2, error
             assert error["retryable"] is False and error["fatal"] is False, error
             assert result["object"]["artifact_id"] in sender.ids()
-            self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["artifact_id"], "metadata_error": error}
+            self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": FixtureResult.PASS, "accepted_id": result["object"]["artifact_id"], "metadata_error": error}
         self.assert_caps()
         self.summary["accepted_ids"] = sorted(expected)
-        self.summary["result"] = "pass"
+        self.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -127,13 +128,13 @@ def main():
     try:
         driver.run_questions()
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
         driver.summary["traceback"] = traceback.format_exc()
         print(driver.summary["traceback"], flush=True)
     finally:
         driver.finish()
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

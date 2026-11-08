@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite ordinary-node 1M learning, checked peer conversion and recovery."""
+from fixture_result import FixtureResult
 import argparse
 from enum import IntEnum
 import hashlib
@@ -315,9 +316,9 @@ def run(trial):
             assert progress["model"]["updates"] == completed["native"]["base"]["model"]["updates"] + 250
         qualifications[node.index] = {"job": original["id"], "qualification": progress["qualification"], "incumbent_score": progress["incumbent_score"], "candidate_score": progress["candidate_score"], "anchor_regression": progress["anchor_regression"], "model": progress["model"], "meta_update": meta_update, "io_bytes": completed["native"]["io_bytes"]}
     trial.summary["qualifications"] = qualifications
-    trial.summary["restart_and_pause"] = {"result": "pass", "retained_training_jobs": [r["record"]["id"] for r in retained.values()]}
+    trial.summary["restart_and_pause"] = {"result": FixtureResult.PASS, "retained_training_jobs": [r["record"]["id"] for r in retained.values()]}
     trial.summary["claim"] = "Two ordinary loopback nodes, actual fresh 1,004,001-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; selection follows the current research policy."
-    trial.summary["result"] = "pass"
+    trial.summary["result"] = FixtureResult.PASS
 
 
 def newer_development_feedback(feedback, original):
@@ -462,7 +463,7 @@ def run_unseeded(trial):
     write_receipt(trial.output / "next-feedback-cycle.json", next_cycle)
     assert node.ids() and first["learning"]["local_examples"] >= 8
     assert first["learning"]["peer_examples"] == 0
-    trial.summary.update(result="pass", first_training_job=original["id"],
+    trial.summary.update(result=FixtureResult.PASS, first_training_job=original["id"],
                          qualification=original["native"]["progress"]["qualification"],
                          completed_trials_before_warm_parent=len(completed_before_parent),
                          rejected_before_warm_parent=sum(item["record"]["native"]["progress"]["qualification"] != Qualification.PROMOTED for item in completed_before_parent.values()),
@@ -486,12 +487,12 @@ def main():
     try:
         (run_unseeded if args.mode == "adaptive" else run)(trial)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)
-    assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary.get("cleanup")
 
 
 if __name__ == "__main__":

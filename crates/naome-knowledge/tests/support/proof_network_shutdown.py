@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite POSIX one-shot shutdown controls during node and relay activity."""
+from fixture_result import FixtureResult
 
 import argparse
 import json
@@ -120,7 +121,7 @@ def trial(driver, role, stop_signal, index):
         stopped = stopped_events[0]
         assert stopped["observed_monotonic"] >= result["signal_sent_monotonic"]
         result["stopped_event_observed"] = True
-        result["result"] = "pass"
+        result["result"] = FixtureResult.PASS
     finally:
         finished.set()
         for connection in connected:
@@ -173,9 +174,9 @@ def main():
                 (role, stop_signal) for role in ["node", "relay"]
                 for stop_signal in [signal.SIGTERM, signal.SIGINT]]):
             trial(driver, role, stop_signal, index)
-        driver.summary["result"] = "pass"
+        driver.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
     driver.summary["cleanup"] = {
         "all_processes_exited": all(all(code is not None for code in trial.get("process_exit_codes", []))
@@ -191,7 +192,7 @@ def main():
                 if path.is_file() and path.name not in ["identity.key", "knowledge.lock"]:
                     bundle.write(path, str(path.relative_to(driver.output)))
     print(json.dumps({"result": driver.summary["result"], "output": str(driver.output)}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

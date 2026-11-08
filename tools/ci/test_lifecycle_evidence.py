@@ -11,6 +11,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "crates/naome-knowledge/tests/support"))
+from fixture_result import FixtureResult
 SPEC = importlib.util.spec_from_file_location(
     "lifecycle_fixture",
     ROOT / "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
@@ -20,6 +21,9 @@ SPEC.loader.exec_module(LIFECYCLE)
 
 
 class LifecycleEvidenceTests(unittest.TestCase):
+    def test_fixture_results_are_numeric_and_distinct(self):
+        self.assertEqual(json.loads(json.dumps(list(FixtureResult))), [0x003f0001, 0x003f0002, 0x003f0003])
+
     def test_archive_and_manifest_exclude_identity_keys_and_control_secrets(self):
         with tempfile.TemporaryDirectory(prefix="naome-lifecycle-evidence-") as name:
             output = Path(name).resolve() / "evidence"
@@ -28,7 +32,7 @@ class LifecycleEvidenceTests(unittest.TestCase):
             for filename in ["identity.key", "control.json", ".control-incoming"]:
                 (node / filename).write_bytes(b"private test material")
             (node / "identity.json").write_text('{"version":1,"peer_id":"public peer"}')
-            summary = {"result": "pass"}
+            summary = {"result": FixtureResult.PASS}
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
                 LIFECYCLE.retain_evidence(output, summary, "identity", "test")
             self.assertEqual(set(summary["artifacts"]), {"node-0/identity.json"})

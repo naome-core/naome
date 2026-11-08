@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded real-process control for autonomous operation after stdin EOF."""
+from fixture_result import FixtureResult
 
 import argparse
 import json
@@ -52,14 +53,14 @@ def main():
         driver.summary["accepted_ids"] = [id]
         driver.summary["content_root"] = content_root(driver.summary["contract"]["compatibility"], [id])
         driver.summary["scenarios"]["autonomous_production_and_listener_after_input_eof"] = {
-            "result": "pass", "artifact_id": id, "stored_objects": 1,
+            "result": FixtureResult.PASS, "artifact_id": id, "stored_objects": 1,
             "producer_source_bytes": len(producer_source) // 2,
             "listener_tcp_connect": True,
             "listener_evidence": "TCP accepts a connection after checked production with closed stdin; this is not a separate libp2p exchange trial",
         }
-        driver.summary["result"] = "pass"
+        driver.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
     finally:
         if node is not None:
@@ -75,14 +76,14 @@ def main():
             "exit_code": node.process.returncode if node is not None and node.process is not None else None,
         }
         if errors:
-            driver.summary["result"] = "fail"
+            driver.summary["result"] = FixtureResult.FAIL
         driver.summary["artifacts"] = {
             str(path): digest(path) for path in sorted(driver.output.iterdir())
             if path.is_file() and path.name != "summary.json"
         }
         (driver.output / "summary.json").write_text(json.dumps(driver.summary, indent=2) + "\n")
     print(json.dumps({"result": driver.summary["result"], "output": str(driver.output)}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

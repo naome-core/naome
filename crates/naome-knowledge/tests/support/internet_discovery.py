@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded public DHT/relay acceptance, with no injected participant addresses."""
+from fixture_result import FixtureResult
 import argparse
 import json
 from pathlib import Path
@@ -19,7 +20,7 @@ def public_convergence(driver, expected, timeout):
                and status["root"] == content_root(driver.summary["contract"]["compatibility"], status["ids"])
                for status in statuses):
             driver.summary["scenarios"]["public_discovery_and_checked_exchange"] = {
-                "result": "pass", "required_ids": expected, "statuses": statuses,
+                "result": FixtureResult.PASS, "required_ids": expected, "statuses": statuses,
                 "all_node_seconds": time.monotonic() - started}
             return
         time.sleep(1)
@@ -68,14 +69,14 @@ def main():
             for node in driver.nodes:
                 assert node.process.poll() is None
             time.sleep(min(1, until - time.monotonic()))
-        driver.summary["result"] = "pass"
+        driver.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        driver.summary.update({"result": "fail", "error": str(error), "traceback": traceback.format_exc()})
+        driver.summary.update({"result": FixtureResult.FAIL, "error": str(error), "traceback": traceback.format_exc()})
     finally:
         driver.finish()
     print(json.dumps({"result": driver.summary["result"], "output": str(driver.output),
                       "error": driver.summary.get("error")}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

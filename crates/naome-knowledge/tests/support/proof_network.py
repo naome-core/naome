@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite four-process proof-network acceptance driver; no inference provider."""
+from fixture_result import FixtureResult
 
 import argparse
 import hashlib
@@ -602,7 +603,7 @@ class Driver:
         contract = json.loads(self.helper_output([str(self.binary), "contract"]))
         repo = Path(__file__).resolve().parents[4]
         self.summary = {
-            "schema": 1, "result": "running", "node_count": 4, "physical_host_count": 1,
+            "schema": 1, "result": FixtureResult.RUNNING, "node_count": 4, "physical_host_count": 1,
             "producer": "finite deterministic formal source queues and checked-context authoring; no LLM inference",
             "contract": contract, "scenarios": {}, "commands": [], "processes": [], "proofs": {},
             **source_metadata(repo, self.helper_output),
@@ -673,7 +674,7 @@ class Driver:
                     times.pop(str(index), None)
                     final.pop(str(index), None)
             if len(times) == len(indices):
-                result = {"result": "pass", "ids": sorted(expected), "root": root,
+                result = {"result": FixtureResult.PASS, "ids": sorted(expected), "root": root,
                           "all_node_seconds": max(times.values()), "per_node_seconds": times,
                           "statuses": final}
                 self.summary["scenarios"][name] = result
@@ -747,13 +748,13 @@ class Driver:
             self.nodes[1].start()
             self.convergence("ten_page_complete_batch_restart", range(2), ids, time.monotonic(), timeout=15)
             self.summary["scenarios"]["inventory_tail_discovery"] = {
-                "result": "pass", "object_count": 595, "page_size": 64,
+                "result": FixtureResult.PASS, "object_count": 595, "page_size": 64,
                 "pages": pages, "tail_proof_id": max(ids),
                 "receiver_tail_present": max(ids) in self.nodes[1].ids(),
             }
             self.summary["accepted_ids"] = sorted(ids)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], ids)
-            self.summary["result"] = "pass"
+            self.summary["result"] = FixtureResult.PASS
         finally:
             for reservation in reservations:
                 reservation.close()
@@ -789,8 +790,8 @@ class Driver:
             assert duplicate["result"]["status"] == 0x0016_0002
             assert duplicate["object"]["artifact_id"] == initial[0]
             self.summary["scenarios"]["large_canonical_command_normalizes_duplicate"] = {
-                "result": "pass", "input_bytes": len(padded) // 2,
-                "artifact_id": initial[0], "status": "duplicate",
+                "result": FixtureResult.PASS, "input_bytes": len(padded) // 2,
+                "artifact_id": initial[0], "status": duplicate["result"]["status"],
             }
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
@@ -812,7 +813,7 @@ class Driver:
             status = self.nodes[3].status_snapshot()
             assert not status["pending"] and set(status["ids"]) == set(initial)
             assert len(stored_objects(self.nodes[3])) == len(initial)
-            self.summary["scenarios"]["dependent_before_parent"] = {"result": "pass", "isolated_failed_closure": status, "no_orphan": True}
+            self.summary["scenarios"]["dependent_before_parent"] = {"result": FixtureResult.PASS, "isolated_failed_closure": status, "no_orphan": True}
             started = time.monotonic()
             parent_metadata = self.nodes[0].command("describe", id=parent["artifact_id"])["metadata"]
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=parent_metadata, object=parent)
@@ -874,14 +875,14 @@ class Driver:
                 status = self.nodes[1].status_snapshot()
                 assert status["ids"] == baseline["ids"] and status["root"] == baseline["root"] and not status["pending"]
                 assert len(stored_objects(self.nodes[1])) == len(baseline["ids"])
-                self.summary["scenarios"][f"reject_{label}"] = {"result": "pass", "error": event["error"], "unchanged_root": status["root"], "metadata_first": True}
+                self.summary["scenarios"][f"reject_{label}"] = {"result": FixtureResult.PASS, "error": event["error"], "unchanged_root": status["root"], "metadata_first": True}
                 time.sleep(0.2)
             offset = len(self.nodes[0].events)
             self.nodes[0].command("test_offer", peer=self.nodes[1].identity,
                                  metadata=self.nodes[0].command("describe", id=left["artifact_id"])["metadata"],
                                  test_compatibility="00" * 32)
             self.nodes[0].wait_event(lambda event: event.get("event") == 0x00170039 and event.get("error") == 0x0001_0003, since=offset)
-            self.summary["scenarios"]["reject_transport_compatibility"] = {"result": "pass"}
+            self.summary["scenarios"]["reject_transport_compatibility"] = {"result": FixtureResult.PASS}
             for _ in range(3):
                 offset = len(self.nodes[0].events)
                 self.nodes[0].command("offer", peer=self.nodes[1].identity, id=left["artifact_id"])
@@ -890,7 +891,7 @@ class Driver:
                 time.sleep(0.2)
             status = self.nodes[1].status_snapshot()
             assert status["root"] == baseline["root"] and status["ids"] == baseline["ids"]
-            self.summary["scenarios"]["duplicate_delivery_and_announcements"] = {"result": "pass", "deliveries": 3, "announcements": 3, "unchanged_root": status["root"]}
+            self.summary["scenarios"]["duplicate_delivery_and_announcements"] = {"result": FixtureResult.PASS, "deliveries": 3, "announcements": 3, "unchanged_root": status["root"]}
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
             union += [left["artifact_id"], right["artifact_id"]]
@@ -924,10 +925,10 @@ class Driver:
                     ".disposable-questions.lock", "proof-backlog.initialized",
                     "proof-backlog.sqlite3", "questions.sqlite3"]
                 assert len(stored_objects(node)) == len(union)
-            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive locks, immutable binary proof catalog, durable local question/proof queues and initialization receipts; no ledger, reward or balance state"}
+            self.summary["scenarios"]["economy_independence"] = {"result": FixtureResult.PASS, "storage": "identity, exclusive locks, immutable binary proof catalog, durable local question/proof queues and initialization receipts; no ledger, reward or balance state"}
             self.summary["accepted_ids"] = sorted(union)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], union)
-            self.summary["result"] = "pass"
+            self.summary["result"] = FixtureResult.PASS
         finally:
             for reservation in reservations:
                 reservation.close()
@@ -941,7 +942,7 @@ class Driver:
                 cleanup_errors.append(str(error))
         self.summary["cleanup"] = {"all_processes_exited": all(node.process is None or node.process.poll() is not None for node in self.nodes), "errors": cleanup_errors}
         if cleanup_errors:
-            self.summary["result"] = "fail"
+            self.summary["result"] = FixtureResult.FAIL
         # Keep transport identities private; digest only public reproduction inputs/evidence.
         files = [path for path in self.output.iterdir() if path.is_file() and path.name != "summary.json"]
         self.summary["artifacts"] = {str(path): digest(path) for path in sorted(files)}
@@ -963,13 +964,13 @@ def main():
         else:
             driver.run()
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
         traceback.print_exc()
     finally:
         driver.finish()
     print(json.dumps({"result": driver.summary["result"], "summary": str(driver.output / "summary.json")}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

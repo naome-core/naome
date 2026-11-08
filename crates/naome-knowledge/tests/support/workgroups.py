@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Two ordinary processes coordinate a finite request over real libp2p."""
+from fixture_result import FixtureResult
 import argparse
 from pathlib import Path
 
@@ -59,7 +60,7 @@ def run(trial):
                               "the helper uses the native solver. No multi-host or "
                               "mathematical performance claim.")
     trial.summary["scenarios"]["cooperative_checked_proof"] = result
-    trial.summary["result"] = "pass"
+    trial.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -73,12 +74,12 @@ def main():
     try:
         run(trial)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "workgroups", args.profile)
-    assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary.get("cleanup")
 
 
 if __name__ == "__main__":

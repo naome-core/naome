@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Ordinary formal-goal input, autonomous ZFC construction, gossip and replay."""
+from fixture_result import FixtureResult
 import argparse
 import json
 from pathlib import Path
@@ -184,7 +185,7 @@ def run(trial):
         node.stop()
     trial.summary["scenarios"]["restart"] = {"exact_closure_rechecked": True,
                                                "canonical_goal": GOAL}
-    trial.summary["result"] = "pass"
+    trial.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -199,12 +200,12 @@ def main():
     try:
         run(trial)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)
-    assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary.get("cleanup")
 
 
 if __name__ == "__main__":

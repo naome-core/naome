@@ -622,6 +622,8 @@ codes! {
 
     pub(crate) enum TrainingOutcome in 62 { Verified = 1, Exhausted = 2, Unavailable = 3 }
 
+    pub(crate) enum FixtureResult in 63 { Pass = 1, Fail = 2, Running = 3 }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
@@ -792,6 +794,13 @@ mod catalog_tests {
 #[cfg(test)]
 mod job_failure_tests {
     use super::*;
+
+    #[test]
+    fn fixture_result_codes_match_evidence_contract() {
+        assert_eq!(u32::from(FixtureResult::Pass), 0x003f_0001);
+        assert_eq!(u32::from(FixtureResult::Fail), 0x003f_0002);
+        assert_eq!(u32::from(FixtureResult::Running), 0x003f_0003);
+    }
 
     #[test]
     fn experiment_outcomes_use_distinct_registered_codes() {

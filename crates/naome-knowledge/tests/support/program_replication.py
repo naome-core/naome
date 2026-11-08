@@ -5,6 +5,7 @@ Two ordinary nodes use separate OS sessions, identities, directories and ports.
 Only lifecycle/status operations drive them. The deterministic provider uses
 the same supervised candidate stream and mathematical checker as other providers.
 """
+from fixture_result import FixtureResult
 import argparse
 from contextlib import closing
 from hashlib import sha256
@@ -146,7 +147,7 @@ def run(trial,units,memory_mib=None):
     receiver.start()
     assert receiver.ids()==before and identity in before
     assert trial.call(receiver,'status')['accepted_artifacts']==len(before)
-    trial.summary.update(result='pass',fixture='autonomous_program_replication',program=published,
+    trial.summary.update(result=FixtureResult.PASS,fixture='autonomous_program_replication',program=published,
         receiver_prefix_at_restart=after['received'],receiver_first_resumed_position=resumed[0]['position'],
         receiver_work_database_bytes=work.stat().st_size,receiver_resource_observation=observation,
         source='autonomous supervised deterministic provider',
@@ -170,13 +171,13 @@ def main():
     try:
         run(trial,args.units,args.memory_mib)
     except BaseException as error:
-        trial.summary.update(result='fail',error=f'{type(error).__name__}: {error}')
+        trial.summary.update(result=FixtureResult.FAIL,error=f'{type(error).__name__}: {error}')
         raise
     finally:
         trial.close()
         write_receipt(trial.output/'result.json',trial.summary)
         retain_evidence(trial.output,trial.summary,'program-replication',args.profile)
-    assert trial.summary['result']=='pass',trial.summary
+    assert trial.summary['result']==FixtureResult.PASS,trial.summary
 
 
 if __name__=='__main__':main()

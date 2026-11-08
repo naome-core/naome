@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Automatic memory pause with real providers, live control and original budgets."""
+from fixture_result import FixtureResult
 import argparse
 import os
 from pathlib import Path
@@ -153,7 +154,7 @@ def run(trial):
     assert restored["checkpoint"] >= retained["checkpoint"]
     assert donor.peer == original_peer
     assert process_identity(donor.process["pid"]) == donor.process
-    trial.summary.update(result="pass", fixture="automatic_resource_computation_pause",
+    trial.summary.update(result=FixtureResult.PASS, fixture="automatic_resource_computation_pause",
         paused_checkpoints=frozen,
         resumed_job=resumed["id"] if resumed else None,
         native_resume_observed=bool(resumed),
@@ -174,13 +175,13 @@ def main():
     try:
         run(trial)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         write_receipt(trial.output / "result.json", trial.summary)
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)
-    assert trial.summary["result"] == "pass", trial.summary
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary
 
 
 if __name__ == "__main__":

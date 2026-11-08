@@ -5,6 +5,7 @@ This diagnostic never supplies questions, proofs, labels or checkpoints. Native
 candidate admission remains unchanged. Runtime observations do not establish
 independent learning quality or indefinite mathematical progress.
 """
+from fixture_result import FixtureResult
 import argparse
 import hashlib
 import json
@@ -235,7 +236,7 @@ def main():
     try:
         run(trial, args.trials)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
@@ -245,7 +246,7 @@ def main():
                 retain_closed_snapshot(node)
                 write_receipt(trial.output / "closed-finder.json", finder_snapshot(node))
             except (sqlite3.Error, TypeError, KeyError) as error:
-                trial.summary.update(result="fail", closed_snapshot_error=f"{type(error).__name__}: {error}")
+                trial.summary.update(result=FixtureResult.FAIL, closed_snapshot_error=f"{type(error).__name__}: {error}")
         retain_evidence(trial.output, trial.summary, "continual", "release")
 
 
