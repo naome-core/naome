@@ -638,6 +638,23 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::CandidatePrefixMismatch => {
+                    "candidate retained prefix differs"
+                }
+                crate::ResearchFailure::CandidateCheckpointInsideGroup => {
+                    "candidate checkpoint ends inside a provider group"
+                }
+                crate::ResearchFailure::CandidateInputMismatch => {
+                    "candidate input differs from its retained program"
+                }
+                crate::ResearchFailure::CandidateUnitOverflow => "provider unit address exhausted",
+                crate::ResearchFailure::CandidateStreamMismatch => {
+                    "candidate retained stream differs"
+                }
+                crate::ResearchFailure::CandidateSealMissing => {
+                    "candidate has no completely checked seal"
+                }
+                crate::ResearchFailure::CandidateCheckedMissing => "checked candidate absent",
                 crate::ResearchFailure::ProgramGroupMissing => "provider program group missing",
                 crate::ResearchFailure::CommandQueueFull => "research command queue is full",
                 crate::ResearchFailure::ServiceStopped => "research service stopped",

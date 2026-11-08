@@ -853,7 +853,10 @@ codes! {
         DefinitionTraceSnapshotMissing = 113,
         ConflictingProviders = 114, InvalidRoleLimits = 115, DeveloperWorkloadUnavailable = 116,
         PeerCursorBeyondGraph = 117, CommandQueueFull = 118, ServiceStopped = 119,
-        ProgramGroupMissing = 120,
+        ProgramGroupMissing = 120, CandidatePrefixMismatch = 121,
+        CandidateCheckpointInsideGroup = 122, CandidateInputMismatch = 123,
+        CandidateUnitOverflow = 124, CandidateStreamMismatch = 125,
+        CandidateSealMissing = 126, CandidateCheckedMissing = 127,
     }
 
 }

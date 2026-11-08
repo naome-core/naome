@@ -287,3 +287,18 @@ fn finder_and_solver_bind_a_checked_program_and_definition_through_publication()
         Some(planned.manifest)
     );
 }
+
+#[test]
+fn candidate_rejects_different_retained_prefix_with_code() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut work = Work::open(&directory.0.join("candidate.sqlite3")).unwrap();
+    let mut prefix = Prefix {
+        hash: [1; 32],
+        ..Prefix::default()
+    };
+    let error = Generated::append(&mut work, &mut prefix, &[]).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::CandidatePrefixMismatch)
+    );
+}

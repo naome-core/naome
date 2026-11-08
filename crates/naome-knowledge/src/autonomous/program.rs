@@ -73,15 +73,15 @@ impl Generated {
         let status = work.status()?;
         if status.commands == before.commands {
             if status.program_hash != crate::hex(&before.hash) {
-                return Err("candidate retained prefix differs".into());
+                return Err(crate::ResearchFailure::CandidatePrefixMismatch.into());
             }
             work.append_group(records)?;
         } else if status.commands < next.commands {
-            return Err("candidate checkpoint ends inside a provider group".into());
+            return Err(crate::ResearchFailure::CandidateCheckpointInsideGroup.into());
         }
         let status = work.status()?;
         if status.commands == next.commands && status.program_hash != crate::hex(&next.hash) {
-            return Err("candidate input differs from its retained program".into());
+            return Err(crate::ResearchFailure::CandidateInputMismatch.into());
         }
         *prefix = next;
         Ok(())
@@ -116,7 +116,7 @@ impl Generated {
             if let Ok(metadata) = std::fs::symlink_metadata(&directory)
                 && (!metadata.is_dir() || metadata.file_type().is_symlink())
             {
-                return Err("program work directory must be a real directory".into());
+                return Err(crate::InputFault::OwnedFileType.into());
             }
             self.work = Some(Work::open(
                 &directory.join(format!("candidate-{}.sqlite3", self.job)),
@@ -157,7 +157,7 @@ impl Generated {
                             self.unit = self
                                 .unit
                                 .checked_add(1)
-                                .ok_or("provider unit address exhausted")?;
+                                .ok_or(crate::ResearchFailure::CandidateUnitOverflow)?;
                         }
                         Err(oneshot::error::TryRecvError::Empty) => self.pending = Some(pending),
                         Err(_) => return Err(crate::ResearchFailure::ServiceStopped.into()),
@@ -171,7 +171,7 @@ impl Generated {
             if status.commands != self.prefix.commands
                 || status.program_hash != crate::hex(&self.prefix.hash)
             {
-                return Err("candidate retained stream differs".into());
+                return Err(crate::ResearchFailure::CandidateStreamMismatch.into());
             }
             if !status.fully_checked {
                 let context = self
@@ -188,7 +188,7 @@ impl Generated {
                     native.checker_time += start.elapsed();
                 }
                 if !progress? && !work.status()?.fully_checked {
-                    return Err("candidate has no completely checked seal".into());
+                    return Err(crate::ResearchFailure::CandidateSealMissing.into());
                 }
                 return Ok(None);
             }
@@ -217,7 +217,10 @@ impl Generated {
             }
             self.checked = Some(PreparedProgram::new(checked));
         }
-        let checked = self.checked.as_mut().ok_or("checked candidate absent")?;
+        let checked = self
+            .checked
+            .as_mut()
+            .ok_or(crate::ResearchFailure::CandidateCheckedMissing)?;
         let proof = checked.proof()?;
         let manifest = proof.manifest().clone();
         let store = graph.ownership();
