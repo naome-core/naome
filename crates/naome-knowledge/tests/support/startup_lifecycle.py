@@ -198,7 +198,7 @@ def handoff_abort_case(trial, node, name, active_ns):
             frame.extend(block)
             assert block and len(frame) <= 4096, "missing/oversized original custody offer"
         candidate = json.loads(bytes(frame).split(b"\n", 1)[0])
-        assert candidate["kind"] == "STARTUP_CHILD_CUSTODY_V1"
+        assert candidate["kind"] == 1835010
         assert candidate["active_ns"] == active_ns
         assert candidate["cleanup_ns"] == active_ns + 10_000_000_000
         assert type(candidate["pid"]) is int and candidate["pid"] > 1
@@ -357,7 +357,7 @@ def handoff_abort_case(trial, node, name, active_ns):
             except (ValueError, UnicodeError) as error:
                 record["closure_errors"].append("malformed custodian output: " + repr(error))
                 continue
-            if isinstance(value, dict) and value.get("kind") == "STARTUP_ABORT_COMPLETION_V1":
+            if isinstance(value, dict) and value.get("kind") == 1835009:
                 completions.append(value)
         assert len(completions) == 1, "missing/duplicate real Rust abort completion"
         done = completions[0]

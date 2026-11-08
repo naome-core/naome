@@ -525,6 +525,8 @@ codes! {
 
     pub(crate) enum DiscoveryQuery in 27 { Participants = 1, Announce = 2, Addresses = 3, Routing = 4 }
 
+    pub(crate) enum CustodyFrame in 28 { AbortCompletion = 1, ChildCustody = 2 }
+
 }
 
 impl InputLimit {

@@ -142,7 +142,7 @@ impl Handoff {
             .active_ns
             .checked_add(700_000_000)
             .is_some_and(|end| observed_ns <= end);
-        let value = serde_json::json!({"kind":"STARTUP_ABORT_COMPLETION_V1","pid":pid,
+        let value = serde_json::json!({"kind":crate::outcome::CustodyFrame::AbortCompletion,"pid":pid,
             "token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns,
             "observed_ns":observed_ns,"timely":timely,"report":report});
         let mut output = std::io::stdout().lock();
@@ -153,7 +153,7 @@ impl Handoff {
     pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), crate::StartupFailure> {
         use crate::StartupFailure;
         self.before_offer().map_err(|_| StartupFailure::Launch)?;
-        let offer = serde_json::json!({"kind":"STARTUP_CHILD_CUSTODY_V1",
+        let offer = serde_json::json!({"kind":crate::outcome::CustodyFrame::ChildCustody,
             "pid":pid,"token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns});
         // This first frame precedes the daemon ACK. The actual Child has not
         // been polled/reaped in this mode and its PID cannot be reused here.
