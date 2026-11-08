@@ -70,9 +70,7 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
             );
             Ok(())
         }
-        ["relay", config] => naome_knowledge::relay::run(Path::new(config))
-            .await
-            .map_err(|_| Failure::DeveloperRelay.into()),
+        ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
         ["run", config, options @ ..] => {
             let test_controls = match options {
                 [] => false,

@@ -112,3 +112,37 @@ fn relay_events_preserve_peers_status_and_io_failure_as_codes() {
     });
     assert!(closed["error"].is_null());
 }
+
+#[tokio::test]
+async fn relay_startup_failures_keep_distinct_machine_codes() {
+    use crate::{Error, InputFault, RuntimeFailure};
+    let directory = crate::checkpoint::tests::Directory::new();
+    let config = directory.0.join("relay.json");
+    assert!(matches!(
+        run(&config).await,
+        Err(Error::Runtime(RuntimeFailure::BoundedFileOpen))
+    ));
+    std::fs::write(&config, b"{").unwrap();
+    assert!(matches!(
+        run(&config).await,
+        Err(Error::Runtime(RuntimeFailure::RelayConfigParse))
+    ));
+    std::fs::write(
+        &config,
+        serde_json::to_vec(&json!({"directory":directory.0,"listen":"invalid"})).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(directory.0.join("identity.key"), b"invalid").unwrap();
+    assert!(matches!(
+        run(&config).await,
+        Err(Error::Runtime(RuntimeFailure::RelayIdentity))
+    ));
+    let key = identity::Keypair::generate_ed25519()
+        .to_protobuf_encoding()
+        .unwrap();
+    std::fs::write(directory.0.join("identity.key"), key).unwrap();
+    assert!(matches!(
+        run(&config).await,
+        Err(Error::InputFault(InputFault::RelayListenAddress))
+    ));
+}

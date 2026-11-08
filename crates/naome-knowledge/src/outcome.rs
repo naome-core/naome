@@ -144,6 +144,8 @@ codes! {
         PrerequisiteOfferedProofMissing = 13,
         PrerequisiteNotClosed = 14, PrerequisiteObligationMissing = 15,
         RegularFileRequired = 16,
+        RelayListenAddress = 17,
+        RelayExternalAddress = 18,
     }
 
     pub enum InputLimit in 8 {
@@ -179,6 +181,7 @@ codes! {
         PrerequisiteCheckerCapacity = 30,
         PrerequisiteDefinitionCapacity = 31,
         BoundedFileBytes = 32,
+        RelayAddressCapacity = 33,
     }
 
     pub(crate) enum WorkerFailure in 9 {
@@ -321,11 +324,17 @@ codes! {
         DeveloperIdentityCreate = 38,
         DeveloperIdentityEncode = 39,
         DeveloperIdentityWrite = 40,
-        DeveloperRelay = 41,
         BoundedFileOpen = 43,
         BoundedFileMetadata = 44,
         BoundedFileRead = 45,
         NetworkConfigParse = 46,
+        RelaySignal = 47,
+        RelayConfigParse = 48,
+        RelayIdentity = 49,
+        RelayDiscovery = 50,
+        RelayTransport = 51,
+        RelayBehaviour = 52,
+        RelayListener = 53,
     }
 
     pub enum StartupFailure in 13 {
@@ -817,6 +826,7 @@ impl InputLimit {
             Self::PrerequisiteCheckerCapacity => "prerequisite checker capacity",
             Self::PrerequisiteDefinitionCapacity => "prerequisite definition capacity",
             Self::BoundedFileBytes => "bounded file byte limit",
+            Self::RelayAddressCapacity => "relay advertised address capacity",
         }
     }
 }

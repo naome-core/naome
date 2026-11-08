@@ -365,6 +365,8 @@ impl fmt::Display for Error {
                     "prerequisite definition obligation missing"
                 }
                 InputFault::RegularFileRequired => "regular file required",
+                InputFault::RelayListenAddress => "invalid relay listen address",
+                InputFault::RelayExternalAddress => "invalid relay external address",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

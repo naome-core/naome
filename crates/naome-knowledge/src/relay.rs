@@ -122,14 +122,15 @@ fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     })
 }
 
-pub async fn run(path: &Path) -> Result<(), String> {
-    let shutdown = network::shutdown_signal()?;
+pub async fn run(path: &Path) -> Result<(), crate::Error> {
+    use crate::{InputFault, InputLimit, RuntimeFailure};
+    let shutdown = network::shutdown_signal().map_err(|_| RuntimeFailure::RelaySignal)?;
     tokio::pin!(shutdown);
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| RuntimeFailure::RelayConfigParse)?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()
@@ -141,16 +142,17 @@ pub async fn run(path: &Path) -> Result<(), String> {
         &config.directory.join("identity.key"),
         1024,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| RuntimeFailure::RelayIdentity)?;
     let own = key.public().to_peer_id();
     if config.external_addresses.len() > crate::resources::limits().addresses_per_contact {
-        return Err("relay advertised address capacity".into());
+        return Err(crate::Error::InputLimit(InputLimit::RelayAddressCapacity));
     }
     let listen: Multiaddr = config
         .listen
         .parse()
-        .map_err(|error| format!("relay listen: {error}"))?;
-    network::require_tcp_address(&listen)?;
+        .map_err(|_| crate::Error::InputFault(InputFault::RelayListenAddress))?;
+    network::require_tcp_address(&listen)
+        .map_err(|_| crate::Error::InputFault(InputFault::RelayListenAddress))?;
     let settings = discovery::Config {
         mdns: false,
         dht: true,
@@ -163,7 +165,8 @@ pub async fn run(path: &Path) -> Result<(), String> {
     // Provider records may refer to circuits through this service itself.
     book.relays.insert(own);
     let book = discovery::SharedBook::new(book);
-    let mut discovery = discovery::Behaviour::new(&key, &settings, true, true)?;
+    let mut discovery = discovery::Behaviour::new(&key, &settings, true, true)
+        .map_err(|_| RuntimeFailure::RelayDiscovery)?;
     if let Some(kad) = discovery.kad.as_mut() {
         kad.store_mut().set_relays(book.lock().relays.clone());
     }
@@ -194,14 +197,14 @@ pub async fn run(path: &Path) -> Result<(), String> {
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_other_transport(move |key| network::transport::tcp(key, tcp_book))
-        .map_err(|error| error.to_string())?
+        .map_err(|_| RuntimeFailure::RelayTransport)?
         .with_behaviour(|_| Behaviour {
             gate: discovery::Gate(book.clone()),
             limits,
             discovery,
             relay,
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|_| RuntimeFailure::RelayBehaviour)?
         .with_swarm_config(|config| {
             config
                 .with_idle_connection_timeout(crate::resources::limits().idle_connection_timeout)
@@ -209,14 +212,17 @@ pub async fn run(path: &Path) -> Result<(), String> {
         })
         .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
-    swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    swarm
+        .listen_on(listen)
+        .map_err(|_| RuntimeFailure::RelayListener)?;
     let use_listen_addresses = config.external_addresses.is_empty();
     let mut advertised = BTreeSet::new();
     for address in config.external_addresses {
         let address: Multiaddr = address
             .parse()
-            .map_err(|error| format!("relay external address: {error}"))?;
-        let address = discovery::routing_address(&address, own, &BTreeSet::new())?;
+            .map_err(|_| crate::Error::InputFault(InputFault::RelayExternalAddress))?;
+        let address = discovery::routing_address(&address, own, &BTreeSet::new())
+            .map_err(|_| crate::Error::InputFault(InputFault::RelayExternalAddress))?;
         swarm.add_external_address(address.clone());
         advertised.insert(address);
     }
@@ -241,7 +247,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                     }
                     network::emit(json!({"event":crate::outcome::NodeEvent::Ready, "address":address.to_string()}));
                 },
-                SwarmEvent::ListenerError { error, .. } => return Err(format!("relay listener: {error}")),
+                SwarmEvent::ListenerError { .. } => return Err(RuntimeFailure::RelayListener.into()),
                 SwarmEvent::ConnectionEstablished { peer_id, connection_id, .. } => {
                     if let Ok(contact) = book.lock().admit(peer_id, Instant::now()) {
                         contact.connected = true; contact.connected_at.get_or_insert(Instant::now());
@@ -288,7 +294,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                 }).collect();
                 for peer in unidentified { let _ = swarm.disconnect_peer_id(peer); }
             },
-            signal = &mut shutdown => { signal?; break; }
+            signal = &mut shutdown => { signal.map_err(|_| RuntimeFailure::RelaySignal)?; break; }
         }
     }
     network::emit(
