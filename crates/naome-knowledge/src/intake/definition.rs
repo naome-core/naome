@@ -11,12 +11,13 @@ pub(super) struct DefinitionFetch {
     // Optional helper metadata gets a short, independent transfer. It cannot
     // revoke the selected parent's grant or extend its publication deadline.
     helper: Option<(ArtifactId, Instant)>,
+    deadline: Option<Instant>,
 }
 
 pub(crate) struct DefinitionRequest {
     pub(crate) peer: PeerId,
     pub(crate) definition: DefinitionId,
-    pub(crate) question_proof: ArtifactId,
+    pub(crate) question_proof: Option<ArtifactId>,
     pub(crate) helper_deadline: Option<Instant>,
 }
 
@@ -35,7 +36,7 @@ impl DefinitionRequest {
         Some(Self {
             peer: transfer.peer(),
             definition: closure.missing_question_definition(graph)?,
-            question_proof: transfer.root(),
+            question_proof: Some(transfer.root()),
             helper_deadline: Some(deadline),
         })
     }
@@ -56,15 +57,18 @@ impl Intake {
         transfer.check(Instant::now())?;
         let mut closure = Closure::for_definition(root, request.question_proof);
         closure.require_root(graph)?;
-        let helper = request
-            .helper_deadline
-            .map(|deadline| (request.question_proof, deadline));
+        let helper = request.question_proof.zip(request.helper_deadline);
         self.definition = Some(DefinitionFetch {
             transfer,
             closure,
             helper,
+            deadline: request.helper_deadline,
         });
         Ok(())
+    }
+
+    pub(crate) fn definition_active(&self) -> bool {
+        self.definition.is_some()
     }
 
     pub(crate) fn helper_definition_request(&mut self, graph: &Graph) -> Option<DefinitionRequest> {
@@ -114,8 +118,9 @@ impl Intake {
         let root = fetch.transfer.root();
         let now = Instant::now();
         let deadline = fetch
-            .helper
-            .map_or(fetch.transfer.deadline(), |(_, deadline)| deadline);
+            .deadline
+            .unwrap_or(fetch.transfer.deadline())
+            .min(fetch.transfer.deadline());
         if !fetch.transfer.live(now) || now >= deadline {
             return Progress::Waiting;
         }
