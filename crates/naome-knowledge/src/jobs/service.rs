@@ -1531,7 +1531,7 @@ impl Owner {
         let completion = completion(record)?;
         crate::network::emit(
             serde_json::json!({"event":crate::outcome::NodeEvent::ResearchFinished,"job":id,
-            "state":format!("{:?}",completion.state),"spent_ms":completion.spent_ms,
+            "state":completion.state,"spent_ms":completion.spent_ms,
             "reserved_units":completion.reserved_units,"experience":completion.experience}),
         );
         if let Some(waiters) = self.waiters.remove(&id) {

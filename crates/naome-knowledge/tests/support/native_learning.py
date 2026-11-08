@@ -172,7 +172,7 @@ def finished_owner_goal(node, question):
     if not current:
         return None
     for record in current["records"].values():
-        if record["input"] != {"role": "solve", "question": question} or record["state"] != "complete":
+        if record["input"] != {"role": "solve", "question": question} or record["state"] != 0x001d_0004:
             continue
         solution = record["native"]["progress"]["result"]
         if solution is not None:
@@ -240,7 +240,7 @@ def run(trial):
     for node in (a, b):
         def active_candidate():
             return next((r for r in training(node)
-                         if r["state"] == "running" and 0 < r["checkpoint"] < 25), None)
+                         if r["state"] == 0x001d_0002 and 0 < r["checkpoint"] < 25), None)
 
         if node is b:
             # A checked local trajectory need not be reconstructible as a peer
@@ -301,7 +301,7 @@ def run(trial):
     qualifications = {}
     for node in trial.nodes:
         original = retained[node.index]["record"]
-        completed = trial.wait(lambda: next((r for r in training(node) if r["id"] == original["id"] and r["state"] == "complete"), None), maximum=180)
+        completed = trial.wait(lambda: next((r for r in training(node) if r["id"] == original["id"] and r["state"] == 0x001d_0004), None), maximum=180)
         assert completed["checkpoint"] == 150 and completed["native"]["progress"]["unit"] == 150
         progress = completed["native"]["progress"]
         meta_update = verify_meta(node, completed)
@@ -349,7 +349,7 @@ def run_unseeded(trial):
         if current is None:
             return None
         for record in sorted(current["records"].values(), key=lambda item: item["id"]):
-            if record["input"]["role"] == "train" and record["state"] == "complete":
+            if record["input"]["role"] == "train" and record["state"] == 0x001d_0004:
                 progress = record["native"]["progress"]
                 assert record["checkpoint"] == progress["unit"] == 150
                 assert progress["candidate"] is None
@@ -399,7 +399,7 @@ def run_unseeded(trial):
                 observed_candidates[candidate_record["id"]] = {"record": candidate_record, "blobs": blobs}
                 write_receipt(trial.output / "continuation-candidate.json", observed_candidates[candidate_record["id"]])
             if (progress and candidate_record["checkpoint"] == 150
-                    and candidate_record["state"] == "complete"
+                    and candidate_record["state"] == 0x001d_0004
                     and candidate_record["native"]["base"]["meta"]["model"] == retained_meta["model"]):
                 # Capture completion independently of the later curriculum
                 # event; further real trials may replace the current blobs.
@@ -415,7 +415,7 @@ def run_unseeded(trial):
                           and event["feedback_revision"] >= first["learning"]["feedback"]["revision"]]
             next_training = next((candidate for candidate in current["records"].values()
                                   if candidate["id"] > original["id"] and candidate["input"]["role"] == "train"
-                                  and candidate["checkpoint"] == 150 and candidate["state"] == "complete"
+                                  and candidate["checkpoint"] == 150 and candidate["state"] == 0x001d_0004
                                   and candidate["native"]["base"]["feedback"]["development"]["cells"]), None)
             if selections and next_training:
                 assert next_training["native"]["base"]["preparation"] == "Meta"

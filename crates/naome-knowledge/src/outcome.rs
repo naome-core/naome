@@ -557,6 +557,11 @@ codes! {
 
     pub(crate) enum CustodyFrame in 28 { AbortCompletion = 1, ChildCustody = 2 }
 
+    pub(crate) enum JobState in 29 {
+        Queued = 1, Running = 2, Suspended = 3, Complete = 4,
+        Failed = 5, Cancelled = 6, Expired = 7, InDoubt = 8,
+    }
+
 }
 
 impl InputLimit {

@@ -81,7 +81,7 @@ def run(trial):
     # the whole-driver deadline and the controlled pause checks are unchanged.
     trial.wait(lambda: state(trial, donor, "running"), maximum=40)
     trial.wait(lambda: next((record for record in journal(donor)["records"].values()
-        if record["state"] == "running" and record["input"]["role"] == "find"
+        if record["state"] == 0x001d_0002 and record["input"]["role"] == "find"
         and record["checkpoint"] > 0), None), maximum=15)
     probe.observe(donor)
     original_process = dict(donor.process)
@@ -93,7 +93,7 @@ def run(trial):
     probe.observe(donor)
     before = journal(donor)
     running = [record for record in before["records"].values()
-               if record["state"] == "running" and record["input"]["role"] == "find"]
+               if record["state"] == 0x001d_0002 and record["input"]["role"] == "find"]
     assert running, "pause did not retain an in-flight provider at a safe boundary"
     retained = running[0]
     frozen = checkpoints(donor)

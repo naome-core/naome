@@ -22,7 +22,7 @@ from native_learning import Qualification, verify_blobs, verify_meta
 def audit_completed(record, candidate, selected_model):
     native = record["native"]
     base, progress = native["base"], native["progress"]
-    assert record["input"]["role"] == "train" and record["state"] == "complete"
+    assert record["input"]["role"] == "train" and record["state"] == 0x001d_0004
     assert record["checkpoint"] == progress["unit"] == record["reserved_units"] == 150
     assert progress["candidate"] is None
     assert candidate["updates"] == base["model"]["updates"] + 250
@@ -176,10 +176,10 @@ def run(trial, maximum_trials):
                     trial.summary["observer_input_blob_read_bytes"] = trial.summary.get("observer_input_blob_read_bytes", 0) + capture_inputs(node, record)
                     candidates[record["id"]] = p["candidate"]
                     write_receipt(trial.output / "candidate-checkpoints.json", candidates)
-                if record["state"] in ("failed", "expired", "in_doubt", "cancelled"):
+                if record["state"] in (0x001d_0005, 0x001d_0007, 0x001d_0008, 0x001d_0006):
                     write_receipt(trial.output / f"failed-trial-{record['id']}.json", record)
                     raise RuntimeError(f"native trial {record['id']} {record['state']}: {record.get('failure')}")
-                if record["state"] == "complete" and record["id"] not in completed:
+                if record["state"] == 0x001d_0004 and record["id"] not in completed:
                     assert record["id"] in candidates, "complete candidate bytes were not observed"
                     # Completion and adoption are separate observations. Wait
                     # for the same transactional journal to select the exact

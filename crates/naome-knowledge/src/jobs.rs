@@ -440,18 +440,7 @@ impl Output {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum State {
-    Queued,
-    Running,
-    Suspended,
-    Complete,
-    Failed,
-    Cancelled,
-    Expired,
-    InDoubt,
-}
+pub(crate) use crate::outcome::JobState as State;
 
 impl State {
     fn terminal(self) -> bool {

@@ -664,7 +664,7 @@ impl Autonomous {
                     questions.settle_backlog(&id);
                     emit(
                         json!({"event":crate::outcome::NodeEvent::SolveObligationHeldOrExpired,"resolution_id":crate::hex(&id),
-                        "state":format!("{:?}",completion.state)}),
+                        "state":completion.state}),
                     );
                     if !self.acknowledge(completion.id) {
                         return accepted;

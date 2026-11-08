@@ -480,7 +480,10 @@ async fn failed_clock_accounting_still_drains_all_owned_tasks() {
     assert!(owner.tasks.is_empty() && owner.running.is_empty());
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
     let saved = owner.disk.saved().unwrap();
-    assert_eq!(saved["payload"]["records"]["1"]["state"], "in_doubt");
+    assert_eq!(
+        saved["payload"]["records"]["1"]["state"],
+        u32::from(State::InDoubt)
+    );
     assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], false);
 }
 
@@ -502,7 +505,10 @@ fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
     assert!(error.contains("reconciliation") && error.contains("clock rollback"));
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
     let saved = owner.disk.saved().unwrap();
-    assert_eq!(saved["payload"]["records"]["1"]["state"], "in_doubt");
+    assert_eq!(
+        saved["payload"]["records"]["1"]["state"],
+        u32::from(State::InDoubt)
+    );
     assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], false);
 }
 

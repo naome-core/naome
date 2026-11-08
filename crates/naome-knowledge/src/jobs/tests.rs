@@ -189,3 +189,21 @@ fn selected_finding_question_binds_the_returned_question() {
             .is_err()
     );
 }
+
+#[test]
+fn job_states_use_registered_codes_and_reject_unknown_values() {
+    for (state, code) in [
+        (State::Queued, 0x001d_0001u32),
+        (State::Running, 0x001d_0002),
+        (State::Suspended, 0x001d_0003),
+        (State::Complete, 0x001d_0004),
+        (State::Failed, 0x001d_0005),
+        (State::Cancelled, 0x001d_0006),
+        (State::Expired, 0x001d_0007),
+        (State::InDoubt, 0x001d_0008),
+    ] {
+        assert_eq!(serde_json::to_value(state).unwrap(), code);
+        assert_eq!(serde_json::from_value::<State>(code.into()).unwrap(), state);
+    }
+    assert!(serde_json::from_value::<State>(0x001d_0009u32.into()).is_err());
+}

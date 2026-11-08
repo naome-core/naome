@@ -101,8 +101,8 @@ class Probe:
         active={}
         for event in node.logs():
             if event.get('event')==0x00170061:active[event['job']]=event['phase']
-        return {job for job,phase in active.items() if phase=='cpu_active'
-            and str(job) in journal(node)['records'] and journal(node)['records'][str(job)]['state']=='running'}
+        return {job for job,phase in active.items() if phase==0x0015_0007
+            and str(job) in journal(node)['records'] and journal(node)['records'][str(job)]['state']==0x001d_0002}
 
     def witness_cpu(self,node,*,respect_admission=False):
         jobs=(observe_work(self.trial,node,f'cpu_worker_node_{node.index}',lambda:self.cpu_active(node),5,1)
@@ -207,19 +207,19 @@ def roles(trial,probe):
     receiver.write_config();receiver.start()
     def overlapping():
         state=journal(receiver)
-        running={lane(record) for record in state['records'].values() if record['state']=='running'}
+        running={lane(record) for record in state['records'].values() if record['state']==0x001d_0002}
         return state if {0,1,2}.issubset(running) else None
     overlap=observe_work(trial,receiver,'three_role_overlap',overlapping,15,role_slots)
     cpu_jobs=probe.witness_cpu(receiver,respect_admission=True)
     trial.summary['native_receiver_cpu_work_observed']=bool(cpu_jobs)
     trial.summary['overlap']={'native_three_role_overlap_observed':bool(overlap),
-        'running_lanes':sorted({lane(r) for r in (overlap or journal(receiver))['records'].values() if r['state']=='running'}),
+        'running_lanes':sorted({lane(r) for r in (overlap or journal(receiver))['records'].values() if r['state']==0x001d_0002}),
         'journal_sha256':digest(receiver.directory/'research/jobs.sqlite3')}
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
     observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')==0x0017004b and event.get('formal_pass')
         and event.get('selection')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
-    pending_solve=any(record['state']=='running' and lane(record)==1
+    pending_solve=any(record['state']==0x001d_0002 and lane(record)==1
         for record in journal(receiver)['records'].values())
     trial.summary['pending_local_solve_on_peer_start']=pending_solve
     donor.config['runtime']['question_interval_ms']=100
@@ -291,7 +291,7 @@ def recovery(trial,probe):
     cpu.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':15000,'descendant':True}))
     cpu.write_config();cpu.start()
     trial.wait(lambda:any(event.get('event')==0x0017005a for event in cpu.logs()),maximum=5)
-    trial.wait(lambda:any(r['reserved_units']==1 and r['state']=='running' for r in journal(cpu)['records'].values()),maximum=5)
+    trial.wait(lambda:any(r['reserved_units']==1 and r['state']==0x001d_0002 for r in journal(cpu)['records'].values()),maximum=5)
     probe.crash(cpu);cpu.start();probe.observe(cpu);cpu.stop();probe.ended()
     trial.summary['scenarios']['crash_resume_preserves_identity_progress_budgets_and_kills_cpu_descendants']={'result':'pass'}
 
@@ -309,7 +309,7 @@ def limits(trial,probe):
     node=Node(trial,3)
     node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':3,'work_units':2}))
     node.write_config();node.start()
-    expired=trial.wait(lambda:next((r for r in journal(node)['records'].values() if r['state']=='expired'),None),maximum=5)
+    expired=trial.wait(lambda:next((r for r in journal(node)['records'].values() if r['state']==0x001d_0007),None),maximum=5)
     assert expired['reserved_units']==2 and expired['checkpoint']==2
     assert not node.ids();probe.observe(node);node.stop();probe.ended()
     def rejected_start(case,expected):
@@ -375,7 +375,7 @@ def faults(trial,probe):
     ids={e['pid'] for e in completed.logs() if e.get('job')==job and e.get('event') in {0x0017005f,0x00170060}}
     retained=[identity for identity in probe.identities.values() if identity['pid'] in ids]
     assert len(retained)==2,'completed provider identities missing'
-    finished=trial.wait(lambda:next((r for r in journal(completed)['records'].values() if r['id']==job and r['state']=='complete'),None),maximum=5)
+    finished=trial.wait(lambda:next((r for r in journal(completed)['records'].values() if r['id']==job and r['state']==0x001d_0004),None),maximum=5)
     reaped=next(e for e in completed.logs() if e.get('event')==0x0017005c and e['job']==job)
     assert reaped['exit']==0 and finished['checkpoint']==finished['reserved_units']==1
     probe.ended(retained)
@@ -396,11 +396,11 @@ def faults(trial,probe):
     assert process_identity(identity['pid'])==identity
     os.kill(identity['pid'],signal.SIGKILL)
     trial.wait(lambda:not process_group(node.process),maximum=8);probe.ended()
-    state=journal(node);assert any(r['state']=='in_doubt' and not r['acknowledged'] for r in state['records'].values())
+    state=journal(node);assert any(r['state']==0x001d_0008 and not r['acknowledged'] for r in state['records'].values())
     assert any(e.get('event')==0x00170017 and e.get('error', {}).get('code') in {0x000C_000D, 0x000C_000E} for e in node.logs())
     node.process=None  # expected fatal exit, not a claimed graceful stop
     node.start();probe.observe(node)
-    assert any(r['state']=='in_doubt' for r in journal(node)['records'].values())
+    assert any(r['state']==0x001d_0008 for r in journal(node)['records'].values())
     node.stop();probe.ended()
 
     # A small server send buffer forces an actual response writer to wait for

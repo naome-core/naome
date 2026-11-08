@@ -28,7 +28,7 @@ class ContinualObservation(unittest.TestCase):
                     "development_regression": False, "cpu_micros": 1,
                     "wall_micros": 1,
                     "transfer": {"observed": (1 << 24)-1, "before": 1, "after": 3}}
-        return {"id": 1, "input": {"role": "train"}, "state": "complete",
+        return {"id": 1, "input": {"role": "train"}, "state": 0x001d_0004,
                 "checkpoint": 150, "reserved_units": 150,
                 "native": {"base": {"model": parent}, "progress": progress}}, candidate
 
@@ -85,7 +85,7 @@ class ContinualObservation(unittest.TestCase):
 
     def test_unfinished_or_substituted_candidates_cannot_count(self):
         record, candidate = self.record()
-        for field, value in [("state", "suspended"), ("checkpoint", 25), ("reserved_units", 25)]:
+        for field, value in [("state", 0x001d_0003), ("checkpoint", 25), ("reserved_units", 25)]:
             wrong = copy.deepcopy(record)
             wrong[field] = value
             with self.assertRaises(AssertionError):
