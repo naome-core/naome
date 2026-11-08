@@ -100,7 +100,7 @@ impl Prerequisites {
         &self,
         base: &[definitions::Entry],
         required: &[String],
-    ) -> Result<Vec<definitions::Entry>, String> {
+    ) -> Result<Vec<definitions::Entry>, crate::Error> {
         if !self.has_definitions() {
             return Ok(base.to_vec());
         }
@@ -369,14 +369,14 @@ impl Prerequisites {
     }
     /// Reconstruct the current ordinary checker context in dependency order.
     /// No envelope's claimed statement or address is accepted as a theorem.
-    pub fn terms(&self, required: &[String]) -> Result<Vec<proof::Term>, String> {
+    pub fn terms(&self, required: &[String]) -> Result<Vec<proof::Term>, crate::Error> {
         self.resolve(required).map(|(terms, _)| terms)
     }
 
     fn resolve(
         &self,
         required: &[String],
-    ) -> Result<(Vec<proof::Term>, Vec<definitions::Entry>), String> {
+    ) -> Result<(Vec<proof::Term>, Vec<definitions::Entry>), crate::Error> {
         self.validate()?;
         let mut context = naome_checker::ArtifactState::new();
         let mut definitions = Vec::new();
@@ -390,7 +390,7 @@ impl Prerequisites {
             .map(|program| program.manifest.artifact_id())
             .collect::<BTreeSet<_>>();
         for envelope in &self.0.artifacts {
-            let candidate = envelope.clone().prepare().map_err(|e| e.to_string())?;
+            let candidate = envelope.clone().prepare()?;
             // These inputs are checked by the mixed program context. They
             // cannot be used as standalone Hilbert certificate terms.
             if candidate
@@ -407,21 +407,20 @@ impl Prerequisites {
                 CandidatePayload::Proof(normal) => {
                     steps = steps
                         .checked_add(normal.certificate().steps().len())
-                        .ok_or("temporary prerequisite step overflow")?;
+                        .ok_or(crate::InputLimit::PrerequisiteStepsOverflow)?;
                     if steps > crate::resources::limits().closure_steps {
-                        return Err("temporary prerequisite checker capacity".into());
+                        return Err(crate::InputLimit::PrerequisiteCheckerCapacity.into());
                     }
-                    let checked = proof::check(normal.certificate().clone(), &context)
-                        .map_err(|e| e.to_string())?;
+                    let checked = proof::check(normal.certificate().clone(), &context)?;
                     if candidate.id != checked.proof_id().into()
                         || candidate.statement != Some(checked.statement_id())
                     {
-                        return Err("temporary prerequisite checked binding differs".into());
+                        return Err(crate::InputFault::CheckedIdentityMismatch.into());
                     }
                     let id = crate::hex(checked.proof_id().as_bytes());
                     if required.contains(&id) {
                         if !checked.conclusion().free_variables().is_empty() {
-                            return Err("temporary prerequisite is not closed".into());
+                            return Err(crate::InputFault::PrerequisiteNotClosed.into());
                         }
                         terms.push(proof::Term::Native {
                             certificate: checked.normal_form().certificate().clone(),
@@ -431,7 +430,7 @@ impl Prerequisites {
                         });
                     }
                     lemmas.push(checked.normal_form().certificate().clone());
-                    context.register_proof(checked).map_err(|e| e.to_string())?;
+                    context.register_proof(checked)?;
                 }
                 CandidatePayload::Definition(certificate) => {
                     let obligation = candidate
@@ -445,7 +444,7 @@ impl Prerequisites {
                                         .filter(|p| p.proof_id() == id)
                                         .map(|_| c.to_canonical_bytes())
                                 })
-                                .ok_or("temporary definition obligation missing")
+                                .ok_or(crate::InputFault::PrerequisiteObligationMissing)
                         })
                         .transpose()?;
                     let entry = definitions::Entry {
@@ -461,7 +460,7 @@ impl Prerequisites {
                             .sum::<usize>()
                             > definitions::BYTES
                     {
-                        return Err("temporary definition reference capacity".into());
+                        return Err(crate::InputLimit::PrerequisiteDefinitionCapacity.into());
                     }
                     definitions::register(&mut context, &entry)?;
                 }

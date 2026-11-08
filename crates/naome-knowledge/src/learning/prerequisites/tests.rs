@@ -314,3 +314,14 @@ fn prerequisite_capture_preserves_memory_reservation_failure() {
         Err(crate::Error::MemoryOverload { .. })
     ));
 }
+
+#[test]
+fn prerequisite_reconstruction_preserves_preparation_memory_failure() {
+    let (_, graph, required) = inputs();
+    let captured = graph.prerequisites(&required).unwrap().unwrap();
+    crate::resources::fail_next_memory_allocation();
+    assert!(matches!(
+        captured.terms(&required),
+        Err(crate::Error::MemoryOverload { .. })
+    ));
+}

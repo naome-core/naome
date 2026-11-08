@@ -320,6 +320,10 @@ impl fmt::Display for Error {
                 InputFault::PrerequisiteOfferedProofMissing => {
                     "offered theorem absent from captured inputs"
                 }
+                InputFault::PrerequisiteNotClosed => "prerequisite is not closed",
+                InputFault::PrerequisiteObligationMissing => {
+                    "prerequisite definition obligation missing"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

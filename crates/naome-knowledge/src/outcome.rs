@@ -137,6 +137,7 @@ codes! {
         IdentityWidth = 8, HexWidth = 9, HexNoncanonical = 10,
         PrerequisiteDuplicate = 11, PrerequisiteProgramInvalid = 12,
         PrerequisiteOfferedProofMissing = 13,
+        PrerequisiteNotClosed = 14, PrerequisiteObligationMissing = 15,
     }
 
     pub enum InputLimit in 8 {
@@ -168,6 +169,9 @@ codes! {
         PrerequisiteArtifactBytes = 26,
         PrerequisiteBytesOverflow = 27,
         PrerequisiteByteCapacity = 28,
+        PrerequisiteStepsOverflow = 29,
+        PrerequisiteCheckerCapacity = 30,
+        PrerequisiteDefinitionCapacity = 31,
     }
 
     pub(crate) enum WorkerFailure in 9 {
@@ -737,6 +741,9 @@ impl InputLimit {
             Self::PrerequisiteArtifactBytes => "prerequisite artifact byte capacity",
             Self::PrerequisiteBytesOverflow => "prerequisite byte overflow",
             Self::PrerequisiteByteCapacity => "prerequisite byte capacity",
+            Self::PrerequisiteStepsOverflow => "prerequisite step overflow",
+            Self::PrerequisiteCheckerCapacity => "prerequisite checker capacity",
+            Self::PrerequisiteDefinitionCapacity => "prerequisite definition capacity",
         }
     }
 }
