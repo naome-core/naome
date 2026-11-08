@@ -36,6 +36,15 @@ pub enum CodecFailure {
     ChunkEnd = 31,
     EarlySeal = 32,
     PrefixLimit = 33,
+    GraphDomain = 34,
+    GraphNodeWidth = 35,
+    GraphChildWidth = 36,
+    GraphVariableWidth = 37,
+    GraphVariableTag = 38,
+    GraphNodeTag = 39,
+    GraphPropertyFlag = 40,
+    GraphNoncanonical = 41,
+    GraphPropertyWidth = 42,
 }
 
 impl std::fmt::Display for CodecFailure {
@@ -74,6 +83,15 @@ impl std::fmt::Display for CodecFailure {
             Self::ChunkEnd => "program chunk end mismatch",
             Self::EarlySeal => "program seal precedes declared end",
             Self::PrefixLimit => "program prefix exceeds manifest",
+            Self::GraphDomain => "formula node domain",
+            Self::GraphNodeWidth => "formula node width",
+            Self::GraphChildWidth => "formula child width",
+            Self::GraphVariableWidth => "formula variable width",
+            Self::GraphVariableTag => "formula variable tag",
+            Self::GraphNodeTag => "formula node tag",
+            Self::GraphPropertyFlag => "formula property flag",
+            Self::GraphNoncanonical => "noncanonical formula node",
+            Self::GraphPropertyWidth => "formula property width",
         })
     }
 }
