@@ -677,7 +677,6 @@ where
                 self.persistence
                     .as_ref()
                     .and_then(persistence::Persistence::error)
-                    .map(|_| crate::RuntimeFailure::QuestionStorage.into())
             })
             .or_else(|| {
                 self.index_storage

@@ -230,6 +230,15 @@ fn replay_preserves_a_typed_visitor_failure_without_changing_records() {
             budget: 13
         }
     ));
+    let latched = persistence.error().unwrap();
+    assert!(latched.fatal());
+    let encoded = serde_json::to_value(latched).unwrap();
+    assert_eq!(
+        encoded["cause_code"],
+        u32::from(crate::outcome::OperationCode::MemoryOverload)
+    );
+    assert_eq!(encoded["requested"], 7);
+
     drop(persistence);
     let persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
     let mut count = 0;

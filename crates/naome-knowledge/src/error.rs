@@ -826,7 +826,7 @@ impl serde::Serialize for Error {
             requested,
             charged,
             budget,
-        } = self
+        } = cause
         {
             value.serialize_entry("requested", requested)?;
             value.serialize_entry("charged", charged)?;
@@ -835,7 +835,7 @@ impl serde::Serialize for Error {
         if let Self::DiskOverload {
             available,
             required,
-        } = self
+        } = cause
         {
             // JSON consumers can preserve the full integer using two u64 limbs.
             let limbs = |value: u128| [(value >> 64) as u64, value as u64];

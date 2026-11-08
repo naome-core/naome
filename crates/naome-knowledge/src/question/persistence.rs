@@ -56,7 +56,7 @@ struct Header {
 pub(super) struct Persistence {
     checkpoint: crate::checkpoint::Checkpoint,
     header: Header,
-    fault: std::sync::Mutex<Option<String>>,
+    fault: std::sync::Mutex<Option<crate::Error>>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,13 +104,18 @@ impl Persistence {
         }
         Ok(persistence)
     }
-    fn report<T>(&self, result: Result<T, String>) -> Result<T, String> {
+    fn report<T>(&self, result: Result<T, crate::Error>) -> Result<T, crate::Error> {
         if let Err(error) = &result {
-            *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+            let failure = if error.fatal() {
+                error.clone()
+            } else {
+                crate::Error::Stored(Box::new(error.clone()))
+            };
+            *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure);
         }
         result
     }
-    pub(super) fn error(&self) -> Option<String> {
+    pub(super) fn error(&self) -> Option<crate::Error> {
         self.fault.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     /// Decode each canonical question once, validate all durable relationships,
@@ -174,17 +179,14 @@ impl Persistence {
             }
             Ok(())
         })();
-        if let Err(error) = &result {
-            *self.fault.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.to_string());
-        }
-        result
+        self.report(result)
     }
     #[cfg(test)]
     pub(super) fn entries_page(
         &self,
         after: Option<&str>,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Vec<(String, Entry)>, String> {
+    ) -> Result<Vec<(String, Entry)>, crate::Error> {
         self.report((|| {
             self.checkpoint
                 .page(
@@ -208,7 +210,7 @@ impl Persistence {
         &self,
         resolution: &Identity,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Option<(ResearchQuestion, Identity)>, String> {
+    ) -> Result<Option<(ResearchQuestion, Identity)>, crate::Error> {
         self.report((|| {
             let Some(key) =
                 self.checkpoint
