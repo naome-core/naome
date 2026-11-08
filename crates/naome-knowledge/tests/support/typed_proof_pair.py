@@ -5,7 +5,7 @@ Usage: typed_proof_pair.py NAOME KNOWLEDGE_UNIT_TEST_BINARY OUTPUT_DIRECTORY
 A transparent loopback forwarder counts delivered encrypted TCP payloads.
 It does not terminate Noise, decode yamux, or count TCP/IP headers.
 """
-from fixture_result import FixtureResult
+from fixture_result import FixtureResult, ResourceProfile
 import argparse
 from collections import Counter
 import json
@@ -122,7 +122,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
             seed(fixture, "warm_membership_dependencies", "NAOME_TYPED_PAIR_WARM", receiver.directory)
         for node in (donor, receiver):
             write_receipt(node.directory / "resource-profile.json", {
-                "profile": "custom", "custom": {
+                "profile": ResourceProfile.CUSTOM, "custom": {
                     "memory_bytes": 128 * 1024 * 1024, "concurrency": 1,
                     "cache_bytes": 1024 * 1024, "batch_steps": 512, "network_requests": 1,
                 },

@@ -304,8 +304,10 @@ fn custom_limits_validate_and_live_switches_respect_reserves() {
         .is_err()
     );
     assert!(
-        serde_json::from_str::<Selection>(r#"{"profile":"custom","custom":{"unknown":1}}"#)
-            .is_err()
+        serde_json::from_value::<Selection>(
+            serde_json::json!({"profile":Profile::Custom,"custom":{"unknown":1}})
+        )
+        .is_err()
     );
 }
 #[test]
@@ -377,4 +379,19 @@ fn container_ancestors_and_v1_cpu_quotas_reduce_effective_hardware() {
     assert_eq!(observed.memory_available, 96 * MIB);
     assert_eq!(observed.cpu_millis, 250);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn adaptive_profiles_have_registered_numeric_codes() {
+    for (profile, expected) in [
+        (Profile::Dynamic, 0x004c_0001_u32),
+        (Profile::Heavy, 0x004c_0002),
+        (Profile::Light, 0x004c_0003),
+        (Profile::Custom, 0x004c_0004),
+    ] {
+        let value = serde_json::to_value(profile).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(serde_json::from_value::<Profile>(value).unwrap(), profile);
+    }
+    assert!(serde_json::from_value::<Profile>(0x004c_ffff_u32.into()).is_err());
 }

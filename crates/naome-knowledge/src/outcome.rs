@@ -1,12 +1,12 @@
 //! Numeric identifiers for machine outcomes exported by the node.
 //! Each domain owns a disjoint range. Exported values are assigned explicitly.
 macro_rules! codes {
-    ($( $visibility:vis enum $name:ident in $domain:literal { $($variant:ident = $id:literal),+ $(,)? } )+) => {
+    ($( $(#[$enum_attr:meta])* $visibility:vis enum $name:ident in $domain:literal { $($(#[$variant_attr:meta])* $variant:ident = $id:literal),+ $(,)? } )+) => {
         #[repr(u16)]
         enum Domain {
             $($name = $domain),+
         }
-        $(codes!(@domain $visibility enum $name { $($variant = $id),+ });)+
+        $(codes!(@domain $(#[$enum_attr])* $visibility enum $name { $($(#[$variant_attr])* $variant = $id),+ });)+
 
         /// Domain, outcome name and canonical code for offline tooling.
         #[cfg(feature = "developer-tools")]
@@ -14,12 +14,13 @@ macro_rules! codes {
             $($( (stringify!($name), stringify!($variant), $name::$variant as u32), )+)+
         ];
     };
-    (@domain $visibility:vis enum $name:ident { $($variant:ident = $id:literal),+ }) => {
+    (@domain $(#[$enum_attr:meta])* $visibility:vis enum $name:ident { $($(#[$variant_attr:meta])* $variant:ident = $id:literal),+ }) => {
+        $(#[$enum_attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         #[repr(u32)]
         #[serde(try_from = "u32", into = "u32")]
         $visibility enum $name {
-            $($variant = ((Domain::$name as u32) << 16) | $id),+
+            $($(#[$variant_attr])* $variant = ((Domain::$name as u32) << 16) | $id),+
         }
 
         impl From<$name> for u32 {
@@ -727,6 +728,8 @@ codes! {
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
     pub enum CheckpointJsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
+    #[derive(Default)]
+    pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
     pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13 }
 
     pub enum ResearchFailure in 36 {

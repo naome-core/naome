@@ -5,7 +5,7 @@ Two ordinary nodes use separate OS sessions, identities, directories and ports.
 Only lifecycle/status operations drive them. The deterministic provider uses
 the same supervised candidate stream and mathematical checker as other providers.
 """
-from fixture_result import FixtureResult
+from fixture_result import FixtureResult, ResourceProfile
 import argparse
 from contextlib import closing
 from hashlib import sha256
@@ -92,9 +92,9 @@ def run(trial,units,memory_mib=None):
         trial.command_timeout=300;trial.cleanup_timeout=300
         profiles = [(donor, memory_mib), (receiver, memory_mib)]
         for node, _ in profiles:
-            node.large_screen=True;node.expected_profile='custom'
+            node.large_screen=True;node.expected_profile=ResourceProfile.CUSTOM
     for node, limit_mib in profiles:
-        write_receipt(node.directory/'resource-profile.json',{'profile':'custom','custom':{
+        write_receipt(node.directory/'resource-profile.json',{'profile':ResourceProfile.CUSTOM,'custom':{
             'memory_bytes':limit_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
     donor.config['runtime']['jobs']={'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
         'mock':{'program_units':units}}}
@@ -134,7 +134,7 @@ def run(trial,units,memory_mib=None):
     assert next(value for value in source_objects if value['artifact_id']==identity)==next(value for value in received_objects if value['artifact_id']==identity)
     observation=trial.wait(lambda:latest(receiver))
     snapshot=observation['snapshot']
-    assert snapshot['selection']['profile']==getattr(receiver,'expected_profile','dynamic')
+    assert snapshot['selection']['profile']==getattr(receiver,'expected_profile',ResourceProfile.DYNAMIC)
     assert 0<snapshot['budget']['memory_bytes']<=observation['capacity_bytes']
     receiver.stop();before=set(receiver.ids())
     work=(receiver.directory/'.program-work'/f'{identity}.sqlite3').resolve()

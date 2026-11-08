@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Ordinary lifecycle and autonomous real direct, discovery and relay qualification."""
-from fixture_result import FixtureResult
+from fixture_result import FixtureResult, ResourceProfile
 
 import argparse
 import ctypes
@@ -916,7 +916,7 @@ class Node:
         # throughput explicitly; dynamic may throttle on a busy shared host.
         profile=self.directory/'resource-profile.json'
         if not profile.exists():
-            write_receipt(profile,{'profile':'heavy','custom':None})
+            write_receipt(profile,{'profile':ResourceProfile.HEAVY,'custom':None})
         self.event_offset = len(self.logs())
         self.release_port()
         result = self.trial.start(self, strict_startup=strict_startup)

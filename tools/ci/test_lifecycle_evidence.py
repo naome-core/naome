@@ -11,7 +11,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "crates/naome-knowledge/tests/support"))
-from fixture_result import FixtureResult
+from fixture_result import FixtureResult, ResourceProfile
 SPEC = importlib.util.spec_from_file_location(
     "lifecycle_fixture",
     ROOT / "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
@@ -23,6 +23,9 @@ SPEC.loader.exec_module(LIFECYCLE)
 class LifecycleEvidenceTests(unittest.TestCase):
     def test_fixture_results_are_numeric_and_distinct(self):
         self.assertEqual(json.loads(json.dumps(list(FixtureResult))), [0x003f0001, 0x003f0002, 0x003f0003])
+
+    def test_resource_profiles_are_registered_numeric_values(self):
+        self.assertEqual(json.loads(json.dumps(list(ResourceProfile))), [0x004c0001, 0x004c0002, 0x004c0003, 0x004c0004])
 
     def test_archive_and_manifest_exclude_identity_keys_and_control_secrets(self):
         with tempfile.TemporaryDirectory(prefix="naome-lifecycle-evidence-") as name:

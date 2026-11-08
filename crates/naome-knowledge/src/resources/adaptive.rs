@@ -25,15 +25,7 @@ pub(crate) use governor::Governor;
 pub(crate) use observation::sample_node;
 pub(crate) use observer::Observer;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    #[default]
-    Dynamic,
-    Heavy,
-    Light,
-    Custom,
-}
+pub use crate::outcome::AdaptiveProfile as Profile;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

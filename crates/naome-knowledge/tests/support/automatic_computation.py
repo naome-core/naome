@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Automatic memory pause with real providers, live control and original budgets."""
-from fixture_result import FixtureResult
+from fixture_result import FixtureResult, ResourceProfile
 import argparse
 import os
 from pathlib import Path
@@ -21,10 +21,10 @@ def pressure(node, constrained):
     # Exercise the ordinary current-format soft memory target without consuming
     # host resources or changing immutable capacity. Actual memory shortage may
     # refuse payload allocations; CPU-only serving has a separate native test.
-    selection = {"profile": "custom", "custom": {
+    selection = {"profile": ResourceProfile.CUSTOM, "custom": {
         "memory_bytes": 8 * 1024 * 1024, "concurrency": 1,
         "cache_bytes": 4096, "batch_steps": 1, "network_requests": 1,
-    }} if constrained else {"profile": "heavy", "custom": None}
+    }} if constrained else {"profile": ResourceProfile.HEAVY, "custom": None}
     write_receipt(node.directory / "resource-profile.json", selection)
 
 

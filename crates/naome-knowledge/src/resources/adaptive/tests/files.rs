@@ -6,7 +6,15 @@ fn profile_defaults_and_existing_json_limits_survive_shared_owned_reads() {
     let directory = Directory::new();
     assert_eq!(load(&directory.0).unwrap(), Selection::default());
     let path = directory.0.join("resource-profile.json");
-    fs::write(&path, br#"{"profile":"light","custom":null}"#).unwrap();
+    fs::write(
+        &path,
+        serde_json::to_vec(&Selection {
+            profile: Profile::Light,
+            custom: None,
+        })
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(load(&directory.0).unwrap().profile, Profile::Light);
     fs::write(&path, b" ".repeat(4097)).unwrap();
     assert!(load(&directory.0).is_err());
