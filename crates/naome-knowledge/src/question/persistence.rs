@@ -72,8 +72,12 @@ impl Persistence {
         let established = crate::storage::marker_valid(&marker, MARKER)
             .map_err(|_| crate::RuntimeFailure::QuestionMarkerRead)?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)
-                .map_err(|_| crate::RuntimeFailure::QuestionCheckpointOpen)?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN).map_err(
+                |cause| crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionCheckpointOpen,
+                    cause: Box::new(cause),
+                },
+            )?
         } else {
             if established {
                 return Err(crate::RuntimeFailure::QuestionRegistryMissing.into());
@@ -92,7 +96,10 @@ impl Persistence {
             .map_err(|_| crate::RuntimeFailure::QuestionCheckpointHeader)?;
         let header: Header = checkpoint
             .header()
-            .map_err(|_| crate::RuntimeFailure::QuestionCheckpointHeader)?;
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::QuestionCheckpointHeader,
+                cause: Box::new(cause),
+            })?;
         if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.policy).is_err()
         {

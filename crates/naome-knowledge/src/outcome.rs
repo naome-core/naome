@@ -168,6 +168,10 @@ codes! {
         CheckpointHeaderCapacity = 35,
         CheckpointHeaderDigest = 36,
         CheckpointHeaderCount = 37,
+        CheckpointIdentity = 38,
+        CheckpointSchema = 39,
+        CheckpointIntegrity = 40,
+        CheckpointRowCount = 41,
     }
 
     pub enum InputLimit in 8 {

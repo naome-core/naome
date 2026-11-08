@@ -140,8 +140,12 @@ impl Disk {
         let marker = directory.join("research.initialized");
         let established = marker_valid(&marker, RESEARCH_MARKER)?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)
-                .map_err(|_| crate::RuntimeFailure::ResearchJournalRead)?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN).map_err(
+                |cause| crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::ResearchJournalRead,
+                    cause: Box::new(cause),
+                },
+            )?
         } else {
             if established {
                 return Err(crate::RuntimeFailure::ResearchJournalMissing.into());
@@ -218,7 +222,10 @@ impl Disk {
         )?;
         let header: Header = checkpoint
             .header()
-            .map_err(|_| crate::RuntimeFailure::ResearchJournalRead)?;
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::ResearchJournalRead,
+                cause: Box::new(cause),
+            })?;
         if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.configuration).is_err()
         {

@@ -268,6 +268,10 @@ pub enum Error {
         column: usize,
     },
     Runtime(crate::RuntimeFailure),
+    RuntimeContext {
+        code: crate::RuntimeFailure,
+        cause: Box<Error>,
+    },
     Research(crate::ResearchFailure),
     Worker(crate::WorkerFailure),
     ResearchCombined {
@@ -317,6 +321,7 @@ impl Error {
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::Runtime(failure) => return (*failure).into(),
+            Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
             Self::Worker(failure) => return (*failure).into(),
             Self::ResearchCombined { .. } => {
@@ -377,6 +382,7 @@ impl Error {
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
+                    | Self::RuntimeContext { .. }
                     | Self::ResearchCombined { .. }
                     | Self::Startup { .. }
             )
@@ -481,6 +487,10 @@ impl fmt::Display for Error {
                 InputFault::CheckpointHeaderCapacity => "checkpoint header exceeds its capacity",
                 InputFault::CheckpointHeaderDigest => "checkpoint header digest differs",
                 InputFault::CheckpointHeaderCount => "checkpoint header count width",
+                InputFault::CheckpointIdentity => "unsupported transactional checkpoint",
+                InputFault::CheckpointSchema => "transactional checkpoint schema differs",
+                InputFault::CheckpointIntegrity => "transactional checkpoint integrity failure",
+                InputFault::CheckpointRowCount => "transactional checkpoint row count differs",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -518,6 +528,9 @@ impl fmt::Display for Error {
                 u32::from(*reason)
             ),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
+            Self::RuntimeContext { code, cause } => {
+                write!(f, "runtime failure {}: {cause}", u32::from(*code))
+            }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
                 crate::ResearchFailure::ClockBeforeEpoch => "wall clock is before research epoch",
@@ -792,6 +805,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Stored(error) => Some(error),
+            Self::RuntimeContext { cause, .. } => Some(cause),
             Self::ResearchCombined { primary, .. } => Some(primary),
             Self::DiagnosticInspection(error) => Some(error),
             _ => None,
@@ -936,6 +950,9 @@ impl serde::Serialize for Error {
         value.serialize_entry("code", &self.code())?;
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
+        if let Self::RuntimeContext { cause, .. } = self {
+            value.serialize_entry("cause", cause)?;
+        }
         if let Self::ResearchCombined { primary, cleanup } = self {
             value.serialize_entry("primary", primary)?;
             value.serialize_entry("cleanup", cleanup)?;

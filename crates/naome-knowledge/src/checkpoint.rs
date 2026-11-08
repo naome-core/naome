@@ -72,7 +72,7 @@ pub(crate) struct Checkpoint {
 }
 
 impl Checkpoint {
-    pub(crate) fn open(path: &Path, domain: &'static str) -> Result<Self, String> {
+    pub(crate) fn open(path: &Path, domain: &'static str) -> Result<Self, crate::Error> {
         let checkpoint = Self::open_for_replay(path, domain)?;
         checkpoint.scan_all(|_, _, _| Ok(()))?;
         Ok(checkpoint)
@@ -80,7 +80,7 @@ impl Checkpoint {
 
     /// Domain replay must consume every primary row and validate its indexed
     /// relationships/cardinality. Avoid a preceding duplicate payload scan.
-    pub(crate) fn open_for_replay(path: &Path, domain: &'static str) -> Result<Self, String> {
+    pub(crate) fn open_for_replay(path: &Path, domain: &'static str) -> Result<Self, crate::Error> {
         let identity = owned(path)?;
         let connection = connect(path)?;
         let application: i64 = connection
@@ -90,7 +90,7 @@ impl Checkpoint {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(sql)?;
         if application != APPLICATION_ID || version != 1 {
-            return Err("unsupported transactional checkpoint".into());
+            return Err(crate::InputFault::CheckpointIdentity.into());
         }
         let definitions = connection
             .prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name")
@@ -105,13 +105,13 @@ impl Checkpoint {
                 .zip(SCHEMA)
                 .any(|(actual, expected)| normalize(actual) != normalize(expected))
         {
-            return Err("transactional checkpoint schema differs".into());
+            return Err(crate::InputFault::CheckpointSchema.into());
         }
         let integrity: String = connection
             .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
             .map_err(sql)?;
         if integrity != "ok" {
-            return Err("transactional checkpoint integrity failure".into());
+            return Err(crate::InputFault::CheckpointIntegrity.into());
         }
         let data_version = version_of(&connection)?;
         let checkpoint = Self {
@@ -130,7 +130,7 @@ impl Checkpoint {
             .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
             .map_err(sql)?;
         if u64::try_from(observed).ok() != Some(expected) {
-            return Err("transactional checkpoint row count differs".into());
+            return Err(crate::InputFault::CheckpointRowCount.into());
         }
         Ok(checkpoint)
     }
@@ -210,7 +210,7 @@ impl Checkpoint {
         }
         fs::rename(&stage, path).map_err(|e| e.to_string())?;
         sync_parent(path)?;
-        Self::open(path, domain)
+        Ok(Self::open(path, domain)?)
     }
 
     pub(crate) fn directory(&self) -> &Path {

@@ -366,3 +366,32 @@ fn corrupted_registry_marker_is_rejected_without_replacement() {
     assert_eq!(std::fs::read(&marker).unwrap(), b"invalid marker");
     assert!(!directory.0.join("research/questions.sqlite3").exists());
 }
+
+#[test]
+fn registry_startup_preserves_corrupt_checkpoint_header_cause() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let policy = PrefilterPolicy::default();
+    drop(Persistence::open(&directory.0, policy).unwrap());
+    let path = directory.0.join("research/questions.sqlite3");
+    let outside = rusqlite::Connection::open(&path).unwrap();
+    outside
+        .execute("UPDATE checkpoint SET digest = zeroblob(32)", [])
+        .unwrap();
+    drop(outside);
+    let error = Persistence::open(&directory.0, policy).err().unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::RuntimeFailure::QuestionCheckpointOpen)
+    );
+    assert_eq!(value["fatal"], true);
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::CheckpointHeaderDigest)
+    );
+    let outside = rusqlite::Connection::open(&path).unwrap();
+    let digest: Vec<u8> = outside
+        .query_row("SELECT digest FROM checkpoint", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(digest, vec![0; 32]);
+}
