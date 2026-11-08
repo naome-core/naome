@@ -143,7 +143,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         ready_cpu = {label: process_cpu_sample(node.process)["cpu_seconds"]
                      for label, node in [("donor", donor), ("receiver", receiver)]}
         received = trial.wait(lambda: next((event for event in receiver.launch_events()
-            if event.get("event") == 0x00170001 and event.get("source") == "fetch"
+            if event.get("event") == 0x00170001 and event.get("source") == 0x180001
             and event.get("id") == root), None), maximum=80)
         report["launch_to_accept_wall_seconds"] = time.monotonic() - start
         report["both_ready_to_accept_wall_seconds"] = time.monotonic() - ready

@@ -24,13 +24,13 @@ class ProgramObservationTests(unittest.TestCase):
             log = node.directory / "node.log"
             previous = node.directory / "node.log.previous"
             started = {"event": 0x00170068, "peer_id": "receiver"}
-            accepted = {"event": 0x00170001, "source": "fetch", "id": "proof"}
+            accepted = {"event": 0x00170001, "source": 0x180001, "id": "proof"}
             stopped = {"event": 0x0017006a}
 
             def write(path, events):
                 path.write_text("".join(json.dumps(event) + "\n" for event in events))
 
-            marker = {"event": 0x00170069, "phase": "checked", "pid": 42,
+            marker = {"event": 0x00170069, "phase": 0x190002, "pid": 42,
                       "instance_sha256": "stale"}
             write(log, [marker, started])
             self.assertEqual(node.launch_events(), [])
@@ -38,7 +38,7 @@ class ProgramObservationTests(unittest.TestCase):
             with log.open("a") as output:
                 output.write(json.dumps(dict(marker, instance_sha256="current")) + "\n")
             log.rename(previous)
-            write(log, [started, accepted, stopped, dict(marker, phase="begin"), started])
+            write(log, [started, accepted, stopped, dict(marker, phase=0x190001), started])
             self.assertEqual(node.launch_events(), [started, accepted, stopped])
             self.assertEqual(node.launch_events(), [started, accepted, stopped])
 

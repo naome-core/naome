@@ -688,8 +688,13 @@ impl State {
         }
     }
 
-    fn hint(&self, peer: PeerId, address: &Multiaddr, source: &str) -> Option<Action> {
-        let accepted = if source == "mdns" {
+    fn hint(
+        &self,
+        peer: PeerId,
+        address: &Multiaddr,
+        source: crate::outcome::EventSource,
+    ) -> Option<Action> {
+        let accepted = if source == crate::outcome::EventSource::Mdns {
             self.book.lock().local_hint(peer, address, Instant::now())
         } else {
             self.book.lock().hint(peer, address, Instant::now())
@@ -726,10 +731,16 @@ impl State {
             && step.last
         {
             let (kind, success) = match result {
-                kad::QueryResult::GetProviders(result) => ("participants", result.is_ok()),
-                kad::QueryResult::StartProviding(result) => ("announce", result.is_ok()),
-                kad::QueryResult::GetClosestPeers(result) => ("addresses", result.is_ok()),
-                _ => ("routing", true),
+                kad::QueryResult::GetProviders(result) => {
+                    (crate::outcome::DiscoveryQuery::Participants, result.is_ok())
+                }
+                kad::QueryResult::StartProviding(result) => {
+                    (crate::outcome::DiscoveryQuery::Announce, result.is_ok())
+                }
+                kad::QueryResult::GetClosestPeers(result) => {
+                    (crate::outcome::DiscoveryQuery::Addresses, result.is_ok())
+                }
+                _ => (crate::outcome::DiscoveryQuery::Routing, true),
             };
             crate::network::emit(
                 serde_json::json!({"event":crate::outcome::NodeEvent::DhtQuery, "kind":kind, "success":success,
@@ -739,7 +750,9 @@ impl State {
         match event {
             BehaviourEvent::Mdns(mdns::Event::Discovered(peers)) => {
                 for (peer, address) in peers {
-                    if let Some(action) = self.hint(peer, &address, "mdns") {
+                    if let Some(action) =
+                        self.hint(peer, &address, crate::outcome::EventSource::Mdns)
+                    {
                         actions.push(action);
                     } else if let Some(mdns) = behaviour.mdns.as_mut() {
                         mdns.retain_nodes(|known| known != &peer);
@@ -826,7 +839,9 @@ impl State {
                         contact.seen = Instant::now();
                     }
                     for address in info.listen_addrs {
-                        if let Some(action) = self.hint(peer_id, &address, "identify") {
+                        if let Some(action) =
+                            self.hint(peer_id, &address, crate::outcome::EventSource::Identify)
+                        {
                             actions.push(action);
                         }
                     }
@@ -890,7 +905,9 @@ impl State {
                             .into_iter()
                             .take(crate::resources::limits().addresses_per_contact)
                         {
-                            if let Some(action) = self.hint(peer.peer_id, &address, "dht") {
+                            if let Some(action) =
+                                self.hint(peer.peer_id, &address, crate::outcome::EventSource::Dht)
+                            {
                                 actions.push(action);
                             }
                         }
@@ -920,7 +937,7 @@ impl State {
                 crate::network::emit(
                     serde_json::json!({"event":crate::outcome::NodeEvent::HolePunchResult, "peer":event.remote_peer_id.to_string(),
                     "success":event.result.is_ok(), "connection_id":event.result.as_ref().ok().map(ToString::to_string),
-                    "error":event.result.err().map(|error| error.to_string())}),
+                    "error":event.result.err().map(|_| crate::outcome::WireFailure::HolePunchFailed)}),
                 );
             }
             _ => {}

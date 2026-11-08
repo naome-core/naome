@@ -265,7 +265,7 @@ impl Startup {
         self.ready.store(true, Ordering::Release);
     }
 
-    pub(crate) fn phase(&self, phase: &str) {
+    pub(crate) fn phase(&self, phase: crate::outcome::StartupPhase) {
         // This bounded diagnostic binds an observed replay phase to this
         // launch. It is neither a readiness receipt nor a proof certificate.
         crate::network::emit(serde_json::json!({

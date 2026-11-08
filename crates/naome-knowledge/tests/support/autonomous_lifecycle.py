@@ -333,18 +333,18 @@ class Trial:
                                 assert isinstance(instance, str) and len(instance) == 64 and all(
                                     character in "0123456789abcdef" for character in instance), "startup attempt phase-instance malformed"
                                 assert instance not in prior_phase_hashes, "startup replay phase reused prelaunch instance"
-                                assert [event.get("phase") for _, event in phases] in (["begin"], ["begin", "checked"]), "startup current attempt phase order malformed"
+                                assert [event.get("phase") for _, event in phases] in ([0x190001], [0x190001, 0x190002]), "startup current attempt phase order malformed"
                                 assert record.get("replay_instance_sha256", instance) == instance, "startup bound replay instance changed"
                                 record["replay_instance_sha256"] = instance
                             startup_birth(daemon)
-                            if phases and phases[-1][1]["phase"] == "begin" and not endpoint_path.exists():
+                            if phases and phases[-1][1]["phase"] == 0x190001 and not endpoint_path.exists():
                                 assert record["pre_ready_capture"], "cancellation lacks native pre-ready custody"
                                 startup_birth(wrapper, process)
                                 assert time.monotonic() < end, "startup cancellation original deadline expired"
                                 process.send_signal(signal.SIGTERM)
                                 record["cancelled_during_observed_replay"] = True
                                 record["cancelled_replay_phase"] = {"log_event_offset": phases[-1][0],
-                                    "pid": daemon["pid"], "phase": "begin", "instance_sha256": instance}
+                                    "pid": daemon["pid"], "phase": 0x190001, "instance_sha256": instance}
                                 break
                         time.sleep(min(.01, max(0, end - time.monotonic())))
                     except StartupWrapperExit:
@@ -989,7 +989,7 @@ def guardian_fixture_worker():
         node.write_config()
         node.start()
         trial.wait(lambda: any(event.get("event") == 0x00170061
-            and event.get("phase") == "cpu_active" for event in node.logs()), maximum=5)
+            and event.get("phase") == 0x150007 for event in node.logs()), maximum=5)
         research = [process_identity(event["pid"]) for event in node.logs()
             if event.get("event") in {0x0017005f, 0x00170060, 0x0017005a}]
         assert len(research) == 3 and all(research), "active research group identities missing"
@@ -1230,7 +1230,7 @@ def main():
             if len(own) != 3 or own != remote or any(node.ids() != own for node in trial.nodes):
                 return False
             remote_accepted = {event["id"] for event in receiver.logs()
-                if event.get("event") == 0x00170001 and event.get("source") == "fetch"}
+                if event.get("event") == 0x00170001 and event.get("source") == 0x180001}
             if not own.issubset(remote_accepted):
                 return False
             # Durable admission precedes publication of the passive status snapshot.
@@ -1241,10 +1241,10 @@ def main():
         accepted = trial.wait(converged, maximum=40 if args.mode != "direct" else 20)
         assert not any(event.get("event") == 0x0017004d for event in receiver.logs()), "receiver generated local fixtures before exchange qualification"
         assert sum(event.get("event") == 0x00170046 for event in sender.logs()) == 3
-        assert any(event.get("event") == 0x00170013 and event.get("kind") == "object" for event in receiver.logs()), "no real root payload response observed"
+        assert any(event.get("event") == 0x00170013 and event.get("kind") == 0x1a0008 for event in receiver.logs()), "no real root payload response observed"
         if args.mode == "mdns":
             assert all(node.config["peers"] == [] for node in trial.nodes)
-            assert any(event.get("event") == 0x00170010 and event.get("source") == "mdns"
+            assert any(event.get("event") == 0x00170010 and event.get("source") == 0x18000b
                 and event.get("peer") == sender.peer for event in receiver.logs()), "autonomous receiver did not discover the unlisted sender over mDNS"
         elif args.mode == "dht":
             assert all(node.config["peers"] == [] for node in trial.nodes)
@@ -1257,7 +1257,7 @@ def main():
                 if event.get("event") == 0x00170009 and event.get("peer") == sender.peer and event.get("relayed") is True}
             assert connections, "no actual relay-circuit peer connection"
             fetched = {event["object_id"] for event in receiver.logs()
-                if event.get("event") == 0x00170013 and event.get("kind") == "object"
+                if event.get("event") == 0x00170013 and event.get("kind") == 0x1a0008
                 and event.get("peer") == sender.peer and event.get("relayed") is True
                 and event.get("connection_id") in connections}
             assert accepted.issubset(fetched), "accepted roots did not all travel over the actual relay connection"

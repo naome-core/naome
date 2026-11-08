@@ -128,7 +128,7 @@ class DiscoveryDriver(Driver):
         expected_source = "mdns" if self.mode == "mdns" else "dht"
         if self.mode == "mdns":
             for node in self.nodes[1:3]:
-                assert any(event.get("event") == 0x00170010 and event.get("source") == "mdns"
+                assert any(event.get("event") == 0x00170010 and event.get("source") == 0x18000b
                            and event.get("peer") in {other.identity for other in self.nodes if other is not node}
                            for event in node.events)
         if self.mode == "dht":
@@ -266,11 +266,11 @@ class DiscoveryDriver(Driver):
                     if event.get("event") == 0x00170009 and event.get("peer") != self.relay.identity}
                 assert connections and all(event["relayed"] is True for event in connections.values())
                 objects = [event for event in node.events if event.get("event") == 0x00170013
-                    and event.get("kind") == "object" and event.get("relayed") is True
+                    and event.get("kind") == 0x1a0008 and event.get("relayed") is True
                     and event.get("object_id") in expected]
                 assert objects, f"node {node.index} has no circuit object response"
                 assert all(event["connection_id"] in connections for event in objects)
-                assert any(event.get("event") == 0x00170001 and event.get("source") == "fetch" for event in node.events)
+                assert any(event.get("event") == 0x00170001 and event.get("source") == 0x180001 for event in node.events)
                 transfers.append({"node":node.index, "connections":connections, "object_responses":objects})
             assert any("CircuitReqAccepted" in event.get("detail", "") for event in self.relay.events)
             self.summary["scenarios"]["proof_payload_requires_relay_circuit"] = {

@@ -227,7 +227,7 @@ def roles(trial,probe):
     donor.write_config();donor.start()
     def all_peer_answers():
         stored=receiver.ids()
-        accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')=='fetch'}
+        accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')==0x180001}
         return len(stored)==3 and stored==donor.ids() and accepted==stored
     delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,role_slots)
     if delivered and pending_solve:
@@ -236,9 +236,9 @@ def roles(trial,probe):
         assert any(event.get('event')==0x0017001f and event.get('peer')==donor.peer for event in receiver.logs()), \
             'resource-limited node did not authenticate its peer'
         assert any(event.get('peer')==donor.peer and event.get('event') in {0x00170012,0x00170013}
-            and event.get('kind') in {'inventory','inventory_result'} for event in receiver.logs()), \
+            and event.get('kind') in {0x1a0001,0x1a0002} for event in receiver.logs()), \
             'resource-limited node did not service inventory traffic'
-    accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')=='fetch'}
+    accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')==0x180001}
     if delivered:
         assert accepted==receiver.ids(),'peer answers must arrive during pending local solving'
     else:
@@ -435,7 +435,7 @@ def faults(trial,probe):
     output=Node(trial,2)
     output.config['runtime'].update(question_interval_ms=100,jobs=job_settings(solving={'proof_padding_bytes':65536,'result_delay_ms':1500,'descendant':True}))
     output.write_config();output.start()
-    ready=trial.wait(lambda:next((e for e in reversed(output.logs()) if e.get('event')==0x00170061 and e.get('phase')=='result_ready'),None),maximum=10)
+    ready=trial.wait(lambda:next((e for e in reversed(output.logs()) if e.get('event')==0x00170061 and e.get('phase')==0x150009),None),maximum=10)
     probe.observe(output);original=output.process;assert process_identity(original['pid'])==original
     os.kill(original['pid'],signal.SIGSTOP)
     try:

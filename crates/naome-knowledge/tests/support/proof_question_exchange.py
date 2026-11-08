@@ -53,7 +53,7 @@ class QuestionDriver(DiscoveryDriver):
         self.wait_set(receiver, expected)
         self.wait_set(spare, expected)
         assert len(stored_objects(receiver)) == 3
-        responses = [event for event in receiver.events if event.get("event") == 0x00170013 and event.get("kind") == "object"]
+        responses = [event for event in receiver.events if event.get("event") == 0x00170013 and event.get("kind") == 0x1a0008]
         assert responses
         assert all(event["relayed"] is (self.mode == "relay") for event in responses)
         # Duplicate announcements cannot create another admission or proof fetch.
@@ -63,7 +63,7 @@ class QuestionDriver(DiscoveryDriver):
         sender.command("offer", peer=receiver.identity, id=first["object"]["artifact_id"])
         self.wait_set(receiver, expected)
         time.sleep(1)
-        assert not any(event.get("event") == 0x00170012 and event.get("kind") == "get"
+        assert not any(event.get("event") == 0x00170012 and event.get("kind") == 0x1a0005
                        and event.get("peer") == receiver.identity and event.get("object_id") == first["object"]["artifact_id"]
                        for event in sender.events[offset:])
         self.summary["scenarios"]["automatic_receiver_selection_and_parent_closure"] = {
@@ -94,7 +94,7 @@ class QuestionDriver(DiscoveryDriver):
         self.start_participant(good)
         expected.append(actual["artifact_id"])
         self.wait_set(receiver, expected)
-        good_gets = [event for event in good.events[good_offset:] if event.get("event") == 0x00170012 and event.get("kind") == "get"
+        good_gets = [event for event in good.events[good_offset:] if event.get("event") == 0x00170012 and event.get("kind") == 0x1a0005
                      and event.get("peer") == receiver.identity and event.get("object_id") == actual["artifact_id"]]
         assert good_gets and len(stored_objects(receiver)) == 4
         self.summary["scenarios"]["false_description_preserves_correct_supplier_rotation"] = {

@@ -868,7 +868,7 @@ class Driver:
                     (event.get("error", {}).get("diagnostic") or {}).get("failure", {}).get("code") == expected_error
                     if label == "mathematical" else event.get("error", {}).get("code") == expected_error), since=offset)
                 if label == "claimed_id":
-                    assert not any(event.get("event") == 0x00170012 and event.get("kind") == "get"
+                    assert not any(event.get("event") == 0x00170012 and event.get("kind") == 0x1a0005
                                    and event.get("object_id") == object["artifact_id"]
                                    for event in self.nodes[0].events[sender_offset:]), "invalid metadata must not authorize payload retrieval"
                 status = self.nodes[1].status_snapshot()

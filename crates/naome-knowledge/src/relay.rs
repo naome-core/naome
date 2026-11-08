@@ -179,7 +179,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                         && discovery::routing_address(&address, own, &BTreeSet::new()).is_ok()
                         && advertised.insert(address.clone()) {
                         swarm.add_external_address(address.clone());
-                        network::emit(json!({"event":crate::outcome::NodeEvent::RelayAdvertised, "address":address.to_string(), "source":"local_listener"}));
+                        network::emit(json!({"event":crate::outcome::NodeEvent::RelayAdvertised, "address":address.to_string(), "source":crate::outcome::EventSource::LocalListener}));
                     }
                     network::emit(json!({"event":crate::outcome::NodeEvent::Ready, "address":address.to_string()}));
                 },

@@ -316,7 +316,7 @@ pub(crate) async fn run_inner<F, Fut>(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
     selection: Option<F>,
-    commands: mpsc::Receiver<Result<QueuedCommand, String>>,
+    commands: mpsc::Receiver<Result<QueuedCommand, crate::Error>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
 ) -> Result<(), crate::Error>
 where
@@ -365,7 +365,7 @@ pub(crate) async fn run_owner<F, Fut>(
     test_controls: bool,
     mut inbox: crate::question::QuestionInbox,
     selection: Option<F>,
-    mut commands: mpsc::Receiver<Result<QueuedCommand, String>>,
+    mut commands: mpsc::Receiver<Result<QueuedCommand, crate::Error>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), crate::Error>
@@ -399,7 +399,7 @@ where
         return Err("producer queue capacity".into());
     }
     if let Some(startup) = &startup {
-        startup.phase("begin");
+        startup.phase(crate::outcome::StartupPhase::Begin);
     }
     // One resource owner spans synchronous checked replay and the live loop.
     // Refresh at replay boundaries instead of freezing its initial quantum.
@@ -434,7 +434,7 @@ where
         })
         .transpose()?;
     if let Some(startup) = &startup {
-        startup.phase("checked");
+        startup.phase(crate::outcome::StartupPhase::Checked);
     }
     let directory = config.directory.clone();
     let key = identity::Keypair::from_protobuf_encoding(&crate::store::read_bounded(
@@ -803,14 +803,14 @@ where
                 emit(json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(id.as_bytes()),"error":error}));
             }
             crate::intake::Progress::Accepted(ids) => {
-                node.publish_admitted(&ids, "fetch");
+                node.publish_admitted(&ids, crate::outcome::EventSource::Fetch);
                 // Earlier explicit owner ingestion can now resolve. This is
                 // not part of the approved peer closure or its atomic batch.
                 let (admitted, rejected) = node.graph.resolve_pending()?;
-                node.publish_admitted(&admitted, "local_pending");
+                node.publish_admitted(&admitted, crate::outcome::EventSource::LocalPending);
                 for (id, error) in rejected {
                     emit(
-                        json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()),"source":"local_pending","error":error}),
+                        json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()),"source":crate::outcome::EventSource::LocalPending,"error":error}),
                     );
                 }
             }
@@ -818,7 +818,7 @@ where
         questions.cancel_closed();
         if let Some(autonomous) = &mut autonomous {
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
-            node.publish_admitted(&admitted,if node.learning.is_some(){"native_solver"}else{"mock_producer"});
+            node.publish_admitted(&admitted,if node.learning.is_some(){crate::outcome::EventSource::NativeSolver}else{crate::outcome::EventSource::MockProducer});
             if let Some(error) = autonomous.error() { return Err(error.clone()); }
         }
         if !stopping && work.is_some() && let Some(learning) = &mut node.learning {
@@ -880,24 +880,24 @@ pub(crate) fn yamux_config() -> yamux::Config {
     config
 }
 
-fn body_kind(body: &Body) -> &'static str {
+fn body_kind(body: &Body) -> crate::outcome::MessageKind {
     match body {
-        Body::Inventory { .. } => "inventory",
-        Body::InventoryResult { .. } => "inventory_result",
-        Body::InventoryUnchanged { .. } => "inventory_unchanged",
-        Body::InventoryRestart => "inventory_restart",
-        Body::Get { .. } => "get",
-        Body::Describe { .. } => "describe",
-        Body::Description { .. } => "description",
-        Body::Object { .. } => "object",
-        Body::Offer { .. } => "offer",
-        Body::Receipt { .. } => "receipt",
-        Body::Missing => "missing",
-        Body::Error { .. } => "error",
-        Body::ProgramDescription { .. } => "program_description",
-        Body::ProgramOffer { .. } => "program_offer",
-        Body::ProgramGet { .. } => "program_get",
-        Body::ProgramData { .. } => "program_data",
+        Body::Inventory { .. } => crate::outcome::MessageKind::Inventory,
+        Body::InventoryResult { .. } => crate::outcome::MessageKind::InventoryResult,
+        Body::InventoryUnchanged { .. } => crate::outcome::MessageKind::InventoryUnchanged,
+        Body::InventoryRestart => crate::outcome::MessageKind::InventoryRestart,
+        Body::Get { .. } => crate::outcome::MessageKind::Get,
+        Body::Describe { .. } => crate::outcome::MessageKind::Describe,
+        Body::Description { .. } => crate::outcome::MessageKind::Description,
+        Body::Object { .. } => crate::outcome::MessageKind::Object,
+        Body::Offer { .. } => crate::outcome::MessageKind::Offer,
+        Body::Receipt { .. } => crate::outcome::MessageKind::Receipt,
+        Body::Missing => crate::outcome::MessageKind::Missing,
+        Body::Error { .. } => crate::outcome::MessageKind::PeerError,
+        Body::ProgramDescription { .. } => crate::outcome::MessageKind::ProgramDescription,
+        Body::ProgramOffer { .. } => crate::outcome::MessageKind::ProgramOffer,
+        Body::ProgramGet { .. } => crate::outcome::MessageKind::ProgramGet,
+        Body::ProgramData { .. } => crate::outcome::MessageKind::ProgramData,
     }
 }
 fn body_position(body: &Body) -> Option<u64> {
@@ -951,7 +951,7 @@ impl QueuedCommand {
     }
 }
 
-fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
+fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, crate::Error>>) {
     use std::io::{BufRead, Read};
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -961,7 +961,7 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
         ) {
             Ok(memory) => memory,
             Err(error) => {
-                let _ = sender.blocking_send(Err(error.to_string()));
+                let _ = sender.blocking_send(Err(error));
                 break;
             }
         };
@@ -975,8 +975,12 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
                 if bytes.len() > crate::resources::limits().command_bytes
                     || bytes.last() != Some(&b'\n') =>
             {
-                let _ =
-                    sender.blocking_send(Err("command byte limit or missing final newline".into()));
+                let fault = if bytes.len() > crate::resources::limits().command_bytes {
+                    crate::InputFault::CommandFrameLimit
+                } else {
+                    crate::InputFault::CommandFrameIncomplete
+                };
+                let _ = sender.blocking_send(Err(crate::Error::InputFault(fault)));
                 break;
             }
             Ok(_) => {
@@ -990,8 +994,10 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
                     break;
                 }
             }
-            Err(error) => {
-                let _ = sender.blocking_send(Err(error.to_string()));
+            Err(_) => {
+                let _ = sender.blocking_send(Err(crate::Error::InputFault(
+                    crate::InputFault::CommandRead,
+                )));
                 break;
             }
         }
@@ -1188,16 +1194,24 @@ impl Node {
         );
     }
 
-    fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, crate::Error> {
+    fn ingest(
+        &mut self,
+        object: Envelope,
+        source: crate::outcome::EventSource,
+    ) -> Result<Value, crate::Error> {
         let result = self.graph.ingest(object, Instant::now())?;
         self.ingested(result, source)
     }
-    fn ingested(&mut self, result: crate::Ingest, source: &str) -> Result<Value, crate::Error> {
+    fn ingested(
+        &mut self,
+        result: crate::Ingest,
+        source: crate::outcome::EventSource,
+    ) -> Result<Value, crate::Error> {
         self.wanted.remove(&result.id);
         self.publish_admitted(&result.admitted, source);
         for (id, error) in result.rejected {
             emit(
-                json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()), "error":error, "source":"pending"}),
+                json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()), "error":error, "source":crate::outcome::EventSource::Pending}),
             );
         }
         let value = json!({"status":result.status, "id":hex(result.id.as_bytes())});
@@ -1205,7 +1219,7 @@ impl Node {
         Ok(value)
     }
 
-    fn publish_admitted(&mut self, ids: &[ArtifactId], source: &str) {
+    fn publish_admitted(&mut self, ids: &[ArtifactId], source: crate::outcome::EventSource) {
         for id in ids {
             self.wanted.remove(id);
             let mut announcement = crate::compatibility().to_vec();
@@ -1262,7 +1276,7 @@ impl Node {
                         .ok_or("artifact missing")?;
                     let (object, ingestion) = self.graph.produce(source)?;
                     let id = ingestion.id;
-                    let result = self.ingested(ingestion, "producer")?;
+                    let result = self.ingested(ingestion, crate::outcome::EventSource::Producer)?;
                     let metadata = self.graph.describe(id);
                     if let Some(error) = self.graph.storage_error() {
                         return Err(error);
@@ -1276,7 +1290,7 @@ impl Node {
                         value.get("object").cloned().ok_or("object missing")?,
                     )
                     .map_err(|error| error.to_string())?;
-                    self.ingest(object, "local")
+                    self.ingest(object, crate::outcome::EventSource::Local)
                 }
                 "object" => Ok(
                     json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
@@ -1478,10 +1492,9 @@ impl Node {
             && let Some(source) = self.producer_artifacts.pop_front()
         {
             self.next_production = now + crate::resources::active_limits().production_interval;
-            let result = self
-                .graph
-                .produce(&source)
-                .and_then(|(_, result)| self.ingested(result, "deterministic_producer"));
+            let result = self.graph.produce(&source).and_then(|(_, result)| {
+                self.ingested(result, crate::outcome::EventSource::DeterministicProducer)
+            });
             match result {
                 Ok(result) => emit(
                     json!({"event":crate::outcome::NodeEvent::ProducerResult, "result":result}),
@@ -1500,10 +1513,10 @@ impl Node {
         if work.is_some() {
             match self.graph.resolve_pending() {
                 Ok((admitted, rejected)) => {
-                    self.publish_admitted(&admitted, "local_backlog");
+                    self.publish_admitted(&admitted, crate::outcome::EventSource::LocalBacklog);
                     for (id, error) in rejected {
                         emit(
-                            json!({"event":crate::outcome::NodeEvent::Rejected,"id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
+                            json!({"event":crate::outcome::NodeEvent::Rejected,"id":hex(id.as_bytes()),"source":crate::outcome::EventSource::LocalBacklog,"error":error}),
                         );
                     }
                 }

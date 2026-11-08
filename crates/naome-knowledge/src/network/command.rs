@@ -26,7 +26,7 @@ impl QueuedCommand {
         };
         let memory = MemoryLease::acquire_control(bytes)?;
         let value = serde_json::from_slice(&self.bytes)
-            .map_err(|error| Error::InvalidInput(error.to_string()))?;
+            .map_err(|_| Error::InputFault(crate::InputFault::MalformedJson))?;
         Ok((value, memory))
     }
 }

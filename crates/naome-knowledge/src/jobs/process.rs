@@ -332,19 +332,19 @@ async fn run_owned(
                     if ready && id == record.id && outstanding == Some(next) =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":"cpu_active","next":next}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":crate::outcome::WorkerFrame::CpuActive,"next":next}),
                     );
                 }
                 Frame::CpuDone { id, next }
                     if ready && id == record.id && outstanding == Some(next) =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":"cpu_done","next":next}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":crate::outcome::WorkerFrame::CpuDone,"next":next}),
                     );
                 }
                 Frame::ResultReady { id } if ready && id == record.id && outstanding.is_none() => {
                     crate::network::emit(
-                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":"result_ready"}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":crate::outcome::WorkerFrame::ResultReady}),
                     );
                 }
                 Frame::Feedback { id, phase, sample } if ready && id == record.id => {

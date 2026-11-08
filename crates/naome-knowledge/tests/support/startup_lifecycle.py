@@ -131,7 +131,7 @@ def internal_case(trial, node, name, hold_seconds=0):
             wait_until(ready, time.monotonic() + trial.remaining(5))
             phases = [event for event in node.logs()[offset:]
                 if event.get("event") == 0x00170069 and event.get("pid") == child.pid]
-            assert [event["phase"] for event in phases] == ["begin", "checked"], phases
+            assert [event["phase"] for event in phases] == [0x190001, 0x190002], phases
             assert all(event["instance_sha256"] == record["instance_sha256"] for event in phases)
             child.stdin.write(("ready " + token + "\n").encode())
             child.stdin.flush()

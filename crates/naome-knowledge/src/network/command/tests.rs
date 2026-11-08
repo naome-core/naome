@@ -25,7 +25,7 @@ fn maximum_hex_artifact_fits_and_json_syntax_stays_strict() {
     for bytes in [b"{} {}".as_slice(), b"{\"a\":", b"[1,]", b"NaN"] {
         assert!(matches!(
             allocation_bound(bytes, usize::MAX),
-            Err(Error::InvalidInput(_))
+            Err(Error::InputFault(crate::InputFault::MalformedJson))
         ));
     }
 }

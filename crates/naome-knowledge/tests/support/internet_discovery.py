@@ -54,7 +54,7 @@ def main():
             assert result["object"]["artifact_id"] == expected[participant]
         public_convergence(driver, expected, args.timeout - 20)
         for node in driver.nodes:
-            assert any(event.get("event") == 0x00170001 and event.get("source") == "fetch" for event in node.events)
+            assert any(event.get("event") == 0x00170001 and event.get("source") == 0x180001 for event in node.events)
             assert any(event.get("event") == 0x0017001f and event.get("proof_peer") is True for event in node.events)
         driver.summary["node_count"] = len(driver.nodes)
         driver.summary["peer_ids"] = [node.identity for node in driver.nodes]

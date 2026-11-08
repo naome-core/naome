@@ -128,6 +128,10 @@ codes! {
         DescriptionAddressMismatch = 1,
         ArtifactCompatibilityMismatch = 2,
         CheckedIdentityMismatch = 3,
+        MalformedJson = 4,
+        CommandFrameLimit = 5,
+        CommandFrameIncomplete = 6,
+        CommandRead = 7,
     }
 
     pub enum InputLimit in 8 {
@@ -220,6 +224,7 @@ codes! {
         UnsolicitedInventory = 37,
         InvalidInventory = 38,
         ContactRetirementCapacity = 39,
+        HolePunchFailed = 40,
     }
 
     pub enum RuntimeFailure in 12 {
@@ -481,6 +486,45 @@ codes! {
         Stopped = 106,
         StorageError = 107,
     }
+    pub(crate) enum EventSource in 24 {
+        Fetch = 1,
+        LocalPending = 2,
+        Pending = 3,
+        NativeSolver = 4,
+        MockProducer = 5,
+        Producer = 6,
+        Local = 7,
+        DeterministicProducer = 8,
+        LocalBacklog = 9,
+        LocalListener = 10,
+        Mdns = 11,
+        Identify = 12,
+        Dht = 13,
+    }
+
+    pub(crate) enum StartupPhase in 25 { Begin = 1, Checked = 2 }
+
+    pub(crate) enum MessageKind in 26 {
+        Inventory = 1,
+        InventoryResult = 2,
+        InventoryUnchanged = 3,
+        InventoryRestart = 4,
+        Get = 5,
+        Describe = 6,
+        Description = 7,
+        Object = 8,
+        Offer = 9,
+        Receipt = 10,
+        Missing = 11,
+        PeerError = 12,
+        ProgramDescription = 13,
+        ProgramOffer = 14,
+        ProgramGet = 15,
+        ProgramData = 16,
+    }
+
+    pub(crate) enum DiscoveryQuery in 27 { Participants = 1, Announce = 2, Addresses = 3, Routing = 4 }
+
 }
 
 impl InputLimit {
