@@ -14,6 +14,23 @@ fn plain_inference_preserves_parameters_and_stable_float32_choices() {
     let fresh = Checkpoint::fresh();
     let runtime = Runtime::load(&fresh, &mut io).unwrap();
     let before = runtime.checkpoint(&fresh, 0, &mut io).unwrap();
+    let device = runtime.device.clone().inner();
+    assert!(matches!(
+        Batch::from_graphs::<Graph>(&[], &device),
+        Err(crate::LearningGraphFailure::EmptyBatch)
+    ));
+    let mut invalid = graph.clone();
+    invalid.goal = invalid.nodes.len();
+    assert!(matches!(
+        Batch::from_graphs(&[invalid], &device),
+        Err(crate::LearningGraphFailure::NodeBinding)
+    ));
+    let mut invalid = graph.clone();
+    invalid.successes.clear();
+    assert!(matches!(
+        Batch::from_graphs(&[invalid], &device),
+        Err(crate::LearningGraphFailure::SuccessfulActionBinding)
+    ));
     let batch = Batch::from_graphs(
         std::slice::from_ref(&graph),
         &runtime.device.clone().inner(),

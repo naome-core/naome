@@ -44,6 +44,11 @@ impl std::fmt::Display for Failure {
             Self::DecisionCapacity => "decision_capacity",
             Self::MissingExpert => "successful action missing",
             Self::MissingPremise => "action premise missing",
+            Self::EmptyBatch => "empty graph batch",
+            Self::BatchCapacity => "graph batch capacity",
+            Self::NodeBinding => "graph node binding differs",
+            Self::NodeOperandOrSymbol => "formula graph operand or symbol differs",
+            Self::SuccessfulActionBinding => "successful action binding differs",
         })
     }
 }
@@ -349,7 +354,7 @@ impl Batch {
     pub fn from_graphs<G: std::borrow::Borrow<Graph>>(
         graphs: &[G],
         device: &Device,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Failure> {
         Self::pack(
             graphs,
             device,
@@ -362,7 +367,7 @@ impl Batch {
     pub fn from_dense_context<G: std::borrow::Borrow<Graph>>(
         graphs: &[G],
         device: &Device,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Failure> {
         Self::pack(graphs, device, true)
     }
 
@@ -370,13 +375,13 @@ impl Batch {
         graphs: &[G],
         device: &Device,
         #[cfg(test)] dense: bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Failure> {
         let graphs = graphs
             .iter()
             .map(std::borrow::Borrow::borrow)
             .collect::<Vec<_>>();
         if graphs.is_empty() {
-            return Err("empty graph batch".into());
+            return Err(Failure::EmptyBatch);
         }
         if graphs.len() > 16
             || graphs.iter().any(|g| {
@@ -386,7 +391,7 @@ impl Batch {
                     || g.candidates.len() > 16
             })
         {
-            return Err("graph batch capacity".into());
+            return Err(Failure::BatchCapacity);
         }
         let b = graphs.len();
         // One shared zero sentinel and disjoint ranges for the actual nodes.
@@ -416,9 +421,9 @@ impl Batch {
         let mut successes = vec![0f32; b * c];
         let mut base = 1;
         for (batch, graph) in graphs.iter().enumerate() {
-            let index = |i: usize| -> Result<usize, String> {
+            let index = |i: usize| -> Result<usize, Failure> {
                 if i >= graph.nodes.len() {
-                    Err("graph node binding differs".into())
+                    Err(Failure::NodeBinding)
                 } else {
                     Ok(if i == 0 { 0 } else { base + i - 1 })
                 }
@@ -429,7 +434,7 @@ impl Batch {
                 roles[offset] = node.role;
                 if node.left >= i || node.right >= i || !(0..SYMBOLS as i32).contains(&node.symbol)
                 {
-                    return Err("formula graph operand or symbol differs".into());
+                    return Err(Failure::NodeOperandOrSymbol);
                 }
                 let left_index = index(node.left)?;
                 let right_index = index(node.right)?;
@@ -454,7 +459,7 @@ impl Batch {
             if graph.successes.is_empty()
                 || graph.successes.iter().any(|i| *i >= graph.candidates.len())
             {
-                return Err("successful action binding differs".into());
+                return Err(Failure::SuccessfulActionBinding);
             }
             for i in &graph.successes {
                 successes[batch * c + i] = 1.;

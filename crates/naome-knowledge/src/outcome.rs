@@ -213,6 +213,11 @@ codes! {
         DecisionCapacity = 5,
         MissingExpert = 6,
         MissingPremise = 7,
+        EmptyBatch = 8,
+        BatchCapacity = 9,
+        NodeBinding = 10,
+        NodeOperandOrSymbol = 11,
+        SuccessfulActionBinding = 12,
     }
 
     pub(crate) enum WireFailure in 11 {

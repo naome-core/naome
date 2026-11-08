@@ -303,12 +303,15 @@ impl Runtime {
     pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, crate::Error> {
         Ok(self.plan_graph(graph, "", None)?.scores)
     }
-    fn scoring_batch(&self, graph: &Graph) -> Result<Batch, String> {
-        Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())
+    fn scoring_batch(&self, graph: &Graph) -> Result<Batch, crate::Error> {
+        Ok(Batch::from_graphs(
+            std::slice::from_ref(graph),
+            &self.device.clone().inner(),
+        )?)
     }
     /// Uniform exploration has the same graph/tensor input gates as inference.
     /// Only the unused neural forward pass is omitted.
-    pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), String> {
+    pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), crate::Error> {
         self.scoring_batch(graph).map(drop)
     }
     fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
