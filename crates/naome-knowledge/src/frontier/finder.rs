@@ -54,7 +54,10 @@ pub(super) fn closed_cut_routes(goal: &Formula, allow_instances: bool) -> CutRou
                     reachable.push((antecedent, distance + 1));
                 }
             }
-            if !quantified.is_empty() {
+            // The Solver can close this final instance directly. Selecting
+            // an intermediate instance would also require prioritizing its
+            // downstream implications inside the bounded construction search.
+            if distance == 0 && !quantified.is_empty() {
                 let variables = wanted.free_variables();
                 for (index, opened, binder) in quantified {
                     let universal = &rules[*index].1;

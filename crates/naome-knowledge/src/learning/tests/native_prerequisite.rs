@@ -385,8 +385,8 @@ fn finder_uses_only_the_shorter_checked_universal_route() {
     let first = Formula::member(y, x);
     let second = Formula::member(x, x);
     let rules = [
-        Formula::implies(short, Formula::for_all(z, Formula::member(z, y))),
-        Formula::implies(long, first.clone()),
+        Formula::implies(short.clone(), Formula::for_all(z, Formula::member(z, y))),
+        Formula::implies(long.clone(), first.clone()),
         Formula::implies(first, second.clone()),
         Formula::implies(second, target.clone()),
     ];
@@ -444,5 +444,34 @@ fn finder_uses_only_the_shorter_checked_universal_route() {
     let (planned, _) = frontier
         .solving_inputs(&graph, &question, std::slice::from_ref(&slow_id))
         .unwrap();
-    assert_eq!(planned, [slow_id]);
+    assert_eq!(planned.as_slice(), std::slice::from_ref(&slow_id));
+
+    let (x, y) = (y, x);
+    let goal = Formula::member(x, y);
+    let first = Formula::member(y, x);
+    let second = Formula::member(x, x);
+    let hinge = Formula::equal(x, y);
+    let alternative = Formula::equal(y, x);
+    let rules = [
+        Formula::implies(hinge, goal.clone()),
+        Formula::implies(short, Formula::for_all(z, Formula::equal(z, y))),
+        Formula::implies(long, first.clone()),
+        Formula::implies(first, second.clone()),
+        Formula::implies(second, alternative.clone()),
+        Formula::implies(alternative, goal.clone()),
+    ];
+    let target = rules
+        .into_iter()
+        .rev()
+        .fold(goal, |goal, assumption| Formula::implies(assumption, goal));
+    let deeper = ResearchQuestion::from_formula(proof::close(target)).unwrap();
+    let (required, inputs) = frontier.solving_inputs(&graph, &deeper, &[]).unwrap();
+    assert_eq!(required.as_slice(), std::slice::from_ref(&slow_id));
+    let result = solve(&deeper, &required, &inputs, seed, 13).unwrap();
+    assert!(result.cost.search_expansions <= 13);
+    let solution = result.solution.expect("the original direct chain fits");
+    std::thread::spawn(move || solution.check_target(&deeper))
+        .join()
+        .unwrap()
+        .unwrap();
 }
