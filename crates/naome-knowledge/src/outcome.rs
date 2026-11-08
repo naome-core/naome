@@ -163,6 +163,11 @@ codes! {
         CheckpointOutsideOwner = 30,
         CheckpointEncoding = 31,
         CheckpointNoncanonical = 32,
+        CheckpointHeaderCardinality = 33,
+        CheckpointHeaderDomain = 34,
+        CheckpointHeaderCapacity = 35,
+        CheckpointHeaderDigest = 36,
+        CheckpointHeaderCount = 37,
     }
 
     pub enum InputLimit in 8 {

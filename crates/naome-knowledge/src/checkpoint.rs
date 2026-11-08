@@ -234,25 +234,30 @@ impl Checkpoint {
         }
         Ok(())
     }
-    fn raw_header(&self) -> Result<(Vec<u8>, u64), String> {
+    fn raw_header(&self) -> Result<(Vec<u8>, u64), crate::Error> {
         self.ensure_generation()?;
         let (domain, payload, stored, count): (String, Vec<u8>, Vec<u8>, i64) = self.connection.query_row(
             "SELECT substr(domain,1,129), substr(header,1,1048577), substr(digest,1,33), entry_count FROM checkpoint WHERE singleton = 1", [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(sql)?;
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().map_err(sql)?.ok_or(crate::InputFault::CheckpointHeaderCardinality)?;
         let rows: i64 = self
             .connection
             .query_row("SELECT count(*) FROM checkpoint", [], |r| r.get(0))
             .map_err(sql)?;
-        if rows != 1
-            || domain != self.domain
-            || payload.len() > MAX_HEADER
-            || stored.as_slice() != digest(self.domain, "header", "1", &payload)
-        {
-            return Err("transactional checkpoint header differs".into());
+        if rows != 1 {
+            return Err(crate::InputFault::CheckpointHeaderCardinality.into());
+        }
+        if domain != self.domain {
+            return Err(crate::InputFault::CheckpointHeaderDomain.into());
+        }
+        if payload.len() > MAX_HEADER {
+            return Err(crate::InputFault::CheckpointHeaderCapacity.into());
+        }
+        if stored.as_slice() != digest(self.domain, "header", "1", &payload) {
+            return Err(crate::InputFault::CheckpointHeaderDigest.into());
         }
         Ok((
             payload,
-            u64::try_from(count).map_err(|_| "checkpoint count width")?,
+            u64::try_from(count).map_err(|_| crate::InputFault::CheckpointHeaderCount)?,
         ))
     }
     pub(crate) fn header<T: DeserializeOwned + Serialize>(&self) -> Result<T, crate::Error> {

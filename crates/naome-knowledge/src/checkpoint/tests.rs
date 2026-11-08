@@ -374,3 +374,48 @@ fn checkpoint_json_errors_keep_categories_positions_and_storage_fatality() {
     );
     assert_eq!(value["line"], 1);
 }
+
+#[test]
+fn checkpoint_header_domain_and_digest_failures_keep_specific_causes() {
+    let directory = Directory::new();
+    let path = directory.0.join("header.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    checkpoint
+        .connection
+        .execute("UPDATE checkpoint SET domain = 'other'", [])
+        .unwrap();
+    let error = checkpoint.header::<u64>().unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderDomain)
+    );
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["fatal"], true);
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(crate::InputFault::CheckpointHeaderDomain)
+    );
+    checkpoint
+        .connection
+        .execute(
+            "UPDATE checkpoint SET domain = 'test', digest = zeroblob(32)",
+            [],
+        )
+        .unwrap();
+    let error = checkpoint.header::<u64>().unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderDigest)
+    );
+    assert!(error.storage().fatal());
+    checkpoint
+        .connection
+        .execute("DELETE FROM checkpoint", [])
+        .unwrap();
+    let error = checkpoint.header::<u64>().unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderCardinality)
+    );
+    assert!(error.storage().fatal());
+}

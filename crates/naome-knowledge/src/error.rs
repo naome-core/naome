@@ -476,6 +476,11 @@ impl fmt::Display for Error {
                 }
                 InputFault::CheckpointEncoding => "checkpoint encoding failed",
                 InputFault::CheckpointNoncanonical => "noncanonical checkpoint record",
+                InputFault::CheckpointHeaderCardinality => "checkpoint header cardinality differs",
+                InputFault::CheckpointHeaderDomain => "checkpoint header domain differs",
+                InputFault::CheckpointHeaderCapacity => "checkpoint header exceeds its capacity",
+                InputFault::CheckpointHeaderDigest => "checkpoint header digest differs",
+                InputFault::CheckpointHeaderCount => "checkpoint header count width",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
