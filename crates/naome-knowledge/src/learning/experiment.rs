@@ -1,11 +1,14 @@
 //! Explicitly invoked finite research consumer of the maintained native learner.
 //! Only fresh model self-search and checker-admitted native solutions train it.
+//! Manual developer-tool runs use `--features developer-tools -- --ignored --exact`
+//! with the fully qualified test name.
 use super::tests::MemoryStore;
 use super::*;
 mod adaptive;
 mod finding;
 mod knowledge;
 mod lemma_loop;
+#[cfg(feature = "developer-tools")]
 mod lookup;
 use sha2::{Digest, Sha256};
 use std::{
@@ -90,6 +93,7 @@ fn shuffled_learning(seed: u64) -> Vec<&'static curriculum::Case> {
     }
     schedule
 }
+#[cfg(feature = "developer-tools")]
 fn evaluate(
     model: &Checkpoint,
     cases: &[&curriculum::Case],
@@ -139,6 +143,7 @@ fn export_model(path: &Path, model: &Checkpoint, io: &MemoryStore) {
         }
     }
 }
+#[cfg(feature = "developer-tools")]
 fn train_seed(
     seed: u64,
     rounds: usize,
@@ -308,6 +313,7 @@ fn train_seed(
     (state, io, events, initial)
 }
 
+#[cfg(feature = "developer-tools")]
 #[test]
 #[ignore = "Finite engineering diagnosis on training and existing selection questions only"]
 fn pipeline_selection_diagnosis() {
@@ -325,6 +331,7 @@ fn pipeline_selection_diagnosis() {
     );
 }
 
+#[cfg(feature = "developer-tools")]
 #[test]
 #[ignore = "Explicit finite native learning progress experiment; requires Release"]
 fn native_learning_progress_experiment() {
@@ -447,6 +454,7 @@ fn native_learning_progress_experiment() {
     }
 }
 
+#[cfg(feature = "developer-tools")]
 #[test]
 #[ignore = "Finite selection-gate diagnosis; no model training or confirmation evaluation"]
 fn selection_gate_headroom() {

@@ -4,6 +4,8 @@ import ast
 import hashlib
 import io
 import pathlib
+import subprocess
+import sys
 import tarfile
 import tomllib
 import unittest
@@ -33,6 +35,22 @@ class ResultGateTests(unittest.TestCase):
     def test_an_empty_gate_cannot_pass(self):
         with self.assertRaises(ValueError):
             require_success({}, [])
+
+
+class RequiredSelectionTests(unittest.TestCase):
+    def test_selected_target_must_execute_a_test_and_succeed(self):
+        runner = ROOT / "tools/ci/run_selected_tests.py"
+        for passed, test_status, expected in [(1, 0, 0), (0, 0, 1), (1, 9, 9)]:
+            with self.subTest(passed=passed, test_status=test_status):
+                summary = f"test result: ok. {passed} passed; 0 failed; 0 ignored;"
+                child = f"print({summary!r}); raise SystemExit({test_status})"
+                result = subprocess.run(
+                    [sys.executable, str(runner), sys.executable, "-c", child],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertIn(summary, result.stdout)
 
 
 class BuildContractTests(unittest.TestCase):
@@ -86,8 +104,9 @@ class BuildContractTests(unittest.TestCase):
                 values = {item.arg: ast.literal_eval(item.value) for item in node.value.keywords}
                 if values.get("version") == "*":
                     annotations[values["crate"]] = values
-        for package, profile in profiles.items():
+        for package in ("curve25519-dalek", "ed25519-dalek", "sha2"):
             with self.subTest(package=package):
+                profile = profiles[package]
                 self.assertIn(package, annotations)
                 flags = dict(flag.removeprefix("-C").split("=", 1) for flag in annotations[package]["rustc_flags"])
                 self.assertEqual(flags["opt-level"], str(profile["opt-level"]))
@@ -120,6 +139,14 @@ class BuildContractTests(unittest.TestCase):
         for digest, _ in entries:
             self.assertEqual(len(bytes.fromhex(digest)), 32)
 
+    def test_cargo_numerical_test_kernels_keep_runtime_guards(self):
+        profiles = tomllib.loads((ROOT / "Cargo.toml").read_text())["profile"]["test"]["package"]
+        for package in ("burn-flex", "gemm", "gemm-common", "gemm-f32"):
+            with self.subTest(package=package):
+                self.assertEqual(profiles[package]["opt-level"], 2)
+                self.assertTrue(profiles[package]["debug-assertions"])
+                self.assertTrue(profiles[package]["overflow-checks"])
+
     def test_shared_numerical_kernels_retain_optimization_and_runtime_guards(self):
         prefix = "--@rules_rust//rust/settings:per_crate_rustc_flag="
         profiles = {}
@@ -142,7 +169,7 @@ class BuildContractTests(unittest.TestCase):
         build = ("run: >- bazel build --config=ci "
                  "--aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect "
                  "--output_groups=+clippy_checks //:mr_build //:mr_tests //crates/... //vendor/...")
-        execute = "run: bazel test --config=ci //:mr_tests"
+        execute = "run: >- bazel test --config=ci //:mr_tests"
         self.assertIn(build, workflow)
         self.assertIn(execute, workflow)
         self.assertLess(workflow.index(build), workflow.index(execute))

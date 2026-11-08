@@ -44,6 +44,28 @@ opt-level = 2
 debug-assertions = true
 overflow-checks = true
 
+# Native learning tests exercise the complete CPU tensor training path.
+# Optimize the f32 matrix kernels without changing workspace crate profiles.
+[profile.test.package.burn-flex]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.gemm]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.gemm-common]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.gemm-f32]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
 [patch.crates-io]
 burn-dispatch = { path = "vendor/burn-dispatch" }
 burn-tensor = { path = "vendor/burn-tensor" }

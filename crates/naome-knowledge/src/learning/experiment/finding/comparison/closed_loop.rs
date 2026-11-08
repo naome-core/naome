@@ -2,7 +2,9 @@
 //! Controls ablate Solver training or the whole learned Finder policy. Neither
 //! a completed run nor a successful promotion establishes indefinite learning.
 use super::*;
+#[cfg(feature = "developer-tools")]
 mod advance;
+#[cfg(feature = "developer-tools")]
 mod continuation;
 
 const ROUNDS: usize = 3;
@@ -125,6 +127,7 @@ pub(super) fn record(
     Ok(row)
 }
 
+#[cfg(feature = "developer-tools")]
 fn execute(
     seed: u64,
     arm: &str,
@@ -281,6 +284,7 @@ fn execute(
     Ok(result)
 }
 
+#[cfg(feature = "developer-tools")]
 #[test]
 #[ignore = "finite current-owner closed-loop comparison; requires explicit frozen protocol"]
 fn matched_current_owner_continuation() {
