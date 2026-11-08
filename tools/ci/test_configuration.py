@@ -172,6 +172,25 @@ class BuildContractTests(unittest.TestCase):
                     with self.subTest(workflow=path.name, action=action):
                         self.assertRegex(action, r"@[0-9a-f]{40}$")
 
+    def test_bazel_cache_restores_trusted_snapshots_and_only_saves_successful_main(self):
+        workflow = (ROOT / ".github/workflows/bazel-tests.yml").read_text()
+        restore = workflow.split("      - name: Restore local Bazel cache", 1)[1].split("      - name:", 1)[0]
+        previous = workflow.split("      - name: Restore previous Bazel cache snapshot", 1)[1].split("      - name:", 1)[0]
+        save = workflow.split("      - name: Save local Bazel cache from main", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("${{ runner.os }}-${{ runner.arch }}-", restore)
+        self.assertIn("${{ steps.cache-day.outputs.day }}", restore.split("restore-keys:", 1)[0])
+        self.assertIn("hashFiles(", restore.split("restore-keys:", 1)[1])
+        self.assertNotIn("cache-day.outputs.day", restore.split("restore-keys:", 1)[1])
+        self.assertIn("date -u +%Y-%m-%d", workflow)
+        self.assertIn("steps.cache.outputs.cache-matched-key == ''", previous)
+        self.assertIn("path: ~/.cache/naome-bazel", previous)
+        self.assertIn("${{ runner.os }}-${{ runner.arch }}-", previous)
+        self.assertIn("success()", save)
+        self.assertIn("github.event_name == 'push'", save)
+        self.assertIn("github.ref == 'refs/heads/main'", save)
+        self.assertIn("steps.cache.outputs.cache-hit != 'true'", save)
+        self.assertIn("steps.cache.outputs.cache-primary-key", save)
+
     def test_ci_builds_both_aggregates_before_running_tests(self):
         workflow = " ".join((ROOT / ".github/workflows/bazel-tests.yml").read_text().split())
         build = ("run: >- bazel build --config=ci "
