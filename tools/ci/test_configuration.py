@@ -178,9 +178,10 @@ class BuildContractTests(unittest.TestCase):
         previous = workflow.split("      - name: Restore previous Bazel cache snapshot", 1)[1].split("      - name:", 1)[0]
         save = workflow.split("      - name: Save local Bazel cache from main", 1)[1].split("      - name:", 1)[0]
         self.assertIn("${{ runner.os }}-${{ runner.arch }}-", restore)
-        self.assertIn("${{ github.sha }}", restore.split("restore-keys:", 1)[0])
+        self.assertIn("${{ steps.cache-day.outputs.day }}", restore.split("restore-keys:", 1)[0])
         self.assertIn("hashFiles(", restore.split("restore-keys:", 1)[1])
-        self.assertNotIn("github.sha", restore.split("restore-keys:", 1)[1])
+        self.assertNotIn("cache-day.outputs.day", restore.split("restore-keys:", 1)[1])
+        self.assertIn("date -u +%Y-%m-%d", workflow)
         self.assertIn("steps.cache.outputs.cache-matched-key == ''", previous)
         self.assertIn("path: ~/.cache/naome-bazel", previous)
         self.assertIn("${{ runner.os }}-${{ runner.arch }}-", previous)

@@ -38,6 +38,11 @@ jobs:
             ~/.cargo/registry/cache
           key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
 
+      # Bound snapshot growth while refreshing the cache on successful main runs.
+      - name: Select Bazel cache day
+        id: cache-day
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Restore local Bazel cache
         continue-on-error: true
         id: cache
@@ -46,7 +51,7 @@ jobs:
           path: |
             ~/.cache/naome-bazel/disk
             ~/.cache/naome-bazel/repository
-          key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml') }}-${{ github.sha }}
+          key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml') }}-${{ steps.cache-day.outputs.day }}
           restore-keys: |
             bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml') }}
 
