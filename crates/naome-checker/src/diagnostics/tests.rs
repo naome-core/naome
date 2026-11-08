@@ -562,3 +562,18 @@ fn tree_continuation_preserves_exact_variables_and_rejects_foreign_addresses() {
         Err(InspectionError::UnknownFormula)
     );
 }
+
+#[test]
+fn diagnostic_failure_codes_keep_typed_witnesses() {
+    let failure = Failure::FormulaWorkLimit {
+        actual: 42,
+        maximum: 11,
+    };
+    let encoded = serde_json::to_value(&failure).unwrap();
+    assert_eq!(encoded["code"], 0x0025_000fu32);
+    assert_eq!(encoded["actual"], 42);
+    assert_eq!(encoded["maximum"], 11);
+    let context = serde_json::to_value(Failure::ContextLimit).unwrap();
+    assert_eq!(context["code"], 0x0025_0010u32);
+    assert_eq!(context.as_object().unwrap().len(), 1);
+}

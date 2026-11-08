@@ -109,10 +109,7 @@ fn native_program_errors_and_bounded_inspection_survive_json_without_admission()
     );
     let report = error.diagnostic().unwrap();
     let json = serde_json::to_value(&error).unwrap();
-    assert_eq!(
-        json["diagnostic"]["failure"]["code"],
-        "mp.expected_implication"
-    );
+    assert_eq!(json["diagnostic"]["failure"]["code"], 0x0025_0001u32);
     let query = FormulaQuery {
         operand: OperandRole::Implication,
         root: report

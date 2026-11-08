@@ -841,7 +841,7 @@ class Driver:
                 q = question_fixture(50 + index)
                 if label == "malformed":
                     object["payload"] = "0000000001ff"
-                    expected_error = "malformed certificate"
+                    expected_error = 0x0006_000a
                 elif label == "claimed_id":
                     object["artifact_id"] = "00" * 32
                     expected_error = 0x0007_0001
@@ -850,7 +850,7 @@ class Driver:
                     expected_error = 0x0007_0002
                 elif label == "mathematical":
                     object["payload"] = "0000000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
-                    expected_error = "mp.expected_implication"
+                    expected_error = 0x0025_0001
                 else:
                     unrelated_source = source(60)
                     unrelated = self.nodes[0].command("test_check", artifact=unrelated_source)["object"]

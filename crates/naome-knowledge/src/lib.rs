@@ -21,6 +21,7 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
         .iter()
         .chain(naome_checker::question::PREFILTER_CODES.iter())
         .chain(naome_checker::question::PREFILTER_RULE_CODES.iter())
+        .chain(naome_checker::diagnostics::DIAGNOSTIC_FAILURE_CODES.iter())
         .copied()
 }
 pub use outcome::{

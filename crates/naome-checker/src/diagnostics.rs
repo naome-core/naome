@@ -61,7 +61,9 @@ pub use formula::{
     Difference, FormulaFragment, FormulaNode, FormulaQuery, NodeKind, NodeRecord, PathSegment,
     Variable, VariableNamespace,
 };
-pub use reasons::{ClaimField, ClaimValue, ExpansionFailure, Failure, FormulaFailure};
+pub use reasons::{
+    ClaimField, ClaimValue, DIAGNOSTIC_FAILURE_CODES, ExpansionFailure, Failure, FormulaFailure,
+};
 
 /// The mathematical checker identity; presentation changes do not change it.
 pub const CHECKER_ID: &str = "naome:zfc-checker";
@@ -264,7 +266,7 @@ impl ProofDiagnostic {
         self.target = Some(fragment);
         Ok(())
     }
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> u32 {
         self.failure.code()
     }
     pub fn operand(&self, role: OperandRole) -> Option<&Operand> {

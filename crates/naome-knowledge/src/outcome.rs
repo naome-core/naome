@@ -42,7 +42,7 @@ macro_rules! codes {
         const _: () = {
             assert!(Domain::$name as u16 > 0);
             // The checker owns the question prefilter domains.
-            assert!(Domain::$name as u16 != 33 && Domain::$name as u16 != 34 && Domain::$name as u16 != 35);
+            assert!(Domain::$name as u16 != 33 && Domain::$name as u16 != 34 && Domain::$name as u16 != 35 && Domain::$name as u16 != 37);
             $(assert!($id > 0 && $id <= u16::MAX as u32);)+
         };
     };

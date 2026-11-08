@@ -3,97 +3,81 @@ use naome_foundation::FormulaCodecError;
 use naome_proof::{DefinedFormulaCodecError, DefinitionExpansionError};
 use serde::Serialize;
 
-/// The failed condition, with typed witnesses instead of prose interpretation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "code")]
-pub enum Failure {
-    #[serde(rename = "mp.expected_implication")]
-    ExpectedImplication { operand: OperandRole },
-    #[serde(rename = "instantiation.expected_universal")]
-    ExpectedUniversal { operand: OperandRole },
-    #[serde(rename = "mp.antecedent_mismatch")]
-    AntecedentMismatch,
-    #[serde(rename = "inference.input_not_proved")]
-    InputNotProved {
-        operand: OperandRole,
-        reference: u64,
-    },
-    #[serde(rename = "reference.not_earlier")]
-    ReferenceNotEarlier {
-        operand: OperandRole,
-        reference: u64,
-    },
-    #[serde(rename = "schema.role_collision")]
-    RoleCollision {
-        variable: u32,
-        roles: Vec<OperandRole>,
-    },
-    #[serde(rename = "schema.parameter_role_collision")]
-    ParameterRoleCollision {
-        variable: u32,
-        role: OperandRole,
-        parameter: u32,
-    },
-    #[serde(rename = "schema.duplicate_parameter")]
-    DuplicateParameter {
-        variable: u32,
-        first: u32,
-        second: u32,
-    },
-    #[serde(rename = "schema.forbidden_predicate_variable")]
-    ForbiddenPredicateVariable { variable: u32, role: OperandRole },
-    #[serde(rename = "schema.undeclared_predicate_variable")]
-    UndeclaredPredicateVariable { variable: u32 },
-    #[serde(rename = "conclusion.open")]
-    OpenConclusion,
-    #[serde(rename = "reference.missing_proof")]
-    MissingProof { proof_id: Digest },
-    #[serde(rename = "definition.expansion")]
-    Expansion { reason: ExpansionFailure },
-    #[serde(rename = "formula.invalid")]
-    Formula { reason: FormulaFailure },
-    #[serde(rename = "checker.formula_work_limit")]
-    FormulaWorkLimit { actual: usize, maximum: usize },
-    #[serde(rename = "context.limit")]
-    ContextLimit,
-    #[serde(rename = "context.corrupt")]
-    ContextCorrupt,
-    #[serde(rename = "context.storage")]
-    ContextStorage,
-    #[serde(rename = "target.mismatch")]
-    TargetMismatch,
-    #[serde(rename = "program.manifest_mismatch")]
-    ManifestMismatch {
-        field: ClaimField,
-        expected: ClaimValue,
-        actual: ClaimValue,
-    },
-}
-impl Failure {
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::ExpectedImplication { .. } => "mp.expected_implication",
-            Self::ExpectedUniversal { .. } => "instantiation.expected_universal",
-            Self::AntecedentMismatch => "mp.antecedent_mismatch",
-            Self::InputNotProved { .. } => "inference.input_not_proved",
-            Self::ReferenceNotEarlier { .. } => "reference.not_earlier",
-            Self::RoleCollision { .. } => "schema.role_collision",
-            Self::ParameterRoleCollision { .. } => "schema.parameter_role_collision",
-            Self::DuplicateParameter { .. } => "schema.duplicate_parameter",
-            Self::ForbiddenPredicateVariable { .. } => "schema.forbidden_predicate_variable",
-            Self::UndeclaredPredicateVariable { .. } => "schema.undeclared_predicate_variable",
-            Self::OpenConclusion => "conclusion.open",
-            Self::MissingProof { .. } => "reference.missing_proof",
-            Self::Expansion { .. } => "definition.expansion",
-            Self::Formula { .. } => "formula.invalid",
-            Self::FormulaWorkLimit { .. } => "checker.formula_work_limit",
-            Self::ContextLimit => "context.limit",
-            Self::ContextCorrupt => "context.corrupt",
-            Self::ContextStorage => "context.storage",
-            Self::TargetMismatch => "target.mismatch",
-            Self::ManifestMismatch { .. } => "program.manifest_mismatch",
+// One table owns each diagnosis code, its typed fields and the offline catalog.
+macro_rules! diagnostic_failures {
+    (
+        structured { $( $name:ident = $code:literal { $( $field:ident: $ty:ty ),+ $(,)? } ),+ $(,)? }
+        units { $( $unit:ident = $unit_code:literal ),+ $(,)? }
+    ) => {
+        /// The failed condition, with typed witnesses instead of prose interpretation.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub enum Failure {
+            $( $name { $( $field: $ty ),+ }, )+
+            $( $unit, )+
         }
+        impl Failure {
+            /// Stable machine code of this condition.
+            pub fn code(&self) -> u32 {
+                match self {
+                    $( Self::$name { .. } => $code, )+
+                    $( Self::$unit => $unit_code, )+
+                }
+            }
+        }
+        impl serde::Serialize for Failure {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeStruct;
+                match self {
+                    $( Self::$name { $( $field ),+ } => {
+                        let mut value = serializer.serialize_struct("Failure", 1 $(+ { let _ = stringify!($field); 1 })+)?;
+                        value.serialize_field("code", &$code)?;
+                        $( value.serialize_field(stringify!($field), $field)?; )+
+                        value.end()
+                    }, )+
+                    $( Self::$unit => {
+                        let mut value = serializer.serialize_struct("Failure", 1)?;
+                        value.serialize_field("code", &$unit_code)?;
+                        value.end()
+                    }, )+
+                }
+            }
+        }
+        /// Assigned checker diagnostic failures for the machine catalog.
+        pub const DIAGNOSTIC_FAILURE_CODES: &[(&str, &str, u32)] = &[
+            $( ("ProofFailure", stringify!($name), $code), )+
+            $( ("ProofFailure", stringify!($unit), $unit_code), )+
+        ];
+    };
+}
+
+diagnostic_failures! {
+    structured {
+        ExpectedImplication = 0x0025_0001 { operand: OperandRole },
+        ExpectedUniversal = 0x0025_0002 { operand: OperandRole },
+        InputNotProved = 0x0025_0004 { operand: OperandRole, reference: u64 },
+        ReferenceNotEarlier = 0x0025_0005 { operand: OperandRole, reference: u64 },
+        RoleCollision = 0x0025_0006 { variable: u32, roles: Vec<OperandRole> },
+        ParameterRoleCollision = 0x0025_0007 { variable: u32, role: OperandRole, parameter: u32 },
+        DuplicateParameter = 0x0025_0008 { variable: u32, first: u32, second: u32 },
+        ForbiddenPredicateVariable = 0x0025_0009 { variable: u32, role: OperandRole },
+        UndeclaredPredicateVariable = 0x0025_000a { variable: u32 },
+        MissingProof = 0x0025_000c { proof_id: Digest },
+        Expansion = 0x0025_000d { reason: ExpansionFailure },
+        Formula = 0x0025_000e { reason: FormulaFailure },
+        FormulaWorkLimit = 0x0025_000f { actual: usize, maximum: usize },
+        ManifestMismatch = 0x0025_0014 { field: ClaimField, expected: ClaimValue, actual: ClaimValue },
     }
+    units {
+        AntecedentMismatch = 0x0025_0003,
+        OpenConclusion = 0x0025_000b,
+        ContextLimit = 0x0025_0010,
+        ContextCorrupt = 0x0025_0011,
+        ContextStorage = 0x0025_0012,
+        TargetMismatch = 0x0025_0013,
+    }
+}
+
+impl Failure {
     pub fn outcome(&self) -> Outcome {
         match self {
             Self::MissingProof { .. }
