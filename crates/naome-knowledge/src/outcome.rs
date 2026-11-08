@@ -234,6 +234,11 @@ codes! {
         GrantIdentity = 44,
         ProgramUnsupported = 45,
         LearningUnsupported = 46,
+        DescendantExecutable = 47,
+        DescendantSpawn = 48,
+        DescendantOutput = 49,
+        DescendantRead = 50,
+        DescendantIdentity = 51,
     }
     pub enum LearningGraphFailure in 10 {
         Capacity = 1,
@@ -743,6 +748,10 @@ codes! {
         OfferedProofMissing = 85,
         OfferedProofBinding = 86,
         OfferedProofFormulaMissing = 87,
+        LearningUnitSequence = 88,
+        TrainingPlanMissing = 89,
+        SampledSequenceOverflow = 90,
+        MetaTrialPlanMissing = 91,
     }
 
 }

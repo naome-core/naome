@@ -39,7 +39,7 @@ impl Supervisor for Grants {
         self.0.push((true, unit));
         Ok(())
     }
-    fn probe(&mut self, _: Probe) -> Result<(), String> {
+    fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
         Ok(())
     }
 }
@@ -174,7 +174,7 @@ fn supervisor_failure_survives_provider_drive() {
         fn checkpoint(&mut self, _: u32) -> Result<(), crate::outcome::WorkerFailure> {
             unreachable!()
         }
-        fn probe(&mut self, _: Probe) -> Result<(), String> {
+        fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
             unreachable!()
         }
         fn blocked_nanos(&self) -> u64 {

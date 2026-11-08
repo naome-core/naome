@@ -580,6 +580,14 @@ impl fmt::Display for Error {
                     "stateless exploration received memory"
                 }
                 crate::ResearchFailure::InvalidActionScores => "invalid native action scores",
+                crate::ResearchFailure::LearningUnitSequence => {
+                    "learning checkpoint sequence differs"
+                }
+                crate::ResearchFailure::TrainingPlanMissing => "training plan absent",
+                crate::ResearchFailure::SampledSequenceOverflow => {
+                    "native sampled sequence count overflow"
+                }
+                crate::ResearchFailure::MetaTrialPlanMissing => "meta trial plan absent",
                 crate::ResearchFailure::FormulaCacheBatchCapacity => "formula cache batch capacity",
                 crate::ResearchFailure::FormulaCacheTensorDecode => {
                     "formula cache tensor decoding failed"

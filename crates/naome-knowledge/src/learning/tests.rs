@@ -348,11 +348,13 @@ fn checkpoint_after_work_before_acknowledgement_is_idempotent() {
         .execute(1, Some(&source), 61, &mut engine, &mut io)
         .unwrap();
     assert_eq!(serde_json::to_vec(&resumed).unwrap(), bytes);
-    assert!(
-        resumed
-            .execute(3, Some(&source), 61, &mut engine, &mut io)
-            .is_err()
-    );
+    assert!(matches!(
+        resumed.execute(3, Some(&source), 61, &mut engine, &mut io),
+        Err(crate::Error::Research(
+            crate::ResearchFailure::LearningUnitSequence
+        ))
+    ));
+    assert_eq!(serde_json::to_vec(&resumed).unwrap(), bytes);
 }
 #[test]
 fn retained_training_plan_and_measured_cost_cannot_change_between_units() {

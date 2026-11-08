@@ -1289,29 +1289,32 @@ impl super::provider::Supervisor for WorkerControl {
         })?;
         self.grant(checkpoint)
     }
-    fn probe(&mut self, probe: super::provider::Probe) -> Result<(), String> {
+    fn probe(&mut self, probe: super::provider::Probe) -> Result<(), WorkerFailure> {
         use super::provider::Probe;
         match probe {
-            Probe::CpuActive(next) => emit(&Frame::CpuActive { id: self.id, next }),
-            Probe::CpuDone(next) => emit(&Frame::CpuDone { id: self.id, next }),
-            Probe::ResultReady => emit(&Frame::ResultReady { id: self.id }),
+            Probe::CpuActive(next) => emit_coded(&Frame::CpuActive { id: self.id, next }),
+            Probe::CpuDone(next) => emit_coded(&Frame::CpuDone { id: self.id, next }),
+            Probe::ResultReady => emit_coded(&Frame::ResultReady { id: self.id }),
             Probe::Descendant => {
-                let mut child =
-                    ProcessCommand::new(std::env::current_exe().map_err(|e| e.to_string())?)
-                        .arg(DESCENDANT)
-                        .env(INTERNAL, "descendant-v1")
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(|e| e.to_string())?;
-                let output = child.stdout.take().ok_or("descendant readiness absent")?;
+                let mut child = ProcessCommand::new(
+                    std::env::current_exe().map_err(|_| WorkerFailure::DescendantExecutable)?,
+                )
+                .arg(DESCENDANT)
+                .env(INTERNAL, "descendant-v1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| WorkerFailure::DescendantSpawn)?;
+                let output = child.stdout.take().ok_or(WorkerFailure::DescendantOutput)?;
                 let child = Descendant(child);
-                if line(&mut std::io::BufReader::new(output), 64)? != b"naome descendant ready v1\n"
+                if line(&mut std::io::BufReader::new(output), 64)
+                    .map_err(|_| WorkerFailure::DescendantRead)?
+                    != b"naome descendant ready v1\n"
                 {
-                    return Err("descendant readiness differs".into());
+                    return Err(WorkerFailure::DescendantIdentity);
                 }
-                emit(&Frame::Descendant {
+                emit_coded(&Frame::Descendant {
                     id: self.id,
                     pid: child.0.id(),
                 })?;

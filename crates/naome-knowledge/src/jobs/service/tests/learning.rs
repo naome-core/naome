@@ -1086,7 +1086,7 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
             assert!(self.0.replace(progress).is_none());
             Ok(())
         }
-        fn probe(&mut self, _: Probe) -> Result<(), String> {
+        fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
             Ok(())
         }
         fn blocked_nanos(&self) -> u64 {

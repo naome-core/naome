@@ -79,7 +79,7 @@ pub(super) trait Supervisor {
     }
     fn reserve(&mut self, next: u32) -> Result<(), crate::outcome::WorkerFailure>;
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), crate::outcome::WorkerFailure>;
-    fn probe(&mut self, probe: Probe) -> Result<(), String>;
+    fn probe(&mut self, probe: Probe) -> Result<(), crate::outcome::WorkerFailure>;
     fn blocked_nanos(&self) -> u64;
     fn observe(
         &mut self,

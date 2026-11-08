@@ -737,7 +737,7 @@ impl Job {
             return Ok(());
         }
         if unit != self.progress.as_ref().map_or(1, |p| p.unit + 1) {
-            return Err("learning checkpoint sequence differs".into());
+            return Err(crate::ResearchFailure::LearningUnitSequence.into());
         }
         let wall_started = std::time::Instant::now();
         let cpu_started = meta::cpu_micros()?;
@@ -806,7 +806,7 @@ impl Job {
             let phase = p
                 .plan
                 .as_ref()
-                .ok_or("training plan absent")?
+                .ok_or(crate::ResearchFailure::TrainingPlanMissing)?
                 .plan
                 .phase(unit - 1);
             if let Some((candidate, first, last)) = engine.train_replay_using(
@@ -855,7 +855,7 @@ impl Job {
                     .training_cost
                     .sampled_sequence_edges
                     .checked_add(engine.cost.sampled_sequence_edges)
-                    .ok_or("native sampled sequence count overflow")?;
+                    .ok_or(crate::ResearchFailure::SampledSequenceOverflow)?;
                 p.training_cost
                     .measurements
                     .include(&engine.cost.measurements)?;
@@ -940,7 +940,10 @@ impl Job {
                 }
             }
             if self.units() > 1 && self.base.preparation == Preparation::Meta {
-                let selection = p.plan.as_ref().ok_or("meta trial plan absent")?;
+                let selection = p
+                    .plan
+                    .as_ref()
+                    .ok_or(crate::ResearchFailure::MetaTrialPlanMissing)?;
                 let experience = meta::Experience {
                     job,
                     context: selection.context,
