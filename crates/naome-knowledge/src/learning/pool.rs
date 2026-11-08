@@ -19,6 +19,7 @@ pub struct Pool {
     keys: BTreeMap<String, usize>,
     origins: BTreeMap<bool, Families>,
     priorities: Vec<u64>,
+    repairs: Vec<usize>,
     derivations: Vec<super::search::derivation::Derivation>,
     witnesses: BTreeMap<String, BTreeMap<usize, Witness>>,
     hindsight: BTreeSet<(u64, String, usize, String)>,
@@ -37,6 +38,7 @@ pub(super) struct DerivedCounts {
     pub unavailable: usize,
     pub preferences: usize,
     pub hindsight: usize,
+    pub repairs: usize,
     pub sequences: usize,
 }
 
@@ -56,7 +58,7 @@ impl Pool {
     pub(super) fn reconcile(
         &mut self,
         observations: &[super::experience::Observation],
-        _contextual: bool,
+        rich_targets: bool,
     ) -> Result<(), String> {
         if observations.len() > super::history::SOURCES {
             return Err("native hindsight source capacity".into());
@@ -162,8 +164,50 @@ impl Pool {
                 }
             }
         }
+        if rich_targets {
+            for observation in observations {
+                self.reconcile_repair(observation)?;
+            }
+        }
         Ok(())
     }
+
+    fn reconcile_repair(
+        &mut self,
+        observation: &super::experience::Observation,
+    ) -> Result<(), String> {
+        let super::experience::TerminalEvidence::CertifiedCandidate { proof_id, refuted } =
+            &observation.summary.terminal
+        else {
+            return Ok(());
+        };
+        if !matches!(observation.summary.origin, super::Origin::Local)
+            || !observation
+                .executions
+                .iter()
+                .any(|trace| trace.has_repair())
+        {
+            return Ok(());
+        }
+        let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)
+            .map_err(|error| error.to_string())?;
+        let target = if *refuted {
+            question.refuted_target()
+        } else {
+            question.proved_target()
+        };
+        let case = super::curriculum::owned::case(&observation.question)
+            .ok_or("observed training lineage differs")?;
+        for execution in &observation.executions {
+            // A supplemental replay must fit the same proof checking capacity
+            // as other training material. An unusable replay contributes no label.
+            if let Ok(Some(graph)) = execution.checked_repair(target, &observation.knowledge) {
+                self.add_repair(&case, proof_id, graph)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn add_derivation(
         &mut self,
         derivation: super::search::derivation::Derivation,
@@ -223,6 +267,7 @@ impl Pool {
     pub(super) fn derived_counts(&self) -> DerivedCounts {
         let mut counts = DerivedCounts {
             hindsight: self.hindsight.len(),
+            repairs: self.repairs.len(),
             sequences: self.sequences.values().map(Vec::len).sum(),
             ..DerivedCounts::default()
         };
@@ -244,6 +289,31 @@ impl Pool {
         }
         counts
     }
+    fn add_repair(
+        &mut self,
+        case: &super::curriculum::Case,
+        proof: &str,
+        graph: Graph,
+    ) -> Result<(), String> {
+        let key = graph.key();
+        let needed = self
+            .keys
+            .get(&key)
+            .map_or_else(|| graph.work_bytes(), |_| 0);
+        if self.work_bytes.saturating_add(needed).saturating_add(64)
+            > self.work_capacity.unwrap_or(WORK_BYTES)
+        {
+            return Ok(());
+        }
+        self.add(false, &case.dependency, &case.family, proof, vec![graph])?;
+        let index = self.keys[&key];
+        if !self.repairs.contains(&index) {
+            self.repairs.push(index);
+            self.work_bytes += 64;
+        }
+        Ok(())
+    }
+
     pub fn add(
         &mut self,
         peer: bool,
@@ -433,9 +503,14 @@ impl Pool {
             return reference::batch(self, cursor);
         }
         let mut result = Vec::with_capacity(16);
-        for _ in 0..16 {
+        for slot in 0..16 {
             let mut position = *cursor;
             *cursor = cursor.wrapping_add(1);
+            if slot == 15 && !self.repairs.is_empty() {
+                let repair = (position / 16 % self.repairs.len() as u64) as usize;
+                result.push(&self.graphs[self.repairs[repair]]);
+                continue;
+            }
             let family = select(&self.origins, &mut position);
             let proof = select(family, &mut position);
             let rules = select(proof, &mut position);

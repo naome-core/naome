@@ -67,7 +67,7 @@ fn description_rotation_waits_for_the_next_suppliers_pacing_window() {
     let select_at = |time| {
         description_supplier(
             &peers,
-            1,
+            Some(bad),
             |_| true,
             |peer| peer != good || time >= available_at,
         )
@@ -82,17 +82,19 @@ fn description_rotation_waits_for_the_next_suppliers_pacing_window() {
 fn description_rotation_keeps_alternating_when_inventory_and_retry_clocks_align() {
     let [first, second, _] = suppliers();
     let peers = [first, second];
-    for (attempt, expected) in [first, second, first, second].into_iter().enumerate() {
+    let mut last = None;
+    for expected in [first, second, first, second] {
         // At every retry deadline the next supplier has just sent inventory.
         // Its short cooldown must defer the request, not select its neighbour.
         assert_eq!(
-            description_supplier(&peers, attempt, |_| true, |peer| peer != expected),
+            description_supplier(&peers, last, |_| true, |peer| peer != expected),
             None
         );
         assert_eq!(
-            description_supplier(&peers, attempt, |_| true, |_| true),
+            description_supplier(&peers, last, |_| true, |_| true),
             Some(expected)
         );
+        last = Some(expected);
     }
 }
 
@@ -101,15 +103,42 @@ fn description_rotation_skips_unavailable_transports_and_respects_pacing() {
     let [first, unavailable, third] = suppliers();
     let peers = [first, unavailable, third];
     assert_eq!(
-        description_supplier(&peers, 1, |peer| peer != unavailable, |_| true),
+        description_supplier(&peers, Some(first), |peer| peer != unavailable, |_| true),
         Some(third)
     );
     assert_eq!(
-        description_supplier(&peers, 1, |peer| peer != unavailable, |peer| peer != third),
+        description_supplier(
+            &peers,
+            Some(first),
+            |peer| peer != unavailable,
+            |peer| peer != third
+        ),
         None
     );
-    assert_eq!(description_supplier(&peers, 1, |_| false, |_| true), None);
-    assert_eq!(description_supplier(&[], 1, |_| true, |_| true), None);
+    assert_eq!(
+        description_supplier(&peers, Some(first), |_| false, |_| true),
+        None
+    );
+    assert_eq!(
+        description_supplier(&[], Some(first), |_| true, |_| true),
+        None
+    );
+}
+
+#[test]
+fn description_rotation_advances_after_the_supplier_actually_used() {
+    let [first, second, _] = suppliers();
+    let peers = [first, second];
+    // First is unavailable at the initial attempt, so the second peer is used.
+    assert_eq!(
+        description_supplier(&peers, None, |peer| peer != first, |_| true),
+        Some(second)
+    );
+    // When First becomes available, the next turn must not repeat Second.
+    assert_eq!(
+        description_supplier(&peers, Some(second), |_| true, |_| true),
+        Some(first)
+    );
 }
 
 #[test]

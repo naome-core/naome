@@ -119,6 +119,7 @@ struct Wanted {
     since: Instant,
     retry: Instant,
     attempts: usize,
+    last_supplier: Option<PeerId>,
 }
 
 fn inventory_preempts_description(next: Option<Instant>, now: Instant) -> bool {
@@ -130,14 +131,17 @@ fn inventory_preempts_description(next: Option<Instant>, now: Instant) -> bool {
 
 fn description_supplier(
     peers: &[PeerId],
-    attempts: usize,
+    last_supplier: Option<PeerId>,
     mut request_ready: impl FnMut(PeerId) -> bool,
     mut automatic_ready: impl FnMut(PeerId) -> bool,
 ) -> Option<PeerId> {
+    let next = last_supplier
+        .and_then(|last| peers.iter().position(|peer| *peer == last))
+        .map_or(0, |index| index + 1);
     let peer = peers
         .iter()
         .cycle()
-        .skip(attempts % peers.len().max(1))
+        .skip(next % peers.len().max(1))
         .take(peers.len())
         .find(|peer| request_ready(**peer))
         .copied()?;
@@ -1164,6 +1168,7 @@ impl Node {
                 since: Instant::now(),
                 retry: Instant::now(),
                 attempts: 0,
+                last_supplier: None,
             },
         );
         Ok(true)
@@ -1753,10 +1758,10 @@ impl Node {
             if remaining == 0 {
                 break;
             }
-            let attempts = self.wanted[&id].attempts;
+            let last_supplier = self.wanted[&id].last_supplier;
             let Some(peer) = description_supplier(
                 &enabled,
-                attempts,
+                last_supplier,
                 |peer| self.request_ready(peer, now),
                 |peer| self.automatic_request_ready(peer, now) && !inventory_urgent.contains(&peer),
             ) else {
@@ -1764,6 +1769,7 @@ impl Node {
             };
             let wanted = self.wanted.get_mut(&id).expect("queued description");
             wanted.attempts += 1;
+            wanted.last_supplier = Some(peer);
             wanted.retry = now + crate::resources::limits().reconcile_interval;
             let request = self
                 .swarm

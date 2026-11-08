@@ -849,6 +849,7 @@ impl Job {
                 p.training_cost.unavailable_fragments = engine.cost.unavailable_fragments;
                 p.training_cost.witnessed_preferences = engine.cost.witnessed_preferences;
                 p.training_cost.hindsight_matches = engine.cost.hindsight_matches;
+                p.training_cost.checked_repairs = engine.cost.checked_repairs;
                 p.training_cost.observed_sequences = engine.cost.observed_sequences;
                 p.training_cost.sampled_sequence_edges = p
                     .training_cost

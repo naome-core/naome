@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Budget {
     Expansions,
+    BranchExpansions,
     Depth,
     Time,
 }
@@ -276,8 +277,8 @@ impl ExperienceSummary {
     }
 }
 
-/// A journal-owned operational observation. It carries no reusable proof;
-/// positive training labels still require the admitted-source reconstruction.
+/// A journal-owned operational observation. Replay material becomes a
+/// positive training label only after independent checking.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Observation {
