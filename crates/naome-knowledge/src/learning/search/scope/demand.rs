@@ -52,6 +52,10 @@ impl Atom {
     }
 }
 
+pub(super) fn atomic(formula: &Formula) -> bool {
+    Atom::read(formula.view()).is_some()
+}
+
 pub(super) fn offers(goal: &Formula, facts: &[Formula]) -> Vec<(ScopedAction, Formula)> {
     let Some(goal) = Atom::read(goal.view()) else {
         return Vec::new();

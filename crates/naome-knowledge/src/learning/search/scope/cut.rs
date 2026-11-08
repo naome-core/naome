@@ -1,4 +1,4 @@
-//! Checked cuts for transport that exceeds one local search scope.
+//! Checked conditional cuts for transport beyond one local search scope.
 use super::{
     ACTIONS, BTreeSet, Command, FACTS, Formula, FreeVariable, Projection, ProofFormula, Scope,
     ScopedAction, demand,
@@ -10,6 +10,8 @@ use naome_proof::{
     program::{ACTION_PREMISES, SCOPE_ASSUMPTIONS},
 };
 
+mod witness;
+
 const SEGMENT_ACTIONS: usize = if ACTIONS < ACTION_PREMISES - 1 {
     ACTIONS
 } else {
@@ -20,7 +22,14 @@ const SERIAL_PATH: usize = 2 * SEGMENT_ACTIONS + ACTIONS - 2;
 
 /// Each group is an alternative route. All questions in a group must be proved.
 pub(crate) fn questions(target: &Formula) -> Vec<Vec<ResearchQuestion>> {
-    route(target).map_or_else(Vec::new, |route| {
+    let Some(scope) = Scope::open(target).ok().flatten() else {
+        return Vec::new();
+    };
+    let cuts = witness::cuts(&scope);
+    if !cuts.is_empty() {
+        return cuts.into_iter().map(|cut| vec![cut.question]).collect();
+    }
+    route(scope).map_or_else(Vec::new, |route| {
         route
             .groups()
             .into_iter()
@@ -39,7 +48,29 @@ pub(crate) fn plan(
     count: usize,
     select: impl Fn(&Formula) -> Option<ProofId>,
 ) -> Option<Plan> {
-    let route = route(target)?;
+    let scope = Scope::open(target).ok().flatten()?;
+    if count == 1
+        && let Some((cut, proof)) = witness::cuts(&scope).into_iter().find_map(|cut| {
+            let proof = select(cut.question.proved_target())?;
+            Some((cut, proof))
+        })
+    {
+        // Charge each bound variable and used assumption, plus the reference,
+        // vacuous generalization and discharge that connect the two proofs.
+        let work = scope.binders.len() + cut.opened.free_variables().len() + cut.inputs.len() + 3;
+        let replacement = unused(&cut.opened).identifier();
+        return Some(Plan {
+            scope,
+            sources: vec![(proof, cut.opened)],
+            actions: vec![ScopedAction::Instantiate {
+                universal: 0,
+                replacement,
+                premises: cut.inputs.into_iter().map(|index| index + 1).collect(),
+            }],
+            work,
+        });
+    }
+    let route = route(scope)?;
     let sources = route.groups().into_iter().find_map(|segments| {
         if segments.len() != count {
             return None;
@@ -49,7 +80,7 @@ pub(crate) fn plan(
             .map(|segment| Some((select(segment.question.proved_target())?, segment)))
             .collect::<Option<Vec<_>>>()
     })?;
-    Some(Plan { route, sources })
+    Some(route.plan(sources))
 }
 
 struct Route {
@@ -65,8 +96,10 @@ struct Step {
 }
 
 pub(crate) struct Plan {
-    route: Route,
-    sources: Vec<(ProofId, Segment)>,
+    scope: Scope,
+    sources: Vec<(ProofId, Formula)>,
+    actions: Vec<ScopedAction>,
+    work: usize,
 }
 
 struct Segment {
@@ -76,8 +109,7 @@ struct Segment {
     question: ResearchQuestion,
 }
 
-fn route(target: &Formula) -> Option<Route> {
-    let scope = Scope::open(target).ok().flatten()?;
+fn route(scope: Scope) -> Option<Route> {
     let mut facts = scope.assumptions.clone();
     let base = facts.len();
     let mut path = Vec::new();
@@ -179,46 +211,22 @@ impl Route {
     }
 }
 
-impl Plan {
-    pub(crate) fn work(&self) -> usize {
-        let length = self.route.path.len();
-        length + self.sources.len() + length - self.sources.last().unwrap().1.end
-    }
-
-    pub(crate) fn commands(&self) -> Vec<Command> {
-        let count = self.sources.len() as u32;
-        let base = self.route.scope.assumptions.len() as u32;
-        let variables = self
-            .sources
-            .iter()
-            .map(|(_, segment)| {
-                let used = segment.opened.free_variables();
-                let unused = (0..=u32::MAX)
-                    .map(FreeVariable::new)
-                    .find(|variable| !used.contains(variable))
-                    .expect("bounded cut variables");
-                (used, unused)
-            })
-            .collect::<Vec<_>>();
-        let assumptions = self
-            .sources
-            .iter()
-            .zip(&variables)
-            .map(|((_, segment), (_, unused))| Formula::for_all(*unused, segment.opened.clone()))
-            .chain(self.route.scope.assumptions.iter().cloned())
-            .map(ProofFormula::from)
-            .collect::<Vec<_>>();
+impl Route {
+    fn plan(self, sources: Vec<(ProofId, Segment)>) -> Plan {
+        let count = sources.len() as u32;
+        let base = self.scope.assumptions.len() as u32;
+        let end = sources.last().expect("nonempty cut sources").1.end;
         let mut actions = Vec::new();
-        for (i, ((_, segment), (_, unused))) in self.sources.iter().zip(&variables).enumerate() {
+        for (i, (_, segment)) in sources.iter().enumerate() {
             actions.push(ScopedAction::Instantiate {
                 universal: i as u32,
-                replacement: unused.identifier(),
+                replacement: unused(&segment.opened).identifier(),
                 premises: segment
                     .inputs
                     .iter()
-                    .map(|&p| {
-                        if p < base {
-                            p + count
+                    .map(|&premise| {
+                        if premise < base {
+                            premise + count
                         } else {
                             base + count + i as u32 - 1
                         }
@@ -226,18 +234,57 @@ impl Plan {
                     .collect(),
             });
         }
-        let end = self.sources.last().unwrap().1.end;
-        for (offset, step) in self.route.path[end..].iter().enumerate() {
+        for (offset, step) in self.path[end..].iter().enumerate() {
             actions.push(ScopedAction::Instantiate {
                 universal: step.universal + count,
                 replacement: step.replacement,
                 premises: vec![base + 2 * count + offset as u32 - 1],
             });
         }
+        let length = self.path.len();
+        Plan {
+            scope: self.scope,
+            work: length + sources.len() + length - end,
+            sources: sources
+                .into_iter()
+                .map(|(proof, segment)| (proof, segment.opened))
+                .collect(),
+            actions,
+        }
+    }
+}
+
+fn unused(formula: &Formula) -> FreeVariable {
+    let used = formula.free_variables();
+    (0..=u32::MAX)
+        .map(FreeVariable::new)
+        .find(|variable| !used.contains(variable))
+        .expect("bounded cut variables")
+}
+
+impl Plan {
+    pub(crate) fn work(&self) -> usize {
+        self.work
+    }
+
+    pub(crate) fn commands(&self) -> Vec<Command> {
+        let variables = self
+            .sources
+            .iter()
+            .map(|(_, opened)| (opened.free_variables(), unused(opened)))
+            .collect::<Vec<_>>();
+        let assumptions = self
+            .sources
+            .iter()
+            .zip(&variables)
+            .map(|((_, opened), (_, unused))| Formula::for_all(*unused, opened.clone()))
+            .chain(self.scope.assumptions.iter().cloned())
+            .map(ProofFormula::from)
+            .collect::<Vec<_>>();
         let mut commands = Projection::scoped(
             &assumptions,
-            &actions,
-            (assumptions.len() + actions.len() - 1) as u32,
+            &self.actions,
+            (assumptions.len() + self.actions.len() - 1) as u32,
             &[],
         );
         let Some(Command::Seal {
@@ -271,7 +318,7 @@ impl Plan {
             });
             conclusion = index;
         }
-        for variable in self.route.scope.binders.iter().rev() {
+        for variable in self.scope.binders.iter().rev() {
             let index = commands.len() as u64;
             commands.push(Command::Generalization {
                 premise: conclusion,

@@ -55,6 +55,30 @@ fn solve(question: &ResearchQuestion, budget: usize) -> Option<Solution> {
     result.solution
 }
 
+// Independent proof checking reserves process-wide memory. Keep the
+// checker-heavy scope regressions separate from concurrent tests.
+fn isolated(name: &str) -> bool {
+    const CHILD: &str = "NAOME_SCOPE_TEST";
+    let test = format!("learning::search::scope::tests::{name}");
+    if std::env::var(CHILD).as_deref() == Ok(test.as_str()) {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test.as_str(), "--nocapture"])
+        .env(CHILD, &test)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("running 1 test"),
+        "{}
+{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
 #[test]
 fn a_wide_transport_scope_pays_for_each_actual_step_and_replays_its_choice() {
     let question = transport();
@@ -89,6 +113,9 @@ fn a_wide_transport_scope_pays_for_each_actual_step_and_replays_its_choice() {
 
 #[test]
 fn a_free_variable_does_not_hide_a_later_scoped_witness() {
+    if !isolated("a_free_variable_does_not_hide_a_later_scoped_witness") {
+        return;
+    }
     let [a, b, c, d, witness] = [0, 1, 2, 3, 4].map(FreeVariable::new);
     let initial = Formula::member(a, b);
     let change_member = Formula::for_all(
@@ -270,26 +297,7 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
 #[test]
 fn a_long_transport_requires_both_checked_segments_under_the_local_allowance() {
     use crate::learning::{Prerequisites, solve_with_report};
-    // Independent checker work uses a process-wide memory lease. Keep this
-    // regression in its own process so parallel tests share no checker pool.
-    const CASE: &str = concat!(
-        "learning::search::scope::tests::",
-        "a_long_transport_requires_both_checked_segments_under_the_local_allowance"
-    );
-    const CHILD: &str = "NAOME_LONG_TRANSPORT_SCOPE_TEST";
-    if std::env::var(CHILD).as_deref() != Ok(CASE) {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", CASE, "--nocapture"])
-            .env(CHILD, CASE)
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success() && stdout.contains("running 1 test"),
-            "{}\n{}",
-            stdout,
-            String::from_utf8_lossy(&output.stderr)
-        );
+    if !isolated("a_long_transport_requires_both_checked_segments_under_the_local_allowance") {
         return;
     }
     let subject = FreeVariable::new(0);
@@ -431,4 +439,108 @@ fn scoped_program_applies_two_premises_in_one_checked_action() {
     {}
     while !checker.prepare_export(64).unwrap() {}
     assert_eq!(checker.checked().unwrap().conclusion(), Some(&target));
+}
+
+#[test]
+fn a_checked_witness_cut_discharges_a_wide_existential_goal() {
+    if !isolated("a_checked_witness_cut_discharges_a_wide_existential_goal") {
+        return;
+    }
+    use crate::learning::{Prerequisites, solve_with_report};
+
+    let question = ResearchQuestion::from_hex(concat!(
+        "0404040404040404030403010100000003010000000001010000000201000000000304030101000000070100000000",
+        "0101000000000100000004030204020101000000070100000000030403010100000006010000000003010100000000",
+        "0100000005010100000003010000000003040301010000000001000000050301010000000001000000040101000000",
+        "0001000000010304030101000000080100000000010100000000010000000503020402010100000008010000000003",
+        "0403010100000008010000000001010000000601000000000204020101000000020100000000",
+    )).unwrap();
+    let cross_witness = ResearchQuestion::from_hex(concat!(
+        "0404040404040404030403010100000000010000000503010100000000010000000401010000000001000000010304",
+        "0301010000000301000000000101000000000100000002030204020101000000070100000000030403010100000008",
+        "0100000000010100000000010000000503040301010000000001000000060301010000000001000000040101000000",
+        "0301000000000304030101000000080100000000010100000000010000000603040301010000000701000000000101",
+        "0000000001000000040302040201010000000801000000000204020101000000030100000000",
+    )).unwrap();
+    assert!(cut::questions(cross_witness.proved_target()).is_empty());
+
+    let target = question.proved_target();
+    let groups = cut::questions(target);
+    let [group] = groups.as_slice() else {
+        panic!("expected one same-witness route");
+    };
+    let [helper] = group.as_slice() else {
+        panic!("expected one helper in the route");
+    };
+    assert!(solve(&question, 32).is_none());
+    let mut engine = Engine::default();
+    let mut store = crate::learning::tests::MemoryStore::default();
+    let generated = engine
+        .with(&Checkpoint::fresh(), &mut store, |runtime| {
+            solve_with_report(
+                &helper.to_hex(),
+                runtime,
+                128,
+                1,
+                SolveContext {
+                    native_programs: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let found = generated.solution.unwrap_or_else(|| {
+        panic!(
+            "the normal Solver must prove the smaller question: {} ({:?}) for {}",
+            generated.diagnostic,
+            generated.terminal,
+            helper.to_hex()
+        )
+    });
+    found.check_target(helper).unwrap();
+    let Tree::Program(packet) = found.tree else {
+        panic!("expected a native witness proof");
+    };
+    let id = packet.manifest.proof_id();
+    let required = [crate::hex(id.as_bytes())];
+    let cut = cut::plan(target, 1, |formula| {
+        (formula == helper.proved_target()).then_some(id)
+    })
+    .expect("the exact checked witness is applicable");
+    assert!(cut::plan(target, 1, |_| None).is_none());
+    let work = cut.work();
+    let inputs = Prerequisites::from_inputs(Vec::new(), vec![*packet], None).unwrap();
+    let context = || SolveContext {
+        required: &required,
+        prerequisites: Some(&inputs),
+        native_programs: true,
+        ..Default::default()
+    };
+    let mut run = |limit| {
+        engine
+            .with(&Checkpoint::fresh(), &mut store, |runtime| {
+                solve_with_report(&question.to_hex(), runtime, limit, 1, context())
+            })
+            .unwrap()
+    };
+    assert!(run(work - 1).solution.is_none());
+    let result = run(work);
+    assert_eq!(result.cost.search_expansions, work);
+    let solution = result
+        .solution
+        .expect("the checked witness cut proves the original goal");
+    solution.check_target(&question).unwrap();
+    let Tree::Program(packet) = solution.tree else {
+        panic!("expected a native proof using the cut");
+    };
+    let references = packet
+        .commands()
+        .unwrap()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::ProofReference { proof_id } => Some(proof_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(references, [*id.as_bytes()]);
 }
