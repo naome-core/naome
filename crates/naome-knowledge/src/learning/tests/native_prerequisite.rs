@@ -365,3 +365,84 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
     .join()
     .unwrap();
 }
+
+#[test]
+fn finder_uses_only_the_shorter_checked_universal_route() {
+    const TEST: &str = "learning::tests::native_prerequisite::finder_uses_only_the_shorter_checked_universal_route";
+    if std::env::var_os("NAOME_NATIVE_QUANTIFIED_ROUTE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_NATIVE_QUANTIFIED_ROUTE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    let (short, fast, fast_base) = donor(34);
+    let (long, slow, slow_base) = donor(12);
+    let [x, y, z] = [0, 1, 2].map(FreeVariable::new);
+    let target = Formula::member(x, y);
+    let first = Formula::member(y, x);
+    let second = Formula::member(x, x);
+    let rules = [
+        Formula::implies(short, Formula::for_all(z, Formula::member(z, y))),
+        Formula::implies(long, first.clone()),
+        Formula::implies(first, second.clone()),
+        Formula::implies(second, target.clone()),
+    ];
+    let target = rules.into_iter().rev().fold(target, |goal, assumption| {
+        Formula::implies(assumption, goal)
+    });
+    let question = ResearchQuestion::from_formula(proof::close(target)).unwrap();
+
+    let mut graph = crate::Graph::default();
+    for program in [&slow_base, &slow] {
+        register_program(&mut graph, program);
+    }
+    let directory = crate::checkpoint::tests::Directory::new();
+    let seed = 6715;
+    let frontier = crate::frontier::Frontier::open(
+        &directory.0,
+        &graph,
+        seed,
+        crate::jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let budget = 9;
+    let slow_id = crate::hex(slow.manifest.proof_id().as_bytes());
+    let (required, inputs) = frontier.solving_inputs(&graph, &question, &[]).unwrap();
+    assert_eq!(required.as_slice(), std::slice::from_ref(&slow_id));
+    let longer = solve(&question, &required, &inputs, seed, budget).unwrap();
+    assert!(longer.solution.is_none());
+    assert_eq!(longer.cost.search_expansions, budget);
+
+    for program in [&fast_base, &fast] {
+        register_program(&mut graph, program);
+    }
+    let (required, inputs) = frontier.solving_inputs(&graph, &question, &[]).unwrap();
+    let fast_id = fast.manifest.proof_id();
+    assert_eq!(required, [crate::hex(fast_id.as_bytes())]);
+    let shorter = solve(&question, &required, &inputs, seed, budget).unwrap();
+    assert!(shorter.cost.search_expansions <= budget);
+    let solution = shorter.solution.expect("shorter checked route fits");
+    let copy = question.clone();
+    std::thread::spawn(move || {
+        solution.check_target(&copy).unwrap();
+        let search::Tree::Program(program) = &solution.tree else {
+            panic!("native solution expected");
+        };
+        assert!(program.commands().unwrap().iter().any(|command| {
+            matches!(command, Command::ProofReference { proof_id } if proof_id == fast_id.as_bytes())
+        }));
+    })
+    .join()
+    .unwrap();
+
+    let (planned, _) = frontier
+        .solving_inputs(&graph, &question, std::slice::from_ref(&slow_id))
+        .unwrap();
+    assert_eq!(planned, [slow_id]);
+}

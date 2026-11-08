@@ -24,15 +24,60 @@ fn close(mut formula: Formula) -> Formula {
     }
     formula
 }
-fn open(formula: &Formula) -> Option<Formula> {
-    let fresh = formula
+fn fresh_opening(formula: &Formula) -> Option<FreeVariable> {
+    formula
         .free_variables()
         .last()
-        .map_or(Some(0), |v| v.identifier().checked_add(1))?;
-    formula.open_outer_universal(FreeVariable::new(fresh))
+        .map_or(Some(0), |v| v.identifier().checked_add(1))
+        .map(FreeVariable::new)
 }
-/// Closed antecedents on a bounded backward implication path to the goal.
-pub(super) fn closed_cut_sources(goal: &Formula) -> Vec<Formula> {
+fn open(formula: &Formula) -> Option<Formula> {
+    formula.open_outer_universal(fresh_opening(formula)?)
+}
+pub(super) struct CutRoutes {
+    pub exact: Vec<(Formula, usize)>,
+    pub quantified: Vec<(Formula, usize)>,
+}
+
+/// Closed witnesses on short backward paths through assumptions.
+pub(super) fn closed_cut_routes(goal: &Formula, allow_instances: bool) -> CutRoutes {
+    fn sources(
+        body: &Formula,
+        rules: &[(Formula, Formula)],
+        quantified: &[(usize, Formula, FreeVariable)],
+    ) -> Vec<(Formula, usize)> {
+        let mut reachable = vec![(body, 0usize)];
+        let mut cursor = 0;
+        while let Some((wanted, distance)) = reachable.get(cursor).copied() {
+            for (antecedent, consequent) in rules {
+                if consequent == wanted && !reachable.iter().any(|(seen, _)| *seen == antecedent) {
+                    reachable.push((antecedent, distance + 1));
+                }
+            }
+            if !quantified.is_empty() {
+                let variables = wanted.free_variables();
+                for (index, opened, binder) in quantified {
+                    let universal = &rules[*index].1;
+                    if !reachable.iter().any(|(seen, _)| *seen == universal)
+                        && (opened == wanted
+                            || variables.iter().take(16).any(|variable| {
+                                opened.clone().substitute_free(*binder, *variable) == *wanted
+                            }))
+                    {
+                        reachable.push((universal, distance + 1));
+                    }
+                }
+            }
+            cursor += 1;
+        }
+        reachable
+            .into_iter()
+            .skip(1)
+            .filter(|(formula, _)| formula.is_closed())
+            .map(|(formula, distance)| (formula.clone(), distance))
+            .collect()
+    }
+
     let mut body = goal.clone();
     while let Some(opened) = open(&body) {
         body = opened;
@@ -47,22 +92,24 @@ pub(super) fn closed_cut_sources(goal: &Formula) -> Vec<Formula> {
         }
         body = conclusion;
     }
-
-    let mut reachable = vec![body];
-    let mut cursor = 0;
-    while let Some(wanted) = reachable.get(cursor).cloned() {
-        for (antecedent, consequent) in &rules {
-            if *consequent == wanted && !reachable.contains(antecedent) {
-                reachable.push(antecedent.clone());
-            }
-        }
-        cursor += 1;
-    }
-    reachable
-        .into_iter()
-        .skip(1)
-        .filter(Formula::is_closed)
-        .collect()
+    let quantified = rules
+        .iter()
+        .take(if allow_instances { rules.len() } else { 0 })
+        .enumerate()
+        .filter_map(|(index, (_, consequent))| {
+            let binder = fresh_opening(consequent)?;
+            consequent
+                .open_outer_universal(binder)
+                .map(|opened| (index, opened, binder))
+        })
+        .collect::<Vec<_>>();
+    let exact = sources(&body, &rules, &[]);
+    let quantified = if quantified.is_empty() {
+        Vec::new()
+    } else {
+        sources(&body, &rules, &quantified)
+    };
+    CutRoutes { exact, quantified }
 }
 
 fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {

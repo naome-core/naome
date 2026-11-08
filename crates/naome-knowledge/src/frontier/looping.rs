@@ -149,14 +149,30 @@ impl Frontier {
                     return Ok((witnesses, inputs));
                 }
             }
+            let routes = finder::closed_cut_routes(question.proved_target(), self.native);
             let mut witnesses = Vec::new();
-            for antecedent in finder::closed_cut_sources(question.proved_target()) {
+            let mut best_exact = usize::MAX;
+            for (antecedent, distance) in routes.exact {
                 if let Some(id) = witness(&antecedent)?
                     && !witnesses.contains(&id)
                 {
+                    best_exact = best_exact.min(distance);
                     witnesses.push(id);
                     if witnesses.len() == 4 {
                         break;
+                    }
+                }
+            }
+            // A strictly shorter route needs just one checked witness. Extra
+            // alternatives can trigger inferences that spend its allowance.
+            for (antecedent, distance) in routes.quantified {
+                if distance >= best_exact {
+                    break;
+                }
+                if let Some(id) = witness(&antecedent)? {
+                    let selected = vec![id];
+                    if let Some(inputs) = graph.solving_inputs(&selected, definitions)? {
+                        return Ok((selected, inputs));
                     }
                 }
             }
