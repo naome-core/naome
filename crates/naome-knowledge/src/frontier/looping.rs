@@ -202,7 +202,7 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
     work
 }
 impl Frontier {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "developer-tools"))]
     pub(crate) fn support_updates(&self) -> u64 {
         self.evidence.model().supports
     }

@@ -25,7 +25,7 @@ pub fn app(function: Term, argument: Term) -> Result<Term, String> {
 pub fn axiom(step: ProofStep) -> Result<Term, String> {
     Ok(Term::Kernel(Kernel::new(step)?))
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "developer-tools"))]
 pub fn identity(formula: Formula, names: &mut Names) -> Term {
     let (id, value) = names.assumption(formula.clone());
     Term::Lambda(id, formula, Box::new(value))

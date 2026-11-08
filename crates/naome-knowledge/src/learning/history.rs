@@ -360,7 +360,7 @@ impl Working {
 }
 
 impl Job {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "developer-tools"))]
     pub(super) fn preflight_history<I: ArtifactIo + ?Sized>(
         &self,
         io: &mut I,

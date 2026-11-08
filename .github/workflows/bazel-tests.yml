@@ -28,16 +28,25 @@ jobs:
       - name: Install pinned Bazel
         run: bash tools/ci/install-bazel.sh
 
-      - name: Configure local Cargo resolver cache
-        run: echo "CARGO_HOME=$HOME/.cache/naome-bazel/cargo" >> "$GITHUB_ENV"
+      - name: Restore Cargo downloads
+        continue-on-error: true
+        id: cargo-downloads
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Restore local Bazel cache
         continue-on-error: true
         id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/naome-bazel
-          key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml', '.github/workflows/*.yml') }}
+          path: |
+            ~/.cache/naome-bazel/disk
+            ~/.cache/naome-bazel/repository
+          key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml') }}
 
       - name: Build and lint product and test targets
         run: >-
@@ -45,9 +54,23 @@ jobs:
           --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
           --output_groups=+clippy_checks
           //:mr_build //:mr_tests //crates/... //vendor/...
+          --profile="$RUNNER_TEMP/naome-bazel-build.json.gz"
 
       - name: Run fast regression tests
-        run: bazel test --config=ci //:mr_tests
+        run: >-
+          bazel test --config=ci //:mr_tests
+          --profile="$RUNNER_TEMP/naome-bazel-test.json.gz"
+
+      - name: Retain Bazel timing profiles
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bazel-timing-${{ inputs.runner }}
+          path: ${{ runner.temp }}/naome-bazel-*.json.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 7
 
       - name: Verify tracked sources are unchanged
         run: git diff --exit-code HEAD
@@ -59,5 +82,26 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/naome-bazel
+          path: |
+            ~/.cache/naome-bazel/disk
+            ~/.cache/naome-bazel/repository
           key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Prime locked Cargo downloads from main
+        if: >-
+          ${{ success() && github.event_name == 'push' &&
+              github.ref == 'refs/heads/main' && steps.cargo-downloads.outputs.cache-hit != 'true' }}
+        id: fetch-cargo
+        continue-on-error: true
+        run: |
+          cargo fetch --locked --target "$(rustc --version --verbose | sed -n 's/^host: //p')"
+
+      - name: Save Cargo downloads from main
+        if: ${{ success() && steps.fetch-cargo.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: ${{ steps.cargo-downloads.outputs.cache-primary-key }}
