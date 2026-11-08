@@ -631,6 +631,9 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::PeerCursorBeyondGraph => {
+                    "peer learning cursor exceeds checked graph"
+                }
                 crate::ResearchFailure::ConflictingProviders => {
                     "native and mock providers are mutually exclusive"
                 }

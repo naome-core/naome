@@ -1140,3 +1140,18 @@ fn a_backlog_write_failure_halts_storage_instead_of_becoming_an_input_rejection(
     assert!(graph.storage_error().is_some());
     assert_eq!(graph.accepted_count(), 0);
 }
+
+#[test]
+fn peer_learning_rejects_cursor_beyond_checked_graph_with_code() {
+    let graph = Graph::default();
+    let error = graph.peer_learning_page(1).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::Research(crate::ResearchFailure::PeerCursorBeyondGraph)
+    ));
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::PeerCursorBeyondGraph)
+    );
+}

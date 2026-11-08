@@ -134,7 +134,7 @@ impl Graph {
     ) -> Result<Vec<(u64, ArtifactId, Option<libp2p::PeerId>)>, crate::Error> {
         self.ensure_live()?;
         if after > self.count as u64 {
-            return Err("peer learning cursor exceeds checked graph".into());
+            return Err(crate::ResearchFailure::PeerCursorBeyondGraph.into());
         }
         self.cold(self.store.peer_learning_page(
             after,
