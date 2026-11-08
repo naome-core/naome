@@ -3,10 +3,17 @@ use super::*;
 use naome_foundation::graph::Node as FormulaNode;
 use naome_proof::{
     ProofFormula,
-    program::{Command, Projection, ScopedAction},
+    program::{Command, Projection, SCOPE_ASSUMPTIONS, ScopedAction},
 };
 
+mod demand;
+#[cfg(test)]
+mod tests;
+
 const ACTIONS: usize = 8;
+const FACTS: usize = 32;
+const OFFERS: usize = 16;
+const GENERAL_ASSUMPTIONS: usize = 8;
 
 struct Scope {
     binders: Vec<FreeVariable>,
@@ -38,7 +45,7 @@ impl Scope {
             goal = result;
         }
         if assumptions.is_empty()
-            || assumptions.len() > 8
+            || assumptions.len() > SCOPE_ASSUMPTIONS.min(FACTS)
             || !assumptions
                 .iter()
                 .any(|f| matches!(f.view().graph_node(), FormulaNode::ForAll(_)))
@@ -52,7 +59,28 @@ impl Scope {
         }))
     }
 
-    fn offers(&self, facts: &[Formula]) -> Vec<(ScopedAction, Formula)> {
+    fn offers(&self, facts: &[Formula]) -> (Vec<(ScopedAction, Formula)>, bool) {
+        let demanded = demand::offers(&self.goal, facts);
+        if self.assumptions.len() > GENERAL_ASSUMPTIONS {
+            return (demanded, true);
+        }
+        if demanded.is_empty() {
+            return (self.general_offers(facts), false);
+        }
+        // Keep the existing scored menu for a closing step already offered
+        // at the start of an ordinary narrow scope.
+        if facts.len() == self.assumptions.len() && demanded[0].1 == self.goal {
+            let general = self.general_offers(facts);
+            if general.iter().any(|(action, result)| {
+                result == &self.goal && demanded.iter().any(|(candidate, _)| candidate == action)
+            }) {
+                return (general, false);
+            }
+        }
+        (demanded, true)
+    }
+
+    fn general_offers(&self, facts: &[Formula]) -> Vec<(ScopedAction, Formula)> {
         let mut offered = Vec::new();
         let mut variables = self.goal.free_variables();
         for fact in facts {
@@ -101,7 +129,7 @@ impl Scope {
         // Ensure a closing inference stays available even when there are
         // more legal instances than the model's existing decision envelope.
         offered.sort_by_key(|(_, result)| *result != self.goal);
-        offered.truncate(16);
+        offered.truncate(OFFERS);
         offered
     }
 
@@ -110,41 +138,61 @@ impl Scope {
         facts: &[Formula],
         offers: &[(ScopedAction, Formula)],
         expert: usize,
+        compact: bool,
     ) -> Decision {
+        let mut candidates: Vec<_> = offers
+            .iter()
+            .map(|(action, result)| {
+                let (rule, premises) = match action {
+                    ScopedAction::Instantiate {
+                        universal,
+                        premises,
+                        ..
+                    } => (
+                        Rule::UniversalInstance,
+                        std::iter::once(*universal)
+                            .chain(premises.iter().copied())
+                            .map(|i| i as usize)
+                            .collect(),
+                    ),
+                    ScopedAction::Conjoin { left, right } => (
+                        Rule::ConstructionPlan,
+                        vec![*left as usize, *right as usize],
+                    ),
+                };
+                Candidate {
+                    rule,
+                    premises,
+                    consequences: vec![result.clone()],
+                }
+            })
+            .collect();
+        let positions = if compact {
+            candidates
+                .iter()
+                .flat_map(|candidate| candidate.premises.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            (0..facts.len()).collect()
+        };
+        if compact {
+            for candidate in &mut candidates {
+                for premise in &mut candidate.premises {
+                    *premise = positions.binary_search(premise).expect("offered operand");
+                }
+            }
+        }
         Decision {
             goal: self.goal.clone(),
-            context: facts
-                .iter()
-                .cloned()
-                .map(|formula| Binding { formula })
-                .collect(),
-            candidates: offers
-                .iter()
-                .map(|(action, result)| {
-                    let (rule, premises) = match action {
-                        ScopedAction::Instantiate {
-                            universal,
-                            premises,
-                            ..
-                        } => (
-                            Rule::UniversalInstance,
-                            std::iter::once(*universal)
-                                .chain(premises.iter().copied())
-                                .map(|i| i as usize)
-                                .collect(),
-                        ),
-                        ScopedAction::Conjoin { left, right } => (
-                            Rule::ConstructionPlan,
-                            vec![*left as usize, *right as usize],
-                        ),
-                    };
-                    Candidate {
-                        rule,
-                        premises,
-                        consequences: vec![result.clone()],
-                    }
+            context: positions
+                .into_iter()
+                .map(|position| Binding {
+                    formula: facts[position].clone(),
                 })
                 .collect(),
+            candidates,
             expert,
         }
     }
@@ -161,18 +209,19 @@ pub(in crate::learning) fn search(
     };
     let mut facts = scope.assumptions.clone();
     let mut actions = Vec::new();
-    for _ in 0..maximum.min(ACTIONS) {
+    let allowance = maximum.min(ACTIONS).min(FACTS - facts.len());
+    for _ in 0..allowance {
         if started.elapsed() >= Duration::from_millis(2500) {
             break;
         }
-        let offered = scope.offers(&facts);
+        let (offered, compact) = scope.offers(&facts);
         if offered.is_empty() {
             break;
         }
         let selected = if offered.len() == 1 {
             0
         } else {
-            let scores = match ranker.scores(&scope.decision(&facts, &offered, 0)) {
+            let scores = match ranker.scores(&scope.decision(&facts, &offered, 0, compact)) {
                 Ok(scores) => scores,
                 Err(error) if error == "formula_graph_capacity" => break,
                 Err(error) => return Err(error),
@@ -200,7 +249,8 @@ pub(super) fn compile(
     target: &Formula,
     actions: &[ScopedAction],
 ) -> Result<(Term, Vec<Graph>), String> {
-    let (scope, graphs) = decision_graphs(target, actions)?;
+    let (scope, graphs) =
+        decision_graphs(target, actions)?.ok_or("scope trace action was not offered")?;
     let result = scope.assumptions.len() + actions.len() - 1;
     let mut term = deduce(&scope.assumptions, actions, result as u32)?;
     for variable in scope.binders.into_iter().rev() {
@@ -212,10 +262,10 @@ pub(super) fn compile(
 fn decision_graphs(
     target: &Formula,
     actions: &[ScopedAction],
-) -> Result<(Scope, Vec<Graph>), String> {
+) -> Result<Option<(Scope, Vec<Graph>)>, String> {
     let scope = Scope::open(target)?.ok_or("scope trace target differs")?;
-    if actions.is_empty() || actions.len() > ACTIONS {
-        return Err("scope trace action capacity".into());
+    if actions.is_empty() || actions.len() > ACTIONS.min(FACTS - scope.assumptions.len()) {
+        return Ok(None);
     }
     let mut facts = scope.assumptions.clone();
     let mut graphs = Vec::new();
@@ -223,13 +273,17 @@ fn decision_graphs(
         .encode_canonical()
         .map_err(|error| error.to_string())?;
     for (offset, action) in actions.iter().enumerate() {
-        let offered = scope.offers(&facts);
-        let selected = offered
-            .iter()
-            .position(|(choice, _)| choice == action)
-            .ok_or("scope trace action was not offered")?;
+        let (offered, compact) = scope.offers(&facts);
+        let Some(selected) = offered.iter().position(|(choice, _)| choice == action) else {
+            return Ok(None);
+        };
         if offered.len() > 1 {
-            let mut graph = Graph::encode(&scope.decision(&facts, &offered, selected))?;
+            let mut graph =
+                match Graph::encode(&scope.decision(&facts, &offered, selected, compact)) {
+                    Ok(graph) => graph,
+                    Err(error) if error == "formula_graph_capacity" => return Ok(None),
+                    Err(error) => return Err(error),
+                };
             graph.binding = super::super::digest(&(&target_bytes, &actions[..offset]));
             graphs.push(graph);
         }
@@ -238,7 +292,7 @@ fn decision_graphs(
     if facts.last() != Some(&scope.goal) {
         return Err("scope trace conclusion differs".into());
     }
-    Ok((scope, graphs))
+    Ok(Some((scope, graphs)))
 }
 
 pub(crate) fn program_graphs(target: &Formula, records: &[Command]) -> Result<Vec<Graph>, String> {
@@ -255,7 +309,9 @@ pub(crate) fn program_graphs(target: &Formula, records: &[Command]) -> Result<Ve
     {
         return Ok(Vec::new());
     }
-    Ok(decision_graphs(target, actions)?.1)
+    // An independently valid program may use a wider or different action
+    // menu. Only reproduce examples that the current search can offer.
+    Ok(decision_graphs(target, actions)?.map_or_else(Vec::new, |(_, graphs)| graphs))
 }
 
 pub(crate) fn verified(
