@@ -13,9 +13,15 @@ struct Node {
     question: ResearchQuestion,
     record: Option<evidence::Record>,
     children: Vec<usize>,
-    checked: Option<(String, u64)>,
+    cuts: Vec<usize>,
+    checked: Option<Checked>,
     depth: usize,
     available: bool,
+}
+struct Checked {
+    proof_id: String,
+    at: u64,
+    proves_requested_side: bool,
 }
 impl Node {
     fn load(
@@ -34,12 +40,19 @@ impl Node {
         memory.push(crate::resources::MemoryLease::acquire(bytes)?);
         let checked = if let Some(record) = &record
             && let Some(root) = &record.verified
+            && let Some(metadata) =
+                graph.describe(ArtifactId::from_bytes(crate::object::id_bytes(root)?))?
         {
-            let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
-            if Frontier::checked_target(graph, root, &question)? {
-                graph
-                    .describe(root)?
-                    .map(|m| (m.proof_id, record.verified_at))
+            let (_, statement, target) = metadata.compile(graph.checked_context())?;
+            if target.resolution_id() == question.resolution_id()
+                && target.core() == question.core()
+            {
+                Some(Checked {
+                    proof_id: metadata.proof_id,
+                    at: record.verified_at,
+                    proves_requested_side: statement
+                        == crate::object::target_id(question.proved_target())?,
+                })
             } else {
                 None
             }
@@ -50,6 +63,7 @@ impl Node {
             question,
             record,
             children: vec![],
+            cuts: vec![],
             checked,
             depth,
             available: true,
@@ -67,13 +81,30 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
         pending: vec![],
         required: vec![],
     };
+    let node = &nodes[index];
+    let last_attempt = node
+        .record
+        .as_ref()
+        .map_or(0, |record| record.last_attempt_at);
+    if let Some(checked) = node
+        .cuts
+        .iter()
+        .filter_map(|&child| nodes[child].checked.as_ref())
+        .find(|checked| checked.proves_requested_side && checked.at > last_attempt)
+    {
+        work.required.push((checked.proof_id.clone(), checked.at));
+        return work;
+    }
     for &child in &nodes[index].children {
+        let alternative = nodes[index].cuts.contains(&child);
         let node = &nodes[child];
         if !node.available {
             continue;
         }
         if let Some(proof) = &node.checked {
-            work.required.push(proof.clone());
+            if !alternative {
+                work.required.push((proof.proof_id.clone(), proof.at));
+            }
         } else if node.record.is_none() && !node.children.is_empty() && depth + 1 < DEPTH {
             let mut nested = next(nodes, child, depth + 1);
             if nested.pending.is_empty() {
@@ -85,6 +116,13 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
             .as_ref()
             .is_none_or(|r| r.last_outcome == Outcome::Candidate && !r.publication_abandoned)
         {
+            if alternative {
+                return Choice {
+                    target: index,
+                    pending: vec![child],
+                    required: vec![],
+                };
+            }
             work.pending.push(child);
         } else if depth + 1 < DEPTH
             && let Some(record) = &node.record
@@ -268,6 +306,9 @@ impl Frontier {
                 } else {
                     Vec::new()
                 };
+                let routes = (self.native && !sources.is_empty()).then(|| {
+                    finder::closed_cut_routes(nodes[index].question.proved_target(), true)
+                });
                 for source in sources {
                     let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
                     if helper.formula().view().node_count_and_depth().0
@@ -293,6 +334,15 @@ impl Frontier {
                         i
                     };
                     nodes[index].children.push(child);
+                    if routes.as_ref().is_some_and(|routes| {
+                        routes
+                            .exact
+                            .iter()
+                            .chain(&routes.quantified)
+                            .any(|(formula, _)| formula == nodes[child].question.proved_target())
+                    }) {
+                        nodes[index].cuts.push(child);
+                    }
                 }
             }
             index += 1;

@@ -1383,17 +1383,20 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
     let record_before = serde_json::to_vec(owner.journal.records.get(&id).unwrap()).unwrap();
     let accounts_before = serde_json::to_vec(&owner.journal.accounts).unwrap();
     let solution = checked_solution();
-    let mut graph = crate::Graph::default();
-    let root = graph.produce(&solution.source).unwrap().1.id;
-    owner
-        .journal
-        .learning
-        .as_mut()
-        .unwrap()
-        .remember_theorem(crate::learning::knowledge::Entry {
-            packet: graph.learning_certificate(root).unwrap().unwrap(),
-        })
-        .unwrap();
+    let question = naome_checker::question::ResearchQuestion::from_hex(
+        &crate::learning::tests::own_question(),
+    )
+    .unwrap();
+    let theorem = solution.theorem(&question).unwrap().unwrap();
+    assert!(
+        owner
+            .journal
+            .learning
+            .as_mut()
+            .unwrap()
+            .remember_theorem(theorem)
+            .unwrap()
+    );
     let next = owner.journal.next_id;
     let (reply, mut receive) = oneshot::channel();
     owner

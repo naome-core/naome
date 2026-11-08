@@ -475,3 +475,149 @@ fn finder_uses_only_the_shorter_checked_universal_route() {
         .unwrap()
         .unwrap();
 }
+
+#[test]
+fn an_observed_open_cut_schedules_one_helper_and_learns_from_its_checked_use() {
+    use crate::frontier::{Frontier, evidence};
+    use crate::jobs;
+
+    const TEST: &str = "learning::tests::native_prerequisite::an_observed_open_cut_schedules_one_helper_and_learns_from_its_checked_use";
+    if std::env::var_os("NAOME_NATIVE_OPEN_CUT_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_NATIVE_OPEN_CUT_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    fn publish(
+        frontier: &mut Frontier,
+        graph: &mut crate::Graph,
+        question: &ResearchQuestion,
+        generation: Generation,
+        job: u64,
+    ) -> naome_proof::ArtifactId {
+        let solution = generation.solution.expect("native solution");
+        assert!(!solution.refuted);
+        let search::Tree::Program(program) = &solution.tree else {
+            panic!("a native program is required");
+        };
+        let root = program.manifest.artifact_id();
+        register_program(graph, program);
+        let completion = jobs::Completion {
+            experience: None,
+            model_checkpoint: None,
+            id: job,
+            binding: jobs::Binding::new([0; 32], [0; 32]),
+            spent_ms: 1,
+            reserved_units: 1,
+            state: jobs::State::Complete,
+            result: Ok(jobs::Output::Native {
+                terminal: Box::new(generation.terminal),
+                solution: Some(solution),
+                diagnostic: generation.diagnostic,
+                frontier: generation.frontier,
+            }),
+        };
+        frontier
+            .attempted(question, graph, &completion, evidence::Outcome::Candidate)
+            .unwrap();
+        frontier.prepared(question, job, root).unwrap();
+        frontier.verified(question, graph, job, root).unwrap();
+        root
+    }
+    let (_, alternatives) = super::helper_goal();
+    let [a, b, c, d, z] = [0, 1, 2, 3, 10].map(FreeVariable::new);
+    let target = Formula::member(a, b);
+    let consequent = Formula::for_all(z, Formula::member(z, b));
+    let rules = [
+        Formula::implies(alternatives[0].proved_target().clone(), consequent.clone()),
+        Formula::implies(alternatives[1].proved_target().clone(), consequent),
+        Formula::implies(Formula::member(b, a), Formula::equal(a, b)),
+        Formula::implies(Formula::equal(a, b), Formula::member(c, b)),
+        Formula::implies(Formula::member(c, b), Formula::equal(c, a)),
+        Formula::implies(Formula::equal(c, a), Formula::member(b, d)),
+    ];
+    let formula = rules.into_iter().rev().fold(target, |goal, assumption| {
+        Formula::implies(assumption, goal)
+    });
+    let goal = ResearchQuestion::from_formula(proof::close(formula)).unwrap();
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = crate::Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let seed = 1401;
+    let budget = 14;
+    let capacity_directory = crate::checkpoint::tests::Directory::new();
+    let mut capacity = Frontier::open(&capacity_directory.0, &graph, seed, settings).unwrap();
+    let before = capacity.learning_snapshot();
+    let blocked = evidence::observed_completion(
+        &goal,
+        1,
+        experience::TerminalEvidence::Unsupported(experience::Capacity::Facts),
+        budget,
+        None,
+    );
+    capacity
+        .attempted(&goal, &graph, &blocked, evidence::Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(capacity.learning_snapshot(), before);
+    let (_, work) = capacity.loop_focus(&graph, |_| true).unwrap().unwrap();
+    assert_eq!(
+        work.pending.as_slice(),
+        std::slice::from_ref(&alternatives[0])
+    );
+    drop(work);
+    drop(capacity);
+
+    let mut frontier = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+    let miss = attempt(&goal, None, seed, budget).unwrap();
+    assert!(miss.solution.is_none());
+    assert!(
+        miss.terminal
+            .observed_search_failure(miss.cost.search_expansions)
+    );
+    let completion =
+        evidence::observed_completion(&goal, 1, miss.terminal, miss.cost.search_expansions, None);
+    frontier
+        .attempted(&goal, &graph, &completion, evidence::Outcome::NoCandidate)
+        .unwrap();
+    drop(frontier);
+
+    let mut frontier = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+    let (open, work) = frontier.loop_focus(&graph, |_| true).unwrap().unwrap();
+    assert_eq!(open.resolution_id(), goal.resolution_id());
+    assert_eq!(work.planned.len(), 2);
+    assert_eq!(
+        work.pending.as_slice(),
+        std::slice::from_ref(&alternatives[0])
+    );
+    assert!(work.required.is_empty());
+    drop(work);
+    let helper = &alternatives[0];
+    let generation = attempt(helper, None, seed, budget).unwrap();
+    let helper_root = publish(&mut frontier, &mut graph, helper, generation, 2);
+    let (open, work) = frontier.loop_focus(&graph, |_| true).unwrap().unwrap();
+    assert_eq!(open.resolution_id(), goal.resolution_id());
+    assert!(work.pending.is_empty());
+    assert_eq!(work.required.len(), 1);
+    let (required, inputs) = frontier
+        .solving_inputs(&graph, &open, &work.required)
+        .unwrap();
+    let result = solve(&open, &required, &inputs, seed, budget).unwrap();
+    assert!(result.cost.search_expansions <= budget);
+    let root = publish(&mut frontier, &mut graph, &open, result, 3);
+    assert_eq!(
+        graph.learning_proof_dependencies(root).unwrap().as_ref(),
+        &[helper_root]
+    );
+    assert_eq!(frontier.support_updates(), 1);
+    assert!(frontier.loop_focus(&graph, |_| true).unwrap().is_none());
+    drop(work);
+    drop(frontier);
+    let reopened = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+    assert_eq!(reopened.support_updates(), 1);
+}

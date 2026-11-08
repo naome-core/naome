@@ -18,6 +18,12 @@ pub(crate) enum Outcome {
     Expired,
     InDoubt,
 }
+#[derive(Clone, Copy)]
+enum Observation {
+    Resolved(u64),
+    Exhausted(u64),
+    CutBlocked,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
@@ -289,8 +295,12 @@ impl Evidence {
                     record.verified_job = record.last_job;
                     let question =
                         ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
-                    self.put_observation(&question, &record, Some((true, record.verified_ms)))
-                        .map_err(|e| e.to_string())?;
+                    self.put_observation(
+                        &question,
+                        &record,
+                        Some(Observation::Resolved(record.verified_ms)),
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
                 after = Some(key);
             }
@@ -375,21 +385,30 @@ impl Evidence {
         &mut self,
         question: &ResearchQuestion,
         record: &Record,
-        observation: Option<(bool, u64)>,
+        observation: Option<Observation>,
     ) -> Result<(), crate::Error> {
         let mut header = self.header.clone();
         let mut record = record.clone();
-        if let Some((resolved, millis)) = observation {
+        if let Some(observation) = observation {
             header.observations = header
                 .observations
                 .checked_add(1)
                 .ok_or("finder observation overflow")?;
-            if resolved && record.verified_at == 0 {
-                record.verified_at = header.observations;
-            } else if !resolved && record.first_unresolved_at == 0 {
+            if matches!(observation, Observation::Resolved(_)) {
+                if record.verified_at == 0 {
+                    record.verified_at = header.observations;
+                }
+            } else if record.first_unresolved_at == 0 {
                 record.first_unresolved_at = header.observations;
             }
-            if crate::learning::State::eligible(&question.to_hex()) {
+            let label = match observation {
+                Observation::Resolved(millis) => Some((true, millis)),
+                Observation::Exhausted(millis) => Some((false, millis)),
+                Observation::CutBlocked => None,
+            };
+            if let Some((resolved, millis)) = label
+                && crate::learning::State::eligible(&question.to_hex())
+            {
                 header
                     .learning
                     .observe(&mut header.model, question, resolved, millis)?;
@@ -494,50 +513,72 @@ impl Evidence {
             record.verified_units = record.last_units;
             record.verified_ms = completion.spent_ms;
         }
-        let observed_search = !self.native
-            || experience.is_some_and(|summary| {
-                summary.terminal.observed_search_failure(
-                    summary
-                        .cost
-                        .as_ref()
-                        .map_or(0, |cost| cost.search_expansions),
+        use crate::learning::experience::{Capacity, TerminalEvidence};
+        let completed_open =
+            completion.state == jobs::State::Complete && outcome == Outcome::NoCandidate;
+        let expansions = experience
+            .and_then(|summary| summary.cost.as_ref())
+            .map_or(0, |cost| cost.search_expansions);
+        let exhausted = completed_open
+            && (!self.native
+                || experience
+                    .is_some_and(|summary| summary.terminal.observed_search_failure(expansions)));
+        let cut_blocked = self.native
+            && completed_open
+            && expansions > 0
+            && experience.is_some_and(|summary| {
+                matches!(
+                    summary.terminal,
+                    TerminalEvidence::Unsupported(Capacity::Facts | Capacity::Graph)
                 )
             });
-        let observation = (completion.state == jobs::State::Complete
-            && outcome == Outcome::NoCandidate
-            && observed_search)
-            .then_some((false, completion.spent_ms));
+        let eligible =
+            (exhausted || cut_blocked) && crate::learning::State::eligible(&question.to_hex());
+        let bytes = crate::resources::active_limits().question_cache_bytes / 2;
+        let mut candidates = if self.native && eligible && record.helpers.is_empty() {
+            finder::cut_helpers(question, 4, bytes)
+        } else {
+            Vec::new()
+        };
+        // Capacity limits can motivate an exact decomposition. They establish
+        // chronology for checked downstream use without training a miss.
+        let observation = if exhausted {
+            Some(Observation::Exhausted(completion.spent_ms))
+        } else if cut_blocked
+            && (!candidates.is_empty()
+                || record.first_unresolved_job > 0 && !record.helpers.is_empty())
+        {
+            Some(Observation::CutBlocked)
+        } else {
+            None
+        };
         record.last_attempt_at = self
             .header
             .observations
             .checked_add(u64::from(observation.is_some()))
             .ok_or("finder observation overflow")?;
-        if observation.is_some()
+        if exhausted
+            && eligible
             && (record.frontier.is_none() || knowledge_changed)
             && let Ok(jobs::Output::Native {
                 frontier: Some(frontier),
                 ..
             }) = &completion.result
-            && crate::learning::State::eligible(&question.to_hex())
         {
             frontier.validate(question)?;
-            for helper in finder::from_frontier(
-                question,
-                frontier,
-                4,
-                crate::resources::active_limits().question_cache_bytes / 2,
-            ) {
-                if record.helpers.len() >= 4 {
-                    break;
-                }
-                if !record.helpers.iter().any(|source| {
-                    ResearchQuestion::from_hex(source)
-                        .is_ok_and(|q| q.resolution_id() == helper.resolution_id())
-                }) {
-                    record.helpers.push(helper.to_hex());
-                }
-            }
+            candidates.extend(finder::from_frontier(question, frontier, 4, bytes));
             record.frontier = Some(frontier.clone());
+        }
+        for helper in candidates {
+            if record.helpers.len() >= 4 {
+                break;
+            }
+            if !record.helpers.iter().any(|source| {
+                ResearchQuestion::from_hex(source)
+                    .is_ok_and(|q| q.resolution_id() == helper.resolution_id())
+            }) {
+                record.helpers.push(helper.to_hex());
+            }
         }
         if observation.is_some() && record.first_unresolved_job == 0 {
             record.first_unresolved_job = completion.id;
@@ -687,7 +728,11 @@ impl Evidence {
         record.verified = Some(crate::hex(root.as_bytes()));
         record.verified_job = job;
         record.verified_units = record.last_units;
-        self.put_observation(question, &record, Some((true, record.verified_ms)))?;
+        self.put_observation(
+            question,
+            &record,
+            Some(Observation::Resolved(record.verified_ms)),
+        )?;
         Ok(Some((record.verified_units, record.verified_ms)))
     }
 

@@ -115,6 +115,30 @@ pub(super) fn closed_cut_routes(goal: &Formula, allow_instances: bool) -> CutRou
     CutRoutes { exact, quantified }
 }
 
+/// A closed witness is a question to prove independently before it can be
+/// supplied to the original goal. Each returned witness is an alternative.
+pub(super) fn cut_helpers(
+    goal: &ResearchQuestion,
+    maximum: usize,
+    bytes: usize,
+) -> Vec<ResearchQuestion> {
+    let routes = closed_cut_routes(goal.proved_target(), true);
+    let mut ranked = routes.exact;
+    ranked.extend(routes.quantified);
+    ranked.sort_by_key(|(_, distance)| *distance);
+    let goal_nodes = goal.formula().view().node_count_and_depth().0;
+    let questions = ranked
+        .into_iter()
+        .filter_map(|(formula, _)| ResearchQuestion::from_formula(formula).ok())
+        .filter(|helper| {
+            helper.formula().view().node_count_and_depth().0 < goal_nodes
+                && helper.resolution_id() != goal.resolution_id()
+                && independent_goal(helper, goal)
+        })
+        .collect();
+    bounded(questions, maximum, bytes)
+}
+
 fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {
     let free = formula.free_variables().into_iter().collect::<Vec<_>>();
     if free.len() != 2 {
