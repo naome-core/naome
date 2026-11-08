@@ -103,7 +103,7 @@ pub trait Ranker {
         memory: Option<&Memory>,
     ) -> Result<Plan, crate::Error> {
         if memory.is_some() {
-            return Err("stateless ranker received working memory".into());
+            return Err(crate::ResearchFailure::StatelessRankerMemory.into());
         }
         Ok(Plan::scores(if d.candidates.len() == 1 {
             vec![0.]
@@ -300,7 +300,7 @@ impl Runtime {
     pub(super) fn recurrent(&self) -> bool {
         self.recurrence != Recurrence::Disabled
     }
-    pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, String> {
+    pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, crate::Error> {
         Ok(self.plan_graph(graph, "", None)?.scores)
     }
     fn scoring_batch(&self, graph: &Graph) -> Result<Batch, String> {
@@ -526,7 +526,7 @@ fn loss_value(loss: &Tensor<1>) -> Result<f32, String> {
 }
 impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
-        self.scores_graph(&Graph::encode(d)?).map_err(Into::into)
+        self.scores_graph(&Graph::encode(d)?)
     }
     fn plan(
         &mut self,
@@ -535,7 +535,7 @@ impl Ranker for Runtime {
         offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, crate::Error> {
-        self.plan_graph(graph, offered, memory).map_err(Into::into)
+        self.plan_graph(graph, offered, memory)
     }
     fn identity(&self) -> Option<String> {
         Some(super::digest(&(&self.identity, self.recurrence)))
@@ -756,7 +756,9 @@ impl Engine {
                 if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
                     self.with(&state.model, io, |runtime| {
-                        pool.reference_focus(&state.feedback, |g| runtime.scores_graph(g))
+                        pool.reference_focus(&state.feedback, |g| {
+                            runtime.scores_graph(g).map_err(Into::into)
+                        })
                     })?;
                     self.cost.preparation_micros = micros(preparation);
                 }
@@ -782,7 +784,9 @@ impl Engine {
         if current_focus && !pool.is_empty() {
             let preparation = std::time::Instant::now();
             self.with(c, io, |runtime| {
-                pool.focus(&state.feedback, |g| runtime.scores_graph(g))
+                pool.focus(&state.feedback, |g| {
+                    runtime.scores_graph(g).map_err(Into::into)
+                })
             })?;
             self.cost.preparation_micros = micros(preparation);
         } else if !phase.focused {

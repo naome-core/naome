@@ -1032,7 +1032,7 @@ struct Exploring<'a> {
     explore: bool,
 }
 impl Exploring<'_> {
-    fn scores_encoded(&mut self, graph: &graph::Graph) -> Result<Vec<f32>, String> {
+    fn scores_encoded(&mut self, graph: &graph::Graph) -> Result<Vec<f32>, crate::Error> {
         // Commit the draw only after the input passes the model's gates.
         let mut next = self.seed;
         let scores = if self.explore && model::random(&mut next).is_multiple_of(5) {
@@ -1050,7 +1050,6 @@ impl Exploring<'_> {
 impl model::Ranker for Exploring<'_> {
     fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         self.scores_encoded(&graph::Graph::encode(d)?)
-            .map_err(Into::into)
     }
     fn plan(
         &mut self,
@@ -1072,7 +1071,7 @@ impl model::Ranker for Exploring<'_> {
             plan
         } else {
             if memory.is_some() {
-                return Err("stateless exploration received memory".into());
+                return Err(crate::ResearchFailure::StatelessExplorationMemory.into());
             }
             model::Plan::scores(if d.candidates.len() == 1 {
                 vec![0.]

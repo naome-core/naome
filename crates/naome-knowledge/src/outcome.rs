@@ -630,6 +630,16 @@ codes! {
         HistoryRecordKeySyntax = 65, HistoryRecordKeyEncoding = 66,
         HistoryRequestJobMissing = 67, HistoryPageRequestMismatch = 68,
         HistoryCursorNotAdvanced = 69,
+        StatelessRankerMemory = 70,
+        MemoryActionIndex = 71,
+        MemoryTensorDecode = 72,
+        MemorySuccessor = 73,
+        MemoryCheckpointMissing = 74,
+        MemoryShapeOrValue = 75,
+        MemoryContext = 76,
+        MemoryPrediction = 77,
+        StatelessExplorationMemory = 78,
+        InvalidActionScores = 79,
     }
 
 }

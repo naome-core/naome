@@ -749,7 +749,7 @@ impl Search<'_> {
         };
         let scores = &plan.scores;
         if scores.len() != actions.len() || scores.iter().any(|s| !s.is_finite()) {
-            return Err("invalid native action scores".into());
+            return Err(crate::ResearchFailure::InvalidActionScores.into());
         }
         let mut order: Vec<_> = (0..actions.len()).collect();
         order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));

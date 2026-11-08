@@ -88,11 +88,13 @@ fn native_memory_binds_real_symbolic_successors_and_exact_checkpoint() {
             3 => wrong.values.pop().map(drop).unwrap(),
             _ => wrong.values[0] = f32::NAN,
         }
-        assert!(
-            runtime
-                .plan_graph(&child.graph, &child.offered, Some(&wrong))
-                .is_err()
-        );
+        let failure = runtime.plan_graph(&child.graph, &child.offered, Some(&wrong));
+        let expected = if change < 3 {
+            crate::ResearchFailure::MemoryContext
+        } else {
+            crate::ResearchFailure::MemoryShapeOrValue
+        };
+        assert!(matches!(failure, Err(crate::Error::Research(actual)) if actual == expected));
     }
     let mut reset_runtime = Runtime::load(&saved, &mut io).unwrap();
     reset_runtime.recurrence = Recurrence::Reset;
