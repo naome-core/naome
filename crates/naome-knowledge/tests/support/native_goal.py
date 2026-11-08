@@ -174,7 +174,7 @@ def run(trial):
                 progress = record["native"]["progress"]
                 if progress and progress["unit"] == 1:
                     assert progress["result"] is None
-                    return {"job": record["id"], "diagnostic": progress["diagnostic"],
+                    return {"job": record["id"], "qualification": progress["qualification"],
                             "reserved_units": record["reserved_units"], "cost": progress["cost"]}
         return None
 

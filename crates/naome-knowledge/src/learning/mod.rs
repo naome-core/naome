@@ -1,4 +1,5 @@
 //! Local operational learning state; never a mathematical artifact or gossip item.
+use crate::outcome::{GenerationOutcome, Qualification};
 mod artifact;
 mod calculus;
 mod construction;
@@ -199,7 +200,8 @@ pub(crate) struct Progress {
     pub meta_cpu_micros: u64,
     pub meta_wall_micros: u64,
     pub result: Option<Solution>,
-    pub diagnostic: String,
+    pub qualification: Qualification,
+    pub generation: Option<GenerationOutcome>,
     pub frontier: Option<SearchFrontier>,
     pub executions: Vec<SearchTrace>,
     pub terminal: experience::TerminalEvidence,
@@ -271,7 +273,7 @@ pub(crate) struct GenerationCost {
     pub definition_references: usize,
     pub definition_check_steps: usize,
     pub definition_micros: u64,
-    pub definition_failure: Option<String>,
+    pub(crate) definition_failure: Option<GenerationOutcome>,
     pub certificate_failures: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -773,7 +775,8 @@ impl Job {
             meta_cpu_micros: 0,
             meta_wall_micros: 0,
             result: None,
-            diagnostic: "no_new_accepted_solutions".into(),
+            qualification: Qualification::NoNewAcceptedSolutions,
+            generation: None,
         });
         let working = if self.units() > 1 && unit <= model::TRAINING_UNITS {
             self.prepare_history(&mut p, engine, io)?
@@ -858,14 +861,13 @@ impl Job {
                 p.first_loss.get_or_insert(first);
                 p.last_loss = Some(last);
                 p.candidate = Some(candidate);
-                p.diagnostic = if p.last_loss < p.first_loss {
-                    "candidate_requires_qualification"
+                p.qualification = if p.last_loss < p.first_loss {
+                    Qualification::Pending
                 } else {
-                    "optimization_or_representation_unresolved"
-                }
-                .into();
+                    Qualification::OptimizationUnresolved
+                };
             } else {
-                p.diagnostic = "no_ambiguous_training_decisions".into();
+                p.qualification = Qualification::NoAmbiguousTrainingDecisions;
             }
             if unit == model::TRAINING_UNITS {
                 p.trained = self.base.epoch;
@@ -918,23 +920,22 @@ impl Job {
                 {
                     p.model = candidate;
                     p.promotions += 1;
-                    p.diagnostic = "candidate_promoted".into();
+                    p.qualification = Qualification::Promoted;
                 } else {
                     p.rejections += 1;
-                    p.diagnostic = if p.development_regression {
-                        "development_regression_rejected"
+                    p.qualification = if p.development_regression {
+                        Qualification::DevelopmentRegression
                     } else if p.anchor_regression {
-                        "forgetting_rejected"
+                        Qualification::AnchorRegression
                     } else if p.candidate_score <= p.incumbent_score {
-                        "no_development_gain_rejected"
+                        Qualification::NoDevelopmentGain
                     } else if !p.transfer.complete() {
-                        "incomplete_transfer_rejected"
+                        Qualification::IncompleteTransfer
                     } else if p.transfer.loss() > 0. {
-                        "transfer_regression_rejected"
+                        Qualification::TransferRegression
                     } else {
-                        "no_transfer_gain_rejected"
-                    }
-                    .into();
+                        Qualification::NoTransferGain
+                    };
                 }
             }
             if self.units() > 1 && self.base.preparation == Preparation::Meta {
@@ -965,7 +966,6 @@ impl Job {
             if let Some(question) = question {
                 let q = ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
                 if curriculum::reserved(&crate::hex(q.resolution_id())) {
-                    p.diagnostic = "reserved_question_excluded".into();
                     p.terminal = experience::TerminalEvidence::NoSearch(
                         experience::NoSearch::ReservedQuestion,
                     );
@@ -990,9 +990,7 @@ impl Job {
                     p.frontier = generated.frontier;
                     p.executions = generated.executions;
                     p.terminal = generated.terminal;
-                    if generated.solution.is_none() {
-                        p.diagnostic = generated.diagnostic;
-                    }
+                    p.generation = Some(generated.diagnostic);
                     p.result = generated.solution;
                 }
             }
@@ -1021,7 +1019,7 @@ impl Job {
 }
 struct Generation {
     solution: Option<Solution>,
-    diagnostic: String,
+    diagnostic: GenerationOutcome,
     cost: GenerationCost,
     frontier: Option<SearchFrontier>,
     executions: Vec<SearchTrace>,
@@ -1129,7 +1127,7 @@ fn program_generation(
             refuted,
             tree: search::Tree::Program(Box::new(packet)),
         }),
-        diagnostic: "certified_program_candidate".into(),
+        diagnostic: GenerationOutcome::CertifiedProgram,
         cost,
         frontier: None,
         executions,
@@ -1302,11 +1300,10 @@ fn solve_with_report(
                                 .sum();
                         }
                     } else {
-                        cost.definition_failure =
-                            Some("definition certificate or helper capacity".into());
+                        cost.definition_failure = Some(GenerationOutcome::DefinitionLimit);
                     }
                 }
-                Err(error) => cost.definition_failure = Some(error),
+                Err(_) => cost.definition_failure = Some(GenerationOutcome::DefinitionCheckFailed),
             }
         }
         cost.definition_micros = definition_started
@@ -1337,7 +1334,7 @@ fn solve_with_definitions(
     job: u64,
     known: &[definitions::Entry],
     theorems: &[knowledge::Entry],
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+) -> Result<(Option<Solution>, GenerationOutcome, GenerationCost), String> {
     solve_with_report(
         source,
         model,
@@ -1358,7 +1355,7 @@ fn search_question_with_knowledge(
     budget: usize,
     theorems: &[knowledge::Entry],
     definitions: &[definitions::Entry],
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+) -> Result<(Option<Solution>, GenerationOutcome, GenerationCost), String> {
     search_question_report(
         source,
         ranker,
@@ -1376,7 +1373,7 @@ fn search_question(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
-) -> Result<(Option<Solution>, String), String> {
+) -> Result<(Option<Solution>, GenerationOutcome), String> {
     let (solution, diagnostic, _) = search_question_measured(source, ranker, budget)?;
     Ok((solution, diagnostic))
 }
@@ -1385,7 +1382,7 @@ fn search_question_measured(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+) -> Result<(Option<Solution>, GenerationOutcome, GenerationCost), String> {
     search_question_with_knowledge(source, ranker, budget, &[], &[])
 }
 #[cfg(test)]
@@ -1410,7 +1407,7 @@ fn search_compiled_question(
     let mut retrieval_micros = 0;
     let mut retrieved = 0;
     let mut dependency_steps = 0;
-    let mut failure = "calculus_or_strategy_unresolved".to_owned();
+    let mut failure = GenerationOutcome::Unresolved;
     let mut terminal = if budget == 0 {
         experience::TerminalEvidence::Budget(experience::Budget::Expansions)
     } else {
@@ -1523,9 +1520,9 @@ fn search_compiled_question(
                 );
                 let (verified, work) = match attempt {
                     Ok(result) => result,
-                    Err(error) => {
+                    Err(_) => {
                         certificate_failures += 1;
-                        failure = format!("composition_unresolved: {error}");
+                        failure = GenerationOutcome::CompositionFailed;
                         terminal = experience::TerminalEvidence::TechnicalFailure;
                         // An interrupted generator cannot claim unused allowance.
                         (None, remaining.min(16))
@@ -1556,9 +1553,9 @@ fn search_compiled_question(
                 tree: Some(search::Tree::Composed {
                     packet: match evidence::pack(&verified) {
                         Ok(packet) => packet,
-                        Err(error) => {
+                        Err(_) => {
                             certificate_failures += 1;
-                            failure = format!("composition_capacity: {error}");
+                            failure = GenerationOutcome::CompositionLimit;
                             terminal = experience::TerminalEvidence::Unsupported(
                                 experience::Capacity::Certificate,
                             );
@@ -1586,7 +1583,7 @@ fn search_compiled_question(
             let (selected, steps) = match selection {
                 Ok(selected) => selected,
                 Err(_error) if !terms.is_empty() => {
-                    failure = "temporary_prerequisite_composition_unresolved".into();
+                    failure = GenerationOutcome::PrerequisiteCompositionFailed;
                     terminal = experience::TerminalEvidence::Unsupported(
                         experience::Capacity::Dependencies,
                     );
@@ -1644,10 +1641,10 @@ fn search_compiled_question(
                     context.definitions,
                 ) {
                     Ok(result) => result,
-                    Err(error) => {
+                    Err(_) => {
                         certificate_failures += 1;
                         remaining = 0;
-                        failure = format!("construction_unresolved: {error}");
+                        failure = GenerationOutcome::ConstructionFailed;
                         terminal = experience::TerminalEvidence::TechnicalFailure;
                         break;
                     }
@@ -1665,9 +1662,9 @@ fn search_compiled_question(
                             &mut remaining,
                         ) {
                             Ok(bytes) => bytes,
-                            Err(error) => {
+                            Err(_) => {
                                 certificate_failures += 1;
-                                failure = format!("construction_capacity: {error}");
+                                failure = GenerationOutcome::ConstructionLimit;
                                 terminal = experience::TerminalEvidence::Unsupported(
                                     experience::Capacity::Certificate,
                                 );
@@ -1729,8 +1726,8 @@ fn search_compiled_question(
                             executions,
                         );
                     }
-                    Err(error) => {
-                        failure = format!("program_unresolved: {error}");
+                    Err(_) => {
+                        failure = GenerationOutcome::ProgramFailed;
                         terminal = experience::TerminalEvidence::CheckerRejected;
                         continue;
                     }
@@ -1738,9 +1735,9 @@ fn search_compiled_question(
             }
             let (tree, cost, verified) = match search::core::checked(&target, &tree) {
                 Ok(checked) => checked,
-                Err(error) => {
+                Err(_) => {
                     certificate_failures += 1;
-                    failure = format!("certificate_unresolved: {error}");
+                    failure = GenerationOutcome::CertificateFailed;
                     terminal = experience::TerminalEvidence::CheckerRejected;
                     continue;
                 }
@@ -1781,7 +1778,7 @@ fn search_compiled_question(
                         || source.len() + helpers.iter().map(String::len).sum::<usize>()
                             > 2 * crate::resources::limits().closure_bytes
                     {
-                        failure = "certificate_closure_capacity".into();
+                        failure = GenerationOutcome::CertificateClosureLimit;
                         terminal = experience::TerminalEvidence::Unsupported(
                             experience::Capacity::Certificate,
                         );
@@ -1827,19 +1824,19 @@ fn search_compiled_question(
                             refuted,
                             tree,
                         }),
-                        diagnostic: "certified_candidate".into(),
+                        diagnostic: GenerationOutcome::CertifiedCertificate,
                         cost: measured,
                         frontier: None,
                     });
                 }
                 Ok(_) => {
-                    failure = "certificate_capacity".into();
+                    failure = GenerationOutcome::CertificateLimit;
                     terminal = experience::TerminalEvidence::Unsupported(
                         experience::Capacity::Certificate,
                     );
                 }
-                Err(error) => {
-                    failure = format!("certificate_unresolved: {error}");
+                Err(_) => {
+                    failure = GenerationOutcome::CertificateFailed;
                     terminal = experience::TerminalEvidence::TechnicalFailure;
                 }
             }

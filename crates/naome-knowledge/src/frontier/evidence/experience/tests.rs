@@ -64,7 +64,6 @@ pub(crate) fn observed_completion(
         result: Ok(jobs::Output::Native {
             solution: None,
             terminal: Box::new(terminal),
-            diagnostic: "deliberately unrelated diagnostic text".into(),
             frontier,
         }),
     }

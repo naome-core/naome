@@ -189,7 +189,7 @@ fn warm(
     job_limits(&clock);
     serde_json::json!({"complete":true,"promoted":promoted,"selected":state.model,"parent_job":parent.job,
         "parent_checkpoint":parent.state.model,"prepared":progress.prepared,"plan":progress.plan,
-        "diagnostic":progress.diagnostic,"before":progress.incumbent_score,"after":progress.candidate_score,
+        "qualification":progress.qualification,"before":progress.incumbent_score,"after":progress.candidate_score,
         "protected_loss":progress.development_regression,"anchor_loss":progress.anchor_regression,"transfer":progress.transfer,
         "elapsed":clock.elapsed(),"source_read_bytes":io.source_bytes,"source_read_operations":io.source_reads,
         "model_read_bytes":io.store.read_bytes,"model_written_bytes":io.store.written_bytes,

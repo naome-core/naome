@@ -507,7 +507,6 @@ pub(crate) fn certificate_error(
     error: naome_proof::ProofCertificateError,
 ) -> crate::Error {
     crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
-        message: format!("malformed certificate: {error}"),
         input_digest: naome_checker::diagnostics::Digest::of(bytes),
         reason: crate::error::FormatFailure::from(&error),
     }))

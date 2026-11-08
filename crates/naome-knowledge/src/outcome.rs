@@ -262,6 +262,64 @@ codes! {
         Write = 6,
     }
 
+    pub(crate) enum Qualification in 15 {
+        NoNewAcceptedSolutions = 1,
+        Pending = 2,
+        OptimizationUnresolved = 3,
+        NoAmbiguousTrainingDecisions = 4,
+        Promoted = 5,
+        DevelopmentRegression = 6,
+        AnchorRegression = 7,
+        NoDevelopmentGain = 8,
+        IncompleteTransfer = 9,
+        TransferRegression = 10,
+        NoTransferGain = 11,
+    }
+
+    pub(crate) enum GenerationOutcome in 16 {
+        CertifiedProgram = 1,
+        CertifiedCertificate = 2,
+        Unresolved = 3,
+        CompositionFailed = 4,
+        CompositionLimit = 5,
+        PrerequisiteCompositionFailed = 6,
+        ConstructionFailed = 7,
+        ConstructionLimit = 8,
+        ProgramFailed = 9,
+        CertificateFailed = 10,
+        CertificateClosureLimit = 11,
+        CertificateLimit = 12,
+        SearchBudget = 13,
+        FactLimit = 14,
+        DefinitionLimit = 15,
+        GraphLimit = 16,
+        DefinitionCheckFailed = 17,
+        ProviderFailed = 18,
+    }
+
+    pub(crate) enum AbortFailure in 17 {
+        Clock = 1,
+        SignalStop = 2,
+        ChildExitedBeforeConfirmation = 3,
+        StopUnconfirmed = 4,
+        WaitAuthorityLost = 5,
+        StopDeadline = 6,
+        SessionUnconfirmed = 7,
+        Kill = 8,
+        Reap = 9,
+    }
+
+    pub(crate) enum AbortReaper in 18 {
+        None = 1,
+        WaitPid = 2,
+        OwnedChild = 3,
+    }
+
+    pub(crate) enum AbortSession in 19 {
+        Unknown = 1,
+        Detached = 2,
+        Inherited = 3,
+    }
 }
 
 impl InputLimit {

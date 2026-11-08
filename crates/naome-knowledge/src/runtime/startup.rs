@@ -135,7 +135,7 @@ impl Handoff {
         &self,
         pid: u32,
         token: &str,
-        report: &serde_json::Value,
+        report: &super::AbortReport,
     ) -> Result<(), String> {
         let observed_ns = native_ns()?;
         let timely = self

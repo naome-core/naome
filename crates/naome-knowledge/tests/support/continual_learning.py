@@ -16,7 +16,7 @@ import time
 
 from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
-from native_learning import verify_blobs, verify_meta
+from native_learning import Qualification, verify_blobs, verify_meta
 
 
 def audit_completed(record, candidate, selected_model):
@@ -30,7 +30,7 @@ def audit_completed(record, candidate, selected_model):
     assert transfer["observed"] == (1 << 24) - 1
     families = [((transfer["before"] >> (2*i) & 3).bit_count(),
                  (transfer["after"] >> (2*i) & 3).bit_count()) for i in range(12)]
-    accepted = progress["diagnostic"] == "candidate_promoted"
+    accepted = progress["qualification"] == Qualification.PROMOTED
     if accepted:
         assert progress["model"] == candidate
         assert progress["candidate_score"] > progress["incumbent_score"]
@@ -44,7 +44,7 @@ def audit_completed(record, candidate, selected_model):
             "source_updates": base["model"]["updates"],
             "candidate_updates": candidate["updates"],
             "selected_updates": progress["model"]["updates"],
-            "reason": progress["diagnostic"], "transfer_families": families,
+            "reason": progress["qualification"], "transfer_families": families,
             "development": [progress["incumbent_score"], progress["candidate_score"]],
             "cpu_micros": progress["cpu_micros"], "wall_micros": progress["wall_micros"]}
 

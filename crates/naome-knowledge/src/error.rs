@@ -77,7 +77,6 @@ impl From<&naome_proof::ProofCertificateError> for FormatFailure {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CertificateFormatError {
-    pub message: String,
     pub input_digest: naome_checker::diagnostics::Digest,
     pub reason: FormatFailure,
 }
@@ -139,10 +138,7 @@ pub enum Error {
     Deadline,
     InvalidInput(String),
     MissingQuestionDefinition(naome_proof::DefinitionId),
-    Proof {
-        message: String,
-        diagnostic: std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>,
-    },
+    Proof(std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>),
     DiagnosticInspection(naome_checker::diagnostics::InspectionError),
     CertificateFormat(Box<CertificateFormatError>),
     /// Invalid data read from owned storage remains fatal while retaining the
@@ -164,7 +160,7 @@ impl Error {
     /// The same mathematical contract survives both native proof paths.
     pub fn diagnostic(&self) -> Option<&naome_checker::diagnostics::ProofDiagnostic> {
         match self {
-            Self::Proof { diagnostic, .. } => Some(diagnostic),
+            Self::Proof(diagnostic) => Some(diagnostic),
             Self::Stored(error) => error.diagnostic(),
             _ => None,
         }
@@ -181,7 +177,7 @@ impl Error {
             Self::Deadline => OperationCode::Deadline,
             Self::InvalidInput(_) => OperationCode::InvalidInput,
             Self::MissingQuestionDefinition(_) => OperationCode::MissingQuestionDefinition,
-            Self::Proof { .. } => OperationCode::ProofCheck,
+            Self::Proof(_) => OperationCode::ProofCheck,
             Self::DiagnosticInspection(_) => OperationCode::DiagnosticInspection,
             Self::CertificateFormat(_) => OperationCode::CertificateFormat,
             Self::Stored(_) => OperationCode::InvalidStoredRecord,
@@ -217,7 +213,7 @@ impl Error {
             error @ (Self::InputFault(_) | Self::QuestionLimit(_) | Self::QuestionInput(_)) => {
                 Self::Stored(Box::new(error))
             }
-            error @ (Self::Proof { .. } | Self::CertificateFormat(_) | Self::ProgramCodec(_))
+            error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
                 if !error.retryable() =>
             {
                 Self::Stored(Box::new(error))
@@ -283,9 +279,16 @@ impl fmt::Display for Error {
             Self::MissingQuestionDefinition(id) => {
                 write!(f, "question definition unavailable: {id:?}")
             }
-            Self::Proof { message, .. } => f.write_str(message),
+            Self::Proof(diagnostic) => write!(
+                f,
+                "proof step {} violates {}",
+                diagnostic.location.step,
+                diagnostic.code()
+            ),
             Self::DiagnosticInspection(error) => error.fmt(f),
-            Self::CertificateFormat(error) => f.write_str(&error.message),
+            Self::CertificateFormat(error) => {
+                write!(f, "malformed certificate: {:?}", error.reason)
+            }
             Self::Stored(error) => write!(f, "storage halted: {error}"),
             Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
             Self::LearningEvidence(error) => error.fmt(f),
@@ -374,14 +377,7 @@ impl From<naome_checker::program::Error> for Error {
             return Self::ExecutionLimit;
         }
         match error {
-            naome_checker::program::Error::Check(diagnostic) => Self::Proof {
-                message: format!(
-                    "proof command {} violates {}",
-                    diagnostic.location.step,
-                    diagnostic.code()
-                ),
-                diagnostic: diagnostic.into(),
-            },
+            naome_checker::program::Error::Check(diagnostic) => Self::Proof(diagnostic.into()),
             naome_checker::program::Error::Inspection(error) => Self::DiagnosticInspection(error),
             naome_checker::program::Error::Invalid(message) => Self::InvalidInput(message),
             naome_checker::program::Error::Codec(error) => error.into(),
@@ -518,10 +514,7 @@ impl serde::Serialize for Error {
 
 impl From<naome_checker::CheckError> for Error {
     fn from(error: naome_checker::CheckError) -> Self {
-        Self::Proof {
-            message: error.to_string(),
-            diagnostic: error.into_diagnostic(),
-        }
+        Self::Proof(error.into_diagnostic())
     }
 }
 
@@ -539,12 +532,10 @@ impl From<naome_checker::DefinitionCheckError> for Error {
 
 impl From<naome_checker::question::ResolutionError> for Error {
     fn from(error: naome_checker::question::ResolutionError) -> Self {
-        let message = error.to_string();
         match error {
-            naome_checker::question::ResolutionError::Target(diagnostic) => Self::Proof {
-                message,
-                diagnostic: diagnostic.into(),
-            },
+            naome_checker::question::ResolutionError::Target(diagnostic) => {
+                Self::Proof(diagnostic.into())
+            }
             naome_checker::question::ResolutionError::Program(error) => error.into(),
         }
     }
@@ -561,7 +552,8 @@ impl From<naome_proof::QuestionError> for Error {
             naome_proof::QuestionError::MissingDefinition(id) => {
                 Self::MissingQuestionDefinition(id)
             }
-            error => Self::InvalidInput(error.to_string()),
+            naome_proof::QuestionError::Limit(limit) => Self::QuestionLimit(limit),
+            error => Self::QuestionInput(Box::new(error)),
         }
     }
 }

@@ -34,7 +34,7 @@ fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
     let generation = Generation {
         terminal: experience::TerminalEvidence::certified(&solution),
         solution: Some(solution.clone()),
-        diagnostic: String::new(),
+        diagnostic: crate::outcome::GenerationOutcome::Unresolved,
         cost,
         frontier: None,
         executions: Vec::new(),
@@ -171,7 +171,7 @@ fn live_sources_keep_their_actual_context_and_lifetime_admission() {
         let generation = Generation {
             terminal: experience::TerminalEvidence::certified(&solution),
             solution: Some(solution),
-            diagnostic: String::new(),
+            diagnostic: crate::outcome::GenerationOutcome::Unresolved,
             cost,
             frontier: None,
             executions: Vec::new(),

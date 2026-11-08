@@ -75,7 +75,7 @@ pub(super) struct Outcome {
     pub solved: bool,
     pub terminal: super::experience::TerminalEvidence,
     #[cfg(test)]
-    pub diagnostic: String,
+    pub diagnostic: crate::outcome::GenerationOutcome,
     pub micros: u64,
     #[cfg(test)]
     pub proof_id: Option<String>,

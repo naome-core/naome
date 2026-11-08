@@ -332,7 +332,7 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
                 "retain the original per-job model IO bound"
             );
             let p = job.progress.as_ref().unwrap();
-            gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"original_scores":p.original_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"first_loss":p.first_loss,"last_loss":p.last_loss,"training_cost":p.training_cost});
+            gate = serde_json::json!({"qualification":p.qualification,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"original_scores":p.original_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"first_loss":p.first_loss,"last_loss":p.last_loss,"training_cost":p.training_cost});
             assert!(state.qualify(&job));
             state.validate().unwrap();
             assert_eq!(digest(&dictionary), digest(&state.knowledge));
@@ -450,9 +450,9 @@ fn evaluate_arm(
         let elapsed = started.elapsed().as_micros();
         let (solution, diagnostic, cost) = match result {
             Ok(r) => r,
-            Err(e) => (
+            Err(_) => (
                 None,
-                format!("provider_error: {e}"),
+                GenerationOutcome::ProviderFailed,
                 GenerationCost::default(),
             ),
         };

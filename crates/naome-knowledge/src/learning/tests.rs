@@ -149,7 +149,7 @@ pub(crate) fn helper_goal() -> (ResearchQuestion, [ResearchQuestion; 2]) {
 pub(crate) fn own_example() -> Example {
     let question = own_question();
     let (solution, diagnostic) = search_question(&question, &mut Symbolic, 128).unwrap();
-    let solution = solution.unwrap_or_else(|| panic!("own native solution: {diagnostic}"));
+    let solution = solution.unwrap_or_else(|| panic!("own native solution: {diagnostic:?}"));
     Example {
         origin: Origin::Local,
         job: 41,
@@ -498,7 +498,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
     prior.wall_micros = 234567;
     prior.meta_cpu_micros = 23;
     prior.meta_wall_micros = 45;
-    prior.diagnostic = "no_ambiguous_training_decisions".into();
+    prior.qualification = Qualification::NoAmbiguousTrainingDecisions;
     job.progress = Some(prior);
     let original = digest(&job);
     let mut control = job.clone();
@@ -599,14 +599,14 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
         result: None,
-        diagnostic: "candidate_requires_qualification".into(),
+        qualification: Qualification::Pending,
         ..finished_progress(&job.base)
     });
     job.execute(job.units(), None, 42, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
-        job.progress.as_ref().unwrap().diagnostic,
-        "forgetting_rejected"
+        job.progress.as_ref().unwrap().qualification,
+        Qualification::AnchorRegression
     );
     assert!(state.qualify(&job));
     assert_eq!(state.model, incumbent);
@@ -630,8 +630,8 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     job.execute(job.units(), None, 43, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
-        job.progress.as_ref().unwrap().diagnostic,
-        "development_regression_rejected"
+        job.progress.as_ref().unwrap().qualification,
+        Qualification::DevelopmentRegression
     );
     assert!(alternate.qualify(&job));
     assert_eq!(alternate.model, incumbent);
@@ -657,8 +657,8 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     job.execute(job.units(), None, 44, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
-        job.progress.as_ref().unwrap().diagnostic,
-        "transfer_regression_rejected"
+        job.progress.as_ref().unwrap().qualification,
+        Qualification::TransferRegression
     );
     job.validate().unwrap();
 
@@ -667,7 +667,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     progress.model = candidate_for_transfer_regression;
     progress.promotions += 1;
     progress.rejections -= 1;
-    progress.diagnostic = "candidate_promoted".into();
+    progress.qualification = Qualification::Promoted;
     progress.development_after = crate::training::ability::Profile::new(digest(&progress.model));
     progress.finder = None;
     let mut worker_job = job.clone();
@@ -725,7 +725,8 @@ fn finished_progress(state: &State) -> Progress {
         regressions: [0; crate::training::ability::SKILLS],
         gains: [0; crate::training::ability::SKILLS],
         result: None,
-        diagnostic: String::new(),
+        qualification: Qualification::NoNewAcceptedSolutions,
+        generation: None,
     }
 }
 pub(crate) fn measured_progress() -> Progress {
@@ -900,7 +901,7 @@ pub(crate) fn completed(job: &mut Job, solution: Solution) {
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
         result: Some(solution),
-        diagnostic: "certified_candidate".into(),
+        qualification: Qualification::NoNewAcceptedSolutions,
         ..finished_progress(&job.base)
     });
 }
@@ -937,7 +938,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
         result: None,
-        diagnostic: "candidate_requires_qualification".into(),
+        qualification: Qualification::Pending,
         plan: Some(plan),
         ..finished_progress(&job.base)
     });
@@ -1437,7 +1438,7 @@ pub(crate) fn typed_scope_candidate(conjoin: bool) -> (ResearchQuestion, Solutio
         .unwrap();
     let solution = generation
         .solution
-        .unwrap_or_else(|| panic!("typed scope: {}", generation.diagnostic));
+        .unwrap_or_else(|| panic!("typed scope: {:?}", generation.diagnostic));
     let search::Tree::Scoped { target, actions } = &solution.tree else {
         panic!("native scope action trace absent");
     };
@@ -1547,7 +1548,7 @@ pub(crate) fn typed_definition_consumer(
         .unwrap();
     let solution = result
         .solution
-        .unwrap_or_else(|| panic!("typed context: {}", result.diagnostic));
+        .unwrap_or_else(|| panic!("typed context: {:?}", result.diagnostic));
     assert!(
         solution.cost.definition_references > 0,
         "{:?}",

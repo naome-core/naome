@@ -347,7 +347,6 @@ impl Input {
 pub(crate) enum Output {
     Native {
         solution: Option<crate::learning::Solution>,
-        diagnostic: String,
         frontier: Option<crate::learning::SearchFrontier>,
         terminal: Box<crate::learning::experience::TerminalEvidence>,
     },
@@ -391,20 +390,17 @@ impl Output {
             (
                 Self::Native {
                     solution,
-                    diagnostic,
                     frontier,
                     terminal,
                 },
                 Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
-            ) if diagnostic.len() <= 4096
-                && solution.as_ref().is_none_or(|s| {
-                    s.source.len() <= 2 * artifact_bytes
-                        && s.helpers.len() < objects
-                        && s.helpers
-                            .iter()
-                            .all(|source| source.len() <= 2 * artifact_bytes)
-                })
-                && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
+            ) if solution.as_ref().is_none_or(|s| {
+                s.source.len() <= 2 * artifact_bytes
+                    && s.helpers.len() < objects
+                    && s.helpers
+                        .iter()
+                        .all(|source| source.len() <= 2 * artifact_bytes)
+            }) && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
             {
                 terminal.validate(solution.as_ref())?;
                 if let Some(report) = frontier {

@@ -372,8 +372,8 @@ def handoff_abort_case(trial, node, name, active_ns):
         assert done["observed_ns"] <= min(time.clock_gettime_ns(time.CLOCK_MONOTONIC), active_ns + 700_000_000)
         assert proof["complete"] is True and proof["original_child_reaped"] is True
         assert proof["original_child_pid"] == done["pid"]
-        assert proof["errors"] == [] and proof["authority_lost"] is False and "clock_error" not in proof
-        assert proof["session_state"] == "CONFIRMED_STOPPED_DETACHED_SESSION"
+        assert proof["errors"] == [] and proof["authority_lost"] is False
+        assert proof["session_state"] == 0x0013_0002  # AbortSession::Detached
         assert proof["owned_group_empty"] is True
         assert process.returncode == 1 and not forced
         assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) <= custodian_end

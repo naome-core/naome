@@ -29,7 +29,6 @@ fn resolve(frontier: &mut Frontier, graph: &mut Graph, q: &ResearchQuestion, job
         result: Ok(jobs::Output::Native {
             terminal: crate::learning::experience::TerminalEvidence::certified(&solution).into(),
             solution: Some(solution.clone()),
-            diagnostic: "certified_candidate".into(),
             frontier: None,
         }),
     };

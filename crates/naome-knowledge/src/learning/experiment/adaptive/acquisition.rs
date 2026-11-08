@@ -112,7 +112,6 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
             let output = crate::jobs::Output::Native {
                 terminal: experience.terminal.clone().into(),
                 solution: solution.clone(),
-                diagnostic: row["diagnostic"].as_str().unwrap().into(),
                 frontier: serde_json::from_value(row["frontier"].clone()).unwrap(),
             };
             let completion = crate::jobs::Completion {

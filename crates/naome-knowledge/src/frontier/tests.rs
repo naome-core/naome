@@ -1271,7 +1271,6 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
                 terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
                     .into(),
                 solution: Some(solution.clone()),
-                diagnostic: "certified_candidate".into(),
                 frontier: None,
             },
             jobs::State::Complete,

@@ -919,7 +919,7 @@ impl Owner {
                     && let Some(progress) = &native.progress
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"native_learning_qualification","job":id,"diagnostic":progress.diagnostic}),
+                        serde_json::json!({"event":"native_learning_qualification","job":id,"qualification":progress.qualification}),
                     );
                 }
             }
@@ -955,7 +955,7 @@ impl Owner {
             && let Some(update) = &progress.meta_update
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_meta_updated","job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.diagnostic}),
+                serde_json::json!({"event":"native_meta_updated","job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
             );
         }
         self.running.remove(&id);

@@ -48,7 +48,6 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
                     terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
                         .into(),
                     solution: Some(solution),
-                    diagnostic: "certified_candidate".into(),
                     frontier: None,
                 }),
             },

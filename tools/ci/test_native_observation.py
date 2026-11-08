@@ -69,7 +69,7 @@ class NativeObservationTests(unittest.TestCase):
         record = {'id': 42, 'input': {'role': 'train', 'source': 'owned'},
                   'native': {'base': {'preparation': 'Meta', 'meta': {'model': {'updates': 8}}},
                              'progress': {'meta_update': update, 'plan': {'plan': plan, 'context': [1]},
-                                          'transfer': transfer, 'diagnostic': 'no_transfer_gain_rejected',
+                                          'transfer': transfer, 'qualification': NATIVE.Qualification.NO_TRANSFER_GAIN,
                                           'meta_cpu_micros': 0, 'cpu_micros': 1,
                                           'meta_wall_micros': 0, 'wall_micros': 1}}}
         database = directory / 'research/jobs.sqlite3'

@@ -238,14 +238,12 @@ impl Provider for Native {
                     p.terminal =
                         crate::learning::experience::TerminalEvidence::certified(&solution);
                     p.result = Some(solution);
-                    p.diagnostic = "native_peer_dag_extracted".into();
                 }
-                Err(reason) => {
+                Err(_) => {
                     p.result = None;
                     p.terminal = crate::learning::experience::TerminalEvidence::Unsupported(
                         crate::learning::experience::Capacity::PeerConversion,
                     );
-                    p.diagnostic = reason;
                 }
             }
         }
@@ -263,7 +261,6 @@ impl Provider for Native {
                 let p = job.progress.as_ref().ok_or("native final state missing")?;
                 Output::Native {
                     solution: p.result.clone(),
-                    diagnostic: p.diagnostic.clone(),
                     frontier: p.frontier.clone(),
                     terminal: p.terminal.clone().into(),
                 }

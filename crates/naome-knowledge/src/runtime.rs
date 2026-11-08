@@ -912,21 +912,20 @@ async fn start_with_handoff(
         Err(error) => {
             let cleanup = match &handoff {
                 Some(owner) => {
-                    let (until, clock_error) = match owner.abort_deadline() {
-                        Ok(until) => (until, None),
-                        Err(error) => (Instant::now(), Some(error)),
-                    };
+                    let until = owner.abort_deadline();
+                    let clock_failed = until.is_err();
+                    let until = until.unwrap_or_else(|_| Instant::now());
                     let mut report =
                         abort_owned_handoff(&mut child, until, inherited_session).await?;
-                    if let Some(error) = clock_error {
-                        report["clock_error"] = serde_json::json!(error);
-                        report["complete"] = serde_json::json!(false);
+                    if clock_failed {
+                        report.errors.push(crate::outcome::AbortFailure::Clock);
+                        report.complete = false;
                     }
                     owner.report_abort(child.id(), &nonce, &report)?;
-                    if report["complete"] == true {
+                    if report.complete {
                         Ok(())
                     } else {
-                        Err(format!("owned startup abort incomplete: {report}"))
+                        Err("owned startup abort incomplete".into())
                     }
                 }
                 None => abort_start(&mut child).await,
@@ -941,11 +940,24 @@ async fn start_with_handoff(
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+struct AbortReport {
+    complete: bool,
+    original_child_pid: u32,
+    original_child_reaped: bool,
+    reaper: crate::outcome::AbortReaper,
+    session_state: crate::outcome::AbortSession,
+    owned_group_empty: Option<bool>,
+    errors: Vec<crate::outcome::AbortFailure>,
+    authority_lost: bool,
+}
+
 async fn abort_owned_handoff(
     child: &mut Child,
     deadline: Instant,
     inherited: Option<(nix::unistd::Pid, nix::unistd::Pid)>,
-) -> Result<serde_json::Value, String> {
+) -> Result<AbortReport, String> {
+    use crate::outcome::{AbortFailure, AbortReaper, AbortSession};
     use nix::sys::{
         signal::{Signal, kill, killpg},
         wait::{WaitPidFlag, WaitStatus, waitpid},
@@ -956,16 +968,16 @@ async fn abort_owned_handoff(
     let pid = nix::unistd::Pid::from_raw(
         i32::try_from(child.id()).map_err(|_| "invalid original handoff Child PID")?,
     );
-    let mut errors = Vec::<String>::new();
-    if let Err(error) = kill(pid, Signal::SIGSTOP) {
-        errors.push(format!("original Child stop: {error}"));
+    let mut errors = Vec::new();
+    if kill(pid, Signal::SIGSTOP).is_err() {
+        errors.push(AbortFailure::SignalStop);
     }
     let stable_end =
         deadline.min(Instant::now() + crate::resources::limits().detach_confirm_timeout);
     let mut stopped = false;
     let mut reaped = false;
     let mut authority_lost = false;
-    let mut reaper = "NONE";
+    let mut reaper = AbortReaper::None;
     loop {
         match waitpid(pid, Some(WaitPidFlag::WUNTRACED | WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::Stopped(actual, Signal::SIGSTOP)) if actual == pid => {
@@ -977,26 +989,23 @@ async fn abort_owned_handoff(
             {
                 // waitpid really reaped it. No group or PID signal follows.
                 reaped = true;
-                reaper = "waitpid";
-                errors.push(
-                    "original Child exited before stable session confirmation; group unknown"
-                        .into(),
-                );
+                reaper = AbortReaper::WaitPid;
+                errors.push(AbortFailure::ChildExitedBeforeConfirmation);
                 break;
             }
             Ok(WaitStatus::StillAlive) => {}
-            Ok(other) => {
-                errors.push(format!("unconfirmed original Child stop: {other:?}"));
+            Ok(_) => {
+                errors.push(AbortFailure::StopUnconfirmed);
                 break;
             }
-            Err(error) => {
+            Err(_) => {
                 authority_lost = true;
-                errors.push(format!("original Child wait authority: {error}"));
+                errors.push(AbortFailure::WaitAuthorityLost);
                 break;
             }
         }
         if Instant::now() >= stable_end {
-            errors.push("original Child stop confirmation deadline".into());
+            errors.push(AbortFailure::StopDeadline);
             break;
         }
         tokio::time::sleep(
@@ -1006,7 +1015,7 @@ async fn abort_owned_handoff(
         )
         .await;
     }
-    let mut state = "UNKNOWN";
+    let mut state = AbortSession::Unknown;
     let mut group_empty: Option<bool> = None;
     if stopped {
         match (
@@ -1014,28 +1023,26 @@ async fn abort_owned_handoff(
             nix::unistd::getsid(Some(pid)),
         ) {
             (Ok(group), Ok(session)) if group == pid && session == pid => {
-                state = "CONFIRMED_STOPPED_DETACHED_SESSION";
+                state = AbortSession::Detached;
                 group_empty = Some(false);
             }
             (Ok(group), Ok(session)) if inherited == Some((group, session)) => {
                 // The actually stopped child cannot race setsid after this
                 // observation. First-party daemon code calls setsid before work.
-                state = "CONFIRMED_STOPPED_BEFORE_DETACH";
+                state = AbortSession::Inherited;
             }
-            observed => errors.push(format!(
-                "stopped original Child session unproved: {observed:?}"
-            )),
+            _ => errors.push(AbortFailure::SessionUnconfirmed),
         }
     }
     if !reaped && !authority_lost {
         let signalled = if group_empty.is_some() {
             // Actual stopped/unreaped session leader pins this original group.
-            killpg(pid, Signal::SIGKILL).map_err(|e| e.to_string())
+            killpg(pid, Signal::SIGKILL).is_ok()
         } else {
-            child.kill().map_err(|e| e.to_string())
+            child.kill().is_ok()
         };
-        if let Err(error) = signalled {
-            errors.push(format!("original Child/group kill: {error}"));
+        if !signalled {
+            errors.push(AbortFailure::Kill);
         }
     }
     loop {
@@ -1043,12 +1050,12 @@ async fn abort_owned_handoff(
             match child.try_wait() {
                 Ok(Some(_)) => {
                     reaped = true;
-                    reaper = "std_Child_try_wait";
+                    reaper = AbortReaper::OwnedChild;
                 }
                 Ok(None) => {}
-                Err(error) => {
+                Err(_) => {
                     authority_lost = true;
-                    errors.push(format!("original Child reap: {error}"));
+                    errors.push(AbortFailure::Reap);
                 }
             }
         }
@@ -1056,7 +1063,7 @@ async fn abort_owned_handoff(
             // Query only after the sole group signal; never signal after reap.
             group_empty = Some(matches!(killpg(pid, None), Err(nix::errno::Errno::ESRCH)));
         }
-        let closure_known = group_empty == Some(true) || state == "CONFIRMED_STOPPED_BEFORE_DETACH";
+        let closure_known = group_empty == Some(true) || state == AbortSession::Inherited;
         if reaped && closure_known {
             break;
         }
@@ -1070,13 +1077,17 @@ async fn abort_owned_handoff(
         )
         .await;
     }
-    let closure_known = group_empty == Some(true) || state == "CONFIRMED_STOPPED_BEFORE_DETACH";
-    Ok(
-        serde_json::json!({"complete":errors.is_empty() && reaped && closure_known && Instant::now() <= deadline,
-        "original_child_pid":child.id(),"original_child_reaped":reaped,"reaper":reaper,
-        "session_state":state,"owned_group_empty":group_empty,"errors":errors,
-        "authority_lost":authority_lost}),
-    )
+    let closure_known = group_empty == Some(true) || state == AbortSession::Inherited;
+    Ok(AbortReport {
+        complete: errors.is_empty() && reaped && closure_known && Instant::now() <= deadline,
+        original_child_pid: child.id(),
+        original_child_reaped: reaped,
+        reaper,
+        session_state: state,
+        owned_group_empty: group_empty,
+        errors,
+        authority_lost,
+    })
 }
 
 async fn abort_start(child: &mut Child) -> Result<(), String> {

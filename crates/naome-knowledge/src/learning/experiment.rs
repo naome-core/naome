@@ -64,7 +64,6 @@ fn completed_search(
         result: Ok(crate::jobs::Output::Native {
             terminal: result.terminal.clone().into(),
             solution: result.solution.clone(),
-            diagnostic: result.diagnostic.clone(),
             frontier: result.frontier.clone(),
         }),
     }
@@ -270,7 +269,7 @@ fn train_seed(
                 io.0.retain(|(hash, _), _| keep.contains(hash));
             }
             let p = job.progress.as_ref().unwrap();
-            gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"original_score":p.original_score,"first_loss":p.first_loss,"last_loss":p.last_loss});
+            gate = serde_json::json!({"qualification":p.qualification,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"original_score":p.original_score,"first_loss":p.first_loss,"last_loss":p.last_loss});
             assert!(state.qualify(&job));
             state.validate().unwrap();
         }

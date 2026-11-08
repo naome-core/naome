@@ -13,6 +13,7 @@ use super::{
     model::{Binding, Candidate, Decision, Plan, Ranker, Rule},
     proof::Term,
 };
+use crate::outcome::GenerationOutcome;
 use naome_foundation::{Formula, FreeVariable};
 use naome_proof::ProofStep;
 use serde::{Deserialize, Serialize};
@@ -618,7 +619,7 @@ fn transition(
 pub struct ResultTree {
     pub tree: Option<Tree>,
     pub expansions: usize,
-    pub failure: Option<String>,
+    pub failure: Option<GenerationOutcome>,
     pub frontier: Option<frontier::Frontier>,
     pub terminal: TerminalEvidence,
     pub execution: Option<trace::Trace>,
@@ -629,7 +630,7 @@ struct Search<'a> {
     started: Instant,
     expansions: usize,
     maximum: usize,
-    failure: Option<String>,
+    failure: Option<GenerationOutcome>,
     exhausted: BTreeSet<String>,
     frontier: Option<frontier::Frontier>,
     terminal: TerminalEvidence,
@@ -650,7 +651,7 @@ impl Search<'_> {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
-            self.failure = Some("search_budget".into());
+            self.failure = Some(GenerationOutcome::SearchBudget);
             self.terminal
                 .include(TerminalEvidence::Budget(if depth > 32 {
                     Budget::Depth
@@ -668,13 +669,13 @@ impl Search<'_> {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
-            self.failure = Some("search_budget".into());
+            self.failure = Some(GenerationOutcome::SearchBudget);
             self.terminal
                 .include(TerminalEvidence::Budget(Budget::Expansions));
             return Ok(None);
         }
         if state.facts.len() > 32 {
-            self.failure = Some("fact_resource".into());
+            self.failure = Some(GenerationOutcome::FactLimit);
             self.terminal
                 .include(TerminalEvidence::Unsupported(Capacity::Facts));
             return Ok(None);
@@ -718,11 +719,11 @@ impl Search<'_> {
             let d = decision_for(&self.goal, state, &offers, 0)?;
             let mut graph = match Graph::encode(&d) {
                 Ok(graph) => graph,
-                Err(e) => {
+                Err(_) => {
                     if let Some(report) = &mut self.frontier {
                         report.observe(state, depth);
                     }
-                    self.failure = Some(e.into());
+                    self.failure = Some(GenerationOutcome::GraphLimit);
                     self.terminal
                         .include(TerminalEvidence::Unsupported(Capacity::Graph));
                     return Ok(None);
@@ -745,7 +746,7 @@ impl Search<'_> {
         }
         for selected in order {
             if self.expansions >= self.maximum {
-                self.failure = Some("search_budget".into());
+                self.failure = Some(GenerationOutcome::SearchBudget);
                 self.terminal
                     .include(TerminalEvidence::Budget(Budget::Expansions));
                 break;
@@ -864,7 +865,7 @@ fn solve_recording(
             execution: None,
             tree: None,
             expansions: 0,
-            failure: Some("search_budget".into()),
+            failure: Some(GenerationOutcome::SearchBudget),
             frontier: None,
             terminal: TerminalEvidence::Budget(Budget::Expansions),
         });

@@ -117,7 +117,6 @@ fn replay(
                     result: Ok(jobs::Output::Native {
                         terminal: generated.terminal.clone().into(),
                         solution: generated.solution.clone(),
-                        diagnostic: generated.diagnostic.clone(),
                         frontier: generated.frontier.clone(),
                     }),
                 },

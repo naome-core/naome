@@ -501,10 +501,13 @@ async fn handoff_abort_stabilizes_inherited_child_without_inventing_group_absenc
     )
     .await
     .unwrap();
-    assert_eq!(report["complete"], true, "{report}");
-    assert_eq!(report["original_child_reaped"], true);
-    assert_eq!(report["session_state"], "CONFIRMED_STOPPED_BEFORE_DETACH");
-    assert!(report["owned_group_empty"].is_null());
+    assert!(report.complete, "{report:?}");
+    assert!(report.original_child_reaped);
+    assert_eq!(
+        report.session_state,
+        crate::outcome::AbortSession::Inherited
+    );
+    assert!(report.owned_group_empty.is_none());
 }
 
 #[tokio::test]
@@ -529,12 +532,12 @@ async fn handoff_abort_handles_the_actual_setsid_race_while_original_child_is_he
     )
     .await
     .unwrap();
-    assert_eq!(report["complete"], true, "{report}");
-    assert_eq!(report["original_child_reaped"], true);
-    match report["session_state"].as_str().unwrap() {
-        "CONFIRMED_STOPPED_DETACHED_SESSION" => assert_eq!(report["owned_group_empty"], true),
-        "CONFIRMED_STOPPED_BEFORE_DETACH" => assert!(report["owned_group_empty"].is_null()),
-        other => panic!("unproved session cannot complete: {other};{report}"),
+    assert!(report.complete, "{report:?}");
+    assert!(report.original_child_reaped);
+    match report.session_state {
+        crate::outcome::AbortSession::Detached => assert_eq!(report.owned_group_empty, Some(true)),
+        crate::outcome::AbortSession::Inherited => assert!(report.owned_group_empty.is_none()),
+        other => panic!("unproved session cannot complete: {other:?};{report:?}"),
     }
 }
 

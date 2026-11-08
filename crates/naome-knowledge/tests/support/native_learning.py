@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Finite ordinary-node 1M learning, checked peer conversion and recovery."""
 import argparse
+from enum import IntEnum
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +12,17 @@ import time
 from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
 from automatic_computation import pressure, state
+
+
+class Qualification(IntEnum):
+    # Canonical Qualification domain from the node's outcome catalog.
+    PROMOTED = 0x000F_0005
+    DEVELOPMENT_REGRESSION = 0x000F_0006
+    ANCHOR_REGRESSION = 0x000F_0007
+    NO_DEVELOPMENT_GAIN = 0x000F_0008
+    INCOMPLETE_TRANSFER = 0x000F_0009
+    TRANSFER_REGRESSION = 0x000F_000A
+    NO_TRANSFER_GAIN = 0x000F_000B
 
 
 def snapshot(node):
@@ -84,7 +96,7 @@ def verify_meta(node, record):
     assert transfer["observed"] == (1 << 24) - 1
     before = [bin(transfer["before"] >> (2 * i) & 3).count("1") for i in range(12)]
     after = [bin(transfer["after"] >> (2 * i) & 3).count("1") for i in range(12)]
-    if progress["diagnostic"] == "candidate_promoted":
+    if progress["qualification"] == Qualification.PROMOTED:
         assert sum(after) > sum(before)
         assert transfer["before"] & ~transfer["after"] == 0
         assert progress["candidate_score"] > progress["incumbent_score"]
@@ -169,7 +181,7 @@ def finished_owner_goal(node, question):
                        and event["id"] in node.ids() for event in node.logs()):
                 return None
         return {"job": record["id"], "solved": solution is not None,
-                "diagnostic": record["native"]["progress"]["diagnostic"],
+                "qualification": record["native"]["progress"]["qualification"],
                 "local_examples": current["learning"]["local_examples"]}
     return None
 
@@ -294,14 +306,14 @@ def run(trial):
         progress = completed["native"]["progress"]
         meta_update = verify_meta(node, completed)
         assert progress["candidate"] is None
-        assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected", "development_regression_rejected", "incomplete_transfer_rejected", "transfer_regression_rejected", "no_transfer_gain_rejected"}
+        assert progress["qualification"] in set(Qualification)
         assert observe(node)["learning"]["accepted"] > 0
         assert checkpoint_identity(completed) == checkpoint_identity(original)
-        if progress["diagnostic"] != "candidate_promoted":
+        if progress["qualification"] != Qualification.PROMOTED:
             assert progress["model"] == completed["native"]["base"]["model"], "rejection must restore the exact model AND Adam pair"
         else:
             assert progress["model"]["updates"] == completed["native"]["base"]["model"]["updates"] + 250
-        qualifications[node.index] = {"job": original["id"], "diagnostic": progress["diagnostic"], "incumbent_score": progress["incumbent_score"], "candidate_score": progress["candidate_score"], "anchor_regression": progress["anchor_regression"], "model": progress["model"], "meta_update": meta_update, "io_bytes": completed["native"]["io_bytes"]}
+        qualifications[node.index] = {"job": original["id"], "qualification": progress["qualification"], "incumbent_score": progress["incumbent_score"], "candidate_score": progress["candidate_score"], "anchor_regression": progress["anchor_regression"], "model": progress["model"], "meta_update": meta_update, "io_bytes": completed["native"]["io_bytes"]}
     trial.summary["qualifications"] = qualifications
     trial.summary["restart_and_pause"] = {"result": "pass", "retained_training_jobs": [r["record"]["id"] for r in retained.values()]}
     trial.summary["claim"] = "Two ordinary loopback nodes, actual fresh 1,004,001-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; selection follows the current research policy."
@@ -348,7 +360,7 @@ def run_unseeded(trial):
                     completed_before_parent[record["id"]] = {
                         "record": record, "meta_update": verify_meta(node, record)}
                     write_receipt(trial.output / "pre-continuation-trials.json", list(completed_before_parent.values()))
-                if progress["diagnostic"] != "candidate_promoted":
+                if progress["qualification"] != Qualification.PROMOTED:
                     assert progress["model"] == record["native"]["base"]["model"]
                     continue
                 assert progress["model"]["updates"] == record["native"]["base"]["model"]["updates"] + 250
@@ -417,7 +429,7 @@ def run_unseeded(trial):
                 assert base["epoch"] > base["trained"]
                 assert progress["unit"] == 150 and progress["candidate"] is None
                 assert progress["trained"] == base["epoch"]
-                if progress["diagnostic"] == "candidate_promoted":
+                if progress["qualification"] == Qualification.PROMOTED:
                     assert progress["model"]["updates"] == 500
                 else:
                     assert progress["model"] == retained_lower
@@ -451,14 +463,14 @@ def run_unseeded(trial):
     assert node.ids() and first["learning"]["local_examples"] >= 8
     assert first["learning"]["peer_examples"] == 0
     trial.summary.update(result="pass", first_training_job=original["id"],
-                         qualification=original["native"]["progress"]["diagnostic"],
+                         qualification=original["native"]["progress"]["qualification"],
                          completed_trials_before_warm_parent=len(completed_before_parent),
-                         rejected_before_warm_parent=sum(item["record"]["native"]["progress"]["diagnostic"] != "candidate_promoted" for item in completed_before_parent.values()),
+                         rejected_before_warm_parent=sum(item["record"]["native"]["progress"]["qualification"] != Qualification.PROMOTED for item in completed_before_parent.values()),
                          own_examples=first["learning"]["local_examples"],
                          feedback_revision=next_cycle["learning"]["feedback"]["revision"],
                          continuation_base_updates=250, continuation_candidate_updates=500,
                          continuation_selected_updates=next_cycle["next_training_job"]["native"]["progress"]["model"]["updates"],
-                         continuation_qualification=next_cycle["next_training_job"]["native"]["progress"]["diagnostic"])
+                         continuation_qualification=next_cycle["next_training_job"]["native"]["progress"]["qualification"])
     trial.summary["claim"] = "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native development/whole-family transfer qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next complete250-update candidate starts from the actually promoted250-update lower weights AND Adam, uses the learned neural plan, consumes a genuinely later checked own-source epoch, and completes all native development/transfer gates. A rejection keeps the exact250-update parent; a promotion keeps500. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery."
 
 
