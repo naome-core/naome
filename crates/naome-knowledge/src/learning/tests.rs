@@ -485,7 +485,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
         ) -> Result<(), crate::Error> {
             self.writes += 1;
             if self.writes == 2 {
-                return Err("injected partial meta pair write".into());
+                return Err(crate::WorkerFailure::GrantClosed.into());
             }
             self.store.write(blob, range, bytes)
         }
@@ -522,16 +522,16 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
         store: MemoryStore::default(),
         writes: 0,
     };
-    assert!(
-        job.execute(
+    let error = job
+        .execute(
             job.units(),
             None,
             71,
             &mut Engine::default(),
-            &mut interrupted
+            &mut interrupted,
         )
-        .is_err()
-    );
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantClosed));
     assert_eq!(digest(&job), original);
     assert_eq!(interrupted.store.0.len(), 1);
     // A new Engine models the lost worker. The prior durable cost, plan and

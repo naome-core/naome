@@ -245,7 +245,7 @@ impl Engine {
         &mut self,
         c: &Checkpoint,
         io: &mut I,
-    ) -> Result<model::Network, String> {
+    ) -> Result<model::Network, crate::Error> {
         c.validate()?;
         if let Some((key, network)) = self.cache.take()
             && key == *c
@@ -253,9 +253,11 @@ impl Engine {
             return Ok(network);
         }
         match (&c.weights, &c.optimizer) {
-            (Some(w), Some(o)) => {
-                model::Network::decode(&artifact::load(io, w)?, &artifact::load(io, o)?, c.updates)
-            }
+            (Some(w), Some(o)) => Ok(model::Network::decode(
+                &artifact::load(io, w)?,
+                &artifact::load(io, o)?,
+                c.updates,
+            )?),
             _ => Ok(model::Network::fresh(c.seed)),
         }
     }
@@ -263,7 +265,7 @@ impl Engine {
         &mut self,
         state: &super::State,
         io: &mut I,
-    ) -> Result<Selection, String> {
+    ) -> Result<Selection, crate::Error> {
         let context = context(state);
         let mut draw = state.meta.draw;
         let fixed = match state.preparation {
@@ -331,7 +333,7 @@ impl Engine {
         selection: &Selection,
         experience: Experience,
         io: &mut I,
-    ) -> Result<Update, String> {
+    ) -> Result<Update, crate::Error> {
         selection.validate()?;
         experience.validate()?;
         if experience.source_model != super::digest(&state.model)
