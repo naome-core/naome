@@ -31,6 +31,7 @@ fn frozen_inputs_are_closed_distinct_and_do_not_reuse_observed_goals() {
     let mut ids = BTreeSet::new();
     let mut families = BTreeMap::<String, usize>::new();
     for case in input.cases {
+        assert!(!case.shape.is_empty());
         let q = ResearchQuestion::from_hex(&case.source).unwrap();
         assert!(q.formula().free_variables().is_empty());
         assert!(!old.contains(q.resolution_id()));
@@ -41,6 +42,7 @@ fn frozen_inputs_are_closed_distinct_and_do_not_reuse_observed_goals() {
     assert!(families.values().all(|n| *n == 4));
 }
 
+#[cfg(feature = "developer-tools")]
 pub(super) fn checkpoint(seed: u64, output: &Path) -> (State, MemoryStore) {
     let mut state = State::fresh();
     state.model.seed = seed;

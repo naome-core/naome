@@ -1,5 +1,6 @@
 use super::*;
 pub(super) const EXPANSIONS: usize = 512;
+#[cfg(feature = "developer-tools")]
 pub(super) const SLICE: usize = 128;
 const CPU_MICROS: u64 = 2_500_000;
 const WALL_MICROS: u64 = 5_000_000;
@@ -7,6 +8,7 @@ const CHECKER_CALLS: u64 = 10_000;
 const CHECKER_STEPS: u64 = 2_000_000;
 const IO_BYTES: u64 = 8_000_000;
 const IO_OPERATIONS: u64 = 512;
+#[cfg(feature = "developer-tools")]
 pub(super) fn limits() -> Value {
     json!({"search_expansions":EXPANSIONS,"cpu_micros":CPU_MICROS,"wall_micros":WALL_MICROS,"checker_calls":CHECKER_CALLS,"submitted_checker_steps":CHECKER_STEPS,"model_io_bytes":IO_BYTES,"model_io_operations":IO_OPERATIONS})
 }
@@ -18,6 +20,7 @@ pub(super) struct Meter {
     debit: Value,
 }
 impl Meter {
+    #[cfg(feature = "developer-tools")]
     pub(super) fn new() -> Self {
         Self::debited(Value::Null)
     }

@@ -46,16 +46,14 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Restore Cargo cache
+      - name: Restore Cargo downloads
         continue-on-error: true
-        id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
-            target
-          key: cargo-v1-${{ inputs.runner }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-all-features-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config', '.cargo/config.toml', '.github/workflows/*.yml') }}
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Check with Clippy
         if: ${{ inputs.profile == 'test' }}
@@ -69,9 +67,9 @@ jobs:
 
       - name: Test ordinary configuration and lifecycle
         run: |
-          cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --lib --locked --no-fail-fast jobs::tests::
-          cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --lib --locked --no-fail-fast resources::tests::
-          cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --test processes --locked ordinary_lifecycle_generates_exchanges_and_recovers_checked_artifacts -- --exact
+          python3 tools/ci/run_selected_tests.py cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --lib --locked --no-fail-fast jobs::tests::
+          python3 tools/ci/run_selected_tests.py cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --lib --locked --no-fail-fast resources::tests::
+          python3 tools/ci/run_selected_tests.py cargo test -p naome-knowledge --profile "$NAOME_TEST_PROFILE" --test processes --locked ordinary_lifecycle_generates_exchanges_and_recovers_checked_artifacts -- --exact
 
       - name: Restore all-feature process binaries
         run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-run
@@ -107,20 +105,3 @@ jobs:
 
       - name: Verify tracked sources are unchanged
         run: git diff --exit-code HEAD
-
-      - name: Save Cargo cache from main
-        continue-on-error: true
-        if: >-
-          ${{
-            success() &&
-            github.event_name == 'push' &&
-            github.ref == 'refs/heads/main' &&
-            steps.cargo-cache.outputs.cache-hit != 'true'
-          }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

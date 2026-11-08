@@ -3,11 +3,11 @@ use super::{Example, ResearchQuestion, digest, graph::Graph, search};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "developer-tools"))]
 pub(super) mod control;
 
 pub(super) fn losses(replay: &[Example], anchors: &[Example]) -> Result<Vec<usize>, String> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "developer-tools"))]
     if !control::enabled() {
         return Ok(vec![0; replay.len()]);
     }
