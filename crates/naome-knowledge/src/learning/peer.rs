@@ -65,12 +65,7 @@ pub(crate) fn extract_source(
         cost: Box::new(super::GenerationCost {
             original_steps: steps,
             useful_steps: steps,
-            unique_states: replay
-                .graphs
-                .iter()
-                .map(Graph::key)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
+            unique_states: replay.graphs.unique(),
             core_work: steps,
             generation_micros: sample.elapsed_nanos / 1000,
             process_peak_rss_bytes: sample.peak_rss_bytes,
@@ -141,7 +136,10 @@ pub(crate) fn validate_source(
 }
 
 pub(super) fn program_graphs(target: &Formula, packet: &Packet) -> Result<Vec<Graph>, String> {
-    Ok(packet.replay(target)?.graphs.clone())
+    Ok(packet.replay(target)?.graphs.materialize())
+}
+pub(super) fn program_states(target: &Formula, packet: &Packet) -> Result<usize, String> {
+    Ok(packet.replay(target)?.graphs.unique())
 }
 pub(super) fn program_definitions(
     target: &Formula,
@@ -371,6 +369,7 @@ fn replay_steps(
                             .map(|(i, f)| Candidate {
                                 rule: Rule::LemmaReference,
                                 premises: vec![i],
+                                replacement: None,
                                 consequences: vec![f.clone()],
                             })
                             .collect(),
@@ -434,6 +433,7 @@ fn checked_mp<'a>(
                         Candidate {
                             rule: *rule,
                             premises: vec![i, j],
+                            replacement: None,
                             consequences: vec![consequence],
                         },
                     ));

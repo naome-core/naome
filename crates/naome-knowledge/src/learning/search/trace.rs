@@ -440,8 +440,8 @@ impl Recorder {
     }
     pub fn begin(
         &mut self,
-        state: &State,
-        offered: &[Action],
+        state: &str,
+        offered: &str,
         selected: usize,
         ranks: Option<&[f32]>,
         parent: Option<Branch>,
@@ -458,8 +458,8 @@ impl Recorder {
         let index = self.trace.events.len();
         self.trace.events.push(Event {
             parent,
-            state: binding(state)?,
-            offered: super::super::digest(&offered),
+            state: state.into(),
+            offered: offered.into(),
             selected,
             ranks: ranks.map(|values| values.iter().map(|v| v.to_bits()).collect()),
             children_attempted: usize::MAX,

@@ -38,6 +38,9 @@ fn action(action: &Action, from: &State, to: &State) -> Result<Action, String> {
         Action::Mp(i, j) => Action::Mp(position(i, from, to)?, position(j, from, to)?),
         Action::Beta(i) => Action::Beta(position(i, from, to)?),
         Action::Instantiate(i, v) => Action::Instantiate(position(i, from, to)?, v),
+        Action::InstantiateApply(i, v, j) => {
+            Action::InstantiateApply(position(i, from, to)?, v, position(j, from, to)?)
+        }
         Action::Witness(i, v) => Action::Witness(position(i, from, to)?, v),
         Action::Substitute(i, j) => {
             Action::Substitute(position(i, from, to)?, position(j, from, to)?)

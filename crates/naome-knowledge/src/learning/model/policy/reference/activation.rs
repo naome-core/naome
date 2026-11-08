@@ -124,12 +124,8 @@ impl Policy {
             return Err("activation observer graph capacity or mapping differs".into());
         }
         let batch = Batch::from_graphs(graphs, device)?;
-        let [_, n] = batch.kinds.dims();
-        let left = batch.left.clone().reshape([n]);
-        let right = batch.right.clone().reshape([n]);
-        let mut h = (self.kinds.forward(batch.kinds.clone())
-            + self.roles.forward(batch.roles.clone()))
-            * batch.valid.clone();
+        let mut h =
+            self.embedding(batch.kinds.clone(), batch.symbols.clone()) * batch.valid.clone();
         if h.is_autodiff() {
             return Err("activation observer requires detached inference".into());
         }
@@ -138,24 +134,7 @@ impl Policy {
         // measurement. All final representations and scores below use encode.
         // This extra work is measured and charged to the diagnostic, never free.
         for layer in self.messages.iter().take(3) {
-            let flat = h.clone().squeeze_dim::<2>(0);
-            let parent = Tensor::zeros([n, WIDTH], &flat.device())
-                .select_assign(0, left.clone(), flat.clone(), IndexingUpdateOp::Add)
-                .select_assign(0, right.clone(), flat.clone(), IndexingUpdateOp::Add)
-                .unsqueeze_dim::<3>(0)
-                * batch.parent_scale.clone();
-            let joined = Tensor::cat(
-                vec![
-                    h.clone(),
-                    flat.clone().select(0, left.clone()).unsqueeze_dim::<3>(0),
-                    flat.select(0, right.clone()).unsqueeze_dim::<3>(0),
-                    parent,
-                ],
-                2,
-            );
-            h = (h + tanh(layer.forward(joined)))
-                * std::f32::consts::FRAC_1_SQRT_2
-                * batch.valid.clone();
+            h = self.next_rows(&batch, layer, h);
         }
         let middle = node_summaries(h, graphs)?;
         let encoded = self.encode(&batch);

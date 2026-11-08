@@ -112,7 +112,10 @@ impl Runtime {
                 &self.device.clone().inner(),
             )
         });
-        let (scores, successors) = policy.readout(policy.encode(&batch), initial);
+        let (scores, successors) = policy.readout(
+            policy.encode_cached(&batch, &mut self.formulas.borrow_mut())?,
+            initial,
+        );
         let scores = scores
             .into_data()
             .try_to_vec::<f32>()

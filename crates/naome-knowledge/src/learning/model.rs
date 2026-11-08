@@ -1,4 +1,4 @@
-//! The research 1M graph policy behind a narrow checkpoint/training boundary.
+//! The native structural policy behind a narrow checkpoint/training boundary.
 //! Formula graphs, goal-conditioned context attention and typed proof choices
 //! use Adam, checked-action objectives and at most 16 graph slots. Real observed
 //! predecessor windows carry bounded working state; the native checker retains
@@ -48,7 +48,8 @@ pub(crate) const REQUIREMENTS: Requirements = Requirements {
     io_bytes: 2 * 1024 * 1024 * 1024,
     work_bytes: 768 * 1024 * 1024,
 };
-pub const PARAMETERS: usize = 1_004_001;
+pub const PARAMETERS: usize = READOUT_PARAMETERS
+    + (19 + super::graph::SYMBOLS + 4 + 4 * policy::LAYERS + 4 * policy::WIDTH + 1) * policy::WIDTH;
 pub(super) const READOUT_PARAMETERS: usize = 384_961;
 pub const TRAINING_UNITS: u32 = 25;
 pub const UPDATES_PER_UNIT: u64 = 10;
@@ -83,6 +84,7 @@ impl Rule {
 pub struct Candidate {
     pub rule: Rule,
     pub premises: Vec<usize>,
+    pub replacement: Option<naome_foundation::FreeVariable>,
     pub consequences: Vec<Formula>,
 }
 pub struct Decision {
@@ -96,7 +98,7 @@ pub trait Ranker {
     fn plan(
         &mut self,
         d: &Decision,
-        _state: &str,
+        _graph: &Graph,
         _offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, String> {
@@ -132,6 +134,7 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
+    hash.update(include_str!("model/policy/cache.rs"));
     hash.update(include_str!("model/memory.rs"));
     hash.update(include_str!("model/sequence.rs"));
     hash.update(include_str!("model/measurement.rs"));
@@ -147,6 +150,8 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("model.rs"));
     hash.update(include_str!("search.rs"));
     hash.update(include_str!("search/frontier.rs"));
+    hash.update(include_str!("search/instantiation.rs"));
+    hash.update(include_str!("search/scope.rs"));
     hash.update(include_str!("search/trace.rs"));
     hash.update(include_str!("search/core.rs"));
     hash.update(include_str!("search/derivation.rs"));
@@ -184,7 +189,7 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("curriculum/frontier.rs"));
     hash.update(include_str!("curriculum/composition.rs"));
     hash.update(
-        b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;sparse-parent-mean;batch=16;lr=0.001;float32",
+        b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;structural-formula-cache;batch=16;lr=0.001;float32",
     );
     crate::hex(&hash.finalize())
 }
@@ -249,6 +254,7 @@ pub fn random(seed: &mut u64) -> u64 {
 }
 pub struct Runtime {
     policy: Policy,
+    formulas: std::cell::RefCell<policy::FormulaCache>,
     optimizer: ModuleOptimizer,
     preservation: preservation::Preservation,
     preservation_micros: u64,
@@ -301,8 +307,8 @@ impl Runtime {
     }
     /// Uniform exploration has the same graph/tensor input gates as inference.
     /// Only the unused neural forward pass is omitted.
-    pub(super) fn validate_decision(&self, decision: &Decision) -> Result<(), String> {
-        self.scoring_batch(&Graph::encode(decision)?).map(drop)
+    pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), String> {
+        self.scoring_batch(graph).map(drop)
     }
     fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
         checkpoint.validate()?;
@@ -357,6 +363,7 @@ impl Runtime {
         }
         Ok(Self {
             policy,
+            formulas: Default::default(),
             optimizer,
             preservation,
             preservation_micros: 0,
@@ -423,6 +430,7 @@ impl Runtime {
         if graphs.is_empty() {
             return Err("training requires own accepted proof decisions".into());
         }
+        self.formulas.get_mut().clear();
         if self.readout_only {
             self.policy = self.policy.clone().readout_training();
         }
@@ -521,14 +529,12 @@ impl Ranker for Runtime {
     }
     fn plan(
         &mut self,
-        d: &Decision,
-        state: &str,
+        _decision: &Decision,
+        graph: &Graph,
         offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, String> {
-        let mut graph = Graph::encode(d)?;
-        graph.binding = state.into();
-        self.plan_graph(&graph, offered, memory)
+        self.plan_graph(graph, offered, memory)
     }
     fn identity(&self) -> Option<String> {
         Some(super::digest(&(&self.identity, self.recurrence)))

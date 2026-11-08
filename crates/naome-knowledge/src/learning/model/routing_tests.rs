@@ -19,6 +19,7 @@ fn row_routing_preserves_logits_and_the_complete_adam_update_bitwise() {
             left: 0,
             right: 0,
             role: 2,
+            symbol: 0,
         });
         larger.context.push(larger.nodes.len() - 1);
     }
@@ -104,4 +105,44 @@ fn row_routing_preserves_logits_and_the_complete_adam_update_bitwise() {
             );
         }
     }
+}
+
+#[test]
+fn cached_formula_rows_are_reused_across_roles_and_discarded_after_training() {
+    let example = crate::learning::tests::own_example();
+    let question = naome_checker::question::ResearchQuestion::from_hex(&example.question).unwrap();
+    let graph = crate::learning::search::compile(question.proved_target(), &example.tree)
+        .unwrap()
+        .1
+        .remove(0);
+    let mut io = MemoryStore::default();
+    let mut runtime = Runtime::load(&Checkpoint::fresh(), &mut io).unwrap();
+    let initial = runtime.scores_graph(&graph).unwrap();
+    let size = runtime.formulas.borrow().len();
+    assert!(size > 1);
+
+    let mut changed_context = graph.clone();
+    changed_context.context.clear();
+    let goal = changed_context.goal;
+    changed_context.nodes[goal].role = 1;
+    let cached = runtime.scores_graph(&changed_context).unwrap();
+    assert_eq!(runtime.formulas.borrow().len(), size);
+    let batch = runtime.scoring_batch(&changed_context).unwrap();
+    let expected = runtime
+        .policy
+        .valid()
+        .independent(&batch, runtime.recurrent())
+        .into_data()
+        .try_to_vec::<f32>()
+        .unwrap();
+    assert_eq!(cached, expected);
+    assert_eq!(runtime.scores_graph(&graph).unwrap(), initial);
+
+    runtime
+        .train(&Pool::from_graphs(std::slice::from_ref(&graph)), &mut 41, 1)
+        .unwrap();
+    assert_eq!(runtime.formulas.borrow().len(), 0);
+    let trained = runtime.scores_graph(&graph).unwrap();
+    assert_ne!(trained, initial);
+    assert_eq!(runtime.formulas.borrow().len(), size);
 }

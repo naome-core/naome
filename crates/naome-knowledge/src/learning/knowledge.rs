@@ -2,6 +2,7 @@
 use super::{evidence, proof, search::Tree};
 use naome_foundation::{Formula, graph::Node};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub const CAPACITY: usize = 8;
@@ -62,42 +63,84 @@ impl Entry {
 
 /// Primitive structure is visible; object addresses and corpus tags are not.
 pub fn fragments(formula: &Formula) -> BTreeSet<Vec<u8>> {
-    fn visit(f: &Formula, output: &mut BTreeSet<Vec<u8>>, work: &mut usize) {
-        *work += 1;
-        if *work > 2048 {
+    fragment_bytes(formula, true, 2048)
+}
+fn fragment_bytes(formula: &Formula, include_atoms: bool, maximum: usize) -> BTreeSet<Vec<u8>> {
+    fn visit(
+        f: &Formula,
+        include_atoms: bool,
+        maximum: usize,
+        output: &mut BTreeSet<Vec<u8>>,
+        work: &mut usize,
+    ) {
+        if *work >= 2048 || output.len() >= maximum {
             return;
         }
-        let mut variables = std::collections::BTreeMap::new();
-        let canonical = f.clone().map_free_variables(|v| {
-            let next = naome_foundation::FreeVariable::new(variables.len() as u32);
-            *variables.entry(v).or_insert(next)
-        });
-        if let Ok(bytes) = canonical.encode_canonical() {
+        *work += 1;
+        let node = f.view().graph_node();
+        if (include_atoms || !matches!(node, Node::Equal(..) | Node::Member(..)))
+            && let Ok(bytes) = f.encode_free_variable_normalized()
+        {
             output.insert(bytes);
         }
-        match f.view().graph_node() {
-            Node::Not(a) => visit(&a.to_owned(), output, work),
+        match node {
+            Node::Not(a) => visit(&a.to_owned(), include_atoms, maximum, output, work),
             Node::Implies(a, b) => {
-                visit(&a.to_owned(), output, work);
-                visit(&b.to_owned(), output, work);
+                visit(&a.to_owned(), include_atoms, maximum, output, work);
+                visit(&b.to_owned(), include_atoms, maximum, output, work);
             }
             Node::ForAll(_) => {
-                let used = f.free_variables();
-                let v = (0..=u32::MAX)
-                    .map(naome_foundation::FreeVariable::new)
-                    .find(|v| !used.contains(v))
-                    .expect("bounded formula variables");
-                if let Some(body) = f.open_outer_universal(v) {
-                    visit(&body, output, work);
+                if let Some(body) = open(f) {
+                    visit(&body, include_atoms, maximum, output, work);
                 }
             }
             _ => {}
         }
     }
     let mut output = BTreeSet::new();
-    visit(formula, &mut output, &mut 0);
+    visit(formula, include_atoms, maximum, &mut output, &mut 0);
     output
 }
+
+fn open(formula: &Formula) -> Option<Formula> {
+    let used = formula.free_variables();
+    let fresh = (0..=u32::MAX)
+        .map(naome_foundation::FreeVariable::new)
+        .find(|v| !used.contains(v))?;
+    formula.open_outer_universal(fresh)
+}
+
+fn key(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+/// Exact structural lookup hints. Normalize variable names without treating
+/// shared atoms as applicable premises. The checker still resolves proof IDs.
+pub(crate) fn lookup_keys(target: &Formula, maximum: usize) -> Vec<[u8; 32]> {
+    fragment_bytes(target, false, maximum)
+        .into_iter()
+        .map(|bytes| key(&bytes))
+        .collect()
+}
+
+pub(crate) fn lemma_keys(formula: &Formula, maximum: usize) -> Vec<[u8; 32]> {
+    let mut keys = BTreeSet::new();
+    let mut body = formula.clone();
+    for _ in 0..maximum {
+        if matches!(body.view().graph_node(), Node::Equal(..) | Node::Member(..)) {
+            break;
+        }
+        if let Ok(bytes) = body.encode_free_variable_normalized() {
+            keys.insert(key(&bytes));
+        }
+        let Some(opened) = open(&body) else {
+            break;
+        };
+        body = opened;
+    }
+    keys.into_iter().collect()
+}
+
 pub fn relevance(formula: &Formula, target: &Formula) -> usize {
     let target = fragments(target);
     fragments(formula).intersection(&target).map(Vec::len).sum()
@@ -115,42 +158,16 @@ pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, St
 pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, String> {
     let mut ranked = Vec::new();
     let mut bytes = 0;
-    let requested = fragments(target);
+    let requested: BTreeSet<_> = lookup_keys(target, 2048).into_iter().collect();
     for entry in entries {
         let verified = entry.verified()?;
-        // Shared atoms alone do not establish a useful proof prerequisite.
-        // Require the actual closed statement, or a complete non-atomic
-        // universal body, among the question's structural subgoals.
-        let mut statement = verified.target.clone();
-        let mut relevant =
-            requested.contains(&statement.encode_canonical().map_err(|e| e.to_string())?);
-        for index in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
-            if relevant {
-                break;
-            }
-            let Some(body) =
-                statement.open_outer_universal(naome_foundation::FreeVariable::new(index as u32))
-            else {
-                break;
-            };
-            statement = body;
-            if matches!(
-                statement.view().graph_node(),
-                Node::Member(..) | Node::Equal(..)
-            ) {
-                break;
-            }
-            let canonical = statement.clone().map_free_variables({
-                let mut names = std::collections::BTreeMap::new();
-                move |variable| {
-                    let next = naome_foundation::FreeVariable::new(names.len() as u32);
-                    *names.entry(variable).or_insert(next)
-                }
-            });
-            relevant =
-                requested.contains(&canonical.encode_canonical().map_err(|e| e.to_string())?);
-        }
-        if !relevant {
+        if !lemma_keys(
+            &verified.target,
+            naome_checker::question::QUESTION_TARGET_MAX_DEPTH,
+        )
+        .iter()
+        .any(|key| requested.contains(key))
+        {
             continue;
         }
         let score = relevance(&verified.target, target);

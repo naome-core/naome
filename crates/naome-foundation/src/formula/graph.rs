@@ -3,6 +3,7 @@
 //! Storage and scheduling belong to consumers. Foundation owns variable
 //! binding, structural properties and representation-independent recipes.
 use super::{Formula, FormulaView, Node as Tree, Variable as TreeVariable};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Variable {
@@ -156,7 +157,7 @@ impl Formula {
             };
             let node = read(handle)?;
             let mut child =
-                |handle, binders| visit(handle, read, depth + 1, binders, remaining).map(Box::new);
+                |handle, binders| visit(handle, read, depth + 1, binders, remaining).map(Arc::new);
             Ok(match node {
                 Node::Equal(left, right) => Tree::Equal(variable(left)?, variable(right)?),
                 Node::Member(left, right) => Tree::Member(variable(left)?, variable(right)?),
@@ -233,18 +234,19 @@ impl<I: Copy> FormulaGraphCursor<I> {
             Some(Pending::Tree(Tree::Member(a, b))) => Node::Member(variable(a), variable(b)),
             Some(Pending::Tree(Tree::Not(body))) => {
                 self.pending.push(Pending::Parent(Node::Not(())));
-                self.pending.push(Pending::Tree(*body));
+                self.pending.push(Pending::Tree(Arc::unwrap_or_clone(body)));
                 return Ok(None);
             }
             Some(Pending::Tree(Tree::ForAll(body))) => {
                 self.pending.push(Pending::Parent(Node::ForAll(())));
-                self.pending.push(Pending::Tree(*body));
+                self.pending.push(Pending::Tree(Arc::unwrap_or_clone(body)));
                 return Ok(None);
             }
             Some(Pending::Tree(Tree::Implies(left, right))) => {
                 self.pending.push(Pending::Parent(Node::Implies((), ())));
-                self.pending.push(Pending::Tree(*right));
-                self.pending.push(Pending::Tree(*left));
+                self.pending
+                    .push(Pending::Tree(Arc::unwrap_or_clone(right)));
+                self.pending.push(Pending::Tree(Arc::unwrap_or_clone(left)));
                 return Ok(None);
             }
             Some(Pending::Parent(parent)) => {

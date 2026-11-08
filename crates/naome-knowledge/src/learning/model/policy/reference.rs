@@ -1,33 +1,9 @@
-//! Frozen pre-optimization routing, including its exact autodiff graph.
-//! Differential tests compare full model and optimizer bytes.
+//! Reference routing with expanded gather indices for inference and autodiff.
 use super::*;
 mod activation;
 
 impl Policy {
     pub(in crate::learning::model) fn forward_reference(&self, batch: &Batch) -> Tensor<2> {
-        let [_, n] = batch.kinds.dims();
-        let left = batch
-            .left
-            .clone()
-            .unsqueeze_dim::<3>(2)
-            .expand([1, n, WIDTH]);
-        let right = batch
-            .right
-            .clone()
-            .unsqueeze_dim::<3>(2)
-            .expand([1, n, WIDTH]);
-        self.forward_reference_using(batch, |h| {
-            Tensor::zeros([1, n, WIDTH], &h.device())
-                .scatter(1, left.clone(), h.clone(), IndexingUpdateOp::Add)
-                .scatter(1, right.clone(), h, IndexingUpdateOp::Add)
-                * batch.parent_scale.clone()
-        })
-    }
-    fn forward_reference_using(
-        &self,
-        batch: &Batch,
-        parents: impl Fn(Tensor<3>) -> Tensor<3>,
-    ) -> Tensor<2> {
         let [_, n] = batch.kinds.dims();
         let b = batch.goal.dims()[0];
         let c = batch.candidates.dims()[1];
@@ -41,23 +17,17 @@ impl Policy {
             .clone()
             .unsqueeze_dim::<3>(2)
             .expand([1, n, WIDTH]);
-        let mut h = (self.kinds.forward(batch.kinds.clone())
-            + self.roles.forward(batch.roles.clone()))
-            * batch.valid.clone();
+        let mut h =
+            self.embedding(batch.kinds.clone(), batch.symbols.clone()) * batch.valid.clone();
         for layer in &self.messages {
-            let joined = Tensor::cat(
-                vec![
-                    h.clone(),
-                    h.clone().gather(1, left.clone()),
-                    h.clone().gather(1, right.clone()),
-                    parents(h.clone()),
-                ],
-                2,
-            );
-            h = (h + tanh(layer.forward(joined)))
-                * std::f32::consts::FRAC_1_SQRT_2
-                * batch.valid.clone();
+            h = Self::message(
+                layer,
+                h.clone(),
+                h.clone().gather(1, left.clone()),
+                h.gather(1, right.clone()),
+            ) * batch.valid.clone();
         }
+        h = h + self.roles.forward(batch.roles.clone()) * batch.valid.clone();
         let flat = h.clone().squeeze_dim::<2>(0);
         let goal_indices = batch.goal.clone().reshape([b, 1]).expand([b, WIDTH]);
         let candidate_indices = batch

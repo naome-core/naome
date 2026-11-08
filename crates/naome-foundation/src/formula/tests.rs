@@ -1,10 +1,10 @@
-use super::{Formula, FreeVariable, Node, Variable, bind_free};
+use super::{Arc, Formula, FreeVariable, Node, Variable, bind_free};
 
 #[test]
 #[should_panic(expected = "formula nesting exceeds the representable De Bruijn index")]
 fn binding_fails_closed_when_de_bruijn_depth_overflows() {
     let x = FreeVariable::new(1);
-    let mut body = Node::ForAll(Box::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
+    let mut body = Node::ForAll(Arc::new(Node::Equal(Variable::Free(x), Variable::Free(x))));
 
     bind_free(&mut body, u32::MAX, &|candidate| {
         (candidate == x).then_some(0)
@@ -30,7 +30,7 @@ fn nested_binders_retain_their_correct_indices() {
 
     assert_eq!(
         formula,
-        Formula(Node::ForAll(Box::new(Node::ForAll(Box::new(
+        Formula(Node::ForAll(Arc::new(Node::ForAll(Arc::new(
             Node::Member(Variable::Bound(1), Variable::Bound(0)),
         )))))
     );

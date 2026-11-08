@@ -9,12 +9,14 @@ fn case(number: usize) -> Graph {
                 left: 0,
                 right: 0,
                 role: 0,
+                symbol: 0,
             },
             Node {
                 kind: 10,
                 left: 0,
                 right: 0,
                 role: 0,
+                symbol: 0,
             },
         ],
         goal: number,
@@ -74,6 +76,7 @@ fn targeting_changes_batches_but_not_states_labels_or_source_coverage() {
         left: 0,
         right: 0,
         role: 0,
+        symbol: 0,
     });
     easy.candidates.push(2);
     let mut hard = easy.clone();
@@ -125,6 +128,7 @@ fn focus_preserves_complete_cycles_and_updates_when_a_decision_is_learned() {
             left: 0,
             right: 0,
             role: 0,
+            symbol: 0,
         });
         g.candidates.push(2);
     }

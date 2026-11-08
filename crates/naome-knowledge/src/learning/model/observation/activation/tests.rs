@@ -89,6 +89,7 @@ fn observer_maps_disjoint_graphs_without_sentinel_or_candidate_padding() {
             left: 0,
             right: 0,
             role: 2,
+            symbol: 0,
         });
         larger.context.push(larger.nodes.len() - 1);
     }

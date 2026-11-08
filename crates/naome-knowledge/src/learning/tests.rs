@@ -12,7 +12,7 @@ impl model::Ranker for UniversalChoice {
             .candidates
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.rule == model::Rule::UniversalInstance)
+            .filter(|(_, c)| c.rule == model::Rule::UniversalInstance && c.premises.len() == 1)
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
         let mut scores = vec![0.; d.candidates.len()];
@@ -52,13 +52,36 @@ fn equivalent_universal_choices_share_the_checked_success_mass() {
         "both native instantiations independently verify"
     );
     for graph in graphs {
-        assert_eq!(graph.candidates.len(), 2);
+        let pure: Vec<_> = graph
+            .candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, root)| {
+                let action = &graph.nodes[*root];
+                (action.kind == model::Rule::UniversalInstance.kind()
+                    && graph.nodes[action.left].kind != 14)
+                    .then_some(index)
+            })
+            .collect();
+        assert_eq!(pure.len(), 2);
         assert_eq!(
-            graph.nodes[graph.candidates[0]],
-            graph.nodes[graph.candidates[1]]
+            graph.nodes[graph.candidates[pure[0]]],
+            graph.nodes[graph.candidates[pure[1]]]
         );
-        assert_eq!(graph.successes, vec![0, 1]);
+        assert_eq!(graph.successes, pure);
     }
+    let fused = search::solve(q.proved_target(), &mut Symbolic, 1).unwrap();
+    assert_eq!(fused.expansions, 1);
+    let tree = fused.tree.expect("the matched quantifier closes directly");
+    assert!(matches!(
+        &tree,
+        search::Tree::Step {
+            action: search::Action::InstantiateApply(..),
+            ..
+        }
+    ));
+    let (term, _) = search::compile(q.proved_target(), &tree).unwrap();
+    proof::verify(&term, q.proved_target()).unwrap();
 }
 
 #[test]
@@ -182,11 +205,13 @@ fn action_graph_preserves_transition_information_and_keeps_labels_out_of_feature
             Candidate {
                 rule: Rule::ModusPonens,
                 premises: vec![0, 1],
+                replacement: None,
                 consequences: vec![q.clone()],
             },
             Candidate {
                 rule: Rule::ImplicationBranch,
                 premises: vec![0],
+                replacement: None,
                 consequences: vec![Formula::negate(p), q],
             },
         ],
@@ -1604,5 +1629,87 @@ fn native_nat_program_reuse_from_a_received_catalog() {
         candidate.manifest.input_bytes,
         sample.elapsed_nanos / 1000,
         sample.peak_rss_bytes
+    );
+}
+
+#[test]
+fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
+    let (_, [lemma, _]) = helper_goal();
+    let solved = symbolic_solution(&lemma);
+    let mut graph = crate::Graph::default();
+    let (root, batch) = graph
+        .prepare_generated(&solved.source, &solved.helpers, &lemma)
+        .unwrap();
+    graph
+        .commit_batch(
+            root,
+            batch,
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+    let variable = FreeVariable::new(0);
+    let formula = lemma
+        .proved_target()
+        .open_outer_universal(variable)
+        .unwrap();
+    let other = FreeVariable::new(1);
+    let target = Formula::for_all(
+        variable,
+        Formula::for_all(
+            other,
+            Formula::implies(Formula::member(variable, other), formula),
+        ),
+    );
+    let target = ResearchQuestion::from_formula(target).unwrap();
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut finder = crate::frontier::Frontier::open(
+        &directory.0,
+        &graph,
+        41,
+        crate::jobs::Settings {
+            native_proof_learning: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    finder.refresh(&graph, |_| true).unwrap();
+    let (required, inputs) = finder.solving_inputs(&graph, &target, &[]).unwrap();
+    assert!(required.is_empty());
+    assert!(
+        !inputs.is_empty(),
+        "structural lookup must supply the checked lemma"
+    );
+    let mut engine = Engine::default();
+    let mut io = MemoryStore::default();
+    let generated = engine
+        .with(&model::Checkpoint::fresh(), &mut io, |runtime| {
+            solve_with_report(
+                &target.to_hex(),
+                runtime,
+                16,
+                1,
+                SolveContext {
+                    prerequisites: Some(&inputs),
+                    native_programs: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let solution = generated
+        .solution
+        .expect("checked scope with a cited lemma");
+    solution.check_target(&target).unwrap();
+    let search::Tree::Program(packet) = solution.tree else {
+        panic!("expected a checked program");
+    };
+    let expected = crate::object::id_bytes(&solved.proof_id).unwrap();
+    assert!(packet.commands().unwrap().iter().any(|command| matches!(
+        command, naome_proof::program::Command::ProofReference { proof_id } if *proof_id == expected
+    )));
+    assert!(
+        !peer::program_graphs(target.proved_target(), &packet)
+            .unwrap()
+            .is_empty()
     );
 }
