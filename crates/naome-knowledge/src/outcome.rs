@@ -346,6 +346,26 @@ codes! {
         AccountUncertain = 10,
         AllowanceExpired = 11,
     }
+    pub(crate) enum WorkerFrame in 21 {
+        History = 1,
+        Model = 2,
+        Learning = 3,
+        Feedback = 4,
+        Ready = 5,
+        Descendant = 6,
+        CpuActive = 7,
+        CpuDone = 8,
+        ResultReady = 9,
+        Reserve = 10,
+        Program = 11,
+        Progress = 12,
+        Result = 13,
+        Failed = 14,
+        Uncertain = 15,
+        CleanupComplete = 16,
+        CleanupFailed = 17,
+    }
+
 }
 
 impl InputLimit {

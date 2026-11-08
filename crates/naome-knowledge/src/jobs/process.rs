@@ -28,81 +28,78 @@ struct Start {
     slot_fd: i32,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
-enum Frame {
-    History {
-        id: u64,
-        unit: u32,
-        request: crate::learning::history::Request,
-    },
-    Model {
-        id: u64,
-        unit: u32,
-        blob: crate::learning::Blob,
-        range: std::ops::Range<usize>,
-        #[serde(with = "model_bytes")]
-        bytes: Option<Vec<u8>>,
-    },
-    Learning {
-        id: u64,
-        unit: u32,
-        progress: Box<crate::learning::Progress>,
-    },
-    Feedback {
-        id: u64,
-        phase: Phase,
-        sample: Sample,
-    },
-    Ready {
-        id: u64,
-        binding: String,
-        pid: u32,
-    },
-    Descendant {
-        id: u64,
-        pid: u32,
-    },
-    CpuActive {
-        id: u64,
-        next: u32,
-    },
-    CpuDone {
-        id: u64,
-        next: u32,
-    },
-    ResultReady {
-        id: u64,
-    },
-    Reserve {
-        id: u64,
-        next: u32,
-    },
-    Program {
-        id: u64,
-        unit: u32,
-        records: String,
-    },
-    Progress {
-        id: u64,
-        checkpoint: u32,
-    },
-    Result {
-        id: u64,
-        output: Output,
-    },
-    Failed {
-        id: u64,
-    },
-    Uncertain {
-        id: u64,
-    },
-    CleanupComplete {
-        id: u64,
-    },
-    CleanupFailed {
-        id: u64,
-    },
+// Define the frame and both streaming codecs together so each numeric tag has
+// one payload schema and decoding rejects unknown tags and fields.
+macro_rules! worker_frames {
+    ($( $variant:ident { $( $(#[$attr:meta])* $field:ident : $owned:ty => $borrowed:ty = $value:expr ),+ $(,)? } ),+ $(,)?) => {
+        enum Frame { $( $variant { $( $field: $owned ),+ } ),+ }
+
+        impl serde::Serialize for Frame {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeTuple;
+                let mut tuple = serializer.serialize_tuple(2)?;
+                match self {
+                    $( Self::$variant { $( $field ),+ } => {
+                        #[derive(serde::Serialize)]
+                        struct Payload<'a> { $( $(#[$attr])* $field: &'a $borrowed ),+ }
+                        tuple.serialize_element(&crate::outcome::WorkerFrame::$variant)?;
+                        tuple.serialize_element(&Payload { $( $field: $value ),+ })?;
+                    } ),+
+                }
+                tuple.end()
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for Frame {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                struct FrameVisitor;
+                impl<'de> serde::de::Visitor<'de> for FrameVisitor {
+                    type Value = Frame;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a tagged worker frame")
+                    }
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Frame, A::Error> {
+                        use serde::de::Error as _;
+                        let tag: crate::outcome::WorkerFrame = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                        let result = match tag {
+                            $( crate::outcome::WorkerFrame::$variant => {
+                                #[derive(serde::Deserialize)]
+                                #[serde(deny_unknown_fields)]
+                                struct Payload { $( $(#[$attr])* $field: $owned ),+ }
+                                let payload: Payload = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                                Frame::$variant { $( $field: payload.$field ),+ }
+                            } ),+
+                        };
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(A::Error::invalid_length(3, &self));
+                        }
+                        Ok(result)
+                    }
+                }
+                deserializer.deserialize_tuple(2, FrameVisitor)
+            }
+        }
+    };
+}
+
+worker_frames! {
+    History { id: u64 => u64 = id, unit: u32 => u32 = unit, request: crate::learning::history::Request => crate::learning::history::Request = request },
+    Model { id: u64 => u64 = id, unit: u32 => u32 = unit, blob: crate::learning::Blob => crate::learning::Blob = blob, range: std::ops::Range<usize> => std::ops::Range<usize> = range, #[serde(with = "model_bytes")] bytes: Option<Vec<u8>> => Option<Vec<u8>> = bytes },
+    Learning { id: u64 => u64 = id, unit: u32 => u32 = unit, progress: Box<crate::learning::Progress> => crate::learning::Progress = progress.as_ref() },
+    Feedback { id: u64 => u64 = id, phase: Phase => Phase = phase, sample: Sample => Sample = sample },
+    Ready { id: u64 => u64 = id, binding: String => String = binding, pid: u32 => u32 = pid },
+    Descendant { id: u64 => u64 = id, pid: u32 => u32 = pid },
+    CpuActive { id: u64 => u64 = id, next: u32 => u32 = next },
+    CpuDone { id: u64 => u64 = id, next: u32 => u32 = next },
+    ResultReady { id: u64 => u64 = id },
+    Reserve { id: u64 => u64 = id, next: u32 => u32 = next },
+    Program { id: u64 => u64 = id, unit: u32 => u32 = unit, records: String => String = records },
+    Progress { id: u64 => u64 = id, checkpoint: u32 => u32 = checkpoint },
+    Result { id: u64 => u64 = id, output: Output => Output = output },
+    Failed { id: u64 => u64 = id },
+    Uncertain { id: u64 => u64 = id },
+    CleanupComplete { id: u64 => u64 = id },
+    CleanupFailed { id: u64 => u64 = id },
 }
 
 #[derive(Serialize, Deserialize)]
