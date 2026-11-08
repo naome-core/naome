@@ -643,17 +643,17 @@ where
         let persistence = self.persistence.as_mut()?;
         match persistence.next_backlog(graph.checked_context()) {
             Ok(question) => question,
-            Err(_) => {
-                self.storage_error = Some(crate::RuntimeFailure::QuestionBacklog.into());
+            Err(error) => {
+                self.storage_error = Some(error.fatal_storage());
                 None
             }
         }
     }
     pub(crate) fn settle_backlog(&mut self, resolution: &Identity) {
         if let Some(persistence) = &mut self.persistence
-            && let Err(_) = persistence.settle_backlog(resolution)
+            && let Err(error) = persistence.settle_backlog(resolution)
         {
-            self.storage_error = Some(crate::RuntimeFailure::QuestionBacklog.into());
+            self.storage_error = Some(error.fatal_storage());
         }
     }
 

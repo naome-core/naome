@@ -106,12 +106,8 @@ impl Persistence {
     }
     fn report<T>(&self, result: Result<T, crate::Error>) -> Result<T, crate::Error> {
         if let Err(error) = &result {
-            let failure = if error.fatal() {
-                error.clone()
-            } else {
-                crate::Error::Stored(Box::new(error.clone()))
-            };
-            *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure);
+            *self.fault.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(error.clone().fatal_storage());
         }
         result
     }
@@ -263,7 +259,7 @@ impl Persistence {
     pub(super) fn next_backlog(
         &mut self,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Option<ResearchQuestion>, String> {
+    ) -> Result<Option<ResearchQuestion>, crate::Error> {
         let read = |after: Option<&str>| {
             self.checkpoint.page(
                 "backlog",
@@ -301,7 +297,7 @@ impl Persistence {
             .map_err(crate::Error::from)?;
         Ok(Some(question))
     }
-    pub(super) fn settle_backlog(&mut self, resolution: &Identity) -> Result<(), String> {
+    pub(super) fn settle_backlog(&mut self, resolution: &Identity) -> Result<(), crate::Error> {
         use crate::checkpoint::Update;
         let key = crate::hex(resolution);
         let Some(sequence) = self.checkpoint.get::<String>("queued", &key, 128)? else {
@@ -321,7 +317,7 @@ impl Persistence {
                     },
                 ],
             )
-            .map_err(|error| crate::Error::from(error).to_string())
+            .map_err(crate::Error::from)
     }
     /// An outbox entry precedes the proof commit. Recovery decides its outcome
     /// from the rechecked graph, never from a persisted success flag.

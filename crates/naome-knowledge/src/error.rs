@@ -264,6 +264,13 @@ impl Error {
                     | Self::Deadline
             )
     }
+    pub(crate) fn fatal_storage(self) -> Self {
+        if self.fatal() {
+            self
+        } else {
+            Self::Stored(Box::new(self))
+        }
+    }
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),

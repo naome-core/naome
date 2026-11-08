@@ -251,3 +251,28 @@ fn replay_preserves_a_typed_visitor_failure_without_changing_records() {
         .unwrap();
     assert_eq!(count, 1);
 }
+
+#[test]
+fn backlog_settlement_preserves_uncertain_commit_and_freezes_the_owner() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let mut persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    let updates = persistence.queue_updates(&question).unwrap();
+    persistence
+        .checkpoint
+        .commit(&persistence.header, updates)
+        .unwrap();
+    crate::checkpoint::fail_after_commit();
+    let error = persistence
+        .settle_backlog(question.resolution_id())
+        .unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    assert!(error.fatal());
+    let code = error.code();
+    assert_eq!(error.fatal_storage().code(), code);
+    assert!(
+        persistence
+            .settle_backlog(question.resolution_id())
+            .is_err()
+    );
+}
