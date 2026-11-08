@@ -267,3 +267,30 @@ async fn cold_artifact_frame_packs_exact_bytes_and_bounds_expansion() {
         assert!(codec.read(&mut Cursor::new(&bytes)).await.is_ok());
     }
 }
+
+#[test]
+fn cooperative_messages_use_numeric_kinds_and_strict_payloads() {
+    let offer = Body::WorkOffer {
+        goal: [7; 32],
+        question: "abc".into(),
+    };
+    let value = serde_json::to_value(&offer).unwrap();
+    assert_eq!(value[0], 0x001a_0011_u32);
+    assert!(
+        matches!(serde_json::from_value::<Body>(value.clone()), Ok(Body::WorkOffer { goal, question }) if goal == [7; 32] && question == "abc")
+    );
+    let mut incomplete = value;
+    incomplete[1].as_object_mut().unwrap().remove("question");
+    assert!(serde_json::from_value::<Body>(incomplete).is_err());
+    let status = Body::WorkStatus {
+        goal: [7; 32],
+        question: [8; 32],
+        active: true,
+        sequence: 9,
+    };
+    let value = serde_json::to_value(status).unwrap();
+    assert_eq!(value[0], 0x001a_0012_u32);
+    assert!(
+        matches!(serde_json::from_value::<Body>(value), Ok(Body::WorkStatus { goal, question, active: true, sequence: 9 }) if goal == [7; 32] && question == [8; 32])
+    );
+}

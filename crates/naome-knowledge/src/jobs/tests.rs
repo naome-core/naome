@@ -207,3 +207,16 @@ fn job_states_use_registered_codes_and_reject_unknown_values() {
     }
     assert!(serde_json::from_value::<State>(0x001d_0009u32.into()).is_err());
 }
+
+#[test]
+fn cooperative_job_binding_is_limited_to_solving() {
+    let binding = Binding::new([1; 32], [2; 32]).for_cooperation();
+    assert!(
+        binding
+            .validate_role(&Input::Solve {
+                question: crate::mocks::create_question(0)
+            })
+            .is_ok()
+    );
+    assert!(binding.validate_role(&Input::find(0)).is_err());
+}

@@ -199,7 +199,7 @@ pub(in crate::frontier) fn independent_goal(
 pub(in crate::frontier) fn relevance(lemma: &ResearchQuestion, goal: &ResearchQuestion) -> u64 {
     fragments(lemma).intersection(&fragments(goal)).count() as u64
 }
-pub(super) fn fragments(question: &ResearchQuestion) -> BTreeSet<[u8; 32]> {
+pub(in crate::frontier) fn fragments(question: &ResearchQuestion) -> BTreeSet<[u8; 32]> {
     use std::collections::BTreeSet;
     fn collect(f: &Formula, out: &mut BTreeSet<[u8; 32]>, left: &mut usize) {
         if *left == 0 {

@@ -1,5 +1,6 @@
 use super::*;
 mod calibration;
+mod cooperation;
 use crate::mocks;
 use crate::question::{AdmissionOutcome, LocalQuestions};
 use naome_checker::question::PrefilterPolicy;
@@ -513,6 +514,10 @@ fn deferred_completion_receipt_preserves_the_unsolved_question_and_closed_servic
             question: question.clone(),
             ticket,
             seen: questions.revision(&graph),
+            cooperative: false,
+            member: None,
+            memory: None,
+            cooperative_started: None,
         },
     );
     for index in 0..crate::resources::limits().job_commands {

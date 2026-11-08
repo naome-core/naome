@@ -62,6 +62,9 @@ codes! {
         UnexpectedRequest = 10,
         RequiredPayloadMissing = 11,
         UnexpectedResponse = 12,
+        WorkOfferUnavailable = 13,
+        WorkOfferCapacity = 14,
+        UnknownWorkOffer = 15,
     }
 
     pub(crate) enum EvidenceCode in 2 {
@@ -102,6 +105,8 @@ codes! {
         Unselected = 6,
         AwaitingDefinition = 7,
         CitedProgramPending = 8,
+        Stale = 9,
+        Recorded = 10,
     }
 
     pub(crate) enum OperationCode in 6 {
@@ -531,6 +536,10 @@ codes! {
         StartupReplay = 105,
         Stopped = 106,
         StorageError = 107,
+        WorkgroupJoined = 108,
+        WorkgroupYielded = 109,
+        WorkgroupMember = 110,
+        WorkgroupReceipt = 111,
     }
     pub(crate) enum EventSource in 24 {
         Fetch = 1,
@@ -567,6 +576,8 @@ codes! {
         ProgramOffer = 14,
         ProgramGet = 15,
         ProgramData = 16,
+        WorkOffer = 17,
+        WorkStatus = 18,
     }
 
     pub(crate) enum DiscoveryQuery in 27 { Participants = 1, Announce = 2, Addresses = 3, Routing = 4 }

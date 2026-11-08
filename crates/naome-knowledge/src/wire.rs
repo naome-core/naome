@@ -17,8 +17,7 @@ mod artifact;
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_ARTIFACT: u32 = 1 << 31;
-pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:numeric-control,packed-binary-artifact,defined-question-per-proof";
+pub(crate) const FRAME_CONTRACT: &str = "naome:frames:numeric-control,packed-binary-artifact,defined-question-per-proof,cooperative-work";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,6 +122,8 @@ macro_rules! bodies {
 
 bodies! {
     controls {
+        WorkOffer => WorkOffer { goal: [u8; 32], question: String },
+        WorkStatus => WorkStatus { goal: [u8; 32], question: [u8; 32], active: bool, sequence: u64 },
         Inventory => Inventory { known: Option<[u8; 32]>, after: Option<crate::corpus::InventoryCursor>, limit: usize },
         Describe => Describe { id: [u8; 32] },
         Get => Get { root: [u8; 32], id: [u8; 32] },

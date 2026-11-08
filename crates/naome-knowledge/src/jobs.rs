@@ -197,6 +197,8 @@ pub(crate) struct Binding {
     pub policy: String,
     pub compatibility: String,
     pub selection: String,
+    /// Whether this finite solving job was offered by another node.
+    pub cooperative: bool,
 }
 
 impl Binding {
@@ -206,11 +208,17 @@ impl Binding {
             policy: crate::hex(&policy),
             compatibility: crate::hex(&crate::compatibility()),
             selection: identity(&provider::DEFAULT_PROVIDER),
+            cooperative: false,
         }
     }
 
     pub(crate) fn with_selection(mut self, selection: [u8; 32]) -> Self {
         self.selection = crate::hex(&selection);
+        self
+    }
+
+    pub(crate) fn for_cooperation(mut self) -> Self {
+        self.cooperative = true;
         self
     }
 
@@ -225,6 +233,14 @@ impl Binding {
         }
         if self.compatibility != crate::hex(&crate::compatibility()) {
             return Err("research compatibility differs".into());
+        }
+        Ok(())
+    }
+
+    fn validate_role(&self, input: &Input) -> Result<(), String> {
+        self.validate()?;
+        if self.cooperative && !matches!(input, Input::Solve { .. }) {
+            return Err("cooperative binding requires a solving job".into());
         }
         Ok(())
     }
@@ -696,7 +712,7 @@ impl Client {
         prerequisites: crate::learning::Prerequisites,
     ) -> Result<Ticket, String> {
         input.validate()?;
-        binding.validate()?;
+        binding.validate_role(&input)?;
         if required.len() > crate::learning::knowledge::CAPACITY
             || required
                 .iter()
