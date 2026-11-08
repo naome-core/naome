@@ -463,6 +463,10 @@ impl fmt::Display for Error {
                 InputFault::CheckpointPageMemoryLimit => {
                     "checkpoint record exceeds page memory budget"
                 }
+                InputFault::CheckpointFileReplaced => "transactional checkpoint file was replaced",
+                InputFault::CheckpointOutsideOwner => {
+                    "transactional checkpoint changed outside its owner"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

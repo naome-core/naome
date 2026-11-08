@@ -45,7 +45,7 @@ impl Checkpoint {
             return Err(CommitError::NotWritten(crate::Error::ExecutionLimit));
         }
         self.ensure_generation()
-            .map_err(|error| CommitError::NotWritten(crate::Error::CorruptStorage(error)))?;
+            .map_err(|error| CommitError::NotWritten(error.fatal_storage()))?;
         let payload = encode(header)
             .map_err(|error| CommitError::NotWritten(crate::Error::InvalidInput(error)))?;
         if payload.len() > MAX_HEADER {
@@ -61,9 +61,10 @@ impl Checkpoint {
                 if version_of(transaction).map_err(crate::Error::CorruptStorage)?
                     != self.data_version
                 {
-                    return Err(crate::Error::CorruptStorage(
-                        "transactional checkpoint changed outside its owner".into(),
-                    ));
+                    return Err(
+                        crate::Error::from(crate::InputFault::CheckpointOutsideOwner)
+                            .fatal_storage(),
+                    );
                 }
                 apply(transaction, self.domain, &updates)?;
                 transaction

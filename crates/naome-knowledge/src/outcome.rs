@@ -158,6 +158,8 @@ codes! {
         CheckpointPageRecordWidth = 26,
         CheckpointPageMemoryOverflow = 27,
         CheckpointPageMemoryLimit = 28,
+        CheckpointFileReplaced = 29,
+        CheckpointOutsideOwner = 30,
     }
 
     pub enum InputLimit in 8 {

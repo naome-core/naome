@@ -260,3 +260,56 @@ fn row_read_limit_and_digest_failures_remain_distinct_and_fail_closed() {
         .unwrap();
     assert_eq!(count, 1);
 }
+
+#[test]
+fn external_checkpoint_change_and_replacement_keep_specific_fail_closed_causes() {
+    let directory = Directory::new();
+    let path = directory.0.join("owner.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    let outside = Connection::open(&path).unwrap();
+    outside
+        .execute("UPDATE checkpoint SET header = X'32'", [])
+        .unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointOutsideOwner)
+    );
+    let error = checkpoint.query(|_| Ok(())).unwrap_err();
+    assert!(error.fatal());
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["cause_code"],
+        u32::from(crate::InputFault::CheckpointOutsideOwner)
+    );
+    drop(outside);
+    drop(checkpoint);
+
+    let path = directory.0.join("replaced.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    fs::rename(&path, directory.0.join("old.sqlite3")).unwrap();
+    fs::write(&path, b"replacement").unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointFileReplaced)
+    );
+    assert!(checkpoint.query(|_| Ok(())).unwrap_err().fatal());
+}
+
+#[test]
+fn uncertain_checkpoint_commit_requires_replay_before_any_read() {
+    let directory = Directory::new();
+    let path = directory.0.join("uncertain.sqlite3");
+    let mut checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    fail_after_commit();
+    assert!(matches!(
+        checkpoint.commit(&2u64, vec![]),
+        Err(CommitError::Uncertain(_))
+    ));
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    assert!(error.fatal());
+    drop(checkpoint);
+    let recovered = Checkpoint::open(&path, "test").unwrap();
+    assert_eq!(recovered.header::<u64>().unwrap(), 2);
+}

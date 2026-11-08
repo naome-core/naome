@@ -216,9 +216,9 @@ impl Checkpoint {
     pub(crate) fn directory(&self) -> &Path {
         self.path.parent().expect("canonical checkpoint parent")
     }
-    fn ensure_generation(&self) -> Result<(), String> {
-        if self.uncertain.is_some() {
-            return Err("checkpoint requires replay after an uncertain write".into());
+    fn ensure_generation(&self) -> Result<(), crate::Error> {
+        if let Some(error) = self.uncertain {
+            return Err(crate::Error::UncertainDurability(error.into()));
         }
         crate::storage::sqlite_adapt(
             &self.connection,
@@ -227,10 +227,10 @@ impl Checkpoint {
         .map_err(sql)?;
         let current = owned(&self.path)?;
         if current.dev() != self.identity.dev() || current.ino() != self.identity.ino() {
-            return Err("transactional checkpoint file was replaced".into());
+            return Err(crate::InputFault::CheckpointFileReplaced.into());
         }
         if version_of(&self.connection)? != self.data_version {
-            return Err("transactional checkpoint changed outside its owner".into());
+            return Err(crate::InputFault::CheckpointOutsideOwner.into());
         }
         Ok(())
     }
@@ -385,10 +385,10 @@ impl Checkpoint {
         read: impl FnOnce(&Connection) -> Result<T, crate::Error>,
     ) -> Result<T, crate::Error> {
         self.ensure_generation()
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         let result = read(&self.connection)?;
         self.ensure_generation()
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         Ok(result)
     }
 
