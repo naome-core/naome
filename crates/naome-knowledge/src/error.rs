@@ -677,6 +677,37 @@ impl fmt::Display for Error {
                     "finder support receipt identity differs"
                 }
                 crate::ResearchFailure::EvidenceSupportOverflow => "finder support count overflow",
+                crate::ResearchFailure::ExperienceTerminalCandidate => {
+                    "terminal evidence differs from the checked candidate"
+                }
+                crate::ResearchFailure::ExperienceNativeContext => {
+                    "experience native context differs from its retained snapshot"
+                }
+                crate::ResearchFailure::ExperienceResultMissing => {
+                    "complete native experience lacks its result"
+                }
+                crate::ResearchFailure::ExperienceCheckpointMissing => {
+                    "complete native experience lacks its checkpoint"
+                }
+                crate::ResearchFailure::ExperienceExecutionMismatch => {
+                    "native terminal evidence differs from its retained execution"
+                }
+                crate::ResearchFailure::ExperiencePeerSyntax => "experience peer identity syntax",
+                crate::ResearchFailure::ExperiencePeerEncoding => {
+                    "experience peer identity encoding"
+                }
+                crate::ResearchFailure::ExperienceReceiptIdentity => {
+                    "experience receipt identity differs"
+                }
+                crate::ResearchFailure::ExperienceTraceMismatch => {
+                    "experience terminal, trace or measured work differs"
+                }
+                crate::ResearchFailure::ExperienceLineage => {
+                    "history observation is outside the eligible training lineage"
+                }
+                crate::ResearchFailure::ExperienceObservationBinding => {
+                    "history observation question or frontier binding differs"
+                }
                 crate::ResearchFailure::ExperienceJobBinding => {
                     "finder experience differs from its completed job"
                 }

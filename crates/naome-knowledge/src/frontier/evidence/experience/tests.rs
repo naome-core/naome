@@ -273,3 +273,21 @@ fn mismatched_completion_identity_reports_registered_code() {
         u32::from(crate::ResearchFailure::ExperienceJobBinding)
     );
 }
+
+#[test]
+fn corrupted_experience_receipt_reports_identity_code() {
+    let (goal, _) = crate::learning::tests::helper_goal();
+    let mut completion = observed(
+        &goal,
+        TerminalEvidence::Budget(Budget::Expansions),
+        128,
+        None,
+    );
+    let summary = completion.experience.as_mut().unwrap();
+    summary.receipt = "00".repeat(32);
+    let error = summary.validate().unwrap_err();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ExperienceReceiptIdentity)
+    );
+}

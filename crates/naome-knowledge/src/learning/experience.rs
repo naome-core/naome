@@ -72,7 +72,7 @@ impl TerminalEvidence {
         }
     }
 
-    pub(crate) fn validate(&self, solution: Option<&Solution>) -> Result<(), String> {
+    pub(crate) fn validate(&self, solution: Option<&Solution>) -> Result<(), crate::Error> {
         match (self, solution) {
             (Self::CertifiedCandidate { proof_id, refuted }, Some(solution))
                 if *proof_id == solution.proof_id && *refuted == solution.refuted =>
@@ -81,7 +81,7 @@ impl TerminalEvidence {
                 Ok(())
             }
             (Self::CertifiedCandidate { .. }, _) | (_, Some(_)) => {
-                Err("terminal evidence differs from the checked candidate".into())
+                Err(crate::ResearchFailure::ExperienceTerminalCandidate.into())
             }
             (_, None) => Ok(()),
         }
@@ -123,13 +123,13 @@ pub(crate) struct ExperienceSummary {
     pub receipt: String,
 }
 impl ExperienceSummary {
-    pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, String> {
+    pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, crate::Error> {
         use crate::jobs::{Input, Output, State};
         let Some(native) = &record.native else {
             return Ok(None);
         };
         if digest(&native.base) != native.base_hash {
-            return Err("experience native context differs from its retained snapshot".into());
+            return Err(crate::ResearchFailure::ExperienceNativeContext.into());
         }
         let (question, origin) = match &record.input {
             Input::Solve { question } => (question, Origin::Local),
@@ -163,10 +163,10 @@ impl ExperienceSummary {
                     ..
                 }) = &record.result
                 else {
-                    return Err("complete native experience lacks its result".into());
+                    return Err(crate::ResearchFailure::ExperienceResultMissing.into());
                 };
                 terminal.validate(solution.as_ref())?;
-                let p = progress.ok_or("complete native experience lacks its checkpoint")?;
+                let p = progress.ok_or(crate::ResearchFailure::ExperienceCheckpointMissing)?;
                 if &p.terminal != terminal.as_ref()
                     || digest(&p.result) != digest(solution)
                     || digest(&p.frontier) != digest(frontier)
@@ -176,9 +176,7 @@ impl ExperienceSummary {
                             .is_none_or(|cost| digest(cost) != digest(s.cost.as_ref()))
                     })
                 {
-                    return Err(
-                        "native terminal evidence differs from its retained execution".into(),
-                    );
+                    return Err(crate::ResearchFailure::ExperienceExecutionMismatch.into());
                 }
                 terminal.as_ref().clone()
             }
@@ -187,7 +185,7 @@ impl ExperienceSummary {
             _ => unreachable!("nonterminal records returned above"),
         };
         let q = naome_checker::question::ResearchQuestion::from_hex(question)
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::Error::from)?;
         if let Some(progress) = progress {
             for execution in &progress.executions {
                 execution.validate_context(&q, &native.base.knowledge)?;
@@ -231,7 +229,7 @@ impl ExperienceSummary {
         digest(&value)
     }
 
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         for id in [
             &self.question,
             &self.checkpoint,
@@ -251,16 +249,16 @@ impl ExperienceSummary {
             crate::object::id_bytes(artifact)?;
             let parsed: libp2p::PeerId = peer
                 .parse()
-                .map_err(|_| "experience peer identity syntax")?;
+                .map_err(|_| crate::ResearchFailure::ExperiencePeerSyntax)?;
             if parsed.to_string() != *peer {
-                return Err("experience peer identity encoding".into());
+                return Err(crate::ResearchFailure::ExperiencePeerEncoding.into());
             }
         }
         if let TerminalEvidence::CertifiedCandidate { proof_id, .. } = &self.terminal {
             crate::object::id_bytes(proof_id)?;
         }
         if self.job == 0 || self.receipt != self.binding() {
-            return Err("experience receipt identity differs".into());
+            return Err(crate::ResearchFailure::ExperienceReceiptIdentity.into());
         }
         let expansions = self.cost.as_ref().map_or(0, |c| c.search_expansions);
         if expansions > self.search_limit as usize
@@ -271,7 +269,7 @@ impl ExperienceSummary {
                 && (self.trace.checked_trajectory.is_none()
                     || self.trace.observed_branches.is_some())
         {
-            return Err("experience terminal, trace or measured work differs".into());
+            return Err(crate::ResearchFailure::ExperienceTraceMismatch.into());
         }
         Ok(())
     }
@@ -289,7 +287,7 @@ pub(crate) struct Observation {
     pub knowledge: Vec<super::knowledge::Entry>,
 }
 impl Observation {
-    pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, String> {
+    pub(crate) fn from_record(record: &crate::jobs::Record) -> Result<Option<Self>, crate::Error> {
         let question = match &record.input {
             crate::jobs::Input::Solve { question } | crate::jobs::Input::Peer { question, .. }
                 if super::State::eligible(question) =>
@@ -322,21 +320,21 @@ impl Observation {
         observation.validate()?;
         Ok(Some(observation))
     }
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         self.summary.validate()?;
         super::knowledge::validate(&self.knowledge)?;
         if !super::State::eligible(&self.question) {
-            return Err("history observation is outside the eligible training lineage".into());
+            return Err(crate::ResearchFailure::ExperienceLineage.into());
         }
         let question = naome_checker::question::ResearchQuestion::from_hex(&self.question)
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::Error::from)?;
         if self.summary.question != crate::hex(question.resolution_id())
             || self.summary.trace.observed_branches != self.frontier.as_ref().map(digest)
             || self.summary.trace.observed_execution
                 != (!self.executions.is_empty()).then(|| digest(&self.executions))
             || self.executions.len() > 2
         {
-            return Err("history observation question or frontier binding differs".into());
+            return Err(crate::ResearchFailure::ExperienceObservationBinding.into());
         }
         if let Some(frontier) = &self.frontier {
             frontier.validate(&question)?;
