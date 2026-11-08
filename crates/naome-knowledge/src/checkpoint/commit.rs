@@ -46,8 +46,7 @@ impl Checkpoint {
         }
         self.ensure_generation()
             .map_err(|error| CommitError::NotWritten(error.fatal_storage()))?;
-        let payload = encode(header)
-            .map_err(|error| CommitError::NotWritten(crate::Error::InvalidInput(error)))?;
+        let payload = encode(header).map_err(CommitError::NotWritten)?;
         if payload.len() > MAX_HEADER {
             return Err(CommitError::NotWritten(crate::Error::InputLimit(
                 crate::InputLimit::CheckpointHeaderCapacity,

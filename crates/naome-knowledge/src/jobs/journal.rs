@@ -580,7 +580,7 @@ impl Disk {
             if self
                 .checkpoint
                 .get::<u64>("history", &history, 32)
-                .map_err(crate::Error::CorruptStorage)?
+                .map_err(crate::Error::fatal_storage)?
                 .is_none()
             {
                 updates.push(crate::checkpoint::Update::put("history", history, id)?);
@@ -590,7 +590,7 @@ impl Disk {
                 if self
                     .checkpoint
                     .get::<u64>("request", &key, 64)
-                    .map_err(crate::Error::CorruptStorage)?
+                    .map_err(crate::Error::fatal_storage)?
                     == Some(*id)
                 {
                     updates.push(crate::checkpoint::Update::Remove {
@@ -797,7 +797,7 @@ impl Disk {
     pub(super) fn directory(&self) -> &Path {
         self.path.parent().expect("canonical research parent")
     }
-    pub(super) fn account(&self, key: &str) -> Result<Option<Account>, String> {
+    pub(super) fn account(&self, key: &str) -> Result<Option<Account>, crate::Error> {
         self.checkpoint.get("account", key, 8192)
     }
 

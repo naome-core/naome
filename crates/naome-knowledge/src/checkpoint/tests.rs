@@ -313,3 +313,64 @@ fn uncertain_checkpoint_commit_requires_replay_before_any_read() {
     let recovered = Checkpoint::open(&path, "test").unwrap();
     assert_eq!(recovered.header::<u64>().unwrap(), 2);
 }
+
+#[test]
+fn checkpoint_json_errors_keep_categories_positions_and_storage_fatality() {
+    for (bytes, expected) in [
+        (b"{!".as_slice(), crate::CheckpointJsonFault::Syntax),
+        (b"{".as_slice(), crate::CheckpointJsonFault::Eof),
+    ] {
+        let error = decode::<serde_json::Value>(bytes).unwrap_err();
+        assert!(
+            matches!(error, crate::Error::CheckpointDecode { reason, line: 1, column: _, } if reason == expected)
+        );
+    }
+    let error = decode::<u64>(b"\"wrong\"").unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::CheckpointDecode {
+            reason: crate::CheckpointJsonFault::Data,
+            ..
+        }
+    ));
+    let error = decode::<serde_json::Value>(b" {\"value\":1}").unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointNoncanonical)
+    );
+
+    let directory = Directory::new();
+    let path = directory.0.join("bad-json.sqlite3");
+    let checkpoint = Checkpoint::create(
+        &path,
+        "test",
+        &1u64,
+        vec![Update::put("record", "one", &1u64).unwrap()],
+    )
+    .unwrap();
+    let bytes = b"{!";
+    checkpoint
+        .connection
+        .execute(
+            "UPDATE entries SET payload = ?1, digest = ?2 WHERE kind = 'record' AND key = 'one'",
+            params![
+                bytes.as_slice(),
+                digest("test", "record", "one", bytes).as_slice()
+            ],
+        )
+        .unwrap();
+    let error = checkpoint
+        .get::<serde_json::Value>("record", "one", 1024)
+        .unwrap_err();
+    let value = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(value["fatal"], true);
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::outcome::OperationCode::CheckpointDecode)
+    );
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::CheckpointJsonFault::Syntax)
+    );
+    assert_eq!(value["line"], 1);
+}

@@ -255,7 +255,7 @@ impl Checkpoint {
             u64::try_from(count).map_err(|_| "checkpoint count width")?,
         ))
     }
-    pub(crate) fn header<T: DeserializeOwned + Serialize>(&self) -> Result<T, String> {
+    pub(crate) fn header<T: DeserializeOwned + Serialize>(&self) -> Result<T, crate::Error> {
         decode(&self.raw_header()?.0)
     }
 
@@ -264,7 +264,7 @@ impl Checkpoint {
         kind: &str,
         key: &str,
         maximum: usize,
-    ) -> Result<Option<T>, String> {
+    ) -> Result<Option<T>, crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
         let row: Option<(Vec<u8>, Vec<u8>)> = self.connection.query_row(
@@ -472,17 +472,29 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
     Ok(())
 }
 
-pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(value).map_err(|e| e.to_string())
+pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, crate::Error> {
+    serde_json::to_vec(value).map_err(|_| crate::InputFault::CheckpointEncoding.into())
 }
-pub(crate) fn decode<T: DeserializeOwned + Serialize>(payload: &[u8]) -> Result<T, String> {
-    let value: T = serde_json::from_slice(payload)
-        .map_err(|e| format!("checkpoint record corruption: {e}"))?;
+pub(crate) fn decode<T: DeserializeOwned + Serialize>(payload: &[u8]) -> Result<T, crate::Error> {
+    let value: T = serde_json::from_slice(payload).map_err(|error| {
+        let reason = match error.classify() {
+            serde_json::error::Category::Io => crate::CheckpointJsonFault::Io,
+            serde_json::error::Category::Syntax => crate::CheckpointJsonFault::Syntax,
+            serde_json::error::Category::Data => crate::CheckpointJsonFault::Data,
+            serde_json::error::Category::Eof => crate::CheckpointJsonFault::Eof,
+        };
+        crate::Error::CheckpointDecode {
+            reason,
+            line: error.line(),
+            column: error.column(),
+        }
+    })?;
     if encode(&value)? != payload {
-        return Err("noncanonical checkpoint record".into());
+        return Err(crate::InputFault::CheckpointNoncanonical.into());
     }
     Ok(value)
 }
+
 fn check_row(
     domain: &str,
     kind: &str,

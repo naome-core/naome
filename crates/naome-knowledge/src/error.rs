@@ -262,6 +262,11 @@ pub enum Error {
     QuestionInput(Box<naome_proof::QuestionError>),
     QuestionRegistration(naome_checker::question::RejectionReason),
     DefinitionCheck(Box<naome_checker::DefinitionCheckError>),
+    CheckpointDecode {
+        reason: crate::CheckpointJsonFault,
+        line: usize,
+        column: usize,
+    },
     Runtime(crate::RuntimeFailure),
     Research(crate::ResearchFailure),
     Worker(crate::WorkerFailure),
@@ -310,6 +315,7 @@ impl Error {
             Self::QuestionInput(_) => OperationCode::QuestionInput,
             Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
+            Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Research(failure) => return (*failure).into(),
             Self::Worker(failure) => return (*failure).into(),
@@ -350,6 +356,7 @@ impl Error {
             | Self::QuestionInput(_)
             | Self::QuestionRegistration(_)
             | Self::DefinitionCheck(_)
+            | Self::CheckpointDecode { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
@@ -467,6 +474,8 @@ impl fmt::Display for Error {
                 InputFault::CheckpointOutsideOwner => {
                     "transactional checkpoint changed outside its owner"
                 }
+                InputFault::CheckpointEncoding => "checkpoint encoding failed",
+                InputFault::CheckpointNoncanonical => "noncanonical checkpoint record",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -494,6 +503,15 @@ impl fmt::Display for Error {
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::DefinitionCheck(reason) => write!(f, "definition check: {reason}"),
+            Self::CheckpointDecode {
+                reason,
+                line,
+                column,
+            } => write!(
+                f,
+                "checkpoint decoding failure {} at {line}:{column}",
+                u32::from(*reason)
+            ),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
@@ -970,6 +988,16 @@ impl serde::Serialize for Error {
         }
         if let Self::QuestionRegistration(reason) = cause {
             value.serialize_entry("reason", &reason.code())?;
+        }
+        if let Self::CheckpointDecode {
+            reason,
+            line,
+            column,
+        } = cause
+        {
+            value.serialize_entry("reason", reason)?;
+            value.serialize_entry("line", line)?;
+            value.serialize_entry("column", column)?;
         }
         if let Self::DefinitionCheck(reason) = cause {
             use crate::outcome::DefinitionCheckReason as Code;

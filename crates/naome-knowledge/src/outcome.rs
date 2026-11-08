@@ -131,6 +131,7 @@ codes! {
         CheckedContext = 19,
         QuestionRegistration = 20,
         DefinitionCheck = 21,
+        CheckpointDecode = 22,
     }
 
     pub enum InputFault in 7 {
@@ -160,6 +161,8 @@ codes! {
         CheckpointPageMemoryLimit = 28,
         CheckpointFileReplaced = 29,
         CheckpointOutsideOwner = 30,
+        CheckpointEncoding = 31,
+        CheckpointNoncanonical = 32,
     }
 
     pub enum InputLimit in 8 {
@@ -698,6 +701,7 @@ codes! {
     pub(crate) enum ConnectionClose in 70 { Io = 1, KeepAliveTimeout = 2 }
     pub(crate) enum RelayClientEvent in 71 { ReservationAccepted = 1, OutboundCircuit = 2, InboundCircuit = 3 }
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
+    pub enum CheckpointJsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
