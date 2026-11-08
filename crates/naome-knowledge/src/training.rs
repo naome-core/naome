@@ -90,12 +90,61 @@ pub fn partition(question: &ResearchQuestion) -> Partition {
 
 /// Solver outcomes are operational observations. Only `Verified` carries a
 /// mathematical target, which is re-bound to the exact checked graph statement.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub enum Outcome {
     Verified { artifact: String },
     Exhausted,
     Unavailable,
+}
+
+impl Serialize for Outcome {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::outcome::TrainingOutcome as Code;
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct(
+            "Outcome",
+            if matches!(self, Self::Verified { .. }) {
+                2
+            } else {
+                1
+            },
+        )?;
+        let code = match self {
+            Self::Verified { .. } => Code::Verified,
+            Self::Exhausted => Code::Exhausted,
+            Self::Unavailable => Code::Unavailable,
+        };
+        value.serialize_field("outcome", &code)?;
+        if let Self::Verified { artifact } = self {
+            value.serialize_field("artifact", artifact)?;
+        }
+        value.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Outcome {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use crate::outcome::TrainingOutcome as Code;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            outcome: Code,
+            #[serde(default, deserialize_with = "present_string")]
+            artifact: Option<String>,
+        }
+        fn present_string<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<String>, D::Error> {
+            String::deserialize(deserializer).map(Some)
+        }
+        let value = Wire::deserialize(deserializer)?;
+        match (value.outcome, value.artifact) {
+            (Code::Verified, Some(artifact)) => Ok(Self::Verified { artifact }),
+            (Code::Exhausted, None) => Ok(Self::Exhausted),
+            (Code::Unavailable, None) => Ok(Self::Unavailable),
+            _ => Err(serde::de::Error::custom("outcome and artifact differ")),
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

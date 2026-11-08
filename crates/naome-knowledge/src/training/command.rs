@@ -143,7 +143,7 @@ Request fields: solver:{checkpoint:SHA256,budget:{work_units,horizon_ms}}, train
   development:null|{solver,knowledge,probes}, previous_development:null|{solver,knowledge,probes},\n\
   after:null|ArtifactId, scan:1..16 (select) or 1..32 (plan), take:1..scan, seed:u64, random_only:bool.\n\
 Use next_after for the next scan page. Coverage roots are a bounded representative replay sample.\n\
-Probe: {question,spent_ms,work_units, result:{outcome:verified,artifact:ArtifactId}|{outcome:exhausted}|{outcome:unavailable}}.\n\
+Probe: {question,spent_ms,work_units, result:{outcome:4063233,artifact:ArtifactId}|{outcome:4063234}|{outcome:4063235}}.\n\
 Only development probes can adapt selection; successes must finish inside the original allowance; verified results must bind to exact checked roots.\n\
 Evaluation fields: initial_checkpoint,solver,knowledge,total_budget_micros,compute,probes.\n\
 Compute fields: selection_micros,generation_and_checking_micros,training_micros,evaluation_micros.\n\

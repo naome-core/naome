@@ -620,6 +620,8 @@ codes! {
     pub(crate) enum FinderLearningOutcome in 60 { CheckedResolution = 1, UnresolvedSearch = 2 }
     pub(crate) enum FinderEvidenceOutcome in 61 { Candidate = 1, NoCandidate = 2, Rejected = 3, Failed = 4, Expired = 5, InDoubt = 6 }
 
+    pub(crate) enum TrainingOutcome in 62 { Verified = 1, Exhausted = 2, Unavailable = 3 }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
