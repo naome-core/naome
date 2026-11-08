@@ -1,6 +1,7 @@
 //! Bounded classical tableau with checked, replayable proof reconstruction.
 pub mod core;
 pub(crate) mod derivation;
+pub(super) mod focus;
 pub(crate) mod frontier;
 mod instantiation;
 pub(super) mod scope;
