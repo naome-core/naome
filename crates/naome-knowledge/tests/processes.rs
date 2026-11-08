@@ -6,6 +6,21 @@ static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
     let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    workgroup_proof_exchange("native", None);
+}
+
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn mock_helper_proves_and_requester_rechecks_cooperative_work() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    workgroup_proof_exchange("mock", None);
+}
+
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+fn workgroup_proof_exchange(
+    helper_provider: &str,
+    seed: Option<(&std::path::Path, &str, &str, &str)>,
+) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = std::env::temp_dir().join(format!(
         "naome-workgroups-{}-{}",
@@ -15,14 +30,28 @@ fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
             .unwrap()
             .as_nanos()
     ));
-    let result = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .arg(root.join("crates/naome-knowledge/tests/support/workgroups.py"))
+        .arg(root.join("crates/naome-knowledge/tests/support/workgroups.py"));
+    if let Some((path, definition, resolution, proof)) = seed {
+        command.arg("--seed").arg(path).args([
+            "--definition-id",
+            definition,
+            "--resolution",
+            resolution,
+            "--expected-proof",
+            proof,
+        ]);
+    }
+    let result = command
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
         .arg(&output)
         .args([
             "--timeout",
             "90",
+            "--helper-provider",
+            helper_provider,
             "--profile",
             if cfg!(debug_assertions) {
                 "test"
@@ -39,6 +68,114 @@ fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn cold_mock_helper_proves_defined_offer_and_requester_rechecks_it() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    use naome_checker::question::ResearchQuestion;
+    use naome_knowledge::question::AdmissionOutcome;
+    use naome_proof::{ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate};
+    let question = ResearchQuestion::from_hex(&naome_knowledge::mocks::create_question(0)).unwrap();
+    let element = naome_foundation::FreeVariable::new(0);
+    let source_set = naome_foundation::FreeVariable::new(1);
+    let result_set = naome_foundation::FreeVariable::new(2);
+    let definition =
+        DefinitionCertificate::relation(1, DefinedFormula::equal(element, element)).unwrap();
+    let definition_id = ArtifactId::from_definition_id(definition.definition_id());
+    let predicate = DefinedFormula::defined_relation(definition.definition_id(), [element]);
+    let body = DefinedFormula::biconditional(
+        DefinedFormula::member(element, result_set),
+        DefinedFormula::conjunction(DefinedFormula::member(element, source_set), predicate),
+    );
+    let source = DefinedFormula::for_all(
+        source_set,
+        DefinedFormula::exists(result_set, DefinedFormula::for_all(element, body)),
+    );
+    let source = source.encode_canonical_with_limits(1023, 31).unwrap().0;
+    let ArtifactPayload::Proof(certificate) = ArtifactPayload::from_canonical_bytes(
+        &naome_knowledge::unhex(&naome_knowledge::mocks::create_proof(&question).unwrap()).unwrap(),
+    )
+    .unwrap() else {
+        panic!("expected proof fixture")
+    };
+    let proof = naome_checker::normalize_and_check(certificate).unwrap();
+    let proof_id = naome_knowledge::hex(proof.artifact_id().as_bytes());
+    let seed = std::env::temp_dir().join(format!(
+        "naome-defined-proof-seed-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&seed).unwrap();
+    let key = libp2p::identity::Keypair::generate_ed25519();
+    std::fs::write(
+        seed.join("identity.key"),
+        key.to_protobuf_encoding().unwrap(),
+    )
+    .unwrap();
+    {
+        let mut graph = naome_knowledge::Graph::open(&seed).unwrap();
+        let artifact = ArtifactPayload::Definition(definition).to_canonical_bytes();
+        let envelope = graph.author(&naome_knowledge::hex(&artifact)).unwrap();
+        assert_eq!(
+            graph
+                .ingest(envelope, std::time::Instant::now())
+                .unwrap()
+                .status,
+            "accepted"
+        );
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (handle, admin, inbox) = naome_knowledge::question::channel();
+        let config = naome_knowledge::network::Config {
+            directory: seed.clone(),
+            listen: "/ip4/127.0.0.1/tcp/0".into(),
+            peers: vec![],
+            discovery: Some(naome_knowledge::network::DiscoveryConfig {
+                mdns: false,
+                dht: false,
+                internet: false,
+                ..Default::default()
+            }),
+            producer_artifacts: vec![],
+            formal_goal: None,
+        };
+        let node = tokio::spawn(naome_knowledge::network::run_with_questions(
+            config,
+            false,
+            inbox,
+            naome_knowledge::mocks::select_question,
+        ));
+        let admission = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            handle.admit_question_bytes(&source),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert!(matches!(admission.outcome, AdmissionOutcome::Admitted(_)));
+        admin.stop().await.unwrap();
+        node.await.unwrap().unwrap();
+    });
+    workgroup_proof_exchange(
+        "mock",
+        Some((
+            &seed,
+            &naome_knowledge::hex(definition_id.as_bytes()),
+            &naome_knowledge::hex(question.resolution_id()),
+            &proof_id,
+        )),
+    );
+    std::fs::remove_dir_all(seed).unwrap();
 }
 
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
