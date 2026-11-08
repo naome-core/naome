@@ -621,3 +621,141 @@ fn an_observed_open_cut_schedules_one_helper_and_learns_from_its_checked_use() {
     let reopened = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
     assert_eq!(reopened.support_updates(), 1);
 }
+
+#[test]
+fn a_known_local_cut_is_checked_inline_under_the_original_search_budget() {
+    use naome_checker::{
+        ArtifactState,
+        question::{
+            AssessmentQuestion, KnowledgeSnapshot, PrefilterPolicy, QuestionRegistry,
+            RejectionReason, assess_question,
+        },
+    };
+    use naome_proof::ProofCertificate;
+
+    let [a, b, c, d, z] = [0, 1, 2, 3, 10].map(FreeVariable::new);
+    let inclusion = Formula::for_all(
+        z,
+        Formula::implies(Formula::member(z, a), Formula::member(z, b)),
+    );
+    let helper = ResearchQuestion::from_formula(proof::close(Formula::implies(
+        inclusion,
+        Formula::implies(Formula::member(c, a), Formula::member(c, b)),
+    )))
+    .unwrap();
+    let conclusion = Formula::member(a, b);
+    let mut rules = [
+        Formula::implies(
+            helper.proved_target().clone(),
+            Formula::for_all(z, Formula::member(z, b)),
+        ),
+        Formula::implies(Formula::member(b, a), Formula::equal(a, b)),
+        Formula::implies(Formula::equal(a, b), Formula::member(c, b)),
+        Formula::implies(Formula::member(c, b), Formula::equal(c, a)),
+        Formula::implies(Formula::equal(c, a), Formula::member(b, d)),
+    ];
+    rules.rotate_left(2);
+    let goal = rules
+        .into_iter()
+        .rev()
+        .fold(conclusion, |goal, rule| Formula::implies(rule, goal));
+    let goal = ResearchQuestion::from_formula(proof::close(goal)).unwrap();
+    let context = ArtifactState::new();
+    let registry = QuestionRegistry::new();
+    let snapshot = KnowledgeSnapshot::new([0; 32], &context, &registry);
+    let request = AssessmentQuestion::from_research_question(&helper, None).unwrap();
+    let assessed = assess_question(&request, &snapshot, &PrefilterPolicy::default());
+    assert_eq!(assessed.reason, Some(RejectionReason::KnownProof));
+    let witness = assessed.deduction.unwrap();
+    assert!(witness.original_proofs().is_empty());
+    let inputs = Prerequisites::internal_cut(witness.canonical_certificate().to_vec()).unwrap();
+    let restored: Prerequisites =
+        serde_json::from_slice(&serde_json::to_vec(&inputs).unwrap()).unwrap();
+    assert!(restored.contains_inputs(&inputs));
+    assert!(!Prerequisites::default().contains_inputs(&restored));
+    assert!(
+        restored
+            .require(
+                &State::fresh(),
+                &[crate::hex(witness.proof_id().as_bytes())]
+            )
+            .is_err()
+    );
+
+    let mut owner = crate::jobs::tests::Manual::new();
+    let binding = crate::jobs::Binding::new([0; 32], [0; 32]);
+    assert!(
+        owner
+            .client
+            .submit_after(
+                crate::jobs::Input::Find {
+                    cursor: 0,
+                    question: goal.to_hex()
+                },
+                binding.clone(),
+                Vec::new(),
+                restored.clone(),
+            )
+            .is_err()
+    );
+    let solve_request = crate::jobs::Input::Solve {
+        question: goal.to_hex(),
+    };
+    let _ticket = owner
+        .client
+        .submit_after(solve_request.clone(), binding, Vec::new(), restored.clone())
+        .unwrap();
+    let requests = owner.requests();
+    assert!(matches!(requests.as_slice(), [(_, input)] if input == &solve_request));
+    let mut worker = State::fresh().job();
+    worker.prerequisites = restored.clone();
+    worker.validate().unwrap();
+    worker.training = true;
+    assert!(worker.validate().is_err());
+
+    let seed = 1403;
+    let budget = 13;
+    let control = attempt(&goal, None, seed, budget).unwrap();
+    assert!(control.solution.is_none());
+    let generated = solve(&goal, &[], &restored, seed, budget).unwrap();
+    assert_eq!(generated.cost.search_expansions, budget);
+    assert!(generated.cost.dependency_check_steps >= 4);
+    let solution = generated
+        .solution
+        .expect("the checked local cut should close");
+    assert!(solution.helpers.is_empty());
+    assert!(!solution.refuted);
+    let search::Tree::Program(packet) = &solution.tree else {
+        panic!("native program expected");
+    };
+    assert!(
+        !packet
+            .commands()
+            .unwrap()
+            .iter()
+            .any(|command| { matches!(command, Command::ProofReference { .. }) })
+    );
+    let copy = goal.clone();
+    std::thread::spawn(move || solution.check_target(&copy))
+        .join()
+        .unwrap()
+        .unwrap();
+
+    let unrelated = ProofCertificate::new(vec![
+        ProofStep::EqualityReflexivity { variable: a },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: a,
+        },
+    ])
+    .unwrap();
+    let unrelated = Prerequisites::internal_cut(unrelated.to_canonical_bytes()).unwrap();
+    assert!(!restored.contains_inputs(&unrelated));
+    let Err(error) = solve(&goal, &[], &unrelated, seed, budget) else {
+        panic!("a checked but unrelated certificate was admitted");
+    };
+    assert_eq!(
+        error,
+        "internal cut does not match the requested proof path"
+    );
+}

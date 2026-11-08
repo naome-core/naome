@@ -1204,12 +1204,34 @@ impl Autonomous {
                     } else {
                         Vec::new()
                     };
-                    let inputs = match &self.frontier {
-                        Some(frontier) => frontier.solving_inputs(graph, &question, &required),
-                        None => graph
-                            .solving_inputs(&required, &[])
-                            .map(|inputs| (required, inputs.unwrap_or_default())),
-                    };
+                    let inputs = (|| -> Result<_, crate::Error> {
+                        let Some(frontier) = &self.frontier else {
+                            return graph
+                                .solving_inputs(&required, &[])
+                                .map(|inputs| (required, inputs.unwrap_or_default()));
+                        };
+                        let (required, prerequisites) =
+                            frontier.solving_inputs(graph, &question, &required)?;
+                        if !required.is_empty() || !prerequisites.is_empty() {
+                            return Ok((required, prerequisites));
+                        }
+                        for cut in frontier.local_cut_candidates(&question)? {
+                            let assessed = questions.assess(graph, &cut);
+                            if assessed.reason
+                                == Some(naome_checker::question::RejectionReason::KnownProof)
+                                && let Some(witness) = assessed.deduction
+                                && witness.original_proofs().is_empty()
+                                && witness.canonical_certificate().len()
+                                    <= crate::learning::knowledge::BYTES
+                            {
+                                let input = crate::learning::Prerequisites::internal_cut(
+                                    witness.canonical_certificate().to_vec(),
+                                )?;
+                                return Ok((required, input));
+                            }
+                        }
+                        Ok((required, prerequisites))
+                    })();
                     let (required, prerequisites) = match inputs {
                         Ok(selected) => selected,
                         Err(error) => {

@@ -9,6 +9,7 @@ use std::{collections::BTreeSet, sync::Arc};
 struct Data {
     artifacts: Vec<Envelope>,
     programs: Vec<Packet>,
+    internal_cut: Option<Vec<u8>>,
     #[serde(skip)]
     _memory: Option<Arc<crate::resources::MemoryLease>>,
 }
@@ -25,7 +26,8 @@ impl Serialize for Prerequisites {
 impl<'de> Deserialize<'de> for Prerequisites {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let data = Data::deserialize(deserializer)?;
-        Self::from_inputs(data.artifacts, data.programs).map_err(serde::de::Error::custom)
+        Self::from_parts(data.artifacts, data.programs, data.internal_cut)
+            .map_err(serde::de::Error::custom)
     }
 }
 impl Prerequisites {
@@ -35,9 +37,26 @@ impl Prerequisites {
     }
 
     pub fn from_inputs(artifacts: Vec<Envelope>, programs: Vec<Packet>) -> Result<Self, String> {
+        Self::from_parts(artifacts, programs, None)
+    }
+
+    pub(crate) fn internal_cut(certificate: Vec<u8>) -> Result<Self, String> {
+        Self::from_parts(Vec::new(), Vec::new(), Some(certificate))
+    }
+
+    pub(super) fn cut_certificate(&self) -> Option<&[u8]> {
+        self.0.internal_cut.as_deref()
+    }
+
+    fn from_parts(
+        artifacts: Vec<Envelope>,
+        programs: Vec<Packet>,
+        internal_cut: Option<Vec<u8>>,
+    ) -> Result<Self, String> {
         let mut value = Self(Arc::new(Data {
             artifacts,
             programs,
+            internal_cut,
             _memory: None,
         }));
         value.validate()?;
@@ -48,6 +67,7 @@ impl Prerequisites {
             .map(Packet::retained_bytes)
             .sum::<usize>();
         let bytes = program_bytes
+            + value.cut_certificate().map_or(0, <[u8]>::len)
             + value
                 .0
                 .artifacts
@@ -61,14 +81,19 @@ impl Prerequisites {
         Ok(value)
     }
     pub fn is_empty(&self) -> bool {
-        self.0.artifacts.is_empty() && self.0.programs.is_empty()
+        self.0.artifacts.is_empty()
+            && self.0.programs.is_empty()
+            && self.cut_certificate().is_none()
     }
     pub fn contains_inputs(&self, requested: &Self) -> bool {
         requested
-            .0
-            .artifacts
-            .iter()
-            .all(|input| self.0.artifacts.contains(input))
+            .cut_certificate()
+            .is_none_or(|cut| self.cut_certificate() == Some(cut))
+            && requested
+                .0
+                .artifacts
+                .iter()
+                .all(|input| self.0.artifacts.contains(input))
             && requested
                 .0
                 .programs
@@ -81,6 +106,10 @@ impl Prerequisites {
             .iter()
             .any(|artifact| artifact.statement_id.is_none())
     }
+    pub(crate) fn allows_empty_required(&self) -> bool {
+        self.has_definitions() || self.cut_certificate().is_some()
+    }
+
     pub fn definitions(
         &self,
         base: &[definitions::Entry],
@@ -106,6 +135,14 @@ impl Prerequisites {
         Ok(selected)
     }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(certificate) = self.cut_certificate()
+            && (certificate.is_empty()
+                || certificate.len() > knowledge::BYTES
+                || !self.0.artifacts.is_empty()
+                || !self.0.programs.is_empty())
+        {
+            return Err("temporary internal cut capacity or mixed context".into());
+        }
         let limits = crate::resources::limits();
         let mut ids = BTreeSet::new();
         let mut bytes = self
@@ -274,12 +311,16 @@ impl Prerequisites {
             recipe,
             &self.0.programs,
             artifacts(),
+            None,
         )?;
         Ok((Some(candidate), work))
     }
 
     pub fn require(&self, base: &State, required: &[String]) -> Result<(), String> {
         self.validate()?;
+        if self.cut_certificate().is_some() && !required.is_empty() {
+            return Err("internal cut cannot stand in for checked graph prerequisites".into());
+        }
         if required.len() > knowledge::CAPACITY
             || required.iter().collect::<BTreeSet<_>>().len() != required.len()
         {

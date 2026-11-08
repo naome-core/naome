@@ -2,6 +2,7 @@
 mod artifact;
 mod calculus;
 mod construction;
+pub(crate) use construction::composition::closed_cut_routes;
 pub(crate) use construction::logic::conjunction as conjunction_operands;
 mod coverage;
 mod curriculum;
@@ -495,7 +496,8 @@ impl Job {
         }
         self.base.validate()?;
         if !self.prerequisites.is_empty()
-            && (self.training || self.required.is_empty() && !self.prerequisites.has_definitions())
+            && (self.training
+                || self.required.is_empty() && !self.prerequisites.allows_empty_required())
         {
             return Err("temporary prerequisites lack a solving role".into());
         }
@@ -1444,6 +1446,41 @@ fn search_question_report(
                 },
                 executions,
             );
+        }
+        if context.native_programs
+            && !refuted
+            && scoped.is_none()
+            && let Some(certificate) = context
+                .prerequisites
+                .and_then(Prerequisites::cut_certificate)
+        {
+            let dependency_checking = proof::checking_work().steps;
+            let (candidate, work) = construction::composition::known_cut(
+                &target,
+                certificate,
+                remaining,
+                orientation_started,
+            )?;
+            dependency_steps += proof::checking_work()
+                .steps
+                .saturating_sub(dependency_checking) as usize;
+            remaining = remaining.saturating_sub(work);
+            if let Some(candidate) = candidate {
+                return program_generation(
+                    candidate.packet,
+                    candidate.helpers,
+                    &target,
+                    false,
+                    GenerationCost {
+                        search_expansions: budget - remaining,
+                        dependency_check_steps: dependency_steps,
+                        generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                            as u64,
+                        ..GenerationCost::default()
+                    },
+                    executions,
+                );
+            }
         }
         if context.native_programs && !terms.is_empty() && scoped.is_none() && remaining != 0 {
             let (term, work) = construction::composition::construct_term(

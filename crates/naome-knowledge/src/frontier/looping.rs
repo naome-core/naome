@@ -187,7 +187,7 @@ impl Frontier {
                     return Ok((witnesses, inputs));
                 }
             }
-            let routes = finder::closed_cut_routes(question.proved_target(), self.native);
+            let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
             let mut witnesses = Vec::new();
             let mut best_exact = usize::MAX;
             for (antecedent, distance) in routes.exact {
@@ -224,6 +224,34 @@ impl Frontier {
             .solving_inputs(planned, definitions)?
             .unwrap_or_default();
         Ok((planned.to_vec(), inputs))
+    }
+
+    /// Exact planned cuts for an earlier open goal. The formal owner decides
+    /// whether it can already supply an independently checked local proof.
+    pub(crate) fn local_cut_candidates(
+        &self,
+        question: &ResearchQuestion,
+    ) -> Result<Vec<ResearchQuestion>, crate::Error> {
+        let Some(record) = self.evidence.get(question)? else {
+            return Ok(Vec::new());
+        };
+        if !self.native
+            || record.first_unresolved_job == 0
+            || record.verified.is_some()
+            || record.loop_disabled
+            || record.helpers.is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        let routes = crate::learning::closed_cut_routes(question.proved_target(), true);
+        let mut candidates = Vec::new();
+        for source in record.helpers {
+            let helper = ResearchQuestion::from_hex(&source)?;
+            if routes.contains(helper.proved_target()) {
+                candidates.push(helper);
+            }
+        }
+        Ok(candidates)
     }
 
     pub(crate) fn loop_focus(
@@ -307,7 +335,7 @@ impl Frontier {
                     Vec::new()
                 };
                 let routes = (self.native && !sources.is_empty()).then(|| {
-                    finder::closed_cut_routes(nodes[index].question.proved_target(), true)
+                    crate::learning::closed_cut_routes(nodes[index].question.proved_target(), true)
                 });
                 for source in sources {
                     let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
@@ -335,11 +363,7 @@ impl Frontier {
                     };
                     nodes[index].children.push(child);
                     if routes.as_ref().is_some_and(|routes| {
-                        routes
-                            .exact
-                            .iter()
-                            .chain(&routes.quantified)
-                            .any(|(formula, _)| formula == nodes[child].question.proved_target())
+                        routes.contains(nodes[child].question.proved_target())
                     }) {
                         nodes[index].cuts.push(child);
                     }

@@ -193,7 +193,7 @@ pub(super) fn program_from_recipe(
     target: &Formula,
     recipe: proof::Recipe,
 ) -> Result<ProgramCandidate, String> {
-    program_from_recipe_with_inputs(target, recipe, &[], [])
+    program_from_recipe_with_inputs(target, recipe, &[], [], None)
 }
 
 pub(super) fn program_from_recipe_with_inputs(
@@ -201,8 +201,9 @@ pub(super) fn program_from_recipe_with_inputs(
     recipe: proof::Recipe,
     programs: &[super::peer::Packet],
     inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
+    inline: Option<naome_proof::ProofId>,
 ) -> Result<ProgramCandidate, String> {
-    let (steps, helpers) = program_recipe(recipe)?;
+    let (steps, helpers) = program_recipe(recipe, inline)?;
     let commands = naome_proof::program::Projection::from_inference_steps(&steps)?.into_commands();
     let artifacts = helpers
         .iter()
@@ -223,7 +224,10 @@ pub(super) fn program_from_recipe_with_inputs(
 
 // Newly synthesized helper derivations can share the root's native command
 // graph. Original bounded artifact references keep their concrete identity.
-fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>), String> {
+fn program_recipe(
+    recipe: proof::Recipe,
+    inline: Option<naome_proof::ProofId>,
+) -> Result<(Vec<ProofStep>, Vec<String>), String> {
     use std::collections::{BTreeMap, BTreeSet};
     fn append(
         output: &mut Vec<ProofStep>,
@@ -278,7 +282,8 @@ fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>)
         let needs_inlined = certificate.steps().iter().any(|step| {
             matches!(step, ProofStep::ProofReference { proof_id } if aliases.contains_key(proof_id))
         });
-        if needs_inlined
+        if inline == Some(id)
+            || needs_inlined
             || checked.normal_form().canonical_bytes().len() + 1
                 > crate::resources::limits().proof_bytes
         {

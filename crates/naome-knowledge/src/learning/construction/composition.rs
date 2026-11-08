@@ -3,6 +3,9 @@ use super::{logic, proof};
 use naome_foundation::Formula;
 use std::{collections::BTreeSet, time::Instant};
 
+mod cuts;
+pub(crate) use cuts::closed_cut_routes;
+
 pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>, String> {
     let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
     let mut ids = context
@@ -346,4 +349,45 @@ pub(crate) fn construct_term(
     }
     let term = search.prove(target, &context)?;
     Ok((term, deduction_work + search.work))
+}
+
+/// Recheck an independently established, self-contained cut against the exact
+/// job target. Its proof stays inside the emitted native program.
+pub(in crate::learning) fn known_cut(
+    target: &Formula,
+    source: &[u8],
+    maximum: usize,
+    started: Instant,
+) -> Result<(Option<super::ProgramCandidate>, usize), String> {
+    use naome_proof::{ProofCertificate, ProofStep};
+    if maximum < 2 {
+        return Ok((None, 0));
+    }
+    let certificate =
+        ProofCertificate::from_canonical_bytes(source).map_err(|error| error.to_string())?;
+    let verified = proof::verify_native(certificate, Vec::new(), Vec::new(), None)?;
+    if !closed_cut_routes(target, true).contains(&verified.target) {
+        return Err("internal cut does not match the requested proof path".into());
+    }
+    let source = verified.native_id;
+    let term = proof::Term::Native {
+        certificate: verified.certificate,
+        lemmas: Vec::new(),
+        definitions: Vec::new(),
+        target: verified.target,
+    };
+    let (closed, work) = construct_term(target, &[term], maximum - 1, started, true)?;
+    let Some(closed) = closed else {
+        return Ok((None, work + 1));
+    };
+    let recipe = proof::recipe(&closed, target)?;
+    if !recipe
+        .steps
+        .iter()
+        .any(|step| matches!(step, ProofStep::ProofReference { proof_id } if *proof_id == source))
+    {
+        return Ok((None, work + 1));
+    }
+    let candidate = super::program_from_recipe_with_inputs(target, recipe, &[], [], Some(source))?;
+    Ok((Some(candidate), work + 1))
 }

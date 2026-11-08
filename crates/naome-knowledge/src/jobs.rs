@@ -718,7 +718,7 @@ impl Client {
         prerequisites.validate()?;
         if !prerequisites.is_empty()
             && (!matches!(input, Input::Solve { .. })
-                || required.is_empty() && !prerequisites.has_definitions())
+                || required.is_empty() && !prerequisites.allows_empty_required())
         {
             return Err("temporary prerequisites lack required roots".into());
         }
