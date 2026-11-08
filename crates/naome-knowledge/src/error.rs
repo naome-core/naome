@@ -261,6 +261,7 @@ pub enum Error {
     Formula(naome_foundation::FormulaCodecError),
     QuestionInput(Box<naome_proof::QuestionError>),
     QuestionRegistration(naome_checker::question::RejectionReason),
+    DefinitionCheck(Box<naome_checker::DefinitionCheckError>),
     Runtime(crate::RuntimeFailure),
     Research(crate::ResearchFailure),
     Worker(crate::WorkerFailure),
@@ -308,6 +309,7 @@ impl Error {
             Self::Formula(_) => OperationCode::Formula,
             Self::QuestionInput(_) => OperationCode::QuestionInput,
             Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
+            Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Research(failure) => return (*failure).into(),
             Self::Worker(failure) => return (*failure).into(),
@@ -347,6 +349,7 @@ impl Error {
             | Self::QuestionLimit(_)
             | Self::QuestionInput(_)
             | Self::QuestionRegistration(_)
+            | Self::DefinitionCheck(_)
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
@@ -476,6 +479,7 @@ impl fmt::Display for Error {
             Self::Formula(error) => error.fmt(f),
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
+            Self::DefinitionCheck(reason) => write!(f, "definition check: {reason}"),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
@@ -953,6 +957,39 @@ impl serde::Serialize for Error {
         if let Self::QuestionRegistration(reason) = cause {
             value.serialize_entry("reason", &reason.code())?;
         }
+        if let Self::DefinitionCheck(reason) = cause {
+            use crate::outcome::DefinitionCheckReason as Code;
+            use naome_checker::DefinitionCheckError as E;
+            use naome_checker::diagnostics::{ExpansionFailure, FormulaFailure};
+            let code = match reason.as_ref() {
+                E::Expansion(error) => {
+                    value.serialize_entry("expansion", &ExpansionFailure::from(error))?;
+                    Code::Expansion
+                }
+                E::CanonicalBody(error) => {
+                    value.serialize_entry("formula", &FormulaFailure::from(error))?;
+                    Code::CanonicalBody
+                }
+                E::Certificate(error) => {
+                    value.serialize_entry("format", &FormatFailure::from(error))?;
+                    Code::Certificate
+                }
+                E::UnknownObligationStatement { statement_id } => {
+                    value.serialize_entry("statement", statement_id.as_bytes())?;
+                    Code::UnknownObligation
+                }
+                E::ObligationConclusionMismatch { statement_id } => {
+                    value.serialize_entry("statement", statement_id.as_bytes())?;
+                    Code::ObligationMismatch
+                }
+                E::ObligationFormula(error) => {
+                    value.serialize_entry("formula", &FormulaFailure::from(error))?;
+                    Code::ObligationFormula
+                }
+                _ => Code::Unsupported,
+            };
+            value.serialize_entry("reason", &code)?;
+        }
         if let Self::QuestionInput(reason) = cause {
             use naome_checker::diagnostics::{ExpansionFailure, FormulaFailure};
             use naome_proof::QuestionError;
@@ -1018,7 +1055,7 @@ impl From<naome_checker::DefinitionCheckError> for Error {
             naome_checker::DefinitionCheckError::Expansion(
                 naome_proof::DefinitionExpansionError::Access(source),
             ) => naome_checker::ContextError::from(source).into(),
-            other => Self::InvalidInput(other.to_string()),
+            other => Self::DefinitionCheck(Box::new(other)),
         }
     }
 }

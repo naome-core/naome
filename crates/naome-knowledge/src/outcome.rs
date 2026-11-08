@@ -130,6 +130,7 @@ codes! {
         Formula = 18,
         CheckedContext = 19,
         QuestionRegistration = 20,
+        DefinitionCheck = 21,
     }
 
     pub enum InputFault in 7 {
@@ -686,6 +687,7 @@ codes! {
     pub(crate) enum ConnectionPort in 69 { New = 1, Reused = 2 }
     pub(crate) enum ConnectionClose in 70 { Io = 1, KeepAliveTimeout = 2 }
     pub(crate) enum RelayClientEvent in 71 { ReservationAccepted = 1, OutboundCircuit = 2, InboundCircuit = 3 }
+    pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,

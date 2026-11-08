@@ -215,3 +215,28 @@ fn definition_format_reasons_retain_arity_and_formal_variable_witnesses() {
     assert_eq!(value["identifier"], 2);
     assert_eq!(value["arity"], 3);
 }
+
+#[test]
+fn definition_checker_preserves_obligation_identity_and_storage_fatality() {
+    let statement = naome_proof::StatementId::from_bytes([9; 32]);
+    let error: Error = naome_checker::DefinitionCheckError::UnknownObligationStatement {
+        statement_id: statement,
+    }
+    .into();
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::DefinitionCheck));
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::outcome::DefinitionCheckReason::UnknownObligation)
+    );
+    assert_eq!(value["statement"], serde_json::json!(vec![9; 32]));
+    assert_eq!(value["fatal"], false);
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(OperationCode::DefinitionCheck)
+    );
+    assert_eq!(stored["reason"], value["reason"]);
+    assert_eq!(stored["statement"], value["statement"]);
+    assert_eq!(stored["fatal"], true);
+}
