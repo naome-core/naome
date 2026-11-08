@@ -1733,3 +1733,21 @@ fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
             .is_empty()
     );
 }
+
+#[test]
+fn model_blob_range_and_index_failures_keep_distinct_codes() {
+    let blob = Blob::of(b"model");
+    assert_eq!(
+        blob.chunk_len(1).unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ModelChunkIndex)
+    );
+    assert_eq!(
+        blob.range_len(&(0..0)).unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ModelChunkRange)
+    );
+    let empty = Blob::of(b"");
+    assert_eq!(
+        empty.validate().unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ModelBlobCapacity)
+    );
+}

@@ -312,6 +312,9 @@ impl fmt::Display for Error {
                 InputFault::CommandFrameLimit => "command frame limit",
                 InputFault::CommandFrameIncomplete => "command frame incomplete",
                 InputFault::CommandRead => "command input read failed",
+                InputFault::IdentityWidth => "identity width",
+                InputFault::HexWidth => "hex width",
+                InputFault::HexNoncanonical => "noncanonical hex",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -476,6 +479,9 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ResumedProviderProgramGroupDiffers => {
                     "resumed provider program group differs"
                 }
+                crate::ResearchFailure::ModelBlobCapacity => "native model blob capacity",
+                crate::ResearchFailure::ModelChunkIndex => "native model chunk index",
+                crate::ResearchFailure::ModelChunkRange => "native model chunk range",
             }),
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
@@ -513,6 +519,12 @@ impl From<crate::StartupFailure> for Error {
             code,
             reaped: false,
         }
+    }
+}
+
+impl From<InputFault> for Error {
+    fn from(error: InputFault) -> Self {
+        Self::InputFault(error)
     }
 }
 

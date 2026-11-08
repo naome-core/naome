@@ -15,10 +15,10 @@ impl Blob {
             bytes: bytes.len(),
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         crate::object::id_bytes(&self.sha256)?;
         if self.bytes == 0 || self.bytes > crate::resources::limits().native_model_blob_bytes {
-            return Err("native model blob capacity".into());
+            return Err(crate::ResearchFailure::ModelBlobCapacity.into());
         }
         Ok(())
     }
@@ -26,10 +26,10 @@ impl Blob {
         self.bytes
             .div_ceil(crate::resources::limits().native_model_chunk_bytes)
     }
-    pub fn chunk_len(&self, index: usize) -> Result<usize, String> {
+    pub fn chunk_len(&self, index: usize) -> Result<usize, crate::Error> {
         self.validate()?;
         if index >= self.chunks() {
-            return Err("native model chunk index".into());
+            return Err(crate::ResearchFailure::ModelChunkIndex.into());
         }
         Ok(
             (self.bytes - index * crate::resources::limits().native_model_chunk_bytes)
@@ -46,10 +46,10 @@ impl Blob {
             .step_by(2)
             .map(|start| start..(start + 2).min(self.chunks()))
     }
-    pub fn range_len(&self, range: &Range<usize>) -> Result<usize, String> {
+    pub fn range_len(&self, range: &Range<usize>) -> Result<usize, crate::Error> {
         self.validate()?;
         if range.start >= range.end || range.end - range.start > 2 || range.end > self.chunks() {
-            return Err("native model chunk range".into());
+            return Err(crate::ResearchFailure::ModelChunkRange.into());
         }
         range.clone().map(|index| self.chunk_len(index)).sum()
     }

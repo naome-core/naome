@@ -442,7 +442,7 @@ async fn run_owned(
                 {
                     let length = blob
                         .range_len(&range)
-                        .map_err(|_| WorkerFailure::ModelRange)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     if let Some(bytes) = &bytes
                         && bytes.len() != length
                     {

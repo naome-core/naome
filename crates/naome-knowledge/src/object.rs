@@ -726,11 +726,13 @@ pub(crate) fn content_id(statement: StatementId, bytes: &[u8]) -> ArtifactId {
 
 pub(crate) fn id_bytes(value: &str) -> Result<[u8; 32], crate::Error> {
     if value.len() != 64 {
-        return Err("identity width".into());
+        return Err(crate::InputFault::IdentityWidth.into());
     }
-    unhex(value)?
-        .try_into()
-        .map_err(|_| "identity width".into())
+    let mut result = [0; 32];
+    for (output, pair) in result.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        *output = hex_digit(pair[0])? * 16 + hex_digit(pair[1])?;
+    }
+    Ok(result)
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -743,22 +745,21 @@ pub fn hex(bytes: &[u8]) -> String {
     result
 }
 
+fn hex_digit(value: u8) -> Result<u8, crate::Error> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(crate::InputFault::HexNoncanonical.into()),
+    }
+}
+
 pub fn unhex(value: &str) -> Result<Vec<u8>, crate::Error> {
     if !value.len().is_multiple_of(2) {
-        return Err("hex width".into());
+        return Err(crate::InputFault::HexWidth.into());
     }
     value
         .as_bytes()
         .chunks_exact(2)
-        .map(|pair| {
-            fn digit(value: u8) -> Result<u8, crate::Error> {
-                match value {
-                    b'0'..=b'9' => Ok(value - b'0'),
-                    b'a'..=b'f' => Ok(value - b'a' + 10),
-                    _ => Err("noncanonical hex".into()),
-                }
-            }
-            Ok(digit(pair[0])? * 16 + digit(pair[1])?)
-        })
+        .map(|pair| Ok(hex_digit(pair[0])? * 16 + hex_digit(pair[1])?))
         .collect()
 }

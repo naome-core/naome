@@ -134,6 +134,7 @@ codes! {
         CommandFrameLimit = 5,
         CommandFrameIncomplete = 6,
         CommandRead = 7,
+        IdentityWidth = 8, HexWidth = 9, HexNoncanonical = 10,
     }
 
     pub enum InputLimit in 8 {
@@ -194,7 +195,6 @@ codes! {
         CheckpointOverflow = 28,
         OwnerUnavailable = 29,
         GrantEncoding = 31,
-        ModelRange = 32,
         ModelLength = 33,
         ProgramCapacity = 34,
         ProgramEncoding = 35,
@@ -618,6 +618,7 @@ codes! {
         ProviderProgramOriginalJobMissing = 59,
         ProviderProgramOriginalReservationMissing = 60,
         ResumedProviderProgramGroupDiffers = 61,
+        ModelBlobCapacity = 62, ModelChunkIndex = 63, ModelChunkRange = 64,
     }
 
 }

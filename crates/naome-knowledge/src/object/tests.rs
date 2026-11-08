@@ -103,3 +103,21 @@ fn statement_metadata_preserves_the_actual_sign_for_conjunctive_proof_feedback()
         );
     }
 }
+
+#[test]
+fn fixed_identity_decoder_checks_width_and_canonical_hex() {
+    let value = "0123456789abcdef".repeat(4);
+    assert_eq!(hex(&id_bytes(&value).unwrap()), value);
+    assert_eq!(
+        id_bytes("00").unwrap_err(),
+        crate::Error::InputFault(crate::InputFault::IdentityWidth)
+    );
+    assert_eq!(
+        id_bytes(&"AA".repeat(32)).unwrap_err(),
+        crate::Error::InputFault(crate::InputFault::HexNoncanonical)
+    );
+    assert_eq!(
+        unhex("0").unwrap_err(),
+        crate::Error::InputFault(crate::InputFault::HexWidth)
+    );
+}
