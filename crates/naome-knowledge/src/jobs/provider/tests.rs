@@ -70,6 +70,32 @@ fn structural_finding_finalizes_the_exact_selected_source_under_one_owned_quantu
     assert!(matches!(failure, Failure::Coded(code) if u32::from(code) == expected.code()));
 }
 #[test]
+fn mock_question_failures_preserve_their_code_for_each_role() {
+    let invalid = "invalid";
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::source_requires_definitions(invalid)
+            .unwrap_err(),
+    );
+    for input in [
+        Input::Solve {
+            question: invalid.into(),
+        },
+        Input::Select {
+            question: invalid.into(),
+            purpose: Purpose::Initial,
+            root: None,
+        },
+    ] {
+        let mut provider = Mock {
+            input,
+            work: MockWork::default(),
+        };
+        let failure = provider.result(&mut Grants::default()).unwrap_err();
+        assert!(matches!(failure, Failure::Coded(code) if u32::from(code) == expected.code()));
+    }
+}
+
+#[test]
 fn structural_finding_preserves_a_definition_aware_source() {
     use naome_foundation::{Formula, FreeVariable};
     use naome_proof::{DefinedFormula, DefinitionCertificate};

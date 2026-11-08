@@ -357,12 +357,12 @@ impl Provider for Mock {
             }
             Input::Solve { question } => {
                 if naome_checker::question::ResearchQuestion::source_requires_definitions(question)
-                    .map_err(|e| e.to_string())?
+                    .map_err(crate::Error::from)?
                 {
                     return Ok(Output::NoCandidate);
                 }
                 let compiled = naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 let proof = if self.work.outcome == MockOutcome::Malformed {
                     Some("00ff".into())
                 } else {
@@ -391,7 +391,7 @@ impl Provider for Mock {
             }
             Input::Select { question, .. } => {
                 naome_checker::question::ResearchQuestion::source_requires_definitions(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 // Formal validation (including definition resolution) belongs to the receiver.
                 Output::Selected(self.work.outcome != MockOutcome::Malformed)
             }
