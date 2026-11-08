@@ -481,11 +481,11 @@ fn checkpoint_creation_reports_io_cause_without_creating_missing_parent() {
     let value = serde_json::to_value(error).unwrap();
     assert_eq!(
         value["code"],
-        u32::from(crate::outcome::OperationCode::CheckpointIo)
+        u32::from(crate::outcome::OperationCode::StorageIo)
     );
     assert_eq!(
         value["operation"],
-        u32::from(crate::CheckpointIoOperation::CreateStage)
+        u32::from(crate::StorageIoOperation::CreateStage)
     );
     assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
     assert_eq!(value["os_code"], nix::errno::Errno::ENOENT as i32);

@@ -133,7 +133,7 @@ codes! {
         DefinitionCheck = 21,
         CheckpointDecode = 22,
         CheckpointSql = 23,
-        CheckpointIo = 24,
+        StorageIo = 24,
     }
 
     pub enum InputFault in 7 {
@@ -180,6 +180,9 @@ codes! {
         CheckpointParentMissing = 45,
         CheckpointFilenameMissing = 46,
         CheckpointTargetExists = 47,
+        OwnedFileType = 48,
+        OwnedFileLinks = 49,
+        OwnedFileOwner = 50,
     }
 
     pub enum InputLimit in 8 {
@@ -720,7 +723,7 @@ codes! {
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
     pub enum CheckpointJsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
-    pub enum CheckpointIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5 }
+    pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,

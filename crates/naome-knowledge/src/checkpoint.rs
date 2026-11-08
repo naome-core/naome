@@ -152,7 +152,9 @@ impl Checkpoint {
                 .mode(0o600)
                 .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
                 .open(&stage)
-                .map_err(|error| io_error(crate::CheckpointIoOperation::CreateStage, error))?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(crate::StorageIoOperation::CreateStage, error)
+                })?;
         }
         let _ = owned(&stage)?;
         let mut connection = connect(&stage)?;
@@ -204,12 +206,15 @@ impl Checkpoint {
         drop(Self::open(&stage, domain)?);
         File::open(&stage)
             .and_then(|f| f.sync_all())
-            .map_err(|error| io_error(crate::CheckpointIoOperation::SyncStage, error))?;
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::SyncStage, error)
+            })?;
         if path.exists() {
             return Err(crate::InputFault::CheckpointTargetExists.into());
         }
-        fs::rename(&stage, path)
-            .map_err(|error| io_error(crate::CheckpointIoOperation::Publish, error))?;
+        fs::rename(&stage, path).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::Publish, error)
+        })?;
         sync_parent(path)?;
         Self::open(path, domain)
     }
@@ -535,7 +540,9 @@ fn connect(path: &Path) -> Result<Connection, crate::Error> {
         path.parent()
             .ok_or(crate::InputFault::CheckpointParentMissing)?,
     )
-    .map_err(|error| io_error(crate::CheckpointIoOperation::ResolveParent, error))?;
+    .map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::ResolveParent, error)
+    })?;
     let path = parent.join(
         path.file_name()
             .ok_or(crate::InputFault::CheckpointFilenameMissing)?,
@@ -561,7 +568,7 @@ fn connect(path: &Path) -> Result<Connection, crate::Error> {
         .map_err(sql_error)?;
     Ok(connection)
 }
-fn owned(path: &Path) -> Result<fs::Metadata, String> {
+fn owned(path: &Path) -> Result<fs::Metadata, crate::Error> {
     crate::storage::owned_file(path)
 }
 fn version_of(connection: &Connection) -> Result<i64, crate::Error> {
@@ -578,14 +585,7 @@ fn sync_parent(path: &Path) -> Result<(), crate::Error> {
             .ok_or(crate::InputFault::CheckpointParentMissing)?,
     )
     .and_then(|f| f.sync_all())
-    .map_err(|error| io_error(crate::CheckpointIoOperation::SyncParent, error))
-}
-fn io_error(operation: crate::CheckpointIoOperation, error: std::io::Error) -> crate::Error {
-    crate::Error::CheckpointIo {
-        operation,
-        kind: crate::outcome::io_fault_kind(&error),
-        os_code: error.raw_os_error().and_then(std::num::NonZeroI32::new),
-    }
+    .map_err(|error| crate::error::storage_io_error(crate::StorageIoOperation::SyncParent, error))
 }
 fn sql_error(error: rusqlite::Error) -> crate::Error {
     let reason = match &error {

@@ -115,24 +115,32 @@ fn read_descriptor(file: File, limit: usize, links: InputLinks) -> Result<Vec<u8
     Ok(bytes)
 }
 
-pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, crate::Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+    })?;
     require_owned(&metadata)?;
     Ok(metadata)
 }
-fn require_owned(metadata: &fs::Metadata) -> Result<(), String> {
+fn require_owned(metadata: &fs::Metadata) -> Result<(), crate::Error> {
     require_input_owned(metadata, InputLinks::One)
 }
 
-fn require_input_owned(metadata: &fs::Metadata, links: InputLinks) -> Result<(), String> {
+fn require_input_owned(metadata: &fs::Metadata, links: InputLinks) -> Result<(), crate::Error> {
     let links_valid = match links {
         InputLinks::One => metadata.nlink() == 1,
         // Atomic replacement can unlink this already-open generation. It has
         // no pathname aliases; multiple hard links remain invalid.
         InputLinks::Snapshot => metadata.nlink() <= 1,
     };
-    if !metadata.is_file() || !links_valid || metadata.uid() != nix::unistd::geteuid().as_raw() {
-        return Err("local store must be one owned regular file".into());
+    if !metadata.is_file() {
+        return Err(crate::InputFault::OwnedFileType.into());
+    }
+    if !links_valid {
+        return Err(crate::InputFault::OwnedFileLinks.into());
+    }
+    if metadata.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(crate::InputFault::OwnedFileOwner.into());
     }
     Ok(())
 }

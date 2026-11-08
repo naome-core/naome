@@ -271,8 +271,8 @@ pub enum Error {
         reason: crate::CheckpointSqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
-    CheckpointIo {
-        operation: crate::CheckpointIoOperation,
+    StorageIo {
+        operation: crate::StorageIoOperation,
         kind: crate::IoFaultKind,
         os_code: Option<NonZeroI32>,
     },
@@ -330,7 +330,7 @@ impl Error {
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
-            Self::CheckpointIo { .. } => OperationCode::CheckpointIo,
+            Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
@@ -374,7 +374,7 @@ impl Error {
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
             | Self::CheckpointSql { .. }
-            | Self::CheckpointIo { .. }
+            | Self::StorageIo { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
@@ -512,6 +512,9 @@ impl fmt::Display for Error {
                 InputFault::CheckpointTargetExists => {
                     "checkpoint publication target already exists"
                 }
+                InputFault::OwnedFileType => "local store must be a regular file",
+                InputFault::OwnedFileLinks => "local store has invalid link count",
+                InputFault::OwnedFileOwner => "local store is not owned by this process",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -539,13 +542,13 @@ impl fmt::Display for Error {
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::DefinitionCheck(reason) => write!(f, "definition check: {reason}"),
-            Self::CheckpointIo {
+            Self::StorageIo {
                 operation,
                 kind,
                 os_code,
             } => write!(
                 f,
-                "checkpoint IO failure {}:{} ({os_code:?})",
+                "storage IO failure {}:{} ({os_code:?})",
                 u32::from(*operation),
                 u32::from(*kind)
             ),
@@ -907,6 +910,17 @@ impl From<EvidenceFailure> for Error {
     }
 }
 
+pub(crate) fn storage_io_error(
+    operation: crate::StorageIoOperation,
+    error: std::io::Error,
+) -> Error {
+    Error::StorageIo {
+        operation,
+        kind: crate::outcome::io_fault_kind(&error),
+        os_code: error.raw_os_error().and_then(NonZeroI32::new),
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         use std::io::ErrorKind;
@@ -1050,7 +1064,7 @@ impl serde::Serialize for Error {
         if let Self::QuestionRegistration(reason) = cause {
             value.serialize_entry("reason", &reason.code())?;
         }
-        if let Self::CheckpointIo {
+        if let Self::StorageIo {
             operation,
             kind,
             os_code,

@@ -93,3 +93,32 @@ fn configuration_snapshot_survives_atomic_replacement_without_relaxing_store_own
     assert!(read_owned_snapshot(&alias, 3).is_err());
     assert!(read_owned_snapshot(&directory.0, 3).is_err());
 }
+
+#[test]
+fn owned_file_validation_reports_type_links_and_missing_metadata() {
+    let directory = Directory::new();
+    let missing = directory.0.join("missing");
+    let error = owned_file(&missing).unwrap_err();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::outcome::OperationCode::StorageIo)
+    );
+    assert_eq!(
+        value["operation"],
+        u32::from(crate::StorageIoOperation::InspectOwnedFile)
+    );
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
+    assert_eq!(value["os_code"], nix::errno::Errno::ENOENT as i32);
+    let error = owned_file(&directory.0).unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::InputFault::OwnedFileType));
+    assert!(error.storage().fatal());
+    let path = directory.0.join("owned");
+    fs::write(&path, b"kept").unwrap();
+    let alias = directory.0.join("alias");
+    fs::hard_link(&path, &alias).unwrap();
+    let error = owned_file(&path).unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::InputFault::OwnedFileLinks));
+    assert!(error.storage().fatal());
+    assert_eq!(fs::read(&path).unwrap(), b"kept");
+}
