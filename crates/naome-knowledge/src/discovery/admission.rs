@@ -1,6 +1,9 @@
 //! Bound identity churn by observed network origin and reserve outbound capacity.
 use super::*;
-use crate::quota::{Quota, Rate};
+use crate::{
+    outcome::WireFailure,
+    quota::{Quota, Rate},
+};
 use libp2p::swarm::ConnectionId;
 use std::net::IpAddr;
 
@@ -36,7 +39,7 @@ impl Book {
         &mut self,
         remote: &Multiaddr,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), WireFailure> {
         let Some(group) = group(remote) else {
             // Circuit streams have no source IP. The relay limits pending
             // circuits and the authenticated admission still reserves capacity.
@@ -46,7 +49,7 @@ impl Book {
             ) {
                 Ok(())
             } else {
-                Err("incoming TCP endpoint required".into())
+                Err(WireFailure::EndpointRequired)
             };
         };
         let rate = Rate {
@@ -59,7 +62,7 @@ impl Book {
         if self.admission.attempts.len() >= crate::resources::limits().contacts
             && !self.admission.attempts.contains_key(&group)
         {
-            return Err("handshake rate table capacity".into());
+            return Err(WireFailure::HandshakeCapacity);
         }
         let quota = self
             .admission
@@ -67,7 +70,7 @@ impl Book {
             .entry(group)
             .or_insert_with(|| Quota::new(now));
         if !quota.try_take(now, rate) {
-            return Err("network handshake rate limit".into());
+            return Err(WireFailure::HandshakeRateLimit);
         }
         Ok(())
     }
@@ -79,7 +82,7 @@ impl Book {
         remote: &Multiaddr,
         outbound: bool,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), WireFailure> {
         let group = group(remote).unwrap_or_else(|| {
             if super::is_relayed(remote) || matches!(remote.iter().next(), Some(Protocol::P2p(_))) {
                 Group::Circuit(peer)
@@ -107,7 +110,7 @@ impl Book {
                 / 4)
             .max(1);
             if peers.len() >= group_limit {
-                return Err("network group peer limit".into());
+                return Err(WireFailure::OriginPeerLimit);
             }
             let inbound: BTreeSet<_> = self
                 .admission
@@ -125,13 +128,13 @@ impl Book {
                 .collect();
             let capacity = crate::resources::limits().contacts / if self.internet { 4 } else { 2 };
             if !outbound && inbound.len() >= capacity.max(1) {
-                return Err("outbound contact capacity reserved".into());
+                return Err(WireFailure::ReservedOutboundCapacity);
             }
         }
         if self.admission.connections.len()
             >= crate::resources::limits().established_connections as usize
         {
-            return Err("authenticated connection capacity".into());
+            return Err(WireFailure::ConnectionCapacity);
         }
         if self.internet && self.automatic && outbound && !self.contacts.contains_key(&peer) {
             self.admission
@@ -163,7 +166,7 @@ impl Book {
         &mut self,
         peer: PeerId,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), WireFailure> {
         if !self.contacts.contains_key(&peer)
             && self.contacts.len() >= crate::resources::limits().contacts
         {
@@ -183,14 +186,16 @@ impl Book {
                 })
                 .min_by_key(|(_, contact)| contact.seen)
                 .map(|(peer, _)| *peer);
-            let victim = replace.ok_or("authenticated contact capacity")?;
+            let victim = replace.ok_or(WireFailure::ContactCapacity)?;
             if self.removed.len() >= crate::resources::limits().contacts {
-                return Err("contact retirement capacity".into());
+                return Err(WireFailure::ContactRetirementCapacity);
             }
             self.retire(victim, now);
             self.removed.push_back(victim);
         }
-        let contact = self.admit(peer, now)?;
+        let contact = self
+            .admit(peer, now)
+            .map_err(|_| WireFailure::ContactCapacity)?;
         contact.connected = true;
         contact.connected_at.get_or_insert(now);
         Ok(())

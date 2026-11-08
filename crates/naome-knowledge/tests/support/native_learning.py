@@ -8,6 +8,7 @@ import sqlite3
 import struct
 import time
 
+from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
 from automatic_computation import pressure, state
 
@@ -16,7 +17,7 @@ def snapshot(node):
     try:
         return read_snapshot(node)
     except sqlite3.OperationalError as error:
-        if "locked" in str(error).lower() or "busy" in str(error).lower():
+        if sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             return None
         raise
 

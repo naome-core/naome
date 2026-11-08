@@ -150,34 +150,33 @@ impl Handoff {
         output.flush().map_err(|e| e.to_string())
     }
 
-    pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), String> {
-        self.before_offer()?;
+    pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), crate::StartupFailure> {
+        use crate::StartupFailure;
+        self.before_offer().map_err(|_| StartupFailure::Launch)?;
         let offer = serde_json::json!({"kind":"STARTUP_CHILD_CUSTODY_V1",
             "pid":pid,"token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns});
         // This first frame precedes the daemon ACK. The actual Child has not
         // been polled/reaped in this mode and its PID cannot be reused here.
-        writeln!(std::io::stdout().lock(), "{offer}").map_err(|e| e.to_string())?;
+        writeln!(std::io::stdout().lock(), "{offer}").map_err(|_| StartupFailure::Launch)?;
         let expected = format!("owned {token}\n").into_bytes();
         let mut frame = Vec::with_capacity(MAX_FRAME);
         loop {
-            let left = self.remaining()?;
+            let left = self.remaining().map_err(|_| StartupFailure::Launch)?;
             let mut byte = [0u8; 1];
             match self.input.read(&mut byte) {
                 Ok(0) => {
-                    return Err(
-                        "startup owner lifeline closed before custody acknowledgement".into(),
-                    );
+                    return Err(StartupFailure::LifelineClosed);
                 }
                 Ok(_) => {
                     frame.push(byte[0]);
                     if frame.len() > MAX_FRAME {
-                        return Err("startup owner frame limit".into());
+                        return Err(StartupFailure::FrameLimit);
                     }
                     if byte[0] == b'\n' {
                         if frame != expected {
-                            return Err("startup owner instance mismatch".into());
+                            return Err(StartupFailure::InstanceMismatch);
                         }
-                        self.remaining()?;
+                        self.remaining().map_err(|_| StartupFailure::Launch)?;
                         return Ok(());
                     }
                 }
@@ -186,7 +185,7 @@ impl Handoff {
                         .await
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(format!("startup owner read: {e}")),
+                Err(_) => return Err(StartupFailure::Launch),
             }
         }
     }

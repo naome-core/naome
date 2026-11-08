@@ -15,6 +15,11 @@ import time
 import traceback
 
 
+def sqlite_is(error, *primary_codes):
+    code = getattr(error, "sqlite_errorcode", None)
+    return code is not None and (code & 0xFF) in primary_codes
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 

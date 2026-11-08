@@ -21,7 +21,7 @@ pub(crate) fn private_directory(directory: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
+pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, crate::Error> {
     let path = directory.join("research");
     match fs::symlink_metadata(&path) {
         Ok(metadata)
@@ -31,14 +31,14 @@ pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
         Ok(_) => return Err("research path must be one owned directory".into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if marker_valid(&directory.join("research.initialized"), RESEARCH_MARKER)? {
-                return Err("established research directory is missing; no fresh allowance".into());
+                return Err(crate::RuntimeFailure::ResearchDirectoryMissing.into());
             }
             fs::create_dir(&path).map_err(|e| e.to_string())?;
             File::open(directory)
                 .and_then(|f| f.sync_all())
                 .map_err(|e| e.to_string())?;
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(e.into()),
     }
     Ok(path)
 }

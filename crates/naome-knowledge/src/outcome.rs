@@ -7,6 +7,12 @@ macro_rules! codes {
             $($name = $domain),+
         }
         $(codes!(@domain $visibility enum $name { $($variant = $id),+ });)+
+
+        /// Domain, outcome name and canonical code for offline tooling.
+        #[cfg(feature = "developer-tools")]
+        pub const OUTCOME_CODES: &[(&str, &str, u32)] = &[
+            $($( (stringify!($name), stringify!($variant), $name::$variant as u32), )+)+
+        ];
     };
     (@domain $visibility:vis enum $name:ident { $($variant:ident = $id:literal),+ }) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -189,6 +195,69 @@ codes! {
         UnsupportedProtocols = 17,
         ResponseOmitted = 18,
         StreamIo = 19,
+        NoAddress = 20,
+        DialCondition = 21,
+        Aborted = 22,
+        IdentityMismatch = 23,
+        SelfConnection = 24,
+        AdmissionDenied = 25,
+        TransportNegotiation = 26,
+        OriginPeerLimit = 27,
+        EndpointRequired = 28,
+        HandshakeCapacity = 29,
+        HandshakeRateLimit = 30,
+        ReservedOutboundCapacity = 31,
+        ConnectionCapacity = 32,
+        ContactCapacity = 33,
+        ResponsePeerMismatch = 34,
+        DescriptionIdentityMismatch = 35,
+        ResponseScopeMismatch = 36,
+        UnsolicitedInventory = 37,
+        InvalidInventory = 38,
+        ContactRetirementCapacity = 39,
+    }
+
+    pub enum RuntimeFailure in 12 {
+        Arguments = 1,
+        Resources = 2,
+        Directory = 3,
+        ReplayGuard = 4,
+        DaemonSetup = 5,
+        Output = 6,
+        OwnerLaunch = 7,
+        OwnerReceipt = 8,
+        ResearchDirectoryMissing = 9,
+        ResearchJournalMissing = 10,
+        ResearchJournalRead = 11,
+        ResearchSlot = 12,
+        ResearchService = 13,
+        Cleanup = 14,
+        Log = 15,
+        QuestionStorage = 16,
+        Autonomous = 17,
+        CheckedStorageReplay = 18,
+        Worker = 19,
+        Start = 20,
+        Stop = 21,
+        Status = 22,
+        Listener = 23,
+    }
+
+    pub enum StartupFailure in 13 {
+        LifelineClosed = 1,
+        InstanceMismatch = 2,
+        Cancelled = 3,
+        Launch = 4,
+        FrameLimit = 5,
+    }
+
+    pub(crate) enum ControlFailure in 14 {
+        ReadDeadline = 1,
+        Frame = 2,
+        InstanceMismatch = 3,
+        Socket = 4,
+        WriteDeadline = 5,
+        Write = 6,
     }
 
 }

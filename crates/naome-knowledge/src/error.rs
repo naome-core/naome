@@ -152,6 +152,11 @@ pub enum Error {
     UncertainDurability(DurabilityFailure),
     LearningEvidence(EvidenceFailure),
     LearningGraph(crate::LearningGraphFailure),
+    Runtime(crate::RuntimeFailure),
+    Startup {
+        code: crate::StartupFailure,
+        reaped: bool,
+    },
 }
 impl Error {
     /// The same mathematical contract survives both native proof paths.
@@ -182,6 +187,8 @@ impl Error {
             Self::UncertainDurability(failure) => return failure.code.into(),
             Self::LearningEvidence(failure) => return failure.code().into(),
             Self::LearningGraph(failure) => return (*failure).into(),
+            Self::Runtime(failure) => return (*failure).into(),
+            Self::Startup { code, .. } => return (*code).into(),
         };
         code.into()
     }
@@ -215,7 +222,11 @@ impl Error {
             .is_some_and(|d| d.outcome == naome_checker::diagnostics::Outcome::ContextFailure)
             || matches!(
                 self,
-                Self::Stored(_) | Self::CorruptStorage(_) | Self::UncertainDurability(_)
+                Self::Stored(_)
+                    | Self::CorruptStorage(_)
+                    | Self::UncertainDurability(_)
+                    | Self::Runtime(_)
+                    | Self::Startup { .. }
             )
     }
     fn format_error(&self) -> Option<(naome_checker::diagnostics::Digest, &FormatFailure)> {
@@ -271,6 +282,8 @@ impl fmt::Display for Error {
             Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
             Self::LearningEvidence(error) => error.fmt(f),
             Self::LearningGraph(error) => error.fmt(f),
+            Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
+            Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
             Self::UncertainDurability(failure) => {
                 write!(f, "storage halted: {}", u32::from(failure.code))
             }
@@ -290,6 +303,21 @@ impl StdError for Error {
         }
     }
 }
+impl From<crate::StartupFailure> for Error {
+    fn from(code: crate::StartupFailure) -> Self {
+        Self::Startup {
+            code,
+            reaped: false,
+        }
+    }
+}
+
+impl From<crate::RuntimeFailure> for Error {
+    fn from(error: crate::RuntimeFailure) -> Self {
+        Self::Runtime(error)
+    }
+}
+
 impl From<crate::LearningGraphFailure> for Error {
     fn from(error: crate::LearningGraphFailure) -> Self {
         Self::LearningGraph(error)
@@ -431,6 +459,9 @@ impl serde::Serialize for Error {
             let limbs = |value: u128| [(value >> 64) as u64, value as u64];
             value.serialize_entry("available", &limbs(*available))?;
             value.serialize_entry("required", &limbs(*required))?;
+        }
+        if let Self::Startup { reaped, .. } = self {
+            value.serialize_entry("reaped", reaped)?;
         }
         if let Self::QuestionLimit(limit) = self {
             value.serialize_entry("limit", &(*limit as u8))?;

@@ -321,7 +321,7 @@ def limits(trial,probe):
             trial.call(node,'start',success=False)
             events=node.logs()[offset:]
             failures=[e for e in events if e.get('event')=='fatal_error']
-            assert len(failures)==1 and expected in failures[0].get('error',''),(case,failures)
+            assert len(failures)==1 and failures[0].get('error', {}).get('code') == expected,(case,failures)
             assert not any(e.get('event') in {'research_started','research_worker','research_descendant'} for e in events)
             recorded=trial.call(node,'status')
             assert not recorded['running'] and recorded['artifact_verification']=='not_run'
@@ -346,17 +346,17 @@ def limits(trial,probe):
         action()
     path=node.directory/'research/jobs.sqlite3';original=path.read_bytes()
     path.write_bytes(b'{corrupt')
-    try:rejected_start('corrupt_journal','transactional checkpoint:')
+    try:rejected_start('corrupt_journal',0x000C_000B)
     finally:restore_state(lambda:path.write_bytes(original))
     saved_journal=node.directory/'saved-journal';path.rename(saved_journal)
-    try:rejected_start('missing_journal','research journal is missing; refusing a fresh allowance')
+    try:rejected_start('missing_journal',0x000C_000A)
     finally:restore_state(lambda:saved_journal.rename(path))
     slot=node.directory/'research/slot-0.lock';saved=node.directory/'saved-slot'
     slot.rename(saved)
-    try:rejected_start('missing_slot','research slot-0 unavailable:')
+    try:rejected_start('missing_slot',0x000C_000C)
     finally:restore_state(lambda:saved.rename(slot))
     research=node.directory/'research';backup=node.directory/'saved-research';research.rename(backup)
-    try:rejected_start('missing_research_directory','established research directory is missing; no fresh allowance')
+    try:rejected_start('missing_research_directory',0x000C_0009)
     finally:restore_state(lambda:backup.rename(research))
     write_receipt(trial.output/'research-startup-rejection-witness.json',trial.summary['startup_rejections'])
     trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':'pass'}
@@ -397,7 +397,7 @@ def faults(trial,probe):
     os.kill(identity['pid'],signal.SIGKILL)
     trial.wait(lambda:not process_group(node.process),maximum=8);probe.ended()
     state=journal(node);assert any(r['state']=='in_doubt' and not r['acknowledged'] for r in state['records'].values())
-    assert any(e.get('event')=='fatal_error' and 'cleanup' in e.get('error','') for e in node.logs())
+    assert any(e.get('event')=='fatal_error' and e.get('error', {}).get('code') in {0x000C_000D, 0x000C_000E} for e in node.logs())
     node.process=None  # expected fatal exit, not a claimed graceful stop
     node.start();probe.observe(node)
     assert any(r['state']=='in_doubt' for r in journal(node)['records'].values())
@@ -420,7 +420,7 @@ def faults(trial,probe):
     try:
         trial.wait(lambda:not process_group(slow.process),maximum=5);probe.ended()
         elapsed=time.monotonic()-started;assert elapsed<5
-        assert any(e.get('event')=='control_rejected' and 'write timeout' in e.get('error','') for e in slow.logs()),'slow writer was not exercised'
+        assert any(e.get('event')=='control_rejected' and e.get('error') == 0x000E_0005 for e in slow.logs()),'slow writer was not exercised'
         received=b''
         while block:=client.recv(8192):received+=block
         assert 0<len(received)<8192 and not received.endswith(b'\n'),'partial response write was not observed'

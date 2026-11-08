@@ -41,7 +41,10 @@ fn a_valid_certificate_with_forged_claimed_identity_is_rejected_before_the_write
     );
     let before = graph.content_root();
     let error = graph.ingest(forged, Instant::now()).unwrap_err();
-    assert!(matches!(error, crate::Error::InvalidInput(_)));
+    assert_eq!(
+        error,
+        crate::Error::InputFault(crate::InputFault::CheckedIdentityMismatch)
+    );
     assert_eq!(graph.content_root(), before);
     assert_eq!(graph.accepted_count(), 0);
     assert!(

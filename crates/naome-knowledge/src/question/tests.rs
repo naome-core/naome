@@ -258,7 +258,10 @@ async fn context(handle: &QuestionHandle) -> LocalQuestionContext {
         .unwrap()
         .unwrap()
 }
-async fn stop(handle: QuestionAdminHandle, task: tokio::task::JoinHandle<Result<(), String>>) {
+async fn stop<E: std::fmt::Debug>(
+    handle: QuestionAdminHandle,
+    task: tokio::task::JoinHandle<Result<(), E>>,
+) {
     handle.stop().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), task)
         .await

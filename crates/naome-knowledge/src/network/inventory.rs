@@ -111,7 +111,7 @@ impl Node {
     ) -> Result<(), String> {
         let Request { after, pages, .. } = request;
         if !valid_page(request, snapshot, &ids, next) {
-            emit(json!({"event":"rejected","error":"invalid inventory"}));
+            emit(json!({"event":"rejected","error":crate::outcome::WireFailure::InvalidInventory}));
             return Ok(());
         }
         // A full queue retries this exact page; new admissions cannot reset or

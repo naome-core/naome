@@ -134,16 +134,17 @@ impl Disk {
         directory: &Path,
         settings: Settings,
         cursor: u64,
-    ) -> Result<(Self, Journal), String> {
+    ) -> Result<(Self, Journal), crate::Error> {
         let root = research_directory(directory)?;
         let path = root.join("jobs.sqlite3");
         let marker = directory.join("research.initialized");
         let established = marker_valid(&marker, RESEARCH_MARKER)?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)
+                .map_err(|_| crate::RuntimeFailure::ResearchJournalRead)?
         } else {
             if established {
-                return Err("research journal is missing; refusing a fresh allowance".into());
+                return Err(crate::RuntimeFailure::ResearchJournalMissing.into());
             }
             let journal = Journal {
                 compatibility: crate::hex(&crate::compatibility()),
@@ -213,7 +214,9 @@ impl Disk {
                 naome_proof::program::decode_records(bytes).map(|_| ())
             },
         )?;
-        let header: Header = checkpoint.header()?;
+        let header: Header = checkpoint
+            .header()
+            .map_err(|_| crate::RuntimeFailure::ResearchJournalRead)?;
         if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.configuration).is_err()
         {
@@ -377,7 +380,8 @@ impl Disk {
         let now = wall_ms()?;
         journal.validate(settings)?;
         for (index, expected) in journal.slots.iter().enumerate() {
-            let file = slot_file(&root, index, false)?;
+            let file =
+                slot_file(&root, index, false).map_err(|_| crate::RuntimeFailure::ResearchSlot)?;
             let metadata = file.file().metadata().map_err(|e| e.to_string())?;
             if (metadata.dev(), metadata.ino()) != *expected {
                 return Err("research physical slot identity differs".into());
@@ -386,7 +390,8 @@ impl Disk {
         let mut reconfiguration_locks = Vec::new();
         if old_workers != crate::resources::limits().workers {
             for index in 0..journal.slots.len() {
-                let file = slot_file(&root, index, false)?;
+                let file = slot_file(&root, index, false)
+                    .map_err(|_| crate::RuntimeFailure::ResearchSlot)?;
                 file.try_lock().map_err(|_|"provider slot reconfiguration requires every previous physical worker to drain")?;
                 reconfiguration_locks.push(file);
             }

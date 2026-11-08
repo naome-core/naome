@@ -1316,7 +1316,7 @@ def main():
             receiver.release_port()
             trial.call(receiver, "start", success=False)
             failures = [event for event in receiver.logs()[offset:] if event.get("event") == "fatal_error"]
-            assert len(failures) == 1 and "catalog" in failures[0].get("error", ""), failures
+            assert len(failures) == 1 and failures[0].get("error", {}).get("code") == 0x000C_0012, failures
             assert not any(event.get("event") == "ready" for event in receiver.logs()[offset:])
         finally:
             replace_catalog_payload(receiver, member, original)

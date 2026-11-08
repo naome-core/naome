@@ -53,7 +53,7 @@ impl NetworkBehaviour for Gate {
         self.0
             .lock()
             .incoming_attempt(remote, Instant::now())
-            .map_err(denied)
+            .map_err(ConnectionDenied::new)
     }
 
     fn handle_established_inbound_connection(
@@ -65,7 +65,7 @@ impl NetworkBehaviour for Gate {
     ) -> Result<THandler<Self>, ConnectionDenied> {
         let mut book = self.0.lock();
         book.admit_connection(id, peer, remote, false, Instant::now())
-            .map_err(denied)?;
+            .map_err(ConnectionDenied::new)?;
         if let Err(error) = book.accepts_inbound(peer, local, remote) {
             book.closed_connection(id);
             return Err(denied(error));
@@ -83,7 +83,7 @@ impl NetworkBehaviour for Gate {
     ) -> Result<THandler<Self>, ConnectionDenied> {
         let mut book = self.0.lock();
         book.admit_connection(id, peer, remote, true, Instant::now())
-            .map_err(denied)?;
+            .map_err(ConnectionDenied::new)?;
         if let Err(error) = book.accepts_endpoint(peer, remote) {
             book.closed_connection(id);
             return Err(denied(error));

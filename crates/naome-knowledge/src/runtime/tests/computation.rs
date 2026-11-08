@@ -101,7 +101,7 @@ async fn invalid_control_token_cannot_stop_the_node() {
             .unwrap_err()
     };
     let (_, error) = tokio::join!(client, server);
-    assert_eq!(error, "local control instance mismatch");
+    assert_eq!(error, crate::outcome::ControlFailure::InstanceMismatch);
     assert_eq!(control.selection().unwrap(), before);
     assert!(!control.stopping());
 }

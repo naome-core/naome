@@ -247,9 +247,9 @@ def handoff_abort_case(trial, node, name, active_ns):
         record["identity_receipt_published_ns"] = published
         assert published < active_ns, "original control endpoint expired during ownership publication"
         expected_primary = {
-            "eof_after_offer": "startup owner lifeline closed before custody acknowledgement",
-            "wrong_nonce_after_offer": "startup owner instance mismatch",
-            "term_after_offer": "node startup cancelled",
+            "eof_after_offer": 0x000D_0001,
+            "wrong_nonce_after_offer": 0x000D_0002,
+            "term_after_offer": 0x000D_0003,
         }[name]
         # Reserve the existing800ms custodian cap inside the same original A.
         # A late fsync/native sample never earns a new control interval.
@@ -396,9 +396,12 @@ def handoff_abort_case(trial, node, name, active_ns):
     assert control_issued and control_request["operation_returned"] is True
     assert control_request["attempted_ns"] <= control_request["completed_ns"] < active_ns
     assert control_request["attempted_ns"] <= record["actual_abort_completion"]["observed_ns"]
-    expected_error = "naome: " + control_request["expected_primary_abort"] + "; owned startup child reaped\n"
-    assert stderr.decode() == expected_error, "abort primary error does not prove the named control"
-    control_request["causal_primary_abort"] = stderr.decode().rstrip("\n")
+    fatal = json.loads(stderr)
+    assert fatal["event"] == "fatal_error", fatal
+    error = fatal["error"]
+    assert error["code"] == control_request["expected_primary_abort"] and error["reaped"] is True, (
+        "abort primary error does not prove the named control", fatal)
+    control_request["causal_primary_abort"] = error
     assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) <= custodian_end, "original custodian endpoint expired before case completion"
     record.update(result="pass", abort_elapsed_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - started,
                   native_runtime_qualification="THIS_EXACT_CASE_ONLY")

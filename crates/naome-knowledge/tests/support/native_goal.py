@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
 from proof_network import stored_objects
 from native_learning import snapshot
@@ -32,7 +33,7 @@ def records(node):
             return [json.loads(row[0]) for row in db.execute(
                 "SELECT payload FROM entries WHERE kind='record'")]
     except sqlite3.OperationalError as error:
-        if "locked" in str(error).lower() or "busy" in str(error).lower():
+        if sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             return []
         raise
 

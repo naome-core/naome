@@ -35,7 +35,7 @@ impl Service {
         settings: Settings,
         cursor: u64,
         computation: Arc<crate::resources::Computation>,
-    ) -> Result<(Self, Client, Recovery), String> {
+    ) -> Result<(Self, Client, Recovery), crate::Error> {
         settings.validate()?;
         let (disk, journal) = Disk::open(directory, settings, cursor)?;
         let recovery = Recovery {

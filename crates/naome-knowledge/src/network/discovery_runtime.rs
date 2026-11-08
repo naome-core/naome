@@ -179,7 +179,7 @@ impl Node {
                     .build(),
             ) {
                 emit(
-                    json!({"event":"dial_failed", "peer":peer.to_string(), "stage":"request", "error":error.to_string()}),
+                    json!({"event":"dial_failed", "peer":peer.to_string(), "stage":"request", "error":dial_failure(&error)}),
                 );
             }
         }
@@ -219,8 +219,8 @@ impl Node {
                 Ok(listener) => {
                     self.relay_listeners.insert(peer, listener);
                 }
-                Err(error) => emit(
-                    json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),
+                Err(_) => emit(
+                    json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":WireFailure::TransportNegotiation}),
                 ),
             }
         }

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 
+from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
 from native_learning import verify_blobs, verify_meta
 
@@ -76,7 +77,7 @@ class JournalReader:
                 self.seen |= ids
             return {"learning": json.loads(raw), "records": records}
         except sqlite3.OperationalError as error:
-            if any(s in str(error).lower() for s in ("locked", "busy", "unable to open")):
+            if sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN):
                 return None
             raise
 
@@ -89,7 +90,7 @@ def finder_snapshot(node):
             row = db.execute("SELECT header FROM checkpoint WHERE singleton=1").fetchone()
         return json.loads(row[0]) if row else None
     except sqlite3.OperationalError as error:
-        if any(s in str(error).lower() for s in ("locked", "busy", "unable to open")):
+        if sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN):
             return None
         raise
 

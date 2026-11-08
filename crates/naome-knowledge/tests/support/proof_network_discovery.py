@@ -226,7 +226,7 @@ class DiscoveryDriver(Driver):
             connected = attacker_ids.intersection(status["connected"])
             assert len(connected) <= 4, "rotating identities exceeded the default network-group limit"
             witnessed = bool(connected) and any(event.get("event") == "incoming_connection_failed"
-                and "network group peer limit" in event.get("detail", "") for event in victim.events)
+                and event.get("error") == 0x000B_001B for event in victim.events)
             if witnessed:
                 break
             time.sleep(0.1)

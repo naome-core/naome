@@ -14,6 +14,7 @@ from pathlib import Path
 import signal
 import sqlite3
 import time
+from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, process_group, process_identity, retain_evidence, write_receipt
 from proof_network import program_manifest, stored_objects
 from resource_observation import latest
@@ -71,7 +72,7 @@ def program_rows(node):
                 'published':bool(published)} for identity,manifest,received,published in connection.execute(
                 'SELECT id,manifest,received,EXISTS(SELECT 1 FROM artifacts WHERE artifacts.id=programs.id) FROM programs ORDER BY id')]
     except sqlite3.OperationalError as error:
-        if str(error) not in ('database is locked', 'database table is locked'):
+        if not sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             raise
         # The node owns recovery and publication. Observe again through the
         # caller's existing bounded wait instead of extending its deadline.

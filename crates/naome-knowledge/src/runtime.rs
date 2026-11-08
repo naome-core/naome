@@ -161,13 +161,14 @@ pub(crate) fn log_error() -> Option<String> {
 }
 
 /// Fatal daemon diagnostics use the same bounded owner as ordinary events.
-pub fn report_error(error: &str) {
-    let bounded = error
-        .chars()
-        .take(crate::resources::limits().diagnostic_bytes)
-        .collect::<String>();
-    if !emit_log(&serde_json::json!({"event":"fatal_error","error":bounded})) {
-        eprintln!("naome: {error}");
+pub fn report_error(error: &crate::Error) {
+    let event = serde_json::json!({"event":"fatal_error","error":error});
+    if !emit_log(&event) {
+        use std::io::Write;
+        let mut stderr = std::io::stderr().lock();
+        if serde_json::to_writer(&mut stderr, &event).is_ok() {
+            let _ = stderr.write_all(b"\n");
+        }
     }
 }
 
@@ -436,21 +437,23 @@ impl Control {
         mut stream: UnixStream,
         count: usize,
         ready: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::outcome::ControlFailure> {
+        use crate::outcome::ControlFailure;
         let request: Request = tokio::time::timeout(
             crate::resources::limits().control_request_timeout,
             read_frame(&mut stream),
         )
         .await
-        .map_err(|_| "local control request timeout")??;
+        .map_err(|_| ControlFailure::ReadDeadline)?
+        .map_err(|_| ControlFailure::Frame)?;
         if request.version != 1 || request.token != self.endpoint.token {
-            return Err("local control instance mismatch".into());
+            return Err(ControlFailure::InstanceMismatch);
         }
         #[cfg(feature = "developer-tools")]
         if std::env::var("NAOME_DEV_CONTROL_SENDBUF_BYTES").as_deref() == Ok("1024") {
             socket2::SockRef::from(&stream)
                 .set_send_buffer_size(1024)
-                .map_err(|e| e.to_string())?;
+                .map_err(|_| ControlFailure::Socket)?;
         }
         let stopping = matches!(request.operation, Operation::Stop);
         if stopping {
@@ -478,11 +481,11 @@ impl Control {
         let response = if stopping
             && std::env::var("NAOME_DEV_CONTROL_SENDBUF_BYTES").as_deref() == Ok("1024")
         {
-            let mut value = serde_json::to_value(&response).map_err(|e| e.to_string())?;
+            let mut value = serde_json::to_value(&response).map_err(|_| ControlFailure::Write)?;
             value["padding"] = serde_json::Value::String("x".repeat(3000));
             value
         } else {
-            serde_json::to_value(&response).map_err(|e| e.to_string())?
+            serde_json::to_value(&response).map_err(|_| ControlFailure::Write)?
         };
         // Leave time for a response timeout to settle before the node's stop
         // drain expires, while provider teardown has already been requested.
@@ -491,7 +494,8 @@ impl Control {
             write_frame(&mut stream, &response),
         )
         .await
-        .map_err(|_| "local control write timeout")??;
+        .map_err(|_| ControlFailure::WriteDeadline)?
+        .map_err(|_| ControlFailure::Write)?;
         Ok(stopping)
     }
 
@@ -786,14 +790,14 @@ async fn status(directory: &Path) -> Result<Status, String> {
     stopped_status(directory).await
 }
 
-async fn start(directory: &Path) -> Result<Status, String> {
+async fn start(directory: &Path) -> Result<Status, crate::Error> {
     start_with_handoff(directory, None).await
 }
 
 async fn start_with_handoff(
     directory: &Path,
     mut handoff: Option<startup::Handoff>,
-) -> Result<Status, String> {
+) -> Result<Status, crate::Error> {
     let deadline = match &handoff {
         Some(owner) => owner.deadline()?,
         None => tokio::time::Instant::now() + crate::resources::limits().startup_timeout,
@@ -898,10 +902,10 @@ async fn start_with_handoff(
         drop(child.stdin.take());
         Ok(status)
     };
-    let result: Result<Status, String> = tokio::select! {
+    let result: Result<Status, crate::Error> = tokio::select! {
         result = launch => result,
-        _ = terminate.recv() => Err("node startup cancelled".into()),
-        _ = interrupt.recv() => Err("node startup cancelled".into()),
+        _ = terminate.recv() => Err(crate::StartupFailure::Cancelled.into()),
+        _ = interrupt.recv() => Err(crate::StartupFailure::Cancelled.into()),
     };
     match result {
         Ok(status) => Ok(status),
@@ -927,8 +931,12 @@ async fn start_with_handoff(
                 }
                 None => abort_start(&mut child).await,
             };
-            cleanup.map_err(|cleanup| format!("{error}; {cleanup}"))?;
-            Err(format!("{error}; owned startup child reaped"))
+            cleanup.map_err(|_| crate::RuntimeFailure::Cleanup)?;
+            let code = match error {
+                crate::Error::Startup { code, .. } => code,
+                _ => crate::StartupFailure::Launch,
+            };
+            Err(crate::Error::Startup { code, reaped: true })
         }
     }
 }
@@ -1154,7 +1162,8 @@ async fn wait_for_stop(
 }
 
 /// Ordinary CLI exposes lifecycle and passive observation.
-pub async fn execute() -> Result<(), String> {
+pub async fn execute() -> Result<(), crate::Error> {
+    use crate::RuntimeFailure as Failure;
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if let Some(output) = cli::information(&arguments) {
         println!("{output}");
@@ -1163,31 +1172,32 @@ pub async fn execute() -> Result<(), String> {
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
     {
-        crate::resources::initialize_for(&directory()?)?;
+        crate::resources::initialize_for(&directory().map_err(|_| Failure::Directory)?)
+            .map_err(|_| Failure::Resources)?;
     } else {
-        crate::resources::initialize_from_environment()?;
+        crate::resources::initialize_from_environment().map_err(|_| Failure::Resources)?;
     }
     if let Some(result) = crate::jobs::internal(&arguments) {
-        return result;
+        return result.map_err(|_| Failure::Worker.into());
     }
     let cli::Arguments {
         command,
         json,
         startup_handoff,
-    } = cli::Arguments::parse(&arguments)?;
-    let _replay_guard = replay_guard::optional(command)?;
-    let directory = directory()?;
+    } = cli::Arguments::parse(&arguments).map_err(|_| Failure::Arguments)?;
+    let _replay_guard = replay_guard::optional(command).map_err(|_| Failure::ReplayGuard)?;
+    let directory = directory().map_err(|_| Failure::Directory)?;
     if std::env::var_os(DAEMON_NONCE).is_some() {
         if command != "start" || startup_handoff {
-            return Err("invalid internal lifecycle invocation".into());
+            return Err(Failure::DaemonSetup.into());
         }
-        nix::unistd::setsid().map_err(|error| format!("detach node session: {error}"))?;
-        let nonce = std::env::var(DAEMON_NONCE).map_err(|_| "missing internal launch nonce")?;
-        let startup = Startup::arm(&nonce)?;
-        let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
-        LOG.set(Mutex::new(Log::open(&directory)?))
-            .map_err(|_| "runtime log already owned")?;
-        let (config, intervals) = configuration(&directory)?;
+        nix::unistd::setsid().map_err(|_| Failure::DaemonSetup)?;
+        let nonce = std::env::var(DAEMON_NONCE).map_err(|_| Failure::DaemonSetup)?;
+        let startup = Startup::arm(&nonce).map_err(|_| Failure::DaemonSetup)?;
+        let directory = fs::canonicalize(directory).map_err(|_| Failure::Directory)?;
+        LOG.set(Mutex::new(Log::open(&directory).map_err(|_| Failure::Log)?))
+            .map_err(|_| Failure::Log)?;
+        let (config, intervals) = configuration(&directory).map_err(|_| Failure::DaemonSetup)?;
         return network::run_autonomous(config, intervals, startup).await;
     }
     if matches!(command, "stop" | "status") && !directory.exists() {
@@ -1201,20 +1211,27 @@ pub async fn execute() -> Result<(), String> {
                 accepted_artifacts: 0,
                 artifact_verification: ArtifactVerification::NotRun,
             },
-        )?;
+        )
+        .map_err(|_| Failure::Output)?;
         return Ok(());
     }
-    crate::storage::private_directory(&directory)?;
-    let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
-    let _lock = operation_lock(&directory).await?;
+    crate::storage::private_directory(&directory).map_err(|_| Failure::Directory)?;
+    let directory = fs::canonicalize(directory).map_err(|_| Failure::Directory)?;
+    let _lock = operation_lock(&directory)
+        .await
+        .map_err(|_| Failure::Directory)?;
     let status = match command {
         "start" if startup_handoff => {
-            start_with_handoff(&directory, Some(startup::Handoff::open()?)).await?
+            start_with_handoff(
+                &directory,
+                Some(startup::Handoff::open().map_err(|_| Failure::Start)?),
+            )
+            .await?
         }
         "start" => start(&directory).await?,
-        "stop" => stop(&directory).await?,
-        "status" => status(&directory).await?,
+        "stop" => stop(&directory).await.map_err(|_| Failure::Stop)?,
+        "status" => status(&directory).await.map_err(|_| Failure::Status)?,
         _ => unreachable!(),
     };
-    cli::print(command, json, &status)
+    cli::print(command, json, &status).map_err(|_| Failure::Output.into())
 }
