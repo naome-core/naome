@@ -141,7 +141,7 @@ pub(crate) struct Autonomous {
     recovery_retry: Option<RecoveryRetry>,
     archive_after: Option<u64>,
     archive_end: u64,
-    recovery_reply: Option<oneshot::Receiver<Result<jobs::RecoveryPage, String>>>,
+    recovery_reply: Option<oneshot::Receiver<Result<jobs::RecoveryPage, crate::Error>>>,
     finding: Option<Finding>,
     admissions: VecDeque<Admission>,
     solving: BTreeMap<Identity, Solving>,
@@ -454,7 +454,12 @@ impl Autonomous {
                             }
                         }
                     }
-                    Ok(Err(_)) => self.error = Some(crate::RuntimeFailure::ResearchService.into()),
+                    Ok(Err(error)) => {
+                        self.error = Some(crate::Error::RuntimeContext {
+                            code: crate::RuntimeFailure::AutonomousArchive,
+                            cause: Box::new(error),
+                        })
+                    }
                     Err(oneshot::error::TryRecvError::Empty) => self.recovery_reply = Some(reply),
                     Err(oneshot::error::TryRecvError::Closed) => {
                         self.error = Some(crate::RuntimeFailure::AutonomousArchive.into())

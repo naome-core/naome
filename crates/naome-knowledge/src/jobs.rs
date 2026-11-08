@@ -606,7 +606,7 @@ enum Command {
     Recover {
         after: u64,
         before: u64,
-        reply: oneshot::Sender<Result<RecoveryPage, String>>,
+        reply: oneshot::Sender<Result<RecoveryPage, crate::Error>>,
     },
 }
 
@@ -755,7 +755,7 @@ impl Client {
         &self,
         after: u64,
         before: u64,
-    ) -> Result<oneshot::Receiver<Result<RecoveryPage, String>>, crate::Error> {
+    ) -> Result<oneshot::Receiver<Result<RecoveryPage, crate::Error>>, crate::Error> {
         let (reply, receive) = oneshot::channel();
         self.sender
             .try_send(Command::Recover {

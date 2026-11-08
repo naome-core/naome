@@ -857,6 +857,8 @@ codes! {
         CandidateCheckpointInsideGroup = 122, CandidateInputMismatch = 123,
         CandidateUnitOverflow = 124, CandidateStreamMismatch = 125,
         CandidateSealMissing = 126, CandidateCheckedMissing = 127,
+        RecoveryFifoIdentity = 128, RecoveryRecordMissing = 129,
+        RecoveryRecordIdentity = 130, RecoveryBytesOverflow = 131,
     }
 
 }

@@ -638,6 +638,16 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::RecoveryFifoIdentity => {
+                    "research FIFO history identity differs"
+                }
+                crate::ResearchFailure::RecoveryRecordMissing => {
+                    "research history record is missing"
+                }
+                crate::ResearchFailure::RecoveryRecordIdentity => {
+                    "research history record identity differs"
+                }
+                crate::ResearchFailure::RecoveryBytesOverflow => "research recovery bytes overflow",
                 crate::ResearchFailure::CandidatePrefixMismatch => {
                     "candidate retained prefix differs"
                 }

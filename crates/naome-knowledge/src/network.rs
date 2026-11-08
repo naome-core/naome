@@ -842,7 +842,7 @@ where
         published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error)=node.graph.storage_error(){return Err(error);}
         if let Some(error)=questions.storage_error(){return Err(error);}
-        if research.as_ref().and_then(crate::jobs::Service::error).is_some(){return Err(crate::RuntimeFailure::ResearchService.into());}
+        if let Some(error)=research.as_ref().and_then(crate::jobs::Service::error){return Err(crate::Error::RuntimeContext { code: crate::RuntimeFailure::ResearchService, cause: Box::new(error) });}
         if stopping {
             break;
         }

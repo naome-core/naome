@@ -309,8 +309,10 @@ impl Owner {
                     Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
                     Some(Command::Submit(input,binding,required,prerequisites,reply))=>self.submit_after(input,binding,required,prerequisites,reply)?,
                     Some(Command::Recover{after,before,reply})=>{
-                        let page=self.disk.recovery_page(after,before,&self.recovery_skip)?;
-                        let _=reply.send(Ok(page));
+                        match self.disk.recovery_page(after,before,&self.recovery_skip) {
+                            Ok(page) => { let _=reply.send(Ok(page)); },
+                            Err(error) => { let _=reply.send(Err(error.clone())); return Err(error); },
+                        }
                     },
                     Some(Command::Acknowledge(id))=>{
                         if id==0 || self.learning_receipts.contains_key(&id){continue;}

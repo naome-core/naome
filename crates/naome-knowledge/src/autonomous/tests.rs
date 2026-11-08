@@ -763,3 +763,29 @@ fn archive_recovery_defers_full_queue_but_reports_closed_service() {
         matches!(autonomous.error(), Some(crate::Error::RuntimeContext { code: crate::RuntimeFailure::AutonomousArchive, cause }) if matches!(cause.as_ref(), crate::Error::Research(crate::ResearchFailure::ServiceStopped)))
     );
 }
+
+#[test]
+fn archive_recovery_preserves_retrieval_failure_cause() {
+    let owner = jobs::tests::Manual::new();
+    let mut recovery = owner.recovery();
+    recovery.archive_end = 2;
+    let mut autonomous =
+        Autonomous::new(intervals(3_600_000), owner.client.clone(), recovery, vec![]);
+    let (send, receive) = oneshot::channel();
+    assert!(
+        send.send(Err(crate::ResearchFailure::RecoveryRecordMissing.into()))
+            .is_ok()
+    );
+    autonomous.recovery_reply = Some(receive);
+    autonomous.advance(&mut Graph::default(), &mut questions());
+    let error = autonomous.error().unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::RuntimeFailure::AutonomousArchive)
+    );
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::ResearchFailure::RecoveryRecordMissing)
+    );
+}

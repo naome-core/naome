@@ -639,7 +639,7 @@ impl Disk {
         after: u64,
         before: u64,
         skip: &BTreeSet<u64>,
-    ) -> Result<super::RecoveryPage, String> {
+    ) -> Result<super::RecoveryPage, crate::Error> {
         let rows = self.checkpoint.page(
             "history",
             Some(&format!("{after:020}")),
@@ -652,7 +652,7 @@ impl Disk {
         for (key, payload) in rows {
             let id: u64 = crate::checkpoint::decode(&payload)?;
             if id == 0 || key != format!("{id:020}") {
-                return Err("research FIFO history identity differs".into());
+                return Err(crate::ResearchFailure::RecoveryFifoIdentity.into());
             }
             if id >= before {
                 next = None;
@@ -662,9 +662,9 @@ impl Disk {
                 let record = self
                     .checkpoint
                     .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
-                    .ok_or("research history record is missing")?;
+                    .ok_or(crate::ResearchFailure::RecoveryRecordMissing)?;
                 if record.id != id {
-                    return Err("research history record identity differs".into());
+                    return Err(crate::ResearchFailure::RecoveryRecordIdentity.into());
                 }
                 if !record.acknowledged && !record.input.internal() {
                     let size = crate::checkpoint::encode(&record)?.len();
@@ -677,7 +677,7 @@ impl Disk {
                     }
                     bytes = bytes
                         .checked_add(size)
-                        .ok_or("research recovery bytes overflow")?;
+                        .ok_or(crate::ResearchFailure::RecoveryBytesOverflow)?;
                     records.push(record);
                 }
             }
