@@ -319,19 +319,30 @@ fn hindsight_does_not_invent_observation_of_a_rebased_checked_path() {
         fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
             Ok(d.candidates
                 .iter()
-                .map(|c| {
-                    if c.rule == Rule::DoubleNegation {
-                        1.
-                    } else {
-                        0.
-                    }
+                .map(|c| match c.rule {
+                    Rule::DoubleNegation => 2.,
+                    Rule::ModusPonens => 1.,
+                    _ => 0.,
                 })
                 .collect())
         }
     }
-    let q = ResearchQuestion::from_hex(
-        "04040302020101000000010100000001030202010100000000010000000103020301010000000101000000010201010000000001000000000101000000000100000000",
-    ).unwrap();
+    let [x, y] = [0, 1].map(FreeVariable::new);
+    let seed = Formula::member(x, x);
+    let intermediate = Formula::member(x, y);
+    let goal = Formula::member(y, x);
+    let detour = Formula::negate(Formula::negate(Formula::member(y, y)));
+    let target = [
+        detour,
+        seed.clone(),
+        Formula::implies(seed, intermediate.clone()),
+        Formula::implies(intermediate, goal.clone()),
+    ]
+    .into_iter()
+    .rev()
+    .fold(goal, |result, premise| Formula::implies(premise, result));
+    let q =
+        ResearchQuestion::from_formula(Formula::for_all(x, Formula::for_all(y, target))).unwrap();
     let found = solve(q.proved_target(), &mut Detour, 128).unwrap();
     let tree = found.tree.unwrap();
     let trace = found.execution.unwrap();
