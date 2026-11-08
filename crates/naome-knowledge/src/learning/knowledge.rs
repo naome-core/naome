@@ -155,74 +155,145 @@ pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, St
     }
     Ok(ids)
 }
-pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, String> {
-    let mut ranked = Vec::new();
-    let mut bytes = 0;
-    let requested: BTreeSet<_> = lookup_keys(target, 2048).into_iter().collect();
-    for entry in entries {
-        let verified = entry.verified()?;
-        if !lemma_keys(
-            &verified.target,
-            naome_checker::question::QUESTION_TARGET_MAX_DEPTH,
-        )
-        .iter()
-        .any(|key| requested.contains(key))
-        {
-            continue;
-        }
-        let score = relevance(&verified.target, target);
-        if score > 0 {
-            ranked.push((score, verified.native_id, entry));
-        }
-    }
-    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let mut output = Vec::new();
-    for (_, _, entry) in ranked {
-        if output.len() < CAPACITY && bytes + entry.packet.len() <= BYTES {
-            bytes += entry.packet.len();
-            output.push(entry.clone());
-        }
-    }
-    Ok(output)
+/// Whether the checked lemma supplies an exact local action for this goal.
+pub(crate) fn directly_applies(target: &Formula, lemma: &Formula) -> Result<bool, String> {
+    super::search::scope::lemma_closes(target, lemma)
 }
+
+pub(super) struct CheckedEntry<'a> {
+    pub entry: &'a Entry,
+    pub target: Formula,
+    pub id: naome_proof::ProofId,
+    steps: usize,
+}
+
+pub(super) fn checked_entries(entries: &[Entry]) -> Result<Vec<CheckedEntry<'_>>, String> {
+    if entries.len() > CAPACITY || entries.iter().map(|e| e.packet.len()).sum::<usize>() > BYTES {
+        return Err("theorem snapshot capacity".into());
+    }
+    let mut ids = BTreeSet::new();
+    entries
+        .iter()
+        .map(|entry| {
+            let verified = entry.verified()?;
+            if !ids.insert(verified.native_id) {
+                return Err("duplicate theorem snapshot".into());
+            }
+            let steps = verified.certificate.steps().len()
+                + verified
+                    .lemmas
+                    .iter()
+                    .map(|proof| proof.steps().len())
+                    .sum::<usize>();
+            Ok(CheckedEntry {
+                entry,
+                target: verified.target,
+                id: verified.native_id,
+                steps,
+            })
+        })
+        .collect()
+}
+
+pub(super) struct Snapshot<'a> {
+    checked: Vec<CheckedEntry<'a>>,
+    keys: Vec<Vec<[u8; 32]>>,
+}
+impl<'a> Snapshot<'a> {
+    pub fn new(entries: &'a [Entry]) -> Result<Self, String> {
+        let checked = checked_entries(entries)?;
+        let keys = checked
+            .iter()
+            .map(|entry| {
+                lemma_keys(
+                    &entry.target,
+                    naome_checker::question::QUESTION_TARGET_MAX_DEPTH,
+                )
+            })
+            .collect();
+        Ok(Self { checked, keys })
+    }
+
+    pub fn offer(
+        &self,
+        target: &Formula,
+        required: &[String],
+    ) -> Result<(Vec<Entry>, usize), String> {
+        if required.len() > CAPACITY {
+            return Err("required theorem capacity".into());
+        }
+        let requested: BTreeSet<_> = lookup_keys(target, 2048).into_iter().collect();
+        let fragments = fragments(target);
+        let mut ranked = Vec::new();
+        for (entry, keys) in self.checked.iter().zip(&self.keys) {
+            let applicable = directly_applies(target, &entry.target)?;
+            if !applicable && !keys.iter().any(|key| requested.contains(key)) {
+                continue;
+            }
+            let relevance = fragment_bytes(&entry.target, true, 2048)
+                .intersection(&fragments)
+                .map(Vec::len)
+                .sum::<usize>();
+            ranked.push((applicable, relevance, entry));
+        }
+        ranked.sort_by_key(|&(applicable, relevance, entry)| {
+            (
+                std::cmp::Reverse(applicable),
+                std::cmp::Reverse(relevance),
+                entry.entry.packet.len(),
+                entry.id,
+            )
+        });
+
+        let mut selected = Vec::new();
+        for (_, _, entry) in ranked {
+            if !selected
+                .iter()
+                .any(|old: &&CheckedEntry<'_>| old.target == entry.target)
+            {
+                selected.push(entry);
+            }
+        }
+        for id in required {
+            let id = naome_proof::ProofId::from_bytes(crate::object::id_bytes(id)?);
+            let entry = self
+                .checked
+                .iter()
+                .find(|entry| entry.id == id)
+                .ok_or("required checked theorem not retained")?;
+            if !selected.iter().any(|old| old.id == id) {
+                selected.push(entry);
+            }
+        }
+        let steps = selected.iter().map(|entry| entry.steps).sum();
+        Ok((
+            selected
+                .into_iter()
+                .map(|entry| entry.entry.clone())
+                .collect(),
+            steps,
+        ))
+    }
+}
+
+#[cfg(test)]
+pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, String> {
+    offer(target, entries, &[])
+}
+
 /// Explicit prerequisites remain checked entries from the exact owner snapshot.
 pub fn offer(
     target: &Formula,
     entries: &[Entry],
     required: &[String],
 ) -> Result<Vec<Entry>, String> {
-    if required.len() > CAPACITY {
-        return Err("required theorem capacity".into());
-    }
-    let mut result = retrieve(target, entries)?;
-    for id in required {
-        crate::object::id_bytes(id)?;
-        let entry = entries
-            .iter()
-            .find(|entry| {
-                entry
-                    .verified()
-                    .is_ok_and(|p| crate::hex(p.native_id.as_bytes()) == *id)
-            })
-            .ok_or("required checked theorem not retained")?;
-        if !result.contains(entry) {
-            result.push(entry.clone());
-        }
-    }
-    validate(&result)?;
-    Ok(result)
+    Snapshot::new(entries)?
+        .offer(target, required)
+        .map(|(entries, _)| entries)
 }
+
 pub fn validate(entries: &[Entry]) -> Result<(), String> {
-    if entries.len() > CAPACITY || entries.iter().map(|e| e.packet.len()).sum::<usize>() > BYTES {
-        return Err("theorem snapshot capacity".into());
-    }
-    let mut ids = BTreeSet::new();
-    for entry in entries {
-        if !ids.insert(entry.verified()?.native_id) {
-            return Err("duplicate theorem snapshot".into());
-        }
-    }
-    Ok(())
+    checked_entries(entries).map(drop)
 }
 pub fn verified(tree: &Tree) -> Result<proof::Verified, String> {
     let Tree::Knowledge { target, .. } = tree else {

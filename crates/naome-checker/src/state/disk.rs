@@ -351,7 +351,10 @@ impl DiskArtifactState {
             proof.proof_id,
             proof.derivation_id,
             proof.statement_id,
-            depth,
+            (
+                depth,
+                proof.normal_form().canonical_bytes().len() as u64 + 1,
+            ),
             &statement_record,
             Some(&proof.conclusion),
         )?;
@@ -521,12 +524,16 @@ impl ContextView for DiskArtifactState {
                 .witnesses
                 .get(id.as_bytes())?
                 .ok_or(ContextError::Corrupt)?;
+            let witness: [u8; 40] = proof
+                .as_slice()
+                .try_into()
+                .map_err(|_| ContextError::Corrupt)?;
             Ok(Some(StatementHeader {
                 location: Some(FormulaLocation {
                     address,
                     snapshot: self.snapshot_id(),
                 }),
-                proof: ProofId::from_bytes(fixed(&proof)?),
+                proof: ProofId::from_bytes(fixed(&witness[8..])?),
                 length: if length == 0 { usize::MAX } else { length },
             }))
         })())

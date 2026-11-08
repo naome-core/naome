@@ -1068,7 +1068,12 @@ fn indexed_aliases_registry_content_and_branches_keep_complete_cache_bindings() 
     let mut branch = state.clone();
     branch.register_proof_for_replication(alias).unwrap();
     let after = decision(&target, &branch, &[], &policy);
-    assert_eq!(after.witness, Some(original.min(alias_id)));
+    assert!(
+        alias_id < original,
+        "the larger alias would win an ID-only ordering"
+    );
+    assert_eq!(after.witness, Some(original));
+    assert!(branch.contains_proof(alias_id));
     assert_ne!(
         before.snapshot, after.snapshot,
         "an alias changes the full snapshot even without a new canonical statement"

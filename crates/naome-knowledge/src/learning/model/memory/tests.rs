@@ -103,9 +103,11 @@ fn native_memory_binds_real_symbolic_successors_and_exact_checkpoint() {
         reset_plan.scores, plan.scores,
         "equal internal work starts from the same zero state"
     );
-    assert_eq!(
-        reset_plan.successors, plan.successors,
-        "the compute control also calculates every candidate transition"
+    assert!(
+        plan.rows
+            .iter()
+            .enumerate()
+            .all(|(index, row)| row.get().is_some() == (index == parent.graph.expert))
     );
     assert!(
         reset_plan
@@ -116,6 +118,11 @@ fn native_memory_binds_real_symbolic_successors_and_exact_checkpoint() {
             )
             .unwrap()
             .is_none()
+    );
+    assert_eq!(
+        reset_plan.rows[parent.graph.expert].get(),
+        plan.rows[parent.graph.expert].get(),
+        "the reset control computes the same selected transition"
     );
 }
 

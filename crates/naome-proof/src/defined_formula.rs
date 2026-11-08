@@ -1,12 +1,13 @@
 //! Canonical proof formulas with eliminable selected-definition applications.
 
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry};
 use std::error::Error;
 use std::fmt;
 
 use naome_foundation::{
     FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula, FormulaCodecError,
     FreeVariable,
+    graph::{Node as PrimitiveNode, Variable as PrimitiveVariable},
 };
 
 use crate::DefinitionId;
@@ -333,13 +334,19 @@ impl DefinedFormula {
         resolver: &R,
         maximum_nodes: usize,
     ) -> Result<(Formula, usize), DefinitionExpansionError> {
-        let mut budget = ExpansionBudget::new(maximum_nodes);
-        let mut definitions = Vec::new();
-        let expanded = expand_node(&self.0, resolver, None, 0, 0, &mut definitions, &mut budget)?;
-        let formula = Self(expanded)
-            .into_primitive()
-            .map_err(DefinitionExpansionError::Formula)?;
-        Ok((formula, budget.used))
+        let mut expansion = Expansion {
+            resolver,
+            active: Vec::new(),
+            instances: HashMap::new(),
+            graph: Vec::new(),
+            interned: HashMap::new(),
+            budget: ExpansionBudget::new(maximum_nodes),
+        };
+        let root = expansion.node(&self.0, None, 0, 0)?;
+        let formula = Formula::from_graph(root, |position| Ok(expansion.graph[position])).map_err(
+            |error| DefinitionExpansionError::Formula(DefinedFormulaCodecError::Graph(error)),
+        )?;
+        Ok((formula, expansion.budget.used))
     }
 
     fn into_node(mut self) -> Node {
@@ -949,114 +956,120 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn expand_node<R: DefinitionResolver + ?Sized>(
-    node: &Node,
-    resolver: &R,
-    substitution: Option<&[Variable]>,
-    substitution_depth: u32,
-    formula_depth: u32,
-    definitions: &mut Vec<DefinitionId>,
-    budget: &mut ExpansionBudget,
-) -> Result<Node, DefinitionExpansionError> {
-    budget.charge()?;
-    if formula_depth >= FORMULA_MAX_DEPTH {
-        return Err(DefinitionExpansionError::DepthLimitExceeded {
-            maximum: FORMULA_MAX_DEPTH,
-        });
-    }
-    match node {
-        Node::Equal(left, right) => Ok(Node::Equal(
-            instantiate_variable(*left, substitution, substitution_depth)?,
-            instantiate_variable(*right, substitution, substitution_depth)?,
-        )),
-        Node::Member(left, right) => Ok(Node::Member(
-            instantiate_variable(*left, substitution, substitution_depth)?,
-            instantiate_variable(*right, substitution, substitution_depth)?,
-        )),
-        Node::Not(formula) => Ok(Node::Not(Box::new(expand_node(
-            formula,
-            resolver,
-            substitution,
-            substitution_depth,
-            formula_depth + 1,
-            definitions,
-            budget,
-        )?))),
-        Node::Implies(antecedent, consequent) => Ok(Node::Implies(
-            Box::new(expand_node(
-                antecedent,
-                resolver,
-                substitution,
-                substitution_depth,
-                formula_depth + 1,
-                definitions,
-                budget,
-            )?),
-            Box::new(expand_node(
-                consequent,
-                resolver,
-                substitution,
-                substitution_depth,
-                formula_depth + 1,
-                definitions,
-                budget,
-            )?),
-        )),
-        Node::ForAll(body) => Ok(Node::ForAll(Box::new(expand_node(
-            body,
-            resolver,
-            substitution,
-            substitution_depth + u32::from(substitution.is_some()),
-            formula_depth + 1,
-            definitions,
-            budget,
-        )?))),
-        Node::DefinedRelation {
-            definition_id,
-            arguments,
-        } => {
-            let definition = resolver
-                .resolve_definition(*definition_id)
-                .map_err(DefinitionExpansionError::Access)?
-                .ok_or(DefinitionExpansionError::UnknownDefinition {
-                    definition_id: *definition_id,
-                })?;
-            let actual = arguments.len();
-            let expected = definition.relation_arity() as usize;
-            if actual != expected {
-                return Err(DefinitionExpansionError::ArityMismatch {
-                    definition_id: *definition_id,
-                    expected,
-                    actual,
-                });
-            }
-            if definitions.contains(definition_id) {
-                return Err(DefinitionExpansionError::CyclicDefinition {
-                    definition_id: *definition_id,
-                });
-            }
-            if definitions.len() as u32 >= FORMULA_MAX_DEPTH - formula_depth {
-                return Err(DefinitionExpansionError::DepthLimitExceeded {
-                    maximum: FORMULA_MAX_DEPTH,
-                });
-            }
-            let arguments = arguments
-                .iter()
-                .map(|argument| instantiate_variable(*argument, substitution, substitution_depth))
-                .collect::<Result<Vec<_>, _>>()?;
-            definitions.push(*definition_id);
-            let expanded = expand_node(
-                &definition.body().0,
-                resolver,
-                Some(&arguments),
-                0,
-                formula_depth,
-                definitions,
-                budget,
-            );
-            definitions.pop();
-            expanded
+type Instance = (DefinitionId, Vec<Variable>, u32);
+
+struct Expansion<'a, R: ?Sized> {
+    resolver: &'a R,
+    active: Vec<DefinitionId>,
+    instances: HashMap<Instance, (usize, usize)>,
+    graph: Vec<PrimitiveNode<usize>>,
+    interned: HashMap<PrimitiveNode<usize>, usize>,
+    budget: ExpansionBudget,
+}
+
+impl<R: DefinitionResolver + ?Sized> Expansion<'_, R> {
+    fn node(
+        &mut self,
+        node: &Node,
+        substitution: Option<&[Variable]>,
+        substitution_depth: u32,
+        formula_depth: u32,
+    ) -> Result<usize, DefinitionExpansionError> {
+        self.budget.charge(1)?;
+        if formula_depth >= FORMULA_MAX_DEPTH {
+            return Err(DefinitionExpansionError::DepthLimitExceeded {
+                maximum: FORMULA_MAX_DEPTH,
+            });
         }
+        let variable = |value| {
+            instantiate_variable(value, substitution, substitution_depth).map(|value| match value {
+                Variable::Free(id) => PrimitiveVariable::Free(id.identifier()),
+                Variable::Bound(index) => PrimitiveVariable::Bound(u64::from(index)),
+            })
+        };
+        let next = formula_depth + 1;
+        let primitive = match node {
+            Node::Equal(left, right) => PrimitiveNode::Equal(variable(*left)?, variable(*right)?),
+            Node::Member(left, right) => PrimitiveNode::Member(variable(*left)?, variable(*right)?),
+            Node::Not(body) => {
+                PrimitiveNode::Not(self.node(body, substitution, substitution_depth, next)?)
+            }
+            Node::Implies(left, right) => PrimitiveNode::Implies(
+                self.node(left, substitution, substitution_depth, next)?,
+                self.node(right, substitution, substitution_depth, next)?,
+            ),
+            Node::ForAll(body) => PrimitiveNode::ForAll(self.node(
+                body,
+                substitution,
+                substitution_depth + u32::from(substitution.is_some()),
+                next,
+            )?),
+            Node::DefinedRelation {
+                definition_id,
+                arguments,
+            } => {
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| {
+                        instantiate_variable(*argument, substitution, substitution_depth)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return self.application(*definition_id, arguments, formula_depth);
+            }
+        };
+        Ok(*self.interned.entry(primitive).or_insert_with(|| {
+            let position = self.graph.len();
+            self.graph.push(primitive);
+            position
+        }))
+    }
+
+    fn application(
+        &mut self,
+        definition_id: DefinitionId,
+        arguments: Vec<Variable>,
+        depth: u32,
+    ) -> Result<usize, DefinitionExpansionError> {
+        // Reuse only complete applications from the same outer scope depth.
+        // Nested applications must still check their active dependency path.
+        let instance = (definition_id, arguments, depth);
+        let reusable = self.active.is_empty();
+        if reusable && let Some(&(root, nodes)) = self.instances.get(&instance) {
+            self.budget.charge(nodes)?;
+            return Ok(root);
+        }
+        let definition = self
+            .resolver
+            .resolve_definition(definition_id)
+            .map_err(DefinitionExpansionError::Access)?
+            .ok_or(DefinitionExpansionError::UnknownDefinition { definition_id })?;
+        let expected = definition.relation_arity() as usize;
+        let actual = instance.1.len();
+        if actual != expected {
+            return Err(DefinitionExpansionError::ArityMismatch {
+                definition_id,
+                expected,
+                actual,
+            });
+        }
+        if self.active.contains(&definition_id) {
+            return Err(DefinitionExpansionError::CyclicDefinition { definition_id });
+        }
+        if self.active.len() as u32 >= FORMULA_MAX_DEPTH - depth {
+            return Err(DefinitionExpansionError::DepthLimitExceeded {
+                maximum: FORMULA_MAX_DEPTH,
+            });
+        }
+        let before = self.budget.used;
+        self.active.push(definition_id);
+        let root = self.node(&definition.body().0, Some(&instance.1), 0, depth);
+        self.active.pop();
+        let root = root?;
+        if reusable {
+            self.instances
+                .insert(instance, (root, self.budget.used - before));
+        }
+        Ok(root)
     }
 }
 
@@ -1101,13 +1114,13 @@ impl ExpansionBudget {
         }
     }
 
-    fn charge(&mut self) -> Result<(), DefinitionExpansionError> {
-        if self.used == self.maximum {
+    fn charge(&mut self, nodes: usize) -> Result<(), DefinitionExpansionError> {
+        if nodes > self.maximum - self.used {
             return Err(DefinitionExpansionError::NodeLimitExceeded {
                 maximum: self.maximum,
             });
         }
-        self.used += 1;
+        self.used += nodes;
         Ok(())
     }
 }
@@ -1138,6 +1151,8 @@ pub enum DefinedFormulaCodecError {
     TrailingBytes { remaining: usize },
     /// Conversion to or from the primitive Foundation codec failed.
     Primitive(FormulaCodecError),
+    /// Materialization of a bounded primitive formula graph failed.
+    Graph(String),
 }
 
 impl fmt::Display for DefinedFormulaCodecError {
@@ -1176,6 +1191,9 @@ impl fmt::Display for DefinedFormulaCodecError {
                 write!(formatter, "formula has {remaining} trailing bytes")
             }
             Self::Primitive(source) => write!(formatter, "primitive formula is invalid: {source}"),
+            Self::Graph(source) => {
+                write!(formatter, "primitive formula graph is invalid: {source}")
+            }
         }
     }
 }

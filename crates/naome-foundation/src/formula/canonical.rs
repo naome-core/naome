@@ -4,7 +4,7 @@
 //! [`Formula`]'s well-formedness invariant. The byte format belongs to the
 //! proof protocol, not to the abstract Foundation identity.
 
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::{BTreeMap, HashMap, btree_map::Entry};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -150,6 +150,21 @@ impl Formula {
         bytes: &[u8],
         maximum_nodes: usize,
     ) -> Result<(Self, usize), FormulaCodecError> {
+        Self::decode_with_sharing(bytes, maximum_nodes, None)
+    }
+
+    /// Decode a bounded formula whose structurally identical subformulas share
+    /// storage. The byte contract and the logical node limit are unchanged.
+    pub fn decode_shared(bytes: &[u8]) -> Result<Self, FormulaCodecError> {
+        Self::decode_with_sharing(bytes, FORMULA_MAX_NODES, Some(HashMap::new()))
+            .map(|(formula, _)| formula)
+    }
+
+    fn decode_with_sharing(
+        bytes: &[u8],
+        maximum_nodes: usize,
+        mut shared: Option<Shared>,
+    ) -> Result<(Self, usize), FormulaCodecError> {
         if bytes.len() > FORMULA_MAX_BYTES {
             return Err(FormulaCodecError::InputTooLong {
                 actual: bytes.len(),
@@ -159,7 +174,7 @@ impl Formula {
 
         let mut cursor = Cursor::new(bytes);
         let mut nodes = NodeBudget::new(maximum_nodes);
-        let node = decode_node(&mut cursor, 0, 0, &mut nodes)?;
+        let node = decode_node(&mut cursor, 0, 0, &mut nodes, &mut shared)?;
 
         if cursor.remaining() != 0 {
             return Err(FormulaCodecError::TrailingBytes {
@@ -261,16 +276,34 @@ impl FreeVariableEncoding {
     }
 }
 
+type Shared = HashMap<super::graph::Node<usize>, Arc<Node>>;
+
 fn decode_node(
     cursor: &mut Cursor<'_>,
     depth: u32,
     binder_depth: u32,
     nodes: &mut NodeBudget,
+    shared: &mut Option<Shared>,
 ) -> Result<Node, FormulaCodecError> {
     check_depth(depth)?;
     nodes.charge()?;
 
-    match cursor.read_u8()? {
+    let tag = cursor.read_u8()?;
+    let mut child = |binders| -> Result<Arc<Node>, FormulaCodecError> {
+        let node = decode_node(cursor, depth + 1, binders, nodes, shared)?;
+        let Some(shared) = shared else {
+            return Ok(Arc::new(node));
+        };
+        // Interned children stay alive until decoding finishes, and every
+        // occurrence still undergoes binder checks before it can share storage.
+        let key = FormulaView(&node)
+            .graph_node()
+            .map(|child| child.0 as *const Node as usize);
+        Ok(Arc::clone(
+            shared.entry(key).or_insert_with(|| Arc::new(node)),
+        ))
+    };
+    match tag {
         EQUAL => Ok(Node::Equal(
             decode_variable(cursor, binder_depth)?,
             decode_variable(cursor, binder_depth)?,
@@ -279,22 +312,9 @@ fn decode_node(
             decode_variable(cursor, binder_depth)?,
             decode_variable(cursor, binder_depth)?,
         )),
-        NOT => Ok(Node::Not(Arc::new(decode_node(
-            cursor,
-            depth + 1,
-            binder_depth,
-            nodes,
-        )?))),
-        IMPLIES => Ok(Node::Implies(
-            Arc::new(decode_node(cursor, depth + 1, binder_depth, nodes)?),
-            Arc::new(decode_node(cursor, depth + 1, binder_depth, nodes)?),
-        )),
-        FOR_ALL => Ok(Node::ForAll(Arc::new(decode_node(
-            cursor,
-            depth + 1,
-            binder_depth + 1,
-            nodes,
-        )?))),
+        NOT => Ok(Node::Not(child(binder_depth)?)),
+        IMPLIES => Ok(Node::Implies(child(binder_depth)?, child(binder_depth)?)),
+        FOR_ALL => Ok(Node::ForAll(child(binder_depth + 1)?)),
         tag => Err(FormulaCodecError::UnknownFormulaTag(tag)),
     }
 }

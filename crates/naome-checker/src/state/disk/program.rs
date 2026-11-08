@@ -51,7 +51,7 @@ impl DiskArtifactState {
         proof: ProofId,
         derivation: DerivationId,
         statement: StatementId,
-        depth: usize,
+        (depth, proof_bytes): (usize, u64),
         record: &[u8],
         formula: Option<&Formula>,
     ) -> Result<(), ArtifactStateError> {
@@ -89,18 +89,25 @@ impl DiskArtifactState {
         self.artifacts
             .insert(*ArtifactId::from_proof_id(proof).as_bytes(), &identity)
             .map_err(context)?;
+        let mut candidate = [0; 40];
+        candidate[..8].copy_from_slice(&proof_bytes.to_be_bytes());
+        candidate[8..].copy_from_slice(proof.as_bytes());
         let previous = self.witnesses.get(statement.as_bytes()).map_err(context)?;
         match previous {
             Some(previous) => {
-                if proof.as_bytes() < &fixed(&previous).map_err(context)? {
+                let previous: [u8; 40] = previous
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| context(ContextError::Corrupt))?;
+                if candidate < previous {
                     self.witnesses
-                        .set(*statement.as_bytes(), proof.as_bytes())
+                        .set(*statement.as_bytes(), &candidate)
                         .map_err(context)?;
                 }
             }
             None => {
                 self.witnesses
-                    .insert(*statement.as_bytes(), proof.as_bytes())
+                    .insert(*statement.as_bytes(), &candidate)
                     .map_err(context)?;
                 if let Some(formula) = formula {
                     for (kind, target) in projections(proof, formula) {
@@ -265,11 +272,22 @@ impl ProgramRegistration {
             record.extend_from_slice(&self.manifest.conclusion);
             record.extend_from_slice(&0u64.to_be_bytes());
         }
+        let manifest_bytes = self
+            .manifest
+            .canonical_bytes()
+            .map_err(|_| ArtifactStateError::Context(ContextError::Corrupt))?
+            .len()
+            + naome_proof::program::MANIFEST_MAGIC.len();
         self.next.register_fact(
             self.manifest.proof_id(),
             self.manifest.derivation_id(),
             self.manifest.statement_id(),
-            self.depth,
+            (
+                self.depth,
+                self.manifest
+                    .input_bytes
+                    .saturating_add(manifest_bytes as u64),
+            ),
             &record,
             proof.conclusion(),
         )?;
