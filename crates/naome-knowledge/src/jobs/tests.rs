@@ -168,10 +168,10 @@ fn source_binding_preserves_original_question_orientation_and_strict_schema() {
 fn ordinary_product_rejects_developer_workloads_before_spawning() {
     let mut settings = Settings::default();
     settings.solving.mock.steps = 2;
-    assert_eq!(
+    assert!(matches!(
         settings.validate().unwrap_err(),
-        "controlled mock workloads require developer-tools"
-    );
+        crate::Error::Research(crate::ResearchFailure::DeveloperWorkloadUnavailable)
+    ));
     assert!(Settings::default().validate().is_ok());
 }
 
@@ -250,4 +250,20 @@ fn cooperative_job_binding_is_limited_to_solving() {
             .is_ok()
     );
     assert!(binding.validate_role(&Input::find(0)).is_err());
+}
+
+#[test]
+fn invalid_role_settings_report_machine_readable_reason() {
+    let mut settings = Settings::default();
+    settings.solving.limits.work_units = 0;
+    let error = settings.validate().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::Research(crate::ResearchFailure::InvalidRoleLimits)
+    ));
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::InvalidRoleLimits)
+    );
 }

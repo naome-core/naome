@@ -240,3 +240,35 @@ fn resource_validation_reports_registered_field_and_preserves_custody() {
         }
     ));
 }
+
+#[test]
+fn native_model_capacity_reports_structured_reasons() {
+    let mut limits = DEFAULT.clone();
+    limits.native_model_chunk_bytes = 512 * 1024 + 1;
+    let error = limits.native_model_capacity().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::ResourceValidation {
+            reason: crate::ResourceValidationReason::NativeModelLimits,
+            ..
+        }
+    ));
+    let mut limits = DEFAULT.clone();
+    limits.native_model_chunk_bytes = 1;
+    limits.native_model_blob_bytes = 9 * MIB;
+    limits.native_model_io_bytes = 512 * MIB;
+    limits.native_model_work_bytes = limits
+        .allocation_budget()
+        .max(crate::learning::MODEL_REQUIREMENTS.work_bytes);
+    let error = limits.native_model_capacity().unwrap_err();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::ResourceValidationReason::NativeModelAllocation)
+    );
+    assert_eq!(value["actual"], limits.allocation_budget() as u64);
+    assert_eq!(
+        value["minimum"],
+        limits.native_model_work_bytes.saturating_add(32 * MIB) as u64
+    );
+}

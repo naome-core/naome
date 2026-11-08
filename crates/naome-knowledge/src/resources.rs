@@ -598,6 +598,7 @@ fn validation(
         reason,
         field,
         actual,
+        minimum: None,
         maximum,
     }
 }
@@ -967,7 +968,7 @@ impl Limits {
             + self.question_cache_bytes
             + self.checked_cache_bytes / 4
     }
-    pub(crate) fn native_model_capacity(&self) -> Result<(), String> {
+    pub(crate) fn native_model_capacity(&self) -> Result<(), crate::Error> {
         if self.native_model_chunk_bytes > 512 * 1024
             || self
                 .native_model_chunk_bytes
@@ -979,18 +980,28 @@ impl Limits {
             || self.native_model_io_bytes < 512 * 1024 * 1024
             || self.native_model_work_bytes < crate::learning::MODEL_REQUIREMENTS.work_bytes
         {
-            return Err("native solver model limits cannot preserve its bounded checkpoint and training requirements".into());
+            return Err(validation(
+                crate::ResourceValidationReason::NativeModelLimits,
+                None,
+                None,
+                None,
+            ));
         }
         if self.allocation_budget()
             < self
                 .native_model_work_bytes
                 .saturating_add(32 * 1024 * 1024)
         {
-            return Err(format!(
-                "native solver model requires a working allocation of at least {} bytes; calibrated capacity is {}",
-                self.native_model_work_bytes + 32 * 1024 * 1024,
-                self.allocation_budget()
-            ));
+            return Err(crate::Error::ResourceValidation {
+                reason: crate::ResourceValidationReason::NativeModelAllocation,
+                field: Some(ResourceField::NativeModelWorkBytes),
+                actual: Some(self.allocation_budget() as u64),
+                minimum: Some(
+                    self.native_model_work_bytes
+                        .saturating_add(32 * 1024 * 1024) as u64,
+                ),
+                maximum: None,
+            });
         }
         Ok(())
     }

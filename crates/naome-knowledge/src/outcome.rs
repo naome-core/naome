@@ -746,7 +746,7 @@ codes! {
         ProviderOverflow = 16, TransportOverflow = 17, RetainedOverflow = 18,
         IndexOverflow = 19, QueueOverflow = 20, AllocationOverflow = 21,
         AllocationBudget = 22, LimitsInconsistent = 23, IdentifySafety = 24,
-        AssessmentCapacity = 25,
+        AssessmentCapacity = 25, NativeModelLimits = 26, NativeModelAllocation = 27,
     }
     #[derive(Default)]
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
@@ -847,6 +847,7 @@ codes! {
         DefinitionSelectionIndex = 111,
         DefinitionAvailability = 112,
         DefinitionTraceSnapshotMissing = 113,
+        ConflictingProviders = 114, InvalidRoleLimits = 115, DeveloperWorkloadUnavailable = 116,
     }
 
 }

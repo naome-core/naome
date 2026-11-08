@@ -271,6 +271,7 @@ pub enum Error {
         reason: crate::ResourceValidationReason,
         field: Option<crate::resources::ResourceField>,
         actual: Option<u64>,
+        minimum: Option<u64>,
         maximum: Option<u64>,
     },
     ResourceProfileDecode {
@@ -599,10 +600,11 @@ impl fmt::Display for Error {
                 reason,
                 field,
                 actual,
+                minimum,
                 maximum,
             } => write!(
                 f,
-                "resource validation {} ({field:?}, {actual:?}, {maximum:?})",
+                "resource validation {} ({field:?}, {actual:?}, {minimum:?}, {maximum:?})",
                 u32::from(*reason)
             ),
             Self::ResourceProfileDecode {
@@ -629,6 +631,13 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::ConflictingProviders => {
+                    "native and mock providers are mutually exclusive"
+                }
+                crate::ResearchFailure::InvalidRoleLimits => "invalid research role limits",
+                crate::ResearchFailure::DeveloperWorkloadUnavailable => {
+                    "controlled workloads require developer tools"
+                }
                 crate::ResearchFailure::ClockBeforeEpoch => "wall clock is before research epoch",
                 crate::ResearchFailure::ClockOverflow => "research clock overflow",
                 crate::ResearchFailure::ClockRollback => "research clock rollback",
@@ -1153,6 +1162,7 @@ impl serde::Serialize for Error {
             reason,
             field,
             actual,
+            minimum,
             maximum,
         } = cause
         {
@@ -1162,6 +1172,9 @@ impl serde::Serialize for Error {
             }
             if let Some(actual) = actual {
                 value.serialize_entry("actual", actual)?;
+            }
+            if let Some(minimum) = minimum {
+                value.serialize_entry("minimum", minimum)?;
             }
             if let Some(maximum) = maximum {
                 value.serialize_entry("maximum", maximum)?;

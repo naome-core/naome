@@ -138,17 +138,14 @@ impl RoleSettings {
 }
 
 impl Settings {
-    pub(crate) fn validate(self) -> Result<Self, String> {
+    pub(crate) fn validate(self) -> Result<Self, crate::Error> {
         if self.native_proof_learning {
             crate::resources::limits().native_model_capacity()?;
             if [self.finding, self.solving]
                 .iter()
                 .any(|role| role.mock != MockWork::default())
             {
-                return Err(
-                    "native proof learning and controlled mock workloads are separate providers"
-                        .into(),
-                );
+                return Err(crate::ResearchFailure::ConflictingProviders.into());
             }
         }
         for role in [self.finding, self.solving, self.selection] {
@@ -171,11 +168,11 @@ impl Settings {
                 })
                 || role.mock.proof_padding_bytes > crate::resources::limits().proof_bytes
             {
-                return Err("research role horizon or workload limit".into());
+                return Err(crate::ResearchFailure::InvalidRoleLimits.into());
             }
             #[cfg(not(feature = "developer-tools"))]
             if role.mock != MockWork::default() {
-                return Err("controlled mock workloads require developer-tools".into());
+                return Err(crate::ResearchFailure::DeveloperWorkloadUnavailable.into());
             }
         }
         Ok(self)
