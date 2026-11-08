@@ -38,6 +38,7 @@ impl Policy {
     pub(in crate::learning::model) fn encode_cached(
         &self,
         batch: &Batch,
+        roots: &[usize],
         cache: &mut FormulaCache,
     ) -> Result<Encoded, String> {
         let device = batch.kinds.device();
@@ -82,7 +83,7 @@ impl Policy {
             .flat_map(|id| cache.rows[*id][LAYERS])
             .collect::<Vec<_>>();
         let h = Tensor::from_data(TensorData::new(rows, [1, indices.len(), WIDTH]), &device);
-        Ok(self.encode_with_context(batch, h))
+        Ok(self.encode_with_context(batch, h, Some(roots)))
     }
 
     fn fill(

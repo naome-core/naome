@@ -1320,6 +1320,46 @@ fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_accoun
 }
 
 #[test]
+fn optional_checked_lemma_reaches_the_native_job_without_becoming_required() {
+    let (_directory, mut owner) = native();
+    let solution = checked_solution();
+    let mut graph = crate::Graph::default();
+    let root = graph.produce(&solution.source).unwrap().1.id;
+    let proof = graph
+        .checked_context()
+        .artifact_proof_id(root)
+        .unwrap()
+        .unwrap();
+    let prerequisites = graph.offered_solving_inputs(proof, &[]).unwrap().unwrap();
+    let (sender, mut queue) = mpsc::channel(1);
+    let client = Client {
+        sender,
+        feedback: Arc::default(),
+    };
+    let _ticket = client
+        .submit_after(
+            Input::Solve {
+                question: crate::learning::tests::own_question(),
+            },
+            Binding::new([0; 32], [0; 32]),
+            Vec::new(),
+            prerequisites.clone(),
+        )
+        .unwrap();
+    let Command::Submit(input, binding, required, inputs, reply) = queue.try_recv().unwrap() else {
+        panic!("expected a solve request");
+    };
+    let id = owner.journal.next_id;
+    owner
+        .submit_after(input, binding, required, inputs, reply)
+        .unwrap();
+    let native = owner.journal.records[&id].native.as_ref().unwrap();
+    assert!(native.required.is_empty());
+    assert!(native.prerequisites.contains_inputs(&prerequisites));
+    native.validate().unwrap();
+}
+
+#[test]
 fn temporary_canonical_inputs_retry_with_the_original_spent_time_and_reservations() {
     let (_directory, mut owner) = native();
     let input = Input::Solve {

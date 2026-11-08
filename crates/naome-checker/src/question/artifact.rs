@@ -328,7 +328,7 @@ impl ResearchQuestion {
         if bytes.len() > QUESTION_BYTES {
             return Err(QuestionError::Limit("encoded question bytes"));
         }
-        let question = match Formula::decode_canonical(bytes) {
+        let question = match Formula::decode_shared(bytes) {
             Ok(formula) => Self::from_formula(formula)?,
             Err(error) if context.is_none() => {
                 return Err(QuestionError::Mathematical(error.to_string()));

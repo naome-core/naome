@@ -407,18 +407,17 @@ pub(super) struct Recorder {
 impl Recorder {
     pub fn new(
         target: &Formula,
-        knowledge: &[super::super::knowledge::Entry],
+        knowledge: &[super::super::knowledge::CheckedEntry<'_>],
     ) -> Result<Self, String> {
         let root = Root {
             target: encode(target)?,
             knowledge: knowledge
                 .iter()
                 .map(|entry| {
-                    let checked = entry.verified()?;
                     Ok(Reference {
-                        formula: encode(&checked.target)?,
-                        proof: crate::hex(checked.native_id.as_bytes()),
-                        packet: super::super::digest(entry),
+                        formula: encode(&entry.target)?,
+                        proof: crate::hex(entry.id.as_bytes()),
+                        packet: super::super::digest(entry.entry),
                     })
                 })
                 .collect::<Result<_, String>>()?,

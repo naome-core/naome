@@ -292,7 +292,29 @@ impl Frontier {
             }
         }
         if self.native && planned.is_empty() {
+            let target = question.proved_target();
+            let mut candidates = Vec::new();
             for proof in self.lemmas.offers(&lemma_index::Index::query(question)) {
+                let Some(header) = graph.checked_context().proof_header(proof)? else {
+                    continue;
+                };
+                let bytes = header.canonical_length();
+                if bytes > naome_checker::question::QUESTION_BYTES {
+                    continue;
+                }
+                let Ok(_projection) = crate::resources::MemoryLease::acquire(bytes * 8 + 2048)
+                else {
+                    continue;
+                };
+                let Some(formula) = graph.checked_context().proof_formula(header, bytes)? else {
+                    continue;
+                };
+                let applies =
+                    crate::learning::knowledge::directly_applies(target, formula.as_ref())?;
+                candidates.push((!applies, proof));
+            }
+            candidates.sort_by_key(|&(indirect, _)| indirect);
+            for (_, proof) in candidates {
                 if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
                     return Ok((Vec::new(), inputs));
                 }

@@ -167,15 +167,28 @@ fn a_valid_peer_deduction_can_include_an_action_the_local_policy_omits() {
             }
         }
     }
-    actions.insert(
-        0,
-        ScopedAction::Instantiate {
-            universal,
-            replacement,
-            premises: Vec::new(),
-        },
+    let off_policy = ScopedAction::Instantiate {
+        universal,
+        replacement,
+        premises: Vec::new(),
+    };
+    assert!(first.iter().all(|(action, _)| action != &off_policy));
+    actions.insert(0, off_policy);
+    let assumptions = scope
+        .assumptions
+        .iter()
+        .cloned()
+        .map(ProofFormula::from)
+        .collect::<Vec<_>>();
+    // Build the incoming peer program before local projection removes the
+    // unused instance. The checker can accept a proof the model cannot replay.
+    let records = Projection::scoped(
+        &assumptions,
+        &actions,
+        (assumptions.len() + actions.len() - 1) as u32,
+        &scope.binders,
     );
-    let records = commands(target, &actions).unwrap();
+    assert_ne!(commands(target, &actions).unwrap(), records);
     let packet = crate::learning::peer::Packet::compose(target, &records, &[], []).unwrap();
     assert_eq!(&packet.target().unwrap(), target);
     assert!(
@@ -367,4 +380,55 @@ fn a_long_transport_requires_both_checked_segments_under_the_local_allowance() {
         })
         .collect::<Vec<_>>();
     assert_eq!(references, ids.map(|id| *id.as_bytes()));
+}
+
+#[test]
+fn scoped_program_applies_two_premises_in_one_checked_action() {
+    struct NoModel;
+    impl Ranker for NoModel {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, String> {
+            Err("the applicable action closes without ranking".into())
+        }
+    }
+
+    let [x, y, z] = [0, 1, 2].map(FreeVariable::new);
+    let rule = Formula::for_all(
+        y,
+        Formula::implies(
+            Formula::member(y, x),
+            Formula::implies(Formula::equal(y, z), Formula::member(x, y)),
+        ),
+    );
+    let target = Formula::for_all(
+        x,
+        Formula::for_all(
+            z,
+            Formula::implies(
+                rule,
+                Formula::implies(
+                    Formula::member(z, x),
+                    Formula::implies(Formula::equal(z, z), Formula::member(x, z)),
+                ),
+            ),
+        ),
+    );
+    let (tree, work) = search(&target, &mut NoModel, 1, Instant::now()).unwrap();
+    assert_eq!(work, 1);
+    let Some(Tree::Scoped { actions, .. }) = tree else {
+        panic!("the compound action must close the goal");
+    };
+    assert!(
+        matches!(&actions[..], [ScopedAction::Instantiate { premises, .. }] if premises.len() == 2)
+    );
+    let commands = commands(&target, &actions).unwrap();
+    let mut checker =
+        naome_checker::program::Engine::open(rusqlite::Connection::open_in_memory().unwrap())
+            .unwrap();
+    checker.append_group(&commands).unwrap();
+    while checker
+        .advance(64, 32768, &naome_checker::ArtifactState::new())
+        .unwrap()
+    {}
+    while !checker.prepare_export(64).unwrap() {}
+    assert_eq!(checker.checked().unwrap().conclusion(), Some(&target));
 }

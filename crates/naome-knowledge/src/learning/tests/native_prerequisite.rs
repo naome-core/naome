@@ -304,7 +304,24 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
         let right = right.unwrap();
         if index != 0 {
             assert!(wrong.solution.is_none());
+        }
+        if index == 1 {
             assert!(empty.solution.is_none());
+        } else {
+            let direct = empty
+                .solution
+                .expect("the closing step proves the goal directly");
+            direct.check_target(&question).unwrap();
+            let search::Tree::Program(program) = direct.tree else {
+                panic!("the direct proof must remain native");
+            };
+            assert!(
+                program
+                    .commands()
+                    .unwrap()
+                    .iter()
+                    .all(|command| { !matches!(command, Command::ProofReference { .. }) })
+            );
         }
         assert!(wrong.cost.search_expansions <= budget);
         assert!(empty.cost.search_expansions <= budget);

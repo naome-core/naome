@@ -13,7 +13,7 @@ type Buckets = PersistentMap<StatementId, Statements>;
 #[derive(Clone, Default)]
 pub(crate) struct KnowledgeIndex {
     artifacts: PersistentMap<ArtifactId, ()>,
-    witnesses: PersistentMap<StatementId, ProofId>,
+    witnesses: PersistentMap<StatementId, (usize, ProofId)>,
     outgoing: Buckets,
     deductions: Buckets,
     instances: Buckets,
@@ -40,15 +40,17 @@ impl KnowledgeIndex {
         proof: ProofId,
         statement: StatementId,
         formula: &Formula,
+        bytes: usize,
     ) {
+        let candidate = (bytes, proof);
         self.artifacts.insert(ArtifactId::from_proof_id(proof), ());
         if let Some(existing) = self.witnesses.get(&statement) {
-            if proof < *existing {
-                self.witnesses.set(statement, proof);
+            if candidate < *existing {
+                self.witnesses.set(statement, candidate);
             }
             return;
         }
-        self.witnesses.insert(statement, proof);
+        self.witnesses.insert(statement, candidate);
         for (kind, target) in projections(proof, formula) {
             let index = match kind {
                 BucketKind::Outgoing => &mut self.outgoing,
@@ -64,7 +66,7 @@ impl KnowledgeIndex {
     }
 
     pub(crate) fn witness(&self, statement: StatementId) -> Option<&ProofId> {
-        self.witnesses.get(&statement)
+        self.witnesses.get(&statement).map(|(_, proof)| proof)
     }
 
     pub(crate) fn outgoing(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {

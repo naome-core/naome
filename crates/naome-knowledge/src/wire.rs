@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-mod program;
+mod artifact;
 
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
-const BINARY_PROGRAM: u32 = 1 << 31;
+const BINARY_ARTIFACT: u32 = 1 << 31;
 pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:json-control,binary-program,defined-question-per-proof";
+    "naome:frames:json-control,packed-binary-artifact,defined-question-per-proof";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,10 +54,10 @@ pub(crate) enum Body {
     Description {
         metadata: Metadata,
     },
+    #[serde(skip)]
     Object {
         root: [u8; 32],
         object: Envelope,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         question: Option<String>,
     },
     #[serde(skip)]
@@ -96,6 +96,7 @@ pub(crate) struct Frame {
     // Across all connections, retain only the configured inbound working set.
     _permit: Option<OwnedSemaphorePermit>,
     _memory: Option<Arc<crate::resources::MemoryLease>>,
+    _expanded: Vec<Arc<crate::resources::MemoryLease>>,
 }
 
 impl Frame {
@@ -107,6 +108,7 @@ impl Frame {
             },
             _permit: None,
             _memory: None,
+            _expanded: Vec::new(),
         }
     }
 }
@@ -130,8 +132,8 @@ impl Codec {
         let mut header = [0; 4];
         stream.read_exact(&mut header).await?;
         let header = u32::from_be_bytes(header);
-        let binary = header & BINARY_PROGRAM != 0;
-        let length = (header & !BINARY_PROGRAM) as usize;
+        let binary = header & BINARY_ARTIFACT != 0;
+        let length = (header & !BINARY_ARTIFACT) as usize;
         if length > frame_limit() {
             return Err(invalid("frame byte limit"));
         }
@@ -155,15 +157,16 @@ impl Codec {
         if stream.read(&mut trailing).await? != 0 {
             return Err(invalid("trailing frame bytes"));
         }
-        let message: Message = if binary {
-            program::decode(&bytes).map_err(invalid)?
+        let (message, expanded) = if binary {
+            artifact::decode(&bytes).map_err(invalid)?
         } else {
-            serde_json::from_slice(&bytes).map_err(invalid)?
+            (serde_json::from_slice(&bytes).map_err(invalid)?, Vec::new())
         };
         Ok(Frame {
             message,
             _permit: Some(permit),
             _memory: Some(memory),
+            _expanded: expanded,
         })
     }
 
@@ -173,9 +176,9 @@ impl Codec {
         frame: Frame,
     ) -> io::Result<()> {
         let _memory = crate::resources::MemoryLease::acquire(frame_limit()).map_err(invalid)?;
-        let binary = program::binary(&frame.message.body);
+        let binary = artifact::binary(&frame.message.body);
         let bytes = if binary {
-            program::encode(&frame.message).map_err(invalid)?
+            artifact::encode(&frame.message).map_err(invalid)?
         } else {
             let mut output = BoundedOutput(Vec::new());
             serde_json::to_writer(&mut output, &frame.message).map_err(invalid)?;
@@ -184,7 +187,7 @@ impl Codec {
         if bytes.len() > frame_limit() {
             return Err(invalid("frame byte limit"));
         }
-        let header = (bytes.len() as u32) | if binary { BINARY_PROGRAM } else { 0 };
+        let header = (bytes.len() as u32) | if binary { BINARY_ARTIFACT } else { 0 };
         stream.write_all(&header.to_be_bytes()).await?;
         stream.write_all(&bytes).await?;
         stream.close().await

@@ -122,7 +122,7 @@ impl Prerequisites {
             .iter()
             .any(|artifact| artifact.statement_id.is_none())
     }
-    pub(crate) fn allows_empty_required(&self) -> bool {
+    pub(crate) fn has_optional_context(&self) -> bool {
         self.has_definitions() || self.has_offer() || self.cut_certificate().is_some()
     }
 

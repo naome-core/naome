@@ -10,7 +10,7 @@ use super::calculus::{self as c, Names};
 use super::{
     experience::{Budget, Capacity, TerminalEvidence},
     graph::Graph,
-    model::{Binding, Candidate, Decision, Ranker, Rule},
+    model::{Binding, Candidate, Decision, Plan, Ranker, Rule},
     proof::Term,
 };
 use naome_foundation::{Formula, FreeVariable};
@@ -339,7 +339,14 @@ fn offers(state: &State) -> Vec<Offer> {
             Action::Substitute(..) => 6,
             Action::Cite(_) => 7,
         };
-        let candidate = (score, Offer { action, delta });
+        let candidate = (
+            score,
+            Offer {
+                action,
+                delta,
+                closes,
+            },
+        );
         let compare =
             |a: &RankedOffer, b: &RankedOffer| b.0.cmp(&a.0).then(a.1.action.cmp(&b.1.action));
         let best = &mut best_by_rule[kind];
@@ -385,6 +392,7 @@ fn offers(state: &State) -> Vec<Offer> {
 struct Offer {
     action: Action,
     delta: Delta,
+    closes: bool,
 }
 
 #[derive(Clone)]
@@ -429,6 +437,7 @@ fn decision(
         .map(|action| {
             Ok(Offer {
                 action: action.clone(),
+                closes: false,
                 delta: transition(state, action, &index)?,
             })
         })
@@ -709,46 +718,66 @@ impl Search<'_> {
         let offers = offers(state);
         let actions: Vec<_> = offers.iter().map(|offer| offer.action.clone()).collect();
         let offered = super::digest(&actions);
-        let memory = incoming
-            .map(|(plan, selected)| plan.child(selected, state_binding.clone(), offered.clone()))
-            .transpose()?
-            .flatten();
-        let key = super::digest(&(
-            &state_binding,
-            32usize.saturating_sub(depth),
-            self.ranker.identity(),
-            memory.as_ref(),
-        ));
-        if self.exhausted.contains(&key) {
-            return Ok(None);
-        }
         if actions.is_empty() {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
             return Ok(None);
         }
-        let d = decision_for(&self.goal, state, &offers, 0)?;
-        let mut graph = match Graph::encode(&d) {
-            Ok(graph) => graph,
-            Err(e) => {
-                if let Some(report) = &mut self.frontier {
-                    report.observe(state, depth);
-                }
-                self.failure = Some(e);
-                self.terminal
-                    .include(TerminalEvidence::Unsupported(Capacity::Graph));
+        // A transition that closes every child needs neither a learned
+        // ordering nor successor memory. Its exact action remains in the
+        // offered set and the checker still verifies the resulting proof.
+        let closing = (depth < 32)
+            .then(|| offers.iter().position(|offer| offer.closes))
+            .flatten();
+        let (plan, key) = if let Some(index) = closing {
+            let mut ranks = vec![0.; actions.len()];
+            ranks[index] = 1.;
+            (Plan::scores(ranks), None)
+        } else {
+            let memory = incoming
+                .map(|(plan, selected)| {
+                    plan.child(selected, state_binding.clone(), offered.clone())
+                })
+                .transpose()?
+                .flatten();
+            let key = super::digest(&(
+                &state_binding,
+                32usize.saturating_sub(depth),
+                self.ranker.identity(),
+                memory.as_ref(),
+            ));
+            if self.exhausted.contains(&key) {
                 return Ok(None);
             }
+            let d = decision_for(&self.goal, state, &offers, 0)?;
+            let mut graph = match Graph::encode(&d) {
+                Ok(graph) => graph,
+                Err(e) => {
+                    if let Some(report) = &mut self.frontier {
+                        report.observe(state, depth);
+                    }
+                    self.failure = Some(e);
+                    self.terminal
+                        .include(TerminalEvidence::Unsupported(Capacity::Graph));
+                    return Ok(None);
+                }
+            };
+            graph.binding.clone_from(&state_binding);
+            (
+                self.ranker.plan(&d, &graph, &offered, memory.as_ref())?,
+                Some(key),
+            )
         };
-        graph.binding = state_binding;
-        let plan = self.ranker.plan(&d, &graph, &offered, memory.as_ref())?;
         let scores = &plan.scores;
         if scores.len() != actions.len() || scores.iter().any(|s| !s.is_finite()) {
             return Err("invalid native action scores".into());
         }
         let mut order: Vec<_> = (0..actions.len()).collect();
         order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));
+        if closing.is_some() {
+            order.truncate(1);
+        }
         for selected in order {
             if self.expansions >= self.maximum {
                 self.failure = Some("search_budget".into());
@@ -762,7 +791,7 @@ impl Search<'_> {
                 .as_mut()
                 .map(|recorder| {
                     recorder.begin(
-                        &graph.binding,
+                        &state_binding,
                         &offered,
                         selected,
                         (actions.len() > 1).then_some(scores.as_slice()),
@@ -817,7 +846,8 @@ impl Search<'_> {
                 }));
             }
         }
-        if self.expansions < self.maximum
+        if let Some(key) = key
+            && self.expansions < self.maximum
             && self.started.elapsed() <= Duration::from_millis(2500)
             && self.exhausted.len() < 256
         {
@@ -888,16 +918,13 @@ fn solve_recording(
             terminal: TerminalEvidence::Unknown,
         });
     }
-    super::knowledge::validate(knowledge)?;
+    let checked = super::knowledge::checked_entries(knowledge)?;
     let mut p = prepare(target)?;
     p.state.knowledge_context = knowledge.iter().map(super::digest).collect();
-    p.state.knowledge = knowledge
-        .iter()
-        .map(|e| Ok(e.verified()?.target))
-        .collect::<Result<_, String>>()?;
+    p.state.knowledge = checked.iter().map(|entry| entry.target.clone()).collect();
     let mut s = Search {
         recorder: capture
-            .then(|| trace::Recorder::new(target, knowledge))
+            .then(|| trace::Recorder::new(target, &checked))
             .transpose()?,
         ranker,
         goal: p.body,
@@ -1284,13 +1311,19 @@ mod witness_tests {
     }
     #[test]
     fn the_last_allowed_transition_can_close_without_spending_another_expansion() {
+        struct UnexpectedInference;
+        impl Ranker for UnexpectedInference {
+            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, String> {
+                Err("a directly closing action must not invoke inference".into())
+            }
+        }
         let question = naome_checker::question::ResearchQuestion::from_hex(
             "040403020001000000010100000000030401010000000001000000020101000000000100000001",
         )
         .unwrap();
         let result = solve_with_knowledge(
             question.proved_target(),
-            &mut Ordered,
+            &mut UnexpectedInference,
             1,
             Instant::now(),
             &[],

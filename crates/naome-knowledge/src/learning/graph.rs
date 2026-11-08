@@ -50,18 +50,21 @@ impl<'a> Builder<'a> {
         Ok(index)
     }
     fn pair(&mut self, roots: &[usize]) -> Result<usize, String> {
-        match roots {
-            [] => Ok(0),
-            [root] => Ok(*root),
-            [left, right] => self.push(Node {
+        if roots.len() > 1 + naome_proof::program::ACTION_PREMISES {
+            return Err("action arity capacity".into());
+        }
+        let Some((&first, rest)) = roots.split_first() else {
+            return Ok(0);
+        };
+        rest.iter().try_fold(first, |left, &right| {
+            self.push(Node {
                 kind: 14,
-                left: *left,
-                right: *right,
+                left,
+                right,
                 role: 0,
                 symbol: 0,
-            }),
-            _ => Err("action arity capacity".into()),
-        }
+            })
+        })
     }
 
     fn free_slot(&mut self, id: u32) -> Result<i32, String> {

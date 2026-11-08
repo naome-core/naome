@@ -166,6 +166,7 @@ impl ArtifactState {
     pub fn register_proof(&mut self, proof: CheckedProof) -> Result<Box<[u8]>, ArtifactStateError> {
         self.validate_proof_registration(&proof)?;
 
+        let bytes = proof.normal_form().canonical_bytes().len() + 1;
         let CheckedProof {
             normal_form,
             conclusion,
@@ -177,7 +178,7 @@ impl ArtifactState {
         } = proof;
 
         self.question_index
-            .register_proof(proof_id, statement_id, &conclusion);
+            .register_proof(proof_id, statement_id, &conclusion, bytes);
         self.statements.insert(
             statement_id,
             StoredStatement {
@@ -229,6 +230,7 @@ impl ArtifactState {
                     proof.proof_id,
                     proof.statement_id,
                     &proof.conclusion,
+                    proof.normal_form().canonical_bytes().len() + 1,
                 );
                 let inserted = self.proofs.insert(proof.proof_id, proof.derivation_id);
                 debug_assert!(inserted);

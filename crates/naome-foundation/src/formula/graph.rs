@@ -3,7 +3,7 @@
 //! Storage and scheduling belong to consumers. Foundation owns variable
 //! binding, structural properties and representation-independent recipes.
 use super::{Formula, FormulaView, Node as Tree, Variable as TreeVariable};
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Variable {
@@ -133,43 +133,59 @@ impl<I: Copy> Node<I> {
 impl Formula {
     /// Materializes a bounded primitive graph with its exact relative binders.
     /// The reader owns the graph and checks its reference identities.
-    pub fn from_graph<I: Copy>(
+    pub fn from_graph<I: Copy + Eq + Hash>(
         root: I,
         mut read: impl FnMut(I) -> Result<Node<I>, String>,
     ) -> Result<Self, String> {
-        fn visit<I: Copy>(
-            handle: I,
-            read: &mut impl FnMut(I) -> Result<Node<I>, String>,
-            depth: u32,
-            binders: u32,
-            remaining: &mut usize,
-        ) -> Result<Tree, String> {
-            if depth > super::canonical::FORMULA_MAX_DEPTH || *remaining == 0 {
-                return Err("materialized formula graph capacity".into());
-            }
-            *remaining -= 1;
-            let variable = |variable| match variable {
-                Variable::Free(id) => Ok(TreeVariable::Free(super::FreeVariable::new(id))),
-                Variable::Bound(index) if index < u64::from(binders) => {
-                    Ok(TreeVariable::Bound(index as u32))
-                }
-                Variable::Bound(_) => Err("formula graph has a dangling binder".to_owned()),
-            };
-            let node = read(handle)?;
-            let mut child =
-                |handle, binders| visit(handle, read, depth + 1, binders, remaining).map(Arc::new);
-            Ok(match node {
-                Node::Equal(left, right) => Tree::Equal(variable(left)?, variable(right)?),
-                Node::Member(left, right) => Tree::Member(variable(left)?, variable(right)?),
-                Node::Not(body) => Tree::Not(child(body, binders)?),
-                Node::Implies(left, right) => {
-                    Tree::Implies(child(left, binders)?, child(right, binders)?)
-                }
-                Node::ForAll(body) => Tree::ForAll(child(body, binders + 1)?),
-            })
+        struct Materializer<I, R> {
+            read: R,
+            shared: HashMap<(I, u32, u32), (Arc<Tree>, usize)>,
+            remaining: usize,
         }
-        let mut remaining = super::canonical::FORMULA_MAX_NODES;
-        visit(root, &mut read, 0, 0, &mut remaining).map(Self)
+        impl<I: Copy + Eq + Hash, R: FnMut(I) -> Result<Node<I>, String>> Materializer<I, R> {
+            fn visit(&mut self, handle: I, depth: u32, binders: u32) -> Result<Arc<Tree>, String> {
+                let capacity = || "materialized formula graph capacity".to_owned();
+                if depth >= super::canonical::FORMULA_MAX_DEPTH {
+                    return Err(capacity());
+                }
+                let key = (handle, depth, binders);
+                if let Some((tree, nodes)) = self.shared.get(&key) {
+                    self.remaining = self.remaining.checked_sub(*nodes).ok_or_else(capacity)?;
+                    return Ok(Arc::clone(tree));
+                }
+                let before = self.remaining;
+                self.remaining = before.checked_sub(1).ok_or_else(capacity)?;
+                let variable = |variable| match variable {
+                    Variable::Free(id) => Ok(TreeVariable::Free(super::FreeVariable::new(id))),
+                    Variable::Bound(index) if index < u64::from(binders) => {
+                        Ok(TreeVariable::Bound(index as u32))
+                    }
+                    Variable::Bound(_) => Err("formula graph has a dangling binder".to_owned()),
+                };
+                let node = (self.read)(handle)?;
+                let tree = Arc::new(match node {
+                    Node::Equal(left, right) => Tree::Equal(variable(left)?, variable(right)?),
+                    Node::Member(left, right) => Tree::Member(variable(left)?, variable(right)?),
+                    Node::Not(body) => Tree::Not(self.visit(body, depth + 1, binders)?),
+                    Node::Implies(left, right) => Tree::Implies(
+                        self.visit(left, depth + 1, binders)?,
+                        self.visit(right, depth + 1, binders)?,
+                    ),
+                    Node::ForAll(body) => Tree::ForAll(self.visit(body, depth + 1, binders + 1)?),
+                });
+                self.shared
+                    .insert(key, (Arc::clone(&tree), before - self.remaining));
+                Ok(tree)
+            }
+        }
+        let mut materializer = Materializer {
+            read: &mut read,
+            shared: HashMap::new(),
+            remaining: super::canonical::FORMULA_MAX_NODES,
+        };
+        materializer
+            .visit(root, 0, 0)
+            .map(|tree| Self(Arc::unwrap_or_clone(tree)))
     }
 
     /// Consumes a bounded tree as a sequence of postorder graph operations.

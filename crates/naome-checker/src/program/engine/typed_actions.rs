@@ -7,6 +7,62 @@ fn drain(engine: &mut Engine) {
 }
 
 #[test]
+fn native_projection_fuses_an_instantiation_at_its_only_later_use() {
+    use naome_proof::{
+        ProofCertificate, ProofStep,
+        program::{Projection, StepResult},
+    };
+
+    let [x, y] = [0, 1].map(FreeVariable::new);
+    let steps = vec![
+        ProofStep::UniversalInstantiation {
+            variable: x,
+            replacement: y,
+            body: Formula::equal(x, x).into(),
+        },
+        ProofStep::EqualityReflexivity { variable: x },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: x,
+        },
+        ProofStep::ModusPonens {
+            premise: 2,
+            implication: 0,
+        },
+        ProofStep::Generalization {
+            premise: 3,
+            variable: y,
+        },
+    ];
+    let projection = Projection::from_inference_steps(&steps).unwrap();
+    assert!(matches!(
+        projection.commands()[2],
+        Command::Instantiate {
+            premise: 1,
+            replacement: 1
+        }
+    ));
+    assert_eq!(projection.results()[0], StepResult::InstantiationAxiom(2));
+    let certificate = crate::check_normal_form_with_state(
+        ProofCertificate::new(steps)
+            .unwrap()
+            .into_unchecked_normal_form(),
+        &ArtifactState::new(),
+    )
+    .unwrap();
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    engine.append_group(projection.commands()).unwrap();
+    drain(&mut engine);
+    while !engine.prepare_export(64).unwrap() {}
+    let program = engine.checked().unwrap();
+    assert_eq!(
+        program.manifest().statement_id(),
+        certificate.statement_id()
+    );
+    assert_eq!(program.conclusion(), Some(certificate.conclusion()));
+}
+
+#[test]
 fn typed_instantiation_preserves_nested_binders_sharing_and_replay() {
     let path = std::env::temp_dir().join(format!(
         "naome-typed-instantiation-{}.sqlite3",
