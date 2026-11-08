@@ -4,6 +4,7 @@ import ast
 import hashlib
 import io
 import pathlib
+import re
 import subprocess
 import sys
 import tarfile
@@ -163,6 +164,13 @@ class BuildContractTests(unittest.TestCase):
                 self.assertEqual([f for f in flags if f.startswith("-Copt-level=")], ["-Copt-level=2"])
                 self.assertEqual([f for f in flags if f.startswith("-Cdebug-assertions=")], ["-Cdebug-assertions=on"])
                 self.assertEqual([f for f in flags if f.startswith("-Coverflow-checks=")], ["-Coverflow-checks=on"])
+
+    def test_external_actions_use_full_commit_pins(self):
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            for action in re.findall(r"\buses: ([^\s#]+)", path.read_text()):
+                if not action.startswith("./"):
+                    with self.subTest(workflow=path.name, action=action):
+                        self.assertRegex(action, r"@[0-9a-f]{40}$")
 
     def test_ci_builds_both_aggregates_before_running_tests(self):
         workflow = " ".join((ROOT / ".github/workflows/bazel-tests.yml").read_text().split())
