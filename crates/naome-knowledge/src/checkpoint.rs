@@ -281,8 +281,8 @@ impl Checkpoint {
         &self,
         kind: &str,
         maximum: usize,
-        mut visit: impl FnMut(&str, &[u8]) -> Result<(), String>,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&str, &[u8]) -> Result<(), crate::Error>,
+    ) -> Result<(), crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
         let mut statement = self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?2), substr(digest,1,33) FROM entries WHERE kind = ?1 ORDER BY key").map_err(sql)?;

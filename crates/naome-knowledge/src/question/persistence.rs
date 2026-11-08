@@ -118,9 +118,9 @@ impl Persistence {
     pub(super) fn replay(
         &self,
         context: &dyn naome_checker::ContextView,
-        mut visit: impl FnMut(Entry, ResearchQuestion) -> Result<(), String>,
-    ) -> Result<(), String> {
-        self.report((|| {
+        mut visit: impl FnMut(Entry, ResearchQuestion) -> Result<(), crate::Error>,
+    ) -> Result<(), crate::Error> {
+        let result: Result<(), crate::Error> = (|| {
             let mut admitted = 0usize;
             let mut queued = 0usize;
             self.checkpoint
@@ -173,7 +173,11 @@ impl Persistence {
                 return Err("question durable index cardinality differs".into());
             }
             Ok(())
-        })())
+        })();
+        if let Err(error) = &result {
+            *self.fault.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.to_string());
+        }
+        result
     }
     #[cfg(test)]
     pub(super) fn entries_page(
@@ -483,9 +487,9 @@ fn decode_entry(
     key: &str,
     entry: &Entry,
     context: &dyn naome_checker::ContextView,
-) -> Result<ResearchQuestion, String> {
+) -> Result<ResearchQuestion, crate::Error> {
     let question = ResearchQuestion::from_hex_with_context(&entry.encoded, context)
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::Error::from)?;
     validate_entry(key, entry, &question)?;
     Ok(question)
 }

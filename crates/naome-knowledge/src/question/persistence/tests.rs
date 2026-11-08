@@ -206,3 +206,39 @@ fn stricter_assessment_policy_preserves_current_sources_and_first_policy_identit
         .unwrap();
     assert_eq!(sources, [question.to_hex()]);
 }
+
+#[test]
+fn replay_preserves_a_typed_visitor_failure_without_changing_records() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let mut persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    persistence.retain(&question, Kind::Baseline, None).unwrap();
+    let error = persistence
+        .replay(&naome_checker::ArtifactState::new(), |_, _| {
+            Err(crate::Error::MemoryOverload {
+                requested: 7,
+                charged: 11,
+                budget: 13,
+            })
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::MemoryOverload {
+            requested: 7,
+            charged: 11,
+            budget: 13
+        }
+    ));
+    drop(persistence);
+    let persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    let mut count = 0;
+    persistence
+        .replay(&naome_checker::ArtifactState::new(), |_, replayed| {
+            assert_eq!(replayed.to_hex(), question.to_hex());
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}

@@ -269,11 +269,13 @@ pub(in crate::jobs::journal) fn validate_rows(
         }
         Ok(())
     })?;
-    c.scan("learned", 256, |key, bytes| validate_learned(c, key, bytes))?;
+    c.scan("learned", 256, |key, bytes| {
+        Ok(validate_learned(c, key, bytes)?)
+    })?;
     c.scan(
         "peer_receipt",
         crate::resources::limits().closure_bytes,
-        |key, bytes| validate_peer(c, state, key, bytes),
+        |key, bytes| Ok(validate_peer(c, state, key, bytes)?),
     )?;
     let mut local = 0u64;
     let mut peer = 0u64;

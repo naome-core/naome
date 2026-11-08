@@ -454,7 +454,7 @@ where
         directory: &std::path::Path,
         horizon: Duration,
         graph: &Graph,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let mut local = Self::new(None);
         local.attach_persistence(directory, graph)?;
         local.managed = Some(client);
@@ -466,22 +466,24 @@ where
         &mut self,
         directory: &std::path::Path,
         graph: &Graph,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if self.persistence.is_some() {
             return Ok(());
         }
         if !self.registry.is_empty() {
             return Err("cannot replace a populated local registry".into());
         }
-        let persistence = persistence::Persistence::open(directory, self.policy)?;
-        let storage = crate::index_storage::IndexStorage::open(directory, "questions")?;
+        let persistence = persistence::Persistence::open(directory, self.policy)
+            .map_err(|_| crate::RuntimeFailure::QuestionStorage)?;
+        let storage = crate::index_storage::IndexStorage::open(directory, "questions")
+            .map_err(|_| crate::RuntimeFailure::QuestionStorage)?;
         self.registry = QuestionRegistry::with_storage(storage.clone());
         persistence.replay(graph.checked_context(), |entry, question| {
             let registered = RegisteredQuestion::from_research_question(&question)
-                .map_err(|error| format!("recovered question: {error:?}"))?;
+                .map_err(crate::Error::from)?;
             self.registry
                 .insert(registered)
-                .map_err(|error| format!("recovered registry: {error:?}"))?;
+                .map_err(crate::Error::from)?;
             if entry.kind == persistence::Kind::Prepared {
                 crate::network::emit(serde_json::json!({
                     "event": crate::outcome::NodeEvent::QuestionRecoveryHold,
