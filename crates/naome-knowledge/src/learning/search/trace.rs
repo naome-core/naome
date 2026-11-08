@@ -80,12 +80,24 @@ pub(crate) struct Event {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Repair {
+    failed: usize,
+    selected: usize,
+    // A canonical replay of the successful tableau survives truncation of
+    // the chronological event prefix.
+    proof: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Trace {
     pub target: String,
     root: Option<Root>,
     events: Vec<Event>,
     pub attempts: usize,
     pub omitted: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repair: Option<Repair>,
 }
 impl Trace {
     /// At most four actual observed transitions, cut at every missing match.
@@ -273,7 +285,77 @@ impl Trace {
             }
             states.push(state);
         }
+        if let Some(repair) = &self.repair {
+            let event = self
+                .events
+                .get(repair.failed)
+                .ok_or("repair has no recorded attempt")?;
+            if event.closed
+                || event.selected == repair.selected
+                || event
+                    .ranks
+                    .as_ref()
+                    .is_none_or(|scores| repair.selected >= scores.len())
+                || repair.proof.is_empty()
+            {
+                return Err("repair decision differs from its failed attempt".into());
+            }
+        }
         Ok(states)
+    }
+
+    pub(crate) fn has_repair(&self) -> bool {
+        self.repair.is_some()
+    }
+
+    /// Use only a separately checked successful proof of the observed target.
+    /// The unsuccessful action is provenance, never a mathematical label.
+    pub(crate) fn checked_repair(
+        &self,
+        target: &Formula,
+        knowledge: &[super::super::knowledge::Entry],
+    ) -> Result<Option<Graph>, String> {
+        let Some(repair) = &self.repair else {
+            return Ok(None);
+        };
+        let root = self.root.as_ref().ok_or("repair has no search root")?;
+        if encode(target)? != root.target {
+            return Ok(None);
+        }
+        self.validate()?;
+        let event = &self.events[repair.failed];
+        let mut proof: Tree = crate::checkpoint::decode(repair.proof.as_bytes())?;
+        if !root.knowledge.is_empty() {
+            let entries = root
+                .knowledge
+                .iter()
+                .map(|reference| {
+                    knowledge
+                        .iter()
+                        .find(|entry| super::super::digest(entry) == reference.packet)
+                        .cloned()
+                        .ok_or("repair lacks its original theorem snapshot")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            proof = Tree::Knowledge {
+                entries,
+                target: target
+                    .encode_canonical()
+                    .map_err(|error| error.to_string())?,
+                proof: Box::new(proof),
+            };
+        }
+        let (term, graphs) = compile(target, &proof)?;
+        let graph = graphs
+            .into_iter()
+            .find(|graph| graph.binding == event.state && graph.expert == repair.selected)
+            .ok_or("checked repair does not use the alternative at its recorded state")?;
+        let recipe = super::super::proof::recipe(&term, target)?;
+        let candidate = super::super::construction::program_from_recipe(target, recipe)?;
+        if candidate.packet.target()? != *target {
+            return Err("checked repair conclusion differs".into());
+        }
+        Ok(Some(graph))
     }
 
     pub(crate) fn validate_question(
@@ -428,6 +510,7 @@ impl Recorder {
             events: Vec::new(),
             attempts: usize::MAX,
             omitted: usize::MAX,
+            repair: None,
         };
         if crate::checkpoint::encode(&trace)?.len() > BYTES {
             trace.root = None;
@@ -493,6 +576,35 @@ impl Recorder {
             event.elapsed_micros = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         }
     }
+    pub fn retain_repair(
+        &mut self,
+        failed: usize,
+        selected: usize,
+        proof: &Tree,
+    ) -> Result<(), String> {
+        let proof = serde_json::to_string(proof).map_err(|error| error.to_string())?;
+        if proof.len() > BYTES {
+            return Ok(());
+        }
+        self.trace.repair = Some(Repair {
+            failed,
+            selected,
+            proof,
+        });
+        let mut removed = Vec::new();
+        while crate::checkpoint::encode(&self.trace)?.len() > BYTES {
+            if self.trace.events.len() == failed + 1 {
+                self.trace.repair = None;
+                self.trace.omitted -= removed.len();
+                self.trace.events.extend(removed.into_iter().rev());
+                break;
+            }
+            removed.extend(self.trace.events.pop());
+            self.trace.omitted += 1;
+        }
+        Ok(())
+    }
+
     pub fn into_trace(self) -> Trace {
         self.trace
     }

@@ -11,9 +11,8 @@ use crate::{
     wire::{Body, Codec, Frame, PROTOCOL},
 };
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits,
-    futures::StreamExt,
-    gossipsub, identity, noise, relay, request_response,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits, gossipsub,
+    identity, noise, relay, request_response,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
     yamux,
 };
@@ -121,18 +120,29 @@ struct Wanted {
     since: Instant,
     retry: Instant,
     attempts: usize,
+    last_supplier: Option<PeerId>,
+}
+
+fn inventory_preempts_description(next: Option<Instant>, now: Instant) -> bool {
+    next.is_none_or(|deadline| {
+        now.saturating_duration_since(deadline) >= crate::resources::limits().reconcile_interval
+            && now >= deadline
+    })
 }
 
 fn description_supplier(
     peers: &[PeerId],
-    attempts: usize,
+    last_supplier: Option<PeerId>,
     mut request_ready: impl FnMut(PeerId) -> bool,
     mut automatic_ready: impl FnMut(PeerId) -> bool,
 ) -> Option<PeerId> {
+    let next = last_supplier
+        .and_then(|last| peers.iter().position(|peer| *peer == last))
+        .map_or(0, |index| index + 1);
     let peer = peers
         .iter()
         .cycle()
-        .skip(attempts % peers.len().max(1))
+        .skip(next % peers.len().max(1))
         .take(peers.len())
         .find(|peer| request_ready(**peer))
         .copied()?;
@@ -1132,6 +1142,7 @@ impl Node {
                 since: Instant::now(),
                 retry: Instant::now(),
                 attempts: 0,
+                last_supplier: None,
             },
         );
         Ok(true)
@@ -1664,6 +1675,76 @@ impl Node {
             }
         }
         let enabled: Vec<_> = self.enabled.iter().copied().collect();
+        // Give queued descriptions the next request window, but reserve an
+        // overdue inventory window so a continuous queue cannot starve discovery.
+        let inventory_room = crate::resources::active_limits()
+            .fetches
+            .saturating_sub(self.wanted.len())
+            >= crate::resources::active_limits().inventory_page;
+        let inventory_urgent: BTreeSet<_> = enabled
+            .iter()
+            .copied()
+            .filter(|peer| {
+                inventory_room
+                    && inventory_preempts_description(self.next_inventory.get(peer).copied(), now)
+                    && !self.flights.values().any(
+                        |flight| matches!(flight, Flight::Inventory { peer: p, .. } if p == peer),
+                    )
+            })
+            .collect();
+        let mut remaining = self.intake.description_capacity().saturating_sub(
+            self.flights
+                .values()
+                .filter(|flight| matches!(flight, Flight::Describe { .. }))
+                .count(),
+        );
+        let ids: Vec<_> = self
+            .wanted
+            .iter()
+            .filter_map(|(id, wanted)| {
+                (wanted.retry <= now
+                    && !self.intake.contains(*id)
+                    && !self
+                        .flights
+                        .values()
+                        .any(|flight| matches!(flight,Flight::Describe { id:p,.. } if p==id)))
+                .then_some(*id)
+            })
+            .collect();
+        for id in ids {
+            if remaining == 0 {
+                break;
+            }
+            let last_supplier = self.wanted[&id].last_supplier;
+            let Some(peer) = description_supplier(
+                &enabled,
+                last_supplier,
+                |peer| self.request_ready(peer, now),
+                |peer| self.automatic_request_ready(peer, now) && !inventory_urgent.contains(&peer),
+            ) else {
+                continue;
+            };
+            let wanted = self.wanted.get_mut(&id).expect("queued description");
+            wanted.attempts += 1;
+            wanted.last_supplier = Some(peer);
+            wanted.retry = now + crate::resources::limits().reconcile_interval;
+            let request = self
+                .swarm
+                .behaviour_mut()
+                .exchange
+                .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
+            self.flights.insert(
+                request,
+                Flight::Describe {
+                    started: Instant::now(),
+                    id,
+                    peer,
+                },
+            );
+            self.charge_automatic_request(peer, now);
+            self.charge_outgoing(peer, now);
+            remaining -= 1;
+        }
         for peer in &enabled {
             if self.request_ready(*peer, now)
                 && self.automatic_request_ready(*peer, now)
@@ -1689,58 +1770,6 @@ impl Node {
                 self.charge_automatic_request(*peer, now);
                 self.charge_outgoing(*peer, now);
             }
-        }
-        let mut remaining = self.intake.description_capacity().saturating_sub(
-            self.flights
-                .values()
-                .filter(|flight| matches!(flight, Flight::Describe { .. }))
-                .count(),
-        );
-        let ids: Vec<_> = self
-            .wanted
-            .iter()
-            .filter_map(|(id, wanted)| {
-                (wanted.retry <= now
-                    && !self.intake.contains(*id)
-                    && !self
-                        .flights
-                        .values()
-                        .any(|flight| matches!(flight,Flight::Describe { id:p,.. } if p==id)))
-                .then_some(*id)
-            })
-            .collect();
-        for id in ids {
-            if remaining == 0 {
-                break;
-            }
-            let attempts = self.wanted[&id].attempts;
-            let Some(peer) = description_supplier(
-                &enabled,
-                attempts,
-                |peer| self.request_ready(peer, now),
-                |peer| self.automatic_request_ready(peer, now),
-            ) else {
-                continue;
-            };
-            let wanted = self.wanted.get_mut(&id).expect("queued description");
-            wanted.attempts += 1;
-            wanted.retry = now + crate::resources::limits().reconcile_interval;
-            let request = self
-                .swarm
-                .behaviour_mut()
-                .exchange
-                .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
-            self.flights.insert(
-                request,
-                Flight::Describe {
-                    started: Instant::now(),
-                    id,
-                    peer,
-                },
-            );
-            self.charge_automatic_request(peer, now);
-            self.charge_outgoing(peer, now);
-            remaining -= 1;
         }
     }
 

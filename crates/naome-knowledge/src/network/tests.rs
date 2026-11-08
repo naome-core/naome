@@ -6,7 +6,7 @@ mod defined_exchange;
 mod definitions;
 #[cfg(unix)]
 mod typed_proof;
-use libp2p::tcp;
+use libp2p::{futures::StreamExt, tcp};
 use naome_checker::question::ResearchQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,6 +49,16 @@ fn suppliers() -> [PeerId; 3] {
 }
 
 #[test]
+fn overdue_inventory_retains_a_request_window() {
+    let now = Instant::now();
+    let interval = crate::resources::limits().reconcile_interval;
+    assert!(inventory_preempts_description(None, now));
+    assert!(!inventory_preempts_description(Some(now + interval), now));
+    assert!(!inventory_preempts_description(Some(now), now));
+    assert!(inventory_preempts_description(Some(now - interval), now));
+}
+
+#[test]
 fn description_rotation_waits_for_the_next_suppliers_pacing_window() {
     let [bad, good, _] = suppliers();
     let peers = [bad, good];
@@ -57,7 +67,7 @@ fn description_rotation_waits_for_the_next_suppliers_pacing_window() {
     let select_at = |time| {
         description_supplier(
             &peers,
-            1,
+            Some(bad),
             |_| true,
             |peer| peer != good || time >= available_at,
         )
@@ -72,17 +82,19 @@ fn description_rotation_waits_for_the_next_suppliers_pacing_window() {
 fn description_rotation_keeps_alternating_when_inventory_and_retry_clocks_align() {
     let [first, second, _] = suppliers();
     let peers = [first, second];
-    for (attempt, expected) in [first, second, first, second].into_iter().enumerate() {
+    let mut last = None;
+    for expected in [first, second, first, second] {
         // At every retry deadline the next supplier has just sent inventory.
         // Its short cooldown must defer the request, not select its neighbour.
         assert_eq!(
-            description_supplier(&peers, attempt, |_| true, |peer| peer != expected),
+            description_supplier(&peers, last, |_| true, |peer| peer != expected),
             None
         );
         assert_eq!(
-            description_supplier(&peers, attempt, |_| true, |_| true),
+            description_supplier(&peers, last, |_| true, |_| true),
             Some(expected)
         );
+        last = Some(expected);
     }
 }
 
@@ -91,15 +103,42 @@ fn description_rotation_skips_unavailable_transports_and_respects_pacing() {
     let [first, unavailable, third] = suppliers();
     let peers = [first, unavailable, third];
     assert_eq!(
-        description_supplier(&peers, 1, |peer| peer != unavailable, |_| true),
+        description_supplier(&peers, Some(first), |peer| peer != unavailable, |_| true),
         Some(third)
     );
     assert_eq!(
-        description_supplier(&peers, 1, |peer| peer != unavailable, |peer| peer != third),
+        description_supplier(
+            &peers,
+            Some(first),
+            |peer| peer != unavailable,
+            |peer| peer != third
+        ),
         None
     );
-    assert_eq!(description_supplier(&peers, 1, |_| false, |_| true), None);
-    assert_eq!(description_supplier(&[], 1, |_| true, |_| true), None);
+    assert_eq!(
+        description_supplier(&peers, Some(first), |_| false, |_| true),
+        None
+    );
+    assert_eq!(
+        description_supplier(&[], Some(first), |_| true, |_| true),
+        None
+    );
+}
+
+#[test]
+fn description_rotation_advances_after_the_supplier_actually_used() {
+    let [first, second, _] = suppliers();
+    let peers = [first, second];
+    // First is unavailable at the initial attempt, so the second peer is used.
+    assert_eq!(
+        description_supplier(&peers, None, |peer| peer != first, |_| true),
+        Some(second)
+    );
+    // When First becomes available, the next turn must not repeat Second.
+    assert_eq!(
+        description_supplier(&peers, Some(second), |_| true, |_| true),
+        Some(first)
+    );
 }
 
 #[test]
@@ -867,4 +906,44 @@ async fn oversized_learning_context_advances_the_durable_cursor() {
         crate::jobs::Service::open(&directory.0, settings, 0, Arc::default()).unwrap();
     assert_eq!(recovery.peer_cursor, skipped_ordinal + 1);
     service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn control_remains_responsive_with_incomplete_clients() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let directory = ConfigFile::new();
+    let graph = Graph::open(&directory.0).unwrap();
+    let control =
+        Arc::new(crate::runtime::Control::bind_test(&directory.0, graph.ownership()).unwrap());
+    let endpoint: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.0.join("control.json")).unwrap()).unwrap();
+    let socket = endpoint["socket"].as_str().unwrap();
+    let status = Arc::new(worker::PublishedStatus::default());
+    status.ready.store(true, Ordering::Release);
+    let mut controls = worker::Controls::spawn(Some(control), status);
+    let mut slow = Vec::new();
+    for _ in 0..crate::resources::active_limits().control_clients {
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        stream.write_all(b"{").await.unwrap();
+        slow.push(stream);
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    let request = format!(
+        "{{\"version\":1,\"token\":\"{}\",\"operation\":\"status\"}}\n",
+        "01".repeat(32)
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_millis(700),
+        BufReader::new(stream).read_line(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(result["report"]["status"]["running"], true);
+    drop(slow);
+    controls.shutdown().await.unwrap();
 }

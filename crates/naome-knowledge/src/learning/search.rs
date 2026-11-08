@@ -664,6 +664,10 @@ struct Search<'a> {
     started: Instant,
     expansions: usize,
     maximum: usize,
+    limit: usize,
+    considered_repair: bool,
+    deferred: bool,
+    repair: Option<(usize, usize)>,
     failure: Option<String>,
     exhausted: BTreeSet<String>,
     frontier: Option<frontier::Frontier>,
@@ -674,6 +678,16 @@ impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
         self.branch(state, depth, None, None)
     }
+    fn expansion_limit(&mut self) {
+        if self.limit < self.maximum {
+            self.deferred = true;
+        } else {
+            self.failure = Some("search_budget".into());
+            self.terminal
+                .include(TerminalEvidence::Budget(Budget::Expansions));
+        }
+    }
+
     fn branch(
         &mut self,
         state: &State,
@@ -699,13 +713,11 @@ impl Search<'_> {
         }
         // Recognizing the terminal state after the last permitted transition
         // consumes no additional expansion. Never admit another action here.
-        if self.expansions >= self.maximum {
+        if self.expansions >= self.limit {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
-            self.failure = Some("search_budget".into());
-            self.terminal
-                .include(TerminalEvidence::Budget(Budget::Expansions));
+            self.expansion_limit();
             return Ok(None);
         }
         if state.facts.len() > 32 {
@@ -778,14 +790,22 @@ impl Search<'_> {
         if closing.is_some() {
             order.truncate(1);
         }
-        for selected in order {
-            if self.expansions >= self.maximum {
-                self.failure = Some("search_budget".into());
-                self.terminal
-                    .include(TerminalEvidence::Budget(Budget::Expansions));
+        // Give the first genuinely ambiguous decision room to try an
+        // alternative before a single descent consumes the whole job.
+        let first_limit = self.maximum.div_ceil(3);
+        let repair_site = !self.considered_repair
+            && order.len() > 1
+            && self.maximum >= 24
+            && self.expansions + 1 < first_limit;
+        self.considered_repair |= repair_site;
+        let mut failed_alternative = None;
+        for (attempt, selected) in order.into_iter().enumerate() {
+            if self.expansions >= self.limit {
+                self.expansion_limit();
                 break;
             }
             let event_started = Instant::now();
+            let previous_repair = self.repair;
             let event = self
                 .recorder
                 .as_mut()
@@ -806,6 +826,9 @@ impl Search<'_> {
             let mut success = true;
             let mut attempted = 0;
             let offer = &offers[selected];
+            if repair_site && attempt == 0 {
+                self.limit = first_limit;
+            }
             for (index, child) in offer
                 .delta
                 .apply(state, &offer.action)
@@ -830,6 +853,9 @@ impl Search<'_> {
                     break;
                 }
             }
+            if repair_site && attempt == 0 {
+                self.limit = self.maximum;
+            }
             if let Some(recorder) = &mut self.recorder {
                 recorder.finish(
                     event,
@@ -840,14 +866,19 @@ impl Search<'_> {
                 );
             }
             if success {
+                if let Some(failed) = failed_alternative {
+                    self.repair = Some((failed, selected));
+                }
                 return Ok(Some(Tree::Step {
                     action: actions[selected].clone(),
                     children,
                 }));
             }
+            self.repair = previous_repair;
+            failed_alternative = failed_alternative.or(event);
         }
         if let Some(key) = key
-            && self.expansions < self.maximum
+            && self.expansions < self.limit
             && self.started.elapsed() <= Duration::from_millis(2500)
             && self.exhausted.len() < 256
         {
@@ -931,13 +962,25 @@ fn solve_recording(
         started,
         expansions: 0,
         maximum,
+        limit: maximum,
+        considered_repair: false,
+        deferred: false,
+        repair: None,
         failure: None,
         exhausted: BTreeSet::new(),
         frontier: frontier::Frontier::new(target),
         terminal: TerminalEvidence::Unknown,
     };
     let mut tree = s.prove(&p.state, 0)?;
-    if tree.is_none() && s.failure.is_none() && s.expansions > 0 {
+    if let Some(proof) = &tree {
+        if let (Some(recorder), Some((failed, selected))) = (&mut s.recorder, s.repair) {
+            recorder.retain_repair(failed, selected, proof)?;
+        }
+    } else if s.deferred && s.failure.is_none() {
+        s.failure = Some("search_budget".into());
+        s.terminal
+            .include(TerminalEvidence::Budget(Budget::BranchExpansions));
+    } else if s.failure.is_none() && s.expansions > 0 {
         s.terminal = TerminalEvidence::PolicyExhausted;
     }
     if !knowledge.is_empty() {
@@ -1477,6 +1520,10 @@ mod transposition_tests {
             started: Instant::now(),
             expansions: 0,
             maximum: 16,
+            limit: 16,
+            considered_repair: false,
+            deferred: false,
+            repair: None,
             failure: None,
             exhausted: BTreeSet::new(),
             frontier: None,

@@ -573,6 +573,7 @@ pub(crate) struct TrainingCost {
     pub unavailable_fragments: usize,
     pub witnessed_preferences: usize,
     pub hindsight_matches: usize,
+    pub checked_repairs: usize,
     pub observed_sequences: usize,
     pub sampled_sequence_edges: usize,
     pub measurements: TrainingMeasurements,
@@ -785,6 +786,7 @@ impl Engine {
         self.cost.unavailable_fragments = derived.unavailable;
         self.cost.witnessed_preferences = derived.preferences;
         self.cost.hindsight_matches = derived.hindsight;
+        self.cost.checked_repairs = derived.repairs;
         self.cost.observed_sequences = derived.sequences;
         self.cost.preservation_states = preservation_pool.graphs().len();
         self.cost.replay_micros = micros(started).saturating_sub(self.cost.preparation_micros);
