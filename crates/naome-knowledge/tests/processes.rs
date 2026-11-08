@@ -163,8 +163,15 @@ fn cold_mock_helper_proves_defined_offer_and_requester_rechecks_it() {
         .unwrap()
         .unwrap();
         assert!(matches!(admission.outcome, AdmissionOutcome::Admitted(_)));
-        admin.stop().await.unwrap();
-        node.await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(15), admin.stop())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(15), node)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     });
     workgroup_proof_exchange(
         "mock",
