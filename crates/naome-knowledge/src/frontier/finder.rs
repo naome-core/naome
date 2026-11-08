@@ -89,17 +89,22 @@ fn closed_pairs(target: &Formula) -> Vec<[Formula; 2]> {
 /// Complete alternatives, in the order in which the Finder considers them.
 pub(super) fn cut_groups(target: &Formula) -> Vec<Vec<ResearchQuestion>> {
     let mut groups = crate::learning::scoped_cut_questions(target);
-    groups.extend(closed_pairs(target).into_iter().filter_map(|pair| {
+    groups.extend(closed_cut_groups(target));
+    groups
+}
+
+fn closed_cut_groups(target: &Formula) -> impl Iterator<Item = Vec<ResearchQuestion>> {
+    closed_pairs(target).into_iter().filter_map(|pair| {
         pair.into_iter()
             .map(|formula| ResearchQuestion::from_formula(formula).ok())
-            .collect::<Option<Vec<_>>>()
-    }));
-    groups
+            .collect()
+    })
 }
 
 /// Independently provable witnesses for the bounded routes to an open goal.
 pub(super) fn cut_helpers(
     goal: &ResearchQuestion,
+    existing: &[ResearchQuestion],
     maximum: usize,
     bytes: usize,
 ) -> Vec<ResearchQuestion> {
@@ -109,25 +114,49 @@ pub(super) fn cut_helpers(
             && helper.resolution_id() != goal.resolution_id()
             && independent_goal(helper, goal)
     };
-    let mut questions = Vec::new();
-    for group in cut_groups(goal.proved_target()) {
-        if !group.iter().all(valid) {
-            continue;
-        }
-        if group.len() == 1 {
-            questions.extend(group);
-        } else if group.len() <= maximum
+    let group_fits = |group: &[ResearchQuestion]| {
+        group.len() <= maximum
             && group.iter().map(key).collect::<BTreeSet<_>>().len() == group.len()
             && group.iter().all(|helper| {
-                question_bytes(helper) <= bytes
+                valid(helper)
+                    && question_bytes(helper) <= bytes
                     && meaningful(helper)
                     && crate::learning::State::eligible(&helper.to_hex())
             })
-        {
-            // The durable plan retains both questions. The scheduler admits
-            // only one pending segment at a time against the live allowance.
-            return group;
+    };
+    let mut questions = Vec::new();
+    for group in crate::learning::scoped_cut_questions(goal.proved_target()) {
+        if group.len() == 1 {
+            questions.extend(group.into_iter().filter(valid));
+        } else if group_fits(&group) {
+            // Keep the remaining slots available for recursive transport cuts.
+            return if existing.is_empty() {
+                group
+            } else {
+                Vec::new()
+            };
         }
+    }
+    let mut alternatives = existing.to_vec();
+    for group in closed_cut_groups(goal.proved_target()).filter(|group| group_fits(group)) {
+        let new = group
+            .into_iter()
+            .filter(|helper| {
+                !alternatives
+                    .iter()
+                    .any(|previous| previous.resolution_id() == helper.resolution_id())
+            })
+            .collect::<Vec<_>>();
+        if alternatives.len() + new.len() <= maximum {
+            alternatives.extend(new);
+        }
+        if alternatives.len() == maximum {
+            break;
+        }
+    }
+    if !alternatives.is_empty() {
+        alternatives.drain(..existing.len());
+        return alternatives;
     }
     let routes = crate::learning::closed_cut_routes(goal.proved_target(), true);
     let mut ranked = routes.exact;

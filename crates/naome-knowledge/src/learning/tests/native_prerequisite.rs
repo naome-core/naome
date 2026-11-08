@@ -678,7 +678,7 @@ fn a_closed_pair_releases_an_open_goal_only_after_both_checked_helpers() {
         .attempted(&goal, &graph, &completion, evidence::Outcome::NoCandidate)
         .unwrap();
     let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
-    assert_eq!(work.planned, helpers);
+    assert!(helpers.iter().all(|helper| work.planned.contains(helper)));
     assert_eq!(work.pending.as_slice(), &helpers[..1]);
     assert!(work.required.is_empty());
     drop(work);
@@ -732,6 +732,105 @@ fn a_closed_pair_releases_an_open_goal_only_after_both_checked_helpers() {
     drop(frontier);
     let reopened = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
     assert_eq!(reopened.support_updates(), 2);
+}
+
+#[test]
+fn an_exhausted_pair_releases_the_next_complete_alternative() {
+    const TEST: &str = "learning::tests::native_prerequisite::an_exhausted_pair_releases_the_next_complete_alternative";
+    if std::env::var_os("NAOME_NATIVE_PAIR_FALLBACK_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_NATIVE_PAIR_FALLBACK_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    let (_, viable) = super::helper_goal();
+    let [a, b] = [0, 1].map(FreeVariable::new);
+    let blocked = ResearchQuestion::from_formula(proof::close(Formula::equal(a, b))).unwrap();
+    let other = ResearchQuestion::from_formula(donor(21).0).unwrap();
+    let target = Formula::member(a, b);
+    let rule = |first: &ResearchQuestion, second: &ResearchQuestion| {
+        Formula::implies(
+            first.proved_target().clone(),
+            Formula::implies(second.proved_target().clone(), target.clone()),
+        )
+    };
+    let decoy = Formula::implies(viable[0].proved_target().clone(), Formula::equal(b, a));
+    let formula = [rule(&blocked, &other), decoy, rule(&viable[0], &viable[1])]
+        .into_iter()
+        .rev()
+        .fold(target.clone(), |body, premise| {
+            Formula::implies(premise, body)
+        });
+    let goal = ResearchQuestion::from_formula(proof::close(formula)).unwrap();
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = crate::Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let (seed, budget) = (71119, 11);
+    let mut frontier = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+    let record_miss = |frontier: &mut Frontier, graph: &crate::Graph, question, job| {
+        let miss = attempt(question, None, seed, budget).unwrap();
+        assert!(miss.solution.is_none());
+        assert!(
+            miss.terminal
+                .observed_search_failure(miss.cost.search_expansions)
+        );
+        let completion = evidence::observed_completion(
+            question,
+            job,
+            miss.terminal,
+            miss.cost.search_expansions,
+            None,
+        );
+        frontier
+            .attempted(question, graph, &completion, evidence::Outcome::NoCandidate)
+            .unwrap();
+    };
+    record_miss(&mut frontier, &graph, &goal, 1);
+    let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+    assert_eq!(
+        work.planned,
+        [&blocked, &other, &viable[0], &viable[1]].map(Clone::clone)
+    );
+    assert_eq!(work.pending.as_slice(), std::slice::from_ref(&blocked));
+    assert!(work.required.is_empty());
+    drop(work);
+    record_miss(&mut frontier, &graph, &blocked, 2);
+    drop(frontier);
+
+    let mut frontier = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+    let mut expected = Vec::new();
+    for (index, helper) in viable.iter().enumerate() {
+        let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+        assert_eq!(work.pending.as_slice(), std::slice::from_ref(helper));
+        assert!(work.required.is_empty());
+        drop(work);
+        expected.push(publish(
+            &mut frontier,
+            &mut graph,
+            helper,
+            attempt(helper, None, seed, 64).unwrap(),
+            3 + index as u64,
+        ));
+    }
+    let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+    assert!(work.pending.is_empty());
+    assert_eq!(work.required.len(), 2);
+    let (required, inputs) = frontier
+        .solving_inputs(&graph, &goal, &work.required)
+        .unwrap();
+    drop(work);
+    let generation = solve(&goal, &required, &inputs, seed, budget).unwrap();
+    let root = publish(&mut frontier, &mut graph, &goal, generation, 5);
+    let dependencies = graph.learning_proof_dependencies(root).unwrap();
+    assert_eq!(dependencies.len(), 2);
+    assert!(expected.iter().all(|id| dependencies.contains(id)));
+    assert_eq!(frontier.support_updates(), 2);
 }
 
 #[test]

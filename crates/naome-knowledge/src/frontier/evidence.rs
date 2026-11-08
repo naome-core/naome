@@ -535,11 +535,17 @@ impl Evidence {
         let eligible =
             (exhausted || cut_blocked) && crate::learning::State::eligible(&question.to_hex());
         let bytes = crate::resources::active_limits().question_cache_bytes / 2;
-        let mut candidates = if self.native && eligible && record.helpers.is_empty() {
-            finder::cut_helpers(question, 4, bytes)
-        } else {
-            Vec::new()
-        };
+        let mut candidates =
+            if self.native && eligible && !record.loop_disabled && record.helpers.len() < 4 {
+                let existing = record
+                    .helpers
+                    .iter()
+                    .map(|source| ResearchQuestion::from_hex(source))
+                    .collect::<Result<Vec<_>, _>>()?;
+                finder::cut_helpers(question, &existing, 4, bytes)
+            } else {
+                Vec::new()
+            };
         // Capacity limits can motivate an exact decomposition. They establish
         // chronology for checked downstream use without training a miss.
         let observation = if exhausted {

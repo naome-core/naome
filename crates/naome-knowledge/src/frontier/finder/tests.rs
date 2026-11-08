@@ -241,11 +241,11 @@ fn serial_cuts_share_the_live_allowance_without_admitting_an_incomplete_group() 
         "0000",
     ))
     .unwrap();
-    let helpers = cut_helpers(&goal, 4, 128 * 1024);
+    let helpers = cut_helpers(&goal, &[], 4, 128 * 1024);
     assert_eq!(helpers.len(), 2);
     let largest = helpers.iter().map(question_bytes).max().unwrap();
     assert!(helpers.iter().map(question_bytes).sum::<usize>() > largest);
-    assert_eq!(cut_helpers(&goal, 4, largest), helpers);
-    assert!(cut_helpers(&goal, 1, largest).is_empty());
-    assert!(cut_helpers(&goal, 4, largest - 1).is_empty());
+    assert_eq!(cut_helpers(&goal, &[], 4, largest), helpers);
+    assert!(cut_helpers(&goal, &[], 1, largest).is_empty());
+    assert!(cut_helpers(&goal, &[], 4, largest - 1).is_empty());
 }

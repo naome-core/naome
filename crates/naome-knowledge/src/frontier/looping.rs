@@ -75,6 +75,35 @@ struct Choice {
     pending: Vec<usize>,
     required: Vec<(String, u64)>,
 }
+fn cut_member_can_advance(nodes: &[Node], index: usize, depth: usize) -> bool {
+    let node = &nodes[index];
+    if let Some(proof) = &node.checked {
+        return proof.proves_requested_side;
+    }
+    if !node.available {
+        return false;
+    }
+    let Some(record) = &node.record else {
+        return true;
+    };
+    if record.last_outcome == Outcome::Candidate && !record.publication_abandoned {
+        return true;
+    }
+    if record.last_outcome != Outcome::NoCandidate
+        || record.loop_disabled
+        || depth + 1 >= DEPTH
+        || node.children.is_empty()
+    {
+        return false;
+    }
+    let nested = next(nodes, index, depth + 1);
+    !nested.pending.is_empty()
+        || nested
+            .required
+            .iter()
+            .any(|(_, at)| *at > record.last_attempt_at)
+}
+
 fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
     let mut work = Choice {
         target: index,
@@ -105,8 +134,23 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
             return work;
         }
     }
-    for &child in &nodes[index].children {
+    let available_cuts = node
+        .cuts
+        .iter()
+        .filter(|group| {
+            group.len() == 1
+                || group
+                    .iter()
+                    .all(|&child| cut_member_can_advance(nodes, child, depth))
+        })
+        .flatten()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    for &child in &node.children {
         let alternative = node.cuts.iter().flatten().any(|&cut| cut == child);
+        if alternative && !available_cuts.contains(&child) {
+            continue;
+        }
         let node = &nodes[child];
         if !node.available {
             continue;
