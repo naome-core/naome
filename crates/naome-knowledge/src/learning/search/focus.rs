@@ -1,23 +1,17 @@
 //! Prefer executable, non-branching consequences in existential tableau search.
 use super::super::model::{Decision, Rule};
-use naome_foundation::{Formula, FormulaView, graph::Node};
+use naome_foundation::{FormulaView, graph::Node};
 use std::collections::HashSet;
 
 pub(in crate::learning) fn rank(decision: &Decision, scores: &mut [f32]) {
-    let existential = |formula: &Formula| {
-        formula
-            .view()
-            .negated()
-            .is_some_and(|body| matches!(body.graph_node(), Node::ForAll(_)))
-    };
     if scores.len() != decision.candidates.len()
         || scores.len() < 2
         || scores.iter().any(|score| !score.is_finite())
-        || !(existential(&decision.goal)
-            || decision
-                .context
-                .iter()
-                .any(|fact| existential(&fact.formula)))
+        || decision
+            .goal
+            .view()
+            .negated()
+            .is_none_or(|body| !matches!(body.graph_node(), Node::ForAll(_)))
     {
         return;
     }

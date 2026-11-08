@@ -1,6 +1,6 @@
 use super::*;
 use crate::learning::model::{Binding, Candidate};
-use naome_foundation::FreeVariable;
+use naome_foundation::{Formula, FreeVariable};
 
 #[test]
 fn existential_search_prioritizes_executable_instances_over_splits() {
@@ -32,6 +32,9 @@ fn existential_search_prioritizes_executable_instances_over_splits() {
     rank(&decision, &mut scores);
     assert_eq!(scores, [1., 2., 4., 3.]);
 
+    decision.context.push(Binding {
+        formula: decision.goal.clone(),
+    });
     decision.goal = Formula::equal(a, b);
     let mut scores = adversarial;
     rank(&decision, &mut scores);
