@@ -219,7 +219,7 @@ impl Binding {
         self
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), crate::Error> {
         for value in [
             &self.snapshot,
             &self.policy,
@@ -229,15 +229,15 @@ impl Binding {
             crate::object::id_bytes(value)?;
         }
         if self.compatibility != crate::hex(&crate::compatibility()) {
-            return Err("research compatibility differs".into());
+            return Err(crate::InputFault::ResearchCompatibility.into());
         }
         Ok(())
     }
 
-    fn validate_role(&self, input: &Input) -> Result<(), String> {
+    fn validate_role(&self, input: &Input) -> Result<(), crate::Error> {
         self.validate()?;
         if self.cooperative && !matches!(input, Input::Solve { .. }) {
-            return Err("cooperative binding requires a solving job".into());
+            return Err(crate::InputFault::CooperativeRole.into());
         }
         Ok(())
     }
@@ -292,15 +292,15 @@ impl Input {
             Self::Select { root: Some(_), .. } => Role::PeerSelection,
         }
     }
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), crate::Error> {
         match self {
             Self::Find { question, .. } | Self::Select { question, .. } => {
                 naome_checker::question::ResearchQuestion::source_requires_definitions(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
             }
             Self::Train { epoch } => {
                 if *epoch == 0 {
-                    return Err("empty native learning epoch".into());
+                    return Err(crate::InputFault::EmptyTrainingEpoch.into());
                 }
             }
             Self::Peer {
@@ -311,17 +311,18 @@ impl Input {
             } => {
                 evidence.validate_width()?;
                 naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 crate::object::id_bytes(artifact)?;
-                let parsed: libp2p::PeerId =
-                    peer.parse().map_err(|_| "native peer origin syntax")?;
+                let parsed: libp2p::PeerId = peer
+                    .parse()
+                    .map_err(|_| crate::InputFault::PeerIdentitySyntax)?;
                 if parsed.to_string() != *peer {
-                    return Err("native peer origin encoding".into());
+                    return Err(crate::InputFault::PeerIdentityEncoding.into());
                 }
             }
             Self::Solve { question } => {
                 naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
             }
         }
         if let Self::Select {
@@ -690,14 +691,15 @@ impl Client {
         &self,
         id: u64,
         unit: u32,
-    ) -> Result<oneshot::Receiver<Result<Vec<naome_proof::program::Command>, String>>, String> {
+    ) -> Result<oneshot::Receiver<Result<Vec<naome_proof::program::Command>, String>>, crate::Error>
+    {
         let (reply, receive) = oneshot::channel();
         self.sender
             .try_send(Command::Program { id, unit, reply })
-            .map_err(|_| "research candidate capacity or stopped service")?;
+            .map_err(command_send_error)?;
         Ok(receive)
     }
-    pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
+    pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, crate::Error> {
         self.submit_after(input, binding, Vec::new(), Default::default())
     }
     pub(crate) fn submit_after(
@@ -706,7 +708,7 @@ impl Client {
         binding: Binding,
         required: Vec<String>,
         prerequisites: crate::learning::Prerequisites,
-    ) -> Result<Ticket, String> {
+    ) -> Result<Ticket, crate::Error> {
         input.validate()?;
         binding.validate_role(&input)?;
         if required.len() > crate::learning::knowledge::CAPACITY
@@ -717,14 +719,14 @@ impl Client {
                 != required.len()
             || !required.is_empty() && !matches!(input, Input::Solve { .. })
         {
-            return Err("required theorem role or capacity".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         prerequisites.validate()?;
         if !prerequisites.is_empty()
             && (!matches!(input, Input::Solve { .. })
                 || required.is_empty() && !prerequisites.has_optional_context())
         {
-            return Err("temporary prerequisites lack required roots".into());
+            return Err(crate::InputFault::PrerequisiteRoots.into());
         }
         for id in &required {
             crate::object::id_bytes(id)?;
@@ -738,7 +740,7 @@ impl Client {
                 prerequisites,
                 sender,
             ))
-            .map_err(|_| "research command capacity or stopped service")?;
+            .map_err(command_send_error)?;
         Ok(Ticket {
             receiver,
             client: self.clone(),
@@ -751,7 +753,7 @@ impl Client {
         &self,
         after: u64,
         before: u64,
-    ) -> Result<oneshot::Receiver<Result<RecoveryPage, String>>, String> {
+    ) -> Result<oneshot::Receiver<Result<RecoveryPage, String>>, crate::Error> {
         let (reply, receive) = oneshot::channel();
         self.sender
             .try_send(Command::Recover {
@@ -759,7 +761,7 @@ impl Client {
                 before,
                 reply,
             })
-            .map_err(|_| "research recovery capacity or stopped service")?;
+            .map_err(command_send_error)?;
         Ok(receive)
     }
     pub(crate) fn acknowledge(&self, id: u64) -> Result<(), crate::Error> {

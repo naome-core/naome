@@ -548,6 +548,13 @@ impl fmt::Display for Error {
                 InputFault::ResourceInitializationRace => {
                     "concurrent resource profile initialization"
                 }
+                InputFault::ResearchCompatibility => "research compatibility differs",
+                InputFault::CooperativeRole => "cooperative binding requires a solving job",
+                InputFault::EmptyTrainingEpoch => "empty native learning epoch",
+                InputFault::PeerIdentitySyntax => "peer identity syntax",
+                InputFault::PeerIdentityEncoding => "peer identity encoding",
+                InputFault::RequiredTheorems => "required theorem role or capacity",
+                InputFault::PrerequisiteRoots => "temporary prerequisites lack required roots",
                 InputFault::ResourceObservationDirectory => {
                     "resource observation directory is unavailable"
                 }

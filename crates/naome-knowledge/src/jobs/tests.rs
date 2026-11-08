@@ -287,3 +287,57 @@ fn research_command_capacity_and_service_stop_have_distinct_codes() {
         u32::from(crate::ResearchFailure::ServiceStopped)
     );
 }
+
+#[test]
+fn research_submission_preserves_validation_and_capacity_codes() {
+    let owner = Manual::new();
+    let binding = Binding::new([0; 32], [0; 32]);
+    let error = owner
+        .client
+        .submit(Input::Train { epoch: 0 }, binding.clone())
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputFault::EmptyTrainingEpoch)
+    );
+    let mut invalid = binding.clone();
+    invalid.compatibility = "00".repeat(32);
+    let error = owner.client.submit(Input::find(0), invalid).err().unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputFault::ResearchCompatibility)
+    );
+    for ordinal in 0..crate::resources::limits().job_commands {
+        owner.client.peer_cursor(ordinal as u64).unwrap();
+    }
+    let error = owner.client.submit(Input::find(0), binding).err().unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::CommandQueueFull)
+    );
+}
+
+#[test]
+fn oversized_peer_certificate_keeps_its_capacity_code() {
+    let owner = Manual::new();
+    let input = Input::Peer {
+        evidence: crate::learning::peer::Source::Certificate(vec![
+            0;
+            crate::learning::knowledge::BYTES
+                + 1
+        ]),
+        question: String::new(),
+        artifact: String::new(),
+        peer: String::new(),
+    };
+    let error = owner
+        .client
+        .submit(input, Binding::new([0; 32], [0; 32]))
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputLimit::PeerCertificateCapacity)
+    );
+}

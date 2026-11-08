@@ -20,10 +20,10 @@ pub(crate) enum Source {
     Program(Box<Packet>),
 }
 impl Source {
-    pub(crate) fn validate_width(&self) -> Result<(), String> {
+    pub(crate) fn validate_width(&self) -> Result<(), crate::Error> {
         match self {
             Self::Certificate(bytes) if bytes.len() > super::knowledge::BYTES => {
-                Err("peer compressed admission capacity".into())
+                Err(crate::InputLimit::PeerCertificateCapacity.into())
             }
             Self::Certificate(_) => Ok(()),
             Self::Program(packet) => packet.validate_width(),

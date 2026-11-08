@@ -198,6 +198,9 @@ codes! {
         ResourceImmutable = 60,
         ResourceInitializationRace = 61,
         ResourceObservationDirectory = 62,
+        ResearchCompatibility = 63, CooperativeRole = 64, EmptyTrainingEpoch = 65,
+        PeerIdentitySyntax = 67, PeerIdentityEncoding = 68,
+        RequiredTheorems = 69, PrerequisiteRoots = 70,
     }
 
     pub enum InputLimit in 8 {
@@ -235,7 +238,7 @@ codes! {
         BoundedFileBytes = 32,
         RelayAddressCapacity = 33,
         ConfiguredPeers = 34,
-        ProducerQueue = 35,
+        ProducerQueue = 35, PeerCertificateCapacity = 36, PeerProgramCapacity = 37,
     }
 
     pub enum WorkerFailure in 9 {
@@ -953,6 +956,8 @@ impl InputLimit {
             Self::RelayAddressCapacity => "relay advertised address capacity",
             Self::ConfiguredPeers => "configured peer capacity",
             Self::ProducerQueue => "producer queue capacity",
+            Self::PeerCertificateCapacity => "peer compressed admission capacity",
+            Self::PeerProgramCapacity => "peer program replay capacity",
         }
     }
 }

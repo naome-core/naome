@@ -294,7 +294,7 @@ impl Packet {
         Ok(record.into())
     }
 
-    pub fn validate_width(&self) -> Result<(), String> {
+    pub fn validate_width(&self) -> Result<(), crate::Error> {
         let limits = crate::resources::limits();
         if self.manifest.commands == 0
             || self.manifest.commands > limits.closure_steps as u64
@@ -302,7 +302,7 @@ impl Packet {
             || self.bytes.len() < 4
             || self.bytes.len() > limits.proof_bytes
         {
-            return Err("peer program replay capacity".into());
+            return Err(crate::InputLimit::PeerProgramCapacity.into());
         }
         Ok(())
     }
@@ -835,4 +835,29 @@ fn graphs(
         }
     }
     Ok(graphs.finish())
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_program_capacity_has_registered_code() {
+        let packet = Packet {
+            manifest: Manifest {
+                commands: 0,
+                input_bytes: 0,
+                program_hash: [0; 32],
+                stream_root: [0; 32],
+                conclusion: [0; 32],
+                statement: [0; 32],
+            },
+            bytes: vec![],
+        };
+        let error = packet.validate_width().unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::InputLimit::PeerProgramCapacity)
+        );
+    }
 }
