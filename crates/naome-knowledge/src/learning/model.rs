@@ -314,7 +314,10 @@ impl Runtime {
     pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), crate::Error> {
         self.scoring_batch(graph).map(drop)
     }
-    fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
+    fn load<I: ArtifactIo + ?Sized>(
+        checkpoint: &Checkpoint,
+        io: &mut I,
+    ) -> Result<Self, crate::Error> {
         checkpoint.validate()?;
         let device = Device::flex().autodiff();
         let mut policy = {
@@ -679,7 +682,7 @@ impl Engine {
         &mut self,
         c: &Checkpoint,
         io: &mut I,
-    ) -> Result<Runtime, String> {
+    ) -> Result<Runtime, crate::Error> {
         let mut runtime = if let Some(index) = self.cache.iter().position(|(key, _)| key == c) {
             self.cache.remove(index).1
         } else {

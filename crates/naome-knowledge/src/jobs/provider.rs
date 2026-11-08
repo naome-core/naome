@@ -45,8 +45,8 @@ pub(super) trait Supervisor {
     fn history(
         &mut self,
         _request: &crate::learning::history::Request,
-    ) -> Result<crate::learning::history::Receipt, String> {
-        Err("provider cannot read admitted history".into())
+    ) -> Result<crate::learning::history::Receipt, crate::Error> {
+        Err(crate::WorkerFailure::HistoryUnsupported.into())
     }
     fn program(
         &mut self,
@@ -59,16 +59,16 @@ pub(super) trait Supervisor {
         &mut self,
         _blob: crate::learning::Blob,
         _range: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, String> {
-        Err("provider cannot read local model artifacts".into())
+    ) -> Result<Vec<u8>, crate::Error> {
+        Err(crate::WorkerFailure::ModelReadUnsupported.into())
     }
     fn write_model(
         &mut self,
         _blob: crate::learning::Blob,
         _range: std::ops::Range<usize>,
         _bytes: Vec<u8>,
-    ) -> Result<(), String> {
-        Err("provider cannot write local model artifacts".into())
+    ) -> Result<(), crate::Error> {
+        Err(crate::WorkerFailure::ModelWriteUnsupported.into())
     }
     fn learning(
         &mut self,
@@ -424,14 +424,14 @@ impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
     fn history(
         &mut self,
         request: &crate::learning::history::Request,
-    ) -> Result<crate::learning::history::Receipt, String> {
+    ) -> Result<crate::learning::history::Receipt, crate::Error> {
         Supervisor::history(self, request)
     }
     fn read(
         &mut self,
         blob: &crate::learning::Blob,
         range: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, crate::Error> {
         self.read_model(blob.clone(), range)
     }
     fn write(
@@ -439,7 +439,7 @@ impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
         blob: &crate::learning::Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.write_model(blob.clone(), range, bytes)
     }
 }

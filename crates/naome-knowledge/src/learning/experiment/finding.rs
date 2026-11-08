@@ -236,7 +236,11 @@ struct Store {
     operations: u64,
 }
 impl ArtifactIo for Store {
-    fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(
+        &mut self,
+        blob: &Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, crate::Error> {
         let bytes = self.inner.read(blob, range)?;
         self.bytes += bytes.len() as u64;
         self.operations += 1;
@@ -247,7 +251,7 @@ impl ArtifactIo for Store {
         blob: &Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.bytes += bytes.len() as u64;
         self.operations += 1;
         self.inner.write(blob, range, bytes)

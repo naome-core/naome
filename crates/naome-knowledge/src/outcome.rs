@@ -189,7 +189,7 @@ codes! {
         ProducerQueue = 35,
     }
 
-    pub(crate) enum WorkerFailure in 9 {
+    pub enum WorkerFailure in 9 {
         ProviderRejected = 1,
         ProviderUncertain = 2,
         CleanupUnconfirmed = 3,
@@ -239,6 +239,12 @@ codes! {
         DescendantOutput = 49,
         DescendantRead = 50,
         DescendantIdentity = 51,
+        HistoryUnsupported = 52,
+        ModelReadUnsupported = 53,
+        ModelWriteUnsupported = 54,
+        HistoryReceiptMissing = 55,
+        HistoryReceiptDecoding = 56,
+        ModelResponseMissing = 57,
     }
     pub enum LearningGraphFailure in 10 {
         Capacity = 1,
@@ -752,6 +758,7 @@ codes! {
         TrainingPlanMissing = 89,
         SampledSequenceOverflow = 90,
         MetaTrialPlanMissing = 91,
+        NativeModelHashMismatch = 92,
     }
 
 }

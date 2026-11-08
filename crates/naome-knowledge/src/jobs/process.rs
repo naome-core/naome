@@ -1157,15 +1157,6 @@ struct WorkerControl {
     descendants: Vec<Descendant>,
     blocked_nanos: u64,
 }
-fn grant_error_text(error: WorkerFailure) -> &'static str {
-    match error {
-        WorkerFailure::GrantClosed => "provider durable grant closed",
-        WorkerFailure::GrantDecoding => "provider durable grant invalid",
-        WorkerFailure::GrantIdentity => "provider durable grant identity differs",
-        _ => "provider durable grant failed",
-    }
-}
-
 impl WorkerControl {
     fn grant_data(&mut self, next: u32) -> Result<Option<Vec<u8>>, WorkerFailure> {
         let waiting = Instant::now();
@@ -1192,51 +1183,49 @@ impl super::provider::Supervisor for WorkerControl {
     fn history(
         &mut self,
         request: &crate::learning::history::Request,
-    ) -> Result<crate::learning::history::Receipt, String> {
-        emit(&Frame::History {
+    ) -> Result<crate::learning::history::Receipt, crate::Error> {
+        emit_coded(&Frame::History {
             id: self.id,
             unit: self.current_unit,
             request: request.clone(),
         })?;
         serde_json::from_slice(
             &self
-                .grant_data(self.current_unit)
-                .map_err(|error| grant_error_text(error).to_owned())?
-                .ok_or("history receipt missing")?,
+                .grant_data(self.current_unit)?
+                .ok_or(WorkerFailure::HistoryReceiptMissing)?,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|_| WorkerFailure::HistoryReceiptDecoding.into())
     }
     fn read_model(
         &mut self,
         blob: crate::learning::Blob,
         range: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, String> {
-        emit(&Frame::Model {
+    ) -> Result<Vec<u8>, crate::Error> {
+        emit_coded(&Frame::Model {
             id: self.id,
             unit: self.current_unit,
             blob,
             range,
             bytes: None,
         })?;
-        self.grant_data(self.current_unit)
-            .map_err(|error| grant_error_text(error).to_owned())?
-            .ok_or("native model read response missing".into())
+        Ok(self
+            .grant_data(self.current_unit)?
+            .ok_or(WorkerFailure::ModelResponseMissing)?)
     }
     fn write_model(
         &mut self,
         blob: crate::learning::Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
-        emit(&Frame::Model {
+    ) -> Result<(), crate::Error> {
+        emit_coded(&Frame::Model {
             id: self.id,
             unit: self.current_unit,
             blob,
             range,
             bytes: Some(bytes),
         })?;
-        self.grant(self.current_unit)
-            .map_err(|error| grant_error_text(error).to_owned())
+        Ok(self.grant(self.current_unit)?)
     }
     fn learning(
         &mut self,

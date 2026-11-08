@@ -9,13 +9,18 @@ pub(super) struct Store {
     pub(super) writes: u64,
 }
 impl ArtifactIo for Store {
-    fn read(&mut self, b: &Blob, r: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, b: &Blob, r: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
         let bytes = self.inner.read(b, r)?;
         self.read_bytes += bytes.len() as u64;
         self.reads += 1;
         Ok(bytes)
     }
-    fn write(&mut self, b: &Blob, r: std::ops::Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        b: &Blob,
+        r: std::ops::Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.written_bytes += bytes.len() as u64;
         self.writes += 1;
         self.inner.write(b, r, bytes)

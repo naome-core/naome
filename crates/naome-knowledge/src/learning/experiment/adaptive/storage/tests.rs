@@ -22,6 +22,11 @@ fn spilled_checkpoint_chunks_restore_exactly_and_corruption_fails_artifact_check
     corrupted[0] ^= 1;
     std::fs::write(chunk, corrupted).unwrap();
     restore(&mut store, &path);
-    assert!(artifact::load(&mut store, &blob).is_err());
+    assert!(matches!(
+        artifact::load(&mut store, &blob),
+        Err(crate::Error::Research(
+            crate::ResearchFailure::NativeModelHashMismatch
+        ))
+    ));
     std::fs::remove_dir_all(path).unwrap();
 }

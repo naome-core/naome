@@ -196,6 +196,7 @@ pub enum Error {
     QuestionRegistration(naome_checker::question::RejectionReason),
     Runtime(crate::RuntimeFailure),
     Research(crate::ResearchFailure),
+    Worker(crate::WorkerFailure),
     ResearchCombined {
         primary: Box<Error>,
         cleanup: Box<Error>,
@@ -242,6 +243,7 @@ impl Error {
             Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Research(failure) => return (*failure).into(),
+            Self::Worker(failure) => return (*failure).into(),
             Self::ResearchCombined { .. } => {
                 return crate::ResearchFailure::MultipleFailures.into();
             }
@@ -408,6 +410,7 @@ impl fmt::Display for Error {
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
+            Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
                 crate::ResearchFailure::ClockBeforeEpoch => "wall clock is before research epoch",
                 crate::ResearchFailure::ClockOverflow => "research clock overflow",
@@ -517,6 +520,9 @@ impl fmt::Display for Error {
                 }
                 crate::ResearchFailure::NativeModelChunkLengthDiffers => {
                     "native model chunk length differs"
+                }
+                crate::ResearchFailure::NativeModelHashMismatch => {
+                    "native model checkpoint hash differs"
                 }
                 crate::ResearchFailure::NativeModelChunkMissing => "native model chunk missing",
                 crate::ResearchFailure::NativeModelImmutableChunkDiffers => {
@@ -652,6 +658,12 @@ impl From<InputLimit> for Error {
 impl From<InputFault> for Error {
     fn from(error: InputFault) -> Self {
         Self::InputFault(error)
+    }
+}
+
+impl From<crate::WorkerFailure> for Error {
+    fn from(error: crate::WorkerFailure) -> Self {
+        Self::Worker(error)
     }
 }
 

@@ -388,7 +388,7 @@ impl Job {
         progress: &mut Progress,
         engine: &mut Engine,
         io: &mut I,
-    ) -> Result<Option<Sources>, String> {
+    ) -> Result<Option<Sources>, crate::Error> {
         let Some(request) = self.history_request.clone() else {
             return Ok(None);
         };

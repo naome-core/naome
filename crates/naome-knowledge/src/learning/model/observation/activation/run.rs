@@ -63,13 +63,18 @@ impl Io {
     }
 }
 impl ArtifactIo for Io {
-    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, crate::Error> {
         let value = self.store.read(blob, range)?;
         self.bytes += value.len();
         self.operations += 1;
         Ok(value)
     }
-    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.bytes += bytes.len();
         self.operations += 1;
         self.store.write(blob, range, bytes)

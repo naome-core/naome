@@ -470,7 +470,11 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
         writes: usize,
     }
     impl ArtifactIo for Interrupted {
-        fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+        fn read(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+        ) -> Result<Vec<u8>, crate::Error> {
             self.store.read(blob, range)
         }
         fn write(
@@ -478,7 +482,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
             blob: &Blob,
             range: std::ops::Range<usize>,
             bytes: Vec<u8>,
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::Error> {
             self.writes += 1;
             if self.writes == 2 {
                 return Err("injected partial meta pair write".into());
@@ -745,7 +749,11 @@ pub(crate) fn measured_progress() -> Progress {
 #[derive(Default)]
 pub(crate) struct MemoryStore(pub BTreeMap<(String, usize), Vec<u8>>);
 impl ArtifactIo for MemoryStore {
-    fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(
+        &mut self,
+        blob: &Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, crate::Error> {
         blob.range_len(&range)?;
         let mut bytes = Vec::new();
         for index in range {
@@ -762,7 +770,7 @@ impl ArtifactIo for MemoryStore {
         blob: &Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         assert_eq!(blob.range_len(&range)?, bytes.len());
         for (index, part) in
             range.zip(bytes.chunks(crate::resources::limits().native_model_chunk_bytes))
@@ -1752,4 +1760,61 @@ fn model_blob_range_and_index_failures_keep_distinct_codes() {
         empty.validate().unwrap_err(),
         crate::Error::Research(crate::ResearchFailure::ModelBlobCapacity)
     );
+}
+
+#[test]
+fn history_owner_failure_keeps_its_code_through_learning_execution() {
+    struct FailedHistory;
+    impl ArtifactIo for FailedHistory {
+        fn history(&mut self, _: &history::Request) -> Result<history::Receipt, crate::Error> {
+            Err(crate::WorkerFailure::GrantIdentity.into())
+        }
+        fn read(&mut self, _: &Blob, _: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
+            unreachable!()
+        }
+        fn write(
+            &mut self,
+            _: &Blob,
+            _: std::ops::Range<usize>,
+            _: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            unreachable!()
+        }
+    }
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    job.request_history(1);
+    let before = digest(&job);
+    let error = job
+        .execute(1, None, 1, &mut Engine::default(), &mut FailedHistory)
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantIdentity));
+    assert_eq!(digest(&job), before);
+}
+
+#[test]
+fn model_owner_failure_keeps_its_code_through_model_loading() {
+    struct FailedModel;
+    impl ArtifactIo for FailedModel {
+        fn read(&mut self, _: &Blob, _: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
+            Err(crate::WorkerFailure::GrantDecoding.into())
+        }
+        fn write(
+            &mut self,
+            _: &Blob,
+            _: std::ops::Range<usize>,
+            _: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            unreachable!()
+        }
+    }
+    let mut checkpoint = Checkpoint::fresh();
+    checkpoint.model = Some(Blob::of(b"model"));
+    checkpoint.optimizer = Some(Blob::of(b"optimizer"));
+    let error = Engine::default()
+        .with_error(&checkpoint, &mut FailedModel, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantDecoding));
 }
