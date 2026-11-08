@@ -182,7 +182,7 @@ impl Provider for Finding {
         Ok((checkpoint == 0).then_some(1))
     }
     fn execute(&mut self, _unit: u32, _owner: &mut dyn Supervisor) -> Result<(), Failure> {
-        naome_checker::question::ResearchQuestion::from_hex(&self.question)
+        naome_checker::question::ResearchQuestion::source_requires_definitions(&self.question)
             .map_err(|e| e.to_string())?;
         Ok(())
     }
