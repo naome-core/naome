@@ -218,7 +218,7 @@ def roles(trial,probe):
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
     observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')==0x0017004b and event.get('formal_pass')
-        and event.get('selection')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
+        and event.get('selection')==0x001e_0002 for event in receiver.logs())>=3,12,role_slots)
     pending_solve=any(record['state']==0x001d_0002 and lane(record)==1
         for record in journal(receiver)['records'].values())
     trial.summary['pending_local_solve_on_peer_start']=pending_solve

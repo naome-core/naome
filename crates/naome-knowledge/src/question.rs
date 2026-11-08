@@ -41,6 +41,20 @@ pub enum SelectionAssessment {
     Stale,
 }
 
+impl SelectionAssessment {
+    pub(crate) fn code(self) -> crate::outcome::SelectionResult {
+        use crate::outcome::SelectionResult;
+        match self {
+            Self::NotRun => SelectionResult::NotRun,
+            Self::Assessed(true) => SelectionResult::Accepted,
+            Self::Assessed(false) => SelectionResult::Rejected,
+            Self::ProviderFailed => SelectionResult::ProviderFailed,
+            Self::TimedOut => SelectionResult::TimedOut,
+            Self::Stale => SelectionResult::Stale,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

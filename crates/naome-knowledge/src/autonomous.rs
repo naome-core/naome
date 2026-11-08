@@ -516,7 +516,7 @@ impl Autonomous {
                         "formal_outcome":result.assessment.prefilter.outcome.code(),
                         "formal_reason":result.assessment.prefilter.reason.map(|reason| reason.code()),
                         "formal_rule":result.assessment.prefilter.rule,
-                        "selection":format!("{:?}",result.assessment.selection_result)}),
+                        "selection":result.assessment.selection_result.code()}),
                     );
                     crate::resources::feedback::finding_result(admitted);
                     if admitted {

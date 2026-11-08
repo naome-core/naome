@@ -1414,3 +1414,27 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
 
 mod equivalence;
 mod selection_binding;
+
+#[test]
+fn selection_result_codes_distinguish_decisions_from_unavailable_results() {
+    use crate::outcome::SelectionResult;
+    for (assessment, code) in [
+        (SelectionAssessment::NotRun, SelectionResult::NotRun),
+        (
+            SelectionAssessment::Assessed(true),
+            SelectionResult::Accepted,
+        ),
+        (
+            SelectionAssessment::Assessed(false),
+            SelectionResult::Rejected,
+        ),
+        (
+            SelectionAssessment::ProviderFailed,
+            SelectionResult::ProviderFailed,
+        ),
+        (SelectionAssessment::TimedOut, SelectionResult::TimedOut),
+        (SelectionAssessment::Stale, SelectionResult::Stale),
+    ] {
+        assert_eq!(assessment.code(), code);
+    }
+}

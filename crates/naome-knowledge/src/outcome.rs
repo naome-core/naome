@@ -562,6 +562,10 @@ codes! {
         Failed = 5, Cancelled = 6, Expired = 7, InDoubt = 8,
     }
 
+    pub(crate) enum SelectionResult in 30 {
+        NotRun = 1, Accepted = 2, Rejected = 3, ProviderFailed = 4, TimedOut = 5, Stale = 6,
+    }
+
 }
 
 impl InputLimit {
