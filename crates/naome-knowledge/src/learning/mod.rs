@@ -732,7 +732,7 @@ impl Job {
         job: u64,
         engine: &mut Engine,
         io: &mut I,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if self.progress.as_ref().is_some_and(|p| p.unit == unit) {
             return Ok(());
         }
@@ -972,8 +972,8 @@ impl Job {
                     );
                 } else {
                     let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
-                    let generated = engine.with(&p.model, io, |runtime| {
-                        solve_with_report(
+                    let generated = engine.with_error(&p.model, io, |runtime| {
+                        solve_with_report_typed(
                             question,
                             runtime,
                             budget,
@@ -1058,7 +1058,7 @@ impl model::Ranker for Exploring<'_> {
         graph: &graph::Graph,
         offered: &str,
         memory: Option<&model::Memory>,
-    ) -> Result<model::Plan, String> {
+    ) -> Result<model::Plan, crate::Error> {
         let mut plan = if self.model.recurrent() {
             let mut plan = self.model.plan(d, graph, offered, memory)?;
             let mut next = self.seed;
@@ -1102,7 +1102,7 @@ fn program_generation(
     refuted: bool,
     mut cost: GenerationCost,
     executions: Vec<search::trace::Trace>,
-) -> Result<Generation, String> {
+) -> Result<Generation, crate::Error> {
     let steps = packet.manifest.commands as usize;
     cost.original_steps = steps;
     cost.useful_steps = steps;
@@ -1142,6 +1142,15 @@ fn solve_with_report(
     job: u64,
     context: SolveContext<'_>,
 ) -> Result<Generation, String> {
+    solve_with_report_typed(source, model, budget, job, context).map_err(Into::into)
+}
+fn solve_with_report_typed(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    context: SolveContext<'_>,
+) -> Result<Generation, crate::Error> {
     let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
     let definitions = context
         .prerequisites
@@ -1368,6 +1377,7 @@ fn search_question_with_knowledge(
         },
     )
     .map(|g| (g.solution, g.diagnostic, g.cost))
+    .map_err(Into::into)
 }
 #[cfg(test)]
 fn search_question(
@@ -1392,7 +1402,7 @@ fn search_question_report(
     ranker: &mut dyn model::Ranker,
     budget: usize,
     context: &SolveContext<'_>,
-) -> Result<Generation, String> {
+) -> Result<Generation, crate::Error> {
     let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
     search_compiled_question(&question, ranker, budget, context)
 }
@@ -1402,7 +1412,7 @@ fn search_compiled_question(
     ranker: &mut dyn model::Ranker,
     budget: usize,
     context: &SolveContext<'_>,
-) -> Result<Generation, String> {
+) -> Result<Generation, crate::Error> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
     let mut retrieval_micros = 0;
@@ -1590,7 +1600,7 @@ fn search_compiled_question(
                     );
                     break;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             };
             retrieved += selected.len();
             dependency_steps += steps;

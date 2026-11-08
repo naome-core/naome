@@ -244,6 +244,24 @@ fn a_budgeted_detour_recovers_a_checked_decision_for_replay() {
         goal,
     ));
     let question = naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
+    struct Limited;
+    impl Ranker for Limited {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+            Err(crate::Error::MemoryOverload {
+                requested: 3,
+                charged: 4,
+                budget: 5,
+            })
+        }
+    }
+    assert!(matches!(
+        solve(&target, &mut Limited, 48),
+        Err(crate::Error::MemoryOverload {
+            requested: 3,
+            charged: 4,
+            budget: 5
+        })
+    ));
     let found = solve(&target, &mut Distracted { goal_block }, 48).unwrap();
     let tree = found
         .tree

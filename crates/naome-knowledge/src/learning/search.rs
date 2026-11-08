@@ -641,7 +641,7 @@ struct Search<'a> {
     recorder: Option<trace::Recorder>,
 }
 impl Search<'_> {
-    fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
+    fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, crate::Error> {
         self.branch(state, depth, None, None)
     }
     fn expansion_limit(&mut self) {
@@ -660,7 +660,7 @@ impl Search<'_> {
         depth: usize,
         parent: Option<trace::Branch>,
         incoming: Option<(&super::model::Plan, usize)>,
-    ) -> Result<Option<Tree>, String> {
+    ) -> Result<Option<Tree>, crate::Error> {
         if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
@@ -862,7 +862,7 @@ pub fn solve(
     target: &Formula,
     ranker: &mut dyn Ranker,
     maximum: usize,
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     solve_started(target, ranker, maximum, Instant::now())
 }
 #[cfg(test)]
@@ -871,7 +871,7 @@ pub fn solve_started(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     solve_with_knowledge(target, ranker, maximum, started, &[])
 }
 pub fn solve_with_knowledge(
@@ -880,7 +880,7 @@ pub fn solve_with_knowledge(
     maximum: usize,
     started: Instant,
     knowledge: &[super::knowledge::Entry],
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     solve_recording(target, ranker, maximum, started, knowledge, true)
 }
 fn solve_recording(
@@ -890,7 +890,7 @@ fn solve_recording(
     started: Instant,
     knowledge: &[super::knowledge::Entry],
     capture: bool,
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     if maximum == 0 {
         return Ok(ResultTree {
             execution: None,

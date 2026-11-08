@@ -101,7 +101,7 @@ pub trait Ranker {
         _graph: &Graph,
         _offered: &str,
         memory: Option<&Memory>,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, crate::Error> {
         if memory.is_some() {
             return Err("stateless ranker received working memory".into());
         }
@@ -534,8 +534,8 @@ impl Ranker for Runtime {
         graph: &Graph,
         offered: &str,
         memory: Option<&Memory>,
-    ) -> Result<Plan, String> {
-        self.plan_graph(graph, offered, memory)
+    ) -> Result<Plan, crate::Error> {
+        self.plan_graph(graph, offered, memory).map_err(Into::into)
     }
     fn identity(&self) -> Option<String> {
         Some(super::digest(&(&self.identity, self.recurrence)))
@@ -704,6 +704,17 @@ impl Engine {
         io: &mut I,
         operation: impl FnOnce(&mut Runtime) -> Result<T, String>,
     ) -> Result<T, String> {
+        let mut runtime = self.take(c, io)?;
+        let result = operation(&mut runtime);
+        self.retain(c.clone(), runtime);
+        result
+    }
+    pub fn with_error<I: ArtifactIo + ?Sized, T>(
+        &mut self,
+        c: &Checkpoint,
+        io: &mut I,
+        operation: impl FnOnce(&mut Runtime) -> Result<T, crate::Error>,
+    ) -> Result<T, crate::Error> {
         let mut runtime = self.take(c, io)?;
         let result = operation(&mut runtime);
         self.retain(c.clone(), runtime);

@@ -69,3 +69,21 @@ async fn truncated_provider_frame_has_a_machine_readable_cause() {
     let mut frames = FrameReader::new(input);
     assert_eq!(frames.next().await, Err(WorkerFailure::FrameTruncated));
 }
+
+#[test]
+fn worker_failure_frame_preserves_registered_cause() {
+    let original = crate::Error::MemoryOverload {
+        requested: 3,
+        charged: 4,
+        budget: 5,
+    };
+    let code = crate::outcome::JobFailureCode::from_owner(&original);
+    let frame = Frame::Failed { id: 42, code };
+    let bytes = serde_json::to_vec(&frame).unwrap();
+    assert!(
+        matches!(serde_json::from_slice::<Frame>(&bytes), Ok(Frame::Failed { id: 42, code: actual }) if u32::from(actual) == original.code())
+    );
+    let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    invalid[1]["code"] = 0xffff_ffff_u32.into();
+    assert!(serde_json::from_value::<Frame>(invalid).is_err());
+}

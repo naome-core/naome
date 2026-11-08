@@ -96,7 +96,7 @@ worker_frames! {
     Program { id: u64 => u64 = id, unit: u32 => u32 = unit, records: String => String = records },
     Progress { id: u64 => u64 = id, checkpoint: u32 => u32 = checkpoint },
     Result { id: u64 => u64 = id, output: Output => Output = output },
-    Failed { id: u64 => u64 = id },
+    Failed { id: u64 => u64 = id, code: crate::outcome::JobFailureCode => crate::outcome::JobFailureCode = code },
     Uncertain { id: u64 => u64 = id },
     CleanupComplete { id: u64 => u64 = id },
     CleanupFailed { id: u64 => u64 = id },
@@ -615,9 +615,8 @@ async fn run_owned(
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
                     return Err(WorkerFailure::ProviderUncertain.into());
                 }
-                Frame::Failed { id } if ready && id == record.id => {
-                    *failure = Some(WorkerFailure::ProviderRejected);
-                    return Err(WorkerFailure::ProviderRejected.into());
+                Frame::Failed { id, code } if ready && id == record.id => {
+                    return Err(code);
                 }
                 Frame::CleanupFailed { id } if id == record.id => {
                     *failure = Some(WorkerFailure::CleanupUnconfirmed);
@@ -1135,7 +1134,14 @@ fn work() -> Result<(), String> {
             id: record.id,
             output,
         }),
-        Err(super::provider::Failure::Failed) => emit(&Frame::Failed { id: record.id }),
+        Err(super::provider::Failure::Failed) => emit(&Frame::Failed {
+            id: record.id,
+            code: WorkerFailure::ProviderRejected.into(),
+        }),
+        Err(super::provider::Failure::Coded(code)) => emit(&Frame::Failed {
+            id: record.id,
+            code,
+        }),
         Err(super::provider::Failure::Uncertain) => emit(&Frame::Uncertain { id: record.id }),
     }
 }

@@ -14,7 +14,13 @@ pub(super) enum Probe {
 #[derive(Debug)]
 pub(super) enum Failure {
     Failed,
+    Coded(crate::outcome::JobFailureCode),
     Uncertain,
+}
+impl From<crate::Error> for Failure {
+    fn from(error: crate::Error) -> Self {
+        Self::Coded(crate::outcome::JobFailureCode::from_owner(&error))
+    }
 }
 impl From<String> for Failure {
     fn from(_: String) -> Self {
