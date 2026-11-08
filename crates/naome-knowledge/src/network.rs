@@ -11,9 +11,8 @@ use crate::{
     wire::{Body, Codec, Frame, PROTOCOL},
 };
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits,
-    futures::StreamExt,
-    gossipsub, identity, noise, relay, request_response,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits, gossipsub,
+    identity, noise, relay, request_response,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
     yamux,
 };
@@ -121,6 +120,13 @@ struct Wanted {
     since: Instant,
     retry: Instant,
     attempts: usize,
+}
+
+fn inventory_preempts_description(next: Option<Instant>, now: Instant) -> bool {
+    next.is_none_or(|deadline| {
+        now.saturating_duration_since(deadline) >= crate::resources::limits().reconcile_interval
+            && now >= deadline
+    })
 }
 
 fn description_supplier(
@@ -1664,32 +1670,23 @@ impl Node {
             }
         }
         let enabled: Vec<_> = self.enabled.iter().copied().collect();
-        for peer in &enabled {
-            if self.request_ready(*peer, now)
-                && self.automatic_request_ready(*peer, now)
-                && crate::resources::active_limits()
-                    .fetches
-                    .saturating_sub(self.wanted.len())
-                    >= crate::resources::active_limits().inventory_page
-                && self
-                    .next_inventory
-                    .get(peer)
-                    .is_none_or(|next| *next <= now)
-                && !self
-                    .flights
-                    .values()
-                    .any(|flight| matches!(flight,Flight::Inventory { peer:p,.. } if p==peer))
-            {
-                let progress = self
-                    .inventory_progress
-                    .get(peer)
-                    .copied()
-                    .unwrap_or_default();
-                self.inventory(*peer, progress.after, progress.pages);
-                self.charge_automatic_request(*peer, now);
-                self.charge_outgoing(*peer, now);
-            }
-        }
+        // Give queued descriptions the next request window, but reserve an
+        // overdue inventory window so a continuous queue cannot starve discovery.
+        let inventory_room = crate::resources::active_limits()
+            .fetches
+            .saturating_sub(self.wanted.len())
+            >= crate::resources::active_limits().inventory_page;
+        let inventory_urgent: BTreeSet<_> = enabled
+            .iter()
+            .copied()
+            .filter(|peer| {
+                inventory_room
+                    && inventory_preempts_description(self.next_inventory.get(peer).copied(), now)
+                    && !self.flights.values().any(
+                        |flight| matches!(flight, Flight::Inventory { peer: p, .. } if p == peer),
+                    )
+            })
+            .collect();
         let mut remaining = self.intake.description_capacity().saturating_sub(
             self.flights
                 .values()
@@ -1718,7 +1715,7 @@ impl Node {
                 &enabled,
                 attempts,
                 |peer| self.request_ready(peer, now),
-                |peer| self.automatic_request_ready(peer, now),
+                |peer| self.automatic_request_ready(peer, now) && !inventory_urgent.contains(&peer),
             ) else {
                 continue;
             };
@@ -1741,6 +1738,32 @@ impl Node {
             self.charge_automatic_request(peer, now);
             self.charge_outgoing(peer, now);
             remaining -= 1;
+        }
+        for peer in &enabled {
+            if self.request_ready(*peer, now)
+                && self.automatic_request_ready(*peer, now)
+                && crate::resources::active_limits()
+                    .fetches
+                    .saturating_sub(self.wanted.len())
+                    >= crate::resources::active_limits().inventory_page
+                && self
+                    .next_inventory
+                    .get(peer)
+                    .is_none_or(|next| *next <= now)
+                && !self
+                    .flights
+                    .values()
+                    .any(|flight| matches!(flight,Flight::Inventory { peer:p,.. } if p==peer))
+            {
+                let progress = self
+                    .inventory_progress
+                    .get(peer)
+                    .copied()
+                    .unwrap_or_default();
+                self.inventory(*peer, progress.after, progress.pages);
+                self.charge_automatic_request(*peer, now);
+                self.charge_outgoing(*peer, now);
+            }
         }
     }
 
