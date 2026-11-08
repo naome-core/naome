@@ -1196,10 +1196,19 @@ pub async fn execute() -> Result<(), crate::Error> {
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
     {
-        crate::resources::initialize_for(&directory().map_err(|_| Failure::Directory)?)
-            .map_err(|_| Failure::Resources)?;
+        crate::resources::initialize_for(&directory().map_err(|_| Failure::Directory)?).map_err(
+            |cause| crate::Error::RuntimeContext {
+                code: Failure::Resources,
+                cause: Box::new(cause),
+            },
+        )?;
     } else {
-        crate::resources::initialize_from_environment().map_err(|_| Failure::Resources)?;
+        crate::resources::initialize_from_environment().map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: Failure::Resources,
+                cause: Box::new(cause),
+            }
+        })?;
     }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result.map_err(|_| Failure::Worker.into());

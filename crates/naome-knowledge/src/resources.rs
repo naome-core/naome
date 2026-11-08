@@ -277,18 +277,16 @@ pub fn limits() -> &'static Limits {
     })
 }
 
-pub fn configure(profile: ResourceProfile) -> Result<&'static Limits, String> {
+pub fn configure(profile: ResourceProfile) -> Result<&'static Limits, crate::Error> {
     let proposed = profile.resolve()?;
     if let Some(current) = LIMITS.get() {
         if current != &proposed {
-            return Err(
-                "resource profile is immutable after initialization; restart required".into(),
-            );
+            return Err(crate::InputFault::ResourceImmutable.into());
         }
     } else {
         LIMITS
             .set(proposed.clone())
-            .map_err(|_| "concurrent resource profile initialization")?;
+            .map_err(|_| crate::InputFault::ResourceInitializationRace)?;
     }
     Ok(LIMITS.get().expect("initialized resource limits"))
 }
@@ -301,55 +299,62 @@ struct EffectiveProfile {
     version: u8,
     limits: Limits,
 }
-pub fn initialize_from_environment() -> Result<&'static Limits, String> {
+pub fn initialize_from_environment() -> Result<&'static Limits, crate::Error> {
     initialize(
         std::env::current_dir()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::CurrentDirectory, error)
+            })?
             .as_path(),
     )
 }
 
-pub(crate) fn initialize_for(directory: &std::path::Path) -> Result<&'static Limits, String> {
+pub(crate) fn initialize_for(directory: &std::path::Path) -> Result<&'static Limits, crate::Error> {
     initialize(directory)
 }
 
-fn initialize(directory: &std::path::Path) -> Result<&'static Limits, String> {
+fn initialize(directory: &std::path::Path) -> Result<&'static Limits, crate::Error> {
     if let Some(snapshot) = std::env::var_os("NAOME_EFFECTIVE_RESOURCES") {
         let snapshot = snapshot
             .to_str()
-            .ok_or("effective resource profile is not UTF-8")?;
+            .ok_or(crate::InputFault::ResourceEffectiveEncoding)?;
         if snapshot.len() > 64 * 1024 {
-            return Err("effective resource profile capacity".into());
+            return Err(crate::InputFault::ResourceEffectiveCapacity.into());
         }
-        let effective: EffectiveProfile = serde_json::from_str(snapshot)
-            .map_err(|e| format!("effective resource profile: {e}"))?;
+        let effective: EffectiveProfile =
+            serde_json::from_str(snapshot).map_err(resource_profile_decode)?;
         if effective.version != PROFILE_VERSION {
-            return Err("unsupported effective resource profile".into());
+            return Err(crate::InputFault::ResourceEffectiveIdentity.into());
         }
         effective.limits.validate()?;
         if let Some(current) = LIMITS.get() {
             if current != &effective.limits {
-                return Err("resource profile changed after initialization".into());
+                return Err(crate::InputFault::ResourceImmutable.into());
             }
         } else {
             LIMITS
                 .set(effective.limits)
-                .map_err(|_| "concurrent resource initialization")?;
+                .map_err(|_| crate::InputFault::ResourceInitializationRace)?;
         }
         return Ok(limits());
     }
     let mut automatic = None;
     let profile = match std::env::var_os("NAOME_RESOURCE_CONFIG") {
         Some(path) => {
-            let path = std::fs::canonicalize(path).map_err(|e| format!("resource profile: {e}"))?;
+            let path = std::fs::canonicalize(path).map_err(|error| {
+                crate::error::storage_io_error(
+                    crate::StorageIoOperation::ResolveResourceProfile,
+                    error,
+                )
+            })?;
             let bytes = crate::store::read_bounded(&path, 64 * 1024)?;
-            serde_json::from_slice(&bytes).map_err(|e| format!("resource profile: {e}"))?
+            serde_json::from_slice(&bytes).map_err(resource_profile_decode)?
         }
         None => {
             let location = directory
                 .ancestors()
                 .find(|path| path.is_dir())
-                .ok_or("resource observation directory is unavailable")?;
+                .ok_or(crate::InputFault::ResourceObservationDirectory)?;
             let observed = adaptive::sample(location)?;
             let profile = calibration::capacity(&observed)?;
             let selection = if directory.is_dir() {
@@ -370,6 +375,14 @@ fn initialize(directory: &std::path::Path) -> Result<&'static Limits, String> {
         )?);
     }
     Ok(capacity)
+}
+
+fn resource_profile_decode(error: serde_json::Error) -> crate::Error {
+    crate::Error::ResourceProfileDecode {
+        reason: crate::error::json_fault(&error),
+        line: error.line(),
+        column: error.column(),
+    }
 }
 
 /// Live work admission below the installed capacity. Stored formats, external

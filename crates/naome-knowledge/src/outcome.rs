@@ -191,6 +191,12 @@ codes! {
         MarkerParentMissing = 54,
         ResourceCustomInvalid = 55,
         ResourceCustomProfileMismatch = 56,
+        ResourceEffectiveEncoding = 57,
+        ResourceEffectiveCapacity = 58,
+        ResourceEffectiveIdentity = 59,
+        ResourceImmutable = 60,
+        ResourceInitializationRace = 61,
+        ResourceObservationDirectory = 62,
     }
 
     pub enum InputLimit in 8 {
@@ -733,7 +739,7 @@ codes! {
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
     #[derive(Default)]
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
-    pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13 }
+    pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13, CurrentDirectory = 14, ResolveResourceProfile = 15 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,

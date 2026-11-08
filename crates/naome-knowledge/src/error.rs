@@ -530,6 +530,18 @@ impl fmt::Display for Error {
                 InputFault::ResourceCustomProfileMismatch => {
                     "custom settings require the custom profile"
                 }
+                InputFault::ResourceEffectiveEncoding => "effective resource profile is not UTF-8",
+                InputFault::ResourceEffectiveCapacity => "effective resource profile capacity",
+                InputFault::ResourceEffectiveIdentity => "unsupported effective resource profile",
+                InputFault::ResourceImmutable => {
+                    "resource profile is immutable after initialization"
+                }
+                InputFault::ResourceInitializationRace => {
+                    "concurrent resource profile initialization"
+                }
+                InputFault::ResourceObservationDirectory => {
+                    "resource observation directory is unavailable"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

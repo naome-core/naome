@@ -844,3 +844,27 @@ mod developer_transport {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn resource_initialization_failure_retains_machine_readable_cause() {
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .arg("status")
+        .env("NAOME_EFFECTIVE_RESOURCES", "{")
+        .env_remove("NAOME_RESOURCE_CONFIG")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let event: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(naome_knowledge::RuntimeFailure::Resources)
+    );
+    assert_eq!(event["error"]["fatal"], true);
+    assert_eq!(event["error"]["cause"]["code"], 0x0006_0019_u32);
+    assert_eq!(
+        event["error"]["cause"]["reason"],
+        u32::from(naome_knowledge::JsonFault::Eof)
+    );
+    assert_eq!(event["error"]["cause"]["line"], 1);
+}

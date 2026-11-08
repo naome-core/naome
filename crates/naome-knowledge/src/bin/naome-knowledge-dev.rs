@@ -35,7 +35,12 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
         println!("{}", naome_knowledge::training::HELP);
         return Ok(());
     }
-    naome_knowledge::resources::initialize_from_environment().map_err(|_| Failure::Resources)?;
+    naome_knowledge::resources::initialize_from_environment().map_err(|cause| {
+        naome_knowledge::Error::RuntimeContext {
+            code: Failure::Resources,
+            cause: Box::new(cause),
+        }
+    })?;
     match args
         .iter()
         .map(String::as_str)
