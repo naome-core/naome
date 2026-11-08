@@ -816,7 +816,7 @@ impl Limits {
             || self.native_model_io_bytes < 512 * 1024 * 1024
             || self.native_model_work_bytes < crate::learning::MODEL_REQUIREMENTS.work_bytes
         {
-            return Err("native 1M model limits cannot preserve its bounded checkpoint and training requirements".into());
+            return Err("native solver model limits cannot preserve its bounded checkpoint and training requirements".into());
         }
         if self.allocation_budget()
             < self
@@ -824,7 +824,7 @@ impl Limits {
                 .saturating_add(32 * 1024 * 1024)
         {
             return Err(format!(
-                "native 1M model requires a working allocation of at least {} bytes; calibrated capacity is {}",
+                "native solver model requires a working allocation of at least {} bytes; calibrated capacity is {}",
                 self.native_model_work_bytes + 32 * 1024 * 1024,
                 self.allocation_budget()
             ));

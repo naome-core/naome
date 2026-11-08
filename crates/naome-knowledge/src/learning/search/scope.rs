@@ -24,6 +24,10 @@ struct Scope {
 
 impl Scope {
     fn open(target: &Formula) -> Result<Option<Self>, String> {
+        Self::open_with(target, None)
+    }
+
+    fn open_with(target: &Formula, lemma: Option<&Formula>) -> Result<Option<Self>, String> {
         let mut goal = target.clone();
         let mut binders = Vec::new();
         loop {
@@ -39,7 +43,7 @@ impl Scope {
             binders.push(variable);
             goal = body;
         }
-        let mut assumptions = Vec::new();
+        let mut assumptions = lemma.into_iter().cloned().collect::<Vec<_>>();
         while let Some((premise, result)) = goal.view().implication_parts() {
             let (premise, result) = (premise.to_owned(), result.to_owned());
             assumptions.push(premise);
@@ -81,6 +85,51 @@ impl Scope {
         (demanded, true)
     }
 
+    fn program(
+        &self,
+        actions: &[ScopedAction],
+        references: &[naome_proof::ProofId],
+    ) -> Vec<Command> {
+        let assumptions = self
+            .assumptions
+            .iter()
+            .cloned()
+            .map(ProofFormula::from)
+            .collect::<Vec<_>>();
+        Projection::scoped_with_references(
+            &assumptions,
+            actions,
+            (self.assumptions.len() + actions.len() - 1) as u32,
+            &self.binders,
+            references,
+        )
+    }
+
+    fn apply(&self, facts: &[Formula], action: &ScopedAction) -> Option<Formula> {
+        match action {
+            ScopedAction::Instantiate {
+                universal,
+                replacement,
+                premises,
+            } => {
+                let mut formula = instantiation::Universal::new(facts.get(*universal as usize)?)?
+                    .instance(FreeVariable::new(*replacement));
+                for premise in premises {
+                    let (antecedent, result) = formula.view().implication_parts()?;
+                    if antecedent != facts.get(*premise as usize)?.view() {
+                        return None;
+                    }
+                    formula = result.to_owned();
+                }
+                Some(formula)
+            }
+            ScopedAction::Conjoin { left, right } => Some(Formula::conjunction(
+                facts.get(*left as usize)?.clone(),
+                facts.get(*right as usize)?.clone(),
+            )),
+        }
+    }
+
     fn general_offers(&self, facts: &[Formula]) -> Vec<(ScopedAction, Formula)> {
         let mut offered = Vec::new();
         let mut variables = self.goal.free_variables();
@@ -90,36 +139,39 @@ impl Scope {
         if variables.is_empty() {
             variables.insert(FreeVariable::new(0));
         }
-        // Open the structural binder with a fresh variable, then instantiate
-        // it with each actual witness. A witness may already occur free.
-        let binder = (0..=u32::MAX)
-            .map(FreeVariable::new)
-            .find(|variable| !variables.contains(variable))
-            .expect("bounded scope variables");
-        for (index, universal) in facts.iter().enumerate() {
-            let Some(body) = universal.open_outer_universal(binder) else {
+        let first = *variables.first().expect("scope variable");
+        let known: std::collections::HashSet<_> = facts.iter().map(Formula::view).collect();
+        for (index, formula) in facts.iter().enumerate() {
+            let Some(universal) = instantiation::Universal::new(formula) else {
                 continue;
             };
-            for &replacement in variables.iter().take(8) {
-                let instance = body.clone().substitute_free(binder, replacement);
-                let mut add = |formula, premises| {
-                    if !facts.contains(&formula) {
-                        offered.push((
-                            ScopedAction::Instantiate {
-                                universal: index as u32,
-                                replacement: replacement.identifier(),
-                                premises,
-                            },
-                            formula,
-                        ));
-                    }
-                };
-                if let Some((antecedent, consequent)) = instance.view().implication_parts()
-                    && let Some(premise) = facts.iter().position(|f| f.view() == antecedent)
-                {
-                    add(consequent.to_owned(), vec![premise as u32]);
+            let mut add = |replacement: FreeVariable, formula: Formula, premises| {
+                if !known.contains(&formula.view()) {
+                    offered.push((
+                        ScopedAction::Instantiate {
+                            universal: index as u32,
+                            replacement: replacement.identifier(),
+                            premises,
+                        },
+                        formula,
+                    ));
                 }
-                add(instance, Vec::new());
+            };
+            for (premise, replacement) in universal.applications(facts, first) {
+                if let Some(conclusion) = universal.consequence(replacement) {
+                    add(replacement, conclusion, vec![premise as u32]);
+                }
+            }
+            let wanted = universal.wanted(&self.goal, first);
+            let instances = wanted.into_iter().chain(
+                variables
+                    .iter()
+                    .copied()
+                    .filter(|v| Some(*v) != wanted)
+                    .take(8),
+            );
+            for replacement in instances {
+                add(replacement, universal.instance(replacement), Vec::new());
             }
         }
         if let Some((a, b)) = super::super::construction::logic::conjunction(&self.goal)
@@ -175,6 +227,12 @@ impl Scope {
                 Candidate {
                     rule,
                     premises,
+                    replacement: match action {
+                        ScopedAction::Instantiate { replacement, .. } => {
+                            Some(FreeVariable::new(*replacement))
+                        }
+                        ScopedAction::Conjoin { .. } => None,
+                    },
                     consequences: vec![result.clone()],
                 }
             })
@@ -219,6 +277,71 @@ pub(in crate::learning) fn search(
     let Some(scope) = Scope::open(target)? else {
         return Ok((None, 0));
     };
+    let (actions, work) = search_scope(&scope, ranker, maximum, started)?;
+    let tree = actions
+        .map(|actions| {
+            Ok::<_, String>(Tree::Scoped {
+                target: target
+                    .encode_canonical()
+                    .map_err(|error| error.to_string())?,
+                actions,
+            })
+        })
+        .transpose()?;
+    Ok((tree, work))
+}
+
+pub(in crate::learning) fn search_with_lemma(
+    target: &Formula,
+    proof: naome_proof::ProofId,
+    lemma: &Formula,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+    started: Instant,
+) -> Result<(Option<Vec<Command>>, usize), String> {
+    if !lemma.is_closed() {
+        return Err("scoped lemma is not closed".into());
+    }
+    let Some(scope) = Scope::open_with(target, Some(lemma))? else {
+        return Ok((None, 0));
+    };
+    let (actions, work) = search_scope(&scope, ranker, maximum, started)?;
+    let commands = actions.and_then(|actions| {
+        let result = scope.assumptions.len() + actions.len() - 1;
+        let mut used = vec![false; result + 1];
+        used[result] = true;
+        for (index, action) in actions.iter().enumerate().rev() {
+            if !used[scope.assumptions.len() + index] {
+                continue;
+            }
+            match action {
+                ScopedAction::Instantiate {
+                    universal,
+                    premises,
+                    ..
+                } => {
+                    used[*universal as usize] = true;
+                    for &premise in premises {
+                        used[premise as usize] = true;
+                    }
+                }
+                ScopedAction::Conjoin { left, right } => {
+                    used[*left as usize] = true;
+                    used[*right as usize] = true;
+                }
+            }
+        }
+        used[0].then(|| scope.program(&actions, &[proof]))
+    });
+    Ok((commands, work))
+}
+
+fn search_scope(
+    scope: &Scope,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+    started: Instant,
+) -> Result<(Option<Vec<ScopedAction>>, usize), String> {
     let mut facts = scope.assumptions.clone();
     let mut actions = Vec::new();
     let allowance = maximum.min(ACTIONS).min(FACTS - facts.len());
@@ -230,7 +353,7 @@ pub(in crate::learning) fn search(
         if offered.is_empty() {
             break;
         }
-        let selected = if offered.len() == 1 {
+        let selected = if offered.len() == 1 || offered[0].1 == scope.goal {
             0
         } else {
             let scores = match ranker.scores(&scope.decision(&facts, &offered, 0, compact)) {
@@ -249,8 +372,7 @@ pub(in crate::learning) fn search(
         actions.push(action);
         if result == scope.goal {
             let work = actions.len();
-            let target = target.encode_canonical().map_err(|e| e.to_string())?;
-            return Ok((Some(Tree::Scoped { target, actions }), work));
+            return Ok((Some(actions), work));
         }
         facts.push(result);
     }
@@ -261,8 +383,13 @@ pub(super) fn compile(
     target: &Formula,
     actions: &[ScopedAction],
 ) -> Result<(Term, Vec<Graph>), String> {
-    let (scope, graphs) =
-        decision_graphs(target, actions)?.ok_or("scope trace action was not offered")?;
+    let (scope, graphs) = decision_graphs(
+        Scope::open(target)?.ok_or("scope trace target differs")?,
+        target,
+        actions,
+        false,
+    )?
+    .ok_or("scope trace action was not offered")?;
     let result = scope.assumptions.len() + actions.len() - 1;
     let mut term = deduce(&scope.assumptions, actions, result as u32)?;
     for variable in scope.binders.into_iter().rev() {
@@ -272,10 +399,11 @@ pub(super) fn compile(
 }
 
 fn decision_graphs(
+    scope: Scope,
     target: &Formula,
     actions: &[ScopedAction],
+    checked_reference: bool,
 ) -> Result<Option<(Scope, Vec<Graph>)>, String> {
-    let scope = Scope::open(target)?.ok_or("scope trace target differs")?;
     if actions.is_empty() || actions.len() > ACTIONS.min(FACTS - scope.assumptions.len()) {
         return Ok(None);
     }
@@ -285,19 +413,37 @@ fn decision_graphs(
         .encode_canonical()
         .map_err(|error| error.to_string())?;
     for (offset, action) in actions.iter().enumerate() {
-        let (offered, compact) = scope.offers(&facts);
-        let Some(selected) = offered.iter().position(|(choice, _)| choice == action) else {
+        let (mut offered, compact) = scope.offers(&facts);
+        let selected = if let Some(index) = offered.iter().position(|(choice, _)| choice == action)
+        {
+            index
+        } else if checked_reference {
+            // A replayed citation supplies the checked action when its
+            // operands are outside the bounded search menu.
+            let result = scope
+                .apply(&facts, action)
+                .ok_or("scope replay operand differs")?;
+            offered.truncate(15);
+            offered.push((action.clone(), result));
+            offered.len() - 1
+        } else {
             return Ok(None);
         };
         if offered.len() > 1 {
-            let mut graph =
-                match Graph::encode(&scope.decision(&facts, &offered, selected, compact)) {
-                    Ok(graph) => graph,
-                    Err(error) if error == "formula_graph_capacity" => return Ok(None),
-                    Err(error) => return Err(error),
-                };
-            graph.binding = super::super::digest(&(&target_bytes, &actions[..offset]));
-            graphs.push(graph);
+            match Graph::encode(&scope.decision(&facts, &offered, selected, compact)) {
+                Ok(mut graph) => {
+                    graph.binding = super::super::digest(&(&target_bytes, &actions[..offset]));
+                    graphs.push(graph);
+                }
+                Err(error)
+                    if checked_reference
+                        && matches!(
+                            error.as_str(),
+                            "formula_graph_capacity" | "action arity capacity"
+                        ) => {}
+                Err(error) if error == "formula_graph_capacity" => return Ok(None),
+                Err(error) => return Err(error),
+            }
         }
         facts.push(offered[selected].1.clone());
     }
@@ -307,23 +453,52 @@ fn decision_graphs(
     Ok(Some((scope, graphs)))
 }
 
-pub(crate) fn program_graphs(target: &Formula, records: &[Command]) -> Result<Vec<Graph>, String> {
+pub(crate) fn program_graphs(
+    target: &Formula,
+    records: &[Command],
+    context: &dyn naome_checker::ContextView,
+) -> Result<Vec<Graph>, String> {
     let Some(actions) = records.iter().find_map(|record| match record {
         Command::Deduce { actions, .. } => Some(actions),
         _ => None,
     }) else {
         return Ok(Vec::new());
     };
-    if actions.is_empty()
-        || actions.len() > ACTIONS
-        || Scope::open(target)?.is_none()
-        || commands(target, actions)? != records
-    {
+    if actions.is_empty() || actions.len() > ACTIONS {
         return Ok(Vec::new());
     }
-    // An independently valid program may use a wider or different action
-    // menu. Only reproduce examples that the current search can offer.
-    Ok(decision_graphs(target, actions)?.map_or_else(Vec::new, |(_, graphs)| graphs))
+    if let Some(scope) = Scope::open(target)?
+        && scope.program(actions, &[]) == records
+    {
+        return Ok(decision_graphs(scope, target, actions, false)?
+            .map_or_else(Vec::new, |(_, graphs)| graphs));
+    }
+    let mut references = records.iter().filter_map(|record| match record {
+        Command::ProofReference { proof_id } => Some(naome_proof::ProofId::from_bytes(*proof_id)),
+        _ => None,
+    });
+    let (Some(reference), None) = (references.next(), references.next()) else {
+        return Ok(Vec::new());
+    };
+    let Some(header) = context.proof_header(reference).map_err(|e| e.to_string())? else {
+        return Err("scope replay citation missing".into());
+    };
+    if header.canonical_length() > naome_checker::question::QUESTION_BYTES {
+        return Ok(Vec::new());
+    }
+    let Some(formula) = context
+        .proof_formula(header, header.canonical_length())
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("scope replay citation formula missing".into());
+    };
+    if let Some(scope) = Scope::open_with(target, Some(formula.as_ref()))?
+        && scope.program(actions, &[reference]) == records
+    {
+        return Ok(decision_graphs(scope, target, actions, true)?
+            .map_or_else(Vec::new, |(_, graphs)| graphs));
+    }
+    Ok(Vec::new())
 }
 
 pub(crate) fn verified(
@@ -337,18 +512,7 @@ pub(crate) fn verified(
 
 pub(crate) fn commands(target: &Formula, actions: &[ScopedAction]) -> Result<Vec<Command>, String> {
     let scope = Scope::open(target)?.ok_or("scope program target differs")?;
-    let result = scope.assumptions.len() + actions.len() - 1;
-    let assumptions = scope
-        .assumptions
-        .into_iter()
-        .map(ProofFormula::from)
-        .collect::<Vec<_>>();
-    Ok(Projection::scoped(
-        &assumptions,
-        actions,
-        result as u32,
-        &scope.binders,
-    ))
+    Ok(scope.program(actions, &[]))
 }
 
 /// Rebuild the selected local actions as ordinary inference for training.

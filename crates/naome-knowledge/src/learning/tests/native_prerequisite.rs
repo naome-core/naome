@@ -73,7 +73,8 @@ fn attempt(
         .map(|proof| crate::hex(proof.manifest.proof_id().as_bytes()))
         .into_iter()
         .collect::<Vec<_>>();
-    let inputs = Prerequisites::from_inputs(Vec::new(), packet.into_iter().collect()).unwrap();
+    let inputs =
+        Prerequisites::from_inputs(Vec::new(), packet.into_iter().collect(), None).unwrap();
     solve(question, &required, &inputs, seed, budget)
 }
 

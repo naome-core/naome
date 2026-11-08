@@ -1,4 +1,4 @@
-//! Structure-preserving native formula graphs. Identifiers are not model features.
+//! Packed formula and action graphs with decision-local variable slots.
 
 use super::model::Decision;
 use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
@@ -11,13 +11,15 @@ use std::collections::HashMap;
 
 pub const MAX_NODES: usize = 256;
 pub const MAX_CONTEXT: usize = 48;
+pub(super) const SYMBOLS: usize = 2 * MAX_NODES + 1;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Node {
     pub kind: i32,
     pub left: usize,
     pub right: usize,
     pub role: i32,
+    pub symbol: i32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,8 +35,9 @@ pub struct Graph {
 
 struct Builder<'a> {
     nodes: Vec<Node>,
-    formulas: HashMap<(FormulaView<'a>, Vec<usize>, usize), usize>,
-    variables: HashMap<(u8, u64), usize>,
+    formulas: HashMap<(FormulaView<'a>, usize), usize>,
+    variables: HashMap<i32, usize>,
+    free: HashMap<u32, usize>,
 }
 
 impl<'a> Builder<'a> {
@@ -55,47 +58,60 @@ impl<'a> Builder<'a> {
                 left: *left,
                 right: *right,
                 role: 0,
+                symbol: 0,
             }),
             _ => Err("action arity capacity".into()),
         }
     }
 
-    fn variable(&mut self, variable: Variable, binders: &[usize]) -> Result<usize, String> {
-        let (key, kind, binder) = match variable {
-            Variable::Free(id) => ((0, u64::from(id)), 6, 0),
+    fn free_slot(&mut self, id: u32) -> Result<i32, String> {
+        let next = self.free.len() + 1;
+        let slot = *self.free.entry(id).or_insert(next);
+        if slot > MAX_NODES {
+            return Err("formula_graph_capacity".into());
+        }
+        Ok(slot as i32)
+    }
+
+    fn variable(&mut self, variable: Variable, binders: usize) -> Result<usize, String> {
+        let (kind, symbol) = match variable {
+            Variable::Free(id) => (6, self.free_slot(id)? as usize),
             Variable::Bound(index) => {
                 let index = usize::try_from(index).map_err(|_| "bound index width")?;
-                let position = binders
-                    .len()
-                    .checked_sub(index + 1)
-                    .ok_or("dangling bound variable")?;
-                let binder = binders[position];
-                ((1, binder as u64), 7, binder)
+                if index >= binders {
+                    return Err("dangling bound variable".into());
+                }
+                (7, MAX_NODES + 1 + index)
             }
         };
-        if let Some(index) = self.variables.get(&key) {
+        if symbol >= SYMBOLS {
+            return Err("formula_graph_capacity".into());
+        }
+        let symbol = symbol as i32;
+        if let Some(index) = self.variables.get(&symbol) {
             return Ok(*index);
         }
         let index = self.push(Node {
             kind,
-            left: binder,
+            left: 0,
             right: 0,
             role: 0,
+            symbol,
         })?;
-        self.variables.insert(key, index);
+        self.variables.insert(symbol, index);
         Ok(index)
     }
 
     fn formula(
         &mut self,
         formula: FormulaView<'a>,
-        binders: &[usize],
+        binders: usize,
         depth: usize,
     ) -> Result<usize, String> {
         if depth == 0 {
             return Ok(0);
         }
-        let key = (formula, binders.to_vec(), depth);
+        let key = (formula, depth);
         let children = if depth == usize::MAX {
             depth
         } else {
@@ -109,16 +125,8 @@ impl<'a> Builder<'a> {
             left: 0,
             right: 0,
             role: 0,
+            symbol: 0,
         };
-        if let FormulaNode::ForAll(body) = formula.graph_node() {
-            node.kind = 5;
-            let index = self.push(node)?;
-            let mut nested = binders.to_vec();
-            nested.push(index);
-            self.nodes[index].left = self.formula(body, &nested, children)?;
-            self.formulas.insert(key, index);
-            return Ok(index);
-        }
         match formula.graph_node() {
             FormulaNode::Equal(a, b) | FormulaNode::Member(a, b) => {
                 node.kind = if matches!(formula.graph_node(), FormulaNode::Equal(..)) {
@@ -138,7 +146,10 @@ impl<'a> Builder<'a> {
                 node.left = self.formula(left, binders, children)?;
                 node.right = self.formula(right, binders, children)?;
             }
-            FormulaNode::ForAll(_) => unreachable!(),
+            FormulaNode::ForAll(body) => {
+                node.kind = 5;
+                node.left = self.formula(body, binders + 1, children)?;
+            }
         }
         let index = self.push(node)?;
         self.formulas.insert(key, index);
@@ -178,23 +189,19 @@ impl Graph {
             .candidates
             .get(decision.expert)
             .ok_or("successful action missing")?;
-        // A vacuous universal can be instantiated with different variables
-        // while retaining the exact premise and conclusion. The checked proof
-        // step is the same observable choice, so share its successful mass.
-        // Distinct conclusions and every other rule keep separate labels.
+        // Equivalent universal effects share the checked target mass and
+        // the same model representation, including a vacuous instantiation.
+        let equivalent = |a: &super::model::Candidate, b: &super::model::Candidate| {
+            a.rule == super::model::Rule::UniversalInstance
+                && a.rule == b.rule
+                && a.premises == b.premises
+                && a.consequences == b.consequences
+        };
         let successes = decision
             .candidates
             .iter()
             .enumerate()
-            .filter(|(i, candidate)| {
-                *i == decision.expert
-                    || witnessed.rule == super::model::Rule::UniversalInstance
-                        && witnessed.premises.len() == 1
-                        && witnessed.consequences.len() == 1
-                        && candidate.rule == witnessed.rule
-                        && candidate.premises == witnessed.premises
-                        && candidate.consequences == witnessed.consequences
-            })
+            .filter(|(i, candidate)| *i == decision.expert || equivalent(witnessed, candidate))
             .map(|(i, _)| i)
             .collect();
         let mut builder = Builder {
@@ -203,20 +210,22 @@ impl Graph {
                 left: 0,
                 right: 0,
                 role: 0,
+                symbol: 0,
             }],
             formulas: HashMap::new(),
             variables: HashMap::new(),
+            free: HashMap::new(),
         };
-        let goal = builder.formula(decision.goal.view(), &[], depth)?;
+        let goal = builder.formula(decision.goal.view(), 0, depth)?;
         let mut context = Vec::new();
         for binding in &decision.context {
-            let root = builder.formula(binding.formula.view(), &[], depth)?;
+            let root = builder.formula(binding.formula.view(), 0, depth)?;
             builder.nodes[root].role |= 2;
             context.push(root);
         }
         builder.nodes[goal].role |= 1;
         let mut candidates = Vec::new();
-        for candidate in &decision.candidates {
+        for (position, candidate) in decision.candidates.iter().enumerate() {
             let premises = candidate
                 .premises
                 .iter()
@@ -233,15 +242,31 @@ impl Graph {
             let conclusions = candidate
                 .consequences
                 .iter()
-                .map(|formula| builder.formula(formula.view(), &[], depth))
+                .map(|formula| builder.formula(formula.view(), 0, depth))
                 .collect::<Result<Vec<_>, _>>()?;
             let left = builder.pair(&premises)?;
             let right = builder.pair(&conclusions)?;
+            let redundant = candidate.replacement.is_some()
+                && decision
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .any(|(other, action)| position != other && equivalent(candidate, action));
+            let symbol = if redundant {
+                0
+            } else {
+                candidate
+                    .replacement
+                    .map(|v| builder.free_slot(v.identifier()))
+                    .transpose()?
+                    .unwrap_or(0)
+            };
             candidates.push(builder.push(Node {
                 kind: candidate.rule.kind(),
                 left,
                 right,
                 role: 0,
+                symbol,
             })?);
         }
         Ok(Self {
@@ -287,7 +312,8 @@ pub struct Batch {
     pub roles: Tensor<2, Int>,
     pub left: Tensor<2, Int>,
     pub right: Tensor<2, Int>,
-    pub parent_scale: Tensor<3>,
+    pub symbols: Tensor<2, Int>,
+    pub(super) nodes: Vec<Node>,
     pub valid: Tensor<3>,
     pub goal: Tensor<2, Int>,
     context_mask: Tensor<2, Bool>,
@@ -352,7 +378,8 @@ impl Batch {
         let mut roles = kinds.clone();
         let mut left = kinds.clone();
         let mut right = kinds.clone();
-        let mut parents = vec![0f32; n];
+        let mut symbols = kinds.clone();
+        let mut nodes = vec![graphs[0].nodes[0].clone()];
         let mut valid = vec![0f32; n];
         let mut goal = vec![0i32; b];
         // Attention uses only membership. Build the bool mask directly
@@ -381,12 +408,21 @@ impl Batch {
                 let offset = index(i)?;
                 kinds[offset] = node.kind;
                 roles[offset] = node.role;
-                left[offset] = index(node.left)? as i32;
-                right[offset] = index(node.right)? as i32;
-                valid[offset] = 1.;
-                for child in [node.left, node.right].into_iter().filter(|i| *i != 0) {
-                    parents[index(child)?] += 1.;
+                if node.left >= i || node.right >= i || !(0..SYMBOLS as i32).contains(&node.symbol)
+                {
+                    return Err("formula graph operand or symbol differs".into());
                 }
+                let left_index = index(node.left)?;
+                let right_index = index(node.right)?;
+                left[offset] = left_index as i32;
+                right[offset] = right_index as i32;
+                symbols[offset] = node.symbol;
+                valid[offset] = 1.;
+                nodes.push(Node {
+                    left: left_index,
+                    right: right_index,
+                    ..node.clone()
+                });
             }
             goal[batch] = index(graph.goal)? as i32;
             for root in &graph.context {
@@ -406,17 +442,13 @@ impl Batch {
             }
             base += graph.nodes.len() - 1;
         }
-        for count in &mut parents {
-            if *count > 0. {
-                *count = 1. / *count;
-            }
-        }
         Ok(Self {
             kinds: Tensor::from_data(TensorData::new(kinds, [1, n]), device),
             roles: Tensor::from_data(TensorData::new(roles, [1, n]), device),
             left: Tensor::from_data(TensorData::new(left, [1, n]), device),
             right: Tensor::from_data(TensorData::new(right, [1, n]), device),
-            parent_scale: Tensor::from_data(TensorData::new(parents, [1, n, 1]), device),
+            symbols: Tensor::from_data(TensorData::new(symbols, [1, n]), device),
+            nodes,
             valid: Tensor::from_data(TensorData::new(valid, [1, n, 1]), device),
             goal: Tensor::from_data(TensorData::new(goal, [b, 1]), device),
             context_mask: context.tensor([b, n], device),

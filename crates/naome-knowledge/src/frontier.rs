@@ -10,6 +10,7 @@ use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
 mod finder;
+mod lemma_index;
 mod looping;
 use evidence::{Evidence, Outcome};
 pub(crate) const PROVIDER: &str = "naome-structural-finder";
@@ -64,6 +65,7 @@ pub(crate) struct Frontier {
     success_units: [u64; SIGNALS],
     success_millis: [u64; SIGNALS],
     knowledge: VecDeque<Features>,
+    lemmas: lemma_index::Index,
     proposals: VecDeque<ResearchQuestion>,
     predicates: VecDeque<Formula>,
     goals: VecDeque<ResearchQuestion>,
@@ -115,6 +117,7 @@ impl Frontier {
             success_units: [0; SIGNALS],
             success_millis: [0; SIGNALS],
             knowledge: VecDeque::new(),
+            lemmas: lemma_index::Index::default(),
             proposals: VecDeque::new(),
             predicates: VecDeque::new(),
             goals: VecDeque::new(),
@@ -130,6 +133,11 @@ impl Frontier {
                     .saturating_mul(4)
                     .saturating_add(std::mem::size_of::<Self>())
                     .saturating_add(32 * std::mem::size_of::<Features>())
+                    .saturating_add(if settings.native_proof_learning {
+                        lemma_index::Index::RESERVATION
+                    } else {
+                        0
+                    })
                     .saturating_add(finder::Model::memory_bytes())
                     .saturating_add(finder::Learning::reservation()),
             )
@@ -496,7 +504,7 @@ impl Frontier {
         }
         self.proposals.retain(|question| eligible(question));
         let root = graph.content_root();
-        if self.observed_root == Some(root) && !self.proposals.is_empty() {
+        if self.observed_root == Some(root) && self.after.is_none() && !self.proposals.is_empty() {
             return Ok(());
         }
         // One checked entry per opportunity; a second ID is only lookahead.
@@ -548,6 +556,13 @@ impl Frontier {
                 // descendants through a newly spelled graph projection.
                 if self.native && !crate::learning::State::eligible(&question.to_hex()) {
                     continue;
+                }
+                if self.native
+                    && let Some(header) = header
+                    && let Some(proof) = graph.checked_context().artifact_proof_id(*id)?
+                    && let Some(formula) = graph.checked_context().proof_formula(header, length)?
+                {
+                    self.lemmas.insert(proof, length, formula.as_ref());
                 }
                 let features = Features::of(&question);
                 for (total, count) in self.building.iter_mut().zip(features.counts) {
@@ -884,13 +899,22 @@ impl Frontier {
                 weight = weight.saturating_mul(512 + (utility * 1024.) as u64) / 1024;
             }
             let mut relevance = 0;
+            let mut saved_work = 0u64;
             for goal in &self.goals {
                 if goal.resolution_id() != question.resolution_id() {
                     let other = self.analyses.get(goal)?;
                     relevance = relevance.max(analysis.relevance(&other));
+                    let keys = other.lookup_keys();
+                    if analysis.lemma_keys().iter().any(|key| keys.contains(key)) {
+                        let units = other.descriptor.features.nodes.div_ceil(64).clamp(1, 8);
+                        saved_work +=
+                            u64::from(units) / (1 + u64::from(self.lemmas.has_support(keys)));
+                    }
                 }
             }
+            // Prioritize helpers that can relieve work across multiple goals.
             weight = weight.saturating_mul(1 + relevance.min(8) * 4);
+            weight = weight.saturating_mul(1 + saved_work.min(32));
             if !analysis.meaningful() {
                 weight /= 64;
             }

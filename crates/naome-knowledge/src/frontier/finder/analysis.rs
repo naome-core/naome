@@ -121,6 +121,8 @@ pub(in crate::frontier) struct Analysis {
     pub descriptor: Descriptor,
     interest: OnceLock<([u8; 32], bool)>,
     fragments: OnceLock<BTreeSet<[u8; 32]>>,
+    lemma_keys: OnceLock<Vec<[u8; 32]>>,
+    lookup_keys: OnceLock<Vec<[u8; 32]>>,
     bytes: usize,
     _memory: Arc<crate::resources::MemoryLease>,
 }
@@ -129,6 +131,15 @@ impl Analysis {
         self.interest
             .get_or_init(|| super::semantics::screen(&self.question))
             .1
+    }
+    pub fn lemma_keys(&self) -> &[[u8; 32]] {
+        self.lemma_keys.get_or_init(|| {
+            crate::frontier::lemma_index::Index::keys(self.question.proved_target())
+        })
+    }
+    pub fn lookup_keys(&self) -> &[[u8; 32]] {
+        self.lookup_keys
+            .get_or_init(|| crate::frontier::lemma_index::Index::query(&self.question))
     }
     pub fn relevance(&self, other: &Self) -> u64 {
         let a = self
@@ -178,7 +189,7 @@ impl Cache {
         // Includes the compiled source, at most 32 fragment keys, lazy-set
         // allocation overhead and the bounded transient binding sketch.
         let bytes =
-            question.to_hex().len().saturating_mul(8) + 4096 + std::mem::size_of::<Analysis>();
+            question.to_hex().len().saturating_mul(8) + 6144 + std::mem::size_of::<Analysis>();
         while !self.entries.is_empty()
             && (self.bytes.saturating_add(bytes) > budget || self.entries.len() >= 128)
         {
@@ -190,6 +201,8 @@ impl Cache {
             descriptor: Descriptor::of(question),
             interest: OnceLock::new(),
             fragments: OnceLock::new(),
+            lemma_keys: OnceLock::new(),
+            lookup_keys: OnceLock::new(),
             bytes,
             _memory: memory,
         });

@@ -1,5 +1,6 @@
 //! Recheck canonical peer program records and learn from their proved operands.
 use super::{Binding, Candidate, Decision, Graph, Rule, checked_mp};
+mod replay;
 use crate::learning::{MODEL_REQUIREMENTS, proof};
 use naome_checker::{
     ContextError, ContextStorage, ContextView, DiskArtifactState,
@@ -10,6 +11,7 @@ use naome_proof::{
     ArtifactPayload, ProofId,
     program::{Command, MANIFEST_MAGIC, Manifest, decode_command, encode_command},
 };
+use replay::Decisions;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -248,7 +250,7 @@ impl InputChecker {
 
 pub(super) struct Replay {
     pub target: Formula,
-    pub graphs: Vec<Graph>,
+    pub graphs: Decisions,
     pub definitions: Vec<naome_proof::DefinitionId>,
     _memory: Arc<crate::resources::MemoryLease>,
 }
@@ -517,7 +519,7 @@ impl Packet {
         let graph_memory =
             crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)?;
         let graphs = graphs(&checked, &target, &commands, &context)?;
-        let retained = graphs.iter().map(Graph::work_bytes).sum::<usize>() + 4 * limits.proof_bytes;
+        let retained = graphs.work_bytes() + 4 * limits.proof_bytes;
         drop(graph_memory);
         Ok(Replay {
             target,
@@ -643,6 +645,7 @@ fn operand_mp(
         candidates.push(Candidate {
             rule,
             premises: operands,
+            replacement: None,
             consequences: vec![conclusion],
         });
     }
@@ -737,12 +740,16 @@ fn graphs(
     target: &Formula,
     commands: &[Command],
     context: &dyn ContextView,
-) -> Result<Vec<Graph>, String> {
+) -> Result<Decisions, String> {
     let goal_parts = crate::learning::knowledge::fragments(target);
     let used = used_commands(commands, Command::operands)?;
     let mut recent = VecDeque::new();
-    let mut graphs = crate::learning::search::scope::program_graphs(target, commands)?;
-    let mut bytes = graphs.iter().map(Graph::work_bytes).sum::<usize>();
+    let scopes = crate::learning::search::scope::program_graphs(target, commands, context)?;
+    let mut bytes = scopes.iter().map(Graph::work_bytes).sum::<usize>();
+    let mut graphs = Decisions::default();
+    for graph in scopes {
+        graphs.push(graph);
+    }
     let ids = commands
         .iter()
         .filter_map(|command| match command {
@@ -793,6 +800,7 @@ fn graphs(
                         .map(|(index, (_, formula))| Candidate {
                             rule: Rule::LemmaReference,
                             premises: vec![index],
+                            replacement: None,
                             consequences: vec![formula.clone()],
                         })
                         .collect(),
@@ -879,5 +887,5 @@ fn graphs(
             recent.push_back((position, formula, rule));
         }
     }
-    Ok(graphs)
+    Ok(graphs.finish())
 }

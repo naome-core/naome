@@ -16,6 +16,23 @@ impl Graph {
         required: &[String],
         definitions: &[ArtifactId],
     ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        self.capture_solving_inputs(required, definitions, None)
+    }
+
+    pub(crate) fn offered_solving_inputs(
+        &self,
+        proof: naome_proof::ProofId,
+        definitions: &[ArtifactId],
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        self.capture_solving_inputs(&[], definitions, Some(proof))
+    }
+
+    fn capture_solving_inputs(
+        &self,
+        required: &[String],
+        definitions: &[ArtifactId],
+        offered: Option<naome_proof::ProofId>,
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
         struct Capture<'a> {
             graph: &'a Graph,
             active: std::collections::BTreeSet<ArtifactId>,
@@ -99,9 +116,18 @@ impl Graph {
                 return Ok(None);
             }
         }
-        crate::learning::Prerequisites::from_inputs(capture.artifacts, capture.programs)
-            .map(Some)
-            .map_err(Into::into)
+        if let Some(proof) = offered
+            && !capture.visit(proof.into())?
+        {
+            return Ok(None);
+        }
+        crate::learning::Prerequisites::from_inputs(
+            capture.artifacts,
+            capture.programs,
+            offered.map(|p| *p.as_bytes()),
+        )
+        .map(Some)
+        .map_err(Into::into)
     }
     pub(crate) fn peer_learning_page(
         &self,

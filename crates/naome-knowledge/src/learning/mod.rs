@@ -1054,26 +1054,30 @@ struct Exploring<'a> {
     seed: u64,
     explore: bool,
 }
-impl model::Ranker for Exploring<'_> {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
-        // Inference is deterministic and does not consume the exploration RNG.
-        // Commit the draw only after validation, preserving error-path state.
+impl Exploring<'_> {
+    fn scores_encoded(&mut self, graph: &graph::Graph) -> Result<Vec<f32>, String> {
+        // Commit the draw only after the input passes the model's gates.
         let mut next = self.seed;
         let scores = if self.explore && model::random(&mut next).is_multiple_of(5) {
-            self.model.validate_decision(d)?;
-            (0..d.candidates.len())
+            self.model.validate_graph(graph)?;
+            (0..graph.candidates.len())
                 .map(|_| (model::random(&mut next) >> 11) as f32 / 9007199254740992.)
                 .collect()
         } else {
-            self.model.scores(d)?
+            self.model.scores_graph(graph)?
         };
         self.seed = next;
         Ok(scores)
     }
+}
+impl model::Ranker for Exploring<'_> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        self.scores_encoded(&graph::Graph::encode(d)?)
+    }
     fn plan(
         &mut self,
         d: &model::Decision,
-        state: &str,
+        graph: &graph::Graph,
         offered: &str,
         memory: Option<&model::Memory>,
     ) -> Result<model::Plan, String> {
@@ -1084,10 +1088,10 @@ impl model::Ranker for Exploring<'_> {
             return Ok(model::Plan::scores(if d.candidates.len() == 1 {
                 vec![0.]
             } else {
-                self.scores(d)?
+                self.scores_encoded(graph)?
             }));
         }
-        let mut plan = self.model.plan(d, state, offered, memory)?;
+        let mut plan = self.model.plan(d, graph, offered, memory)?;
         let mut next = self.seed;
         if d.candidates.len() > 1 && self.explore && model::random(&mut next).is_multiple_of(5) {
             plan.scores = (0..d.candidates.len())
@@ -1121,11 +1125,7 @@ fn program_generation(
     cost.original_steps = steps;
     cost.useful_steps = steps;
     cost.core_work = steps;
-    cost.unique_states = peer::program_graphs(target, &packet)?
-        .iter()
-        .map(graph::Graph::key)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
+    cost.unique_states = peer::program_states(target, &packet)?;
     cost.definition_references = packet
         .commands()?
         .iter()
@@ -1175,6 +1175,33 @@ fn solve_with_report(
         seed: job.max(1),
         explore: budget >= 128,
     };
+    let mut lemma_work = 0;
+    if budget != 0
+        && context.native_programs
+        && context.required.is_empty()
+        && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_offer())
+    {
+        let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+        let (packet, work) =
+            inputs.search_native_lemma(question.proved_target(), &mut ranker, budget, started)?;
+        lemma_work = work;
+        if let Some(packet) = packet {
+            return program_generation(
+                packet,
+                Vec::new(),
+                question.proved_target(),
+                false,
+                GenerationCost {
+                    search_expansions: lemma_work,
+                    retrieved_lemmas: 1,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                },
+                Vec::new(),
+            );
+        }
+    }
     let Generation {
         mut solution,
         diagnostic,
@@ -1182,7 +1209,16 @@ fn solve_with_report(
         frontier,
         executions,
         mut terminal,
-    } = search_question_report(source, &mut ranker, budget, &context)?;
+    } = search_question_report(
+        source,
+        &mut ranker,
+        budget.saturating_sub(lemma_work),
+        &context,
+    )?;
+    cost.search_expansions += lemma_work;
+    if let Some(solution) = &mut solution {
+        solution.cost.search_expansions += lemma_work;
+    }
     if let Some(solution) = &mut solution {
         if matches!(
             solution.tree,

@@ -76,7 +76,12 @@ fn a_wide_transport_scope_pays_for_each_actual_step_and_replays_its_choice() {
         Command::Deduce { assumptions, actions, .. }
             if assumptions.len() == 9 && actions.len() == 2
     )));
-    let graphs = program_graphs(question.proved_target(), &records).unwrap();
+    let graphs = program_graphs(
+        question.proved_target(),
+        &records,
+        &naome_checker::ArtifactState::default(),
+    )
+    .unwrap();
     assert_eq!(graphs.len(), 1);
     assert_eq!(graphs[0].candidates.len(), 2);
     assert_eq!(graphs[0].context.len(), 3);
@@ -124,9 +129,13 @@ fn a_free_variable_does_not_hide_a_later_scoped_witness() {
             ])
     )));
     assert!(
-        !program_graphs(question.proved_target(), &records)
-            .unwrap()
-            .is_empty()
+        !program_graphs(
+            question.proved_target(),
+            &records,
+            &naome_checker::ArtifactState::default()
+        )
+        .unwrap()
+        .is_empty()
     );
 }
 
@@ -169,7 +178,11 @@ fn a_valid_peer_deduction_can_include_an_action_the_local_policy_omits() {
     let records = commands(target, &actions).unwrap();
     let packet = crate::learning::peer::Packet::compose(target, &records, &[], []).unwrap();
     assert_eq!(&packet.target().unwrap(), target);
-    assert!(program_graphs(target, &records).unwrap().is_empty());
+    assert!(
+        program_graphs(target, &records, &naome_checker::ArtifactState::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -204,7 +217,7 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
     })
     .expect("the exact alternative transport prefix");
     let required = [crate::hex(proof_id.as_bytes())];
-    let inputs = Prerequisites::from_inputs(Vec::new(), vec![*packet]).unwrap();
+    let inputs = Prerequisites::from_inputs(Vec::new(), vec![*packet], None).unwrap();
     let mut engine = Engine::default();
     let mut io = crate::learning::tests::MemoryStore::default();
     let context = || SolveContext {
@@ -312,7 +325,7 @@ fn a_long_transport_requires_both_checked_segments_under_the_local_allowance() {
             .map(|&i| crate::hex(ids[i].as_bytes()))
             .collect::<Vec<_>>();
         let packets = indices.iter().map(|&i| packets[i].clone()).collect();
-        let inputs = Prerequisites::from_inputs(Vec::new(), packets).unwrap();
+        let inputs = Prerequisites::from_inputs(Vec::new(), packets, None).unwrap();
         engine
             .with(&Checkpoint::fresh(), &mut io, |runtime| {
                 solve_with_report(

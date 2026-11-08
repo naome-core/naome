@@ -291,7 +291,7 @@ fn action_kind(action: &search::Action) -> u8 {
         search::Action::NotImp(_) => 1,
         search::Action::Mp(..) => 2,
         search::Action::Beta(_) => 3,
-        search::Action::Instantiate(..) => 4,
+        search::Action::Instantiate(..) | search::Action::InstantiateApply(..) => 4,
         search::Action::Witness(..) => 5,
         search::Action::Substitute(..) => 6,
         search::Action::Cite(_) => 7,

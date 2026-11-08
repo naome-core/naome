@@ -12,11 +12,11 @@ impl Ranker for Observed<'_> {
     fn plan(
         &mut self,
         decision: &Decision,
-        state: &str,
+        graph: &Graph,
         offered: &str,
         memory: Option<&model::Memory>,
     ) -> Result<model::Plan, String> {
-        let mut plan = self.runtime.plan(decision, state, offered, memory)?;
+        let mut plan = self.runtime.plan(decision, graph, offered, memory)?;
         // The fixture chooses the branching path explicitly. Neural working
         // state still follows every actual symbolic action and child.
         plan.scores = decision
@@ -31,7 +31,7 @@ impl Ranker for Observed<'_> {
             })
             .collect();
         self.calls
-            .push((state.into(), memory.cloned(), plan.clone()));
+            .push((graph.binding.clone(), memory.cloned(), plan.clone()));
         Ok(plan)
     }
     fn identity(&self) -> Option<String> {

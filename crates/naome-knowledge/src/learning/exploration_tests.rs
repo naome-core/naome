@@ -12,6 +12,7 @@ fn decision() -> model::Decision {
             .map(|_| model::Candidate {
                 rule: model::Rule::DoubleNegation,
                 premises: vec![0],
+                replacement: None,
                 consequences: vec![],
             })
             .collect(),
@@ -65,6 +66,7 @@ fn deferred_neural_inference_preserves_scores_draws_and_invalid_input_errors() {
                 .map(|_| model::Candidate {
                     rule: model::Rule::DoubleNegation,
                     premises: vec![0],
+                    replacement: None,
                     consequences: vec![],
                 })
                 .collect();

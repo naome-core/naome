@@ -247,6 +247,13 @@ impl Frontier {
                 return Ok((witnesses, inputs));
             }
         }
+        if self.native && planned.is_empty() {
+            for proof in self.lemmas.offers(&lemma_index::Index::query(question)) {
+                if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
+                    return Ok((Vec::new(), inputs));
+                }
+            }
+        }
         let inputs = graph
             .solving_inputs(planned, definitions)?
             .unwrap_or_default();
