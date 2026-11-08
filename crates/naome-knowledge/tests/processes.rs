@@ -76,7 +76,7 @@ fn cold_helper_fetches_definitions_for_cooperative_work() {
         let mut graph = naome_knowledge::Graph::open(&seed).unwrap();
         let envelope = graph.author(&naome_knowledge::hex(&artifact)).unwrap();
         let receipt = graph.ingest(envelope, std::time::Instant::now()).unwrap();
-        assert_eq!(receipt.status, "accepted");
+        assert_eq!(receipt.status, naome_knowledge::IngestStatus::Accepted);
     }
     let result = Command::new("python3")
         .env("PYTHONDONTWRITEBYTECODE", "1")

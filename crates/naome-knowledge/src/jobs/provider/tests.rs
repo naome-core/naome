@@ -54,16 +54,20 @@ fn structural_finding_finalizes_the_exact_selected_source_under_one_owned_quantu
     .unwrap();
     assert!(matches!(result, Output::Question(source) if source == question));
     assert_eq!(grants.0, [(false, 1), (true, 1)]);
-    assert!(
-        drive(
-            &mut Finding {
-                question: "invalid".into()
-            },
-            &mut Grants::default(),
-            0
-        )
-        .is_err()
+    let invalid = "invalid";
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::source_requires_definitions(invalid)
+            .unwrap_err(),
     );
+    let failure = drive(
+        &mut Finding {
+            question: invalid.into(),
+        },
+        &mut Grants::default(),
+        0,
+    )
+    .unwrap_err();
+    assert!(matches!(failure, Failure::Coded(code) if u32::from(code) == expected.code()));
 }
 #[test]
 fn structural_finding_preserves_a_definition_aware_source() {

@@ -187,7 +187,7 @@ impl Provider for Finding {
     }
     fn execute(&mut self, _unit: u32, _owner: &mut dyn Supervisor) -> Result<(), Failure> {
         naome_checker::question::ResearchQuestion::source_requires_definitions(&self.question)
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::Error::from)?;
         Ok(())
     }
     fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {

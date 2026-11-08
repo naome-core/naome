@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """An ordinary cold peer resolves definitions before joining a work offer."""
+from fixture_result import FixtureResult
 import argparse
 from pathlib import Path
 import shutil
@@ -40,13 +41,13 @@ def run(trial, args):
 
     def joined():
         for node in trial.nodes:
-            assert not [event for event in node.logs() if event.get("event") == "fatal_error"]
+            assert not [event for event in node.logs() if event.get("event") == 0x00170017]
         events = helper.logs()
-        offer = next((i for i, event in enumerate(events) if event.get("event") == "exchange_request"
-                      and event.get("kind") == "work_offer" and event.get("peer") == requester.peer), None)
-        accepted = next((i for i, event in enumerate(events) if event.get("event") == "accepted"
-                         and event.get("source") == "fetch" and event.get("id") == args.definition_id), None)
-        membership = next((i for i, event in enumerate(events) if event.get("event") == "workgroup_joined"
+        offer = next((i for i, event in enumerate(events) if event.get("event") == 0x00170012
+                      and event.get("kind") == 0x001a0011 and event.get("peer") == requester.peer), None)
+        accepted = next((i for i, event in enumerate(events) if event.get("event") == 0x00170001
+                         and event.get("source") == 0x00180001 and event.get("id") == args.definition_id), None)
+        membership = next((i for i, event in enumerate(events) if event.get("event") == 0x0017006c
                            and event.get("peer") == requester.peer and event.get("resolution_id") == args.resolution), None)
         if offer is None or accepted is None or membership is None:
             return None
@@ -55,11 +56,11 @@ def run(trial, args):
         jobs = [record for record in records(helper)
                 if record.get("binding", {}).get("cooperative")
                 and record.get("input") == {"role": "solve", "question": args.target}]
-        jobs = [job for job in jobs if any(event.get("event") == "research_started"
+        jobs = [job for job in jobs if any(event.get("event") == 0x0017005f
                     and event.get("job") == job["id"] for event in events)
-                and any(event.get("event") == "research_finished" and event.get("state") == "Complete"
+                and any(event.get("event") == 0x0017005b and event.get("state") == 0x001d0004
                         and event.get("job") == job["id"] for event in events)]
-        if not jobs or not any(event.get("event") == "workgroup_member"
+        if not jobs or not any(event.get("event") == 0x0017006e
                                and event.get("peer") == helper.peer and event.get("active") is True
                                and event.get("resolution_id") == args.resolution
                                for event in requester.logs()):
@@ -68,14 +69,14 @@ def run(trial, args):
                 "joined_event": membership, "jobs": [job["id"] for job in jobs]}
 
     result = trial.wait(joined, maximum=80)
-    assert any(event.get("event") == "workgroup_member" and event.get("peer") == helper.peer
+    assert any(event.get("event") == 0x0017006e and event.get("peer") == helper.peer
                and event.get("resolution_id") == args.resolution and event.get("active") is True
                for event in requester.logs())
     trial.summary["claim"] = ("Two ordinary local processes: the helper fetched and checked a previously "
                               "missing relation after an autonomous work offer, then started and completed a solve job. "
                               "This fixture makes no proof-completion or multi-host claim.")
     trial.summary["scenarios"]["cold_defined_offer"] = result
-    trial.summary["result"] = "pass"
+    trial.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -92,12 +93,12 @@ def main():
     try:
         run(trial, args)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "defined-workgroup", args.profile)
-    assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary.get("cleanup")
 
 
 if __name__ == "__main__":
