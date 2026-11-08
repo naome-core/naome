@@ -1058,24 +1058,28 @@ impl model::Ranker for Exploring<'_> {
         offered: &str,
         memory: Option<&model::Memory>,
     ) -> Result<model::Plan, String> {
-        if !self.model.recurrent() {
+        let mut plan = if self.model.recurrent() {
+            let mut plan = self.model.plan(d, graph, offered, memory)?;
+            let mut next = self.seed;
+            if d.candidates.len() > 1 && self.explore && model::random(&mut next).is_multiple_of(5)
+            {
+                plan.scores = (0..d.candidates.len())
+                    .map(|_| (model::random(&mut next) >> 11) as f32 / 9007199254740992.)
+                    .collect();
+            }
+            self.seed = next;
+            plan
+        } else {
             if memory.is_some() {
                 return Err("stateless exploration received memory".into());
             }
-            return Ok(model::Plan::scores(if d.candidates.len() == 1 {
+            model::Plan::scores(if d.candidates.len() == 1 {
                 vec![0.]
             } else {
                 self.scores_encoded(graph)?
-            }));
-        }
-        let mut plan = self.model.plan(d, graph, offered, memory)?;
-        let mut next = self.seed;
-        if d.candidates.len() > 1 && self.explore && model::random(&mut next).is_multiple_of(5) {
-            plan.scores = (0..d.candidates.len())
-                .map(|_| (model::random(&mut next) >> 11) as f32 / 9007199254740992.)
-                .collect();
-        }
-        self.seed = next;
+            })
+        };
+        search::focus::rank(d, &mut plan.scores);
         Ok(plan)
     }
     fn identity(&self) -> Option<String> {
