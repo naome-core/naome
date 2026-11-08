@@ -2,6 +2,45 @@ use std::{path::PathBuf, process::Command};
 
 static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = std::env::temp_dir().join(format!(
+        "naome-workgroups-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let result = Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg(root.join("crates/naome-knowledge/tests/support/workgroups.py"))
+        .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
+        .arg(&output)
+        .args([
+            "--timeout",
+            "90",
+            "--profile",
+            if cfg!(debug_assertions) {
+                "test"
+            } else {
+                "release"
+            },
+        ])
+        .output()
+        .expect("ordinary workgroup process scenario");
+    assert!(
+        result.status.success(),
+        "workgroup evidence at {}\n{}\n{}",
+        output.display(),
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
 #[ignore = "Bounded public produce/compaction mechanism screen"]

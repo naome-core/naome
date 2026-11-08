@@ -1015,7 +1015,7 @@ fn validate_record(
     } else if r.provider == crate::learning::PROVIDER {
         return Err("native provider snapshot absent".into());
     }
-    r.binding.validate()?;
+    r.binding.validate_role(&r.input)?;
     r.settings.validate_history()?;
     if id != r.id
         || id >= next_id

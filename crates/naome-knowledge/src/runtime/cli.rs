@@ -40,7 +40,12 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Its small predictor learns search outcomes, cost and checked reuse\n\
              in earlier unresolved goals. These observations guide exploration\n\
              and never establish mathematical truth or research novelty.\n\
-             Model, optimizer and replay remain local. Only checked mathematics is shared.\n\
+             Model, optimizer and replay remain local.\n\
+             \nCooperative research:\n\
+             Nodes may offer unresolved formal questions to compatible peers and\n\
+             voluntarily work on related requests within local resource budgets.\n\
+             Work offers and participation are public to those peers; results are\n\
+             admitted only after independent checking and local selection.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\
              mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\
