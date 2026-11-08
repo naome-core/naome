@@ -141,7 +141,7 @@ class BuildContractTests(unittest.TestCase):
             self.assertEqual(len(bytes.fromhex(digest)), 32)
 
     def test_cargo_numerical_test_kernels_keep_runtime_guards(self):
-        profiles = tomllib.loads((ROOT / "Cargo.toml").read_text())["profile"]["test"]["package"]
+        profiles = tomllib.loads((ROOT / ".cargo/config.toml").read_text())["profile"]["test"]["package"]
         for package in ("burn-flex", "gemm", "gemm-common", "gemm-f32"):
             with self.subTest(package=package):
                 self.assertEqual(profiles[package]["opt-level"], 2)
