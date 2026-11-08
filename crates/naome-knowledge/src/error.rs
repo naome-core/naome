@@ -638,6 +638,45 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::EvidenceIdentity => "research evidence identity differs",
+                crate::ResearchFailure::EvidenceHelperCapacity => "research helper plan capacity",
+                crate::ResearchFailure::EvidenceHelperSource => {
+                    "research helper plan source differs"
+                }
+                crate::ResearchFailure::EvidenceOutcome => {
+                    "research evidence outcome or cost differs"
+                }
+                crate::ResearchFailure::EvidenceInitialization => {
+                    "Finder initialization would replace actual experience"
+                }
+                crate::ResearchFailure::EvidenceDrawOverflow => "research draw overflow",
+                crate::ResearchFailure::EvidenceObservationOverflow => {
+                    "finder observation overflow"
+                }
+                crate::ResearchFailure::EvidenceCompletedReceipt => {
+                    "finder experience substituted a completed receipt"
+                }
+                crate::ResearchFailure::EvidenceAttemptOverflow => "research attempt overflow",
+                crate::ResearchFailure::EvidenceWorkOverflow => "research work overflow",
+                crate::ResearchFailure::EvidenceTimeOverflow => "research time overflow",
+                crate::ResearchFailure::EvidencePlanBinding => {
+                    "research recursive plan binding or capacity"
+                }
+                crate::ResearchFailure::EvidencePlanCycle => "research recursive plan cycle",
+                crate::ResearchFailure::EvidencePreparedJob => "research prepared job differs",
+                crate::ResearchFailure::EvidenceCandidateRequired => {
+                    "only a candidate job can supply checked evidence"
+                }
+                crate::ResearchFailure::EvidenceProofSourceMissing => {
+                    "finder proof index source is missing"
+                }
+                crate::ResearchFailure::EvidenceProofIdentity => {
+                    "finder proof index identity differs"
+                }
+                crate::ResearchFailure::EvidenceSupportReceipt => {
+                    "finder support receipt identity differs"
+                }
+                crate::ResearchFailure::EvidenceSupportOverflow => "finder support count overflow",
                 crate::ResearchFailure::EvidenceMissing => {
                     "established research evidence is missing"
                 }
