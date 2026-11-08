@@ -232,6 +232,8 @@ codes! {
         GrantClosed = 42,
         GrantDecoding = 43,
         GrantIdentity = 44,
+        ProgramUnsupported = 45,
+        LearningUnsupported = 46,
     }
     pub enum LearningGraphFailure in 10 {
         Capacity = 1,

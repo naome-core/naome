@@ -1081,7 +1081,7 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
             &mut self,
             unit: u32,
             progress: crate::learning::Progress,
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::outcome::WorkerFailure> {
             assert_eq!(unit, 1);
             assert!(self.0.replace(progress).is_none());
             Ok(())

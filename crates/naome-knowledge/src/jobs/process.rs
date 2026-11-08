@@ -1238,14 +1238,17 @@ impl super::provider::Supervisor for WorkerControl {
         self.grant(self.current_unit)
             .map_err(|error| grant_error_text(error).to_owned())
     }
-    fn learning(&mut self, unit: u32, progress: crate::learning::Progress) -> Result<(), String> {
-        emit(&Frame::Learning {
+    fn learning(
+        &mut self,
+        unit: u32,
+        progress: crate::learning::Progress,
+    ) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Learning {
             id: self.id,
             unit,
             progress: Box::new(progress),
         })?;
         self.grant(unit)
-            .map_err(|error| grant_error_text(error).to_owned())
     }
     fn blocked_nanos(&self) -> u64 {
         self.blocked_nanos
@@ -1261,15 +1264,17 @@ impl super::provider::Supervisor for WorkerControl {
         &mut self,
         unit: u32,
         records: Vec<naome_proof::program::Command>,
-    ) -> Result<(), String> {
-        let records = crate::hex(&naome_proof::program::encode_records(&records)?);
-        emit(&Frame::Program {
+    ) -> Result<(), WorkerFailure> {
+        let records = crate::hex(
+            &naome_proof::program::encode_records(&records)
+                .map_err(|_| WorkerFailure::ProgramEncoding)?,
+        );
+        emit_coded(&Frame::Program {
             id: self.id,
             unit,
             records,
         })?;
         self.grant(unit)
-            .map_err(|error| grant_error_text(error).to_owned())
     }
     fn reserve(&mut self, next: u32) -> Result<(), WorkerFailure> {
         emit_coded(&Frame::Reserve { id: self.id, next })?;

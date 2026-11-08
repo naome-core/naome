@@ -52,8 +52,8 @@ pub(super) trait Supervisor {
         &mut self,
         _unit: u32,
         _records: Vec<naome_proof::program::Command>,
-    ) -> Result<(), String> {
-        Err("provider does not support streamed candidates".into())
+    ) -> Result<(), crate::outcome::WorkerFailure> {
+        Err(crate::outcome::WorkerFailure::ProgramUnsupported)
     }
     fn read_model(
         &mut self,
@@ -70,8 +70,12 @@ pub(super) trait Supervisor {
     ) -> Result<(), String> {
         Err("provider cannot write local model artifacts".into())
     }
-    fn learning(&mut self, _unit: u32, _progress: crate::learning::Progress) -> Result<(), String> {
-        Err("provider does not support local learning checkpoints".into())
+    fn learning(
+        &mut self,
+        _unit: u32,
+        _progress: crate::learning::Progress,
+    ) -> Result<(), crate::outcome::WorkerFailure> {
+        Err(crate::outcome::WorkerFailure::LearningUnsupported)
     }
     fn reserve(&mut self, next: u32) -> Result<(), crate::outcome::WorkerFailure>;
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), crate::outcome::WorkerFailure>;
