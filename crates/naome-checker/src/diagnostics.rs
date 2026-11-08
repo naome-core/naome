@@ -79,6 +79,10 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
         .chain(RULE_CODES.iter())
         .chain(OPERAND_ROLE_CODES.iter())
         .chain(reasons::CLAIM_FIELD_CODES.iter())
+        .chain(reasons::CLAIM_VALUE_CODES.iter())
+        .chain(INSPECTION_ERROR_CODES.iter())
+        .chain(formula::VARIABLE_CODES.iter())
+        .chain(formula::FORMULA_NODE_CODES.iter())
         .chain(formula::NODE_KIND_CODES.iter())
         .chain(formula::PATH_SEGMENT_CODES.iter())
         .chain(formula::VARIABLE_NAMESPACE_CODES.iter())
@@ -338,24 +342,22 @@ impl ProofDiagnostic {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "code", rename_all = "snake_case")]
-pub enum InspectionError {
-    InputChanged,
-    ContextChanged,
-    InvalidQuery,
-    UnknownFormula,
-    InvalidPath,
-    ReplayRequired {
-        checked_before: u64,
-        required_before: u64,
-    },
-    ContextUnavailable,
-    FormulaOutsideLimits {
-        reason: FormulaFailure,
-    },
-    UnsupportedDiagnostic,
-    TargetRequired,
+diagnostic_codes! {
+    InspectionError, INSPECTION_ERROR_CODES, "InspectionError",
+    structured {
+        ReplayRequired = 0x0033_0006 { checked_before: u64, required_before: u64 },
+        FormulaOutsideLimits = 0x0033_0008 { reason: FormulaFailure },
+    }
+    units {
+        InputChanged = 0x0033_0001,
+        ContextChanged = 0x0033_0002,
+        InvalidQuery = 0x0033_0003,
+        UnknownFormula = 0x0033_0004,
+        InvalidPath = 0x0033_0005,
+        ContextUnavailable = 0x0033_0007,
+        UnsupportedDiagnostic = 0x0033_0009,
+        TargetRequired = 0x0033_000a,
+    }
 }
 impl fmt::Display for InspectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

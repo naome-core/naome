@@ -3,54 +3,6 @@ use naome_foundation::FormulaCodecError;
 use naome_proof::{DefinedFormulaCodecError, DefinitionExpansionError};
 use serde::Serialize;
 
-// One table owns each diagnostic code, typed fields and catalog entry.
-macro_rules! diagnostic_codes {
-    (
-        $(#[$meta:meta])* $name:ident, $catalog:ident, $label:literal,
-        structured { $( $variant:ident = $code:literal { $( $field:ident: $ty:ty ),+ $(,)? } ),+ $(,)? }
-        units { $( $unit:ident = $unit_code:literal ),+ $(,)? }
-    ) => {
-        $(#[$meta])*
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub enum $name {
-            $( $variant { $( $field: $ty ),+ }, )+
-            $( $unit, )+
-        }
-        impl $name {
-            /// Stable machine code of this condition.
-            pub fn code(&self) -> u32 {
-                match self {
-                    $( Self::$variant { .. } => $code, )+
-                    $( Self::$unit => $unit_code, )+
-                }
-            }
-        }
-        impl serde::Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                use serde::ser::SerializeStruct;
-                match self {
-                    $( Self::$variant { $( $field ),+ } => {
-                        let mut value = serializer.serialize_struct(stringify!($name), 1 $(+ { let _ = stringify!($field); 1 })+)?;
-                        value.serialize_field("code", &$code)?;
-                        $( value.serialize_field(stringify!($field), $field)?; )+
-                        value.end()
-                    }, )+
-                    $( Self::$unit => {
-                        let mut value = serializer.serialize_struct(stringify!($name), 1)?;
-                        value.serialize_field("code", &$unit_code)?;
-                        value.end()
-                    }, )+
-                }
-            }
-        }
-        /// Assigned diagnostic codes for the machine catalog.
-        pub const $catalog: &[(&str, &str, u32)] = &[
-            $( ($label, stringify!($variant), $code), )+
-            $( ($label, stringify!($unit), $unit_code), )+
-        ];
-    };
-}
-
 diagnostic_codes! {
     /// The failed condition, with typed witnesses instead of prose interpretation.
     Failure, DIAGNOSTIC_FAILURE_CODES, "ProofFailure",
@@ -122,12 +74,33 @@ diagnostic_units! {
         Statement = 5,
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClaimValue {
     Count(u64),
     Digest(Digest),
 }
+impl Serialize for ClaimValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("ClaimValue", 2)?;
+        match self {
+            Self::Count(count) => {
+                value.serialize_field("code", &0x0032_0001_u32)?;
+                value.serialize_field("value", count)?;
+            }
+            Self::Digest(digest) => {
+                value.serialize_field("code", &0x0032_0002_u32)?;
+                value.serialize_field("value", digest)?;
+            }
+        }
+        value.end()
+    }
+}
+/// Assigned claim value classes for the machine catalog.
+pub const CLAIM_VALUE_CODES: &[(&str, &str, u32)] = &[
+    ("ClaimValue", "Count", 0x0032_0001),
+    ("ClaimValue", "Digest", 0x0032_0002),
+];
 
 diagnostic_codes! {
     FormulaFailure, FORMULA_FAILURE_CODES, "FormulaFailure",

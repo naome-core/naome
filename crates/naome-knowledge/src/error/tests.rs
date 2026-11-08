@@ -68,7 +68,7 @@ fn inspection_errors_keep_their_typed_retry_requirements_in_json() {
         },
     ));
     let json = serde_json::to_value(&error).unwrap();
-    assert_eq!(json["inspection_error"]["code"], "replay_required");
+    assert_eq!(json["inspection_error"]["code"], 0x0033_0006_u32);
     assert_eq!(json["inspection_error"]["checked_before"], 3);
     assert_eq!(json["inspection_error"]["required_before"], 9);
 }

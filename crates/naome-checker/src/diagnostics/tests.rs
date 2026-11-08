@@ -636,3 +636,35 @@ fn diagnostic_unit_values_have_registered_numeric_codes() {
     assert_eq!(codes.len(), unique.len());
     assert!(!unique.contains(&0));
 }
+
+#[test]
+fn inspection_and_formula_values_preserve_numeric_types_and_witnesses() {
+    let mismatch = Failure::ManifestMismatch {
+        field: ClaimField::Commands,
+        expected: ClaimValue::Count(2),
+        actual: ClaimValue::Count(3),
+    };
+    let value = serde_json::to_value(mismatch).unwrap();
+    assert_eq!(value["field"], 0x0031_0001_u32);
+    assert_eq!(value["expected"]["code"], 0x0032_0001_u32);
+    assert_eq!(value["expected"]["value"], 2);
+    assert_eq!(value["actual"]["value"], 3);
+    let inspection = InspectionError::ReplayRequired {
+        checked_before: 3,
+        required_before: 9,
+    };
+    let value = serde_json::to_value(inspection).unwrap();
+    assert_eq!(value["code"], 0x0033_0006_u32);
+    assert_eq!(value["required_before"], 9);
+    let node = FormulaNode::Equal {
+        left: Variable::Free(4),
+        right: Variable::Bound(2),
+    };
+    let value = serde_json::to_value(node).unwrap();
+    assert_eq!(value["code"], 0x0036_0001_u32);
+    assert_eq!(value["left"]["code"], 0x0034_0001_u32);
+    assert_eq!(value["left"]["identifier"], 4);
+    assert_eq!(value["right"]["code"], 0x0034_0002_u32);
+    assert_eq!(value["right"]["identifier"], 2);
+    assert!(value.get("kind").is_none());
+}
