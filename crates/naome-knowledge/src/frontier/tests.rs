@@ -1412,3 +1412,18 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
             .is_empty()
     );
 }
+
+#[test]
+fn missing_established_evidence_remains_a_structured_start_failure() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    drop(Frontier::open(&directory.0, &graph, 1, jobs::Settings::default()).unwrap());
+    std::fs::remove_file(directory.0.join("research/evidence.sqlite3")).unwrap();
+    let error = Frontier::open(&directory.0, &graph, 1, jobs::Settings::default())
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::EvidenceMissing)
+    );
+}

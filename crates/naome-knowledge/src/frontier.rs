@@ -107,7 +107,7 @@ impl Frontier {
         graph: &Graph,
         seed: u64,
         settings: jobs::Settings,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let evidence = Evidence::open(directory, seed, settings)?;
         let random = Random::new(evidence.random());
         let mut local = Self {
@@ -149,8 +149,7 @@ impl Frontier {
                     })
                     .saturating_add(finder::Model::memory_bytes())
                     .saturating_add(finder::Learning::reservation()),
-            )
-            .map_err(|e| e.to_string())?,
+            )?,
         };
         // A durable success flag alone cannot restore demonstrated ability.
         let mut successes = [0u64; SIGNALS];
@@ -160,7 +159,7 @@ impl Frontier {
         let mut goals = VecDeque::new();
         local.evidence.replay(|record| {
             let question =
-                ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
+                ResearchQuestion::from_hex(&record.question).map_err(crate::Error::from)?;
             if record.first_unresolved_job > 0 && record.verified.is_none() {
                 Self::retain_goal(&mut goals, question.clone());
             }
@@ -171,9 +170,9 @@ impl Frontier {
             }
             if let Some(root) = record.verified.as_ref().or(record.prepared.as_ref()) {
                 let question =
-                    ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
+                    ResearchQuestion::from_hex(&record.question).map_err(crate::Error::from)?;
                 let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
-                if Self::checked_target(graph, root, &question).map_err(|e| e.to_string())? {
+                if Self::checked_target(graph, root, &question)? {
                     let features = Features::of(&question);
                     for index in 0..SIGNALS {
                         if features.counts[index] > 0 {
@@ -210,13 +209,9 @@ impl Frontier {
                     {
                         let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
                         let question = ResearchQuestion::from_hex(&record.question)
-                            .map_err(|e| e.to_string())?;
-                        if Self::checked_target(graph, root, &question)
-                            .map_err(|e| e.to_string())?
-                        {
-                            local
-                                .verified(&question, graph, record.verified_job, root)
-                                .map_err(|e| e.to_string())?;
+                            .map_err(crate::Error::from)?;
+                        if Self::checked_target(graph, root, &question)? {
+                            local.verified(&question, graph, record.verified_job, root)?;
                         }
                     }
                     after = Some(key);

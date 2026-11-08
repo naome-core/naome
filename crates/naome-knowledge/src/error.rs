@@ -638,6 +638,13 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::EvidenceMissing => {
+                    "established research evidence is missing"
+                }
+                crate::ResearchFailure::EvidenceRandomState => "invalid research random state",
+                crate::ResearchFailure::EvidenceObservationSequence => {
+                    "finder observation sequence differs"
+                }
                 crate::ResearchFailure::RecoveryFifoIdentity => {
                     "research FIFO history identity differs"
                 }

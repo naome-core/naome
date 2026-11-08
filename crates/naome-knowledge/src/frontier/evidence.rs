@@ -162,7 +162,7 @@ impl Evidence {
         directory: &Path,
         seed: u64,
         settings: jobs::Settings,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let directory = crate::storage::research_directory(directory)?;
         let path = directory.join("evidence.sqlite3");
         let marker = directory.join("evidence.initialized");
@@ -171,7 +171,7 @@ impl Evidence {
             Checkpoint::open_for_replay(&path, DOMAIN)?
         } else {
             if crate::storage::marker_valid(&marker, MARKER)? {
-                return Err("established research evidence is missing".into());
+                return Err(crate::ResearchFailure::EvidenceMissing.into());
             }
             Checkpoint::create(
                 &path,
@@ -189,13 +189,13 @@ impl Evidence {
         };
         let mut header: Header = checkpoint.header()?;
         if header.random == 0 {
-            return Err("invalid research random state".into());
+            return Err(crate::ResearchFailure::EvidenceRandomState.into());
         }
         crate::object::id_bytes(&header.model_contract)?;
         header.model.validate()?;
         header.learning.validate()?;
         if header.observations < header.model.updates {
-            return Err("finder observation sequence differs".into());
+            return Err(crate::ResearchFailure::EvidenceObservationSequence.into());
         }
         if header.model_contract != solver {
             header.model_contract = solver.clone();
@@ -269,19 +269,16 @@ impl Evidence {
     }
     pub(super) fn replay(
         &mut self,
-        mut visit: impl FnMut(&Record) -> Result<bool, String>,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&Record) -> Result<bool, crate::Error>,
+    ) -> Result<(), crate::Error> {
         let mut after = None;
         loop {
-            let page = self
-                .checkpoint
-                .page(
-                    "question",
-                    after.as_deref(),
-                    16,
-                    crate::resources::active_limits().question_cache_bytes,
-                )
-                .map_err(|e| e.to_string())?;
+            let page = self.checkpoint.page(
+                "question",
+                after.as_deref(),
+                16,
+                crate::resources::active_limits().question_cache_bytes,
+            )?;
             if page.is_empty() {
                 return Ok(());
             }
@@ -292,9 +289,8 @@ impl Evidence {
                     record.verified = record.prepared.clone();
                     record.verified_job = record.last_job;
                     let question =
-                        ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
-                    self.put_observation(&question, &record, Some((true, record.verified_ms)))
-                        .map_err(|e| e.to_string())?;
+                        ResearchQuestion::from_hex(&record.question).map_err(crate::Error::from)?;
+                    self.put_observation(&question, &record, Some((true, record.verified_ms)))?;
                 }
                 after = Some(key);
             }
@@ -308,7 +304,7 @@ impl Evidence {
         }
         Ok(record)
     }
-    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, String> {
+    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, crate::Error> {
         self.checkpoint
             .page(
                 "question",

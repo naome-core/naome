@@ -859,6 +859,7 @@ codes! {
         CandidateSealMissing = 126, CandidateCheckedMissing = 127,
         RecoveryFifoIdentity = 128, RecoveryRecordMissing = 129,
         RecoveryRecordIdentity = 130, RecoveryBytesOverflow = 131,
+        EvidenceMissing = 132, EvidenceRandomState = 133, EvidenceObservationSequence = 134,
     }
 
 }

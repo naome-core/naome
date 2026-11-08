@@ -203,7 +203,7 @@ impl Autonomous {
         directory: &std::path::Path,
         graph: &Graph,
         seed: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.frontier = Some(crate::frontier::Frontier::open(
             directory,
             graph,
