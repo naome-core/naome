@@ -126,11 +126,11 @@ fn aliases_and_alternative_derivations_coexist() {
         Err(naome_checker::ArtifactStateError::DuplicateDerivation { .. })
     ));
     let outcome = graph.ingest(child.clone(), Instant::now()).unwrap();
-    assert_eq!(outcome.status, "accepted");
+    assert_eq!(outcome.status, crate::IngestStatus::Accepted);
     assert_eq!(graph.ids().len(), 2);
     assert_eq!(
         graph.ingest(child, Instant::now()).unwrap().status,
-        "duplicate"
+        crate::IngestStatus::Duplicate
     );
     assert_eq!(graph.ids().len(), 2);
     let alternate = graph.author("00000000050600000000000000000b00000000000000000000000000000b0000000000000000000000200000000000000001200000000000000002210000000300000000").unwrap();
@@ -159,7 +159,7 @@ fn dependent_waits_for_exact_immutable_parent_then_union_converges() {
     let mut second = Graph::default();
     assert_eq!(
         second.ingest(child, Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     assert!(second.ids().is_empty());
     assert_eq!(second.missing().unwrap().len(), 1);
@@ -196,7 +196,7 @@ fn waiting_proofs_survive_retry_deadlines_without_extending_or_resetting_history
             .ingest(child, now + crate::resources::limits().pending_retry)
             .unwrap()
             .status,
-        "duplicate"
+        crate::IngestStatus::Duplicate
     );
 }
 
@@ -334,7 +334,7 @@ fn pending_history_outlives_working_pages_and_restart_without_affecting_accepted
                 )
                 .unwrap()
                 .status,
-            "waiting"
+            crate::IngestStatus::Waiting
         );
         assert!(graph.pending.len() <= crate::resources::limits().pending_page);
     }
@@ -844,7 +844,7 @@ fn startup_prune_fixture(directory: &Path) -> (Graph, Vec<Envelope>, StatementId
                 .ingest(envelope.clone(), Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         envelopes.push(envelope);
     }
@@ -970,7 +970,7 @@ fn local_source_production_reuses_one_sealed_check_with_identical_transport_byte
     let mut graph = Graph::default();
     let (object, result) = graph.produce(SOURCE).unwrap();
     assert_eq!(object, expected);
-    assert_eq!(result.status, "accepted");
+    assert_eq!(result.status, crate::IngestStatus::Accepted);
     assert_eq!(graph.checker_calls(), (1, 0));
     assert_eq!(graph.object(result.id).unwrap(), Some(expected));
 }

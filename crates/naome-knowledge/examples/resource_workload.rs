@@ -100,7 +100,7 @@ fn main() -> Result<(), String> {
     let mut window = Instant::now();
     for (index, object) in objects.into_iter().enumerate() {
         let result = graph.ingest(object, Instant::now())?;
-        assert_eq!(result.status, "accepted");
+        assert_eq!(result.status, naome_knowledge::IngestStatus::Accepted);
         assert_eq!(graph.accepted_count(), index + 1);
         if (index + 1).is_multiple_of(WINDOW) {
             windows.push(window.elapsed().as_secs_f64());

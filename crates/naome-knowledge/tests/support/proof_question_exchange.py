@@ -103,7 +103,7 @@ class QuestionDriver(DiscoveryDriver):
         if self.mode == "direct":
             sender.command("links", peers=[])
             result = sender.command("produce", artifact=quantified_reflexivity(34))
-            assert result["result"]["status"] == "accepted" and result["metadata"] is None, result
+            assert result["result"]["status"] == 0x0016_0001 and result["metadata"] is None, result
             error = result["metadata_error"]
             assert error["code"] == 0x0006_000D, error
             assert error["limit"] == 2, error

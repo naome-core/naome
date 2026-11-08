@@ -37,7 +37,7 @@ def main():
         node.start([producer_source], command_input=False, test_controls=False)
         node.wait_event(lambda event: event.get("event") == "command_input_closed")
         event = node.wait_event(lambda event: event.get("event") == "producer_result")
-        assert event["result"]["status"] == "accepted"
+        assert event["result"]["status"] == 0x0016_0001
         id = event["result"]["id"]
         assert id == "c0de06fa90f5d8ba27cf4d97779d2614a3eb819695ac8ac13751df9e1b062798", "service artifact address"
         assert node.process.poll() is None

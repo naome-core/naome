@@ -28,7 +28,7 @@ use storage::CheckedStorage;
 
 #[derive(Debug)]
 pub struct Ingest {
-    pub status: &'static str,
+    pub status: crate::IngestStatus,
     pub id: ArtifactId,
     pub admitted: Vec<ArtifactId>,
     pub rejected: Vec<(ArtifactId, crate::Error)>,
@@ -639,7 +639,7 @@ impl Graph {
             return Ok((
                 envelope,
                 Ingest {
-                    status: "duplicate",
+                    status: crate::IngestStatus::Duplicate,
                     id,
                     admitted: Vec::new(),
                     rejected: Vec::new(),
@@ -652,7 +652,7 @@ impl Graph {
         Ok((
             envelope,
             Ingest {
-                status: "accepted",
+                status: crate::IngestStatus::Accepted,
                 id,
                 admitted,
                 rejected,
@@ -670,7 +670,7 @@ impl Graph {
                 return Err("proof identity collision".into());
             }
             return Ok(Ingest {
-                status: "duplicate",
+                status: crate::IngestStatus::Duplicate,
                 id,
                 admitted: Vec::new(),
                 rejected: Vec::new(),
@@ -678,7 +678,7 @@ impl Graph {
         }
         if self.waiting(id) {
             return Ok(Ingest {
-                status: "waiting_duplicate",
+                status: crate::IngestStatus::WaitingDuplicate,
                 id,
                 admitted: Vec::new(),
                 rejected: Vec::new(),
@@ -704,7 +704,7 @@ impl Graph {
                 self.pending.insert(id, (candidate, now));
             }
             return Ok(Ingest {
-                status: "waiting",
+                status: crate::IngestStatus::Waiting,
                 id,
                 admitted: Vec::new(),
                 rejected: Vec::new(),
@@ -712,7 +712,7 @@ impl Graph {
         }
         self.admit(candidate)?;
         let mut result = Ingest {
-            status: "accepted",
+            status: crate::IngestStatus::Accepted,
             id,
             admitted: vec![id],
             rejected: Vec::new(),

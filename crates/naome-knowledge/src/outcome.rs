@@ -366,6 +366,12 @@ codes! {
         CleanupFailed = 17,
     }
 
+    pub enum IngestStatus in 22 {
+        Accepted = 1,
+        Duplicate = 2,
+        Waiting = 3,
+        WaitingDuplicate = 4,
+    }
 }
 
 impl InputLimit {

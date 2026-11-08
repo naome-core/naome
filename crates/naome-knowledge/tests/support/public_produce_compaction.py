@@ -306,7 +306,7 @@ def main():
                     finally:
                         duration = time.monotonic_ns() - mark
                         row["roundtrip_ns"] = duration
-                    assert result["result"] == {"status": "accepted", "id": identifier}
+                    assert result["result"] == {"status": 0x0016_0001, "id": identifier}
                     envelope = result["object"]
                     assert set(envelope) == {"artifact_id", "statement_id", "compatibility", "payload", "obligation_proof"}
                     assert envelope["artifact_id"] == identifier and envelope["statement_id"] == statement

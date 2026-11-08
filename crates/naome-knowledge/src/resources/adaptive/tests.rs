@@ -111,7 +111,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     let mut graph = Graph::open(&directory.0).unwrap();
     assert_eq!(
         graph.ingest(child, Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     let target = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &target).unwrap();

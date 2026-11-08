@@ -983,7 +983,7 @@ fn inventory_pages_seek_past_the_cursor_without_rescanning_prior_ids() {
         };
         assert_eq!(
             graph.ingest(object, Instant::now()).unwrap().status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         expected.push(id);
     }

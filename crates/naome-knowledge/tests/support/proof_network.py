@@ -694,7 +694,7 @@ class Driver:
 
     def produce(self, node, depth, label):
         result = self.nodes[node].command("produce", artifact=source(depth))
-        assert result["result"]["status"] == "accepted"
+        assert result["result"]["status"] == 0x0016_0001
         object = result["object"]
         self.retain_proof(label, object)
         return object
@@ -729,7 +729,7 @@ class Driver:
                 for used in range(depth):
                     self.check_deadline()
                     result = self.nodes[0].command("produce", artifact=inventory_source(depth, used))
-                    assert result["result"]["status"] == "accepted"
+                    assert result["result"]["status"] == 0x0016_0001
                     ids.append(result["object"]["artifact_id"])
             assert len(ids) == len(set(ids)) == 595
             reservations[1].close()
@@ -786,7 +786,7 @@ class Driver:
             assert len(set(initial)) == 4
             padded = source(1, padding=64000)
             duplicate = self.nodes[0].command("produce", artifact=padded)
-            assert duplicate["result"]["status"] == "duplicate"
+            assert duplicate["result"]["status"] == 0x0016_0002
             assert duplicate["object"]["artifact_id"] == initial[0]
             self.summary["scenarios"]["large_canonical_command_normalizes_duplicate"] = {
                 "result": "pass", "input_bytes": len(padded) // 2,

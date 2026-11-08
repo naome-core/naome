@@ -102,7 +102,7 @@ class DiscoveryDriver(Driver):
 
     def own_proof(self, node):
         event = node.wait_event(lambda event: event.get("event") == "producer_result", timeout=15)
-        assert event["result"]["status"] in ["accepted", "duplicate"]
+        assert event["result"]["status"] in [0x0016_0001, 0x0016_0002]
         object = node.command("object", id=event["result"]["id"])["object"]
         return self.retain_proof(f"independent-{node.index}", object)
 

@@ -202,6 +202,9 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
                 variable: x,
             },
         ]);
-        assert_eq!(replayed.produce(&source).unwrap().1.status, "accepted");
+        assert_eq!(
+            replayed.produce(&source).unwrap().1.status,
+            crate::IngestStatus::Accepted
+        );
     }
 }

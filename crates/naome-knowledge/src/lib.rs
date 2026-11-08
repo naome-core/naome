@@ -17,8 +17,8 @@ pub use learning::evidence::{EvidenceLimit, Failure as EvidenceFailure};
 #[cfg(feature = "developer-tools")]
 pub use outcome::OUTCOME_CODES;
 pub use outcome::{
-    DurabilityCode, InputFault, InputLimit, LearningGraphFailure, PauseReason, RuntimeFailure,
-    StartupFailure,
+    DurabilityCode, IngestStatus, InputFault, InputLimit, LearningGraphFailure, PauseReason,
+    RuntimeFailure, StartupFailure,
 };
 mod frontier;
 pub use error::{CertificateFormatError, DurabilityFailure, Error};

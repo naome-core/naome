@@ -281,7 +281,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
                 .ingest(object.clone(), Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         let metadata = producer.describe(id).unwrap().unwrap();
         let peer = PeerId::random();
@@ -637,7 +637,7 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
     let mut graph = Graph::default();
     assert_eq!(
         graph.ingest(owner, Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     let peer = PeerId::random();
     let mut questions = new_questions();

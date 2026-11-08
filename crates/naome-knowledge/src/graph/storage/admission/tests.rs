@@ -274,7 +274,7 @@ fn public_ingest_batches_real_artifact_and_mirror_inserts_before_canonical_commi
                 .ingest(envelope.clone(), Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         PROBE.with(|slot| {
             let probe = slot.borrow();

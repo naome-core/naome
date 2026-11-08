@@ -65,7 +65,7 @@ def trial(driver, role, stop_signal, index):
             driver.nodes = [subject]
             subject.start(test_controls=False)
             produced = subject.command("produce", artifact=source(3))
-            assert produced["result"]["status"] == "accepted"
+            assert produced["result"]["status"] == 0x0016_0001
 
             def commands():
                 try:

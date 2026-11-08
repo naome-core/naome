@@ -557,7 +557,7 @@ async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_p
     let (_, admission) = source
         .produce("00000000020600000000210000000000000000")
         .unwrap();
-    assert_eq!(admission.status, "accepted");
+    assert_eq!(admission.status, crate::IngestStatus::Accepted);
     let certificate = admission.id;
     let mut work =
         crate::proof_work::Work::open(&sender.0.join("mixed-implication.sqlite3")).unwrap();

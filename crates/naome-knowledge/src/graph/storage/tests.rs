@@ -566,7 +566,7 @@ fn startup_prune_graph() -> (Graph, crate::Envelope, naome_proof::ArtifactId) {
             .ingest(envelope.clone(), std::time::Instant::now())
             .unwrap()
             .status,
-        "accepted"
+        crate::IngestStatus::Accepted
     );
     (graph, envelope, id)
 }

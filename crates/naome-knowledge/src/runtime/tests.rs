@@ -103,7 +103,7 @@ async fn canonical_inputs_match_autonomous_mock_roots_and_replays_checked_storag
         assert_eq!(replayed.ids(), vec![root]);
         assert_eq!(
             replayed.ingest(envelope, Instant::now()).unwrap().status,
-            "duplicate"
+            crate::IngestStatus::Duplicate
         );
         assert_eq!(
             ResearchQuestion::from_canonical_bytes(original_bytes).unwrap(),
@@ -124,7 +124,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     let mut graph = Graph::open(&directory.0).unwrap();
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     assert_eq!(graph.accepted_count(), 0);
     let incomplete = [(root_id, root.clone().prepare().unwrap())].into();
@@ -161,11 +161,11 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     );
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
-        "duplicate"
+        crate::IngestStatus::Duplicate
     );
     assert_eq!(
         graph.ingest(helper.clone(), Instant::now()).unwrap().status,
-        "duplicate"
+        crate::IngestStatus::Duplicate
     );
     let mut invalid = root.clone();
     invalid.payload = "ff".into();
