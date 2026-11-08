@@ -177,3 +177,159 @@ fn theorem_context_binds_the_original_checked_packet_not_just_an_allowed_formula
             .is_err()
     );
 }
+
+struct Distracted {
+    goal_block: Formula,
+}
+
+impl Ranker for Distracted {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+        use naome_foundation::graph::Node;
+        fn contains(formula: naome_foundation::FormulaView<'_>, goal: &Formula) -> bool {
+            formula == goal.view()
+                || match formula.graph_node() {
+                    Node::Not(inner) => contains(inner, goal),
+                    Node::Implies(left, right) => contains(left, goal) || contains(right, goal),
+                    _ => false,
+                }
+        }
+        let found_block = decision
+            .context
+            .iter()
+            .any(|entry| entry.formula == self.goal_block);
+        Ok(decision
+            .candidates
+            .iter()
+            .map(|choice| {
+                let reaches_goal = choice
+                    .consequences
+                    .iter()
+                    .any(|result| contains(result.view(), &decision.goal));
+                if found_block == reaches_goal { 1. } else { 0. }
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn a_budgeted_detour_recovers_a_checked_decision_for_replay() {
+    use native::experience::{ExperienceSummary, Observation, TraceBinding};
+    let variables = (0..7).map(FreeVariable::new).collect::<Vec<_>>();
+    let [a, _, c, d, e, f, g] = variables.as_slice() else {
+        unreachable!()
+    };
+    let mut distractors = Vec::new();
+    for (i, &left) in variables.iter().enumerate() {
+        distractors.extend(
+            variables[i + 1..]
+                .iter()
+                .map(|&right| Formula::negate(Formula::equal(left, right))),
+        );
+    }
+    fn conjunction(parts: &[Formula]) -> Formula {
+        if let [part] = parts {
+            return part.clone();
+        }
+        let (left, right) = parts.split_at(parts.len() / 2);
+        Formula::conjunction(conjunction(left), conjunction(right))
+    }
+    let distractor = conjunction(&distractors);
+    let goal = Formula::member(*g, *a);
+    let goal_block = Formula::conjunction(
+        Formula::conjunction(Formula::member(*c, *d), Formula::member(*d, *e)),
+        Formula::conjunction(Formula::member(*f, *g), goal.clone()),
+    );
+    let target = native::proof::close(Formula::implies(
+        Formula::conjunction(distractor, goal_block.clone()),
+        goal,
+    ));
+    let question = naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
+    let found = solve(&target, &mut Distracted { goal_block }, 48).unwrap();
+    let tree = found
+        .tree
+        .expect("the alternative closes within the original budget");
+    assert!(found.expansions < 48);
+    let trace = found.execution.unwrap();
+    let repair = trace
+        .repair
+        .as_ref()
+        .unwrap_or_else(|| panic!("no repair retained after {} expansions", found.expansions));
+    let failed = &trace.events[repair.failed];
+    assert_eq!(failed.start, 1);
+    assert_eq!(failed.end, 16);
+    assert!(!failed.closed);
+    assert_ne!(failed.selected, repair.selected);
+    assert_eq!(trace.attempts, found.expansions);
+
+    let (term, _) = compile(&target, &tree).unwrap();
+    let proof = native::construction::program_from_recipe(
+        &target,
+        native::proof::recipe(&term, &target).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(proof.packet.target().unwrap(), target);
+    let proof_id = crate::hex(proof.packet.manifest.proof_id().as_bytes());
+    let graph = trace
+        .checked_repair(&target, &[])
+        .unwrap()
+        .expect("verified correction");
+    assert_eq!(graph.binding, failed.state);
+    assert_eq!(graph.successes, [repair.selected]);
+
+    // Only the prefix through the failed decision is available from the
+    // journal. The successful replay remains independently checkable.
+    let mut prefix = trace.clone();
+    prefix.events.truncate(repair.failed + 1);
+    prefix.omitted = prefix.attempts - prefix.events.len();
+    assert!(prefix.closed_subtrees().unwrap().is_empty());
+    let make_observation = |trace: Trace| {
+        let executions = vec![trace];
+        let mut summary = ExperienceSummary {
+            job: 1,
+            question: crate::hex(question.resolution_id()),
+            checkpoint: "01".repeat(32),
+            policy: "02".repeat(32),
+            request_binding: "03".repeat(32),
+            native_context: "04".repeat(32),
+            origin: native::Origin::Local,
+            terminal: TerminalEvidence::CertifiedCandidate {
+                proof_id: proof_id.clone(),
+                refuted: false,
+            },
+            trace: TraceBinding {
+                checked_trajectory: Some(native::digest(&Tree::Program(Box::new(
+                    proof.packet.clone(),
+                )))),
+                observed_branches: None,
+                observed_execution: Some(native::digest(&executions)),
+            },
+            cost: None,
+            search_limit: 48,
+            spent_ms: 0,
+            reserved_units: 1,
+            receipt: String::new(),
+        };
+        summary.receipt = native::digest(&summary);
+        Observation {
+            question: question.to_hex(),
+            summary,
+            executions,
+            frontier: None,
+            knowledge: Vec::new(),
+        }
+    };
+    let bytes = crate::checkpoint::encode(&make_observation(prefix.clone())).unwrap();
+    let restored: Observation = crate::checkpoint::decode(&bytes).unwrap();
+    let mut pool = native::pool::Pool::default();
+    pool.reconcile(&[restored], true).unwrap();
+    assert_eq!(pool.derived_counts().repairs, 1);
+    let batch = pool.batch(&mut 0);
+    assert_eq!(batch.len(), 16);
+    assert!(batch.iter().all(|example| example.key() == graph.key()));
+
+    let mut forged = prefix;
+    forged.repair.as_mut().unwrap().proof = serde_json::to_string(&Tree::Close(0, 0)).unwrap();
+    let mut pool = native::pool::Pool::default();
+    pool.reconcile(&[make_observation(forged)], true).unwrap();
+    assert!(pool.is_empty(), "an unchecked replay cannot become a label");
+}
