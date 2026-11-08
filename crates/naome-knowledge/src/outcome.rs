@@ -136,6 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
+        ResourceValidation = 26,
     }
 
     pub enum InputFault in 7 {
@@ -737,6 +738,16 @@ codes! {
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
     pub enum JsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
+    pub enum ResourceValidationReason in 78 {
+        ProfileVersion = 1, MemoryBudget = 2, ScalingOverflow = 3, FieldWidth = 4,
+        ResidentOverflow = 5, FieldBudget = 6, FieldZero = 7, Timer = 8,
+        Custody = 9, Workers = 10, CheckerCache = 11, CountBudget = 12,
+        BufferBudget = 13, ContactOverflow = 14, ContactConfiguration = 15,
+        ProviderOverflow = 16, TransportOverflow = 17, RetainedOverflow = 18,
+        IndexOverflow = 19, QueueOverflow = 20, AllocationOverflow = 21,
+        AllocationBudget = 22, LimitsInconsistent = 23, IdentifySafety = 24,
+        AssessmentCapacity = 25,
+    }
     #[derive(Default)]
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
     pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13, CurrentDirectory = 14, ResolveResourceProfile = 15 }

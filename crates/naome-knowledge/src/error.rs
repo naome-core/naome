@@ -267,6 +267,12 @@ pub enum Error {
         line: usize,
         column: usize,
     },
+    ResourceValidation {
+        reason: crate::ResourceValidationReason,
+        field: Option<crate::resources::ResourceField>,
+        actual: Option<u64>,
+        maximum: Option<u64>,
+    },
     ResourceProfileDecode {
         reason: crate::JsonFault,
         line: usize,
@@ -335,6 +341,7 @@ impl Error {
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
+            Self::ResourceValidation { .. } => OperationCode::ResourceValidation,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
             Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Runtime(failure) => return (*failure).into(),
@@ -380,6 +387,7 @@ impl Error {
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
             | Self::ResourceProfileDecode { .. }
+            | Self::ResourceValidation { .. }
             | Self::CheckpointSql { .. }
             | Self::StorageIo { .. }
             | Self::ProgramInput(_)
@@ -585,6 +593,16 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "checkpoint SQLite failure {} ({sqlite_code:?})",
+                u32::from(*reason)
+            ),
+            Self::ResourceValidation {
+                reason,
+                field,
+                actual,
+                maximum,
+            } => write!(
+                f,
+                "resource validation {} ({field:?}, {actual:?}, {maximum:?})",
                 u32::from(*reason)
             ),
             Self::ResourceProfileDecode {
@@ -1129,6 +1147,24 @@ impl serde::Serialize for Error {
             value.serialize_entry("reason", reason)?;
             if let Some(code) = sqlite_code {
                 value.serialize_entry("sqlite_code", code)?;
+            }
+        }
+        if let Self::ResourceValidation {
+            reason,
+            field,
+            actual,
+            maximum,
+        } = cause
+        {
+            value.serialize_entry("reason", reason)?;
+            if let Some(field) = field {
+                value.serialize_entry("field", field)?;
+            }
+            if let Some(actual) = actual {
+                value.serialize_entry("actual", actual)?;
+            }
+            if let Some(maximum) = maximum {
+                value.serialize_entry("maximum", maximum)?;
             }
         }
         if let Self::ResourceProfileDecode {

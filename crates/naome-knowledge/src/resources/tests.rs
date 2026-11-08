@@ -209,3 +209,34 @@ pub(crate) fn snapshot(paused: bool) -> Snapshot {
 pub(crate) fn budget(paused: bool) {
     adaptive::publish(snapshot(paused));
 }
+
+#[test]
+fn resource_validation_reports_registered_field_and_preserves_custody() {
+    let mut profile = ResourceProfile::default();
+    profile.tuning.question_page = Some(0);
+    let error = profile.resolve().unwrap_err();
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], 0x0006_001a_u32);
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::ResourceValidationReason::FieldBudget)
+    );
+    assert_eq!(value["field"], u32::from(ResourceField::QuestionPage));
+    assert_eq!(value["actual"], 0);
+    assert_eq!(value["maximum"], profile.memory_bytes as u64);
+    assert_eq!(
+        serde_json::from_value::<ResourceField>(value["field"].clone()).unwrap(),
+        ResourceField::QuestionPage
+    );
+    assert!(serde_json::from_value::<ResourceField>(0x004d_ffff_u32.into()).is_err());
+    profile.tuning.question_page = None;
+    profile.tuning.replay_guard_bytes = Some(385 * MIB);
+    let error = profile.resolve().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::ResourceValidation {
+            reason: crate::ResourceValidationReason::Custody,
+            ..
+        }
+    ));
+}

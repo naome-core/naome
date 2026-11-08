@@ -60,9 +60,48 @@ impl Default for ResourceProfile {
 // One table owns defaults, optional operator overrides and resolved limits.
 // Scaled fields follow process memory; fixed fields are per-operation defaults.
 macro_rules! resource_policy {
-    (scaled {$($scaled_scope:ident $scaled:ident: $sty:ty = $svalue:expr;)*}
-     fixed {$($fixed_scope:ident $fixed:ident: $fty:ty = $fvalue:expr;)*}
-     timers {$($timer_scope:ident $timer:ident, $milliseconds:ident = $tvalue:expr;)*}) => {
+    (scaled {$($scaled_scope:ident $scaled:ident ($scaled_code:ident, $scaled_id:literal): $sty:ty = $svalue:expr;)*}
+     fixed {$($fixed_scope:ident $fixed:ident ($fixed_code:ident, $fixed_id:literal): $fty:ty = $fvalue:expr;)*}
+     timers {$($timer_scope:ident $timer:ident ($timer_code:ident, $timer_id:literal), $milliseconds:ident = $tvalue:expr;)*}) => {
+        /// Registered field identities for resource validation diagnostics.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+        #[repr(u32)]
+        #[serde(try_from = "u32", into = "u32")]
+        pub enum ResourceField {
+            MemoryBytes = 0x004d_0001,
+            Workers = 0x004d_0002,
+            ResidentJobs = 0x004d_0003,
+            ProfileVersion = 0x004d_0004,
+            $($scaled_code = 0x004d_0000 | $scaled_id,)*
+            $($fixed_code = 0x004d_0000 | $fixed_id,)*
+            $($timer_code = 0x004d_0000 | $timer_id,)*
+        }
+        impl From<ResourceField> for u32 { fn from(value: ResourceField) -> Self { value as u32 } }
+        impl TryFrom<u32> for ResourceField {
+            type Error = &'static str;
+            fn try_from(value: u32) -> Result<Self, Self::Error> {
+                match value {
+                    value if value == Self::MemoryBytes as u32 => Ok(Self::MemoryBytes),
+                    value if value == Self::Workers as u32 => Ok(Self::Workers),
+                    value if value == Self::ResidentJobs as u32 => Ok(Self::ResidentJobs),
+                    value if value == Self::ProfileVersion as u32 => Ok(Self::ProfileVersion),
+                    $(value if value == Self::$scaled_code as u32 => Ok(Self::$scaled_code),)*
+                    $(value if value == Self::$fixed_code as u32 => Ok(Self::$fixed_code),)*
+                    $(value if value == Self::$timer_code as u32 => Ok(Self::$timer_code),)*
+                    _ => Err("unknown resource field code"),
+                }
+            }
+        }
+        #[cfg(feature = "developer-tools")]
+        pub(crate) const RESOURCE_FIELD_CODES: &[(&str, &str, u32)] = &[
+            ("ResourceField", "MemoryBytes", ResourceField::MemoryBytes as u32),
+            ("ResourceField", "Workers", ResourceField::Workers as u32),
+            ("ResourceField", "ResidentJobs", ResourceField::ResidentJobs as u32),
+            ("ResourceField", "ProfileVersion", ResourceField::ProfileVersion as u32),
+            $(("ResourceField", stringify!($scaled_code), ResourceField::$scaled_code as u32),)*
+            $(("ResourceField", stringify!($fixed_code), ResourceField::$fixed_code as u32),)*
+            $(("ResourceField", stringify!($timer_code), ResourceField::$timer_code as u32),)*
+        ];
         #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
         #[serde(default, deny_unknown_fields)]
         pub struct Tuning {
@@ -92,26 +131,26 @@ macro_rules! resource_policy {
             $($scaled:$svalue,)* $($fixed:$fvalue,)* $($timer:$tvalue,)*
         };
         impl ResourceProfile {
-            pub fn resolve(&self)->Result<Limits,String>{
-                if self.version!=PROFILE_VERSION{return Err("unsupported resource profile version".into());}
-                if self.memory_bytes==0||self.memory_bytes>isize::MAX as usize{return Err("invalid process memory budget".into());}
-                let scale=|value:usize|usize::try_from(value as u128 * self.memory_bytes as u128 / DEFAULT.memory_bytes as u128).map(|n|n.max(1)).map_err(|_| "resource scaling overflow");
+            pub fn resolve(&self)->Result<Limits,crate::Error>{
+                if self.version!=PROFILE_VERSION{return Err(validation(crate::ResourceValidationReason::ProfileVersion,Some(ResourceField::ProfileVersion),Some(u64::from(self.version)),Some(u64::from(PROFILE_VERSION))));}
+                if self.memory_bytes==0||self.memory_bytes>isize::MAX as usize{return Err(validation(crate::ResourceValidationReason::MemoryBudget,Some(ResourceField::MemoryBytes),Some(self.memory_bytes as u64),Some(isize::MAX as u64)));}
+                let scale=|value:usize, field|usize::try_from(value as u128 * self.memory_bytes as u128 / DEFAULT.memory_bytes as u128).map(|n|n.max(1)).map_err(|_| validation(crate::ResourceValidationReason::ScalingOverflow,Some(field),Some(value as u64),None));
                 let mut limits=Limits{
                     memory_bytes:self.memory_bytes,workers:self.workers,resident_jobs:0,
-                    $($scaled:match self.tuning.$scaled {Some(value)=>value,None=><$sty>::try_from(scale(DEFAULT.$scaled as usize)?).map_err(|_|concat!(stringify!($scaled)," width"))?},)*
+                    $($scaled:match self.tuning.$scaled {Some(value)=>value,None=><$sty>::try_from(scale(DEFAULT.$scaled as usize,ResourceField::$scaled_code)?).map_err(|_|validation(crate::ResourceValidationReason::FieldWidth,Some(ResourceField::$scaled_code),None,None))?},)*
                     $($fixed:self.tuning.$fixed.unwrap_or(DEFAULT.$fixed),)*
                     $($timer:self.tuning.$milliseconds.map(Duration::from_millis).unwrap_or(DEFAULT.$timer),)*
                 };
                 limits.solving_jobs=self.tuning.solving_jobs.unwrap_or(self.workers[1]);
-                limits.resident_jobs=self.workers.iter().try_fold(0usize,|n,w|n.checked_add(*w)).and_then(|n|n.checked_add(limits.queued_jobs_per_role.checked_mul(self.workers.len())?)).and_then(|n|n.checked_add(limits.terminal_job_page)).ok_or("resident working-set overflow")?;
+                limits.resident_jobs=self.workers.iter().try_fold(0usize,|n,w|n.checked_add(*w)).and_then(|n|n.checked_add(limits.queued_jobs_per_role.checked_mul(self.workers.len())?)).and_then(|n|n.checked_add(limits.terminal_job_page)).ok_or_else(||validation(crate::ResourceValidationReason::ResidentOverflow,Some(ResourceField::ResidentJobs),None,None))?;
                 limits.validate()?;Ok(limits)
             }
         }
         impl Limits {
-            fn validate_positive(&self)->Result<(),String>{
-                $(if self.$scaled==0 || self.$scaled as u128 > self.memory_bytes as u128 {return Err(concat!(stringify!($scaled)," exceeds its allocation budget or is zero").into());})*
-                $(if self.$fixed==0{return Err(concat!(stringify!($fixed)," must be positive").into());})*
-                $(if self.$timer.is_zero()||self.$timer.as_millis()>u128::from(u64::MAX)||Instant::now().checked_add(self.$timer).is_none(){return Err(concat!("invalid ",stringify!($timer)).into());})*
+            fn validate_positive(&self)->Result<(),crate::Error>{
+                $(if self.$scaled==0 || self.$scaled as u128 > self.memory_bytes as u128 {return Err(validation(crate::ResourceValidationReason::FieldBudget,Some(ResourceField::$scaled_code),Some(self.$scaled as u64),Some(self.memory_bytes as u64)));})*
+                $(if self.$fixed==0{return Err(validation(crate::ResourceValidationReason::FieldZero,Some(ResourceField::$fixed_code),Some(0),None));})*
+                $(if self.$timer.is_zero()||self.$timer.as_millis()>u128::from(u64::MAX)||Instant::now().checked_add(self.$timer).is_none(){return Err(validation(crate::ResourceValidationReason::Timer,Some(ResourceField::$timer_code),u64::try_from(self.$timer.as_millis()).ok(),Some(u64::MAX)));})*
                 Ok(())
             }
         }
@@ -119,152 +158,152 @@ macro_rules! resource_policy {
 }
 resource_policy! {
     scaled {
-        work registry_index_cache_bytes: usize = 4 * 1024 * 1024;
-        work checked_index_cache_bytes: usize = 4 * 1024 * 1024;
-        work checkpoint_cache_bytes: usize = 2 * 1024 * 1024;
-        work catalog_cache_bytes: usize = 8 * 1024 * 1024;
-        work pending_page: usize = 128;
-        work checked_cache_bytes: usize = 32 * 1024 * 1024;
-        capacity batch_objects: usize = 4096;
-        capacity batch_bytes: usize = 64 * 1024 * 1024;
-        work replay_page: usize = 64;
-        work id_page: usize = 128;
-        capacity configured_peers: usize = 16;
-        capacity network_config_bytes: usize = 524_288;
-        work fetches: usize = 128;
-        capacity flights: usize = 16;
-        capacity flights_per_peer: usize = 2;
-        capacity command_bytes: usize = 524_288;
-        work inventory_page: usize = 64;
-        work status_page: usize = 64;
-        work transport_events: usize = 64;
-        capacity contacts: usize = 16;
-        capacity addresses_per_contact: usize = 4;
-        work application_queries: usize = 2;
-        work dht_parallelism: usize = 2;
-        capacity dht_replication: usize = 8;
-        capacity dht_bucket_size: usize = 8;
-        capacity discovery_interfaces:usize = 8;
-        capacity bootstrap_peers: usize = 4;
-        capacity relay_peers: usize = 2;
-        capacity relay_circuits: usize = 16;
-        capacity relay_reservations: usize = 16;
-        capacity relay_circuits_per_peer: usize = 4;
-        work queued_metadata: usize = 8;
-        capacity closure_objects: usize = 128;
-        capacity closure_bytes: usize = 512 * 1024;
-        capacity closure_steps: usize = 4096;
-        work selection_decisions: usize = 4;
-        work question_page: usize = 128;
-        work question_commands: usize = 8;
-        work finding_admissions: usize = 4;
-        work job_commands: usize = 32;
-        capacity active_job_bytes: usize = 32 * 1024 * 1024;
-        work queued_jobs_per_role: usize = 8;
-        work terminal_job_page: usize = 32;
-        capacity provider_stream_bytes: usize = 4 * 1024 * 1024;
+        work registry_index_cache_bytes (RegistryIndexCacheBytes, 5): usize = 4 * 1024 * 1024;
+        work checked_index_cache_bytes (CheckedIndexCacheBytes, 6): usize = 4 * 1024 * 1024;
+        work checkpoint_cache_bytes (CheckpointCacheBytes, 7): usize = 2 * 1024 * 1024;
+        work catalog_cache_bytes (CatalogCacheBytes, 8): usize = 8 * 1024 * 1024;
+        work pending_page (PendingPage, 9): usize = 128;
+        work checked_cache_bytes (CheckedCacheBytes, 10): usize = 32 * 1024 * 1024;
+        capacity batch_objects (BatchObjects, 11): usize = 4096;
+        capacity batch_bytes (BatchBytes, 12): usize = 64 * 1024 * 1024;
+        work replay_page (ReplayPage, 13): usize = 64;
+        work id_page (IdPage, 14): usize = 128;
+        capacity configured_peers (ConfiguredPeers, 15): usize = 16;
+        capacity network_config_bytes (NetworkConfigBytes, 16): usize = 524_288;
+        work fetches (Fetches, 17): usize = 128;
+        capacity flights (Flights, 18): usize = 16;
+        capacity flights_per_peer (FlightsPerPeer, 19): usize = 2;
+        capacity command_bytes (CommandBytes, 20): usize = 524_288;
+        work inventory_page (InventoryPage, 21): usize = 64;
+        work status_page (StatusPage, 22): usize = 64;
+        work transport_events (TransportEvents, 23): usize = 64;
+        capacity contacts (Contacts, 24): usize = 16;
+        capacity addresses_per_contact (AddressesPerContact, 25): usize = 4;
+        work application_queries (ApplicationQueries, 26): usize = 2;
+        work dht_parallelism (DhtParallelism, 27): usize = 2;
+        capacity dht_replication (DhtReplication, 28): usize = 8;
+        capacity dht_bucket_size (DhtBucketSize, 29): usize = 8;
+        capacity discovery_interfaces (DiscoveryInterfaces, 30):usize = 8;
+        capacity bootstrap_peers (BootstrapPeers, 31): usize = 4;
+        capacity relay_peers (RelayPeers, 32): usize = 2;
+        capacity relay_circuits (RelayCircuits, 33): usize = 16;
+        capacity relay_reservations (RelayReservations, 34): usize = 16;
+        capacity relay_circuits_per_peer (RelayCircuitsPerPeer, 35): usize = 4;
+        work queued_metadata (QueuedMetadata, 36): usize = 8;
+        capacity closure_objects (ClosureObjects, 37): usize = 128;
+        capacity closure_bytes (ClosureBytes, 38): usize = 512 * 1024;
+        capacity closure_steps (ClosureSteps, 39): usize = 4096;
+        work selection_decisions (SelectionDecisions, 40): usize = 4;
+        work question_page (QuestionPage, 41): usize = 128;
+        work question_commands (QuestionCommands, 42): usize = 8;
+        work finding_admissions (FindingAdmissions, 43): usize = 4;
+        work job_commands (JobCommands, 44): usize = 32;
+        capacity active_job_bytes (ActiveJobBytes, 45): usize = 32 * 1024 * 1024;
+        work queued_jobs_per_role (QueuedJobsPerRole, 46): usize = 8;
+        work terminal_job_page (TerminalJobPage, 47): usize = 32;
+        capacity provider_stream_bytes (ProviderStreamBytes, 48): usize = 4 * 1024 * 1024;
     }
     fixed {
-        capacity disk_reserve_bytes: u64 = 128 * 1024 * 1024;
+        capacity disk_reserve_bytes (DiskReserveBytes, 49): u64 = 128 * 1024 * 1024;
         // Native learning uses binary local chunks; proof and network caps are independent.
-        capacity native_model_chunk_bytes: usize = crate::learning::MODEL_REQUIREMENTS.chunk_bytes;
-        capacity native_model_blob_bytes: usize = crate::learning::MODEL_REQUIREMENTS.blob_bytes;
-        capacity native_model_io_bytes: usize = crate::learning::MODEL_REQUIREMENTS.io_bytes;
-        capacity native_model_work_bytes: usize = crate::learning::MODEL_REQUIREMENTS.work_bytes;
-        capacity diagnostic_bytes: usize = 4096;
-        capacity dht_packet_bytes: usize = 4096;
-        capacity relay_request_burst: usize = 4;
-        capacity relay_reservations_per_peer: usize = 1;
-        work supervisor_commands: usize = 8;
-        work provider_events: usize = 16;
-        capacity developer_objects: usize = 8;
-        capacity developer_questions: usize = 128;
-        capacity retained_generations: usize = 4;
-        work compaction_bytes: usize = naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-        work compaction_records: usize = 128;
-        work checker_cache_bytes: usize = 2 * 1024 * 1024;
-        work question_cache_bytes: usize = 256 * 1024;
-        work checker_cache_entries: usize = 64;
-        capacity request_burst: usize = 8;
-        capacity wanted_attempts: usize = 16;
-        capacity gossip_packet_bytes: usize = 1024;
-        capacity producer_bytes: usize = 65_536;
-        capacity producer_artifacts: usize = 32;
-        capacity exchange_streams: usize = 4;
-        capacity inbound_streams: usize = 16;
-        capacity identify_protocol_bytes: usize = 256;
-        capacity identify_protocols: usize = 32;
-        capacity identify_addresses: usize = 16;
-        capacity replay_guard_bytes: usize = 384 * 1024 * 1024;
-        capacity upgrade_connections_per_peer: u32 = 3;
-        capacity connections_per_peer: u32 = 2;
-        capacity established_connections: u32 = 32;
-        capacity pending_connections: u32 = 16;
-        work cli_commands: usize = 8;
-        work control_clients: usize = 8;
-        work inbound_frames: usize = 32;
-        capacity proof_bytes: usize = 65_536;
-        capacity proof_dependencies: usize = 32;
-        capacity address_bytes: usize = 512;
-        capacity relay_circuit_bytes: u64 = 8 * 1024 * 1024;
-        capacity closure_work_bytes: usize = 128 * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-        work solving_jobs: usize = 2;
-        work publications: usize = 4;
-        capacity publication_retries: u32 = 8;
-        work waiters_per_job: usize = 4;
-        capacity log_segment_bytes: u64 = 1024 * 1024;
-        capacity assessment_formula_nodes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_nodes;
-        capacity assessment_dependencies:usize = naome_checker::question::AssessmentLimits::MAXIMUM.dependencies;
-        capacity assessment_operations:usize = naome_checker::question::AssessmentLimits::MAXIMUM.operations;
-        capacity assessment_work_bytes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_work_bytes;
-        capacity assessment_certificate_steps:usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_steps;
-        capacity assessment_certificate_bytes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_bytes;
-        capacity job_work_units:u32 = 4096;
+        capacity native_model_chunk_bytes (NativeModelChunkBytes, 50): usize = crate::learning::MODEL_REQUIREMENTS.chunk_bytes;
+        capacity native_model_blob_bytes (NativeModelBlobBytes, 51): usize = crate::learning::MODEL_REQUIREMENTS.blob_bytes;
+        capacity native_model_io_bytes (NativeModelIoBytes, 52): usize = crate::learning::MODEL_REQUIREMENTS.io_bytes;
+        capacity native_model_work_bytes (NativeModelWorkBytes, 53): usize = crate::learning::MODEL_REQUIREMENTS.work_bytes;
+        capacity diagnostic_bytes (DiagnosticBytes, 54): usize = 4096;
+        capacity dht_packet_bytes (DhtPacketBytes, 55): usize = 4096;
+        capacity relay_request_burst (RelayRequestBurst, 56): usize = 4;
+        capacity relay_reservations_per_peer (RelayReservationsPerPeer, 57): usize = 1;
+        work supervisor_commands (SupervisorCommands, 58): usize = 8;
+        work provider_events (ProviderEvents, 59): usize = 16;
+        capacity developer_objects (DeveloperObjects, 60): usize = 8;
+        capacity developer_questions (DeveloperQuestions, 61): usize = 128;
+        capacity retained_generations (RetainedGenerations, 62): usize = 4;
+        work compaction_bytes (CompactionBytes, 63): usize = naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
+        work compaction_records (CompactionRecords, 64): usize = 128;
+        work checker_cache_bytes (CheckerCacheBytes, 65): usize = 2 * 1024 * 1024;
+        work question_cache_bytes (QuestionCacheBytes, 66): usize = 256 * 1024;
+        work checker_cache_entries (CheckerCacheEntries, 67): usize = 64;
+        capacity request_burst (RequestBurst, 68): usize = 8;
+        capacity wanted_attempts (WantedAttempts, 69): usize = 16;
+        capacity gossip_packet_bytes (GossipPacketBytes, 70): usize = 1024;
+        capacity producer_bytes (ProducerBytes, 71): usize = 65_536;
+        capacity producer_artifacts (ProducerArtifacts, 72): usize = 32;
+        capacity exchange_streams (ExchangeStreams, 73): usize = 4;
+        capacity inbound_streams (InboundStreams, 74): usize = 16;
+        capacity identify_protocol_bytes (IdentifyProtocolBytes, 75): usize = 256;
+        capacity identify_protocols (IdentifyProtocols, 76): usize = 32;
+        capacity identify_addresses (IdentifyAddresses, 77): usize = 16;
+        capacity replay_guard_bytes (ReplayGuardBytes, 78): usize = 384 * 1024 * 1024;
+        capacity upgrade_connections_per_peer (UpgradeConnectionsPerPeer, 79): u32 = 3;
+        capacity connections_per_peer (ConnectionsPerPeer, 80): u32 = 2;
+        capacity established_connections (EstablishedConnections, 81): u32 = 32;
+        capacity pending_connections (PendingConnections, 82): u32 = 16;
+        work cli_commands (CliCommands, 83): usize = 8;
+        work control_clients (ControlClients, 84): usize = 8;
+        work inbound_frames (InboundFrames, 85): usize = 32;
+        capacity proof_bytes (ProofBytes, 86): usize = 65_536;
+        capacity proof_dependencies (ProofDependencies, 87): usize = 32;
+        capacity address_bytes (AddressBytes, 88): usize = 512;
+        capacity relay_circuit_bytes (RelayCircuitBytes, 89): u64 = 8 * 1024 * 1024;
+        capacity closure_work_bytes (ClosureWorkBytes, 90): usize = 128 * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
+        work solving_jobs (SolvingJobs, 91): usize = 2;
+        work publications (Publications, 92): usize = 4;
+        capacity publication_retries (PublicationRetries, 93): u32 = 8;
+        work waiters_per_job (WaitersPerJob, 94): usize = 4;
+        capacity log_segment_bytes (LogSegmentBytes, 95): u64 = 1024 * 1024;
+        capacity assessment_formula_nodes (AssessmentFormulaNodes, 96):usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_nodes;
+        capacity assessment_dependencies (AssessmentDependencies, 97):usize = naome_checker::question::AssessmentLimits::MAXIMUM.dependencies;
+        capacity assessment_operations (AssessmentOperations, 98):usize = naome_checker::question::AssessmentLimits::MAXIMUM.operations;
+        capacity assessment_work_bytes (AssessmentWorkBytes, 99):usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_work_bytes;
+        capacity assessment_certificate_steps (AssessmentCertificateSteps, 100):usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_steps;
+        capacity assessment_certificate_bytes (AssessmentCertificateBytes, 101):usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_bytes;
+        capacity job_work_units (JobWorkUnits, 102):u32 = 4096;
     }
     timers {
-        capacity transport_busy_grace, transport_busy_grace_ms = Duration::from_millis(10);
-        capacity custody_poll_interval, custody_poll_interval_ms = Duration::from_millis(10);
-        capacity replay_guard_timeout, replay_guard_timeout_ms = Duration::from_secs(1800);
-        capacity replay_guard_freshness, replay_guard_freshness_ms = Duration::from_secs(2);
-        work finding_interval, finding_interval_ms = Duration::from_secs(5);
-        work solving_interval, solving_interval_ms = Duration::from_secs(1);
-        capacity job_horizon, job_horizon_ms = Duration::from_secs(24*60*60);
-        capacity request_rate_window, request_rate_window_ms = Duration::from_secs(1);
-        capacity relay_rate_window, relay_rate_window_ms = Duration::from_secs(2);
-        capacity publication_backoff, publication_backoff_ms = Duration::from_secs(1);
-        capacity lifecycle_poll_interval, lifecycle_poll_interval_ms = Duration::from_millis(50);
-        capacity lifecycle_abort_timeout, lifecycle_abort_timeout_ms = Duration::from_secs(10);
-        capacity detach_poll_interval, detach_poll_interval_ms = Duration::from_millis(5);
-        capacity detach_confirm_timeout, detach_confirm_timeout_ms = Duration::from_millis(150);
-        capacity cleanup_poll_interval, cleanup_poll_interval_ms = Duration::from_millis(20);
-        capacity supervisor_cleanup_timeout, supervisor_cleanup_timeout_ms = Duration::from_secs(1);
-        capacity supervisor_poll_interval, supervisor_poll_interval_ms = Duration::from_millis(50);
-        capacity provider_drain_timeout, provider_drain_timeout_ms = Duration::from_secs(3);
-        capacity provider_announce_interval, provider_announce_interval_ms = Duration::from_secs(10);
-        work production_interval, production_interval_ms = Duration::from_secs(1);
-        capacity gossip_heartbeat, gossip_heartbeat_ms = Duration::from_secs(1);
-        capacity idle_connection_timeout, idle_connection_timeout_ms = Duration::from_secs(60);
-        capacity job_flush_interval, job_flush_interval_ms = Duration::from_secs(30);
-        work job_tick_interval, job_tick_interval_ms = Duration::from_secs(1);
-        work tick_interval, tick_interval_ms = Duration::from_millis(250);
-        capacity sqlite_busy_timeout, sqlite_busy_timeout_ms = Duration::from_millis(100);
-        capacity pending_retry, pending_retry_ms = Duration::from_secs(30);
-        capacity request_timeout, request_timeout_ms = Duration::from_secs(5);
-        capacity reconcile_interval, reconcile_interval_ms = Duration::from_secs(2);
-        capacity automatic_request_interval, automatic_request_interval_ms = Duration::from_millis(150);
-        capacity contact_ttl, contact_ttl_ms = Duration::from_secs(30);
-        capacity identify_timeout, identify_timeout_ms = Duration::from_secs(10);
-        capacity discovery_interval, discovery_interval_ms = Duration::from_secs(5);
-        capacity query_timeout, query_timeout_ms = Duration::from_secs(10);
-        capacity provider_ttl, provider_ttl_ms = Duration::from_secs(30);
-        capacity mdns_ttl, mdns_ttl_ms = Duration::from_secs(20);
-        capacity relay_circuit_duration, relay_circuit_duration_ms = Duration::from_secs(120);
-        capacity root_timeout, root_timeout_ms = Duration::from_secs(60);
-        capacity selection_timeout, selection_timeout_ms = Duration::from_secs(30);
-        capacity control_timeout, control_timeout_ms = Duration::from_secs(2);
-        capacity control_request_timeout, control_request_timeout_ms = Duration::from_secs(1);
-        capacity lifecycle_timeout, lifecycle_timeout_ms = Duration::from_secs(15);
-        capacity startup_timeout, startup_timeout_ms = Duration::from_secs(1800);
+        capacity transport_busy_grace (TransportBusyGrace, 103), transport_busy_grace_ms = Duration::from_millis(10);
+        capacity custody_poll_interval (CustodyPollInterval, 104), custody_poll_interval_ms = Duration::from_millis(10);
+        capacity replay_guard_timeout (ReplayGuardTimeout, 105), replay_guard_timeout_ms = Duration::from_secs(1800);
+        capacity replay_guard_freshness (ReplayGuardFreshness, 106), replay_guard_freshness_ms = Duration::from_secs(2);
+        work finding_interval (FindingInterval, 107), finding_interval_ms = Duration::from_secs(5);
+        work solving_interval (SolvingInterval, 108), solving_interval_ms = Duration::from_secs(1);
+        capacity job_horizon (JobHorizon, 109), job_horizon_ms = Duration::from_secs(24*60*60);
+        capacity request_rate_window (RequestRateWindow, 110), request_rate_window_ms = Duration::from_secs(1);
+        capacity relay_rate_window (RelayRateWindow, 111), relay_rate_window_ms = Duration::from_secs(2);
+        capacity publication_backoff (PublicationBackoff, 112), publication_backoff_ms = Duration::from_secs(1);
+        capacity lifecycle_poll_interval (LifecyclePollInterval, 113), lifecycle_poll_interval_ms = Duration::from_millis(50);
+        capacity lifecycle_abort_timeout (LifecycleAbortTimeout, 114), lifecycle_abort_timeout_ms = Duration::from_secs(10);
+        capacity detach_poll_interval (DetachPollInterval, 115), detach_poll_interval_ms = Duration::from_millis(5);
+        capacity detach_confirm_timeout (DetachConfirmTimeout, 116), detach_confirm_timeout_ms = Duration::from_millis(150);
+        capacity cleanup_poll_interval (CleanupPollInterval, 117), cleanup_poll_interval_ms = Duration::from_millis(20);
+        capacity supervisor_cleanup_timeout (SupervisorCleanupTimeout, 118), supervisor_cleanup_timeout_ms = Duration::from_secs(1);
+        capacity supervisor_poll_interval (SupervisorPollInterval, 119), supervisor_poll_interval_ms = Duration::from_millis(50);
+        capacity provider_drain_timeout (ProviderDrainTimeout, 120), provider_drain_timeout_ms = Duration::from_secs(3);
+        capacity provider_announce_interval (ProviderAnnounceInterval, 121), provider_announce_interval_ms = Duration::from_secs(10);
+        work production_interval (ProductionInterval, 122), production_interval_ms = Duration::from_secs(1);
+        capacity gossip_heartbeat (GossipHeartbeat, 123), gossip_heartbeat_ms = Duration::from_secs(1);
+        capacity idle_connection_timeout (IdleConnectionTimeout, 124), idle_connection_timeout_ms = Duration::from_secs(60);
+        capacity job_flush_interval (JobFlushInterval, 125), job_flush_interval_ms = Duration::from_secs(30);
+        work job_tick_interval (JobTickInterval, 126), job_tick_interval_ms = Duration::from_secs(1);
+        work tick_interval (TickInterval, 127), tick_interval_ms = Duration::from_millis(250);
+        capacity sqlite_busy_timeout (SqliteBusyTimeout, 128), sqlite_busy_timeout_ms = Duration::from_millis(100);
+        capacity pending_retry (PendingRetry, 129), pending_retry_ms = Duration::from_secs(30);
+        capacity request_timeout (RequestTimeout, 130), request_timeout_ms = Duration::from_secs(5);
+        capacity reconcile_interval (ReconcileInterval, 131), reconcile_interval_ms = Duration::from_secs(2);
+        capacity automatic_request_interval (AutomaticRequestInterval, 132), automatic_request_interval_ms = Duration::from_millis(150);
+        capacity contact_ttl (ContactTtl, 133), contact_ttl_ms = Duration::from_secs(30);
+        capacity identify_timeout (IdentifyTimeout, 134), identify_timeout_ms = Duration::from_secs(10);
+        capacity discovery_interval (DiscoveryInterval, 135), discovery_interval_ms = Duration::from_secs(5);
+        capacity query_timeout (QueryTimeout, 136), query_timeout_ms = Duration::from_secs(10);
+        capacity provider_ttl (ProviderTtl, 137), provider_ttl_ms = Duration::from_secs(30);
+        capacity mdns_ttl (MdnsTtl, 138), mdns_ttl_ms = Duration::from_secs(20);
+        capacity relay_circuit_duration (RelayCircuitDuration, 139), relay_circuit_duration_ms = Duration::from_secs(120);
+        capacity root_timeout (RootTimeout, 140), root_timeout_ms = Duration::from_secs(60);
+        capacity selection_timeout (SelectionTimeout, 141), selection_timeout_ms = Duration::from_secs(30);
+        capacity control_timeout (ControlTimeout, 142), control_timeout_ms = Duration::from_secs(2);
+        capacity control_request_timeout (ControlRequestTimeout, 143), control_request_timeout_ms = Duration::from_secs(1);
+        capacity lifecycle_timeout (LifecycleTimeout, 144), lifecycle_timeout_ms = Duration::from_secs(15);
+        capacity startup_timeout (StartupTimeout, 145), startup_timeout_ms = Duration::from_secs(1800);
     }
 }
 static LIMITS: OnceLock<Limits> = OnceLock::new();
@@ -549,11 +588,30 @@ pub(crate) fn require_disk_space(
     DiskLease::acquire(path, additional).map(drop)
 }
 
+fn validation(
+    reason: crate::ResourceValidationReason,
+    field: Option<ResourceField>,
+    actual: Option<u64>,
+    maximum: Option<u64>,
+) -> crate::Error {
+    crate::Error::ResourceValidation {
+        reason,
+        field,
+        actual,
+        maximum,
+    }
+}
+
 impl Limits {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         self.validate_positive()?;
         if self.memory_bytes == 0 || self.memory_bytes > isize::MAX as usize {
-            return Err("invalid process memory budget".into());
+            return Err(validation(
+                crate::ResourceValidationReason::MemoryBudget,
+                Some(ResourceField::MemoryBytes),
+                Some(self.memory_bytes as u64),
+                Some(isize::MAX as u64),
+            ));
         }
         // These external custody ceilings can only be narrowed. The caller
         // retains two 64 MiB reserves and the original 30 minute window.
@@ -567,7 +625,12 @@ impl Limits {
             || self.custody_poll_interval > self.replay_guard_freshness
             || self.transport_busy_grace > self.control_timeout
         {
-            return Err("resource profile would weaken replay custody guarantees".into());
+            return Err(validation(
+                crate::ResourceValidationReason::Custody,
+                None,
+                None,
+                None,
+            ));
         }
         let workers = self
             .workers
@@ -576,9 +639,18 @@ impl Limits {
                 0usize,
                 |n, w| if *w == 0 { None } else { n.checked_add(*w) },
             )
-            .ok_or("invalid provider worker allocation")?;
+            .ok_or_else(|| {
+                validation(crate::ResourceValidationReason::Workers, None, None, None)
+            })?;
         naome_checker::ReadCacheLimits::new(self.checker_cache_entries, self.checker_cache_bytes)
-            .map_err(|_| "checker read cache exceeds its byte budget")?;
+            .map_err(|_| {
+            validation(
+                crate::ResourceValidationReason::CheckerCache,
+                None,
+                None,
+                None,
+            )
+        })?;
         for count in [
             self.inbound_frames,
             self.identify_protocols,
@@ -635,7 +707,12 @@ impl Limits {
             self.request_burst,
         ] {
             if count > self.memory_bytes / 512 {
-                return Err("resource count exceeds process allocation budget".into());
+                return Err(validation(
+                    crate::ResourceValidationReason::CountBudget,
+                    None,
+                    Some(count as u64),
+                    Some((self.memory_bytes / 512) as u64),
+                ));
             }
         }
         for bytes in [
@@ -649,19 +726,34 @@ impl Limits {
             self.compaction_bytes,
         ] {
             if bytes > self.memory_bytes {
-                return Err("single buffer exceeds process memory budget".into());
+                return Err(validation(
+                    crate::ResourceValidationReason::BufferBudget,
+                    None,
+                    Some(bytes as u64),
+                    Some(self.memory_bytes as u64),
+                ));
             }
         }
         let contact_bytes = self
             .addresses_per_contact
-            .checked_mul(
-                self.address_bytes
-                    .checked_add(128)
-                    .ok_or("contact allocation overflow")?,
-            )
+            .checked_mul(self.address_bytes.checked_add(128).ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::ContactOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?)
             .and_then(|n| n.checked_mul(2))
             .and_then(|n| n.checked_add(1024))
-            .ok_or("contact allocation overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::ContactOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         if self
             .contacts
             .checked_mul(contact_bytes)
@@ -683,23 +775,45 @@ impl Limits {
                     .saturating_add(self.proof_dependencies.saturating_mul(32))
                     .saturating_add(256)
         {
-            return Err("inconsistent contact, parser, compaction or closure allocation".into());
+            return Err(validation(
+                crate::ResourceValidationReason::ContactConfiguration,
+                None,
+                None,
+                None,
+            ));
         }
         let provider_frames = workers
             .checked_mul(self.provider_stream_bytes)
-            .ok_or("provider memory overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::ProviderOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         let transport_frames = self
             .flights
             .checked_mul(self.proof_bytes)
             .and_then(|n| n.checked_mul(4))
-            .ok_or("transport memory overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::TransportOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         let index_caches = self
             .checked_index_cache_bytes
-            .checked_mul(
-                self.retained_generations
-                    .checked_add(2)
-                    .ok_or("retained index count overflow")?,
-            )
+            .checked_mul(self.retained_generations.checked_add(2).ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::RetainedOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?)
             .and_then(|n| {
                 n.checked_add(
                     self.registry_index_cache_bytes
@@ -711,13 +825,27 @@ impl Limits {
             .and_then(|n| n.checked_add(self.checker_cache_bytes))
             .and_then(|n| n.checked_add(self.question_cache_bytes))
             .and_then(|n| n.checked_add(self.checked_cache_bytes / 4))
-            .ok_or("index cache allocation overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::IndexOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         let queued_commands = self
             .cli_commands
             .checked_add(2)
             .and_then(|n| n.checked_mul(self.command_bytes.checked_mul(2)?.checked_add(2)?))
             .and_then(|n| n.checked_add(self.command_parse_budget()?))
-            .ok_or("command queue memory overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::QueueOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         let charged = self
             .checked_cache_bytes
             .checked_add(self.active_job_bytes)
@@ -727,11 +855,20 @@ impl Limits {
             .and_then(|n| n.checked_add(queued_commands))
             .and_then(|n| n.checked_add(index_caches))
             .and_then(|n| n.checked_add(CHECKER_RESERVE))
-            .ok_or("resource allocation overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::AllocationOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         if charged > self.memory_bytes {
-            return Err(format!(
-                "resource allocations {charged} exceed memory budget {}",
-                self.memory_bytes
+            return Err(validation(
+                crate::ResourceValidationReason::AllocationBudget,
+                None,
+                Some(charged as u64),
+                Some(self.memory_bytes as u64),
             ));
         }
         if self.proof_bytes > naome_proof::CERTIFICATE_MAX_BYTES
@@ -767,12 +904,22 @@ impl Limits {
                 .is_none_or(|n| n > crate::checkpoint::MAX_ROW)
             || self.command_bytes < 4096
         {
-            return Err("inconsistent resource limits or unsupported canonical proof size".into());
+            return Err(validation(
+                crate::ResourceValidationReason::LimitsInconsistent,
+                None,
+                None,
+                None,
+            ));
         }
         if self.identify_protocols > DEFAULT.identify_protocols
             || self.identify_addresses > DEFAULT.identify_addresses
         {
-            return Err("identify parser safeguards may only be reduced".into());
+            return Err(validation(
+                crate::ResourceValidationReason::IdentifySafety,
+                None,
+                None,
+                None,
+            ));
         }
         let maximum = naome_checker::question::AssessmentLimits::MAXIMUM;
         for (value, max) in [
@@ -784,7 +931,12 @@ impl Limits {
             (self.assessment_certificate_bytes, maximum.certificate_bytes),
         ] {
             if value > max {
-                return Err("assessment policy exceeds supported deterministic work format".into());
+                return Err(validation(
+                    crate::ResourceValidationReason::AssessmentCapacity,
+                    None,
+                    Some(value as u64),
+                    Some(max as u64),
+                ));
             }
         }
         Ok(())

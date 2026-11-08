@@ -19,6 +19,7 @@ pub use learning::evidence::{EvidenceLimit, Failure as EvidenceFailure};
 pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)> {
     outcome::OUTCOME_CODES
         .iter()
+        .chain(resources::RESOURCE_FIELD_CODES.iter())
         .chain(naome_checker::question::PREFILTER_CODES.iter())
         .chain(naome_checker::question::PREFILTER_RULE_CODES.iter())
         .copied()
@@ -27,7 +28,7 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
 pub use outcome::{
     CheckpointSqlFault, DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault,
     InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ResearchFailure,
-    RuntimeFailure, StartupFailure, StorageIoOperation, WorkerFailure,
+    ResourceValidationReason, RuntimeFailure, StartupFailure, StorageIoOperation, WorkerFailure,
 };
 mod frontier;
 pub use error::{CertificateFormatError, DurabilityFailure, Error, FormatFailure};
