@@ -1216,11 +1216,15 @@ fn retryable_publication(error: &crate::Error) -> bool {
 }
 
 impl PeerLearning {
-    fn advance(&mut self, graph: &Graph, binding: crate::jobs::Binding) -> Result<(), String> {
+    fn advance(
+        &mut self,
+        graph: &Graph,
+        binding: crate::jobs::Binding,
+    ) -> Result<(), crate::Error> {
         let page = match graph.peer_learning_page(self.cursor) {
             Ok(page) => page,
             Err(error) if error.retryable() => return Ok(()),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(error),
         };
         for (ordinal, id, peer) in page {
             match graph.learning_definition(id) {
@@ -1237,13 +1241,13 @@ impl PeerLearning {
                 }
                 Ok(None) => {}
                 Err(error) if error.retryable() => break,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             }
             let Some(peer) = peer else {
                 let packet = match graph.learning_certificate(id) {
                     Ok(packet) => packet,
                     Err(error) if error.retryable() => break,
-                    Err(error) => return Err(error.to_string()),
+                    Err(error) => return Err(error),
                 };
                 let observed = if let Some(packet) = packet {
                     self.client
@@ -1260,7 +1264,7 @@ impl PeerLearning {
             let question = match graph.learning_question(id) {
                 Ok(q) => q,
                 Err(error) if error.retryable() => break,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             use crate::learning::peer::Source;
             let evidence = graph
@@ -1276,7 +1280,7 @@ impl PeerLearning {
             let evidence = match evidence {
                 Ok(value) => value,
                 Err(error) if error.retryable() => break,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             let admission = crate::jobs::PeerAdmission {
                 evidence,
