@@ -691,29 +691,33 @@ impl Evidence {
         Ok(Some((record.verified_units, record.verified_ms)))
     }
 
+    pub(super) fn support_consumer(
+        &self,
+        goal: &ResearchQuestion,
+        job: u64,
+        root: ArtifactId,
+    ) -> Result<Option<Record>, crate::Error> {
+        if !crate::learning::State::eligible(&goal.to_hex()) {
+            return Ok(None);
+        }
+        Ok(self.get(goal)?.filter(|consumer| {
+            consumer.last_job == job
+                && consumer.verified.as_deref() == Some(crate::hex(root.as_bytes()).as_str())
+                && consumer.first_unresolved_job != 0
+        }))
+    }
+
     /// Credit a distinct earlier unresolved goal once, after both exact
     /// checked targets and their actual dependency edge have been established.
     pub(super) fn support(
         &mut self,
         goal: &ResearchQuestion,
         actual_goal: &ResearchQuestion,
-        job: u64,
+        consumer: &Record,
         root: ArtifactId,
         dependency: ArtifactId,
         mut checked: impl FnMut(&ResearchQuestion) -> Result<Option<ResearchQuestion>, crate::Error>,
     ) -> Result<Option<ResearchQuestion>, crate::Error> {
-        if !crate::learning::State::eligible(&goal.to_hex()) {
-            return Ok(None);
-        }
-        let Some(consumer) = self.get(goal)? else {
-            return Ok(None);
-        };
-        if consumer.last_job != job
-            || consumer.verified.as_deref() != Some(crate::hex(root.as_bytes()).as_str())
-            || consumer.first_unresolved_job == 0
-        {
-            return Ok(None);
-        }
         let lemma = crate::hex(dependency.as_bytes());
         let Some(key) = self.checkpoint.get::<String>("proved", &lemma, 128)? else {
             return Ok(None);
@@ -782,7 +786,7 @@ impl Evidence {
             resolution,
             first_unresolved_job: consumer.first_unresolved_job,
             lemma_job: producer.verified_job,
-            goal_job: job,
+            goal_job: consumer.verified_job,
             first_unresolved_at: consumer.first_unresolved_at,
             lemma_at: producer.verified_at,
             goal_at: consumer.verified_at,

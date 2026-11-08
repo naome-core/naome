@@ -177,7 +177,7 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
         ));
         let question = ResearchQuestion::from_formula(target).unwrap();
         let seed = 1981 + index as u64;
-        let budget = 8;
+        let budget = if index == 0 { 8 } else { 5 };
         if index == 1 {
             let mut graph = crate::Graph::default();
             for program in [&base, &donor, &decoy_base, &decoy] {
@@ -215,18 +215,65 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
             let second = ResearchQuestion::from_formula(target).unwrap();
             let (required, inputs) = frontier.solving_inputs(&graph, &second, &[]).unwrap();
             assert_eq!(required, [crate::hex(first_id.as_bytes())]);
-            let control = attempt(&second, None, seed, budget).unwrap();
+            let continuation_budget = 8;
+            let control = attempt(&second, None, seed, continuation_budget).unwrap();
             assert!(control.solution.is_none());
-            let next = solve(&second, &required, &inputs, seed, budget).unwrap();
+            let next = solve(&second, &required, &inputs, seed, continuation_budget).unwrap();
             eprintln!(
                 "continuation without={} with={} expansions={}",
                 control.diagnostic, next.diagnostic, next.cost.search_expansions
             );
-            assert!(next.cost.search_expansions <= budget);
+            assert!(next.cost.search_expansions <= continuation_budget);
             let next = next
                 .solution
                 .unwrap_or_else(|| panic!("{}", next.diagnostic));
             continuation = Some((second, next, first_id));
+            let mut with_unused = first.commands().unwrap();
+            let seal = with_unused.pop().unwrap();
+            with_unused.push(Command::ProofReference {
+                proof_id: *decoy_id.as_bytes(),
+            });
+            with_unused.push(seal);
+            let with_unused = peer::Packet::compose(
+                question.proved_target(),
+                &with_unused,
+                &[donor.clone(), decoy.clone()],
+                [],
+            )
+            .unwrap();
+            register_program(&mut graph, &with_unused);
+            assert_eq!(
+                graph
+                    .learning_proof_dependencies(with_unused.manifest.artifact_id())
+                    .unwrap()
+                    .as_ref(),
+                &[donor.manifest.artifact_id()]
+            );
+            let decoy_formula = decoy.target().unwrap();
+            let formula_only = peer::Packet::compose(
+                &Formula::implies(decoy_formula.clone(), decoy_formula),
+                &[
+                    Command::ProofReference {
+                        proof_id: *decoy_id.as_bytes(),
+                    },
+                    Command::Deduce {
+                        assumptions: vec![0],
+                        actions: Vec::new(),
+                        result: 0,
+                    },
+                    Command::Seal { proof: 1 },
+                ],
+                std::slice::from_ref(&decoy),
+                [],
+            )
+            .unwrap();
+            register_program(&mut graph, &formula_only);
+            assert!(
+                graph
+                    .learning_proof_dependencies(formula_only.manifest.artifact_id())
+                    .unwrap()
+                    .is_empty()
+            );
             derived.push((question.clone(), selected, donor_id));
         }
         let wrong = attempt(&question, Some(decoy), seed, budget);

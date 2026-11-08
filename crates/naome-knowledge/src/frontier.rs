@@ -1062,16 +1062,18 @@ impl Frontier {
             self.demonstrated(&Features::of(question), units, millis);
             self.learning_event(question, before, true);
         }
-        if self.native {
+        if self.native
+            && let Some(consumer) = self.evidence.support_consumer(question, job, root)?
+        {
             let actual_goal = graph
                 .describe(root)?
                 .ok_or("checked goal disappeared")?
                 .statement_question(graph.checked_context())?;
-            for dependency in graph.direct_dependencies(root)? {
+            for dependency in graph.learning_proof_dependencies(root)? {
                 if let Some(lemma) = self.evidence.support(
                     question,
                     &actual_goal,
-                    job,
+                    &consumer,
                     root,
                     dependency,
                     |lemma| {

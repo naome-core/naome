@@ -11,7 +11,7 @@ use naome_proof::{ProofCertificate, ProofStep};
 use sha2::{Digest, Sha256};
 
 mod program;
-pub(crate) use program::Packet;
+pub(crate) use program::{Packet, contributing_proofs};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

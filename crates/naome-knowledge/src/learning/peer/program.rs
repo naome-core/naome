@@ -661,25 +661,20 @@ fn operand_mp(
     }
 }
 
-fn graphs(
-    engine: &CheckedProgram,
-    target: &Formula,
+fn used_commands(
     commands: &[Command],
-    context: &dyn ContextView,
-) -> Result<Vec<Graph>, String> {
-    let goal_parts = crate::learning::knowledge::fragments(target);
+    operands: impl Fn(&Command) -> Vec<u64>,
+) -> Result<Vec<bool>, String> {
+    let Some((Command::Seal { .. }, prefix)) = commands.split_last() else {
+        return Err("peer program seal missing".into());
+    };
     let mut used = vec![false; commands.len()];
-    let mut pending = vec![
-        commands
-            .len()
-            .checked_sub(1)
-            .ok_or("peer program seal missing")?,
-    ];
+    let mut pending = vec![prefix.len()];
     while let Some(position) = pending.pop() {
         if std::mem::replace(&mut used[position], true) {
             continue;
         }
-        for input in commands[position].operands() {
+        for input in operands(&commands[position]) {
             let index = usize::try_from(input).map_err(|_| "peer program operand width")?;
             if index >= position {
                 return Err("peer program operand order differs".into());
@@ -687,6 +682,64 @@ fn graphs(
             pending.push(index);
         }
     }
+    Ok(used)
+}
+
+/// Only citations that contribute to the final sealed result teach Finder.
+pub(crate) fn contributing_proofs(
+    commands: &[Command],
+) -> Result<std::collections::BTreeSet<ProofId>, String> {
+    // Formula constructors and deduction assumptions need only the formula,
+    // even if the operand happens to carry a proof.
+    let proof_operands = |command: &Command| match *command {
+        Command::ModusPonens {
+            premise,
+            implication,
+        } => vec![premise, implication],
+        Command::Generalization { premise, .. } | Command::Instantiate { premise, .. } => {
+            vec![premise]
+        }
+        Command::Alias { input } | Command::Seal { proof: input } => vec![input],
+        Command::Graph { .. }
+        | Command::DefinedRelation { .. }
+        | Command::Equal { .. }
+        | Command::Member { .. }
+        | Command::Not { .. }
+        | Command::Implies { .. }
+        | Command::ForAll { .. }
+        | Command::Substitute { .. }
+        | Command::Simplification { .. }
+        | Command::Frege { .. }
+        | Command::Contraposition { .. }
+        | Command::Distribution { .. }
+        | Command::Vacuous { .. }
+        | Command::Instantiation { .. }
+        | Command::Deduce { .. }
+        | Command::Reflexivity { .. }
+        | Command::Substitution { .. }
+        | Command::Axiom { .. }
+        | Command::ProofReference { .. }
+        | Command::Separation { .. }
+        | Command::Replacement { .. } => Vec::new(),
+    };
+    Ok(commands
+        .iter()
+        .zip(used_commands(commands, proof_operands)?)
+        .filter_map(|(command, used)| match command {
+            Command::ProofReference { proof_id } if used => Some(ProofId::from_bytes(*proof_id)),
+            _ => None,
+        })
+        .collect())
+}
+
+fn graphs(
+    engine: &CheckedProgram,
+    target: &Formula,
+    commands: &[Command],
+    context: &dyn ContextView,
+) -> Result<Vec<Graph>, String> {
+    let goal_parts = crate::learning::knowledge::fragments(target);
+    let used = used_commands(commands, Command::operands)?;
     let mut recent = VecDeque::new();
     let mut graphs = crate::learning::search::scope::program_graphs(target, commands)?;
     let mut bytes = graphs.iter().map(Graph::work_bytes).sum::<usize>();

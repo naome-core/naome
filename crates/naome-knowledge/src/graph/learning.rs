@@ -197,16 +197,61 @@ impl Graph {
         let _ = crate::learning::definitions::context(std::slice::from_ref(&entry))?;
         Ok(Some(entry))
     }
+    /// Checked proof references used by a bounded published derivation.
+    /// Oversized programs remain valid but are outside Finder's replay envelope.
+    pub(crate) fn learning_proof_dependencies(
+        &self,
+        root: ArtifactId,
+    ) -> Result<Box<[ArtifactId]>, crate::Error> {
+        let Some(manifest) = self.program_manifest(root)? else {
+            return self.direct_dependencies(root);
+        };
+        if !Self::bounded_learning_program(&manifest) {
+            return Ok(Box::default());
+        }
+        let limits = crate::resources::limits();
+        let _memory = crate::resources::MemoryLease::acquire(8 * limits.closure_bytes)?;
+        let commands = self.learning_program_commands(&manifest)?;
+        Ok(crate::learning::peer::contributing_proofs(&commands)?
+            .into_iter()
+            .map(ArtifactId::from)
+            .collect())
+    }
+
+    fn bounded_learning_program(manifest: &naome_proof::program::Manifest) -> bool {
+        let limits = crate::resources::limits();
+        manifest.commands <= limits.closure_steps as u64
+            && manifest.input_bytes <= limits.closure_bytes as u64
+    }
+
+    fn learning_program_commands(
+        &self,
+        manifest: &naome_proof::program::Manifest,
+    ) -> Result<Vec<naome_proof::program::Command>, crate::Error> {
+        use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS};
+        let mut commands = Vec::new();
+        while (commands.len() as u64) < manifest.commands {
+            let chunk = self.cold(self.store.program_chunk(
+                manifest,
+                commands.len() as u64,
+                CHUNK_RECORDS,
+                CHUNK_BYTES,
+            ))?;
+            if chunk.records.is_empty() {
+                return Err("checked peer program chunk is empty".into());
+            }
+            commands.extend(chunk.records);
+        }
+        Ok(commands)
+    }
+
     /// Snapshot the exact checked input and its ordered proof and definition dependencies.
     /// A replay worker rechecks these objects and the original program seal.
     pub(crate) fn peer_program(
         &self,
         manifest: naome_proof::program::Manifest,
     ) -> Result<Option<crate::learning::peer::Packet>, crate::Error> {
-        use naome_proof::{
-            DefinitionId, ProofId,
-            program::{CHUNK_BYTES, CHUNK_RECORDS, Command, Manifest},
-        };
+        use naome_proof::{DefinitionId, ProofId, program::Command};
         use std::collections::BTreeSet;
         fn references(commands: &[Command]) -> impl Iterator<Item = ArtifactId> + '_ {
             commands.iter().filter_map(|command| match command {
@@ -218,29 +263,11 @@ impl Graph {
             })
         }
         let limits = crate::resources::limits();
-        let bounded = |m: &Manifest| {
-            m.commands <= limits.closure_steps as u64
-                && m.input_bytes <= limits.closure_bytes as u64
-        };
-        if !bounded(&manifest) {
+        if !Self::bounded_learning_program(&manifest) {
             return Ok(None);
         }
         let _memory = crate::resources::MemoryLease::acquire(8 * limits.closure_bytes)?;
-        let read = |manifest: &Manifest| -> Result<Vec<Command>, crate::Error> {
-            let id = manifest.artifact_id();
-            let mut commands = Vec::new();
-            while (commands.len() as u64) < manifest.commands {
-                let chunk = self
-                    .program_chunk(id, commands.len() as u64, CHUNK_RECORDS, CHUNK_BYTES)?
-                    .ok_or("checked peer program missing")?;
-                if chunk.records.is_empty() {
-                    return Err("checked peer program chunk is empty".into());
-                }
-                commands.extend(chunk.records);
-            }
-            Ok(commands)
-        };
-        let commands = read(&manifest)?;
+        let commands = self.learning_program_commands(&manifest)?;
         let mut pending = references(&commands)
             .map(|id| (id, None))
             .collect::<Vec<_>>();
@@ -272,12 +299,12 @@ impl Graph {
             let (record, dependencies) = if let Some(dependency) =
                 crate::object::program_manifest(&object.bytes)?
             {
-                if !bounded(&dependency)
+                if !Self::bounded_learning_program(&dependency)
                     || bytes.saturating_add(dependency.input_bytes as usize) > limits.closure_bytes
                 {
                     return Ok(None);
                 }
-                let records = read(&dependency)?;
+                let records = self.learning_program_commands(&dependency)?;
                 let children = references(&records).collect::<Vec<_>>();
                 (
                     crate::learning::peer::Packet::context_record(&dependency, &records)?,
