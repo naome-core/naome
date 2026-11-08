@@ -107,7 +107,7 @@ impl ProofHeader {
     }
 }
 
-/// The deterministic minimum concrete proof witness for an accepted statement.
+/// The smallest retained concrete proof witness, with ties ordered by proof ID.
 #[derive(Clone, Copy)]
 pub struct StatementHeader {
     pub(crate) location: Option<FormulaLocation>,

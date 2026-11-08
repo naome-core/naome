@@ -24,74 +24,67 @@ impl Projection {
         Self::with_instantiations(proof, &[]).expect("unfused projection")
     }
 
-    /// Fold selected adjacent instantiation-axiom and modus-ponens pairs.
-    /// Each listed index is the modus ponens step. Its axiom must have no
-    /// other consumers or definition references. Independently replay the
-    /// result and compare the checked trace before treating it as equivalent.
+    /// Fold selected instantiation axioms into their sole modus ponens use.
+    /// Independently replay the program before treating its results as checked.
     pub fn with_instantiations(proof: &ProofNormalForm, sites: &[usize]) -> Result<Self, String> {
-        Self::lower_steps(proof.certificate().steps(), sites)
+        let steps = proof.certificate().steps();
+        let uses = reference_counts(steps)?;
+        Self::lower_steps(steps, &uses, sites.iter().copied())
     }
 
-    fn lower_steps(steps: &[ProofStep], sites: &[usize]) -> Result<Self, String> {
+    fn lower_steps(
+        steps: &[ProofStep],
+        uses: &[usize],
+        sites: impl IntoIterator<Item = usize>,
+    ) -> Result<Self, String> {
+        let mut omitted = vec![false; steps.len()];
         let mut folds = vec![None; steps.len()];
-        if !sites.is_empty() {
-            let mut uses = vec![0u32; steps.len()];
-            for step in steps {
-                for reference in step.local_references().into_iter().flatten() {
-                    uses[reference as usize] += 1;
-                }
+        for site in sites {
+            let Some(ProofStep::ModusPonens {
+                premise,
+                implication,
+            }) = steps.get(site)
+            else {
+                return Err("instantiation site must select modus ponens".into());
+            };
+            let axiom = *implication as usize;
+            let ProofStep::UniversalInstantiation {
+                replacement, body, ..
+            } = &steps[axiom]
+            else {
+                return Err("instantiation site has no instantiation axiom".into());
+            };
+            if uses[axiom] != 1 || body.as_defined().is_some() || omitted[axiom] {
+                return Err(
+                    "instantiation site cannot be folded without losing a reference".into(),
+                );
             }
-            for &site in sites {
-                let Some(ProofStep::ModusPonens {
-                    premise,
-                    implication,
-                }) = steps.get(site)
-                else {
-                    return Err("instantiation site must select modus ponens".into());
-                };
-                let axiom = *implication as usize;
-                let ProofStep::UniversalInstantiation {
-                    replacement, body, ..
-                } = &steps[axiom]
-                else {
-                    return Err("instantiation site has no instantiation axiom".into());
-                };
-                if axiom + 1 != site
-                    || uses[axiom] != 1
-                    || body.as_defined().is_some()
-                    || folds[axiom].replace((*premise, *replacement)).is_some()
-                {
-                    return Err(
-                        "instantiation site cannot be folded without losing a reference".into(),
-                    );
-                }
-            }
+            omitted[axiom] = true;
+            folds[site] = Some((axiom, *premise as usize, *replacement));
         }
 
         let mut builder = Builder::default();
-        let mut results = Vec::with_capacity(steps.len());
-        let mut handles = Vec::with_capacity(steps.len());
-        let mut index = 0;
-        while index < steps.len() {
-            if let Some((premise, replacement)) = folds[index] {
+        let mut results = vec![StepResult::Result(0); steps.len()];
+        let mut handles = vec![0; steps.len()];
+        for (index, step) in steps.iter().enumerate() {
+            if omitted[index] {
+                continue;
+            }
+            let position = if let Some((axiom, premise, replacement)) = folds[index] {
                 let position = builder.push(Command::Instantiate {
-                    premise: handles[premise as usize],
+                    premise: handles[premise],
                     replacement: replacement.identifier(),
                 });
-                results.push(StepResult::InstantiationAxiom(position));
-                handles.push(position);
-                results.push(StepResult::Result(position));
-                handles.push(position);
-                index += 2;
+                results[axiom] = StepResult::InstantiationAxiom(position);
+                position
             } else {
-                let position = builder.step(&steps[index], &handles);
-                results.push(StepResult::Result(position));
-                handles.push(position);
-                index += 1;
-            }
+                builder.step(step, &handles)
+            };
+            handles[index] = position;
+            results[index] = StepResult::Result(position);
         }
         builder.push(Command::Seal {
-            proof: *handles.last().expect("a certificate is nonempty"),
+            proof: *handles.last().ok_or("program inference recipe is empty")?,
         });
         Ok(Self {
             commands: builder.commands,
@@ -99,8 +92,7 @@ impl Projection {
         })
     }
 
-    /// Use a direct typed instantiation where the normalized axiom has only
-    /// its adjacent application as a consumer.
+    /// Use a typed instantiation when an axiom has only one application.
     pub fn with_native_instantiations(proof: &ProofNormalForm) -> Result<Self, String> {
         Self::from_inference_steps(proof.certificate().steps())
     }
@@ -108,37 +100,17 @@ impl Projection {
     /// Lower an untrusted, dependency-ordered inference recipe directly into
     /// typed commands. The independent program checker validates the result.
     pub fn from_inference_steps(steps: &[ProofStep]) -> Result<Self, String> {
-        if steps.is_empty() {
-            return Err("program inference recipe is empty".into());
-        }
-        let mut uses = vec![0u32; steps.len()];
-        for (position, step) in steps.iter().enumerate() {
-            for reference in step.local_references().into_iter().flatten() {
-                if reference as usize >= position {
-                    return Err("program inference recipe has a forward reference".into());
-                }
-                let count = uses
-                    .get_mut(reference as usize)
-                    .ok_or("invalid projection reference")?;
-                *count = count.saturating_add(1);
-            }
-        }
-        let sites = steps
-            .windows(2)
-            .enumerate()
-            .filter_map(|(index, pair)| {
-                let [
-                    ProofStep::UniversalInstantiation { body, .. },
-                    ProofStep::ModusPonens { implication, .. },
-                ] = pair
-                else {
-                    return None;
-                };
-                (*implication as usize == index && uses[index] == 1 && body.as_defined().is_none())
-                    .then_some(index + 1)
-            })
-            .collect::<Vec<_>>();
-        Self::lower_steps(steps, &sites)
+        let uses = reference_counts(steps)?;
+        let sites = steps.iter().enumerate().filter_map(|(index, step)| {
+            let ProofStep::ModusPonens { implication, .. } = step else {
+                return None;
+            };
+            let axiom = *implication as usize;
+            matches!(&steps[axiom], ProofStep::UniversalInstantiation { body, .. }
+                if uses[axiom] == 1 && body.as_defined().is_none())
+            .then_some(index)
+        });
+        Self::lower_steps(steps, &uses, sites)
     }
 
     /// Build one scoped deduction, exposing only its discharged conclusion.
@@ -215,6 +187,19 @@ impl Projection {
     pub fn results(&self) -> &[StepResult] {
         &self.results
     }
+}
+
+fn reference_counts(steps: &[ProofStep]) -> Result<Vec<usize>, String> {
+    let mut uses = vec![0; steps.len()];
+    for (position, step) in steps.iter().enumerate() {
+        for reference in step.local_references().into_iter().flatten() {
+            if reference as usize >= position {
+                return Err("program inference recipe has a forward reference".into());
+            }
+            uses[reference as usize] += 1;
+        }
+    }
+    Ok(uses)
 }
 
 #[derive(Default)]

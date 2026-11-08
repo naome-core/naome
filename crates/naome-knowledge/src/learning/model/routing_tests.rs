@@ -118,6 +118,20 @@ fn cached_formula_rows_are_reused_across_roles_and_discarded_after_training() {
     let mut io = MemoryStore::default();
     let mut runtime = Runtime::load(&Checkpoint::fresh(), &mut io).unwrap();
     let initial = runtime.scores_graph(&graph).unwrap();
+    assert!(!graph.context.is_empty());
+    let dense = runtime
+        .policy
+        .valid()
+        .independent(&runtime.scoring_batch(&graph).unwrap(), runtime.recurrent())
+        .into_data()
+        .try_to_vec::<f32>()
+        .unwrap();
+    assert!(
+        initial
+            .iter()
+            .zip(dense)
+            .all(|(sparse, dense)| (sparse - dense).abs() < 1e-5)
+    );
     let size = runtime.formulas.borrow().len();
     assert!(size > 1);
 

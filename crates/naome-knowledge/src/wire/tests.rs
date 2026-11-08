@@ -175,3 +175,47 @@ async fn program_offer_binds_the_canonical_question_bytes() {
     );
     assert_eq!(metadata.question(&context).unwrap(), Some(question));
 }
+
+#[tokio::test]
+async fn cold_artifact_frame_packs_exact_bytes_and_bounds_expansion() {
+    let object = Envelope {
+        compatibility: crate::hex(&crate::compatibility()),
+        artifact_id: crate::hex(&[9; 32]),
+        statement_id: None,
+        obligation_proof: Some(crate::hex(&[10; 32])),
+        payload: "04aabbcc".repeat(2048),
+    };
+    let codec = Codec::default();
+    let mut output = Cursor::new(Vec::new());
+    codec
+        .write(
+            &mut output,
+            Frame::new(Body::Object {
+                root: [3; 32],
+                object: object.clone(),
+                question: None,
+            }),
+        )
+        .await
+        .unwrap();
+    let mut bytes = output.into_inner();
+    assert!(bytes.len() < object.payload.len() / 4);
+    let decoded = codec.read(&mut Cursor::new(&bytes)).await.unwrap();
+    assert!(matches!(decoded.message.body,
+        Body::Object { root, object: decoded, question: None } if root == [3; 32] && decoded == object));
+
+    // Five fixed addresses, kind and option flags precede the packed length.
+    let packed = 4 + 5 * 32 + 1 + 2;
+    assert_ne!(bytes[packed] & 0x80, 0);
+    let declared = packed + 4;
+    let excessive = (crate::resources::limits().proof_bytes + 1) as u32;
+    bytes[declared..declared + 4].copy_from_slice(&excessive.to_be_bytes());
+    assert!(
+        codec
+            .read(&mut Cursor::new(bytes))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("payload capacity")
+    );
+}

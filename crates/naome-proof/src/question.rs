@@ -87,9 +87,11 @@ impl QuestionTarget {
             return Err(QuestionError::Limit("question target depth"));
         }
         let canonical_core = encoded[leading..].to_vec();
-        let core = Formula::decode_canonical_with_node_limit(&canonical_core, max_nodes)
-            .map_err(|error| QuestionError::Mathematical(error.to_string()))?
-            .0;
+        let mut core = formula.view();
+        for _ in 0..leading {
+            core = core.negated().expect("encoded outer negation");
+        }
+        let core = core.to_owned();
         let resolution_id = hash(
             b"naome:state:resolution:v1\0",
             &[FOUNDATION_ID.as_bytes(), &canonical_core],

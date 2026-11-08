@@ -1,6 +1,7 @@
 //! Search-owned working memory. Checkpoints contain weights and Adam; an
 //! interrupted native search restarts at its existing unit boundary.
 use super::*;
+use std::cell::OnceCell;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Recurrence {
@@ -22,7 +23,8 @@ pub struct Memory {
 pub struct Plan {
     pub scores: Vec<f32>,
     model: Option<String>,
-    successors: Option<Vec<Vec<f32>>>,
+    successors: Option<policy::Successors>,
+    rows: Vec<OnceCell<Vec<f32>>>,
     carry: bool,
 }
 
@@ -32,6 +34,7 @@ impl Plan {
             scores,
             model: None,
             successors: None,
+            rows: Vec::new(),
             carry: false,
         }
     }
@@ -46,15 +49,27 @@ impl Plan {
         if selected >= self.scores.len() {
             return Err("native memory action index differs".into());
         }
+        let Some(successors) = &self.successors else {
+            return Ok(None);
+        };
+        let row = &self.rows[selected];
+        if row.get().is_none() {
+            let values = successors
+                .selected(selected)
+                .into_data()
+                .try_to_vec::<f32>()
+                .map_err(|e| e.to_string())?;
+            if values.len() != policy::WIDTH
+                || values.iter().any(|v| !v.is_finite() || v.abs() > 1.)
+            {
+                return Err("native memory successor differs".into());
+            }
+            let _ = row.set(values);
+        }
         if !self.carry {
             return Ok(None);
         }
-        let values = self
-            .successors
-            .as_ref()
-            .and_then(|s| s.get(selected))
-            .ok_or("native memory transition missing")?
-            .clone();
+        let values = row.get().expect("selected successor row").clone();
         let model = self
             .model
             .clone()
@@ -112,8 +127,8 @@ impl Runtime {
                 &self.device.clone().inner(),
             )
         });
-        let (scores, successors) = policy.readout(
-            policy.encode_cached(&batch, &mut self.formulas.borrow_mut())?,
+        let (scores, successors) = policy.infer(
+            policy.encode_cached(&batch, &graph.context, &mut self.formulas.borrow_mut())?,
             initial,
         );
         let scores = scores
@@ -123,27 +138,16 @@ impl Runtime {
         if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
             return Err("native memory prediction differs".into());
         }
-        let successors = successors
-            .map(|s| -> Result<Vec<Vec<f32>>, String> {
-                let values = s
-                    .into_data()
-                    .try_to_vec::<f32>()
-                    .map_err(|e| e.to_string())?;
-                if values.len() != scores.len() * policy::WIDTH
-                    || values.iter().any(|v| !v.is_finite() || v.abs() > 1.)
-                {
-                    return Err("native memory successor differs".into());
-                }
-                Ok(values
-                    .chunks_exact(policy::WIDTH)
-                    .map(<[f32]>::to_vec)
-                    .collect())
-            })
-            .transpose()?;
+        let rows = if successors.is_some() {
+            vec![OnceCell::new(); scores.len()]
+        } else {
+            Vec::new()
+        };
         Ok(Plan {
             scores,
             model: Some(self.identity.clone()),
             successors,
+            rows,
             carry: self.recurrence == Recurrence::Carry,
         })
     }

@@ -475,7 +475,8 @@ impl Job {
         }
         self.base.validate()?;
         if !self.prerequisites.is_empty()
-            && (self.training || self.required.is_empty() && !self.prerequisites.has_definitions())
+            && (self.training
+                || self.required.is_empty() && !self.prerequisites.has_optional_context())
         {
             return Err("temporary prerequisites lack a solving role".into());
         }
@@ -1141,6 +1142,7 @@ fn solve_with_report(
     job: u64,
     context: SolveContext<'_>,
 ) -> Result<Generation, String> {
+    let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
     let definitions = context
         .prerequisites
         .map(|inputs| inputs.definitions(context.definitions, context.required))
@@ -1159,23 +1161,20 @@ fn solve_with_report(
     if budget != 0
         && !context.required.is_empty()
         && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
+        && let Some(packet) = inputs.native_proof(question.proved_target(), context.required)?
     {
-        let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
-        if let Some(packet) = inputs.native_proof(question.proved_target(), context.required)? {
-            return program_generation(
-                packet,
-                Vec::new(),
-                question.proved_target(),
-                false,
-                GenerationCost {
-                    search_expansions: 1,
-                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
-                        as u64,
-                    ..GenerationCost::default()
-                },
-                Vec::new(),
-            );
-        }
+        return program_generation(
+            packet,
+            Vec::new(),
+            question.proved_target(),
+            false,
+            GenerationCost {
+                search_expansions: 1,
+                generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                ..GenerationCost::default()
+            },
+            Vec::new(),
+        );
     }
     let mut lemma_work = 0;
     if budget != 0
@@ -1183,7 +1182,6 @@ fn solve_with_report(
         && context.required.is_empty()
         && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_offer())
     {
-        let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
         let (packet, work) =
             inputs.search_native_lemma(question.proved_target(), &mut ranker, budget, started)?;
         lemma_work = work;
@@ -1211,8 +1209,8 @@ fn solve_with_report(
         frontier,
         executions,
         mut terminal,
-    } = search_question_report(
-        source,
+    } = search_compiled_question(
+        &question,
         &mut ranker,
         budget.saturating_sub(lemma_work),
         &context,
@@ -1238,7 +1236,6 @@ fn solve_with_report(
             });
         }
         let definition_started = std::time::Instant::now();
-        let question = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
         let target = if solution.refuted {
             question.refuted_target()
         } else {
@@ -1389,15 +1386,25 @@ fn search_question_measured(
 ) -> Result<(Option<Solution>, String, GenerationCost), String> {
     search_question_with_knowledge(source, ranker, budget, &[], &[])
 }
+#[cfg(test)]
 fn search_question_report(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
     context: &SolveContext<'_>,
 ) -> Result<Generation, String> {
+    let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+    search_compiled_question(&question, ranker, budget, context)
+}
+
+fn search_compiled_question(
+    q: &ResearchQuestion,
+    ranker: &mut dyn model::Ranker,
+    budget: usize,
+    context: &SolveContext<'_>,
+) -> Result<Generation, String> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
-    let q = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
     let mut retrieval_micros = 0;
     let mut retrieved = 0;
     let mut dependency_steps = 0;
@@ -1426,6 +1433,7 @@ fn search_question_report(
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
+    let mut knowledge = None;
     for refuted in [false, true] {
         if remaining == 0 {
             break;
@@ -1564,10 +1572,19 @@ fn search_question_report(
                 terminal: experience::TerminalEvidence::Unknown,
             }
         } else {
-            let selected = match knowledge::offer(&target, context.theorems, context.required) {
+            let selection = (|| {
+                if knowledge.is_none() {
+                    knowledge = Some(knowledge::Snapshot::new(context.theorems)?);
+                }
+                knowledge
+                    .as_ref()
+                    .expect("checked theorem snapshot")
+                    .offer(&target, context.required)
+            })();
+            let (selected, steps) = match selection {
                 Ok(selected) => selected,
-                Err(error) if !terms.is_empty() => {
-                    failure = format!("temporary_prerequisite_composition_unresolved: {error}");
+                Err(_error) if !terms.is_empty() => {
+                    failure = "temporary_prerequisite_composition_unresolved".into();
                     terminal = experience::TerminalEvidence::Unsupported(
                         experience::Capacity::Dependencies,
                     );
@@ -1576,12 +1593,7 @@ fn search_question_report(
                 Err(error) => return Err(error),
             };
             retrieved += selected.len();
-            dependency_steps += selected
-                .iter()
-                .map(|e| evidence::steps(&e.packet))
-                .collect::<Result<Vec<_>, _>>()?
-                .iter()
-                .sum::<usize>();
+            dependency_steps += steps;
             retrieval_micros += retrieval_started
                 .elapsed()
                 .as_micros()

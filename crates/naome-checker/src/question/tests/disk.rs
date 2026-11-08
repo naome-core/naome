@@ -259,7 +259,7 @@ fn cold_aliases_citations_full_snapshot_replay_and_rollback_match_the_ram_oracle
     ));
     assert!(!previous.contains_proof(alias).unwrap());
     let result = twin.compare(&equal(), &registry, &policy);
-    assert_eq!(result.witness, Some(first.min(alias)));
+    assert_eq!(result.witness, Some(first));
     let replay = twin.replay();
     assert!(replay.contains_proof(first).unwrap() && replay.contains_proof(alias).unwrap());
     let missing = ProofCertificate::new(vec![ProofStep::ProofReference {
