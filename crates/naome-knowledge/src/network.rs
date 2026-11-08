@@ -686,7 +686,7 @@ where
     }
     let mut controls = worker::Controls::spawn(control.clone(), published.clone());
     emit(
-        json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
+        json!({"event":crate::outcome::NodeEvent::Starting, "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
     let owner_busy = node.swarm.busy.clone();
     let outcome:Result<(),crate::Error>=worker::while_polled(owner_busy, async {
@@ -739,14 +739,14 @@ where
                 match command {
                     Some(Ok(command)) => {
                         match command.parse() {
-                            Err(error) => emit(json!({"event":"command_error","error":error})),
+                            Err(error) => emit(json!({"event":crate::outcome::NodeEvent::CommandError,"error":error})),
                             Ok((value, _parsed_memory)) => { if !node.command(value) { break; } },
                         }
                     },
-                    Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
+                    Some(Err(error)) => emit(json!({"event":crate::outcome::NodeEvent::CommandError, "error":error})),
                     None => {
                         command_input_open = false;
-                        emit(json!({"event":"command_input_closed"}));
+                        emit(json!({"event":crate::outcome::NodeEvent::CommandInputClosed}));
                     },
                 }
             },
@@ -800,7 +800,7 @@ where
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
             crate::intake::Progress::Skipped(id, error) => {
-                emit(json!({"event":"proof_skipped","id":hex(id.as_bytes()),"error":error}));
+                emit(json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(id.as_bytes()),"error":error}));
             }
             crate::intake::Progress::Accepted(ids) => {
                 node.publish_admitted(&ids, "fetch");
@@ -810,7 +810,7 @@ where
                 node.publish_admitted(&admitted, "local_pending");
                 for (id, error) in rejected {
                     emit(
-                        json!({"event":"rejected", "id":hex(id.as_bytes()),"source":"local_pending","error":error}),
+                        json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()),"source":"local_pending","error":error}),
                     );
                 }
             }
@@ -847,14 +847,18 @@ where
     let cleanup = cleanup.and(control_cleanup).and(transport_cleanup);
     match (outcome, cleanup) {
         (Err(primary), Err(_)) => {
-            emit(json!({"event":"shutdown_failed","error":crate::RuntimeFailure::Cleanup}));
+            emit(
+                json!({"event":crate::outcome::NodeEvent::ShutdownFailed,"error":crate::RuntimeFailure::Cleanup}),
+            );
             return Err(primary);
         }
         (Err(error), _) => return Err(error),
         (_, Err(_)) => return Err(crate::RuntimeFailure::Cleanup.into()),
         _ => {}
     }
-    emit(json!({"event":"stopped", "root":hex(&node.graph.content_root())}));
+    emit(
+        json!({"event":crate::outcome::NodeEvent::Stopped, "root":hex(&node.graph.content_root())}),
+    );
     Ok(())
 }
 
@@ -1193,11 +1197,11 @@ impl Node {
         self.publish_admitted(&result.admitted, source);
         for (id, error) in result.rejected {
             emit(
-                json!({"event":"rejected", "id":hex(id.as_bytes()), "error":error, "source":"pending"}),
+                json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()), "error":error, "source":"pending"}),
             );
         }
         let value = json!({"status":result.status, "id":hex(result.id.as_bytes())});
-        emit(json!({"event":"ingest", "result":value, "source":source}));
+        emit(json!({"event":crate::outcome::NodeEvent::Ingest, "result":value, "source":source}));
         Ok(value)
     }
 
@@ -1212,7 +1216,7 @@ impl Node {
                 .gossip
                 .publish(self.topic.clone(), announcement);
             emit(
-                json!({"event":"accepted", "id":hex(id.as_bytes()), "source":source, "root":hex(&self.graph.content_root())}),
+                json!({"event":crate::outcome::NodeEvent::Accepted, "id":hex(id.as_bytes()), "source":source, "root":hex(&self.graph.content_root())}),
             );
         }
     }
@@ -1454,9 +1458,11 @@ impl Node {
             }
         })();
         match result {
-            Ok(result) => emit(json!({"event":"response","request":request,"result":result})),
+            Ok(result) => emit(
+                json!({"event":crate::outcome::NodeEvent::Response,"request":request,"result":result}),
+            ),
             Err(error) => emit(
-                json!({"event":"response","request":request,"retryable":retryable_publication(&error),"error":error}),
+                json!({"event":crate::outcome::NodeEvent::Response,"request":request,"retryable":retryable_publication(&error),"error":error}),
             ),
         }
         value.get("command").and_then(Value::as_str) != Some("stop")
@@ -1477,12 +1483,18 @@ impl Node {
                 .produce(&source)
                 .and_then(|(_, result)| self.ingested(result, "deterministic_producer"));
             match result {
-                Ok(result) => emit(json!({"event":"producer_result", "result":result})),
+                Ok(result) => emit(
+                    json!({"event":crate::outcome::NodeEvent::ProducerResult, "result":result}),
+                ),
                 Err(error) if retryable_publication(&error) => {
                     self.producer_artifacts.push_back(source);
-                    emit(json!({"event":"producer_deferred", "error":error}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::ProducerDeferred, "error":error}),
+                    );
                 }
-                Err(error) => emit(json!({"event":"producer_rejected", "error":error})),
+                Err(error) => emit(
+                    json!({"event":crate::outcome::NodeEvent::ProducerRejected, "error":error}),
+                ),
             }
         }
         if work.is_some() {
@@ -1491,11 +1503,13 @@ impl Node {
                     self.publish_admitted(&admitted, "local_backlog");
                     for (id, error) in rejected {
                         emit(
-                            json!({"event":"rejected","id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
+                            json!({"event":crate::outcome::NodeEvent::Rejected,"id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
                         );
                     }
                 }
-                Err(error) => emit(json!({"event":"proof_backlog_error","error":error})),
+                Err(error) => emit(
+                    json!({"event":crate::outcome::NodeEvent::ProofBacklogError,"error":error}),
+                ),
             }
         }
         let wanted_before = self.wanted.len();
@@ -1573,10 +1587,10 @@ impl Node {
     fn proof_fetch_error(&mut self, root: ArtifactId, error: crate::Error) {
         self.graph.program_failure(&error);
         let event = if error.retryable() {
-            "proof_deferred"
+            crate::outcome::NodeEvent::ProofDeferred
         } else {
             self.intake.abort(root);
-            "proof_skipped"
+            crate::outcome::NodeEvent::ProofSkipped
         };
         emit(json!({"event":event, "id":hex(root.as_bytes()),"error":error}));
     }
@@ -1795,7 +1809,7 @@ impl Node {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.ready = true;
                 emit(
-                    json!({"event":"ready","address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
+                    json!({"event":crate::outcome::NodeEvent::Ready,"address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
                 );
             }
             SwarmEvent::ListenerError { listener_id, error } => {
@@ -1807,13 +1821,13 @@ impl Node {
                     self.relay_failed(peer);
                     self.swarm.remove_listener(listener_id);
                     emit(
-                        json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":crate::wire::stream_failure(&error)}),
+                        json!({"event":crate::outcome::NodeEvent::RelayListenFailed, "peer":peer.to_string(), "error":crate::wire::stream_failure(&error)}),
                     );
                 } else if listener_id == self.primary_listener {
                     return Err(crate::RuntimeFailure::Listener.into());
                 } else {
                     emit(
-                        json!({"event":"retired_listener_error", "error":crate::wire::stream_failure(&error)}),
+                        json!({"event":crate::outcome::NodeEvent::RetiredListenerError, "error":crate::wire::stream_failure(&error)}),
                     );
                 }
             }
@@ -1843,12 +1857,12 @@ impl Node {
                 }
                 self.next_inventory.remove(&peer_id);
                 emit(
-                    json!({"event":"connected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
+                    json!({"event":crate::outcome::NodeEvent::Connected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
                     "connections":num_established.get(), "relayed":relayed, "endpoint":format!("{endpoint:?}")}),
                 );
                 if relayed && self.discovery.config.hole_punch {
                     emit(
-                        json!({"event":"hole_punch_attempt", "peer":peer_id.to_string(), "relayed_connection_id":connection_id.to_string()}),
+                        json!({"event":crate::outcome::NodeEvent::HolePunchAttempt, "peer":peer_id.to_string(), "relayed_connection_id":connection_id.to_string()}),
                     );
                 }
             }
@@ -1868,7 +1882,7 @@ impl Node {
                     ListenError::Transport(_) => WireFailure::TransportNegotiation,
                 };
                 emit(
-                    json!({"event":"incoming_connection_failed", "connection_id":connection_id.to_string(),
+                    json!({"event":crate::outcome::NodeEvent::IncomingConnectionFailed, "connection_id":connection_id.to_string(),
                     "local":local_addr.to_string(), "remote":send_back_addr.to_string(), "error":code}),
                 );
             }
@@ -1891,22 +1905,28 @@ impl Node {
                     }
                 }
                 emit(
-                    json!({"event":"disconnected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
+                    json!({"event":crate::outcome::NodeEvent::Disconnected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
                     "connections":num_established, "cause":format!("{cause:?}")}),
                 );
             }
             SwarmEvent::NewExternalAddrCandidate { address } => {
                 // Identify observations are DCUtR candidates, not evidence of
                 // public reachability and not automatically confirmed addresses.
-                emit(json!({"event":"external_candidate", "address":address.to_string()}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ExternalCandidate, "address":address.to_string()}),
+                );
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
                 self.discovery.addresses_changed();
-                emit(json!({"event":"external_confirmed", "address":address.to_string()}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ExternalConfirmed, "address":address.to_string()}),
+                );
             }
             SwarmEvent::ExternalAddrExpired { address } => {
                 self.discovery.addresses_changed();
-                emit(json!({"event":"external_expired", "address":address.to_string()}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ExternalExpired, "address":address.to_string()}),
+                );
             }
             SwarmEvent::Behaviour(BehaviourEvent::Discovery(event)) => {
                 let upgrade = match &event {
@@ -1937,10 +1957,12 @@ impl Node {
                 }
             }
             SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
-                emit(json!({"event":"relay_client", "detail":format!("{event:?}")}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::RelayClient, "detail":format!("{event:?}")}),
+                );
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
-                json!({"event":"dial_failed","peer":peer_id.map(|peer|peer.to_string()),
+                json!({"event":crate::outcome::NodeEvent::DialFailed,"peer":peer_id.map(|peer|peer.to_string()),
                     "stage":"transport", "error":dial_failure(&error)}),
             ),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
@@ -1958,7 +1980,9 @@ impl Node {
                     if self.graph.contains(id)? || !self.charge(propagation_source) {
                         return Ok(());
                     }
-                    emit(json!({"event":"announcement","id":hex(id.as_bytes())}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::Announcement,"id":hex(id.as_bytes())}),
+                    );
                     self.want(id)?;
                 }
             }
@@ -1971,7 +1995,7 @@ impl Node {
                     request, channel, ..
                 } => {
                     emit(
-                        json!({"event":"exchange_request", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
+                        json!({"event":crate::outcome::NodeEvent::ExchangeRequest, "peer":peer.to_string(), "connection_id":connection_id.to_string(),
                         "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&request.message.body),
                         "object_id":body_id(&request.message.body),"root_id":body_root(&request.message.body),"position":body_position(&request.message.body)}),
                     );
@@ -2001,7 +2025,7 @@ impl Node {
                     response,
                 } => {
                     emit(
-                        json!({"event":"exchange_response", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
+                        json!({"event":crate::outcome::NodeEvent::ExchangeResponse, "peer":peer.to_string(), "connection_id":connection_id.to_string(),
                         "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&response.message.body),
                         "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body),"position":body_position(&response.message.body)}),
                     );
@@ -2025,7 +2049,7 @@ impl Node {
                         } else if let Flight::Get { root, .. } = flight {
                             self.intake.abort(root);
                             emit(
-                                json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":WireFailure::ResponsePeerMismatch}),
+                                json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(root.as_bytes()),"error":WireFailure::ResponsePeerMismatch}),
                             );
                         }
                     }
@@ -2043,7 +2067,7 @@ impl Node {
                 if let Some(Flight::Get { root, .. }) = self.flights.remove(&request_id) {
                     self.intake.abort(root);
                     emit(
-                        json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":WireFailure::StreamIo}),
+                        json!({"event":crate::outcome::NodeEvent::ProofSkipped, "id":hex(root.as_bytes()),"error":WireFailure::StreamIo}),
                     );
                 }
                 use request_response::OutboundFailure as Failure;
@@ -2054,7 +2078,7 @@ impl Node {
                     Failure::UnsupportedProtocols => WireFailure::UnsupportedProtocols,
                     Failure::Io(error) => crate::wire::stream_failure(error),
                 };
-                emit(json!({"event":"request_failed","error":code}));
+                emit(json!({"event":crate::outcome::NodeEvent::RequestFailed,"error":code}));
             }
             SwarmEvent::Behaviour(BehaviourEvent::Exchange(
                 request_response::Event::InboundFailure { error, .. },
@@ -2067,7 +2091,7 @@ impl Node {
                     Failure::ResponseOmission => WireFailure::ResponseOmitted,
                     Failure::Io(error) => crate::wire::stream_failure(error),
                 };
-                emit(json!({"event":"inbound_failed","error":code}));
+                emit(json!({"event":crate::outcome::NodeEvent::InboundFailed,"error":code}));
             }
             _ => {}
         }
@@ -2211,9 +2235,9 @@ impl Node {
                     Ok(status) => Body::Receipt { status },
                     Err(error) => {
                         let event = if self.graph.storage_error().is_some() {
-                            "storage_error"
+                            crate::outcome::NodeEvent::StorageError
                         } else {
-                            "rejected"
+                            crate::outcome::NodeEvent::Rejected
                         };
                         emit(json!({"event":event,"error":error}));
                         Body::Error {
@@ -2252,7 +2276,9 @@ impl Node {
             | Flight::Offer { peer, .. } => *peer,
         };
         if peer != expected_peer {
-            emit(json!({"event":"rejected", "error":WireFailure::ResponsePeerMismatch}));
+            emit(
+                json!({"event":crate::outcome::NodeEvent::Rejected, "error":WireFailure::ResponsePeerMismatch}),
+            );
             return Ok(());
         }
         match (flight, body) {
@@ -2265,7 +2291,7 @@ impl Node {
             ) => {
                 if metadata.manifest.artifact_id() != id {
                     emit(
-                        json!({"event":"rejected","error":WireFailure::DescriptionIdentityMismatch}),
+                        json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::DescriptionIdentityMismatch}),
                     );
                 } else {
                     let queued =
@@ -2276,7 +2302,9 @@ impl Node {
                             self.wanted.remove(&id);
                         }
                         Ok(_) => {}
-                        Err(error) => emit(json!({"event":"rejected","error":error})),
+                        Err(error) => {
+                            emit(json!({"event":crate::outcome::NodeEvent::Rejected,"error":error}))
+                        }
                     }
                 }
             }
@@ -2303,7 +2331,7 @@ impl Node {
                 };
                 if let Err(error) = result {
                     self.graph.program_failure(&error);
-                    emit(json!({"event":"rejected","error":error}));
+                    emit(json!({"event":crate::outcome::NodeEvent::Rejected,"error":error}));
                 }
             }
             (Flight::Program { read, .. }, Body::ProgramData { root, id, chunk }) => {
@@ -2326,7 +2354,7 @@ impl Node {
                     self.graph.program_failure(&error);
                     self.intake.program_failed(peer, expected_id);
                     emit(
-                        json!({"event":"program_chunk_rejected","id":hex(expected_id.as_bytes()),"error":error}),
+                        json!({"event":crate::outcome::NodeEvent::ProgramChunkRejected,"id":hex(expected_id.as_bytes()),"error":error}),
                     );
                 }
             }
@@ -2339,7 +2367,7 @@ impl Node {
                     _ => PeerFailure::UnexpectedResponse,
                 };
                 emit(
-                    json!({"event":"program_transfer_deferred","id":hex(id.as_bytes()),"error":error}),
+                    json!({"event":crate::outcome::NodeEvent::ProgramTransferDeferred,"id":hex(id.as_bytes()),"error":error}),
                 );
             }
             (
@@ -2352,13 +2380,15 @@ impl Node {
                 Body::InventoryUnchanged { root },
             ) => {
                 if request.after.is_some() || known != Some(root) {
-                    emit(json!({"event":"rejected","error":WireFailure::UnsolicitedInventory}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::UnsolicitedInventory}),
+                    );
                 } else {
                     self.inventory_progress.remove(&peer);
                     self.inventory_summaries
                         .insert(peer, (root, self.graph.content_root()));
                     emit(
-                        json!({"event":"inventory_unchanged","peer":peer.to_string(),"root":hex(&root)}),
+                        json!({"event":crate::outcome::NodeEvent::InventoryUnchanged,"peer":peer.to_string(),"root":hex(&root)}),
                     );
                 }
             }
@@ -2386,7 +2416,7 @@ impl Node {
             (Flight::Describe { id, .. }, Body::Description { metadata }) => {
                 if metadata.artifact_id != hex(id.as_bytes()) {
                     emit(
-                        json!({"event":"rejected","error":WireFailure::DescriptionIdentityMismatch}),
+                        json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::DescriptionIdentityMismatch}),
                     );
                     return Ok(());
                 }
@@ -2401,7 +2431,9 @@ impl Node {
                     // through queued/declined assessment. Otherwise a wrong
                     // descriptor can monopolize retries for the same ArtifactId.
                     Ok(_) => {}
-                    Err(error) => emit(json!({"event":"rejected","error":error})),
+                    Err(error) => {
+                        emit(json!({"event":crate::outcome::NodeEvent::Rejected,"error":error}))
+                    }
                 }
             }
             (
@@ -2433,7 +2465,7 @@ impl Node {
                 }
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {
-                emit(json!({"event":"offer_result","status":status}))
+                emit(json!({"event":crate::outcome::NodeEvent::OfferResult,"status":status}))
             }
             (
                 Flight::Get { root, .. },
@@ -2444,30 +2476,36 @@ impl Node {
                 // Keep the existing approved closure and its original grant.
                 // Automatic request pacing retries without renewing authority.
                 emit(
-                    json!({"event":"proof_deferred", "id":hex(root.as_bytes()),"error":PeerFailure::OwnerBusy}),
+                    json!({"event":crate::outcome::NodeEvent::ProofDeferred, "id":hex(root.as_bytes()),"error":PeerFailure::OwnerBusy}),
                 );
             }
             (Flight::Get { root, .. }, Body::Error { code }) => {
                 self.intake.abort(root);
-                emit(json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":code}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ProofSkipped, "id":hex(root.as_bytes()),"error":code}),
+                );
             }
             (Flight::Get { root, .. }, Body::Missing) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":PeerFailure::RequiredPayloadMissing}),
+                    json!({"event":crate::outcome::NodeEvent::ProofSkipped, "id":hex(root.as_bytes()),"error":PeerFailure::RequiredPayloadMissing}),
                 );
             }
-            (_, Body::Error { code }) => emit(json!({"event":"peer_error","error":code})),
+            (_, Body::Error { code }) => {
+                emit(json!({"event":crate::outcome::NodeEvent::PeerError,"error":code}))
+            }
             // Keep the bounded attempt counter so the next retry rotates to
             // another peer. A missing descriptor is no decline authority.
             (Flight::Describe { .. }, Body::Missing) => {}
             (Flight::Get { root, .. }, _) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":PeerFailure::UnexpectedResponse}),
+                    json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(root.as_bytes()),"error":PeerFailure::UnexpectedResponse}),
                 );
             }
-            _ => emit(json!({"event":"rejected","error":WireFailure::ResponseScopeMismatch})),
+            _ => emit(
+                json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::ResponseScopeMismatch}),
+            ),
         }
         if let Some(error) = self.graph.storage_error() {
             return Err(error);

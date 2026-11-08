@@ -177,7 +177,7 @@ class Trial:
         prefix_sha256 = hashlib.sha256(json.dumps(before_events, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
         prior_phase_hashes = {event.get("instance_sha256") for event in before_events
-            if event.get("event") == "startup_replay"
+            if event.get("event") == 0x00170069
             and isinstance(event.get("instance_sha256"), str)
             and len(event["instance_sha256"]) == 64
             and all(character in "0123456789abcdef" for character in event["instance_sha256"])}
@@ -325,7 +325,7 @@ class Trial:
                                 separators=(",", ":")).encode()).hexdigest()
                             assert prefix == prefix_sha256, "startup prelaunch log prefix changed"
                             phases = [(event_boundary + index, event) for index, event in enumerate(events[event_boundary:])
-                                if event.get("event") == "startup_replay" and event.get("pid") == daemon["pid"]]
+                                if event.get("event") == 0x00170069 and event.get("pid") == daemon["pid"]]
                             if phases:
                                 hashes = {event.get("instance_sha256") for _, event in phases}
                                 assert len(hashes) == 1, "startup attempt phase-instance changed"
@@ -796,7 +796,7 @@ class Relay:
         self.identity = process_identity(self.process.pid)
         assert self.identity is not None and self.identity["pid"] == self.identity["group"]
         (trial.output / "relay-process.json").write_text(json.dumps(self.identity) + "\n")
-        trial.wait(lambda: any(event.get("event") == "ready" for event in self.logs()))
+        trial.wait(lambda: any(event.get("event") == 0x00170050 for event in self.logs()))
         trial.summary["relay"] = {"peer_id": self.peer, **self.identity}
 
     def logs(self):
@@ -922,7 +922,7 @@ class Node:
         assert result["running"]
         self.capture_process()
         event = self.trial.wait(lambda: next((event for event in self.logs()
-            [self.event_offset:] if event.get("event") == "starting"), None))
+            [self.event_offset:] if event.get("event") == 0x00170068), None))
         if self.peer is not None:
             assert self.peer == event["peer_id"], "restart changed the runtime peer identity"
         self.peer = event["peer_id"]
@@ -954,7 +954,7 @@ class Node:
         assert not status["running"], status
         assert not process_group(self.process), "stop returned before the owned OS process group exited"
         if self.process is not None:
-            assert sum(event.get("event") == "stopped" for event in
+            assert sum(event.get("event") == 0x0017006a for event in
                        self.logs()[self.event_offset:]) == 1, "graceful stop event missing or duplicated"
         assert self.trial.call(self, "stop", cleanup=cleanup) == status, "repeated stop changed persistent status"
         assert self.trial.call(self, "status", cleanup=cleanup) == status, "stopped status disagrees with stop"
@@ -988,13 +988,13 @@ def guardian_fixture_worker():
             "steps": 0, "cpu_ms": 20000, "descendant": True}}}
         node.write_config()
         node.start()
-        trial.wait(lambda: any(event.get("event") == "research_working"
+        trial.wait(lambda: any(event.get("event") == 0x00170061
             and event.get("phase") == "cpu_active" for event in node.logs()), maximum=5)
         research = [process_identity(event["pid"]) for event in node.logs()
-            if event.get("event") in {"research_started", "research_worker", "research_descendant"}]
+            if event.get("event") in {0x0017005f, 0x00170060, 0x0017005a}]
         assert len(research) == 3 and all(research), "active research group identities missing"
         write_receipt(trial.output / "research-processes.json", research)
-        worker_pid = next(event["pid"] for event in node.logs() if event.get("event") == "research_worker")
+        worker_pid = next(event["pid"] for event in node.logs() if event.get("event") == 0x00170060)
         worker = next(identity for identity in research if identity["pid"] == worker_pid)
         before_sample = process_cpu_sample(worker)
         cpu_witness = {"worker": worker_pid, "worker_identity": worker,
@@ -1217,9 +1217,9 @@ def main():
             statuses = list(pool.map(lambda _: trial.call(sender, "start"), range(2)))
         assert all(status["running"] for status in statuses)
         sender.capture_process()
-        trial.wait(lambda: any(event.get("event") == "starting" and event["peer_id"] == sender.peer
+        trial.wait(lambda: any(event.get("event") == 0x00170068 and event["peer_id"] == sender.peer
             for event in sender.logs()[sender.event_offset:]))
-        assert sum(event.get("event") == "starting" for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
+        assert sum(event.get("event") == 0x00170068 for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
         def expected_status(node):
             return {"running": True, "accepted_artifacts": 3,
@@ -1230,7 +1230,7 @@ def main():
             if len(own) != 3 or own != remote or any(node.ids() != own for node in trial.nodes):
                 return False
             remote_accepted = {event["id"] for event in receiver.logs()
-                if event.get("event") == "accepted" and event.get("source") == "fetch"}
+                if event.get("event") == 0x00170001 and event.get("source") == "fetch"}
             if not own.issubset(remote_accepted):
                 return False
             # Durable admission precedes publication of the passive status snapshot.
@@ -1239,29 +1239,29 @@ def main():
                 return False
             return own
         accepted = trial.wait(converged, maximum=40 if args.mode != "direct" else 20)
-        assert not any(event.get("event") == "question_generated" for event in receiver.logs()), "receiver generated local fixtures before exchange qualification"
-        assert sum(event.get("event") == "proof_generated" for event in sender.logs()) == 3
-        assert any(event.get("event") == "exchange_response" and event.get("kind") == "object" for event in receiver.logs()), "no real root payload response observed"
+        assert not any(event.get("event") == 0x0017004d for event in receiver.logs()), "receiver generated local fixtures before exchange qualification"
+        assert sum(event.get("event") == 0x00170046 for event in sender.logs()) == 3
+        assert any(event.get("event") == 0x00170013 and event.get("kind") == "object" for event in receiver.logs()), "no real root payload response observed"
         if args.mode == "mdns":
             assert all(node.config["peers"] == [] for node in trial.nodes)
-            assert any(event.get("event") == "discovered" and event.get("source") == "mdns"
+            assert any(event.get("event") == 0x00170010 and event.get("source") == "mdns"
                 and event.get("peer") == sender.peer for event in receiver.logs()), "autonomous receiver did not discover the unlisted sender over mDNS"
         elif args.mode == "dht":
             assert all(node.config["peers"] == [] for node in trial.nodes)
-            trial.wait(lambda: any(event.get("event") == "dht_participant" and event.get("peer") == sender.peer
+            trial.wait(lambda: any(event.get("event") == 0x0017000c and event.get("peer") == sender.peer
                 for event in receiver.logs()), maximum=25)
-            trial.wait(lambda: any(event.get("event") == "identified" and event.get("peer") == sender.peer
+            trial.wait(lambda: any(event.get("event") == 0x0017001f and event.get("peer") == sender.peer
                 for event in receiver.logs()), maximum=10)
         elif args.mode == "relay":
             connections = {event["connection_id"] for event in receiver.logs()
-                if event.get("event") == "connected" and event.get("peer") == sender.peer and event.get("relayed") is True}
+                if event.get("event") == 0x00170009 and event.get("peer") == sender.peer and event.get("relayed") is True}
             assert connections, "no actual relay-circuit peer connection"
             fetched = {event["object_id"] for event in receiver.logs()
-                if event.get("event") == "exchange_response" and event.get("kind") == "object"
+                if event.get("event") == 0x00170013 and event.get("kind") == "object"
                 and event.get("peer") == sender.peer and event.get("relayed") is True
                 and event.get("connection_id") in connections}
             assert accepted.issubset(fetched), "accepted roots did not all travel over the actual relay connection"
-            assert not any(event.get("event") == "connected" and event.get("peer") == sender.peer
+            assert not any(event.get("event") == 0x00170009 and event.get("peer") == sender.peer
                 and event.get("relayed") is False for event in receiver.logs()), "relay-only qualification used a direct shortcut"
             trial.summary["relayed_connection_ids"] = sorted(connections)
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
@@ -1270,20 +1270,20 @@ def main():
             "result": "pass", "root_proofs": 3, "receiver_generated_questions": 0,
             "receiver_accepted_source": "fetch", "mocked": ["question generation", "proof generation"]}
         trial.wait(lambda: len({event["resolution_id"] for event in sender.logs()
-            if event.get("event") == "question_generated"}) >= 6, maximum=5)
+            if event.get("event") == 0x0017004d}) >= 6, maximum=5)
         assert sender.ids() == accepted and receiver.ids() == accepted
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
         # Resource-deferred admission may retry after its first request settles.
         generated, resolved, pending, admitted = set(), set(), set(), set()
         for event in sender.logs():
-            if event.get("event") == "proof_generated":
+            if event.get("event") == 0x00170046:
                 resolved.add(event["resolution_id"])
-            elif event.get("event") == "question_assessed":
+            elif event.get("event") == 0x0017004b:
                 resolution = event["resolution_id"]
                 pending.discard(resolution)
                 if event["admitted"]:
                     admitted.add(resolution)
-            elif event.get("event") == "question_generated":
+            elif event.get("event") == 0x0017004d:
                 resolution = event["resolution_id"]
                 assert resolution not in resolved, "a checked answer was generated again"
                 assert resolution not in admitted, "an admitted question was generated again"
@@ -1315,9 +1315,9 @@ def main():
             offset = len(receiver.logs())
             receiver.release_port()
             trial.call(receiver, "start", success=False)
-            failures = [event for event in receiver.logs()[offset:] if event.get("event") == "fatal_error"]
+            failures = [event for event in receiver.logs()[offset:] if event.get("event") == 0x00170017]
             assert len(failures) == 1 and failures[0].get("error", {}).get("code") == 0x000C_0012, failures
-            assert not any(event.get("event") == "ready" for event in receiver.logs()[offset:])
+            assert not any(event.get("event") == 0x00170050 for event in receiver.logs()[offset:])
         finally:
             replace_catalog_payload(receiver, member, original)
             receiver.reserve_port()

@@ -737,7 +737,7 @@ impl Graph {
         let page = match page {
             Err(error) if error.retryable() => {
                 crate::network::emit(
-                    serde_json::json!({"event":"proof_backlog_deferred","error":error}),
+                    serde_json::json!({"event":crate::outcome::NodeEvent::ProofBacklogDeferred,"error":error}),
                 );
                 return Ok((Vec::new(), Vec::new()));
             }
@@ -759,7 +759,7 @@ impl Graph {
                 Ok(candidate) => candidate,
                 Err(error) if error.retryable() || matches!(error, crate::Error::InputLimit(_)) => {
                     crate::network::emit(
-                        serde_json::json!({"event":"proof_backlog_overload","id":crate::hex(id.as_bytes()),"error":error}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ProofBacklogOverload,"id":crate::hex(id.as_bytes()),"error":error}),
                     );
                     continue;
                 }
@@ -773,7 +773,7 @@ impl Graph {
                 Ok(()) => admitted.push(id),
                 Err(error) if error.retryable() => {
                     crate::network::emit(
-                        serde_json::json!({"event":"proof_backlog_deferred","id":crate::hex(id.as_bytes()),"error":error}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ProofBacklogDeferred,"id":crate::hex(id.as_bytes()),"error":error}),
                     );
                     continue;
                 }

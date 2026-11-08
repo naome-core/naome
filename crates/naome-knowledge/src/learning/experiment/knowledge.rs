@@ -84,7 +84,7 @@ pub(super) fn acquire(
     let (all, observe) = history;
     eprintln!(
         "{}",
-        serde_json::json!({"event":"own_search_started","job":job,"question":source})
+        serde_json::json!({"event":crate::outcome::NodeEvent::OwnSearchStarted,"job":job,"question":source})
     );
     let started = Instant::now();
     let q = ResearchQuestion::from_hex(source).unwrap();
@@ -133,7 +133,7 @@ pub(super) fn acquire(
     let mut newly_admitted = false;
     if let Some(solution) = &solution {
         newly_admitted = admit_discovery(graph, &q, solution).unwrap_or_else(|error| {
-            eprintln!("{}", serde_json::json!({"event":"own_admission_failed","job":job,"solution":solution,"error":error.to_string()}));
+            eprintln!("{}", serde_json::json!({"event":crate::outcome::NodeEvent::OwnAdmissionFailed,"job":job,"solution":solution,"error":error.to_string()}));
             panic!("own search failed ordinary graph admission: {error}")
         });
         let root = crate::object::proof_address(&solution.proof_id).unwrap();
@@ -166,7 +166,7 @@ pub(super) fn acquire(
     let event = serde_json::json!({"job":job,"question":source,"solution":solution,"diagnostic":diagnostic,"cost":cost,"terminal":terminal,"frontier":frontier,"experience":completion.experience,"newly_admitted":newly_admitted,"accepted_replay":retained,"accepted_lemma":lemma,"elapsed_micros":started.elapsed().as_micros()});
     eprintln!(
         "{}",
-        serde_json::json!({"event":"own_search_completed","acquisition":event})
+        serde_json::json!({"event":crate::outcome::NodeEvent::OwnSearchCompleted,"acquisition":event})
     );
     event
 }

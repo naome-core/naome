@@ -53,7 +53,7 @@ def read_snapshot(node):
 
 
 def training(node):
-    failures=[e for e in node.logs()[node.event_offset:] if e.get("event")=="fatal_error"]
+    failures=[e for e in node.logs()[node.event_offset:] if e.get("event")==0x00170017]
     assert not failures, failures
     current=snapshot(node)
     return [r for r in current["records"].values() if r["input"]["role"] == "train"] if current else []
@@ -177,7 +177,7 @@ def finished_owner_goal(node, question):
         solution = record["native"]["progress"]["result"]
         if solution is not None:
             assert not solution["refuted"]
-            if not any(event.get("event") == "proof_generated" and event["job"] == record["id"]
+            if not any(event.get("event") == 0x00170046 and event["job"] == record["id"]
                        and event["id"] in node.ids() for event in node.logs()):
                 return None
         return {"job": record["id"], "solved": solution is not None,
@@ -343,7 +343,7 @@ def run_unseeded(trial):
     completed_before_parent = {}
 
     def qualified():
-        fatal = [event for event in node.logs() if event.get("event") == "fatal_error"]
+        fatal = [event for event in node.logs() if event.get("event") == 0x00170017]
         assert not fatal, fatal
         current = snapshot(node)
         if current is None:
@@ -410,7 +410,7 @@ def run_unseeded(trial):
             feedback = record["native"]["base"]["feedback"]
             if not newer_development_feedback(feedback, original):
                 continue
-            selections = [event for event in node.logs() if event.get("event") == "native_curriculum_selected"
+            selections = [event for event in node.logs() if event.get("event") == 0x0017002a
                           and event["checkpoint"] == feedback["checkpoint"]
                           and event["feedback_revision"] >= first["learning"]["feedback"]["revision"]]
             next_training = next((candidate for candidate in current["records"].values()
@@ -439,7 +439,7 @@ def run_unseeded(trial):
                 observed_candidate = candidate_observation["record"]["native"]["progress"]["candidate"]
                 candidate_digest = hashlib.sha256(json.dumps(observed_candidate, separators=(",", ":")).encode()).hexdigest()
                 assert second_update["experience"]["candidate_model"] == candidate_digest
-                plans = [event for event in node.logs() if event.get("event") == "native_meta_plan"
+                plans = [event for event in node.logs() if event.get("event") == 0x0017002e
                          and event["job"] == next_training["id"]
                          and event["meta_updates"] == retained_meta["model"]["updates"]]
                 if not plans:

@@ -33,7 +33,7 @@ impl Controller {
             == Some(std::ffi::OsStr::new("1"))
         {
             crate::network::emit(serde_json::json!({
-                "event": "resource_observation",
+                "event": crate::outcome::NodeEvent::ResourceObservation,
                 "snapshot": &snapshot,
                 "capacity_bytes": super::super::limits().memory_bytes,
                 "feedback": super::super::feedback::statistics(),

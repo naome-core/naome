@@ -531,7 +531,7 @@ impl Controls {
                         pending.push(async move { control.respond(stream, count, ready).await });
                     },
                     response = pending.next(), if !pending.is_empty() => {
-                        if let Some(Err(error)) = response { emit(json!({"event":"control_rejected", "error":error})); }
+                        if let Some(Err(error)) = response { emit(json!({"event":crate::outcome::NodeEvent::ControlRejected, "error":error})); }
                     },
                 }
             }

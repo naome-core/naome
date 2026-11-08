@@ -206,7 +206,7 @@ impl Generated {
                 .map_err(crate::Error::from)?;
             if let Some(native) = &self.native {
                 emit(json!({
-                    "event": "native_program_checked",
+                    "event": crate::outcome::NodeEvent::NativeProgramChecked,
                     "job": self.job,
                     "id": crate::hex(native.candidate.manifest.artifact_id().as_bytes()),
                     "input_bytes": native.candidate.manifest.input_bytes,

@@ -703,7 +703,7 @@ fn arm(
         write(&path.join("rounds.json"), &rows);
         eprintln!(
             "{}",
-            json!({"event":"finder_study_round","seed":seed,"arm":label(treatment),"round":round+1,"completed":completed,"solved":solved})
+            json!({"event":crate::outcome::NodeEvent::FinderStudyRound,"seed":seed,"arm":label(treatment),"round":round+1,"completed":completed,"solved":solved})
         );
     }
     if clock.is_some() {

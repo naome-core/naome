@@ -83,7 +83,7 @@ impl Service {
                 })();
                 if let Err(failure) = &result {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_service_failed","error":failure}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchServiceFailed,"error":failure}),
                     );
                     *report.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure.clone());
                 }
@@ -287,7 +287,7 @@ impl Owner {
                             let remembered=learning.remember_theorem(theorem)?;
                             learning.peer_cursor=learning.peer_cursor.max(ordinal);
                             self.save()?;
-                            crate::network::emit(serde_json::json!({"event":"native_theorem_observed","remembered":remembered}));
+                            crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeTheoremObserved,"remembered":remembered}));
                         }
                     },
                     Some(Command::DefinitionVerified{ordinal,definition})=>{
@@ -297,7 +297,7 @@ impl Owner {
                             let remembered=learning.remember_definition(definition)?;
                             learning.peer_cursor=learning.peer_cursor.max(ordinal);
                             self.save()?;
-                            crate::network::emit(serde_json::json!({"event":"native_definition_observed","artifact":crate::hex(address.as_bytes()),"remembered":remembered}));
+                            crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeDefinitionObserved,"artifact":crate::hex(address.as_bytes()),"remembered":remembered}));
                         }
                     },
                     Some(Command::PeerCursor(ordinal))=>{if let Some(learning)=self.journal.learning.as_mut(){learning.peer_cursor=learning.peer_cursor.max(ordinal);self.save()?;}},
@@ -382,7 +382,7 @@ impl Owner {
                                 self.save()?;
                                 if checkpoint==1 && let Some(n)=self.journal.records[&id].native.as_ref()
                                     && let Some(selection)=n.progress.as_ref().and_then(|p|p.plan.as_ref()) {
-                                    crate::network::emit(serde_json::json!({"event":"native_meta_plan","job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection}));
+                                    crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaPlan,"job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection}));
                                 }
                                 if native {self.disk.collect_models(&mut self.journal)}else{Ok(())}
                             })();
@@ -885,7 +885,7 @@ impl Owner {
             .and_then(|p| p.cost.as_ref())
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_data_generation","job":id,"cost":cost}),
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeDataGeneration,"job":id,"cost":cost}),
             );
         }
         if peer {
@@ -919,7 +919,7 @@ impl Owner {
                     && let Some(progress) = &native.progress
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"native_learning_qualification","job":id,"qualification":progress.qualification}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification}),
                     );
                 }
             }
@@ -955,7 +955,7 @@ impl Owner {
             && let Some(update) = &progress.meta_update
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_meta_updated","job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaUpdated,"job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
             );
         }
         self.running.remove(&id);
@@ -1276,7 +1276,7 @@ impl Owner {
         self.clocks.insert(id, Instant::now());
         self.save()?;
         crate::network::emit(
-            serde_json::json!({"event":"research_created","job":id,"lane":input.lane(),"expires_ms":expires_ms}),
+            serde_json::json!({"event":crate::outcome::NodeEvent::ResearchCreated,"job":id,"lane":input.lane(),"expires_ms":expires_ms}),
         );
         Ok(())
     }
@@ -1529,9 +1529,11 @@ impl Owner {
             return Ok(());
         }
         let completion = completion(record)?;
-        crate::network::emit(serde_json::json!({"event":"research_finished","job":id,
+        crate::network::emit(
+            serde_json::json!({"event":crate::outcome::NodeEvent::ResearchFinished,"job":id,
             "state":format!("{:?}",completion.state),"spent_ms":completion.spent_ms,
-            "reserved_units":completion.reserved_units,"experience":completion.experience}));
+            "reserved_units":completion.reserved_units,"experience":completion.experience}),
+        );
         if let Some(waiters) = self.waiters.remove(&id) {
             for waiter in waiters {
                 let _ = waiter.send(completion.clone());

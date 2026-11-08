@@ -91,7 +91,7 @@ def trial(driver, role, stop_signal, index):
             companion.start(test_controls=False, network_config={"peers": [], "discovery": {
                 "mdns": False, "dht": True, "hole_punch": False,
                 "bootstrap": [{"id": identity, "address": f"/ip4/127.0.0.1/tcp/{subject.port}"}]}})
-            subject.wait_event(lambda event: event.get("event") == "relay_connected")
+            subject.wait_event(lambda event: event.get("event") == 0x00170054)
             # At most sixteen additional pending TCP handshakes, all local and
             # closed in finally. The authenticated connection is recorded too.
             for _ in range(16):
@@ -115,7 +115,7 @@ def trial(driver, role, stop_signal, index):
         for reader in subject.threads:
             reader.join(timeout=2)
             assert not reader.is_alive(), "terminal log reader did not exit"
-        stopped_events = [event for event in subject.events if event.get("event") == "stopped"]
+        stopped_events = [event for event in subject.events if event.get("event") == 0x0017006a]
         assert len(stopped_events) == 1, "one stopped event required after process exit"
         stopped = stopped_events[0]
         assert stopped["observed_monotonic"] >= result["signal_sent_monotonic"]

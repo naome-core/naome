@@ -143,7 +143,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         ready_cpu = {label: process_cpu_sample(node.process)["cpu_seconds"]
                      for label, node in [("donor", donor), ("receiver", receiver)]}
         received = trial.wait(lambda: next((event for event in receiver.launch_events()
-            if event.get("event") == "accepted" and event.get("source") == "fetch"
+            if event.get("event") == 0x00170001 and event.get("source") == "fetch"
             and event.get("id") == root), None), maximum=80)
         report["launch_to_accept_wall_seconds"] = time.monotonic() - start
         report["both_ready_to_accept_wall_seconds"] = time.monotonic() - ready
@@ -161,14 +161,14 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         assert all(not meter.errors for meter in meters), [meter.errors for meter in meters]
         assert set(receiver.ids()) == helpers | {root}
         events = receiver.launch_events()
-        responses = [event for event in events if event.get("event") == "exchange_response"]
+        responses = [event for event in events if event.get("event") == 0x00170013]
         report["response_kinds"] = dict(Counter(event["kind"] for event in responses))
         assert any(event.get("object_id") == root for event in responses)
         fetched_helpers = {event.get("object_id") for event in responses} & helpers
         assert fetched_helpers == (helpers if temperature == "cold" else set()), fetched_helpers
         report["fetched_helper_artifacts"] = sorted(fetched_helpers)
         accepted_before_target = {event.get("id") for event in events[:events.index(received)]
-                                  if event.get("event") == "accepted"}
+                                  if event.get("event") == 0x00170001}
         if temperature == "cold":
             assert helpers <= accepted_before_target
 

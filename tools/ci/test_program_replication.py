@@ -23,14 +23,14 @@ class ProgramObservationTests(unittest.TestCase):
             node.launch_hash = "current"
             log = node.directory / "node.log"
             previous = node.directory / "node.log.previous"
-            started = {"event": "starting", "peer_id": "receiver"}
-            accepted = {"event": "accepted", "source": "fetch", "id": "proof"}
-            stopped = {"event": "stopped"}
+            started = {"event": 0x00170068, "peer_id": "receiver"}
+            accepted = {"event": 0x00170001, "source": "fetch", "id": "proof"}
+            stopped = {"event": 0x0017006a}
 
             def write(path, events):
                 path.write_text("".join(json.dumps(event) + "\n" for event in events))
 
-            marker = {"event": "startup_replay", "phase": "checked", "pid": 42,
+            marker = {"event": 0x00170069, "phase": "checked", "pid": 42,
                       "instance_sha256": "stale"}
             write(log, [marker, started])
             self.assertEqual(node.launch_events(), [])

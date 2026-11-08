@@ -96,11 +96,11 @@ class PublicNode(Node):
                     event = json.loads(raw)
                     assert isinstance(event, dict), "stdout event must be an object"
                     with self.condition:
-                        if event.get("event") == "response":
+                        if event.get("event") == 0x00170063:
                             request = event.get("request")
                             assert self.pending is not None and request == self.pending and request not in self.responses, "unsolicited/duplicate response"
                             self.responses[request] = event
-                        if event.get("event") in ("starting", "ready", "stopped"):
+                        if event.get("event") in (0x00170068, 0x00170050, 0x0017006a):
                             self.events.append(event)
                         self.condition.notify_all()
         except Exception as error:

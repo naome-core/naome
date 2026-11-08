@@ -44,7 +44,7 @@ class QuestionDriver(DiscoveryDriver):
         for node in self.nodes:
             self.start_participant(node)
         for node in [spare, receiver]:
-            node.wait_event(lambda event: event.get("event") == "identified" and event.get("peer") == sender.identity, timeout=40)
+            node.wait_event(lambda event: event.get("event") == 0x0017001f and event.get("peer") == sender.identity, timeout=40)
         first = sender.command("produce", artifact=source(11))
         helper = sender.command("produce", artifact=source(7))
         child_source = cite_and_weaken(citation_id(helper["object"]), bytes.fromhex(question_fixture(7)), member_self())
@@ -53,7 +53,7 @@ class QuestionDriver(DiscoveryDriver):
         self.wait_set(receiver, expected)
         self.wait_set(spare, expected)
         assert len(stored_objects(receiver)) == 3
-        responses = [event for event in receiver.events if event.get("event") == "exchange_response" and event.get("kind") == "object"]
+        responses = [event for event in receiver.events if event.get("event") == 0x00170013 and event.get("kind") == "object"]
         assert responses
         assert all(event["relayed"] is (self.mode == "relay") for event in responses)
         # Duplicate announcements cannot create another admission or proof fetch.
@@ -63,7 +63,7 @@ class QuestionDriver(DiscoveryDriver):
         sender.command("offer", peer=receiver.identity, id=first["object"]["artifact_id"])
         self.wait_set(receiver, expected)
         time.sleep(1)
-        assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get"
+        assert not any(event.get("event") == 0x00170012 and event.get("kind") == "get"
                        and event.get("peer") == receiver.identity and event.get("object_id") == first["object"]["artifact_id"]
                        for event in sender.events[offset:])
         self.summary["scenarios"]["automatic_receiver_selection_and_parent_closure"] = {
@@ -89,12 +89,12 @@ class QuestionDriver(DiscoveryDriver):
         bad_offset, good_offset = len(bad.events), len(good.events)
         receiver_offset = len(receiver.events)
         self.start_participant(receiver)
-        receiver.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == actual["artifact_id"], since=receiver_offset)
+        receiver.wait_event(lambda event: event.get("event") == 0x00170047 and event.get("id") == actual["artifact_id"], since=receiver_offset)
         assert set(receiver.ids()) == set(expected)
         self.start_participant(good)
         expected.append(actual["artifact_id"])
         self.wait_set(receiver, expected)
-        good_gets = [event for event in good.events[good_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "get"
+        good_gets = [event for event in good.events[good_offset:] if event.get("event") == 0x00170012 and event.get("kind") == "get"
                      and event.get("peer") == receiver.identity and event.get("object_id") == actual["artifact_id"]]
         assert good_gets and len(stored_objects(receiver)) == 4
         self.summary["scenarios"]["false_description_preserves_correct_supplier_rotation"] = {

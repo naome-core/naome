@@ -158,7 +158,7 @@ def run(trial, maximum_trials):
                 ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"], text=True))
             assert pressure == 1, "installed host-pressure admission is closed"
         events = node.logs()
-        assert not [e for e in events if e.get("event") == "fatal_error"]
+        assert not [e for e in events if e.get("event") == 0x00170017]
         current = reader.read(node)
         trial.summary["observer_journal_read_bytes"] = reader.bytes
         finder = finder_snapshot(node)

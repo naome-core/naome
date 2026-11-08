@@ -270,6 +270,6 @@ fn large_checked_prerequisites_resolve_the_observed_missing_root() {
     .unwrap();
     eprintln!(
         "{}",
-        serde_json::json!({"event":"observed_large_context_resolved","cost":generated.cost,"proof_id":solution.proof_id})
+        serde_json::json!({"event":crate::outcome::NodeEvent::ObservedLargeContextResolved,"cost":generated.cost,"proof_id":solution.proof_id})
     );
 }

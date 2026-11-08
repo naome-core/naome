@@ -987,7 +987,7 @@ impl Frontier {
             && let Some(feedback) = &self.feedback
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_curriculum_selected", "checkpoint":feedback.checkpoint,
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeCurriculumSelected, "checkpoint":feedback.checkpoint,
                 "feedback_revision":feedback.revision,"resolution_id":crate::hex(candidates[index].resolution_id()),
                 "priority":weighted[position].1,"candidates":candidates.len(),"structural_group":crate::training::group(candidates[index])}),
             );
@@ -998,7 +998,7 @@ impl Frontier {
                 |descriptor| self.evidence.model().weight_from(descriptor),
             );
             crate::network::emit(serde_json::json!({
-                "event":"finder_selected", "resolution_id":crate::hex(candidates[index].resolution_id()),
+                "event":crate::outcome::NodeEvent::FinderSelected, "resolution_id":crate::hex(candidates[index].resolution_id()),
                 "question":candidates[index].to_hex(), "model_updates":self.evidence.model().updates,
                 "model_weight":model_weight, "candidates":candidates.len()
             }));
@@ -1108,10 +1108,12 @@ impl Frontier {
                             .transpose()
                     },
                 )? {
-                    crate::network::emit(serde_json::json!({"event":"finder_goal_supported",
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::FinderGoalSupported,
                         "lemma":crate::hex(dependency.as_bytes()), "goal":crate::hex(root.as_bytes()),
                         "lemma_resolution":crate::hex(lemma.resolution_id()), "goal_resolution":crate::hex(question.resolution_id()),
-                        "support_updates":self.evidence.model().supports}));
+                        "support_updates":self.evidence.model().supports}),
+                    );
                 }
             }
         }
@@ -1124,7 +1126,7 @@ impl Frontier {
         let model = self.evidence.model();
         if self.native && model.updates > before {
             crate::network::emit(serde_json::json!({
-                "event":"finder_learned", "resolution_id":crate::hex(question.resolution_id()),
+                "event":crate::outcome::NodeEvent::FinderLearned, "resolution_id":crate::hex(question.resolution_id()),
                 "outcome":if resolved { "checked_resolution" } else { "unresolved_search" },
                 "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
                 "supports":model.supports,"rehearsals":model.rehearsals,"utility_observations":model.utility_observations,

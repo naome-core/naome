@@ -20,7 +20,7 @@ class InternetReceiptTests(unittest.TestCase):
             "expected_ids": ["proof-0", "proof-1"],
             "processes": [{"network_config": {"peers": [], "discovery": {
                 "mdns": False, "dht": True, "internet": True}}}],
-            "public_connections": [[{"event": "exchange_response", "kind": "object",
+            "public_connections": [[{"event": 0x00170013, "kind": "object",
                 "peer": f"peer-{1-index}", "object_id": f"proof-{1-index}"}]],
         } for index, system in enumerate(["Linux", "Darwin"])]
 

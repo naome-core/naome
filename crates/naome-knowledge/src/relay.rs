@@ -166,7 +166,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
     let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     network::emit(
-        json!({"event":"relay_starting", "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
+        json!({"event":crate::outcome::NodeEvent::RelayStarting, "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
     );
     loop {
         tokio::select! {
@@ -179,16 +179,16 @@ pub async fn run(path: &Path) -> Result<(), String> {
                         && discovery::routing_address(&address, own, &BTreeSet::new()).is_ok()
                         && advertised.insert(address.clone()) {
                         swarm.add_external_address(address.clone());
-                        network::emit(json!({"event":"relay_advertised", "address":address.to_string(), "source":"local_listener"}));
+                        network::emit(json!({"event":crate::outcome::NodeEvent::RelayAdvertised, "address":address.to_string(), "source":"local_listener"}));
                     }
-                    network::emit(json!({"event":"ready", "address":address.to_string()}));
+                    network::emit(json!({"event":crate::outcome::NodeEvent::Ready, "address":address.to_string()}));
                 },
                 SwarmEvent::ListenerError { error, .. } => return Err(format!("relay listener: {error}")),
                 SwarmEvent::ConnectionEstablished { peer_id, connection_id, .. } => {
                     if let Ok(contact) = book.lock().admit(peer_id, Instant::now()) {
                         contact.connected = true; contact.connected_at.get_or_insert(Instant::now());
                     }
-                    network::emit(json!({"event":"relay_connected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string()}));
+                    network::emit(json!({"event":crate::outcome::NodeEvent::RelayConnected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string()}));
                 }
                 SwarmEvent::ConnectionClosed { peer_id, num_established:0, .. } => {
                     if let Some(contact) = book.lock().contacts.get_mut(&peer_id) {
@@ -214,7 +214,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                         }
                     }
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => network::emit(json!({"event":"relay_service", "detail":format!("{event:?}")})),
+                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => network::emit(json!({"event":crate::outcome::NodeEvent::RelayService, "detail":format!("{event:?}")})),
                 _ => {}
             },
             _ = tick.tick() => {
@@ -223,7 +223,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                 for peer in expired {
                     book.lock().retire(peer, Instant::now());
                     if let Some(kad) = swarm.behaviour_mut().discovery.kad.as_mut() { kad.remove_peer(&peer); }
-                    network::emit(json!({"event":"contact_expired", "peer":peer.to_string()}));
+                    network::emit(json!({"event":crate::outcome::NodeEvent::ContactExpired, "peer":peer.to_string()}));
                 }
                 let unidentified: Vec<_> = book.lock().contacts.iter().filter_map(|(peer, contact)| {
                     (contact.connected && !contact.compatible && contact.connected_at.is_some_and(|since| since.elapsed() >= crate::resources::limits().identify_timeout)).then_some(*peer)
@@ -233,7 +233,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
             signal = &mut shutdown => { signal?; break; }
         }
     }
-    network::emit(json!({"event":"stopped", "role":"relay"}));
+    network::emit(json!({"event":crate::outcome::NodeEvent::Stopped, "role":"relay"}));
     Ok(())
 }
 

@@ -269,7 +269,7 @@ impl Startup {
         // This bounded diagnostic binds an observed replay phase to this
         // launch. It is neither a readiness receipt nor a proof certificate.
         crate::network::emit(serde_json::json!({
-            "event": "startup_replay", "phase": phase,
+            "event": crate::outcome::NodeEvent::StartupReplay, "phase": phase,
             "pid": std::process::id(), "instance_sha256": self.instance_sha256,
         }));
     }

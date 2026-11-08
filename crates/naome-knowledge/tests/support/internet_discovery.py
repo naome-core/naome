@@ -54,14 +54,14 @@ def main():
             assert result["object"]["artifact_id"] == expected[participant]
         public_convergence(driver, expected, args.timeout - 20)
         for node in driver.nodes:
-            assert any(event.get("event") == "accepted" and event.get("source") == "fetch" for event in node.events)
-            assert any(event.get("event") == "identified" and event.get("proof_peer") is True for event in node.events)
+            assert any(event.get("event") == 0x00170001 and event.get("source") == "fetch" for event in node.events)
+            assert any(event.get("event") == 0x0017001f and event.get("proof_peer") is True for event in node.events)
         driver.summary["node_count"] = len(driver.nodes)
         driver.summary["peer_ids"] = [node.identity for node in driver.nodes]
         driver.summary["expected_ids"] = expected
         driver.summary["own_proof_id"] = expected[args.participant] if args.participant is not None else None
         driver.summary["public_connections"] = [[event for event in node.events
-            if event.get("event") in ["connected", "identified", "external_confirmed", "exchange_response"]]
+            if event.get("event") in [0x00170009, 0x0017001f, 0x00170015, 0x00170013]]
             for node in driver.nodes]
         until = min(driver.deadline - 5, time.monotonic() + args.hold)
         while time.monotonic() < until:

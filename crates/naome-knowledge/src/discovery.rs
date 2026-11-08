@@ -697,14 +697,16 @@ impl State {
         match accepted {
             Ok(new) => {
                 if new {
-                    crate::network::emit(serde_json::json!({"event":"discovered", "source":source,
-                    "peer":peer.to_string(), "address":address.to_string()}));
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::Discovered, "source":source,
+                    "peer":peer.to_string(), "address":address.to_string()}),
+                    );
                 }
                 Some(Action::Contact(peer))
             }
             Err(error) => {
                 crate::network::emit(
-                    serde_json::json!({"event":"discovery_rejected", "source":source,
+                    serde_json::json!({"event":crate::outcome::NodeEvent::DiscoveryRejected, "source":source,
                 "peer":peer.to_string(), "error":error}),
                 );
                 None
@@ -730,7 +732,7 @@ impl State {
                 _ => ("routing", true),
             };
             crate::network::emit(
-                serde_json::json!({"event":"dht_query", "kind":kind, "success":success,
+                serde_json::json!({"event":crate::outcome::NodeEvent::DhtQuery, "kind":kind, "success":success,
                 "requests":stats.num_requests(), "responses":stats.num_successes(), "failures":stats.num_failures()}),
             );
         }
@@ -747,7 +749,7 @@ impl State {
             BehaviourEvent::Mdns(mdns::Event::Expired(peers)) => {
                 for (peer, _) in peers {
                     crate::network::emit(
-                        serde_json::json!({"event":"mdns_expired", "peer":peer.to_string()}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::MdnsExpired, "peer":peer.to_string()}),
                     );
                 }
             }
@@ -797,7 +799,7 @@ impl State {
                     };
                     if transient {
                         crate::network::emit(
-                            serde_json::json!({"event":"identified", "peer":peer_id.to_string(),
+                            serde_json::json!({"event":crate::outcome::NodeEvent::Identified, "peer":peer_id.to_string(),
                             "proof_peer":false, "relay":false, "transient_router":true}),
                         );
                         return actions;
@@ -829,12 +831,12 @@ impl State {
                         }
                     }
                     crate::network::emit(
-                        serde_json::json!({"event":"identified", "peer":peer_id.to_string(), "proof_peer":proof, "relay":relay}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::Identified, "peer":peer_id.to_string(), "proof_peer":proof, "relay":relay}),
                     );
                     actions.push(Action::Compatible(peer_id));
                 } else {
                     crate::network::emit(
-                        serde_json::json!({"event":"incompatible_peer", "peer":peer_id.to_string()}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::IncompatiblePeer, "peer":peer_id.to_string()}),
                     );
                     actions.push(Action::Reject(peer_id));
                 }
@@ -850,7 +852,7 @@ impl State {
                     let provider = record.provider;
                     let accepted = kad.store_mut().add_provider(record).is_ok();
                     crate::network::emit(
-                        serde_json::json!({"event":"provider_hint", "peer":provider.to_string(), "accepted":accepted}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ProviderHint, "peer":provider.to_string(), "accepted":accepted}),
                     );
                 }
             }
@@ -872,7 +874,7 @@ impl State {
                                 self.resolve.push_back(peer);
                             }
                             crate::network::emit(
-                                serde_json::json!({"event":"dht_participant", "peer":peer.to_string()}),
+                                serde_json::json!({"event":crate::outcome::NodeEvent::DhtParticipant, "peer":peer.to_string()}),
                             );
                         }
                     }
@@ -916,7 +918,7 @@ impl State {
             }
             BehaviourEvent::Dcutr(event) => {
                 crate::network::emit(
-                    serde_json::json!({"event":"hole_punch_result", "peer":event.remote_peer_id.to_string(),
+                    serde_json::json!({"event":crate::outcome::NodeEvent::HolePunchResult, "peer":event.remote_peer_id.to_string(),
                     "success":event.result.is_ok(), "connection_id":event.result.as_ref().ok().map(ToString::to_string),
                     "error":event.result.err().map(|error| error.to_string())}),
                 );

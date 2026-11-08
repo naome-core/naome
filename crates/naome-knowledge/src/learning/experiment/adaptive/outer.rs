@@ -367,7 +367,7 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
                     write(&path.join("trials.json"), &summaries);
                     eprintln!(
                         "{}",
-                        serde_json::json!({"event":"outer_meta_trial_completed","context":context,
+                        serde_json::json!({"event":crate::outcome::NodeEvent::OuterMetaTrialCompleted,"context":context,
                         "mode":name,"stage":stage,"fork":fork,"meta_updates":controller.state.model.updates,"elapsed":clock.elapsed()})
                     );
                 }

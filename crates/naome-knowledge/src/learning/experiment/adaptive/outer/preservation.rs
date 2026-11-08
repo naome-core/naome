@@ -228,7 +228,7 @@ fn verified_own_preservation_comparison() {
             write(&path.join("trials.json"), &all_rows);
             eprintln!(
                 "{}",
-                serde_json::json!({"event":"preservation_branch_completed","context":context,
+                serde_json::json!({"event":crate::outcome::NodeEvent::PreservationBranchCompleted,"context":context,
                 "method":name,"promoted":selected.promoted,"elapsed":clock.elapsed()})
             );
         }

@@ -327,7 +327,7 @@ fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events()
     }
     let mut log = Log::open(&directory.0).unwrap();
     for _ in 0..4 {
-        log.write(&serde_json::json!({"event":"bounded","detail":"x".repeat(900*1024)}))
+        log.write(&serde_json::json!({"event":crate::outcome::NodeEvent::Bounded,"detail":"x".repeat(900*1024)}))
             .unwrap();
     }
     assert!(

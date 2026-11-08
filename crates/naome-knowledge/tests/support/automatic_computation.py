@@ -115,7 +115,7 @@ def run(trial):
         assert status["computation_reason"], status
         assert checkpoints(donor) == frozen, "productive work advanced during resource pause"
         assert donor.ids() == accepted, "paused node published or admitted new work"
-    assert not any(event.get("event") in {"question_generated", "research_started", "accepted"}
+    assert not any(event.get("event") in {0x0017004d, 0x0017005f, 0x00170001}
                    for event in donor.logs()[offset:])
 
     pressure(donor, False)

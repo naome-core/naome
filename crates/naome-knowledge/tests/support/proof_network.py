@@ -463,7 +463,7 @@ class Node:
             thread = threading.Thread(target=self.read, args=(name, stream, log), daemon=True)
             thread.start()
             self.threads.append(thread)
-        self.wait_event(lambda event: event.get("event") == "ready", timeout=15, since=event_offset)
+        self.wait_event(lambda event: event.get("event") == 0x00170050, timeout=15, since=event_offset)
 
     def read(self, name, stream, log):
         with log.open("w") as output:
@@ -479,7 +479,7 @@ class Node:
                 event["observed_monotonic"] = time.monotonic()
                 with self.condition:
                     self.events.append(event)
-                    if event.get("event") == "response":
+                    if event.get("event") == 0x00170063:
                         self.responses[event["request"]] = event
                     self.condition.notify_all()
         with self.condition:
@@ -645,7 +645,7 @@ class Driver:
             str(index): {"connected": statuses.get(index, {}).get("connected"),
                          "expected": sorted(peers),
                          "events": [event for event in self.nodes[index].events
-                                    if event.get("event") in ["connected", "disconnected", "dial_failed", "request_failed", "inbound_failed"]][-10:]}
+                                    if event.get("event") in [0x00170009, 0x0017000f, 0x0017000e, 0x00170058, 0x00170020]][-10:]}
             for index, peers in expected.items()
         }
         raise AssertionError(f"topology did not match configured partition: {json.dumps(diagnostics)}")
@@ -740,7 +740,7 @@ class Driver:
             self.topology([[0, 1]])
             self.convergence("ten_page_inventory_complete_content_catchup", range(2), ids,
                              started, timeout=210, interval=0.5)
-            pages = [event for event in self.nodes[1].events if event.get("event") == "inventory_page"]
+            pages = [event for event in self.nodes[1].events if event.get("event") == 0x00170024]
             assert any(event["page"] >= 9 for event in pages)
             assert all(len(stored_objects(node)) == 595 for node in self.nodes)
             self.nodes[1].stop()
@@ -777,7 +777,7 @@ class Driver:
             assert len({node.identity for node in self.nodes}) == 4
             assert len({node.process.pid for node in self.nodes}) == 4
             for index, node in enumerate(self.nodes):
-                event = node.wait_event(lambda event: event.get("event") == "producer_result")
+                event = node.wait_event(lambda event: event.get("event") == 0x0017003d)
                 id = event["result"]["id"]
                 status = node.status_snapshot()
                 assert status["ids"] == [id]
@@ -808,7 +808,7 @@ class Driver:
             self.retain_proof("dependent", child)
             before = len(self.nodes[3].events)
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
-            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("error") == 0x0001_000B, since=before)
+            self.nodes[3].wait_event(lambda event: event.get("event") == 0x00170047 and event.get("error") == 0x0001_000B, since=before)
             status = self.nodes[3].status_snapshot()
             assert not status["pending"] and set(status["ids"]) == set(initial)
             assert len(stored_objects(self.nodes[3])) == len(initial)
@@ -863,12 +863,12 @@ class Driver:
                 offset = len(self.nodes[1].events)
                 sender_offset = len(self.nodes[0].events)
                 self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
-                expected_event = "rejected" if label == "claimed_id" else "proof_skipped"
+                expected_event = 0x00170051 if label == "claimed_id" else 0x00170047
                 event = self.nodes[1].wait_event(lambda event: event.get("event") == expected_event and (
                     (event.get("error", {}).get("diagnostic") or {}).get("failure", {}).get("code") == expected_error
                     if label == "mathematical" else event.get("error", {}).get("code") == expected_error), since=offset)
                 if label == "claimed_id":
-                    assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get"
+                    assert not any(event.get("event") == 0x00170012 and event.get("kind") == "get"
                                    and event.get("object_id") == object["artifact_id"]
                                    for event in self.nodes[0].events[sender_offset:]), "invalid metadata must not authorize payload retrieval"
                 status = self.nodes[1].status_snapshot()
@@ -880,12 +880,12 @@ class Driver:
             self.nodes[0].command("test_offer", peer=self.nodes[1].identity,
                                  metadata=self.nodes[0].command("describe", id=left["artifact_id"])["metadata"],
                                  test_compatibility="00" * 32)
-            self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and event.get("error") == 0x0001_0003, since=offset)
+            self.nodes[0].wait_event(lambda event: event.get("event") == 0x00170039 and event.get("error") == 0x0001_0003, since=offset)
             self.summary["scenarios"]["reject_transport_compatibility"] = {"result": "pass"}
             for _ in range(3):
                 offset = len(self.nodes[0].events)
                 self.nodes[0].command("offer", peer=self.nodes[1].identity, id=left["artifact_id"])
-                self.nodes[0].wait_event(lambda event: event.get("event") == "offer_result" and event.get("status") == 0x0005_0002, since=offset)
+                self.nodes[0].wait_event(lambda event: event.get("event") == 0x00170034 and event.get("status") == 0x0005_0002, since=offset)
                 self.nodes[0].command("announce", id=left["artifact_id"])
                 time.sleep(0.2)
             status = self.nodes[1].status_snapshot()

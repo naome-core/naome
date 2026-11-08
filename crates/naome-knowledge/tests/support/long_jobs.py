@@ -63,7 +63,7 @@ class Probe:
 
     def observe(self,node):
         for event in node.logs():
-            if event.get('event') not in {'research_started','research_worker','research_descendant'}:
+            if event.get('event') not in {0x0017005f,0x00170060,0x0017005a}:
                 continue
             key=(node.index,event['event'],event['job'],event['pid'])
             if key in self.seen:continue
@@ -100,7 +100,7 @@ class Probe:
     def cpu_active(self,node):
         active={}
         for event in node.logs():
-            if event.get('event')=='research_working':active[event['job']]=event['phase']
+            if event.get('event')==0x00170061:active[event['job']]=event['phase']
         return {job for job,phase in active.items() if phase=='cpu_active'
             and str(job) in journal(node)['records'] and journal(node)['records'][str(job)]['state']=='running'}
 
@@ -109,7 +109,7 @@ class Probe:
               if respect_admission else self.trial.wait(lambda:self.cpu_active(node),maximum=5))
         if jobs is None:
             return None
-        workers={event['pid'] for event in node.logs() if event.get('event')=='research_worker' and event['job'] in jobs}
+        workers={event['pid'] for event in node.logs() if event.get('event')==0x00170060 and event['job'] in jobs}
         identities={pid:process_identity(pid) for pid in workers}
         assert identities and all(identities.values()),'CPU witness requires live worker identities'
         def samples():
@@ -217,7 +217,7 @@ def roles(trial,probe):
         'journal_sha256':digest(receiver.directory/'research/jobs.sqlite3')}
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
-    observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
+    observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')==0x0017004b and event.get('formal_pass')
         and event.get('selection')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
     pending_solve=any(record['state']=='running' and lane(record)==1
         for record in journal(receiver)['records'].values())
@@ -227,18 +227,18 @@ def roles(trial,probe):
     donor.write_config();donor.start()
     def all_peer_answers():
         stored=receiver.ids()
-        accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
+        accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')=='fetch'}
         return len(stored)==3 and stored==donor.ids() and accepted==stored
     delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,role_slots)
     if delivered and pending_solve:
-        assert any(event.get('event')=='solve_cancelled_by_answer' for event in receiver.logs())
+        assert any(event.get('event')==0x00170066 for event in receiver.logs())
     if not delivered:
-        assert any(event.get('event')=='identified' and event.get('peer')==donor.peer for event in receiver.logs()), \
+        assert any(event.get('event')==0x0017001f and event.get('peer')==donor.peer for event in receiver.logs()), \
             'resource-limited node did not authenticate its peer'
-        assert any(event.get('peer')==donor.peer and event.get('event') in {'exchange_request','exchange_response'}
+        assert any(event.get('peer')==donor.peer and event.get('event') in {0x00170012,0x00170013}
             and event.get('kind') in {'inventory','inventory_result'} for event in receiver.logs()), \
             'resource-limited node did not service inventory traffic'
-    accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
+    accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')=='fetch'}
     if delivered:
         assert accepted==receiver.ids(),'peer answers must arrive during pending local solving'
     else:
@@ -290,7 +290,7 @@ def recovery(trial,probe):
     cpu=Node(trial,1)
     cpu.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':15000,'descendant':True}))
     cpu.write_config();cpu.start()
-    trial.wait(lambda:any(event.get('event')=='research_descendant' for event in cpu.logs()),maximum=5)
+    trial.wait(lambda:any(event.get('event')==0x0017005a for event in cpu.logs()),maximum=5)
     trial.wait(lambda:any(r['reserved_units']==1 and r['state']=='running' for r in journal(cpu)['records'].values()),maximum=5)
     probe.crash(cpu);cpu.start();probe.observe(cpu);cpu.stop();probe.ended()
     trial.summary['scenarios']['crash_resume_preserves_identity_progress_budgets_and_kills_cpu_descendants']={'result':'pass'}
@@ -301,7 +301,7 @@ def limits(trial,probe):
         node=Node(trial,index)
         node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(solving={'outcome':outcome,'work_units':2}))
         node.write_config();node.start()
-        expected='proof_candidate_rejected' if outcome!='failed' else 'solve_obligation_held_or_expired'
+        expected=0x00170044 if outcome != 'failed' else 0x00170067
         trial.wait(lambda:any(event.get('event')==expected for event in node.logs()),maximum=12)
         assert not node.ids()
         probe.observe(node);assert trial.call(node,'status')['accepted_artifacts']==0
@@ -320,9 +320,9 @@ def limits(trial,probe):
         try:
             trial.call(node,'start',success=False)
             events=node.logs()[offset:]
-            failures=[e for e in events if e.get('event')=='fatal_error']
+            failures=[e for e in events if e.get('event')==0x00170017]
             assert len(failures)==1 and failures[0].get('error', {}).get('code') == expected,(case,failures)
-            assert not any(e.get('event') in {'research_started','research_worker','research_descendant'} for e in events)
+            assert not any(e.get('event') in {0x0017005f,0x00170060,0x0017005a} for e in events)
             recorded=trial.call(node,'status')
             assert not recorded['running'] and recorded['artifact_verification']=='not_run'
             assert not (node.directory/'control.json').exists()
@@ -369,14 +369,14 @@ def faults(trial,probe):
     completed=Node(trial,3)
     completed.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'step_ms':500}))
     completed.write_config();completed.start()
-    launched=trial.wait(lambda:next((e for e in completed.logs() if e.get('event')=='research_worker'),None),maximum=5)
+    launched=trial.wait(lambda:next((e for e in completed.logs() if e.get('event')==0x00170060),None),maximum=5)
     probe.observe(completed)
     job=launched['job']
-    ids={e['pid'] for e in completed.logs() if e.get('job')==job and e.get('event') in {'research_started','research_worker'}}
+    ids={e['pid'] for e in completed.logs() if e.get('job')==job and e.get('event') in {0x0017005f,0x00170060}}
     retained=[identity for identity in probe.identities.values() if identity['pid'] in ids]
     assert len(retained)==2,'completed provider identities missing'
     finished=trial.wait(lambda:next((r for r in journal(completed)['records'].values() if r['id']==job and r['state']=='complete'),None),maximum=5)
-    reaped=next(e for e in completed.logs() if e.get('event')=='research_reaped' and e['job']==job)
+    reaped=next(e for e in completed.logs() if e.get('event')==0x0017005c and e['job']==job)
     assert reaped['exit']==0 and finished['checkpoint']==finished['reserved_units']==1
     probe.ended(retained)
     write_receipt(trial.output/'completed-provider-cleanup-witness.json',{'job':job,
@@ -390,14 +390,14 @@ def faults(trial,probe):
     node=Node(trial,0)
     node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':20000,'descendant':True}))
     node.write_config();node.start();probe.witness_cpu(node)
-    event=next(e for e in reversed(node.logs()) if e.get('event')=='research_started')
+    event=next(e for e in reversed(node.logs()) if e.get('event')==0x0017005f)
     identity=process_identity(event['pid']);assert identity and identity['pid']==identity['group']==identity['session']
     assert str(trial.binary) in identity['command'] and '--research-supervisor-v1' in identity['command']
     assert process_identity(identity['pid'])==identity
     os.kill(identity['pid'],signal.SIGKILL)
     trial.wait(lambda:not process_group(node.process),maximum=8);probe.ended()
     state=journal(node);assert any(r['state']=='in_doubt' and not r['acknowledged'] for r in state['records'].values())
-    assert any(e.get('event')=='fatal_error' and e.get('error', {}).get('code') in {0x000C_000D, 0x000C_000E} for e in node.logs())
+    assert any(e.get('event')==0x00170017 and e.get('error', {}).get('code') in {0x000C_000D, 0x000C_000E} for e in node.logs())
     node.process=None  # expected fatal exit, not a claimed graceful stop
     node.start();probe.observe(node)
     assert any(r['state']=='in_doubt' for r in journal(node)['records'].values())
@@ -420,7 +420,7 @@ def faults(trial,probe):
     try:
         trial.wait(lambda:not process_group(slow.process),maximum=5);probe.ended()
         elapsed=time.monotonic()-started;assert elapsed<5
-        assert any(e.get('event')=='control_rejected' and e.get('error') == 0x000E_0005 for e in slow.logs()),'slow writer was not exercised'
+        assert any(e.get('event')==0x0017000b and e.get('error') == 0x000E_0005 for e in slow.logs()),'slow writer was not exercised'
         received=b''
         while block:=client.recv(8192):received+=block
         assert 0<len(received)<8192 and not received.endswith(b'\n'),'partial response write was not observed'
@@ -435,12 +435,12 @@ def faults(trial,probe):
     output=Node(trial,2)
     output.config['runtime'].update(question_interval_ms=100,jobs=job_settings(solving={'proof_padding_bytes':65536,'result_delay_ms':1500,'descendant':True}))
     output.write_config();output.start()
-    ready=trial.wait(lambda:next((e for e in reversed(output.logs()) if e.get('event')=='research_working' and e.get('phase')=='result_ready'),None),maximum=10)
+    ready=trial.wait(lambda:next((e for e in reversed(output.logs()) if e.get('event')==0x00170061 and e.get('phase')=='result_ready'),None),maximum=10)
     probe.observe(output);original=output.process;assert process_identity(original['pid'])==original
     os.kill(original['pid'],signal.SIGSTOP)
     try:
         time.sleep(2)
-        supplier=next(e for e in output.logs() if e.get('event')=='research_started' and e['job']==ready['job'])
+        supplier=next(e for e in output.logs() if e.get('event')==0x0017005f and e['job']==ready['job'])
         assert process_identity(supplier['pid']) is not None,'result supplier exited instead of facing unread pipe backpressure'
         os.kill(original['pid'],signal.SIGKILL)
         trial.wait(lambda:not process_group(original),maximum=5);probe.ended()

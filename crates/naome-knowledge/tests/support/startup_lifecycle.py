@@ -130,7 +130,7 @@ def internal_case(trial, node, name, hold_seconds=0):
                 return trial.call(node, "status")["running"]
             wait_until(ready, time.monotonic() + trial.remaining(5))
             phases = [event for event in node.logs()[offset:]
-                if event.get("event") == "startup_replay" and event.get("pid") == child.pid]
+                if event.get("event") == 0x00170069 and event.get("pid") == child.pid]
             assert [event["phase"] for event in phases] == ["begin", "checked"], phases
             assert all(event["instance_sha256"] == record["instance_sha256"] for event in phases)
             child.stdin.write(("ready " + token + "\n").encode())
@@ -397,7 +397,7 @@ def handoff_abort_case(trial, node, name, active_ns):
     assert control_request["attempted_ns"] <= control_request["completed_ns"] < active_ns
     assert control_request["attempted_ns"] <= record["actual_abort_completion"]["observed_ns"]
     fatal = json.loads(stderr)
-    assert fatal["event"] == "fatal_error", fatal
+    assert fatal["event"] == 0x00170017, fatal
     error = fatal["error"]
     assert error["code"] == control_request["expected_primary_abort"] and error["reaped"] is True, (
         "abort primary error does not prove the named control", fatal)

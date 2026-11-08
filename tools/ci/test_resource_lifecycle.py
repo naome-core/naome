@@ -156,15 +156,15 @@ class ContactRetirementTests(unittest.TestCase):
         self.assertFalse(contact_retired({"contacts": []}, [], "stale", True))
 
     def test_an_expiration_event_never_excuses_a_current_contact(self):
-        events = [{"event": "contact_expired", "peer": "stale"}]
+        events = [{"event": 0x0017000a, "peer": "stale"}]
         for known in (False, True):
             self.assertFalse(contact_retired({"contacts": [{"peer": "stale"}]}, events, "stale", known))
 
     def test_an_observed_contact_requires_its_own_expiration_event(self):
         self.assertFalse(contact_retired({"contacts": []}, [
-            {"event": "contact_expired", "peer": "other"}], "stale", True))
+            {"event": 0x0017000a, "peer": "other"}], "stale", True))
         self.assertTrue(contact_retired({"contacts": []}, [
-            {"event": "contact_expired", "peer": "stale"}], "stale", True))
+            {"event": 0x0017000a, "peer": "stale"}], "stale", True))
 
 
 if __name__ == "__main__":

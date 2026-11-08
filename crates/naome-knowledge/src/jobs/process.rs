@@ -289,7 +289,7 @@ async fn run_owned(
         .id()
         .ok_or("provider supervisor has no process identity")?;
     crate::network::emit(
-        serde_json::json!({"event":"research_started","job":record.id,
+        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchStarted,"job":record.id,
         "provider":record.provider,"pid":pid,"lane":record.input.lane(),"remaining_ms":remaining_ms}),
     );
     let mut input = child.stdin.take().ok_or("provider lifeline absent")?;
@@ -318,33 +318,33 @@ async fn run_owned(
                 {
                     ready = true;
                     crate::network::emit(
-                        serde_json::json!({"event":"research_worker","job":id,"pid":pid}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorker,"job":id,"pid":pid}),
                     );
                 }
                 Frame::Descendant { id, pid }
                     if ready && id == record.id && record.settings.mock.descendant =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_descendant","job":id,"pid":pid}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchDescendant,"job":id,"pid":pid}),
                     );
                 }
                 Frame::CpuActive { id, next }
                     if ready && id == record.id && outstanding == Some(next) =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_working","job":id,"phase":"cpu_active","next":next}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":"cpu_active","next":next}),
                     );
                 }
                 Frame::CpuDone { id, next }
                     if ready && id == record.id && outstanding == Some(next) =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_working","job":id,"phase":"cpu_done","next":next}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":"cpu_done","next":next}),
                     );
                 }
                 Frame::ResultReady { id } if ready && id == record.id && outstanding.is_none() => {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_working","job":id,"phase":"result_ready"}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":"result_ready"}),
                     );
                 }
                 Frame::Feedback { id, phase, sample } if ready && id == record.id => {
@@ -675,7 +675,7 @@ async fn run_owned(
         }
     };
     crate::network::emit(
-        serde_json::json!({"event":"research_reaped","job":record.id,"pid":pid,"exit":status.code()}),
+        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchReaped,"job":record.id,"pid":pid,"exit":status.code()}),
     );
     // An incomplete Start cannot create a worker. When cancellation closed its
     // lifeline before any complete Start or output frame, reaped supervisor

@@ -259,7 +259,7 @@ impl Disk {
             }
         }
         crate::network::emit(
-            serde_json::json!({"event":"native_peer_replay","artifact":artifact,"peer":peer,"conversion_job":id,"status":status}),
+            serde_json::json!({"event":crate::outcome::NodeEvent::NativePeerReplay,"artifact":artifact,"peer":peer,"conversion_job":id,"status":status}),
         );
         receipt.status = status;
         let mut updates = vec![

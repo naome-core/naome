@@ -29,7 +29,7 @@ def verify(root, expected_revision=None):
             config = process["network_config"]
             assert config["peers"] == []
             assert config["discovery"] == {"mdns": False, "dht": True, "internet": True}
-        assert any(event.get("event") == "exchange_response" and event.get("kind") == "object"
+        assert any(event.get("event") == 0x00170013 and event.get("kind") == "object"
                    and event.get("peer") == other["peer_ids"][0]
                    and event.get("object_id") == other["own_proof_id"]
                    for event in report["public_connections"][0]), "counterpart payload receipt required"

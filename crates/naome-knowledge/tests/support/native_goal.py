@@ -64,9 +64,9 @@ def run(trial):
 
     def published():
         assert not [event for node in trial.nodes for event in node.logs()
-                    if event.get("event") == "fatal_error"]
+                    if event.get("event") == 0x00170017]
         accepted = a.ids()
-        return next((event for event in a.logs() if event.get("event") == "proof_generated"
+        return next((event for event in a.logs() if event.get("event") == 0x00170046
                      and event["id"] in accepted), None)
 
     produced = trial.wait(published, maximum=45)
@@ -101,7 +101,7 @@ def run(trial):
     objects = stored_objects(SimpleNamespace(directory=a.directory))
     program = next(o["program_manifest"] for o in objects if o["artifact_id"] == root)
     checked_program = next(e for e in a.logs()
-        if e.get("event") == "native_program_checked" and e.get("id") == root)
+        if e.get("event") == 0x00170031 and e.get("id") == root)
     assert checked_program["job"] == produced["job"]
     assert checked_program["input_bytes"] == program["input_bytes"]
     assert checked_program["checker_work"] > 0

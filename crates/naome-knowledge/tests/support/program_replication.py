@@ -27,12 +27,12 @@ class AutonomousNode(Node):
         events = self.logs()
         for index in range(len(events) - 1, -1, -1):
             event = events[index]
-            if (event.get("event") == "startup_replay" and event.get("phase") == "checked"
+            if (event.get("event") == 0x00170069 and event.get("phase") == "checked"
                     and event.get("pid") == self.process["pid"]
                     and event.get("instance_sha256") == self.launch_hash):
                 following = events[index + 1:]
                 for end, later in enumerate(following):
-                    if later.get("event") == "startup_replay" and later.get("phase") == "begin":
+                    if later.get("event") == 0x00170069 and later.get("phase") == "begin":
                         return following[:end]
                 return following
         return []
@@ -45,7 +45,7 @@ class AutonomousNode(Node):
         assert endpoint["pid"] == self.process["pid"]
         self.launch_hash = sha256(endpoint["token"].encode()).hexdigest()
         event=self.trial.wait(lambda:next((event for event in self.launch_events()
-            if event.get('event')=='starting'),None))
+            if event.get('event')==0x00170068),None))
         if self.peer is not None:assert self.peer==event['peer_id']
         self.peer=event['peer_id']
         return result
@@ -54,7 +54,7 @@ class AutonomousNode(Node):
         status=self.trial.call(self,'stop',cleanup=cleanup)
         assert not status['running'] and not process_group(self.process)
         if self.process is not None:
-            assert sum(event.get('event')=='stopped' for event in self.launch_events())==1
+            assert sum(event.get('event')==0x0017006a for event in self.launch_events())==1
         if not getattr(self, 'large_screen', False):
             assert self.trial.call(self, 'stop', cleanup=cleanup) == status
             assert self.trial.call(self, 'status', cleanup=cleanup) == status
@@ -107,7 +107,7 @@ def run(trial,units,memory_mib=None):
     published=trial.wait(lambda:next((row for row in program_rows(donor) if row['published']),None),maximum=trial.remaining(600))
     identity=published['id'];manifest=published['manifest']
     assert manifest['commands']==units*128 and manifest['input_bytes']>65536
-    trial.wait(lambda:any(event.get('event')=='accepted' and event.get('id')==identity
+    trial.wait(lambda:any(event.get('event')==0x00170001 and event.get('id')==identity
         and event.get('source')=='mock_producer' for event in donor.logs()))
     receiver.start()
     prefix=trial.wait(lambda:next((row for row in program_rows(receiver)
@@ -124,10 +124,10 @@ def run(trial,units,memory_mib=None):
     write_receipt(trial.output/'interrupted-prefix.json',{'before_kill':prefix,'after_kill':after})
     receiver.start()
     trial.wait(lambda:next((row for row in program_rows(receiver) if row['id']==identity and row['published']),None),maximum=trial.remaining(600))
-    trial.wait(lambda:any(event.get('event')=='accepted' and event.get('id')==identity
+    trial.wait(lambda:any(event.get('event')==0x00170001 and event.get('id')==identity
         and event.get('source')=='fetch' for event in receiver.launch_events()))
     resumed=[event for event in receiver.launch_events()
-        if event.get('event')=='exchange_response' and event.get('kind')=='program_data' and event.get('object_id')==identity]
+        if event.get('event')==0x00170013 and event.get('kind')=='program_data' and event.get('object_id')==identity]
     assert resumed and resumed[0]['position']==after['received'],resumed[:1]
     source_objects=stored_objects(donor);received_objects=stored_objects(receiver)
     assert next(value for value in source_objects if value['artifact_id']==identity)==next(value for value in received_objects if value['artifact_id']==identity)

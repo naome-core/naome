@@ -470,7 +470,7 @@ where
                 .map_err(|error| format!("recovered registry: {error:?}"))?;
             if entry.kind == persistence::Kind::Prepared {
                 crate::network::emit(serde_json::json!({
-                    "event": "question_recovery_hold",
+                    "event": crate::outcome::NodeEvent::QuestionRecoveryHold,
                     "source_id": crate::hex(question.record_id()),
                     "reason": "original admission delivery is uncertain",
                 }));

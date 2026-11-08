@@ -107,7 +107,7 @@ fn matched_recursive_lemma_loop() {
             write(&path.join("results.json"), &rows);
             eprintln!(
                 "{}",
-                json!({"event":"matched_recursive_goal","seed":seed,"case":index+1,"id":id,"win":win,"loss":loss,"qualifying_gain":gain})
+                json!({"event":crate::outcome::NodeEvent::MatchedRecursiveGoal,"seed":seed,"case":index+1,"id":id,"win":win,"loss":loss,"qualifying_gain":gain})
             );
         }
     }
@@ -130,7 +130,7 @@ fn matched_recursive_lemma_loop() {
     write(&path.join("summary.json"), &summary);
     eprintln!(
         "{}",
-        json!({"event":"matched_recursive_complete","eligible_pairs":eligible,"counts":counts,"wins":wins,"losses":losses,"gains":gains})
+        json!({"event":crate::outcome::NodeEvent::MatchedRecursiveComplete,"eligible_pairs":eligible,"counts":counts,"wins":wins,"losses":losses,"gains":gains})
     );
 }
 

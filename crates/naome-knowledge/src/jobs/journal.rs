@@ -478,7 +478,7 @@ impl Disk {
             // Retirement cannot revoke a durable acknowledgement or classify
             // temporary cleanup pressure as corruption of canonical history.
             crate::network::emit(
-                serde_json::json!({"event":"candidate_cache_retirement_deferred","job":id,"error":error}),
+                serde_json::json!({"event":crate::outcome::NodeEvent::CandidateCacheRetirementDeferred,"job":id,"error":error}),
             );
         }
     }
