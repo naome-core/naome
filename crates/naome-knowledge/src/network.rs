@@ -197,6 +197,7 @@ struct WorkOffer {
     goal: naome_checker::question::Identity,
     question: String,
     expires: Instant,
+    requested: Option<ArtifactId>,
     _memory: Arc<crate::resources::MemoryLease>,
 }
 type WorkKey = (
@@ -879,10 +880,36 @@ where
         }
         questions.cancel_closed();
         if let Some(autonomous) = &mut autonomous {
-            if let Some(offer) = node.work_offers.pop_front()
+            if let Some(mut offer) = node.work_offers.pop_front()
                 && Instant::now() < offer.expires
+                && node.enabled.contains(&offer.peer)
             {
-                autonomous.offer_work(offer.peer, offer.goal, &offer.question, &node.graph, &mut questions);
+                if let Some(id) = offer.requested && !node.graph.contains(id)? {
+                    if node.intake.definition_active() {
+                        node.work_offers.push_back(offer);
+                    }
+                } else {
+                    match naome_checker::question::ResearchQuestion::from_hex_with_context(&offer.question, node.graph.checked_context()) {
+                        Ok(_) => { autonomous.offer_work(offer.peer, offer.goal, &offer.question, &node.graph, &mut questions); }
+                        Err(naome_proof::QuestionError::MissingDefinition(definition)) => {
+                            if node.intake.definition_active() {
+                                node.work_offers.push_back(offer);
+                            } else {
+                                let id = ArtifactId::from_definition_id(definition);
+                                let grant = node.swarm.grant(offer.peer, id);
+                                let request = crate::intake::DefinitionRequest {
+                                    peer: offer.peer, definition, question_proof: None,
+                                    helper_deadline: Some(offer.expires),
+                                };
+                                if node.intake.request_question_definition(request, &node.graph, Some(grant)).is_ok() {
+                                    offer.requested = Some(id);
+                                    node.work_offers.push_back(offer);
+                                }
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
             }
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
             node.publish_admitted(&admitted,if node.learning.is_some(){crate::outcome::EventSource::NativeSolver}else{crate::outcome::EventSource::MockProducer});
@@ -1727,7 +1754,7 @@ impl Node {
             crate::intake::DefinitionRequest {
                 peer,
                 definition,
-                question_proof: artifact,
+                question_proof: Some(artifact),
                 helper_deadline: None,
             },
             &self.graph,
@@ -2311,6 +2338,7 @@ impl Node {
                         goal,
                         question,
                         expires: Instant::now() + crate::resources::limits().selection_timeout,
+                        requested: None,
                         _memory: memory,
                     });
                     Body::Receipt {

@@ -66,6 +66,33 @@ fn structural_finding_finalizes_the_exact_selected_source_under_one_owned_quantu
     );
 }
 #[test]
+fn structural_finding_preserves_a_definition_aware_source() {
+    use naome_foundation::{Formula, FreeVariable};
+    use naome_proof::{DefinedFormula, DefinitionCertificate};
+    let x = FreeVariable::new(0);
+    let definition = DefinitionCertificate::relation(
+        1,
+        DefinedFormula::from_primitive(&Formula::member(x, x)).unwrap(),
+    )
+    .unwrap();
+    let question = DefinedFormula::for_all(
+        x,
+        DefinedFormula::defined_relation(definition.definition_id(), [x]),
+    );
+    let source = crate::hex(&question.encode_canonical_with_limits(1023, 31).unwrap().0);
+    assert!(naome_checker::question::ResearchQuestion::from_hex(&source).is_err());
+    let result = drive(
+        &mut Finding {
+            question: source.clone(),
+        },
+        &mut Grants::default(),
+        0,
+    )
+    .unwrap();
+    assert!(matches!(result, Output::Question(returned) if returned == source));
+}
+
+#[test]
 fn another_provider_resumes_through_the_same_reservations_and_preserves_uncertainty() {
     let mut grants = Grants::default();
     assert!(matches!(

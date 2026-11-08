@@ -32,6 +32,7 @@ pub(in crate::intake) struct Closure {
     root: ArtifactId,
     statement: Option<StatementId>,
     question_proof: Option<ArtifactId>,
+    definition_root: bool,
     items: BTreeMap<ArtifactId, Helper>,
     certificates: BTreeMap<ArtifactId, crate::object::Candidate>,
     questions: BTreeMap<ArtifactId, HelperQuestion>,
@@ -52,6 +53,7 @@ impl Closure {
             root,
             statement,
             question_proof: None,
+            definition_root: false,
             items: BTreeMap::new(),
             certificates: BTreeMap::new(),
             questions: BTreeMap::new(),
@@ -67,9 +69,13 @@ impl Closure {
             budget: Observer::default(),
         }
     }
-    pub(in crate::intake) fn for_definition(root: ArtifactId, question_proof: ArtifactId) -> Self {
+    pub(in crate::intake) fn for_definition(
+        root: ArtifactId,
+        question_proof: Option<ArtifactId>,
+    ) -> Self {
         let mut closure = Self::new(root, None);
-        closure.question_proof = Some(question_proof);
+        closure.question_proof = question_proof;
+        closure.definition_root = true;
         closure
     }
     pub(in crate::intake) fn require_root(&mut self, graph: &Graph) -> Result<(), crate::Error> {
@@ -371,7 +377,7 @@ impl Closure {
         // before decoding allocates their trees. Rejected payloads change nothing.
         let usage = self.usage.add(&object)?;
         let candidate = object.prepare()?;
-        if let Some(question_proof) = self.question_proof {
+        if self.definition_root {
             if id == self.root
                 && !matches!(
                     candidate.payload,
@@ -380,7 +386,8 @@ impl Closure {
             {
                 return Err("requested definition payload differs".into());
             }
-            if candidate.dependencies.contains(&question_proof)
+            if let Some(question_proof) = self.question_proof
+                && candidate.dependencies.contains(&question_proof)
                 && !graph.contains(question_proof)?
             {
                 return Err("definition depends on the unselected question proof".into());
