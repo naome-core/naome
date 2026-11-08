@@ -15,11 +15,11 @@ struct Scope {
 }
 
 impl Scope {
-    fn open(target: &Formula) -> Result<Option<Self>, String> {
+    fn open(target: &Formula) -> Result<Option<Self>, crate::Error> {
         Self::open_with(target, None)
     }
 
-    fn open_with(target: &Formula, lemma: Option<&Formula>) -> Result<Option<Self>, String> {
+    fn open_with(target: &Formula, lemma: Option<&Formula>) -> Result<Option<Self>, crate::Error> {
         let mut goal = target.clone();
         let mut binders = Vec::new();
         loop {
@@ -28,7 +28,7 @@ impl Scope {
             let variable = (0..=u32::MAX)
                 .map(FreeVariable::new)
                 .find(|variable| !used.contains(variable))
-                .ok_or("scope binder capacity")?;
+                .ok_or(crate::ResearchFailure::ScopeBinderCapacity)?;
             let Some(body) = goal.open_outer_universal(variable) else {
                 break;
             };
@@ -287,17 +287,15 @@ pub(in crate::learning) fn search(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<Tree>, usize), String> {
+) -> Result<(Option<Tree>, usize), crate::Error> {
     let Some(scope) = Scope::open(target)? else {
         return Ok((None, 0));
     };
     let (actions, work) = search_scope(&scope, ranker, maximum, started)?;
     let tree = actions
         .map(|actions| {
-            Ok::<_, String>(Tree::Scoped {
-                target: target
-                    .encode_canonical()
-                    .map_err(|error| error.to_string())?,
+            Ok::<_, crate::Error>(Tree::Scoped {
+                target: target.encode_canonical()?,
                 actions,
             })
         })
@@ -312,9 +310,9 @@ pub(in crate::learning) fn search_with_lemma(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<Vec<Command>>, usize), String> {
+) -> Result<(Option<Vec<Command>>, usize), crate::Error> {
     if !lemma.is_closed() {
-        return Err("scoped lemma is not closed".into());
+        return Err(crate::ResearchFailure::ScopeLemmaNotClosed.into());
     }
     let Some(scope) = Scope::open_with(target, Some(lemma))? else {
         return Ok((None, 0));
@@ -373,7 +371,7 @@ fn search_scope(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<Vec<ScopedAction>>, usize), String> {
+) -> Result<(Option<Vec<ScopedAction>>, usize), crate::Error> {
     let mut facts = scope.assumptions.clone();
     let mut actions = Vec::new();
     for _ in 0..maximum.min(ACTIONS) {
@@ -390,10 +388,10 @@ fn search_scope(
             let scores = match ranker.scores(&scope.decision(&facts, &offered, 0)) {
                 Ok(scores) => scores,
                 Err(crate::Error::LearningGraph(crate::LearningGraphFailure::Capacity)) => break,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             };
             if scores.len() != offered.len() || scores.iter().any(|score| !score.is_finite()) {
-                return Err("scope ranker scores differ from the offered actions".into());
+                return Err(crate::ResearchFailure::ScopeInvalidScores.into());
             }
             (0..offered.len())
                 .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))

@@ -647,6 +647,12 @@ codes! {
         InvalidActionScores = 79,
         FormulaCacheBatchCapacity = 80,
         FormulaCacheTensorDecode = 81,
+        ScopeInvalidScores = 82,
+        ScopeLemmaNotClosed = 83,
+        ScopeBinderCapacity = 84,
+        OfferedProofMissing = 85,
+        OfferedProofBinding = 86,
+        OfferedProofFormulaMissing = 87,
     }
 
 }

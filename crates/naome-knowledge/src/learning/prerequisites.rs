@@ -195,33 +195,33 @@ impl Prerequisites {
         ranker: &mut dyn super::model::Ranker,
         maximum: usize,
         started: std::time::Instant,
-    ) -> Result<(Option<Packet>, usize), String> {
+    ) -> Result<(Option<Packet>, usize), crate::Error> {
         use naome_checker::ContextView;
         use naome_proof::{ProofId, program::Command};
 
         let _work =
-            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)
-                .map_err(|error| error.to_string())?;
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
         let artifacts = self
             .0
             .artifacts
             .iter()
             .map(|a| a.clone().prepare())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
+            .collect::<Result<Vec<_>, _>>()?;
         let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
-        let id = ProofId::from_bytes(self.0.offered.ok_or("offered theorem missing")?);
+        let id = ProofId::from_bytes(
+            self.0
+                .offered
+                .ok_or(crate::ResearchFailure::OfferedProofMissing)?,
+        );
         let header = context
-            .proof_header(id)
-            .map_err(|e| e.to_string())?
-            .ok_or("offered theorem failed context binding")?;
+            .proof_header(id)?
+            .ok_or(crate::ResearchFailure::OfferedProofBinding)?;
         if header.canonical_length() > naome_checker::question::QUESTION_BYTES {
             return Ok((None, 0));
         }
         let formula = context
-            .proof_formula(header, header.canonical_length())
-            .map_err(|e| e.to_string())?
-            .ok_or("offered theorem formula missing")?;
+            .proof_formula(header, header.canonical_length())?
+            .ok_or(crate::ResearchFailure::OfferedProofFormulaMissing)?;
         let (commands, used) = if formula.as_ref() == target {
             (
                 Some(vec![

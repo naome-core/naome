@@ -517,6 +517,18 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::FormulaCacheTensorDecode => {
                     "formula cache tensor decoding failed"
                 }
+                crate::ResearchFailure::ScopeInvalidScores => {
+                    "scope ranker scores differ from offered actions"
+                }
+                crate::ResearchFailure::ScopeLemmaNotClosed => "scoped lemma is not closed",
+                crate::ResearchFailure::ScopeBinderCapacity => "scope binder capacity",
+                crate::ResearchFailure::OfferedProofMissing => "offered theorem missing",
+                crate::ResearchFailure::OfferedProofBinding => {
+                    "offered theorem failed context binding"
+                }
+                crate::ResearchFailure::OfferedProofFormulaMissing => {
+                    "offered theorem formula missing"
+                }
             }),
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")

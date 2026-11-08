@@ -50,3 +50,33 @@ fn scoped_program_applies_two_premises_in_one_checked_action() {
     while !checker.prepare_export(64).unwrap() {}
     assert_eq!(checker.checked().unwrap().conclusion(), Some(&target));
 }
+
+#[test]
+fn scoped_search_preserves_ranker_resource_failure() {
+    struct Limited;
+    impl Ranker for Limited {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+            Err(crate::Error::MemoryOverload {
+                requested: 3,
+                charged: 4,
+                budget: 5,
+            })
+        }
+    }
+    let [x, y] = [0, 1].map(FreeVariable::new);
+    let scope = Scope {
+        binders: Vec::new(),
+        assumptions: vec![Formula::for_all(x, Formula::member(x, y))],
+        goal: Formula::equal(x, y),
+    };
+    let offers = scope.offers(&scope.assumptions);
+    assert!(offers.len() > 1 && offers[0].1 != scope.goal);
+    assert!(matches!(
+        search_scope(&scope, &mut Limited, 2, Instant::now()),
+        Err(crate::Error::MemoryOverload {
+            requested: 3,
+            charged: 4,
+            budget: 5
+        })
+    ));
+}

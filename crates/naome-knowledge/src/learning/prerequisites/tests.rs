@@ -273,3 +273,15 @@ fn large_checked_prerequisites_resolve_the_observed_missing_root() {
         serde_json::json!({"event":crate::outcome::NodeEvent::ObservedLargeContextResolved,"cost":generated.cost,"proof_id":solution.proof_id})
     );
 }
+
+#[test]
+fn lemma_search_preserves_memory_reservation_failure() {
+    let inputs = Prerequisites::default();
+    let variable = naome_foundation::FreeVariable::new(0);
+    let target = naome_foundation::Formula::equal(variable, variable);
+    crate::resources::fail_next_memory_allocation();
+    assert!(matches!(
+        inputs.search_native_lemma(&target, &mut NoNeural, 1, std::time::Instant::now()),
+        Err(crate::Error::MemoryOverload { .. })
+    ));
+}
