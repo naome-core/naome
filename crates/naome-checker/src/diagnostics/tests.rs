@@ -596,3 +596,43 @@ fn nested_formula_and_expansion_failures_have_numeric_codes_and_witnesses() {
     assert_eq!(json["reason"]["reason"]["binder_depth"], 2);
     assert!(json["reason"].get("kind").is_none());
 }
+
+#[test]
+fn diagnostic_unit_values_have_registered_numeric_codes() {
+    assert_eq!(
+        serde_json::to_value(InputFormat::Program).unwrap(),
+        0x002d_0002_u32
+    );
+    assert_eq!(
+        serde_json::to_value(Outcome::MissingDependency).unwrap(),
+        0x002e_0002_u32
+    );
+    assert_eq!(
+        serde_json::to_value(Rule::ModusPonens).unwrap(),
+        0x002f_0015_u32
+    );
+    assert_eq!(
+        serde_json::to_value(OperandRole::Implication).unwrap(),
+        0x0030_0002_u32
+    );
+    assert_eq!(
+        serde_json::to_value(ClaimField::Commands).unwrap(),
+        0x0031_0001_u32
+    );
+    assert_eq!(
+        serde_json::to_value(NodeKind::ForAll).unwrap(),
+        0x0035_0005_u32
+    );
+    assert_eq!(
+        serde_json::to_value(PathSegment::Consequent).unwrap(),
+        0x0037_0003_u32
+    );
+    assert_eq!(
+        serde_json::to_value(VariableNamespace::Source).unwrap(),
+        0x0038_0002_u32
+    );
+    let codes: Vec<_> = outcome_codes().map(|(_, _, code)| code).collect();
+    let unique: std::collections::BTreeSet<_> = codes.iter().copied().collect();
+    assert_eq!(codes.len(), unique.len());
+    assert!(!unique.contains(&0));
+}

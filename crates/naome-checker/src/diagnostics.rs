@@ -51,6 +51,8 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::fmt;
 
+#[macro_use]
+mod codes;
 pub(crate) mod certificate;
 pub(crate) mod formula;
 mod reasons;
@@ -65,6 +67,23 @@ pub use reasons::{
     ClaimField, ClaimValue, DIAGNOSTIC_FAILURE_CODES, EXPANSION_FAILURE_CODES, ExpansionFailure,
     FORMULA_FAILURE_CODES, Failure, FormulaFailure,
 };
+
+/// Assigned diagnostic and inspection codes for offline machine consumers.
+pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)> {
+    DIAGNOSTIC_FAILURE_CODES
+        .iter()
+        .chain(FORMULA_FAILURE_CODES.iter())
+        .chain(EXPANSION_FAILURE_CODES.iter())
+        .chain(INPUT_FORMAT_CODES.iter())
+        .chain(OUTCOME_CODES.iter())
+        .chain(RULE_CODES.iter())
+        .chain(OPERAND_ROLE_CODES.iter())
+        .chain(reasons::CLAIM_FIELD_CODES.iter())
+        .chain(formula::NODE_KIND_CODES.iter())
+        .chain(formula::PATH_SEGMENT_CODES.iter())
+        .chain(formula::VARIABLE_NAMESPACE_CODES.iter())
+        .copied()
+}
 
 /// The mathematical checker identity; presentation changes do not change it.
 pub const CHECKER_ID: &str = "naome:zfc-checker";
@@ -99,11 +118,11 @@ impl Serialize for Digest {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InputFormat {
-    Certificate,
-    Program,
+diagnostic_units! {
+    InputFormat, INPUT_FORMAT_CODES, "InputFormat", 45 {
+        Certificate = 1,
+        Program = 2,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -114,72 +133,72 @@ pub struct InputBinding {
     pub commands: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Outcome {
-    Invalid,
-    MissingDependency,
-    LimitExceeded,
-    ContextFailure,
+diagnostic_units! {
+    Outcome, OUTCOME_CODES, "Outcome", 46 {
+        Invalid = 1,
+        MissingDependency = 2,
+        LimitExceeded = 3,
+        ContextFailure = 4,
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Rule {
-    DefinedRelation,
-    Equal,
-    Member,
-    Not,
-    Implies,
-    ForAll,
-    Substitute,
-    Simplification,
-    Frege,
-    Contraposition,
-    Distribution,
-    Vacuous,
-    Instantiation,
-    Deduction,
-    Reflexivity,
-    Substitution,
-    Axiom,
-    ProofReference,
-    Separation,
-    Replacement,
-    ModusPonens,
-    Generalization,
-    Alias,
-    Seal,
-    Target,
+diagnostic_units! {
+    Rule, RULE_CODES, "Rule", 47 {
+        DefinedRelation = 1,
+        Equal = 2,
+        Member = 3,
+        Not = 4,
+        Implies = 5,
+        ForAll = 6,
+        Substitute = 7,
+        Simplification = 8,
+        Frege = 9,
+        Contraposition = 10,
+        Distribution = 11,
+        Vacuous = 12,
+        Instantiation = 13,
+        Deduction = 14,
+        Reflexivity = 15,
+        Substitution = 16,
+        Axiom = 17,
+        ProofReference = 18,
+        Separation = 19,
+        Replacement = 20,
+        ModusPonens = 21,
+        Generalization = 22,
+        Alias = 23,
+        Seal = 24,
+        Target = 25,
+    }
 }
 
-/// Operand names belong to the mathematical rule, not source argument order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OperandRole {
-    Premise,
-    Implication,
-    Antecedent,
-    Consequent,
-    First,
-    Second,
-    Third,
-    Formula,
-    Body,
-    Predicate,
-    Variable,
-    From,
-    To,
-    Element,
-    Source,
-    Result,
-    Input,
-    Output,
-    Witness,
-    Parameter,
-    Proof,
-    Conclusion,
-    Target,
+diagnostic_units! {
+    /// Operand names belong to the mathematical rule, not source argument order.
+    OperandRole, OPERAND_ROLE_CODES, "OperandRole", 48 {
+        Premise = 1,
+        Implication = 2,
+        Antecedent = 3,
+        Consequent = 4,
+        First = 5,
+        Second = 6,
+        Third = 7,
+        Formula = 8,
+        Body = 9,
+        Predicate = 10,
+        Variable = 11,
+        From = 12,
+        To = 13,
+        Element = 14,
+        Source = 15,
+        Result = 16,
+        Input = 17,
+        Output = 18,
+        Witness = 19,
+        Parameter = 20,
+        Proof = 21,
+        Conclusion = 22,
+        Target = 23,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

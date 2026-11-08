@@ -113,14 +113,14 @@ impl Failure {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClaimField {
-    Commands,
-    InputBytes,
-    ProgramHash,
-    StreamRoot,
-    Statement,
+diagnostic_units! {
+    ClaimField, CLAIM_FIELD_CODES, "ClaimField", 49 {
+        Commands = 1,
+        InputBytes = 2,
+        ProgramHash = 3,
+        StreamRoot = 4,
+        Statement = 5,
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
