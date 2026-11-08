@@ -229,7 +229,7 @@ impl Persistence {
     fn queue_updates(
         &mut self,
         question: &ResearchQuestion,
-    ) -> Result<Vec<crate::checkpoint::Update>, String> {
+    ) -> Result<Vec<crate::checkpoint::Update>, crate::Error> {
         use crate::checkpoint::Update;
         let record = crate::hex(question.record_id());
         let resolution = crate::hex(question.resolution_id());
@@ -383,7 +383,7 @@ impl Persistence {
         question: &ResearchQuestion,
         kind: Kind,
         receipt: Option<&AdmissionReceipt>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         #[cfg(test)]
         if kind == Kind::Exchange && FAIL_EXCHANGE.with(|value| value.replace(false)) {
             return Err("injected question persistence failure".into());
@@ -450,13 +450,13 @@ impl Persistence {
         }
         self.checkpoint
             .commit(&self.header, updates)
-            .map_err(|error| crate::Error::from(error).to_string())
+            .map_err(crate::Error::from)
     }
     pub(super) fn delivered(
         &mut self,
         question: &ResearchQuestion,
         delivered: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let key = crate::hex(question.record_id());
         let mut entry = self
             .checkpoint
@@ -478,7 +478,7 @@ impl Persistence {
         };
         self.checkpoint
             .commit(&self.header, std::mem::take(&mut updates))
-            .map_err(|error| crate::Error::from(error).to_string())
+            .map_err(crate::Error::from)
     }
 }
 fn decode_entry(

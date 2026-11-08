@@ -276,3 +276,73 @@ fn backlog_settlement_preserves_uncertain_commit_and_freezes_the_owner() {
             .is_err()
     );
 }
+
+#[test]
+fn question_retention_preserves_uncertain_commit_until_replay() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let mut persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    crate::checkpoint::fail_after_commit();
+    let error = persistence
+        .retain(&question, Kind::Baseline, None)
+        .unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    assert!(persistence.retain(&question, Kind::Baseline, None).is_err());
+    drop(persistence);
+    let persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    let mut count = 0;
+    persistence
+        .replay(&naome_checker::ArtifactState::new(), |_, restored| {
+            assert_eq!(restored.to_hex(), question.to_hex());
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn question_delivery_preserves_uncertain_commit_and_replays_admission() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let policy = PrefilterPolicy::default();
+    let key = crate::hex(question.record_id());
+    let entry = Entry {
+        encoded: question.to_hex(),
+        kind: Kind::Prepared,
+        first: Some(FirstAdmission {
+            record: key.clone(),
+            input: "01".repeat(32),
+            policy: crate::hex(&policy.identity()),
+            snapshot_before: "02".repeat(32),
+            snapshot_after: "03".repeat(32),
+            registry_before: "04".repeat(32),
+            registry_after: "05".repeat(32),
+        }),
+    };
+    let mut persistence = Persistence::open(&directory.0, policy).unwrap();
+    let update = crate::checkpoint::Update::put("question", key, &entry).unwrap();
+    persistence
+        .checkpoint
+        .commit(&persistence.header, vec![update])
+        .unwrap();
+    crate::checkpoint::fail_after_commit();
+    let error = persistence.delivered(&question, true).unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    drop(persistence);
+    let mut persistence = Persistence::open(&directory.0, policy).unwrap();
+    let context = naome_checker::ArtifactState::new();
+    let (restored, _) = persistence
+        .admitted(question.resolution_id(), &context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.to_hex(), question.to_hex());
+    assert_eq!(
+        persistence
+            .next_backlog(&context)
+            .unwrap()
+            .unwrap()
+            .to_hex(),
+        question.to_hex()
+    );
+}

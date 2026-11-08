@@ -1071,13 +1071,13 @@ where
         Ok(())
     }
 
-    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) -> Result<(), String> {
+    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) -> Result<(), crate::Error> {
         if delta.insert
             && let Some(persistence) = &mut self.persistence
             && let Err(error) =
                 persistence.retain(&delta.question, persistence::Kind::Exchange, None)
         {
-            self.storage_error = Some(crate::RuntimeFailure::QuestionRetention.into());
+            self.storage_error = Some(error.clone().fatal_storage());
             return Err(error);
         }
         self.registry = delta.registry;
@@ -1118,8 +1118,7 @@ where
                         registry,
                         question,
                         insert: true,
-                    })
-                    .map_err(|_| crate::RuntimeFailure::QuestionRetention)?;
+                    })?;
                 }
                 self.persistence
                     .as_mut()
@@ -1330,11 +1329,10 @@ where
                         self.registry = previous;
                     } else if inserted {
                         if let Some(persistence) = &mut self.persistence
-                            && let Err(_) =
+                            && let Err(error) =
                                 persistence.retain(&question, persistence::Kind::Baseline, None)
                         {
-                            self.storage_error =
-                                Some(crate::RuntimeFailure::QuestionRetention.into());
+                            self.storage_error = Some(error.fatal_storage());
                         }
                         self.remember(question, false);
                     }
@@ -1458,17 +1456,13 @@ where
                         novelty,
                     };
                     if let Some(persistence) = &mut self.persistence {
-                        if persistence
-                            .retain(
-                                &pending.question,
-                                persistence::Kind::Prepared,
-                                Some(&receipt),
-                            )
-                            .is_err()
-                        {
+                        if let Err(error) = persistence.retain(
+                            &pending.question,
+                            persistence::Kind::Prepared,
+                            Some(&receipt),
+                        ) {
                             self.registry = previous;
-                            self.storage_error =
-                                Some(crate::RuntimeFailure::QuestionRetention.into());
+                            self.storage_error = Some(error.fatal_storage());
                             return;
                         }
                         prepared = true;
@@ -1506,9 +1500,9 @@ where
         }
         if prepared
             && let Some(persistence) = &mut self.persistence
-            && let Err(_) = persistence.delivered(&pending.question, delivered)
+            && let Err(error) = persistence.delivered(&pending.question, delivered)
         {
-            self.storage_error = Some(crate::RuntimeFailure::QuestionDelivery.into());
+            self.storage_error = Some(error.fatal_storage());
             return;
         }
         if delivered && let Some(provenance) = provenance {
