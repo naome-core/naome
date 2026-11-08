@@ -19,8 +19,9 @@ fn encoded() -> Vec<u8> {
 #[test]
 fn current_message_schema_requires_exact_fields_and_types() {
     for body in [
-        serde_json::json!({"kind":"Inventory","after":null,"limit":"untrusted"}),
-        serde_json::json!({"kind":"Inventory","after":null,"limit":1,"extra":true}),
+        serde_json::json!([crate::outcome::MessageKind::Inventory,{"known":null,"after":null,"limit":"untrusted"}]),
+        serde_json::json!([crate::outcome::MessageKind::Inventory,{"known":null,"after":null,"limit":1,"extra":true}]),
+        serde_json::json!([crate::outcome::MessageKind::Inventory,{"after":null,"limit":1}]),
     ] {
         assert!(
             serde_json::from_value::<Message>(
@@ -39,20 +40,39 @@ fn peer_outcomes_accept_only_codes_in_their_own_domain() {
     };
     assert_eq!(
         serde_json::to_vec(&busy).unwrap(),
-        br#"{"kind":"Error","code":65537}"#
+        br#"[1703948,{"code":65537}]"#
     );
     assert!(matches!(
-        serde_json::from_slice::<Body>(br#"{"kind":"Error","code":65537}"#),
+        serde_json::from_slice::<Body>(br#"[1703948,{"code":65537}]"#),
         Ok(Body::Error {
             code: PeerFailure::OwnerBusy
         })
     ));
     for input in [
-        br#"{"kind":"Error","code":131073}"#.as_slice(),
-        br#"{"kind":"Error","code":131071}"#,
-        br#"{"kind":"Error","code":65537,"grant":true}"#,
+        br#"[1703948,{"code":131073}]"#.as_slice(),
+        br#"[1703948,{"code":131071}]"#,
+        br#"[1703948,{"code":65537,"grant":true}]"#,
     ] {
         assert!(serde_json::from_slice::<Body>(input).is_err());
+    }
+}
+
+#[test]
+fn numeric_control_body_rejects_unknown_binary_and_extra_fields() {
+    use crate::outcome::MessageKind;
+    let missing = u32::from(MessageKind::Missing);
+    assert!(matches!(
+        serde_json::from_str::<Body>(&format!("[{missing},{{}}]")),
+        Ok(Body::Missing)
+    ));
+    for input in [
+        format!("[{missing},{{\"extra\":true}}]"),
+        format!("[{missing},{{}},0]"),
+        format!("[{missing}]"),
+        format!("[{},{{}}]", u32::from(MessageKind::Object)),
+        "[4294967295,{}]".to_owned(),
+    ] {
+        assert!(serde_json::from_str::<Body>(&input).is_err(), "{input}");
     }
 }
 

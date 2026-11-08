@@ -886,26 +886,6 @@ pub(crate) fn yamux_config() -> yamux::Config {
     config
 }
 
-fn body_kind(body: &Body) -> crate::outcome::MessageKind {
-    match body {
-        Body::Inventory { .. } => crate::outcome::MessageKind::Inventory,
-        Body::InventoryResult { .. } => crate::outcome::MessageKind::InventoryResult,
-        Body::InventoryUnchanged { .. } => crate::outcome::MessageKind::InventoryUnchanged,
-        Body::InventoryRestart => crate::outcome::MessageKind::InventoryRestart,
-        Body::Get { .. } => crate::outcome::MessageKind::Get,
-        Body::Describe { .. } => crate::outcome::MessageKind::Describe,
-        Body::Description { .. } => crate::outcome::MessageKind::Description,
-        Body::Object { .. } => crate::outcome::MessageKind::Object,
-        Body::Offer { .. } => crate::outcome::MessageKind::Offer,
-        Body::Receipt { .. } => crate::outcome::MessageKind::Receipt,
-        Body::Missing => crate::outcome::MessageKind::Missing,
-        Body::Error { .. } => crate::outcome::MessageKind::PeerError,
-        Body::ProgramDescription { .. } => crate::outcome::MessageKind::ProgramDescription,
-        Body::ProgramOffer { .. } => crate::outcome::MessageKind::ProgramOffer,
-        Body::ProgramGet { .. } => crate::outcome::MessageKind::ProgramGet,
-        Body::ProgramData { .. } => crate::outcome::MessageKind::ProgramData,
-    }
-}
 fn body_position(body: &Body) -> Option<u64> {
     match body {
         Body::ProgramGet { start, .. } => Some(*start),
@@ -2032,7 +2012,7 @@ impl Node {
                 } => {
                     emit(
                         json!({"event":crate::outcome::NodeEvent::ExchangeRequest, "peer":peer.to_string(), "connection_id":connection_id.to_string(),
-                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&request.message.body),
+                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":request.message.body.kind(),
                         "object_id":body_id(&request.message.body),"root_id":body_root(&request.message.body),"position":body_position(&request.message.body)}),
                     );
                     let body = if !self.enabled.contains(&peer) {
@@ -2062,7 +2042,7 @@ impl Node {
                 } => {
                     emit(
                         json!({"event":crate::outcome::NodeEvent::ExchangeResponse, "peer":peer.to_string(), "connection_id":connection_id.to_string(),
-                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&response.message.body),
+                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":response.message.body.kind(),
                         "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body),"position":body_position(&response.message.body)}),
                     );
                     if let Some(flight) = self.flights.remove(&request_id) {

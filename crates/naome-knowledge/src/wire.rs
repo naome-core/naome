@@ -17,7 +17,8 @@ mod artifact;
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_ARTIFACT: u32 = 1 << 31;
-pub(crate) const FRAME_CONTRACT: &str = "naome:frames:json-control-with-numeric-peer-outcomes,packed-binary-artifact,defined-question-per-proof";
+pub(crate) const FRAME_CONTRACT: &str =
+    "naome:frames:numeric-control,packed-binary-artifact,defined-question-per-proof";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,71 +27,120 @@ pub(crate) struct Message {
     pub body: Body,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(test, derive(Clone))]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub(crate) enum Body {
-    Inventory {
-        known: Option<[u8; 32]>,
-        after: Option<crate::corpus::InventoryCursor>,
-        limit: usize,
-    },
-    Describe {
-        id: [u8; 32],
-    },
-    Get {
-        root: [u8; 32],
-        id: [u8; 32],
-    },
-    Offer {
-        metadata: Metadata,
-    },
-    InventoryUnchanged {
-        root: [u8; 32],
-    },
-    InventoryResult {
-        snapshot: crate::corpus::InventorySnapshot,
-        ids: Vec<[u8; 32]>,
-        next: Option<crate::corpus::InventoryCursor>,
-    },
-    InventoryRestart,
-    Description {
-        metadata: Metadata,
-    },
-    #[serde(skip)]
-    Object {
-        root: [u8; 32],
-        object: Envelope,
-        question: Option<String>,
-    },
-    #[serde(skip)]
-    ProgramDescription {
-        root: Option<[u8; 32]>,
-        metadata: crate::object::ProgramMetadata,
-    },
-    #[serde(skip)]
-    ProgramOffer {
-        metadata: crate::object::ProgramMetadata,
-    },
-    ProgramGet {
-        root: [u8; 32],
-        id: [u8; 32],
-        start: u64,
-        limit: usize,
-    },
-    #[serde(skip)]
-    ProgramData {
-        root: [u8; 32],
-        id: [u8; 32],
-        chunk: naome_proof::program::Chunk,
-    },
-    Missing,
-    Receipt {
-        status: OfferStatus,
-    },
-    Error {
-        code: PeerFailure,
-    },
+fn required_field<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    T::deserialize(deserializer)
+}
+
+// The same declaration owns the payload schema and its numeric message kind.
+macro_rules! bodies {
+    (
+        controls { $( $variant:ident => $kind:ident { $( $field:ident: $ty:ty ),* $(,)? } ),+ $(,)? }
+        units { $( $unit:ident => $unit_kind:ident ),+ $(,)? }
+        binary { $( $binary:ident => $binary_kind:ident { $( $binary_field:ident: $binary_ty:ty ),+ $(,)? } ),+ $(,)? }
+    ) => {
+        #[derive(Debug)]
+        #[cfg_attr(test, derive(Clone))]
+        pub(crate) enum Body {
+            $( $variant { $( $field: $ty ),* }, )+
+            $( $unit, )+
+            $( $binary { $( $binary_field: $binary_ty ),+ }, )+
+        }
+
+        impl Body {
+            pub(crate) fn kind(&self) -> crate::outcome::MessageKind {
+                match self {
+                    $( Self::$variant { .. } => crate::outcome::MessageKind::$kind, )+
+                    $( Self::$unit => crate::outcome::MessageKind::$unit_kind, )+
+                    $( Self::$binary { .. } => crate::outcome::MessageKind::$binary_kind, )+
+                }
+            }
+        }
+
+        impl serde::Serialize for Body {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::{Error as _, SerializeTuple};
+                let mut tuple = serializer.serialize_tuple(2)?;
+                match self {
+                    $( Self::$variant { $( $field ),* } => {
+                        #[derive(serde::Serialize)]
+                        struct Payload<'a> { $( $field: &'a $ty ),* }
+                        tuple.serialize_element(&self.kind())?;
+                        tuple.serialize_element(&Payload { $( $field ),* })?;
+                    }, )+
+                    $( Self::$unit => {
+                        #[derive(serde::Serialize)]
+                        struct Empty {}
+                        tuple.serialize_element(&self.kind())?;
+                        tuple.serialize_element(&Empty {})?;
+                    }, )+
+                    $( Self::$binary { .. } => return Err(S::Error::custom("binary body in control frame")), )+
+                }
+                tuple.end()
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for Body {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                struct BodyVisitor;
+                impl<'de> serde::de::Visitor<'de> for BodyVisitor {
+                    type Value = Body;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a numeric control body")
+                    }
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Body, A::Error> {
+                        use serde::de::Error as _;
+                        let kind: crate::outcome::MessageKind = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                        let body = match kind {
+                            $( crate::outcome::MessageKind::$kind => {
+                                #[derive(serde::Deserialize)]
+                                #[serde(deny_unknown_fields)]
+                                struct Payload { $( #[serde(deserialize_with = "required_field")] $field: $ty ),* }
+                                let payload: Payload = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                                Body::$variant { $( $field: payload.$field ),* }
+                            }, )+
+                            $( crate::outcome::MessageKind::$unit_kind => {
+                                #[derive(serde::Deserialize)]
+                                #[serde(deny_unknown_fields)]
+                                struct Payload {}
+                                let _: Payload = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                                Body::$unit
+                            }, )+
+                            $( crate::outcome::MessageKind::$binary_kind => return Err(A::Error::custom("binary body in control frame")), )+
+                        };
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(A::Error::invalid_length(3, &self));
+                        }
+                        Ok(body)
+                    }
+                }
+                deserializer.deserialize_tuple(2, BodyVisitor)
+            }
+        }
+    };
+}
+
+bodies! {
+    controls {
+        Inventory => Inventory { known: Option<[u8; 32]>, after: Option<crate::corpus::InventoryCursor>, limit: usize },
+        Describe => Describe { id: [u8; 32] },
+        Get => Get { root: [u8; 32], id: [u8; 32] },
+        Offer => Offer { metadata: Metadata },
+        InventoryUnchanged => InventoryUnchanged { root: [u8; 32] },
+        InventoryResult => InventoryResult { snapshot: crate::corpus::InventorySnapshot, ids: Vec<[u8; 32]>, next: Option<crate::corpus::InventoryCursor> },
+        Description => Description { metadata: Metadata },
+        ProgramGet => ProgramGet { root: [u8; 32], id: [u8; 32], start: u64, limit: usize },
+        Receipt => Receipt { status: OfferStatus },
+        Error => PeerError { code: PeerFailure },
+    }
+    units { InventoryRestart => InventoryRestart, Missing => Missing }
+    binary {
+        Object => Object { root: [u8; 32], object: Envelope, question: Option<String> },
+        ProgramDescription => ProgramDescription { root: Option<[u8; 32]>, metadata: crate::object::ProgramMetadata },
+        ProgramOffer => ProgramOffer { metadata: crate::object::ProgramMetadata },
+        ProgramData => ProgramData { root: [u8; 32], id: [u8; 32], chunk: naome_proof::program::Chunk },
+    }
 }
 
 #[derive(Debug)]
