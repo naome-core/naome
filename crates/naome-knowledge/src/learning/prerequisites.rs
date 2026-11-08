@@ -281,18 +281,20 @@ impl Prerequisites {
             ));
         }
 
-        if let [(id, formula)] = sources.as_slice()
-            && self
-                .0
-                .programs
-                .iter()
-                .any(|packet| packet.manifest.proof_id() == *id)
-            && let Some(cut) = super::search::scope::cut::plan(target, formula)
+        let programs = self
+            .0
+            .programs
+            .iter()
+            .map(|packet| packet.manifest.proof_id())
+            .collect::<BTreeSet<_>>();
+        if (1..=2).contains(&sources.len())
+            && let Some(cut) = super::search::scope::cut::plan(target, sources.len(), |formula| {
+                select(formula).filter(|id| programs.contains(id))
+            })
             && cut.work() <= maximum
             && started.elapsed() < std::time::Duration::from_millis(2500)
         {
-            let packet =
-                Packet::compose(target, &cut.commands(*id), &self.0.programs, artifacts())?;
+            let packet = Packet::compose(target, &cut.commands(), &self.0.programs, artifacts())?;
             return Ok((
                 Some(super::construction::ProgramCandidate {
                     packet,
@@ -302,12 +304,6 @@ impl Prerequisites {
             ));
         }
 
-        let programs = self
-            .0
-            .programs
-            .iter()
-            .map(|packet| packet.manifest.proof_id())
-            .collect::<BTreeSet<_>>();
         if sources.iter().all(|(id, _)| !programs.contains(id)) {
             return Ok((None, 0));
         }

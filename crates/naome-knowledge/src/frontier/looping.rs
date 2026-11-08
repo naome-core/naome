@@ -13,7 +13,7 @@ struct Node {
     question: ResearchQuestion,
     record: Option<evidence::Record>,
     children: Vec<usize>,
-    cuts: Vec<usize>,
+    cuts: Vec<Vec<usize>>,
     checked: Option<Checked>,
     depth: usize,
     available: bool,
@@ -86,17 +86,27 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
         .record
         .as_ref()
         .map_or(0, |record| record.last_attempt_at);
-    if let Some(checked) = node
-        .cuts
-        .iter()
-        .filter_map(|&child| nodes[child].checked.as_ref())
-        .find(|checked| checked.proves_requested_side && checked.at > last_attempt)
-    {
-        work.required.push((checked.proof_id.clone(), checked.at));
-        return work;
+    for group in &node.cuts {
+        if let Some(checked) = group
+            .iter()
+            .map(|&child| {
+                nodes[child]
+                    .checked
+                    .as_ref()
+                    .filter(|proof| proof.proves_requested_side)
+            })
+            .collect::<Option<Vec<_>>>()
+            && checked.iter().any(|proof| proof.at > last_attempt)
+        {
+            work.required = checked
+                .into_iter()
+                .map(|proof| (proof.proof_id.clone(), proof.at))
+                .collect();
+            return work;
+        }
     }
     for &child in &nodes[index].children {
-        let alternative = nodes[index].cuts.contains(&child);
+        let alternative = node.cuts.iter().flatten().any(|&cut| cut == child);
         let node = &nodes[child];
         if !node.available {
             continue;
@@ -188,12 +198,19 @@ impl Frontier {
                 }
             }
             if self.native {
-                for helper in crate::learning::scoped_cut_questions(question.proved_target()) {
-                    if let Some(id) = witness(helper.proved_target())? {
-                        let selected = vec![id];
-                        if let Some(inputs) = graph.solving_inputs(&selected, definitions)? {
-                            return Ok((selected, inputs));
+                for group in crate::learning::scoped_cut_questions(question.proved_target()) {
+                    let mut selected = Vec::new();
+                    for helper in &group {
+                        if let Some(id) = witness(helper.proved_target())? {
+                            selected.push(id);
+                        } else {
+                            break;
                         }
+                    }
+                    if selected.len() == group.len()
+                        && let Some(inputs) = graph.solving_inputs(&selected, definitions)?
+                    {
+                        return Ok((selected, inputs));
                     }
                 }
             }
@@ -377,15 +394,35 @@ impl Frontier {
                         i
                     };
                     nodes[index].children.push(child);
-                    if scoped
+                }
+                for group in scoped {
+                    let members = group
                         .iter()
-                        .any(|cut| cut.resolution_id() == nodes[child].question.resolution_id())
-                        || routes.as_ref().is_some_and(|routes| {
-                            routes.contains(nodes[child].question.proved_target())
+                        .filter_map(|helper| {
+                            nodes[index].children.iter().copied().find(|&child| {
+                                helper.resolution_id() == nodes[child].question.resolution_id()
+                            })
                         })
-                    {
-                        nodes[index].cuts.push(child);
+                        .collect::<Vec<_>>();
+                    if members.len() == group.len() {
+                        nodes[index].cuts.push(members);
+                    } else {
+                        nodes[index]
+                            .children
+                            .retain(|child| !members.contains(child));
                     }
+                }
+                if let Some(routes) = routes {
+                    let independent = nodes[index]
+                        .children
+                        .iter()
+                        .filter(|&&child| {
+                            !nodes[index].cuts.iter().flatten().any(|&cut| cut == child)
+                                && routes.contains(nodes[child].question.proved_target())
+                        })
+                        .map(|&child| vec![child])
+                        .collect::<Vec<_>>();
+                    nodes[index].cuts.extend(independent);
                 }
             }
             index += 1;

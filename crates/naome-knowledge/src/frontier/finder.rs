@@ -34,8 +34,7 @@ fn fresh_opening(formula: &Formula) -> Option<FreeVariable> {
 fn open(formula: &Formula) -> Option<Formula> {
     formula.open_outer_universal(fresh_opening(formula)?)
 }
-/// A closed witness is a question to prove independently before it can be
-/// supplied to the original goal. Each returned witness is an alternative.
+/// Independently provable witnesses for the bounded routes to an open goal.
 pub(super) fn cut_helpers(
     goal: &ResearchQuestion,
     maximum: usize,
@@ -46,19 +45,37 @@ pub(super) fn cut_helpers(
     ranked.extend(routes.quantified);
     ranked.sort_by_key(|(_, distance)| *distance);
     let goal_nodes = goal.formula().view().node_count_and_depth().0;
-    let questions = crate::learning::scoped_cut_questions(goal.proved_target())
-        .into_iter()
-        .chain(
-            ranked
-                .into_iter()
-                .filter_map(|(formula, _)| ResearchQuestion::from_formula(formula).ok()),
-        )
-        .filter(|helper| {
-            helper.formula().view().node_count_and_depth().0 < goal_nodes
-                && helper.resolution_id() != goal.resolution_id()
-                && independent_goal(helper, goal)
-        })
-        .collect();
+    let valid = |helper: &ResearchQuestion| {
+        helper.formula().view().node_count_and_depth().0 < goal_nodes
+            && helper.resolution_id() != goal.resolution_id()
+            && independent_goal(helper, goal)
+    };
+    let mut questions = Vec::new();
+    for group in crate::learning::scoped_cut_questions(goal.proved_target()) {
+        if !group.iter().all(valid) {
+            continue;
+        }
+        if group.len() == 1 {
+            questions.extend(group);
+        } else if group.len() <= maximum
+            && group.iter().map(key).collect::<BTreeSet<_>>().len() == group.len()
+            && group.iter().all(|helper| {
+                question_bytes(helper) <= bytes
+                    && meaningful(helper)
+                    && crate::learning::State::eligible(&helper.to_hex())
+            })
+        {
+            // The durable plan retains both questions. The scheduler admits
+            // only one pending segment at a time against the live allowance.
+            return group;
+        }
+    }
+    questions.extend(
+        ranked
+            .into_iter()
+            .filter_map(|(formula, _)| ResearchQuestion::from_formula(formula).ok())
+            .filter(valid),
+    );
     bounded(questions, maximum, bytes)
 }
 
@@ -307,6 +324,9 @@ pub(super) fn for_goal(
 ) -> Vec<ResearchQuestion> {
     bounded(helpers(goal, cursor), maximum, bytes)
 }
+fn question_bytes(question: &ResearchQuestion) -> usize {
+    question.to_hex().len() * 8 + 256
+}
 fn bounded(all: Vec<ResearchQuestion>, maximum: usize, bytes: usize) -> Vec<ResearchQuestion> {
     bounded_eligible(all, maximum, bytes, &mut |_| true)
 }
@@ -321,7 +341,7 @@ fn bounded_eligible(
     let mut result = Vec::new();
     let mut checks = 0;
     for question in all {
-        let cost = question.to_hex().len() * 8 + 256;
+        let cost = question_bytes(&question);
         if result.len() >= maximum.min(12) || checks >= 20 {
             break;
         }

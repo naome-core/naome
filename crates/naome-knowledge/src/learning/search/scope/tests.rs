@@ -144,15 +144,17 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
 
     let alternatives = cut::questions(goal.proved_target());
     assert!(alternatives.len() >= 2);
-    let helper = &alternatives[1];
-    let prefix = cut::plan(goal.proved_target(), helper.proved_target())
-        .expect("the exact alternative transport prefix");
+    let helper = &alternatives[1][0];
     let witness = solve(helper, 8).expect("an independently solvable cut");
     witness.check_target(helper).unwrap();
     let Tree::Program(packet) = witness.tree else {
         panic!("native witness program");
     };
     let proof_id = packet.manifest.proof_id();
+    let prefix = cut::plan(goal.proved_target(), 1, |formula| {
+        (formula == helper.proved_target()).then_some(proof_id)
+    })
+    .expect("the exact alternative transport prefix");
     let required = [crate::hex(proof_id.as_bytes())];
     let inputs = Prerequisites::from_inputs(Vec::new(), vec![*packet]).unwrap();
     let mut engine = Engine::default();
@@ -189,4 +191,97 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
     assert!(root.commands().unwrap().iter().any(|command| matches!(
         command, Command::ProofReference { proof_id: used } if used == proof_id.as_bytes()
     )));
+}
+
+#[test]
+fn a_long_transport_requires_both_checked_segments_under_the_local_allowance() {
+    use crate::learning::{Prerequisites, solve_with_report};
+    let subject = FreeVariable::new(0);
+    let binder = FreeVariable::new(40);
+    let atom = |index: u32, point| {
+        let object = FreeVariable::new(1 + index / 2);
+        if index.is_multiple_of(2) {
+            Formula::member(point, object)
+        } else {
+            Formula::equal(point, object)
+        }
+    };
+    let target = (0..15).rev().fold(atom(15, subject), |body, index| {
+        let step = Formula::for_all(
+            binder,
+            Formula::implies(atom(index, binder), atom(index + 1, binder)),
+        );
+        Formula::implies(step, body)
+    });
+    let goal =
+        ResearchQuestion::from_formula(proof::close(Formula::implies(atom(0, subject), target)))
+            .unwrap();
+    assert!(solve(&goal, 32).is_none());
+    let groups = cut::questions(goal.proved_target());
+    let [group] = groups.as_slice() else {
+        panic!("one serial transport route");
+    };
+    let [first, second] = group.as_slice() else {
+        panic!("two independent segment questions");
+    };
+    let witness = |question: &ResearchQuestion| {
+        let solution = solve(question, 5).expect("checked segment within one scope");
+        solution.check_target(question).unwrap();
+        let Tree::Program(packet) = solution.tree else {
+            panic!("native checked segment");
+        };
+        *packet
+    };
+    let packets = [witness(first), witness(second)];
+    let ids = packets.each_ref().map(|packet| packet.manifest.proof_id());
+    let mut engine = Engine::default();
+    let mut io = crate::learning::tests::MemoryStore::default();
+    let mut run = |indices: &[usize], maximum| {
+        let required = indices
+            .iter()
+            .map(|&i| crate::hex(ids[i].as_bytes()))
+            .collect::<Vec<_>>();
+        let packets = indices.iter().map(|&i| packets[i].clone()).collect();
+        let inputs = Prerequisites::from_inputs(Vec::new(), packets).unwrap();
+        engine
+            .with(&Checkpoint::fresh(), &mut io, |runtime| {
+                solve_with_report(
+                    &goal.to_hex(),
+                    runtime,
+                    maximum,
+                    1,
+                    SolveContext {
+                        required: &required,
+                        prerequisites: Some(&inputs),
+                        native_programs: true,
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+    };
+    for one in [0, 1] {
+        assert!(run(&[one], 32).solution.is_none());
+    }
+    assert!(run(&[0, 1], 21).solution.is_none());
+    let result = run(&[1, 0], 22);
+    assert_eq!(result.cost.search_expansions, 22);
+    let solution = result.solution.expect("checked consumer of both segments");
+    solution.check_target(&goal).unwrap();
+    let Tree::Program(root) = solution.tree else {
+        panic!("native serial transport");
+    };
+    let records = root.commands().unwrap();
+    assert!(records.iter().any(|command| matches!(
+        command,
+        Command::Deduce { actions, .. } if actions.len() == 7
+    )));
+    let references = records
+        .iter()
+        .filter_map(|command| match command {
+            Command::ProofReference { proof_id } => Some(*proof_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(references, ids.map(|id| *id.as_bytes()));
 }
