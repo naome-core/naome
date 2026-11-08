@@ -193,7 +193,6 @@ codes! {
         FrameIdentity = 27,
         CheckpointOverflow = 28,
         OwnerUnavailable = 29,
-        OwnerRejected = 30,
         GrantEncoding = 31,
         ModelRange = 32,
         ModelLength = 33,
@@ -586,6 +585,49 @@ codes! {
 
 }
 
+/// A worker or owner failure code, restricted to outcomes valid for a job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub(crate) struct JobFailureCode(std::num::NonZeroU32);
+
+impl JobFailureCode {
+    pub(crate) fn from_owner(error: &crate::Error) -> Self {
+        Self::try_from(error.code()).expect("owner error must use a registered job failure code")
+    }
+}
+impl From<WorkerFailure> for JobFailureCode {
+    fn from(error: WorkerFailure) -> Self {
+        Self(std::num::NonZeroU32::new(error.into()).expect("worker failure code is nonzero"))
+    }
+}
+impl From<JobFailureCode> for u32 {
+    fn from(error: JobFailureCode) -> Self {
+        error.0.get()
+    }
+}
+impl TryFrom<u32> for JobFailureCode {
+    type Error = &'static str;
+    fn try_from(code: u32) -> Result<Self, Self::Error> {
+        if EvidenceCode::try_from(code).is_ok()
+            || DurabilityCode::try_from(code).is_ok()
+            || OperationCode::try_from(code).is_ok()
+            || InputFault::try_from(code).is_ok()
+            || InputLimit::try_from(code).is_ok()
+            || WorkerFailure::try_from(code).is_ok()
+            || LearningGraphFailure::try_from(code).is_ok()
+            || RuntimeFailure::try_from(code).is_ok()
+            || StartupFailure::try_from(code).is_ok()
+            || ResearchFailure::try_from(code).is_ok()
+        {
+            Ok(Self(
+                std::num::NonZeroU32::new(code).expect("registered code is nonzero"),
+            ))
+        } else {
+            Err("unknown job failure code")
+        }
+    }
+}
+
 impl InputLimit {
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -627,5 +669,41 @@ mod catalog_tests {
         assert_eq!(unique.len(), codes.len());
         assert!(unique.contains(&naome_checker::question::RejectionReason::KnownProof.code()));
         assert!(unique.contains(&naome_checker::question::PrefilterOutcome::Inconclusive.code()));
+    }
+}
+
+#[cfg(test)]
+mod job_failure_tests {
+    use super::*;
+
+    #[test]
+    fn job_failure_codes_preserve_owner_and_worker_domains() {
+        assert_eq!(
+            std::mem::size_of::<Option<JobFailureCode>>(),
+            std::mem::size_of::<u32>()
+        );
+        for error in [
+            crate::Error::Research(ResearchFailure::WorkBudgetExhausted),
+            crate::Error::MemoryOverload {
+                requested: 3,
+                charged: 4,
+                budget: 5,
+            },
+            crate::Error::Runtime(RuntimeFailure::ResearchJournalRead),
+        ] {
+            let failure = JobFailureCode::from_owner(&error);
+            assert_eq!(u32::from(failure), error.code());
+            assert_eq!(
+                serde_json::from_value::<JobFailureCode>(error.code().into()).unwrap(),
+                failure
+            );
+        }
+        let worker = JobFailureCode::from(WorkerFailure::FrameTruncated);
+        assert_eq!(u32::from(worker), u32::from(WorkerFailure::FrameTruncated));
+        assert!(
+            serde_json::from_value::<JobFailureCode>(u32::from(NodeEvent::Starting).into())
+                .is_err()
+        );
+        assert!(serde_json::from_value::<JobFailureCode>(u32::MAX.into()).is_err());
     }
 }

@@ -328,7 +328,7 @@ fn cleanup_uncertainty_overrides_cancelled_and_expired_states() {
                 1,
                 process::Outcome {
                     state: State::InDoubt,
-                    result: Err(WorkerFailure::CleanupUnconfirmed),
+                    result: Err(WorkerFailure::CleanupUnconfirmed.into()),
                 },
             )
             .unwrap_err();
@@ -411,7 +411,7 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
                 1,
                 process::Outcome {
                     state: State::Cancelled,
-                    result: Err(WorkerFailure::Cancelled),
+                    result: Err(WorkerFailure::Cancelled.into()),
                 },
             )
             .unwrap();
@@ -473,7 +473,7 @@ async fn failed_clock_accounting_still_drains_all_owned_tasks() {
             1,
             process::Outcome {
                 state: State::InDoubt,
-                result: Err(WorkerFailure::CleanupUnconfirmed),
+                result: Err(WorkerFailure::CleanupUnconfirmed.into()),
             },
         )
     }));
@@ -519,7 +519,7 @@ fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
             1,
             process::Outcome {
                 state: State::InDoubt,
-                result: Err(WorkerFailure::CleanupUnconfirmed),
+                result: Err(WorkerFailure::CleanupUnconfirmed.into()),
             },
         )
         .unwrap_err();

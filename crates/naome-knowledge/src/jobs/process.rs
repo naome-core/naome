@@ -1,6 +1,6 @@
 //! The production parent lifeline is independent of synchronous provider work.
 use super::*;
-use crate::outcome::WorkerFailure;
+use crate::outcome::{JobFailureCode, WorkerFailure};
 use std::{
     io::{BufRead, Write},
     os::fd::AsRawFd,
@@ -152,7 +152,7 @@ pub(super) enum Event {
 
 pub(super) struct Outcome {
     pub state: State,
-    pub result: Result<Output, WorkerFailure>,
+    pub result: Result<Output, JobFailureCode>,
 }
 
 struct OwnedAttempt {
@@ -194,7 +194,7 @@ pub(super) async fn run(
             State::Failed
         });
     attempt.feedback.finish(state);
-    let result = result.map_err(|error| attempt.failure.unwrap_or(error));
+    let result = result.map_err(|error| attempt.failure.map(JobFailureCode::from).unwrap_or(error));
     Outcome { state, result }
 }
 
@@ -206,7 +206,7 @@ async fn run_owned(
     slot: std::fs::File,
     permit: crate::resources::ComputationPermit,
     attempt: &mut OwnedAttempt,
-) -> Result<Output, WorkerFailure> {
+) -> Result<Output, JobFailureCode> {
     let disposition = &attempt.disposition;
     let feedback = &mut attempt.feedback;
     let failure = &mut attempt.failure;
@@ -217,7 +217,7 @@ async fn run_owned(
     );
     if remaining_ms == 0 {
         *disposition.lock().expect("provider disposition owner") = Some(State::Expired);
-        return Err(WorkerFailure::Deadline);
+        return Err(WorkerFailure::Deadline.into());
     }
     let deadline = tokio::time::Instant::now() + Duration::from_millis(remaining_ms);
     // This is the only deliberately inherited descriptor besides stdio. It is
@@ -281,7 +281,7 @@ async fn run_owned(
                 .await
                 .map_err(|_| WorkerFailure::SlotInheritance)?;
         }
-        return Err(WorkerFailure::SlotInheritance);
+        return Err(WorkerFailure::SlotInheritance.into());
     }
     let pid = child.id().ok_or(WorkerFailure::SupervisorIdentity)?;
     crate::network::emit(
@@ -379,7 +379,7 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| WorkerFailure::OwnerUnavailable)?
-                        .map_err(|_| WorkerFailure::OwnerRejected)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next,
@@ -413,7 +413,7 @@ async fn run_owned(
                     let receipt = receipt
                         .await
                         .map_err(|_| WorkerFailure::OwnerUnavailable)?
-                        .map_err(|_| WorkerFailure::OwnerRejected)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut response = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
@@ -446,7 +446,7 @@ async fn run_owned(
                     if let Some(bytes) = &bytes
                         && bytes.len() != length
                     {
-                        return Err(WorkerFailure::ModelLength);
+                        return Err(WorkerFailure::ModelLength.into());
                     }
                     let (reply, receipt) = oneshot::channel();
                     events
@@ -463,7 +463,7 @@ async fn run_owned(
                     let data = receipt
                         .await
                         .map_err(|_| WorkerFailure::OwnerUnavailable)?
-                        .map_err(|_| WorkerFailure::OwnerRejected)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut response = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
@@ -495,7 +495,7 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| WorkerFailure::OwnerUnavailable)?
-                        .map_err(|_| WorkerFailure::OwnerRejected)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
@@ -515,12 +515,12 @@ async fn run_owned(
                         && matches!(record.input, Input::Solve { .. }) =>
                 {
                     if records.len() > naome_proof::program::CHUNK_BYTES * 2 {
-                        return Err(WorkerFailure::ProgramCapacity);
+                        return Err(WorkerFailure::ProgramCapacity.into());
                     }
                     let bytes =
                         crate::unhex(&records).map_err(|_| WorkerFailure::ProgramEncoding)?;
                     if crate::hex(&bytes) != records {
-                        return Err(WorkerFailure::ProgramEncoding);
+                        return Err(WorkerFailure::ProgramEncoding.into());
                     }
                     let records = naome_proof::program::decode_records(&bytes)
                         .map_err(|_| WorkerFailure::ProgramEncoding)?;
@@ -537,7 +537,7 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| WorkerFailure::OwnerUnavailable)?
-                        .map_err(|_| WorkerFailure::OwnerRejected)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
@@ -572,7 +572,7 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| WorkerFailure::OwnerUnavailable)?
-                        .map_err(|_| WorkerFailure::OwnerRejected)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     feedback.checkpoint(next)?;
                     drop(working.take());
                     feedback.wait();
@@ -606,32 +606,32 @@ async fn run_owned(
                     if let Output::Program { units } = &output
                         && *units != checkpoint
                     {
-                        return Err(WorkerFailure::ResultInvalid);
+                        return Err(WorkerFailure::ResultInvalid.into());
                     }
-                    return Ok(output);
+                    return Ok::<Output, JobFailureCode>(output);
                 }
                 Frame::Uncertain { id } if ready && id == record.id => {
                     *failure = Some(WorkerFailure::ProviderUncertain);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-                    return Err(WorkerFailure::ProviderUncertain);
+                    return Err(WorkerFailure::ProviderUncertain.into());
                 }
                 Frame::Failed { id } if ready && id == record.id => {
                     *failure = Some(WorkerFailure::ProviderRejected);
-                    return Err(WorkerFailure::ProviderRejected);
+                    return Err(WorkerFailure::ProviderRejected.into());
                 }
                 Frame::CleanupFailed { id } if id == record.id => {
                     *failure = Some(WorkerFailure::CleanupUnconfirmed);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-                    return Err(WorkerFailure::CleanupUnconfirmed);
+                    return Err(WorkerFailure::CleanupUnconfirmed.into());
                 }
-                _ => return Err(WorkerFailure::FrameIdentity),
+                _ => return Err(WorkerFailure::FrameIdentity.into()),
             }
         }
     };
     let result = tokio::select! {
         value=execution=>value,
-        _=&mut cancel=>{*disposition.lock().expect("provider disposition owner")=Some(State::Cancelled);Err(WorkerFailure::Cancelled)},
-        _=tokio::time::sleep_until(deadline)=>{*disposition.lock().expect("provider disposition owner")=Some(State::Expired);Err(WorkerFailure::Deadline)},
+        _=&mut cancel=>{*disposition.lock().expect("provider disposition owner")=Some(State::Cancelled);Err(WorkerFailure::Cancelled.into())},
+        _=tokio::time::sleep_until(deadline)=>{*disposition.lock().expect("provider disposition owner")=Some(State::Expired);Err(WorkerFailure::Deadline.into())},
     };
     // Cancellation or expiry can drop the admission wait before it receives a
     // permit. Close that measurement before custody drain and child reaping.
@@ -650,7 +650,7 @@ async fn run_owned(
     let drain = async {
         loop {
             let Some(frame) = reader.next().await? else {
-                return Ok::<(), WorkerFailure>(());
+                return Ok::<(), JobFailureCode>(());
             };
             match serde_json::from_slice::<Frame>(&frame)
                 .map_err(|_| WorkerFailure::FrameEncoding)?
@@ -658,7 +658,7 @@ async fn run_owned(
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
                 Frame::CleanupFailed { id } if id == record.id => {
                     cleaned = false;
-                    return Err(WorkerFailure::CleanupUnconfirmed);
+                    return Err(WorkerFailure::CleanupUnconfirmed.into());
                 }
                 Frame::Ready { id, .. }
                 | Frame::Feedback { id, .. }
@@ -675,7 +675,7 @@ async fn run_owned(
                 | Frame::Failed { id, .. }
                 | Frame::Uncertain { id, .. }
                     if id == record.id => {}
-                _ => return Err(WorkerFailure::FrameIdentity),
+                _ => return Err(WorkerFailure::FrameIdentity.into()),
             }
         }
     };
@@ -687,7 +687,7 @@ async fn run_owned(
     {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error),
-        Err(_) => Some(WorkerFailure::OutputDrainDeadline),
+        Err(_) => Some(WorkerFailure::OutputDrainDeadline.into()),
     };
     let status = match tokio::time::timeout(
         crate::resources::limits().provider_drain_timeout,
@@ -700,7 +700,7 @@ async fn run_owned(
             child.start_kill().map_err(|_| WorkerFailure::PipeIo)?;
             child.wait().await.map_err(|_| WorkerFailure::PipeIo)?;
             *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-            return Err(WorkerFailure::CleanupUnconfirmed);
+            return Err(WorkerFailure::CleanupUnconfirmed.into());
         }
     };
     crate::network::emit(
@@ -715,7 +715,7 @@ async fn run_owned(
     if !cleaned {
         *failure = Some(WorkerFailure::CleanupUnconfirmed);
         *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-        return Err(WorkerFailure::CleanupUnconfirmed);
+        return Err(WorkerFailure::CleanupUnconfirmed.into());
     }
     // A cleanup receipt confirms process custody. It cannot confirm effects
     // reported as uncertain by the worker.
@@ -729,7 +729,7 @@ async fn run_owned(
         return Err(result.err().unwrap_or(error));
     }
     if result.is_ok() && !status.success() {
-        return Err(WorkerFailure::SupervisorExit);
+        return Err(WorkerFailure::SupervisorExit.into());
     }
     result
 }

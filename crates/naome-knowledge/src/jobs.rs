@@ -471,13 +471,13 @@ pub(crate) struct Record {
     pub state: State,
     pub result: Option<Output>,
     pub acknowledged: bool,
-    pub failure: Option<crate::outcome::WorkerFailure>,
+    pub failure: Option<crate::outcome::JobFailureCode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompletionFailure {
     Admission(crate::outcome::AdmissionFailure),
-    Worker(crate::outcome::WorkerFailure),
+    Worker(crate::outcome::JobFailureCode),
     NoResult(State),
 }
 
@@ -565,7 +565,7 @@ enum PeerStatus {
         trace_proof: String,
     },
     Unsupported {
-        reason: crate::outcome::WorkerFailure,
+        reason: crate::outcome::JobFailureCode,
     },
 }
 enum Command {

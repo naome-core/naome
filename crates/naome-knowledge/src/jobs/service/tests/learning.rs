@@ -158,7 +158,7 @@ fn technical_and_interrupted_records_preserve_uncertainty_without_fake_proofs() 
     ] {
         let mut record = owner.journal.records[&id].clone();
         record.state = state;
-        record.failure = Some(WorkerFailure::Execution);
+        record.failure = Some(WorkerFailure::Execution.into());
         let summary = ExperienceSummary::from_record(&record).unwrap().unwrap();
         summary.validate().unwrap();
         assert_eq!(summary.terminal, terminal);
@@ -179,12 +179,14 @@ fn failed_native_experience_reloads_from_the_existing_job_journal() {
     let (id, mut receiver) = submit_native(&mut owner, input.clone());
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
+    let cause = crate::Error::Research(crate::ResearchFailure::WorkBudgetExhausted);
+    let failure = crate::outcome::JobFailureCode::from_owner(&cause);
     owner
         .complete(
             id,
             process::Outcome {
                 state: State::Failed,
-                result: Err(WorkerFailure::Execution),
+                result: Err(failure),
             },
         )
         .unwrap();
@@ -198,6 +200,7 @@ fn failed_native_experience_reloads_from_the_existing_job_journal() {
         .unwrap()
         .unwrap();
     assert_eq!(record.id, id);
+    assert_eq!(record.failure, Some(failure));
     assert!(record.result.is_none());
     let restored = crate::learning::experience::ExperienceSummary::from_record(&record)
         .unwrap()
@@ -371,7 +374,7 @@ fn bounded_journal_history_includes_terminal_failures_without_invented_training_
             failed,
             process::Outcome {
                 state: State::Failed,
-                result: Err(WorkerFailure::Execution),
+                result: Err(WorkerFailure::Execution.into()),
             },
         )
         .unwrap();
@@ -1559,7 +1562,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             &mut owner.journal,
             &admission,
             PeerStatus::Unsupported {
-                reason: WorkerFailure::ReplayNotSelected,
+                reason: WorkerFailure::ReplayNotSelected.into(),
             },
         )
         .unwrap();
@@ -1606,7 +1609,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             &mut owner.journal,
             &admission,
             PeerStatus::Unsupported {
-                reason: WorkerFailure::ReplayNotSelected,
+                reason: WorkerFailure::ReplayNotSelected.into(),
             },
         )
         .unwrap();

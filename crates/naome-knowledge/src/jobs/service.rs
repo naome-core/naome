@@ -497,7 +497,7 @@ impl Owner {
                     &mut self.journal,
                     &admission,
                     PeerStatus::Unsupported {
-                        reason: WorkerFailure::ReplayAdmissionLimit,
+                        reason: WorkerFailure::ReplayAdmissionLimit.into(),
                     },
                 )?;
             } else {
@@ -797,7 +797,7 @@ impl Owner {
                 .expect("owned peer result");
             record.state = State::Expired;
             record.result = None;
-            record.failure = Some(WorkerFailure::Deadline);
+            record.failure = Some(WorkerFailure::Deadline.into());
         }
         let updates = self.disk.finish_peer(&mut self.journal, id)?;
         self.journal
@@ -1446,7 +1446,7 @@ impl Owner {
                     .await
                     .unwrap_or(process::Outcome {
                         state: State::InDoubt,
-                        result: Err(WorkerFailure::Panic),
+                        result: Err(WorkerFailure::Panic.into()),
                     });
                     (id, outcome)
                 }));

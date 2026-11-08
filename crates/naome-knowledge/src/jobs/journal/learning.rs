@@ -202,11 +202,11 @@ impl Disk {
         let mut status = PeerStatus::Unsupported {
             reason: record
                 .failure
-                .unwrap_or(crate::outcome::WorkerFailure::ReplayUnavailable),
+                .unwrap_or(crate::outcome::WorkerFailure::ReplayUnavailable.into()),
         };
         if let Some(Output::Native { solution, .. }) = &record.result {
             status = PeerStatus::Unsupported {
-                reason: crate::outcome::WorkerFailure::NoReplayCandidate,
+                reason: crate::outcome::WorkerFailure::NoReplayCandidate.into(),
             };
             if let Some(solution) = solution
                 && !solution.refuted
@@ -253,7 +253,7 @@ impl Disk {
                     };
                 } else {
                     status = PeerStatus::Unsupported {
-                        reason: crate::outcome::WorkerFailure::ReplayNotSelected,
+                        reason: crate::outcome::WorkerFailure::ReplayNotSelected.into(),
                     };
                 }
             }
