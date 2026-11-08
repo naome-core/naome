@@ -173,6 +173,9 @@ codes! {
         CheckpointSchema = 39,
         CheckpointIntegrity = 40,
         CheckpointRowCount = 41,
+        CheckpointCountWidth = 42,
+        CheckpointReadWidth = 43,
+        CheckpointUnexpectedKind = 44,
     }
 
     pub enum InputLimit in 8 {

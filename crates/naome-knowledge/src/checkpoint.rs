@@ -358,25 +358,25 @@ impl Checkpoint {
         Ok(page)
     }
 
-    pub(crate) fn count(&self, kind: &str) -> Result<usize, String> {
+    pub(crate) fn count(&self, kind: &str) -> Result<usize, crate::Error> {
         self.ensure_generation()?;
         let count: i64 = self
             .connection
             .query_row("SELECT count(*) FROM entries WHERE kind=?1", [kind], |r| {
                 r.get(0)
             })
-            .map_err(sql)?;
-        usize::try_from(count).map_err(|_| "checkpoint count width".into())
+            .map_err(sql_error)?;
+        usize::try_from(count).map_err(|_| crate::InputFault::CheckpointCountWidth.into())
     }
     pub(crate) fn get_bytes(
         &self,
         kind: &str,
         key: &str,
         maximum: usize,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Vec<u8>>, crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
-        let row:Option<(Vec<u8>,Vec<u8>)>=self.connection.query_row("SELECT substr(payload,1,?3),substr(digest,1,33) FROM entries WHERE kind=?1 AND key=?2",params![kind,key,i64::try_from(maximum+1).map_err(|_|"checkpoint width")?],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+        let row:Option<(Vec<u8>,Vec<u8>)>=self.connection.query_row("SELECT substr(payload,1,?3),substr(digest,1,33) FROM entries WHERE kind=?1 AND key=?2",params![kind,key,i64::try_from(maximum+1).map_err(|_|crate::InputFault::CheckpointReadWidth)?],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql_error)?;
         row.map(|(payload, stored)| {
             check_row(self.domain, kind, key, &payload, &stored, maximum)?;
             Ok(payload)
@@ -399,32 +399,32 @@ impl Checkpoint {
 
     fn scan_all(
         &self,
-        mut visit: impl FnMut(&str, &str, &[u8]) -> Result<(), String>,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&str, &str, &[u8]) -> Result<(), crate::Error>,
+    ) -> Result<(), crate::Error> {
         self.ensure_generation()?;
-        let mut statement = self.connection.prepare("SELECT substr(kind,1,17), substr(key,1,129), substr(payload,1,67108865), substr(digest,1,33) FROM entries ORDER BY kind,key").map_err(sql)?;
-        let mut rows = statement.query([]).map_err(sql)?;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let kind: String = row.get(0).map_err(sql)?;
-            let key: String = row.get(1).map_err(sql)?;
-            let payload: Vec<u8> = row.get(2).map_err(sql)?;
-            let stored: Vec<u8> = row.get(3).map_err(sql)?;
+        let mut statement = self.connection.prepare("SELECT substr(kind,1,17), substr(key,1,129), substr(payload,1,67108865), substr(digest,1,33) FROM entries ORDER BY kind,key").map_err(sql_error)?;
+        let mut rows = statement.query([]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let kind: String = row.get(0).map_err(sql_error)?;
+            let key: String = row.get(1).map_err(sql_error)?;
+            let payload: Vec<u8> = row.get(2).map_err(sql_error)?;
+            let stored: Vec<u8> = row.get(3).map_err(sql_error)?;
             check_row(self.domain, &kind, &key, &payload, &stored, MAX_ROW)?;
             visit(&kind, &key, &payload)?;
         }
         Ok(())
     }
-    pub(crate) fn require_kinds(&self, kinds: &[&str]) -> Result<(), String> {
+    pub(crate) fn require_kinds(&self, kinds: &[&str]) -> Result<(), crate::Error> {
         self.ensure_generation()?;
         let mut statement = self
             .connection
             .prepare("SELECT DISTINCT kind FROM entries")
-            .map_err(sql)?;
-        let mut rows = statement.query([]).map_err(sql)?;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let kind: String = row.get(0).map_err(sql)?;
+            .map_err(sql_error)?;
+        let mut rows = statement.query([]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let kind: String = row.get(0).map_err(sql_error)?;
             if !kinds.contains(&kind.as_str()) {
-                return Err("unexpected checkpoint record kind".into());
+                return Err(crate::InputFault::CheckpointUnexpectedKind.into());
             }
         }
         Ok(())

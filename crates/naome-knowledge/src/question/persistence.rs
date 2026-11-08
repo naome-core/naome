@@ -93,7 +93,10 @@ impl Persistence {
         };
         checkpoint
             .require_kinds(&["question", "admitted", "backlog", "queued", "publication"])
-            .map_err(|_| crate::RuntimeFailure::QuestionCheckpointHeader)?;
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::QuestionCheckpointHeader,
+                cause: Box::new(cause),
+            })?;
         let header: Header = checkpoint
             .header()
             .map_err(|cause| crate::Error::RuntimeContext {

@@ -442,3 +442,30 @@ fn checkpoint_sql_read_failure_retains_native_code_and_fails_closed() {
     );
     assert_eq!(value["sqlite_code"], rusqlite::ffi::SQLITE_ERROR);
 }
+
+#[test]
+fn checkpoint_direct_reads_and_kind_validation_retain_specific_failures() {
+    let directory = Directory::new();
+    let path = directory.0.join("direct.sqlite3");
+    let checkpoint = Checkpoint::create(
+        &path,
+        "test",
+        &1u64,
+        vec![
+            Update::put("record", "one", &"long payload").unwrap(),
+            Update::put("unexpected", "two", &2u64).unwrap(),
+        ],
+    )
+    .unwrap();
+    let error = checkpoint.get_bytes("record", "one", 2).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointRecordReadLimit)
+    );
+    let error = checkpoint.require_kinds(&["record"]).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointUnexpectedKind)
+    );
+    assert!(error.storage().fatal());
+}

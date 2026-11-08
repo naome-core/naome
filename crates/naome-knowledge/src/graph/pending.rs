@@ -159,7 +159,7 @@ impl PendingStore {
             .is_some())
     }
     pub(super) fn len(&self) -> Result<usize, crate::Error> {
-        Ok(self.checkpoint.count("pending")?)
+        self.checkpoint.count("pending")
     }
     pub(super) fn insert(
         &mut self,
