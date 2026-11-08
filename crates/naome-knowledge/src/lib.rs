@@ -27,11 +27,11 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
         .copied()
 }
 pub use outcome::{
-    DurabilityCode, IngestStatus, InputFault, InputLimit, LearningGraphFailure, PauseReason,
-    ResearchFailure, RuntimeFailure, StartupFailure,
+    DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault, InputLimit,
+    LearningGraphFailure, PauseReason, ResearchFailure, RuntimeFailure, StartupFailure,
 };
 mod frontier;
-pub use error::{CertificateFormatError, DurabilityFailure, Error};
+pub use error::{CertificateFormatError, DurabilityFailure, Error, FormatFailure};
 mod graph;
 mod index_storage;
 mod intake;

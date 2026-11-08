@@ -42,7 +42,7 @@ macro_rules! codes {
         const _: () = {
             assert!(Domain::$name as u16 > 0);
             // The checker owns the question prefilter domains.
-            assert!(Domain::$name as u16 != 33 && Domain::$name as u16 != 34 && Domain::$name as u16 != 35 && Domain::$name as u16 != 37);
+            assert!(Domain::$name as u16 != 33 && Domain::$name as u16 != 34 && Domain::$name as u16 != 35 && Domain::$name as u16 != 37 && Domain::$name as u16 != 40 && Domain::$name as u16 != 41);
             $(assert!($id > 0 && $id <= u16::MAX as u32);)+
         };
     };
@@ -593,6 +593,13 @@ codes! {
     }
 
     pub(crate) enum DialStage in 39 { Request = 1, Transport = 2 }
+
+    pub(crate) enum FormatReasonCode in 42 {
+        EmptyCertificate = 1, Limit = 2, ReferenceNotEarlier = 3, UnexpectedEnd = 4,
+        UnknownTag = 5, Formula = 6, TrailingBytes = 7, Unsupported = 8,
+    }
+    pub enum FormatResource in 43 { Steps = 1, Bytes = 2, Nodes = 3 }
+    pub enum FormatTagClass in 44 { ProofStep = 1, ZfcAxiom = 2 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,

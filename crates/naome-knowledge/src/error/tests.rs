@@ -99,7 +99,7 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
         json["format_error"]["input_digest"],
         naome_checker::diagnostics::Digest::of(&bytes).to_string()
     );
-    assert_eq!(json["format_error"]["reason"]["kind"], "unexpected_end");
+    assert_eq!(json["format_error"]["reason"]["code"], 0x002a_0004_u32);
     assert!(!error.fatal() && !error.retryable());
     let stored = error.storage();
     let stored_json = serde_json::to_value(&stored).unwrap();
@@ -140,4 +140,24 @@ fn formula_codec_failures_preserve_numeric_reason_and_context() {
     assert_eq!(stored["cause_code"], u32::from(OperationCode::Formula));
     assert_eq!(stored["formula"], value["formula"]);
     assert_eq!(stored["fatal"], true);
+}
+
+#[test]
+fn certificate_format_reasons_encode_domains_and_witnesses() {
+    use naome_proof::ProofCertificateError;
+    let limit = FormatFailure::from(&ProofCertificateError::TooManySteps {
+        actual: 9,
+        maximum: 8,
+    });
+    let value = serde_json::to_value(limit).unwrap();
+    assert_eq!(value["code"], 0x002a_0002_u32);
+    assert_eq!(value["resource"], 0x002b_0001_u32);
+    assert_eq!(value["actual"], 9);
+    assert_eq!(value["maximum"], 8);
+    let tag = FormatFailure::from(&ProofCertificateError::UnknownZfcAxiomTag(42));
+    let value = serde_json::to_value(tag).unwrap();
+    assert_eq!(value["code"], 0x002a_0005_u32);
+    assert_eq!(value["domain"], 0x002c_0002_u32);
+    assert_eq!(value["tag"], 42);
+    assert!(value.get("kind").is_none());
 }

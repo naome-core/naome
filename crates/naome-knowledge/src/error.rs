@@ -1,16 +1,15 @@
 //! Operation outcomes retain their meaning until the presentation boundary.
 use crate::{
     EvidenceFailure, InputFault, InputLimit,
-    outcome::{DurabilityCode, OperationCode},
+    outcome::{DurabilityCode, FormatReasonCode, FormatResource, FormatTagClass, OperationCode},
 };
 use std::{error::Error as StdError, fmt, num::NonZeroI32};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormatFailure {
     EmptyCertificate,
     Limit {
-        resource: &'static str,
+        resource: FormatResource,
         actual: Option<u64>,
         maximum: u64,
     },
@@ -20,7 +19,7 @@ pub enum FormatFailure {
     },
     UnexpectedEnd,
     UnknownTag {
-        domain: &'static str,
+        domain: FormatTagClass,
         tag: u8,
     },
     Formula {
@@ -31,23 +30,64 @@ pub enum FormatFailure {
     },
     Unsupported,
 }
+impl serde::Serialize for FormatFailure {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut value = serializer.serialize_map(None)?;
+        let code = match self {
+            Self::EmptyCertificate => FormatReasonCode::EmptyCertificate,
+            Self::Limit { .. } => FormatReasonCode::Limit,
+            Self::ReferenceNotEarlier { .. } => FormatReasonCode::ReferenceNotEarlier,
+            Self::UnexpectedEnd => FormatReasonCode::UnexpectedEnd,
+            Self::UnknownTag { .. } => FormatReasonCode::UnknownTag,
+            Self::Formula { .. } => FormatReasonCode::Formula,
+            Self::TrailingBytes { .. } => FormatReasonCode::TrailingBytes,
+            Self::Unsupported => FormatReasonCode::Unsupported,
+        };
+        value.serialize_entry("code", &code)?;
+        match self {
+            Self::Limit {
+                resource,
+                actual,
+                maximum,
+            } => {
+                value.serialize_entry("resource", resource)?;
+                value.serialize_entry("actual", actual)?;
+                value.serialize_entry("maximum", maximum)?;
+            }
+            Self::ReferenceNotEarlier { step, reference } => {
+                value.serialize_entry("step", step)?;
+                value.serialize_entry("reference", reference)?;
+            }
+            Self::UnknownTag { domain, tag } => {
+                value.serialize_entry("domain", domain)?;
+                value.serialize_entry("tag", tag)?;
+            }
+            Self::Formula { reason } => value.serialize_entry("reason", reason)?,
+            Self::TrailingBytes { remaining } => value.serialize_entry("remaining", remaining)?,
+            Self::EmptyCertificate | Self::UnexpectedEnd | Self::Unsupported => {}
+        }
+        value.end()
+    }
+}
+
 impl From<&naome_proof::ProofCertificateError> for FormatFailure {
     fn from(error: &naome_proof::ProofCertificateError) -> Self {
         use naome_proof::ProofCertificateError;
         match *error {
             ProofCertificateError::EmptyCertificate => Self::EmptyCertificate,
             ProofCertificateError::TooManySteps { actual, maximum } => Self::Limit {
-                resource: "steps",
+                resource: FormatResource::Steps,
                 actual: Some(actual as u64),
                 maximum: maximum as u64,
             },
             ProofCertificateError::InputTooLong { actual, maximum } => Self::Limit {
-                resource: "bytes",
+                resource: FormatResource::Bytes,
                 actual: Some(actual as u64),
                 maximum: maximum as u64,
             },
             ProofCertificateError::FormulaNodeLimitExceeded { maximum } => Self::Limit {
-                resource: "nodes",
+                resource: FormatResource::Nodes,
                 actual: None,
                 maximum: maximum as u64,
             },
@@ -56,11 +96,11 @@ impl From<&naome_proof::ProofCertificateError> for FormatFailure {
             }
             ProofCertificateError::UnexpectedEnd => Self::UnexpectedEnd,
             ProofCertificateError::UnknownStepTag(tag) => Self::UnknownTag {
-                domain: "proof_step",
+                domain: FormatTagClass::ProofStep,
                 tag,
             },
             ProofCertificateError::UnknownZfcAxiomTag(tag) => Self::UnknownTag {
-                domain: "zfc_axiom",
+                domain: FormatTagClass::ZfcAxiom,
                 tag,
             },
             ProofCertificateError::Formula(ref reason) => Self::Formula {
