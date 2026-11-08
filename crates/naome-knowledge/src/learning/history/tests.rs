@@ -149,10 +149,13 @@ fn source_substitution_missing_closure_and_omitted_records_fail_before_training(
         }
         let receipt = receipt(&page);
         job.history = Some(receipt.clone());
-        assert!(
-            Working::prepare(&job, &page, &receipt).is_err(),
-            "mutation {mutation}"
-        );
+        let error = Working::prepare(&job, &page, &receipt).unwrap_err();
+        if mutation != 1 {
+            assert!(matches!(
+                error,
+                crate::Error::Research(crate::ResearchFailure::HistorySourcePageMismatch)
+            ));
+        }
     }
 }
 

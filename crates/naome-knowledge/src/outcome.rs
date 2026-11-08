@@ -759,6 +759,18 @@ codes! {
         SampledSequenceOverflow = 90,
         MetaTrialPlanMissing = 91,
         NativeModelHashMismatch = 92,
+        HistoryOriginEvidence = 93,
+        HistoryTrajectoryMissing = 94,
+        HistoryPageIdentity = 95,
+        HistoryPageCursor = 96,
+        HistoryPageContinuation = 97,
+        HistoryRecordPageMismatch = 98,
+        HistoryObservationHorizon = 99,
+        HistorySourcePageLane = 100,
+        HistorySourcePageMismatch = 101,
+        HistoryPreparedCapacity = 102,
+        HistoryPreparedIdentity = 103,
+        HistoryPreparedChanged = 104,
     }
 
 }

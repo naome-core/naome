@@ -521,6 +521,40 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::NativeModelChunkLengthDiffers => {
                     "native model chunk length differs"
                 }
+                crate::ResearchFailure::HistoryOriginEvidence => {
+                    "historical origin lacks its exact admission evidence"
+                }
+                crate::ResearchFailure::HistoryTrajectoryMissing => {
+                    "history source lacks its complete trajectory"
+                }
+                crate::ResearchFailure::HistoryPageIdentity => {
+                    "history page identity or sequence differs"
+                }
+                crate::ResearchFailure::HistoryPageCursor => "history page source cursor differs",
+                crate::ResearchFailure::HistoryPageContinuation => {
+                    "history continuation lacks its last examined source"
+                }
+                crate::ResearchFailure::HistoryRecordPageMismatch => {
+                    "history record page omitted or substituted a scanned job"
+                }
+                crate::ResearchFailure::HistoryObservationHorizon => {
+                    "history observation differs from its original job horizon"
+                }
+                crate::ResearchFailure::HistorySourcePageLane => {
+                    "admitted source page contains a different journal view"
+                }
+                crate::ResearchFailure::HistorySourcePageMismatch => {
+                    "historical page omitted or substituted an owned source"
+                }
+                crate::ResearchFailure::HistoryPreparedCapacity => {
+                    "prepared replay exceeds existing working source capacity"
+                }
+                crate::ResearchFailure::HistoryPreparedIdentity => {
+                    "prepared replay differs from its immutable job"
+                }
+                crate::ResearchFailure::HistoryPreparedChanged => {
+                    "prepared replay changed across continuation"
+                }
                 crate::ResearchFailure::NativeModelHashMismatch => {
                     "native model checkpoint hash differs"
                 }
