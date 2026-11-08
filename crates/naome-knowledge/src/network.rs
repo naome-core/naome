@@ -1987,7 +1987,7 @@ impl Node {
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
                 json!({"event":crate::outcome::NodeEvent::DialFailed,"peer":peer_id.map(|peer|peer.to_string()),
-                    "stage":"transport", "error":dial_failure(&error)}),
+                    "stage":crate::outcome::DialStage::Transport, "error":dial_failure(&error)}),
             ),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,

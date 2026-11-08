@@ -571,6 +571,14 @@ codes! {
 
     pub enum ArtifactVerification in 32 { Checked = 1, NotRun = 2 }
 
+    pub(crate) enum EventReason in 38 {
+        ProviderEffectsOrCleanupUncertain = 1,
+        CheckedPrerequisiteNotRetained = 2,
+        AdmissionDeliveryUncertain = 3,
+    }
+
+    pub(crate) enum DialStage in 39 { Request = 1, Transport = 2 }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
@@ -716,6 +724,21 @@ mod catalog_tests {
 #[cfg(test)]
 mod job_failure_tests {
     use super::*;
+
+    #[test]
+    fn event_context_codes_round_trip_and_reject_unknown_values() {
+        let event = serde_json::json!({
+            "reason": EventReason::AdmissionDeliveryUncertain,
+            "stage": DialStage::Transport,
+        });
+        assert_eq!(event["reason"], 0x0026_0003_u32);
+        assert_eq!(event["stage"], 0x0027_0002_u32);
+        assert_eq!(
+            serde_json::from_value::<EventReason>(event["reason"].clone()).unwrap(),
+            EventReason::AdmissionDeliveryUncertain
+        );
+        assert!(serde_json::from_value::<DialStage>(0x0027_ffff_u32.into()).is_err());
+    }
 
     #[test]
     fn job_failure_codes_preserve_owner_and_worker_domains() {

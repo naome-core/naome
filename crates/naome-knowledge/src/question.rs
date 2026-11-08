@@ -486,7 +486,7 @@ where
                 crate::network::emit(serde_json::json!({
                     "event": crate::outcome::NodeEvent::QuestionRecoveryHold,
                     "source_id": crate::hex(question.record_id()),
-                    "reason": "original admission delivery is uncertain",
+                    "reason": crate::outcome::EventReason::AdmissionDeliveryUncertain,
                 }));
             }
             self.remember(question, entry.kind == persistence::Kind::Admitted);

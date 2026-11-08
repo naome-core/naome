@@ -270,7 +270,7 @@ impl Autonomous {
     fn retire(&mut self, record: jobs::Record) -> bool {
         if record.state == jobs::State::InDoubt {
             emit(
-                json!({"event":crate::outcome::NodeEvent::ResearchRecoveryHold,"job":record.id,"reason":"provider effects or cleanup are uncertain"}),
+                json!({"event":crate::outcome::NodeEvent::ResearchRecoveryHold,"job":record.id,"reason":crate::outcome::EventReason::ProviderEffectsOrCleanupUncertain}),
             );
             return true;
         }
@@ -651,7 +651,7 @@ impl Autonomous {
                     return accepted;
                 }
                 emit(
-                    json!({"event":crate::outcome::NodeEvent::LemmaLoopUnavailable,"resolution_id":crate::hex(&id),"reason":"checked prerequisite not retained by owner"}),
+                    json!({"event":crate::outcome::NodeEvent::LemmaLoopUnavailable,"resolution_id":crate::hex(&id),"reason":crate::outcome::EventReason::CheckedPrerequisiteNotRetained}),
                 );
             }
             match completion {
