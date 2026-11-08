@@ -24,9 +24,9 @@ pub(crate) struct Recovery {
 
 pub(crate) struct Service {
     thread: Option<JoinHandle<()>>,
-    error: Arc<Mutex<Option<String>>>,
+    error: Arc<Mutex<Option<crate::Error>>>,
     halt: Option<oneshot::Sender<()>>,
-    stopped: Option<oneshot::Receiver<Result<(), String>>>,
+    stopped: Option<oneshot::Receiver<Result<(), crate::Error>>>,
 }
 
 impl Service {
@@ -74,7 +74,7 @@ impl Service {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|_| crate::Error::from(crate::ResearchFailure::OwnerRuntimeUnavailable))?;
                     let (events, progress) =
                         mpsc::channel(crate::resources::active_limits().provider_events);
                     let mut owner = Owner::new(disk, journal, settings, computation);
@@ -102,28 +102,28 @@ impl Service {
         ))
     }
 
-    pub(crate) fn error(&self) -> Option<String> {
+    pub(crate) fn error(&self) -> Option<crate::Error> {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    pub(crate) async fn shutdown(&mut self) -> Result<(), String> {
+    pub(crate) async fn shutdown(&mut self) -> Result<(), crate::Error> {
         self.begin_shutdown()?;
         let result = match self.stopped.take() {
             Some(receiver) => receiver
                 .await
-                .unwrap_or_else(|_| Err("research stop receipt unavailable".into())),
+                .unwrap_or_else(|_| Err(crate::ResearchFailure::StopReceiptUnavailable.into())),
             None => self.error().map_or(Ok(()), Err),
         };
         let mut joined = Ok(());
         if let Some(thread) = self.thread.take() {
             joined = thread
                 .join()
-                .map_err(|_| "research owner thread panicked".to_owned());
+                .map_err(|_| crate::Error::from(crate::ResearchFailure::OwnerThreadPanic));
         }
-        result.and(joined)
+        combine_outcomes(result, joined)
     }
 
-    pub(crate) fn begin_shutdown(&mut self) -> Result<(), String> {
+    pub(crate) fn begin_shutdown(&mut self) -> Result<(), crate::Error> {
         if let Some(halt) = self.halt.take() {
             let _ = halt.send(());
         }
@@ -137,8 +137,11 @@ impl Drop for Service {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            *self.error.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some("research owner thread panicked".into());
+            let mut error = self.error.lock().unwrap_or_else(|e| e.into_inner());
+            *error = Some(append_failure(
+                error.take(),
+                crate::ResearchFailure::OwnerThreadPanic.into(),
+            ));
         }
     }
 }
@@ -250,13 +253,11 @@ impl Owner {
         halt: oneshot::Receiver<()>,
         events: mpsc::Sender<process::Event>,
         progress: mpsc::Receiver<process::Event>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let result = std::panic::AssertUnwindSafe(self.drive(commands, halt, events, progress))
             .catch_unwind()
             .await
-            .unwrap_or_else(|_| {
-                Err("research driver panicked; pending effects require reconciliation".into())
-            });
+            .unwrap_or_else(|_| Err(crate::ResearchFailure::DriverPanic.into()));
         let cleanup = self.stop_all().await;
 
         combine_outcomes(result, cleanup)
@@ -268,7 +269,7 @@ impl Owner {
         mut halt: oneshot::Receiver<()>,
         events: mpsc::Sender<process::Event>,
         mut progress: mpsc::Receiver<process::Event>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.recover_internal()?;
         let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -359,7 +360,7 @@ impl Owner {
                             match self.reserve(id,next) {
                                 Ok(Reservation::Granted)=>{let _=reply.send(Ok(()));},
                                 Ok(Reservation::Exhausted)=>{let _=reply.send(Err("research work budget exhausted".into()));},
-                                Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
+                                Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error.into());},
                             }
                         },
                         process::Event::History{id,unit,request,reply}=>{if self.history_io.insert(id,PendingHistory{unit,request,reply}).is_some(){return Err("duplicate pending history read".into());}},
@@ -388,7 +389,7 @@ impl Owner {
                             })();
                             let failure=result.as_ref().err().cloned();
                             let _=reply.send(result.map_err(String::from));
-                            if let Some(error)=failure{return Err(String::from(error));}
+                            if let Some(error)=failure{return Err(error);}
                         },
                     }
                 },
@@ -815,7 +816,7 @@ impl Owner {
         Ok(())
     }
 
-    fn complete(&mut self, id: u64, outcome: process::Outcome) -> Result<(), String> {
+    fn complete(&mut self, id: u64, outcome: process::Outcome) -> Result<(), crate::Error> {
         if outcome.state == State::InDoubt {
             // The completed task has already left tasks. Retain uncertainty
             // before any clock or disk operation can fail and lose its outcome.
@@ -835,8 +836,8 @@ impl Owner {
             // clock even after rollback. This grants no new time or work.
             let retained = self.retain_uncertainty();
             return combine_outcomes(
-                Err("provider cleanup or effects require reconciliation".into()),
-                combine_outcomes(accounting.map_err(String::from), retained),
+                Err(crate::ResearchFailure::EffectsUnconfirmed.into()),
+                combine_outcomes(accounting, retained.map_err(crate::Error::from)),
             );
         }
         let record = self
@@ -854,7 +855,7 @@ impl Owner {
             match check_peer_completion(record, proposed) {
                 Ok(()) => false,
                 Err(error) if error.retryable() => true,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
         } else {
             false
@@ -899,7 +900,7 @@ impl Owner {
                 self.running.remove(&id);
                 return Ok(());
             }
-            return self.finish_peer_completion(id);
+            return self.finish_peer_completion(id).map_err(crate::Error::from);
         }
         if self
             .waiters
@@ -965,7 +966,7 @@ impl Owner {
             self.internal_receivers.remove(&id);
         }
         if uncertain {
-            return Err("provider cleanup or effects require reconciliation".into());
+            return Err(crate::ResearchFailure::EffectsUnconfirmed.into());
         }
         Ok(())
     }
@@ -1608,12 +1609,12 @@ impl Owner {
         }
     }
 
-    async fn stop_all(&mut self) -> Result<(), String> {
+    async fn stop_all(&mut self) -> Result<(), crate::Error> {
         let mut failure = None;
         let ids = self.running.keys().copied().collect::<Vec<_>>();
         for id in ids {
             if let Err(error) = self.charge(id) {
-                failure = Some(append_failure(failure.take(), &error.to_string()));
+                failure = Some(append_failure(failure.take(), error));
             }
             let record = self
                 .journal
@@ -1630,7 +1631,7 @@ impl Owner {
         }
         let saved = self.save();
         if let Err(error) = saved {
-            failure = Some(append_failure(failure.take(), &error.to_string()));
+            failure = Some(append_failure(failure.take(), error));
         }
         for (id, running) in std::mem::take(&mut self.running) {
             self.clocks.insert(id, running.clock);
@@ -1640,7 +1641,7 @@ impl Owner {
         }
         while let Some((id, outcome)) = self.tasks.next().await {
             if let Err(error) = self.charge(id) {
-                failure = Some(append_failure(failure.take(), &error.to_string()));
+                failure = Some(append_failure(failure.take(), error));
             }
             if outcome.state == State::InDoubt {
                 let record = self
@@ -1654,7 +1655,7 @@ impl Owner {
                 record.failure = outcome.result.err();
                 failure = Some(append_failure(
                     failure.take(),
-                    "provider cleanup is unconfirmed",
+                    crate::ResearchFailure::EffectsUnconfirmed.into(),
                 ));
             } else if let Ok(output) = outcome.result {
                 let record = self
@@ -1666,7 +1667,8 @@ impl Owner {
                     let exhausted = match allowance_expired(&self.journal, id) {
                         Ok(expired) => expired,
                         Err(error) => {
-                            failure = Some(append_failure(failure.take(), &error));
+                            failure =
+                                Some(append_failure(failure.take(), crate::Error::from(error)));
                             true
                         }
                     };
@@ -1687,7 +1689,7 @@ impl Owner {
         }
         self.waiters.clear();
         if let Err(error) = self.save() {
-            failure = Some(append_failure(failure.take(), &error.to_string()));
+            failure = Some(append_failure(failure.take(), error));
             if self
                 .journal
                 .records
@@ -1695,7 +1697,7 @@ impl Owner {
                 .any(|record| record.state == State::InDoubt)
                 && let Err(error) = self.retain_uncertainty()
             {
-                failure = Some(append_failure(failure.take(), &error));
+                failure = Some(append_failure(failure.take(), crate::Error::from(error)));
             }
         }
         failure.map_or(Ok(()), Err)
@@ -1768,9 +1770,16 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
         )
         .time_expired())
 }
-fn append_failure(previous: Option<String>, next: &str) -> String {
-    previous.map_or_else(|| next.to_owned(), |old| format!("{old}; cleanup: {next}"))
+fn append_failure(previous: Option<crate::Error>, next: crate::Error) -> crate::Error {
+    match previous {
+        Some(primary) => crate::Error::ResearchCombined {
+            primary: Box::new(primary),
+            cleanup: Box::new(next),
+        },
+        None => next,
+    }
 }
+
 fn completion(record: &Record) -> Result<Completion, String> {
     Ok(Completion {
         experience: crate::learning::experience::ExperienceSummary::from_record(record)?,
@@ -1789,11 +1798,15 @@ fn completion(record: &Record) -> Result<Completion, String> {
     })
 }
 
-fn combine_outcomes(result: Result<(), String>, cleanup: Result<(), String>) -> Result<(), String> {
+fn combine_outcomes(
+    result: Result<(), crate::Error>,
+    cleanup: Result<(), crate::Error>,
+) -> Result<(), crate::Error> {
     match (result, cleanup) {
-        (Err(primary), Err(cleanup)) => Err(format!(
-            "cleanup failed: {cleanup}; primary failure: {primary}"
-        )),
+        (Err(primary), Err(cleanup)) => Err(crate::Error::ResearchCombined {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }),
         (Err(error), _) | (_, Err(error)) => Err(error),
         _ => Ok(()),
     }

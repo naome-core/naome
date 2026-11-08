@@ -155,6 +155,10 @@ pub enum Error {
     QuestionInput(Box<naome_proof::QuestionError>),
     Runtime(crate::RuntimeFailure),
     Research(crate::ResearchFailure),
+    ResearchCombined {
+        primary: Box<Error>,
+        cleanup: Box<Error>,
+    },
     Startup {
         code: crate::StartupFailure,
         reaped: bool,
@@ -196,6 +200,9 @@ impl Error {
             Self::QuestionInput(_) => OperationCode::QuestionInput,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Research(failure) => return (*failure).into(),
+            Self::ResearchCombined { .. } => {
+                return crate::ResearchFailure::MultipleFailures.into();
+            }
             Self::Startup { code, .. } => return (*code).into(),
         };
         code.into()
@@ -242,6 +249,7 @@ impl Error {
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
                     | Self::Research(_)
+                    | Self::ResearchCombined { .. }
                     | Self::Startup { .. }
             )
     }
@@ -323,7 +331,24 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::AccountingRecordMissing => {
                     "research accounting record absent"
                 }
+                crate::ResearchFailure::MultipleFailures => "multiple research failures",
+                crate::ResearchFailure::EffectsUnconfirmed => {
+                    "provider cleanup or effects require reconciliation"
+                }
+                crate::ResearchFailure::DriverPanic => {
+                    "research driver panicked; pending effects require reconciliation"
+                }
+                crate::ResearchFailure::StopReceiptUnavailable => {
+                    "research stop receipt unavailable"
+                }
+                crate::ResearchFailure::OwnerThreadPanic => "research owner thread panicked",
+                crate::ResearchFailure::OwnerRuntimeUnavailable => {
+                    "research owner runtime unavailable"
+                }
             }),
+            Self::ResearchCombined { primary, cleanup } => {
+                write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
+            }
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
             Self::UncertainDurability(failure) => {
                 write!(f, "storage halted: {}", u32::from(failure.code))
@@ -339,6 +364,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Stored(error) => Some(error),
+            Self::ResearchCombined { primary, .. } => Some(primary),
             Self::DiagnosticInspection(error) => Some(error),
             _ => None,
         }
@@ -465,6 +491,10 @@ impl serde::Serialize for Error {
         value.serialize_entry("code", &self.code())?;
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
+        if let Self::ResearchCombined { primary, cleanup } = self {
+            value.serialize_entry("primary", primary)?;
+            value.serialize_entry("cleanup", cleanup)?;
+        }
         if let Some(diagnostic) = self.diagnostic() {
             value.serialize_entry("diagnostic", diagnostic)?;
         }

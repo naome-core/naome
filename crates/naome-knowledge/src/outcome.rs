@@ -575,6 +575,8 @@ codes! {
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
+        MultipleFailures = 6, EffectsUnconfirmed = 7, DriverPanic = 8,
+        StopReceiptUnavailable = 9, OwnerThreadPanic = 10, OwnerRuntimeUnavailable = 11,
     }
 
 }

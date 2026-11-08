@@ -850,7 +850,9 @@ where
         Some(service) => service.shutdown().await,
         None => Ok(()),
     };
-    let cleanup = cleanup.and(control_cleanup).and(transport_cleanup);
+    let cleanup = cleanup
+        .and(control_cleanup.map_err(|_| crate::Error::from(crate::RuntimeFailure::Cleanup)))
+        .and(transport_cleanup.map_err(|_| crate::Error::from(crate::RuntimeFailure::Cleanup)));
     match (outcome, cleanup) {
         (Err(primary), Err(_)) => {
             emit(

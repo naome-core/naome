@@ -521,6 +521,19 @@ fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
         )
         .unwrap_err();
     assert!(error.contains("reconciliation") && error.contains("clock rollback"));
+    let encoded = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::ResearchFailure::MultipleFailures)
+    );
+    assert_eq!(
+        encoded["primary"]["code"],
+        u32::from(crate::ResearchFailure::EffectsUnconfirmed)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
     let saved = owner.disk.saved().unwrap();
     assert_eq!(
@@ -680,13 +693,48 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
 }
 
 #[test]
+fn dropping_panicked_owner_preserves_the_earlier_failure() {
+    let error = Arc::new(Mutex::new(Some(
+        crate::ResearchFailure::ClockRollback.into(),
+    )));
+    let service = Service {
+        thread: Some(std::thread::spawn(|| panic!("injected owner panic"))),
+        error: error.clone(),
+        halt: None,
+        stopped: None,
+    };
+    drop(service);
+    let encoded = serde_json::to_value(error.lock().unwrap().as_ref().unwrap()).unwrap();
+    assert_eq!(
+        encoded["primary"]["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::OwnerThreadPanic)
+    );
+}
+
+#[test]
 fn cleanup_error_is_preserved_alongside_an_earlier_driver_failure() {
     let error = combine_outcomes(
-        Err("driver clock failed".into()),
-        Err("provider termination unconfirmed".into()),
+        Err(crate::ResearchFailure::ClockRollback.into()),
+        Err(crate::ResearchFailure::EffectsUnconfirmed.into()),
     )
     .unwrap_err();
-    assert!(error.contains("driver clock failed") && error.contains("termination unconfirmed"));
+    let encoded = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::ResearchFailure::MultipleFailures)
+    );
+    assert_eq!(
+        encoded["primary"]["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::EffectsUnconfirmed)
+    );
 }
 
 // Isolated processes make the RSS comparison independent of parallel unit tests.
