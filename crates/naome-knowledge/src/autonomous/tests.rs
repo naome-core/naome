@@ -741,3 +741,25 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
     assert!(graph.ids().is_empty());
     assert!(autonomous.error().is_none());
 }
+
+#[test]
+fn archive_recovery_defers_full_queue_but_reports_closed_service() {
+    let owner = jobs::tests::Manual::new();
+    for ordinal in 0..crate::resources::limits().job_commands {
+        owner.client.peer_cursor(ordinal as u64).unwrap();
+    }
+    let mut recovery = owner.recovery();
+    recovery.archive_end = 2;
+    let mut autonomous =
+        Autonomous::new(intervals(3_600_000), owner.client.clone(), recovery, vec![]);
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    autonomous.advance(&mut graph, &mut questions);
+    assert_eq!(autonomous.archive_after, Some(0));
+    assert!(autonomous.error().is_none());
+    drop(owner);
+    autonomous.advance(&mut graph, &mut questions);
+    assert!(
+        matches!(autonomous.error(), Some(crate::Error::RuntimeContext { code: crate::RuntimeFailure::AutonomousArchive, cause }) if matches!(cause.as_ref(), crate::Error::Research(crate::ResearchFailure::ServiceStopped)))
+    );
+}

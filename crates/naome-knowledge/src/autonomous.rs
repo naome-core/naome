@@ -462,8 +462,16 @@ impl Autonomous {
                 }
             } else if let Some(after) = self.archive_after {
                 // A full command channel defers the page; it never loses history.
-                if let Ok(reply) = self.client.recover(after, self.archive_end) {
-                    self.recovery_reply = Some(reply);
+                match self.client.recover(after, self.archive_end) {
+                    Ok(reply) => self.recovery_reply = Some(reply),
+                    Err(crate::Error::Research(crate::ResearchFailure::CommandQueueFull)) => {}
+                    Err(error) => {
+                        self.error = Some(crate::Error::RuntimeContext {
+                            code: crate::RuntimeFailure::AutonomousArchive,
+                            cause: Box::new(error),
+                        });
+                        return accepted;
+                    }
                 }
             }
         }
