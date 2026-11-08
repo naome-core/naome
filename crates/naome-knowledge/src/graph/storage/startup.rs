@@ -28,12 +28,13 @@ impl CheckedStorage {
             // materialized subtree cannot contain a buffered descendant.
             context
                 .visit_pending_records(|address| {
-                    let mut cache = self
-                        .cache
-                        .lock()
-                        .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?;
+                    let mut cache = self.cache.lock().map_err(|_| {
+                        ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
+                    })?;
                     if cache.buffering != Some(self.generation) {
-                        return Err(ContextError::Storage("startup generation changed".into()));
+                        return Err(ContextError::Storage(
+                            naome_proof::ContextStorageFailure::StartupGeneration,
+                        ));
                     }
                     let Some(entry) = cache.entries.get_mut(&address) else {
                         return Ok(false);
@@ -86,13 +87,13 @@ impl CheckedStorage {
                 Ok(false)
             } else {
                 Err(ContextError::Storage(
-                    "buffered records have no startup owner".into(),
+                    naome_proof::ContextStorageFailure::StartupOwner,
                 ))
             };
         };
         if generation != self.generation || cache.closed {
             return Err(ContextError::Storage(
-                "startup buffer generation differs or closed".into(),
+                naome_proof::ContextStorageFailure::StartupGeneration,
             ));
         }
         let charge = bytes
@@ -172,7 +173,7 @@ impl CheckedStorage {
         }
         if cache.buffering != Some(self.generation) {
             return Err(ContextError::Storage(
-                "buffered startup generation differs".into(),
+                naome_proof::ContextStorageFailure::StartupGeneration,
             ));
         }
         if cache
@@ -185,8 +186,10 @@ impl CheckedStorage {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
-        let connection = connection_guard.open().map_err(ContextError::Storage)?;
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?;
+        let connection = connection_guard.open().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         // Buffered entries use this address set instead of an LRU position,
         // within the same per-entry charge. Never scan historical cache rows.
         let mut pending = std::mem::take(&mut cache.pending);
@@ -205,7 +208,9 @@ impl CheckedStorage {
                 } else {
                     persist_record(connection, self.generation, address, &entry.bytes)?;
                     #[cfg(test)]
-                    tests::at_stage(tests::Cut::Flush).map_err(ContextError::Storage)?;
+                    tests::at_stage(tests::Cut::Flush).map_err(|_| {
+                        ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+                    })?;
                     entry.state = EntryState::Persisted(self.generation);
                     cache.clock += 1;
                     entry.clock = cache.clock;

@@ -110,3 +110,20 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
     );
     assert_eq!(stored_json["format_error"], json["format_error"]);
 }
+
+#[test]
+fn checked_context_storage_cause_retains_its_native_code() {
+    use naome_checker::ContextError;
+    use naome_proof::ContextStorageFailure;
+
+    let error = crate::Error::from(ContextError::Storage(ContextStorageFailure::Sqlite(Some(
+        2067,
+    ))));
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], 0x0006_0013u32);
+    assert_eq!(value["reason"], 1);
+    assert_eq!(value["native_code"], 2067);
+    assert_eq!(value["fatal"], true);
+    assert_eq!(value["retryable"], false);
+    assert!(value.get("message").is_none());
+}

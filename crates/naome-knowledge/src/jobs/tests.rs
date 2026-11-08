@@ -95,7 +95,7 @@ impl Manual {
             spent_ms: 0,
             reserved_units: 1,
             state,
-            result,
+            result: result.map_err(|_| CompletionFailure::NoResult(State::Failed)),
         });
     }
     pub(crate) fn recovery(&self) -> Recovery {

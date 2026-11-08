@@ -771,7 +771,7 @@ where
         }
         published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error)=node.graph.storage_error(){return Err(error);}
-        if questions.storage_error().is_some(){return Err(crate::RuntimeFailure::QuestionStorage.into());}
+        if let Some(error)=questions.storage_error(){return Err(error);}
         if research.as_ref().and_then(crate::jobs::Service::error).is_some(){return Err(crate::RuntimeFailure::ResearchService.into());}
         if stopping {
             break;
@@ -819,12 +819,12 @@ where
         if let Some(autonomous) = &mut autonomous {
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
             node.publish_admitted(&admitted,if node.learning.is_some(){"native_solver"}else{"mock_producer"});
-            if autonomous.error().is_some(){return Err(crate::RuntimeFailure::Autonomous.into());}
+            if let Some(error) = autonomous.error() { return Err(error.clone()); }
         }
         if !stopping && work.is_some() && let Some(learning) = &mut node.learning {
             learning.advance(&node.graph, questions.formal_context(&node.graph).binding())?;
         }
-        if questions.storage_error().is_some() { return Err(crate::RuntimeFailure::QuestionStorage.into()); }
+        if let Some(error) = questions.storage_error() { return Err(error); }
         node.requests();
         published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error) = node.graph.storage_error() {

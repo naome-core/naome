@@ -30,7 +30,7 @@ pub(crate) struct IndexStorage {
     path: PathBuf,
     identity: (u64, u64),
     version: i64,
-    error: Mutex<Option<String>>,
+    error: Mutex<Option<ContextError>>,
     _lease: Arc<IndexLease>,
     label: String,
     mirror: Mutex<Option<Arc<Self>>>,
@@ -162,7 +162,7 @@ impl IndexStorage {
             .and_then(|n| usize::try_from(n).ok())
             .ok_or("index allocated size overflow".into())
     }
-    pub(crate) fn error(&self) -> Option<String> {
+    pub(crate) fn error(&self) -> Option<ContextError> {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn live(&self, connection: &Connection) -> Result<(), ContextError> {
@@ -172,9 +172,12 @@ impl IndexStorage {
         )
         .map_err(sql)?;
         if let Some(error) = self.error() {
-            return Err(ContextError::Storage(error));
+            return Err(error);
         }
-        if owned(&self.path).map_err(ContextError::Storage)? != self.identity {
+        if owned(&self.path).map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })? != self.identity
+        {
             return Err(ContextError::Corrupt);
         }
         let version: i64 = connection
@@ -253,7 +256,7 @@ impl ContextStorage for IndexStorage {
     }
     fn record_failure(&self, error: &ContextError) {
         if !matches!(error, ContextError::Limit) {
-            *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
         }
     }
 }
@@ -301,7 +304,10 @@ fn owned(path: &Path) -> Result<(u64, u64), String> {
     Ok((metadata.dev(), metadata.ino()))
 }
 fn sql(error: rusqlite::Error) -> ContextError {
-    ContextError::Storage(error.to_string())
+    ContextError::Storage(naome_proof::ContextStorageFailure::Sqlite(match error {
+        rusqlite::Error::SqliteFailure(failure, _) => Some(failure.extended_code),
+        _ => None,
+    }))
 }
 
 #[cfg(test)]

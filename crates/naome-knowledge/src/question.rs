@@ -390,7 +390,7 @@ pub(crate) struct LocalQuestions<F> {
     compaction: Option<RegistryCompaction>,
     next_compaction: usize,
     old_indexes: Vec<std::sync::Weak<crate::index_storage::IndexStorage>>,
-    storage_error: Option<String>,
+    storage_error: Option<crate::Error>,
     selection_horizon: Duration,
     selection: Option<Identity>,
     /// Bounded complete read-only decisions, never admission or selection receipts.
@@ -627,17 +627,17 @@ where
         let persistence = self.persistence.as_mut()?;
         match persistence.next_backlog(graph.checked_context()) {
             Ok(question) => question,
-            Err(error) => {
-                self.storage_error = Some(error);
+            Err(_) => {
+                self.storage_error = Some(crate::RuntimeFailure::QuestionBacklog.into());
                 None
             }
         }
     }
     pub(crate) fn settle_backlog(&mut self, resolution: &Identity) {
         if let Some(persistence) = &mut self.persistence
-            && let Err(error) = persistence.settle_backlog(resolution)
+            && let Err(_) = persistence.settle_backlog(resolution)
         {
-            self.storage_error = Some(error);
+            self.storage_error = Some(crate::RuntimeFailure::QuestionBacklog.into());
         }
     }
 
@@ -654,18 +654,19 @@ where
             .collect()
     }
 
-    pub(crate) fn storage_error(&self) -> Option<String> {
+    pub(crate) fn storage_error(&self) -> Option<crate::Error> {
         self.storage_error
             .clone()
             .or_else(|| {
                 self.persistence
                     .as_ref()
                     .and_then(persistence::Persistence::error)
+                    .map(|_| crate::RuntimeFailure::QuestionStorage.into())
             })
             .or_else(|| {
                 self.index_storage
                     .as_ref()
-                    .and_then(|storage| storage.error())
+                    .and_then(|storage| storage.error().map(crate::Error::from))
             })
     }
     pub(crate) fn uses_jobs(&self) -> bool {
@@ -685,9 +686,9 @@ where
         self.cache.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {
             if let (Some(client), Some(job)) = (&self.managed, pending.job)
-                && let Err(error) = client.acknowledge(job)
+                && let Err(_) = client.acknowledge(job)
             {
-                self.storage_error = Some(error);
+                self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
             }
             pending.reply.send(
                 QuestionAssessment {
@@ -1017,7 +1018,7 @@ where
             && let Err(error) = persistence.stage_publication(root, &delta.question)
         {
             if error.fatal() {
-                self.storage_error = Some(error.to_string());
+                self.storage_error = Some(error.clone());
             }
             return Err(error);
         }
@@ -1036,11 +1037,13 @@ where
                 return Err(error);
             }
         };
-        self.apply_exchange(delta).map_err(|_| {
-            crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+        if self.apply_exchange(delta).is_err() {
+            let error = crate::Error::UncertainDurability(crate::DurabilityFailure::new(
                 crate::DurabilityCode::QuestionPublication,
-            ))
-        })?;
+            ));
+            self.storage_error = Some(error.clone());
+            return Err(error);
+        }
         self.finish_publication(root)?;
         Ok(admitted)
     }
@@ -1049,7 +1052,7 @@ where
         if let Some(persistence) = &mut self.persistence
             && let Err(error) = persistence.finish_publication(root)
         {
-            self.storage_error = Some(error.to_string());
+            self.storage_error = Some(error.clone());
             return Err(error);
         }
         Ok(())
@@ -1061,7 +1064,7 @@ where
             && let Err(error) =
                 persistence.retain(&delta.question, persistence::Kind::Exchange, None)
         {
-            self.storage_error = Some(error.clone());
+            self.storage_error = Some(crate::RuntimeFailure::QuestionRetention.into());
             return Err(error);
         }
         self.registry = delta.registry;
@@ -1244,7 +1247,7 @@ where
         };
         let id = self.next_pending;
         let Some(next) = id.checked_add(1) else {
-            self.storage_error = Some("question selection identity exhausted".into());
+            self.storage_error = Some(crate::RuntimeFailure::QuestionSelection.into());
             return;
         };
         self.next_pending = next;
@@ -1307,10 +1310,11 @@ where
                         self.registry = previous;
                     } else if inserted {
                         if let Some(persistence) = &mut self.persistence
-                            && let Err(error) =
+                            && let Err(_) =
                                 persistence.retain(&question, persistence::Kind::Baseline, None)
                         {
-                            self.storage_error = Some(error);
+                            self.storage_error =
+                                Some(crate::RuntimeFailure::QuestionRetention.into());
                         }
                         self.remember(question, false);
                     }
@@ -1374,9 +1378,9 @@ where
         };
         if pending.reply.is_closed() {
             if let (Some(client), Some(job)) = (&self.managed, pending.job)
-                && let Err(error) = client.acknowledge(job)
+                && let Err(_) = client.acknowledge(job)
             {
-                self.storage_error = Some(error);
+                self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
             }
             return;
         }
@@ -1431,13 +1435,17 @@ where
                         novelty,
                     };
                     if let Some(persistence) = &mut self.persistence {
-                        if let Err(error) = persistence.retain(
-                            &pending.question,
-                            persistence::Kind::Prepared,
-                            Some(&receipt),
-                        ) {
+                        if persistence
+                            .retain(
+                                &pending.question,
+                                persistence::Kind::Prepared,
+                                Some(&receipt),
+                            )
+                            .is_err()
+                        {
                             self.registry = previous;
-                            self.storage_error = Some(error);
+                            self.storage_error =
+                                Some(crate::RuntimeFailure::QuestionRetention.into());
                             return;
                         }
                         prepared = true;
@@ -1472,18 +1480,18 @@ where
         }
         if prepared
             && let Some(persistence) = &mut self.persistence
-            && let Err(error) = persistence.delivered(&pending.question, delivered)
+            && let Err(_) = persistence.delivered(&pending.question, delivered)
         {
-            self.storage_error = Some(error);
+            self.storage_error = Some(crate::RuntimeFailure::QuestionDelivery.into());
             return;
         }
         if delivered && let Some(provenance) = provenance {
             self.remember(provenance.question, true);
         }
         if let (Some(client), Some(job)) = (&self.managed, pending.job)
-            && let Err(error) = client.acknowledge(job)
+            && let Err(_) = client.acknowledge(job)
         {
-            self.storage_error = Some(error);
+            self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
         }
     }
 

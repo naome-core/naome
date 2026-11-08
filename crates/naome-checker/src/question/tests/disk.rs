@@ -58,16 +58,25 @@ impl ContextStorage for Files {
         let mut remaining = self.remaining.lock().unwrap();
         if let Some(count) = remaining.as_mut() {
             if *count == 0 {
-                return Err(ContextError::Storage("injected cold read failure".into()));
+                return Err(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::Injected,
+                ));
             }
             *count -= 1;
         }
         drop(remaining);
-        let file = fs::File::open(self.path(address))
-            .map_err(|error| ContextError::Storage(error.to_string()))?;
+        let file = fs::File::open(self.path(address)).map_err(|error| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                error.raw_os_error(),
+            ))
+        })?;
         if file
             .metadata()
-            .map_err(|error| ContextError::Storage(error.to_string()))?
+            .map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })?
             .len()
             > maximum as u64
         {
@@ -76,7 +85,11 @@ impl ContextStorage for Files {
         let mut bytes = Vec::new();
         file.take(maximum as u64 + 1)
             .read_to_end(&mut bytes)
-            .map_err(|error| ContextError::Storage(error.to_string()))?;
+            .map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })?;
         if bytes.len() > maximum {
             return Err(ContextError::Limit);
         }
@@ -85,11 +98,20 @@ impl ContextStorage for Files {
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
         let path = self.path(address);
         if path.exists() {
-            if fs::read(path).map_err(|error| ContextError::Storage(error.to_string()))? != bytes {
+            if fs::read(path).map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })? != bytes
+            {
                 return Err(ContextError::Corrupt);
             }
         } else {
-            fs::write(path, bytes).map_err(|error| ContextError::Storage(error.to_string()))?;
+            fs::write(path, bytes).map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })?;
         }
         Ok(())
     }

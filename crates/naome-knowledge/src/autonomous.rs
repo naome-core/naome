@@ -139,7 +139,7 @@ pub(crate) struct Autonomous {
     admissions: VecDeque<Admission>,
     solving: BTreeMap<Identity, Solving>,
     publications: VecDeque<Publication>,
-    error: Option<String>,
+    error: Option<crate::Error>,
     pending_receipt: Option<jobs::Receipt>,
     frontier: Option<crate::frontier::Frontier>,
     evidence_publications: VecDeque<EvidencePublication>,
@@ -212,8 +212,8 @@ impl Autonomous {
                 && Instant::now() >= publication.retry
         })
     }
-    pub(crate) fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+    pub(crate) fn error(&self) -> Option<&crate::Error> {
+        self.error.as_ref()
     }
     /// A canonical question fixed by the stopped node's start configuration.
     pub(crate) fn formal_goal(&mut self, source: Option<ResearchQuestion>) {
@@ -228,8 +228,8 @@ impl Autonomous {
                 self.pending_receipt = Some(receipt);
                 false
             }
-            Err(error) => {
-                self.error = Some(error);
+            Err(_) => {
+                self.error = Some(crate::RuntimeFailure::AutonomousReceipt.into());
                 false
             }
         }
@@ -260,7 +260,7 @@ impl Autonomous {
                 Ok((root, true)) => return self.accepted_learning(record.id, root),
                 Ok(_) => {}
                 Err(error) => {
-                    self.error = Some(error.to_string());
+                    self.error = Some(error);
                     return false;
                 }
             }
@@ -362,7 +362,7 @@ impl Autonomous {
                     return vec![];
                 }
                 Err(error) => {
-                    self.error = Some(error.to_string());
+                    self.error = Some(error);
                     return vec![];
                 }
             }
@@ -394,10 +394,10 @@ impl Autonomous {
                             }
                         }
                     }
-                    Ok(Err(error)) => self.error = Some(error),
+                    Ok(Err(_)) => self.error = Some(crate::RuntimeFailure::ResearchService.into()),
                     Err(oneshot::error::TryRecvError::Empty) => self.recovery_reply = Some(reply),
                     Err(oneshot::error::TryRecvError::Closed) => {
-                        self.error = Some("research archive recovery stopped".into())
+                        self.error = Some(crate::RuntimeFailure::AutonomousArchive.into())
                     }
                 }
             } else if let Some(after) = self.archive_after {
@@ -576,7 +576,7 @@ impl Autonomous {
                     }
                 },
                 Err(oneshot::error::TryRecvError::Empty) => self.finding = Some(finding),
-                Err(_) => self.error = Some("finding job owner stopped".into()),
+                Err(_) => self.error = Some(crate::RuntimeFailure::AutonomousFinding.into()),
             }
         }
 
@@ -622,7 +622,7 @@ impl Autonomous {
                 if let Err(error) = frontier.attempted(&solving.question, graph, observed, outcome)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         solving.completion = completion.ok();
                         self.solving.insert(id, solving);
@@ -632,15 +632,20 @@ impl Autonomous {
             }
             if let Ok(completion) = &completion
                 && completion.id == 0
-                && completion
-                    .result
-                    .as_ref()
-                    .err()
-                    .is_some_and(|e| e.contains("required") && e.contains("prerequisites"))
+                && completion.result.as_ref().err().is_some_and(|error| {
+                    matches!(
+                        error,
+                        jobs::CompletionFailure::Admission(
+                            crate::outcome::AdmissionFailure::PrerequisitesNotRetained
+                                | crate::outcome::AdmissionFailure::InFlightPrerequisites
+                                | crate::outcome::AdmissionFailure::ArchivedPrerequisites
+                        )
+                    )
+                })
                 && let Some(frontier) = &mut self.frontier
             {
                 if let Err(error) = frontier.exhaust_helpers(&solving.question) {
-                    self.error = Some(error.to_string());
+                    self.error = Some(error);
                     return accepted;
                 }
                 emit(
@@ -730,7 +735,7 @@ impl Autonomous {
                                         frontier.rejected(&solving.question, completion.id)
                                 {
                                     if error.fatal() {
-                                        self.error = Some(error.to_string());
+                                        self.error = Some(error);
                                     } else {
                                         solving.completion = Some(completion);
                                         self.solving.insert(id, solving);
@@ -785,7 +790,7 @@ impl Autonomous {
                 Err(oneshot::error::TryRecvError::Empty) => {
                     self.solving.insert(id, solving);
                 }
-                Err(_) => self.error = Some("solving job owner stopped".into()),
+                Err(_) => self.error = Some(crate::RuntimeFailure::AutonomousSolving.into()),
             }
         }
 
@@ -866,7 +871,7 @@ impl Autonomous {
                     && let Err(error) = frontier.prepared(&pending.question, pending.job, *root)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         self.publications.push_back(pending);
                     }
@@ -885,7 +890,7 @@ impl Autonomous {
                     && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         self.publications.push_back(pending);
                     }
@@ -988,7 +993,7 @@ impl Autonomous {
                                     )
                                 {
                                     if error.fatal() {
-                                        self.error = Some(error.to_string());
+                                        self.error = Some(error);
                                         return accepted;
                                     }
                                     self.evidence_publications.push_back(EvidencePublication {
@@ -1015,9 +1020,8 @@ impl Autonomous {
                             Err(error) => {
                                 pending.batch = None;
                                 emit(json!({"event":"proof_candidate_deferred","error":error}));
-                                if let Some(error) = questions
-                                    .storage_error()
-                                    .or_else(|| graph.storage_error().map(String::from))
+                                if let Some(error) =
+                                    questions.storage_error().or_else(|| graph.storage_error())
                                 {
                                     self.error = Some(error);
                                     return accepted;
@@ -1034,7 +1038,7 @@ impl Autonomous {
                         pending.retry = now;
                     }
                     Err(error) => {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                         return accepted;
                     }
                 }
@@ -1048,7 +1052,7 @@ impl Autonomous {
                     && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         self.publications.push_back(pending);
                     }
@@ -1114,7 +1118,7 @@ impl Autonomous {
                 Ok(work) => work,
                 Err(error) => {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     }
                     return accepted;
                 }
@@ -1185,7 +1189,7 @@ impl Autonomous {
                     Ok(index) => index,
                     Err(error) => {
                         if error.fatal() {
-                            self.error = Some(error.to_string());
+                            self.error = Some(error);
                         }
                         return accepted;
                     }
@@ -1215,7 +1219,7 @@ impl Autonomous {
                         Ok(selected) => selected,
                         Err(error) => {
                             if error.fatal() {
-                                self.error = Some(error.to_string());
+                                self.error = Some(error);
                             }
                             self.retain(question);
                             return accepted;
@@ -1278,7 +1282,7 @@ impl Autonomous {
             } else {
                 let cursor = self.cursor;
                 let Some(next) = cursor.checked_add(1) else {
-                    self.error = Some("finding cursor exhausted".into());
+                    self.error = Some(crate::RuntimeFailure::AutonomousCursor.into());
                     return accepted;
                 };
                 self.cursor = next;
@@ -1303,7 +1307,7 @@ impl Autonomous {
                         Ok(()) => {}
                         Err(error) if !error.fatal() => return accepted,
                         Err(error) => {
-                            self.error = Some(error.to_string());
+                            self.error = Some(error);
                             return accepted;
                         }
                     }
@@ -1314,7 +1318,7 @@ impl Autonomous {
                             Ok(false) => vec![goal.clone()],
                             Ok(true) => frontier.goal_candidates(cursor, goal),
                             Err(error) => {
-                                self.error = Some(error.to_string());
+                                self.error = Some(error);
                                 return accepted;
                             }
                         }
@@ -1340,7 +1344,7 @@ impl Autonomous {
                         Ok(None) => return accepted,
                         Err(error) => {
                             if error.fatal() {
-                                self.error = Some(error.to_string());
+                                self.error = Some(error);
                             }
                             return accepted;
                         }

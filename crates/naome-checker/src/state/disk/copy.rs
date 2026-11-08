@@ -145,7 +145,9 @@ impl DiskArtifactCopy {
     pub fn finish(self, current: &DiskArtifactState) -> Result<DiskArtifactState, ContextError> {
         let result = (|| {
             if !self.complete() {
-                return Err(ContextError::Storage("checked copy is incomplete".into()));
+                return Err(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::IncompleteCopy,
+                ));
             }
             for (source, current) in maps(&self.copy.plan().source)
                 .into_iter()

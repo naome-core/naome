@@ -145,6 +145,7 @@ pub enum Error {
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
     CorruptStorage(String),
+    CheckedContext(naome_checker::ContextError),
     UncertainDurability(DurabilityFailure),
     LearningEvidence(EvidenceFailure),
     LearningGraph(crate::LearningGraphFailure),
@@ -184,6 +185,7 @@ impl Error {
             Self::CertificateFormat(_) => OperationCode::CertificateFormat,
             Self::Stored(_) => OperationCode::InvalidStoredRecord,
             Self::CorruptStorage(_) => OperationCode::CorruptStorage,
+            Self::CheckedContext(_) => OperationCode::CheckedContext,
             Self::UncertainDurability(failure) => return failure.code.into(),
             Self::LearningEvidence(failure) => return failure.code().into(),
             Self::LearningGraph(failure) => return (*failure).into(),
@@ -234,6 +236,7 @@ impl Error {
                 self,
                 Self::Stored(_)
                     | Self::CorruptStorage(_)
+                    | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
                     | Self::Startup { .. }
@@ -297,6 +300,7 @@ impl fmt::Display for Error {
             }
             Self::Stored(error) => write!(f, "storage halted: {error}"),
             Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
+            Self::CheckedContext(error) => write!(f, "storage halted: {error}"),
             Self::LearningEvidence(error) => error.fmt(f),
             Self::LearningGraph(error) => error.fmt(f),
             Self::ProgramCodec(error) => error.fmt(f),
@@ -411,7 +415,7 @@ impl From<naome_checker::ContextError> for Error {
     fn from(error: naome_checker::ContextError) -> Self {
         match error {
             naome_checker::ContextError::Limit => Self::ExecutionLimit,
-            other => Self::CorruptStorage(other.to_string()),
+            other => Self::CheckedContext(other),
         }
     }
 }
@@ -466,6 +470,18 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
+        if let Self::CheckedContext(context) = cause {
+            match context {
+                naome_checker::ContextError::Storage(reason) => {
+                    value.serialize_entry("reason", &reason.code())?;
+                    if let Some(code) = reason.native_code() {
+                        value.serialize_entry("native_code", &code)?;
+                    }
+                }
+                naome_checker::ContextError::Corrupt => value.serialize_entry("reason", &13u8)?,
+                naome_checker::ContextError::Limit => value.serialize_entry("reason", &14u8)?,
+            }
+        }
         if let Self::ProgramCodec(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;
         }

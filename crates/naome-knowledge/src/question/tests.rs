@@ -1377,7 +1377,15 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
             .is_err()
     );
     assert!(graph.contains(root).unwrap());
-    assert!(local.storage_error().is_some());
+    assert!(matches!(
+        local.storage_error(),
+        Some(crate::Error::UncertainDurability(
+            crate::DurabilityFailure {
+                code: crate::DurabilityCode::QuestionPublication,
+                ..
+            }
+        ))
+    ));
     assert_eq!(local.registry.len(), 0);
     assert_eq!(
         local

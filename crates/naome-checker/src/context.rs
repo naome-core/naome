@@ -42,7 +42,7 @@ impl Default for ReadCacheLimits {
 /// A cold context access failed; failure never means authenticated absence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextError {
-    Storage(String),
+    Storage(naome_proof::ContextStorageFailure),
     Corrupt,
     Limit,
 }
@@ -50,7 +50,7 @@ pub enum ContextError {
 impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Storage(message) => write!(f, "checked context storage: {message}"),
+            Self::Storage(reason) => write!(f, "checked context storage: {reason:?}"),
             Self::Corrupt => f.write_str("checked context integrity failure"),
             Self::Limit => f.write_str("checked context access limit"),
         }

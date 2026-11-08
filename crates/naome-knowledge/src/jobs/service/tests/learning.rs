@@ -1223,14 +1223,12 @@ fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_accoun
             reply,
         )
         .unwrap();
-    assert!(
-        receive
-            .try_recv()
-            .unwrap()
-            .result
-            .unwrap_err()
-            .contains("prerequisites")
-    );
+    assert!(matches!(
+        receive.try_recv().unwrap().result,
+        Err(CompletionFailure::Admission(
+            AdmissionFailure::PrerequisitesNotRetained
+        ))
+    ));
     assert_eq!(owner.journal.next_id, next);
     assert!(!owner.journal.accounts.contains_key(&input.account_key()));
     owner
@@ -1384,14 +1382,12 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
             reply,
         )
         .unwrap();
-    assert!(
-        receive
-            .try_recv()
-            .unwrap()
-            .result
-            .unwrap_err()
-            .contains("snapshot predates")
-    );
+    assert!(matches!(
+        receive.try_recv().unwrap().result,
+        Err(CompletionFailure::Admission(
+            AdmissionFailure::InFlightPrerequisites
+        ))
+    ));
     assert_eq!(owner.journal.next_id, next);
     assert_eq!(
         serde_json::to_vec(owner.journal.records.get(&id).unwrap()).unwrap(),

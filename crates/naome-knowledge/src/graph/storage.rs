@@ -223,14 +223,16 @@ impl CheckedStorage {
     /// remove our exact route; the shared failure still halts the live owner.
     pub(super) fn abort_copy(&self, epoch: u64, target: &Arc<CheckedStorage>) {
         let mut route = self.write_gate.lock().unwrap_or_else(|error| {
-            self.record_failure(&ContextError::Storage("checked write gate poisoned".into()));
+            self.record_failure(&ContextError::Storage(
+                naome_proof::ContextStorageFailure::WriteGate,
+            ));
             error.into_inner()
         });
         if route.matches(epoch, target) {
             route.mirror = None;
         } else if route.mirror.is_some() {
             self.record_failure(&ContextError::Storage(
-                "checked copy abort found another route".into(),
+                naome_proof::ContextStorageFailure::CopyRoute,
             ));
         }
     }
@@ -520,10 +522,9 @@ impl CheckedStorage {
     }
     fn read_inner(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
         {
-            let mut cache = self
-                .cache
-                .lock()
-                .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?;
+            let mut cache = self.cache.lock().map_err(|_| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
+            })?;
             if let Some(entry) = cache.entries.get(&address) {
                 if entry.bytes.len() > maximum {
                     return Err(ContextError::Limit);
@@ -538,7 +539,7 @@ impl CheckedStorage {
         let bytes = self.read_uncached(address, maximum)?;
         self.cache
             .lock()
-            .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock))?
             .insert(address, bytes.clone(), self.generation);
         Ok(bytes)
     }
@@ -546,8 +547,10 @@ impl CheckedStorage {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
-        let connection = connection_guard.open().map_err(ContextError::Storage)?;
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?;
+        let connection = connection_guard.open().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         // Read only a fixed header before fetching or allocating decoded bytes.
         let encoded_bound = codec::maximum_encoded(maximum)?;
         let record: Option<(i64, Option<Vec<u8>>)> = connection
@@ -585,10 +588,9 @@ impl CheckedStorage {
     }
     fn write_inner(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
         {
-            let mut cache = self
-                .cache
-                .lock()
-                .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?;
+            let mut cache = self.cache.lock().map_err(|_| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
+            })?;
             if self.buffer_write(&mut cache, address, bytes)? {
                 return Ok(());
             }
@@ -606,13 +608,15 @@ impl CheckedStorage {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
-        let connection = connection_guard.open().map_err(ContextError::Storage)?;
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?;
+        let connection = connection_guard.open().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         persist_record(connection, self.generation, address, bytes)?;
         drop(connection_guard);
         self.cache
             .lock()
-            .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock))?
             .insert(address, bytes.to_vec(), self.generation);
         Ok(())
     }
@@ -621,7 +625,7 @@ impl CheckedStorage {
             self.halt
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .get_or_insert_with(|| crate::Error::CorruptStorage(error.to_string()));
+                .get_or_insert_with(|| crate::Error::CheckedContext(error.clone()));
         }
         result
     }
@@ -742,9 +746,11 @@ impl ContextStorage for StartupMarker {
             self.storage
                 .connection
                 .lock()
-                .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?
+                .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?
                 .open()
-                .map_err(ContextError::Storage)?
+                .map_err(|_| {
+                    ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+                })?
                 .prepare_cached(
                     "INSERT INTO startup_keep(address) VALUES(?1) ON CONFLICT(address) DO NOTHING",
                 )
@@ -752,7 +758,8 @@ impl ContextStorage for StartupMarker {
                 .execute([address.as_slice()])
                 .map_err(context_error)?;
             #[cfg(test)]
-            startup_prune_test_fault(StartupPruneStage::Mark).map_err(ContextError::Storage)?;
+            startup_prune_test_fault(StartupPruneStage::Mark)
+                .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::Injected))?;
             Ok(())
         })())
     }
@@ -861,19 +868,29 @@ impl ContextStorage for CheckedStorage {
         self.halt
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .get_or_insert_with(|| crate::Error::CorruptStorage(error.to_string()));
+            .get_or_insert_with(|| crate::Error::CheckedContext(error.clone()));
     }
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
-        self.require_live().map_err(ContextError::Storage)?;
+        self.require_live().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         self.record_error(self.read_inner(address, maximum))
     }
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
-        self.require_live().map_err(ContextError::Storage)?;
+        self.require_live().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         let route = match self.write_gate() {
             Ok(route) => route,
-            Err(error) => return self.record_error(Err(ContextError::Storage(error))),
+            Err(_) => {
+                return self.record_error(Err(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::WriteGate,
+                )));
+            }
         };
-        self.require_live().map_err(ContextError::Storage)?;
+        self.require_live().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         #[cfg(test)]
         WRITE_TEST_PAUSE.with(|slot| {
             let pause = slot.borrow_mut().take();
@@ -932,7 +949,10 @@ fn require_regular(path: &Path) -> Result<(), String> {
     Ok(())
 }
 fn context_error(error: rusqlite::Error) -> ContextError {
-    ContextError::Storage(error.to_string())
+    ContextError::Storage(naome_proof::ContextStorageFailure::Sqlite(match error {
+        rusqlite::Error::SqliteFailure(failure, _) => Some(failure.extended_code),
+        _ => None,
+    }))
 }
 
 #[cfg(test)]

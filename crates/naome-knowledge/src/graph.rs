@@ -154,7 +154,11 @@ impl Graph {
 
     fn cold<T, E: Into<crate::Error>>(&self, result: Result<T, E>) -> Result<T, crate::Error> {
         result.map_err(|error| {
-            let error = error.into().storage();
+            // A storage adapter may already have recorded the typed root cause
+            // before an outer layer reported the failed operation.
+            let error = self
+                .storage_error()
+                .unwrap_or_else(|| error.into().storage());
             self.program_failure(&error);
             error
         })

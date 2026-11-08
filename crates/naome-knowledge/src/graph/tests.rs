@@ -921,10 +921,22 @@ fn startup_prune_failures_discard_the_generation_and_rebuild_from_canonical_hist
         let error = storage::with_startup_prune_test(Some(stage), || Graph::open(&directory))
             .err()
             .expect("no live graph may escape a partial prune");
-        assert!(
-            error.contains(&format!("test-controlled startup prune {stage:?} failure")),
-            "{error}"
-        );
+        if stage == storage::StartupPruneStage::Mark {
+            assert!(
+                matches!(
+                    error,
+                    crate::Error::CheckedContext(naome_checker::ContextError::Storage(
+                        naome_proof::ContextStorageFailure::Injected
+                    ))
+                ),
+                "{error}"
+            );
+        } else {
+            assert!(
+                error.contains(&format!("test-controlled startup prune {stage:?} failure")),
+                "{error}"
+            );
+        }
         assert!(
             std::fs::read_dir(&directory).unwrap().all(|entry| {
                 !entry

@@ -1,5 +1,5 @@
 use super::*;
-use crate::outcome::WorkerFailure;
+use crate::outcome::{AdmissionFailure, WorkerFailure};
 use journal::{Account, Disk, Journal};
 use libp2p::futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::{
@@ -1043,11 +1043,7 @@ impl Owner {
                     .as_ref()
                     .is_none_or(|state| prerequisites.require(state, &required).is_err())
             {
-                reject(
-                    reply,
-                    binding,
-                    "required checked prerequisites not retained",
-                );
+                reject(reply, binding, AdmissionFailure::PrerequisitesNotRetained);
                 return Ok(());
             }
             if self.journal.records.values().any(|r| {
@@ -1059,11 +1055,7 @@ impl Owner {
                             || required.iter().any(|id| !n.required.contains(id))
                     })
             }) {
-                reject(
-                    reply,
-                    binding,
-                    "in-flight snapshot predates required prerequisites",
-                );
+                reject(reply, binding, AdmissionFailure::InFlightPrerequisites);
                 return Ok(());
             }
         }
@@ -1089,7 +1081,7 @@ impl Owner {
                 reply,
                 binding,
                 State::InDoubt,
-                "research in-flight effects require reconciliation",
+                AdmissionFailure::InFlightUncertain,
             );
             return Ok(());
         }
@@ -1108,7 +1100,7 @@ impl Owner {
             let waiters = self.waiters.entry(record.id).or_default();
             waiters.retain(|reply| !reply.is_closed());
             if waiters.len() >= crate::resources::active_limits().waiters_per_job {
-                reject(reply, binding, "research duplicate waiter capacity");
+                reject(reply, binding, AdmissionFailure::DuplicateWaiterCapacity);
             } else {
                 waiters.push(reply);
                 self.clocks.entry(record.id).or_insert_with(Instant::now);
@@ -1126,11 +1118,7 @@ impl Owner {
                         || required.iter().any(|id| !n.required.contains(id))
                 })
             {
-                reject(
-                    reply,
-                    binding,
-                    "archived snapshot predates required prerequisites",
-                );
+                reject(reply, binding, AdmissionFailure::ArchivedPrerequisites);
                 return Ok(());
             }
             if record.state.terminal() || record.state == State::InDoubt {
@@ -1140,11 +1128,11 @@ impl Owner {
             }
             return Err("nonterminal research job is absent from its resident working set".into());
         }
-        if let Err(error) = crate::resources::require_disk_space(
+        if let Err(_error) = crate::resources::require_disk_space(
             self.disk.directory(),
             u64::try_from(output_reservation(&input)).map_err(|_| "job disk reservation width")?,
         ) {
-            reject(reply, binding, &error.to_string());
+            reject(reply, binding, AdmissionFailure::DiskReservation);
             return Ok(());
         }
         let native = if self.settings.native_proof_learning
@@ -1178,7 +1166,7 @@ impl Owner {
             .checked_add(input_bytes + 4096)
             .ok_or("research byte reservation overflow")?;
         if !self.compact_bytes(reservation)? {
-            reject(reply, binding, "research result byte reservation capacity");
+            reject(reply, binding, AdmissionFailure::ResultReservation);
             return Ok(());
         }
         let queued = self
@@ -1194,7 +1182,7 @@ impl Owner {
             || queued
                 >= crate::resources::active_limits().queued_jobs_per_role + lanes()[input.lane()]
         {
-            reject(reply, binding, "research role queue capacity");
+            reject(reply, binding, AdmissionFailure::QueueCapacity);
             return Ok(());
         }
         let now = wall_ms()?;
@@ -1209,7 +1197,7 @@ impl Owner {
         let mut reserved_units = 0;
         if let Input::Find { cursor, .. } = input {
             if cursor < self.journal.next_cursor {
-                reject(reply, binding, "research finding cursor already consumed");
+                reject(reply, binding, AdmissionFailure::CursorConsumed);
                 return Ok(());
             }
             self.journal.next_cursor = cursor
@@ -1221,7 +1209,7 @@ impl Owner {
                     reply,
                     binding,
                     State::InDoubt,
-                    "research original effects require reconciliation",
+                    AdmissionFailure::AccountUncertain,
                 );
                 return Ok(());
             }
@@ -1234,7 +1222,7 @@ impl Owner {
                     reply,
                     binding,
                     State::Expired,
-                    "research original obligation allowance exhausted",
+                    AdmissionFailure::AllowanceExpired,
                 );
                 return Ok(());
             }
@@ -1714,11 +1702,16 @@ impl Owner {
     }
 }
 
-fn reject(reply: oneshot::Sender<Completion>, binding: Binding, error: &str) {
+fn reject(reply: oneshot::Sender<Completion>, binding: Binding, error: AdmissionFailure) {
     reject_state(reply, binding, State::Failed, error);
 }
 
-fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: State, error: &str) {
+fn reject_state(
+    reply: oneshot::Sender<Completion>,
+    binding: Binding,
+    state: State,
+    error: AdmissionFailure,
+) {
     let _ = reply.send(Completion {
         experience: None,
         model_checkpoint: None,
@@ -1727,7 +1720,7 @@ fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: Sta
         spent_ms: 0,
         reserved_units: 0,
         state,
-        result: Err(error.into()),
+        result: Err(CompletionFailure::Admission(error)),
     });
 }
 
@@ -1787,10 +1780,12 @@ fn completion(record: &Record) -> Result<Completion, String> {
         spent_ms: record.spent_ms,
         reserved_units: record.reserved_units,
         state: record.state,
-        result: record
-            .result
-            .clone()
-            .ok_or_else(|| format!("research job {:?}", record.state)),
+        result: record.result.clone().ok_or_else(|| {
+            record.failure.map_or(
+                CompletionFailure::NoResult(record.state),
+                CompletionFailure::Worker,
+            )
+        }),
     })
 }
 

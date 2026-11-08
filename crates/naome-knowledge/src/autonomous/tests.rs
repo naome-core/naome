@@ -530,7 +530,12 @@ fn deferred_completion_receipt_preserves_the_unsolved_question_and_closed_servic
     assert!(autonomous.pending_receipt.is_none());
     drop(owner);
     assert!(!autonomous.acknowledge(999));
-    assert!(autonomous.error().unwrap().contains("stopped"));
+    assert!(matches!(
+        autonomous.error(),
+        Some(crate::Error::Runtime(
+            crate::RuntimeFailure::AutonomousReceipt
+        ))
+    ));
     assert!(
         autonomous.pending_receipt.is_none(),
         "a stopped owner is not an endless capacity retry"

@@ -121,6 +121,7 @@ codes! {
         QuestionInput = 16,
         ProgramInput = 17,
         ProgramFormula = 18,
+        CheckedContext = 19,
     }
 
     pub enum InputFault in 7 {
@@ -245,6 +246,16 @@ codes! {
         Stop = 21,
         Status = 22,
         Listener = 23,
+        QuestionBacklog = 24,
+        QuestionAcknowledgement = 25,
+        QuestionSelection = 26,
+        QuestionRetention = 27,
+        QuestionDelivery = 28,
+        AutonomousReceipt = 29,
+        AutonomousArchive = 30,
+        AutonomousFinding = 31,
+        AutonomousSolving = 32,
+        AutonomousCursor = 33,
     }
 
     pub enum StartupFailure in 13 {
@@ -321,6 +332,19 @@ codes! {
         Unknown = 1,
         Detached = 2,
         Inherited = 3,
+    }
+    pub(crate) enum AdmissionFailure in 20 {
+        PrerequisitesNotRetained = 1,
+        InFlightPrerequisites = 2,
+        ArchivedPrerequisites = 3,
+        DuplicateWaiterCapacity = 4,
+        DiskReservation = 5,
+        ResultReservation = 6,
+        QueueCapacity = 7,
+        CursorConsumed = 8,
+        InFlightUncertain = 9,
+        AccountUncertain = 10,
+        AllowanceExpired = 11,
     }
 }
 

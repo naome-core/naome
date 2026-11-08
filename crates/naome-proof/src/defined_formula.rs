@@ -432,17 +432,61 @@ impl<'a> DefinitionResolution<'a> {
     }
 }
 
+/// A bounded storage failure, independent of platform error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextStorageFailure {
+    Sqlite(Option<i32>),
+    System(Option<i32>),
+    CacheLock,
+    IndexLock,
+    WriteGate,
+    OwnerUnavailable,
+    CopyRoute,
+    StartupGeneration,
+    StartupOwner,
+    IncompleteCopy,
+    ProgramRead,
+    Injected,
+}
+
+impl ContextStorageFailure {
+    /// Stable reason within the checked-context storage domain.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Sqlite(_) => 1,
+            Self::System(_) => 2,
+            Self::CacheLock => 3,
+            Self::IndexLock => 4,
+            Self::WriteGate => 5,
+            Self::OwnerUnavailable => 6,
+            Self::CopyRoute => 7,
+            Self::StartupGeneration => 8,
+            Self::StartupOwner => 9,
+            Self::IncompleteCopy => 10,
+            Self::ProgramRead => 11,
+            Self::Injected => 12,
+        }
+    }
+    /// Original operating-system or SQLite code when the adapter supplied one.
+    pub fn native_code(self) -> Option<i32> {
+        match self {
+            Self::Sqlite(code) | Self::System(code) => code,
+            _ => None,
+        }
+    }
+}
+
 /// Failure to read an already selected definition. This is not absence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefinitionAccessError {
-    Storage(String),
+    Storage(ContextStorageFailure),
     Corrupt,
     Limit,
 }
 impl fmt::Display for DefinitionAccessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Storage(message) => write!(f, "definition storage: {message}"),
+            Self::Storage(reason) => write!(f, "definition storage: {reason:?}"),
             Self::Corrupt => f.write_str("definition integrity failure"),
             Self::Limit => f.write_str("definition access limit"),
         }

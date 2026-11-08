@@ -485,6 +485,13 @@ pub(crate) struct Record {
     pub failure: Option<crate::outcome::WorkerFailure>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CompletionFailure {
+    Admission(crate::outcome::AdmissionFailure),
+    Worker(crate::outcome::WorkerFailure),
+    NoResult(State),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Completion {
     pub experience: Option<crate::learning::experience::ExperienceSummary>,
@@ -495,7 +502,7 @@ pub(crate) struct Completion {
     pub spent_ms: u64,
     pub reserved_units: u32,
     pub state: State,
-    pub result: Result<Output, String>,
+    pub result: Result<Output, CompletionFailure>,
 }
 
 pub(crate) struct Ticket {

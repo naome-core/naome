@@ -636,8 +636,9 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
     assert!(receipts.iter_mut().any(|reply| {
         reply.try_recv().is_ok_and(|c| {
             c.id == 0
-                && c.result
-                    .is_err_and(|error| error.contains("result byte reservation"))
+                && c.result.is_err_and(|error| {
+                    error == CompletionFailure::Admission(AdmissionFailure::ResultReservation)
+                })
         })
     }));
     let (reply, _receipt) = oneshot::channel();

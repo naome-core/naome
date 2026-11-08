@@ -74,7 +74,7 @@ impl Summary {
 pub(super) struct Outcome {
     pub solved: bool,
     pub terminal: super::experience::TerminalEvidence,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "developer-tools"))]
     pub diagnostic: crate::outcome::GenerationOutcome,
     pub micros: u64,
     #[cfg(all(test, feature = "developer-tools"))]
@@ -112,7 +112,7 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
             terminal: generation.terminal,
             #[cfg(all(test, feature = "developer-tools"))]
             proof_id: generation.solution.map(|s| s.proof_id),
-            #[cfg(test)]
+            #[cfg(all(test, feature = "developer-tools"))]
             diagnostic: generation.diagnostic,
             micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         })
