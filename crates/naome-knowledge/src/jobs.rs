@@ -592,7 +592,7 @@ enum Command {
     Program {
         id: u64,
         unit: u32,
-        reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, String>>,
+        reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, crate::Error>>,
     },
     Submit(
         Input,
@@ -691,8 +691,10 @@ impl Client {
         &self,
         id: u64,
         unit: u32,
-    ) -> Result<oneshot::Receiver<Result<Vec<naome_proof::program::Command>, String>>, crate::Error>
-    {
+    ) -> Result<
+        oneshot::Receiver<Result<Vec<naome_proof::program::Command>, crate::Error>>,
+        crate::Error,
+    > {
         let (reply, receive) = oneshot::channel();
         self.sender
             .try_send(Command::Program { id, unit, reply })

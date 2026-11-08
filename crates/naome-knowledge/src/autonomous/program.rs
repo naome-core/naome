@@ -17,7 +17,7 @@ pub(super) struct Generated {
     units: u32,
     unit: u32,
     prefix: Prefix,
-    pending: Option<oneshot::Receiver<Result<Vec<Command>, String>>>,
+    pending: Option<oneshot::Receiver<Result<Vec<Command>, crate::Error>>>,
     work: Option<Work>,
     checked: Option<PreparedProgram>,
     budget: Observer,
@@ -160,7 +160,7 @@ impl Generated {
                                 .ok_or("provider unit address exhausted")?;
                         }
                         Err(oneshot::error::TryRecvError::Empty) => self.pending = Some(pending),
-                        Err(_) => return Err("provider candidate owner stopped".into()),
+                        Err(_) => return Err(crate::ResearchFailure::ServiceStopped.into()),
                     }
                 } else {
                     self.pending = Some(client.program(self.job, self.unit)?);

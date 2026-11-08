@@ -44,7 +44,7 @@ impl Manual {
                 | Command::DefinitionVerified { .. }
                 | Command::TheoremVerified { .. } => {}
                 Command::Program { reply, .. } => {
-                    let _ = reply.send(Err("manual provider has no retained program".into()));
+                    let _ = reply.send(Err(crate::ResearchFailure::ProgramGroupMissing.into()));
                 }
                 Command::Submit(input, binding, _required, _prerequisites, reply) => {
                     let id = self.next;

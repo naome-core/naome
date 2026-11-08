@@ -745,7 +745,7 @@ impl Disk {
         &self,
         id: u64,
         unit: u32,
-    ) -> Result<Vec<naome_proof::program::Command>, String> {
+    ) -> Result<Vec<naome_proof::program::Command>, crate::Error> {
         let records = self
             .checkpoint
             .get_bytes(
@@ -753,7 +753,7 @@ impl Disk {
                 &format!("{id}:{unit}"),
                 naome_proof::program::CHUNK_BYTES,
             )?
-            .ok_or("provider program group missing")?;
+            .ok_or(crate::ResearchFailure::ProgramGroupMissing)?;
         naome_proof::program::decode_records(&records).map_err(Into::into)
     }
     pub(super) fn save_program_group(

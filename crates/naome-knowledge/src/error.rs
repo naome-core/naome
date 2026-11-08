@@ -638,6 +638,7 @@ impl fmt::Display for Error {
             }
             Self::Worker(failure) => write!(f, "worker failure {}", u32::from(*failure)),
             Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::ProgramGroupMissing => "provider program group missing",
                 crate::ResearchFailure::CommandQueueFull => "research command queue is full",
                 crate::ResearchFailure::ServiceStopped => "research service stopped",
                 crate::ResearchFailure::PeerCursorBeyondGraph => {
