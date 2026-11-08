@@ -216,6 +216,16 @@ fn row_read_limit_and_digest_failures_remain_distinct_and_fail_closed() {
         vec![Update::put("record", "one", &"retained payload").unwrap()],
     )
     .unwrap();
+    let error = checkpoint.page("record", None, 0, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointPageBudget)
+    );
+    let error = checkpoint.page("record", None, 1, 64).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointPageMemoryLimit)
+    );
     let error = checkpoint.page("record", None, 1, 2).unwrap_err();
     assert_eq!(
         error.code(),

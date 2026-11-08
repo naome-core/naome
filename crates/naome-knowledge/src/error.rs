@@ -456,6 +456,13 @@ impl fmt::Display for Error {
                 InputFault::CheckpointRecordKey => "checkpoint record key or kind is invalid",
                 InputFault::CheckpointRecordReadLimit => "checkpoint record exceeds its read limit",
                 InputFault::CheckpointRecordDigest => "checkpoint record digest differs",
+                InputFault::CheckpointPageBudget => "checkpoint page budget must be positive",
+                InputFault::CheckpointPageByteWidth => "checkpoint page byte width",
+                InputFault::CheckpointPageRecordWidth => "checkpoint page record width",
+                InputFault::CheckpointPageMemoryOverflow => "checkpoint page memory overflow",
+                InputFault::CheckpointPageMemoryLimit => {
+                    "checkpoint record exceeds page memory budget"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

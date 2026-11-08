@@ -153,6 +153,11 @@ codes! {
         CheckpointRecordKey = 21,
         CheckpointRecordReadLimit = 22,
         CheckpointRecordDigest = 23,
+        CheckpointPageBudget = 24,
+        CheckpointPageByteWidth = 25,
+        CheckpointPageRecordWidth = 26,
+        CheckpointPageMemoryOverflow = 27,
+        CheckpointPageMemoryLimit = 28,
     }
 
     pub enum InputLimit in 8 {

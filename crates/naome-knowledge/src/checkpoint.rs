@@ -309,15 +309,16 @@ impl Checkpoint {
     ) -> Result<Vec<(String, Vec<u8>)>, crate::Error> {
         self.ensure_generation()?;
         if records == 0 || bytes == 0 {
-            return Err("checkpoint page budget must be positive".into());
+            return Err(crate::InputFault::CheckpointPageBudget.into());
         }
         let mut statement=self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind=?1 AND key>?2 ORDER BY key LIMIT ?4").map_err(sql)?;
         let mut rows = statement
             .query(params![
                 kind,
                 after.unwrap_or(""),
-                i64::try_from(bytes.min(MAX_ROW) + 1).map_err(|_| "checkpoint byte width")?,
-                i64::try_from(records).map_err(|_| "checkpoint page width")?
+                i64::try_from(bytes.min(MAX_ROW) + 1)
+                    .map_err(|_| crate::InputFault::CheckpointPageByteWidth)?,
+                i64::try_from(records).map_err(|_| crate::InputFault::CheckpointPageRecordWidth)?
             ])
             .map_err(sql)?;
         let mut page = Vec::new();
@@ -338,10 +339,10 @@ impl Checkpoint {
                 .len()
                 .checked_add(payload.len())
                 .and_then(|n| n.checked_add(128))
-                .ok_or("checkpoint page memory overflow")?;
+                .ok_or(crate::InputFault::CheckpointPageMemoryOverflow)?;
             if needed > bytes.saturating_sub(retained) {
                 if page.is_empty() {
-                    return Err("checkpoint record exceeds page memory budget".into());
+                    return Err(crate::InputFault::CheckpointPageMemoryLimit.into());
                 }
                 break;
             }
