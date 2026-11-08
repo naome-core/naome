@@ -127,3 +127,17 @@ fn checked_context_storage_cause_retains_its_native_code() {
     assert_eq!(value["retryable"], false);
     assert!(value.get("message").is_none());
 }
+
+#[test]
+fn formula_codec_failures_preserve_numeric_reason_and_context() {
+    let error = Error::from(naome_foundation::FormulaCodecError::UnknownFormulaTag(42));
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::Formula));
+    assert_eq!(value["formula"]["code"], 0x0028_0005_u32);
+    assert_eq!(value["formula"]["tag"], 42);
+    assert!(value["formula"].get("kind").is_none());
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["cause_code"], u32::from(OperationCode::Formula));
+    assert_eq!(stored["formula"], value["formula"]);
+    assert_eq!(stored["fatal"], true);
+}

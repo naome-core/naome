@@ -62,7 +62,8 @@ pub use formula::{
     Variable, VariableNamespace,
 };
 pub use reasons::{
-    ClaimField, ClaimValue, DIAGNOSTIC_FAILURE_CODES, ExpansionFailure, Failure, FormulaFailure,
+    ClaimField, ClaimValue, DIAGNOSTIC_FAILURE_CODES, EXPANSION_FAILURE_CODES, ExpansionFailure,
+    FORMULA_FAILURE_CODES, Failure, FormulaFailure,
 };
 
 /// The mathematical checker identity; presentation changes do not change it.

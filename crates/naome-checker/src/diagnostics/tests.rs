@@ -577,3 +577,22 @@ fn diagnostic_failure_codes_keep_typed_witnesses() {
     assert_eq!(context["code"], 0x0025_0010u32);
     assert_eq!(context.as_object().unwrap().len(), 1);
 }
+
+#[test]
+fn nested_formula_and_expansion_failures_have_numeric_codes_and_witnesses() {
+    let failure = Failure::Expansion {
+        reason: ExpansionFailure::Formula {
+            reason: FormulaFailure::DanglingBoundVariable {
+                index: 3,
+                binder_depth: 2,
+            },
+        },
+    };
+    let json = serde_json::to_value(&failure).unwrap();
+    assert_eq!(json["code"], 0x0025_000d_u32);
+    assert_eq!(json["reason"]["code"], 0x0029_0007_u32);
+    assert_eq!(json["reason"]["reason"]["code"], 0x0028_0007_u32);
+    assert_eq!(json["reason"]["reason"]["index"], 3);
+    assert_eq!(json["reason"]["reason"]["binder_depth"], 2);
+    assert!(json["reason"].get("kind").is_none());
+}

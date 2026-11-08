@@ -3,54 +3,57 @@ use naome_foundation::FormulaCodecError;
 use naome_proof::{DefinedFormulaCodecError, DefinitionExpansionError};
 use serde::Serialize;
 
-// One table owns each diagnosis code, its typed fields and the offline catalog.
-macro_rules! diagnostic_failures {
+// One table owns each diagnostic code, typed fields and catalog entry.
+macro_rules! diagnostic_codes {
     (
-        structured { $( $name:ident = $code:literal { $( $field:ident: $ty:ty ),+ $(,)? } ),+ $(,)? }
+        $(#[$meta:meta])* $name:ident, $catalog:ident, $label:literal,
+        structured { $( $variant:ident = $code:literal { $( $field:ident: $ty:ty ),+ $(,)? } ),+ $(,)? }
         units { $( $unit:ident = $unit_code:literal ),+ $(,)? }
     ) => {
-        /// The failed condition, with typed witnesses instead of prose interpretation.
+        $(#[$meta])*
         #[derive(Clone, Debug, PartialEq, Eq)]
-        pub enum Failure {
-            $( $name { $( $field: $ty ),+ }, )+
+        pub enum $name {
+            $( $variant { $( $field: $ty ),+ }, )+
             $( $unit, )+
         }
-        impl Failure {
+        impl $name {
             /// Stable machine code of this condition.
             pub fn code(&self) -> u32 {
                 match self {
-                    $( Self::$name { .. } => $code, )+
+                    $( Self::$variant { .. } => $code, )+
                     $( Self::$unit => $unit_code, )+
                 }
             }
         }
-        impl serde::Serialize for Failure {
+        impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 use serde::ser::SerializeStruct;
                 match self {
-                    $( Self::$name { $( $field ),+ } => {
-                        let mut value = serializer.serialize_struct("Failure", 1 $(+ { let _ = stringify!($field); 1 })+)?;
+                    $( Self::$variant { $( $field ),+ } => {
+                        let mut value = serializer.serialize_struct(stringify!($name), 1 $(+ { let _ = stringify!($field); 1 })+)?;
                         value.serialize_field("code", &$code)?;
                         $( value.serialize_field(stringify!($field), $field)?; )+
                         value.end()
                     }, )+
                     $( Self::$unit => {
-                        let mut value = serializer.serialize_struct("Failure", 1)?;
+                        let mut value = serializer.serialize_struct(stringify!($name), 1)?;
                         value.serialize_field("code", &$unit_code)?;
                         value.end()
                     }, )+
                 }
             }
         }
-        /// Assigned checker diagnostic failures for the machine catalog.
-        pub const DIAGNOSTIC_FAILURE_CODES: &[(&str, &str, u32)] = &[
-            $( ("ProofFailure", stringify!($name), $code), )+
-            $( ("ProofFailure", stringify!($unit), $unit_code), )+
+        /// Assigned diagnostic codes for the machine catalog.
+        pub const $catalog: &[(&str, &str, u32)] = &[
+            $( ($label, stringify!($variant), $code), )+
+            $( ($label, stringify!($unit), $unit_code), )+
         ];
     };
 }
 
-diagnostic_failures! {
+diagnostic_codes! {
+    /// The failed condition, with typed witnesses instead of prose interpretation.
+    Failure, DIAGNOSTIC_FAILURE_CODES, "ProofFailure",
     structured {
         ExpectedImplication = 0x0025_0001 { operand: OperandRole },
         ExpectedUniversal = 0x0025_0002 { operand: OperandRole },
@@ -126,20 +129,23 @@ pub enum ClaimValue {
     Digest(Digest),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FormulaFailure {
-    ByteLimit { actual: usize, maximum: usize },
-    NodeLimit { maximum: usize },
-    DepthLimit { maximum: u32 },
-    UnexpectedEnd,
-    UnknownFormulaTag { tag: u8 },
-    UnknownVariableTag { tag: u8 },
-    DanglingBoundVariable { index: u32, binder_depth: u32 },
-    TrailingBytes { remaining: usize },
-    DefinitionArgumentLimit { actual: usize },
-    UnexpandedDefinition { definition_id: Digest },
-    Unsupported,
+diagnostic_codes! {
+    FormulaFailure, FORMULA_FAILURE_CODES, "FormulaFailure",
+    structured {
+        ByteLimit = 0x0028_0001 { actual: usize, maximum: usize },
+        NodeLimit = 0x0028_0002 { maximum: usize },
+        DepthLimit = 0x0028_0003 { maximum: u32 },
+        UnknownFormulaTag = 0x0028_0005 { tag: u8 },
+        UnknownVariableTag = 0x0028_0006 { tag: u8 },
+        DanglingBoundVariable = 0x0028_0007 { index: u32, binder_depth: u32 },
+        TrailingBytes = 0x0028_0008 { remaining: usize },
+        DefinitionArgumentLimit = 0x0028_0009 { actual: usize },
+        UnexpandedDefinition = 0x0028_000a { definition_id: Digest },
+    }
+    units {
+        UnexpectedEnd = 0x0028_0004,
+        Unsupported = 0x0028_000b,
+    }
 }
 impl FormulaFailure {
     pub fn is_limit(&self) -> bool {
@@ -212,33 +218,18 @@ impl From<&DefinedFormulaCodecError> for FormulaFailure {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ExpansionFailure {
-    UnknownDefinition {
-        definition_id: Digest,
-    },
-    ArityMismatch {
-        definition_id: Digest,
-        expected: usize,
-        actual: usize,
-    },
-    CyclicDefinition {
-        definition_id: Digest,
-    },
-    UndeclaredFormalVariable {
-        identifier: u32,
-    },
-    NodeLimit {
-        maximum: usize,
-    },
-    DepthLimit {
-        maximum: u32,
-    },
-    Formula {
-        reason: FormulaFailure,
-    },
-    Unsupported,
+diagnostic_codes! {
+    ExpansionFailure, EXPANSION_FAILURE_CODES, "ExpansionFailure",
+    structured {
+        UnknownDefinition = 0x0029_0001 { definition_id: Digest },
+        ArityMismatch = 0x0029_0002 { definition_id: Digest, expected: usize, actual: usize },
+        CyclicDefinition = 0x0029_0003 { definition_id: Digest },
+        UndeclaredFormalVariable = 0x0029_0004 { identifier: u32 },
+        NodeLimit = 0x0029_0005 { maximum: usize },
+        DepthLimit = 0x0029_0006 { maximum: u32 },
+        Formula = 0x0029_0007 { reason: FormulaFailure },
+    }
+    units { Unsupported = 0x0029_0008 }
 }
 impl ExpansionFailure {
     pub fn is_limit(&self) -> bool {

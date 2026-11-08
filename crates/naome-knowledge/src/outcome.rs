@@ -122,7 +122,7 @@ codes! {
         ProgramCodec = 15,
         QuestionInput = 16,
         ProgramInput = 17,
-        ProgramFormula = 18,
+        Formula = 18,
         CheckedContext = 19,
     }
 
