@@ -15,7 +15,8 @@ def run(trial, args):
         node.config["discovery"] = {"mdns": False, "dht": False, "internet": False}
     shutil.copytree(args.seed, requester.directory, dirs_exist_ok=True)
     requester.config["runtime"]["jobs"] = {"native_proof_learning": True}
-    helper.config["runtime"]["jobs"] = {"native_proof_learning": True}
+    if args.helper_provider == "native":
+        helper.config["runtime"]["jobs"] = {"native_proof_learning": True}
     requester.write_config()
     helper.write_config()
     requester.start()
@@ -43,6 +44,10 @@ def run(trial, args):
         for node in trial.nodes:
             assert not [event for event in node.logs() if event.get("event") == 0x00170017]
         events = helper.logs()
+        if args.helper_provider == "mock":
+            assert not any(event.get("event") == 0x00170026
+                           and event.get("resolution_id") == args.resolution for event in events), (
+                               "helper rejected checked prerequisites", events[-20:])
         offer = next((i for i, event in enumerate(events) if event.get("event") == 0x00170012
                       and event.get("kind") == 0x001a0011 and event.get("peer") == requester.peer), None)
         accepted = next((i for i, event in enumerate(events) if event.get("event") == 0x00170001
@@ -75,6 +80,7 @@ def run(trial, args):
     trial.summary["claim"] = ("Two ordinary local processes: the helper fetched and checked a previously "
                               "missing relation after an autonomous work offer, then started and completed a solve job. "
                               "This fixture makes no proof-completion or multi-host claim.")
+    trial.summary["helper_provider"] = args.helper_provider
     trial.summary["scenarios"]["cold_defined_offer"] = result
     trial.summary["result"] = FixtureResult.PASS
 
@@ -85,6 +91,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--seed", type=Path, required=True)
+    parser.add_argument("--helper-provider", choices=("native", "mock"), required=True)
     parser.add_argument("--profile", default="test")
     for option in ("definition-id", "question", "resolution", "target"):
         parser.add_argument("--" + option, required=True)
