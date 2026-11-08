@@ -493,6 +493,26 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::HistoryCursorNotAdvanced => {
                     "history cursor did not advance"
                 }
+                crate::ResearchFailure::StatelessRankerMemory => "stateless ranker received memory",
+                crate::ResearchFailure::MemoryActionIndex => "native memory action index differs",
+                crate::ResearchFailure::MemoryTensorDecode => {
+                    "native memory tensor decoding failed"
+                }
+                crate::ResearchFailure::MemorySuccessor => "native memory successor differs",
+                crate::ResearchFailure::MemoryCheckpointMissing => {
+                    "native memory checkpoint missing"
+                }
+                crate::ResearchFailure::MemoryShapeOrValue => {
+                    "native memory shape or value differs"
+                }
+                crate::ResearchFailure::MemoryContext => {
+                    "native memory context or checkpoint differs"
+                }
+                crate::ResearchFailure::MemoryPrediction => "native memory prediction differs",
+                crate::ResearchFailure::StatelessExplorationMemory => {
+                    "stateless exploration received memory"
+                }
+                crate::ResearchFailure::InvalidActionScores => "invalid native action scores",
             }),
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
