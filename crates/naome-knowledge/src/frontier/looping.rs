@@ -187,13 +187,14 @@ impl Frontier {
                     return Ok((witnesses, inputs));
                 }
             }
-            if self.native
-                && let Some(helper) = crate::learning::scoped_cut_question(question.proved_target())
-                && let Some(id) = witness(helper.proved_target())?
-            {
-                let selected = vec![id];
-                if let Some(inputs) = graph.solving_inputs(&selected, definitions)? {
-                    return Ok((selected, inputs));
+            if self.native {
+                for helper in crate::learning::scoped_cut_questions(question.proved_target()) {
+                    if let Some(id) = witness(helper.proved_target())? {
+                        let selected = vec![id];
+                        if let Some(inputs) = graph.solving_inputs(&selected, definitions)? {
+                            return Ok((selected, inputs));
+                        }
+                    }
                 }
             }
             let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
@@ -347,9 +348,9 @@ impl Frontier {
                     crate::learning::closed_cut_routes(nodes[index].question.proved_target(), true)
                 });
                 let scoped = if routes.is_some() {
-                    crate::learning::scoped_cut_question(nodes[index].question.proved_target())
+                    crate::learning::scoped_cut_questions(nodes[index].question.proved_target())
                 } else {
-                    None
+                    Vec::new()
                 };
                 for source in sources {
                     let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
@@ -376,11 +377,13 @@ impl Frontier {
                         i
                     };
                     nodes[index].children.push(child);
-                    if scoped.as_ref().is_some_and(|cut| {
-                        cut.resolution_id() == nodes[child].question.resolution_id()
-                    }) || routes.as_ref().is_some_and(|routes| {
-                        routes.contains(nodes[child].question.proved_target())
-                    }) {
+                    if scoped
+                        .iter()
+                        .any(|cut| cut.resolution_id() == nodes[child].question.resolution_id())
+                        || routes.as_ref().is_some_and(|routes| {
+                            routes.contains(nodes[child].question.proved_target())
+                        })
+                    {
                         nodes[index].cuts.push(child);
                     }
                 }

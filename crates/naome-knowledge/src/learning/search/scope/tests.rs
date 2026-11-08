@@ -142,9 +142,13 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
     let goal = ResearchQuestion::from_formula(proof::close(target)).unwrap();
     assert!(solve(&goal, 32).is_none());
 
-    let prefix = cut::plan(goal.proved_target()).expect("an admissible transport prefix");
-    let witness = solve(&prefix.question, 8).expect("an independently solvable cut");
-    witness.check_target(&prefix.question).unwrap();
+    let alternatives = cut::questions(goal.proved_target());
+    assert!(alternatives.len() >= 2);
+    let helper = &alternatives[1];
+    let prefix = cut::plan(goal.proved_target(), helper.proved_target())
+        .expect("the exact alternative transport prefix");
+    let witness = solve(helper, 8).expect("an independently solvable cut");
+    witness.check_target(helper).unwrap();
     let Tree::Program(packet) = witness.tree else {
         panic!("native witness program");
     };
@@ -170,7 +174,7 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
             solve_with_report(&goal.to_hex(), runtime, prefix.work(), 1, context())
         })
         .unwrap();
-    assert_eq!(found.cost.search_expansions, 17);
+    assert_eq!(found.cost.search_expansions, 16);
     let root = found
         .solution
         .expect("a checked scoped proof using the prefix");

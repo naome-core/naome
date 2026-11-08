@@ -287,8 +287,7 @@ impl Prerequisites {
                 .programs
                 .iter()
                 .any(|packet| packet.manifest.proof_id() == *id)
-            && let Some(cut) = super::search::scope::cut::plan(target)
-            && cut.question.proved_target() == formula
+            && let Some(cut) = super::search::scope::cut::plan(target, formula)
             && cut.work() <= maximum
             && started.elapsed() < std::time::Duration::from_millis(2500)
         {
