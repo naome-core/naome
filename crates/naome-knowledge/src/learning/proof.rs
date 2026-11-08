@@ -556,16 +556,40 @@ pub(super) fn artifact(certificate: &ProofCertificate) -> String {
 pub(crate) fn check_artifact(
     encoded: &str,
     context: &dyn naome_checker::ContextView,
-) -> Result<naome_checker::CheckedProof, String> {
-    let bytes = crate::unhex(encoded).map_err(|error| error.to_string())?;
-    let naome_proof::ArtifactPayload::Proof(certificate) =
-        naome_proof::ArtifactPayload::from_canonical_bytes(&bytes)
-            .map_err(|error| error.to_string())?
-    else {
-        return Err("expected a canonical proof artifact".into());
+) -> Result<naome_checker::CheckedProof, crate::Error> {
+    use naome_proof::ArtifactPayloadError;
+    let bytes = crate::unhex(encoded)?;
+    let format = |reason| {
+        crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
+            input_digest: naome_checker::diagnostics::Digest::of(&bytes),
+            reason,
+        }))
     };
-    check_normal_form(certificate.into_unchecked_normal_form(), context)
-        .map_err(|error| error.to_string())
+    let payload =
+        naome_proof::ArtifactPayload::from_canonical_bytes(&bytes).map_err(
+            |error| match error {
+                ArtifactPayloadError::Proof(error) => {
+                    crate::object::certificate_error(&bytes[1..], error)
+                }
+                ArtifactPayloadError::InputTooLong { actual, maximum } => {
+                    format(crate::FormatFailure::Limit {
+                        resource: crate::FormatResource::Bytes,
+                        actual: Some(actual as u64),
+                        maximum: maximum as u64,
+                    })
+                }
+                ArtifactPayloadError::UnexpectedEnd => format(crate::FormatFailure::UnexpectedEnd),
+                ArtifactPayloadError::UnknownTag(tag) => format(crate::FormatFailure::UnknownTag {
+                    domain: crate::FormatTagClass::ArtifactPayload,
+                    tag,
+                }),
+                other => crate::Error::InvalidInput(other.to_string()),
+            },
+        )?;
+    let naome_proof::ArtifactPayload::Proof(certificate) = payload else {
+        return Err(crate::ResearchFailure::ExpectedProofArtifact.into());
+    };
+    check_normal_form(certificate.into_unchecked_normal_form(), context).map_err(crate::Error::from)
 }
 
 pub(super) fn define_steps(

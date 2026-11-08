@@ -555,6 +555,19 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::HistoryPreparedChanged => {
                     "prepared replay changed across continuation"
                 }
+                crate::ResearchFailure::ExpectedProofArtifact => {
+                    "expected a canonical proof artifact"
+                }
+                crate::ResearchFailure::NativeProgramBinding => {
+                    "native program source or conclusion differs"
+                }
+                crate::ResearchFailure::NativeCertificateConclusion => {
+                    "native certificate conclusion differs"
+                }
+                crate::ResearchFailure::NativeDefinitionHelpers => {
+                    "definition helper source binding differs"
+                }
+                crate::ResearchFailure::NativeSourceIdentity => "native source identity differs",
                 crate::ResearchFailure::NativeModelHashMismatch => {
                     "native model checkpoint hash differs"
                 }

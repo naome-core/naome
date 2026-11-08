@@ -1846,3 +1846,28 @@ fn model_write_failure_keeps_its_code_through_training_execution() {
     assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantClosed));
     assert_eq!(digest(&job), before);
 }
+
+#[test]
+fn native_artifact_check_preserves_proof_and_format_diagnostics() {
+    let context = naome_checker::ArtifactState::new();
+    let certificate =
+        naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+            proof_id: naome_proof::ProofId::from_bytes([7; 32]),
+        }])
+        .unwrap();
+    let bytes = naome_proof::ArtifactPayload::Proof(certificate).to_canonical_bytes();
+    let error = proof::check_artifact(&crate::hex(&bytes), &context).unwrap_err();
+    assert!(error.diagnostic().is_some());
+    assert!(
+        serde_json::to_value(&error)
+            .unwrap()
+            .get("diagnostic")
+            .is_some()
+    );
+
+    let error = proof::check_artifact("ff", &context).unwrap_err();
+    assert!(matches!(error, crate::Error::CertificateFormat(ref value)
+    if matches!(value.reason, crate::FormatFailure::UnknownTag {
+        domain: crate::FormatTagClass::ArtifactPayload, tag: 255
+    })));
+}

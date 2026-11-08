@@ -305,7 +305,7 @@ impl Solution {
         let packet = evidence::pack(&verified)?;
         Ok((packet.len() <= knowledge::BYTES).then_some(knowledge::Entry { packet }))
     }
-    pub fn check_target(&self, question: &ResearchQuestion) -> Result<(), String> {
+    pub fn check_target(&self, question: &ResearchQuestion) -> Result<(), crate::Error> {
         let target = if self.refuted {
             question.refuted_target()
         } else {
@@ -316,23 +316,22 @@ impl Solution {
                 || self.proof_id != crate::hex(packet.manifest.proof_id().as_bytes())
                 || &packet.target()? != target
             {
-                return Err("native program source or conclusion differs".into());
+                return Err(crate::ResearchFailure::NativeProgramBinding.into());
             }
         } else if self.checked()?.conclusion() != target {
-            return Err("native certificate conclusion differs".into());
+            return Err(crate::ResearchFailure::NativeCertificateConclusion.into());
         }
         Ok(())
     }
 
-    pub fn checked(&self) -> Result<naome_checker::CheckedProof, String> {
+    pub fn checked(&self) -> Result<naome_checker::CheckedProof, crate::Error> {
         if self.helpers != definitions::helpers(&self.tree)? {
-            return Err("definition helper source binding differs".into());
+            return Err(crate::ResearchFailure::NativeDefinitionHelpers.into());
         }
         let context = definitions::proof_context(&self.tree)?;
-        let proof = crate::learning::proof::check_artifact(&self.source, &context)
-            .map_err(|e| e.to_string())?;
+        let proof = crate::learning::proof::check_artifact(&self.source, &context)?;
         if crate::hex(proof.proof_id().as_bytes()) != self.proof_id {
-            return Err("native source identity differs".into());
+            return Err(crate::ResearchFailure::NativeSourceIdentity.into());
         }
         Ok(proof)
     }

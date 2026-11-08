@@ -661,7 +661,7 @@ codes! {
         UnknownTag = 5, Formula = 6, TrailingBytes = 7, Unsupported = 8,
     }
     pub enum FormatResource in 43 { Steps = 1, Bytes = 2, Nodes = 3 }
-    pub enum FormatTagClass in 44 { ProofStep = 1, ZfcAxiom = 2 }
+    pub enum FormatTagClass in 44 { ProofStep = 1, ZfcAxiom = 2, ArtifactPayload = 3 }
 
     pub(crate) enum SelectionPurpose in 57 { Assessment = 1, Admission = 2, Initial = 3, Final = 4, Publication = 5 }
 
@@ -771,6 +771,11 @@ codes! {
         HistoryPreparedCapacity = 102,
         HistoryPreparedIdentity = 103,
         HistoryPreparedChanged = 104,
+        ExpectedProofArtifact = 105,
+        NativeProgramBinding = 106,
+        NativeCertificateConclusion = 107,
+        NativeDefinitionHelpers = 108,
+        NativeSourceIdentity = 109,
     }
 
 }
