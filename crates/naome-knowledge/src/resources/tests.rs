@@ -272,3 +272,16 @@ fn native_model_capacity_reports_structured_reasons() {
         limits.native_model_work_bytes.saturating_add(32 * MIB) as u64
     );
 }
+
+#[test]
+fn disk_reservation_reports_structured_filesystem_failure() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let missing = directory.0.join("missing");
+    let error = DiskLease::acquire(&missing, 1).unwrap_err();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["operation"],
+        u32::from(crate::StorageIoOperation::InspectDiskVolume)
+    );
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
+}

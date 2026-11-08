@@ -747,10 +747,11 @@ codes! {
         IndexOverflow = 19, QueueOverflow = 20, AllocationOverflow = 21,
         AllocationBudget = 22, LimitsInconsistent = 23, IdentifySafety = 24,
         AssessmentCapacity = 25, NativeModelLimits = 26, NativeModelAllocation = 27,
+        DiskVolumeChanged = 28, DiskReservationLock = 29, DiskReservationOverflow = 30,
     }
     #[derive(Default)]
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
-    pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13, CurrentDirectory = 14, ResolveResourceProfile = 15 }
+    pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13, CurrentDirectory = 14, ResolveResourceProfile = 15, InspectDiskVolume = 16, InspectDiskSpace = 17 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,

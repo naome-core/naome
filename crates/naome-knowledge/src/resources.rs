@@ -483,8 +483,17 @@ pub(crate) struct DiskLease {
 }
 fn disk_capacity(path: &std::path::Path) -> Result<(u64, u128), crate::Error> {
     use std::os::unix::fs::MetadataExt;
-    let volume = std::fs::metadata(path).map_err(|e| e.to_string())?.dev();
-    let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
+    let volume = std::fs::metadata(path)
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectDiskVolume, error)
+        })?
+        .dev();
+    let stats = nix::sys::statvfs::statvfs(path).map_err(|error| {
+        crate::error::storage_io_error(
+            crate::StorageIoOperation::InspectDiskSpace,
+            std::io::Error::from_raw_os_error(error as i32),
+        )
+    })?;
     let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
     #[cfg(test)]
     let available = TEST_DISK
@@ -506,11 +515,23 @@ impl DiskLease {
     pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
         let (volume, available) = disk_capacity(path)?;
         if volume != self.volume {
-            return Err("disk reservation filesystem changed".into());
+            return Err(validation(
+                crate::ResourceValidationReason::DiskVolumeChanged,
+                None,
+                None,
+                None,
+            ));
         }
         let held = *DISK_RESERVATIONS
             .lock()
-            .map_err(|_| "disk reservation lock poisoned")?
+            .map_err(|_| {
+                validation(
+                    crate::ResourceValidationReason::DiskReservationLock,
+                    None,
+                    None,
+                    None,
+                )
+            })?
             .get(&self.reservation_key())
             .unwrap_or(&0);
         let required = u128::from(limits().disk_reserve_bytes) + held;
@@ -543,20 +564,37 @@ impl DiskLease {
     ) -> Result<(), crate::Error> {
         let (volume, available) = disk_capacity(path)?;
         if volume != self.volume {
-            return Err("disk reservation filesystem changed".into());
+            return Err(validation(
+                crate::ResourceValidationReason::DiskVolumeChanged,
+                None,
+                None,
+                None,
+            ));
         }
         self.grow(available, total)
     }
     fn grow(&mut self, available: u128, total: u64) -> Result<(), crate::Error> {
-        let mut reservations = DISK_RESERVATIONS
-            .lock()
-            .map_err(|_| "disk reservation lock poisoned")?;
+        let mut reservations = DISK_RESERVATIONS.lock().map_err(|_| {
+            validation(
+                crate::ResourceValidationReason::DiskReservationLock,
+                None,
+                None,
+                None,
+            )
+        })?;
         let held = reservations.entry(self.reservation_key()).or_default();
         let bytes = self.bytes.max(u128::from(total));
         let next = held
             .checked_sub(self.bytes)
             .and_then(|other| other.checked_add(bytes))
-            .ok_or("disk reservation overflow")?;
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::DiskReservationOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
         let required = u128::from(limits().disk_reserve_bytes) + next;
         if available < required {
             return Err(crate::Error::DiskOverload {
