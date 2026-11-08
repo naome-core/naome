@@ -46,6 +46,10 @@ def run(trial):
     assert any(e.get("event") == "question_generated" for e in requester.logs())
     assert any(e.get("event") == "exchange_request" and e.get("kind") == "work_offer"
                for e in helper.logs())
+    assert any(e.get("event") == "workgroup_receipt" and e.get("status") == "queued"
+               for e in requester.logs())
+    assert not any(e.get("event") == "rejected" and e.get("error") == "unexpected response kind"
+                   for node in trial.nodes for e in node.logs())
     assert any(e.get("event") == "accepted" and e.get("id") == result["root"]
                and e.get("source") == "fetch" for e in requester.logs())
     trial.summary["claim"] = ("Two ordinary local node processes exchange a work offer and a "

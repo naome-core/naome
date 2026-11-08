@@ -2624,6 +2624,9 @@ impl Node {
             (Flight::Offer { .. }, Body::Receipt { status }) => {
                 emit(json!({"event":"offer_result","status":status}))
             }
+            (Flight::Work { .. }, Body::Receipt { status }) => {
+                emit(json!({"event":"workgroup_receipt","status":status}))
+            }
             (Flight::Get { root, .. }, Body::Error { reason }) if reason == OWNER_BUSY => {
                 // Keep the existing approved closure and its original grant.
                 // Automatic request pacing retries without renewing authority.
