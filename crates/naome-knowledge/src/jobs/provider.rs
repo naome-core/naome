@@ -13,17 +13,17 @@ pub(super) enum Probe {
 }
 #[derive(Debug)]
 pub(super) enum Failure {
-    Failed(String),
-    Uncertain(String),
+    Failed,
+    Uncertain,
 }
 impl From<String> for Failure {
-    fn from(error: String) -> Self {
-        Self::Failed(error)
+    fn from(_: String) -> Self {
+        Self::Failed
     }
 }
 impl From<&str> for Failure {
-    fn from(error: &str) -> Self {
-        Self::Failed(error.to_owned())
+    fn from(_: &str) -> Self {
+        Self::Failed
     }
 }
 pub(super) trait Supervisor {
@@ -84,9 +84,7 @@ pub(super) fn drive(
     measured(supervisor, Phase::Setup, |owner| provider.start(owner))?;
     while let Some(next) = provider.next(checkpoint)? {
         if checkpoint.checked_add(1) != Some(next) {
-            return Err(Failure::Uncertain(
-                "provider work-unit sequence differs".into(),
-            ));
+            return Err(Failure::Uncertain);
         }
         supervisor.reserve(next)?;
         measured(supervisor, Phase::Unit { unit: next }, |owner| {
@@ -303,10 +301,7 @@ impl Provider for Mock {
         if units != 0 && checkpoint >= units {
             return Ok(None);
         }
-        checkpoint
-            .checked_add(1)
-            .map(Some)
-            .ok_or_else(|| Failure::Failed("provider checkpoint overflow".into()))
+        checkpoint.checked_add(1).map(Some).ok_or(Failure::Failed)
     }
     fn execute(&mut self, next: u32, supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
         if self.streams() {
@@ -338,7 +333,7 @@ impl Provider for Mock {
     }
     fn result(&mut self, supervisor: &mut dyn Supervisor) -> Result<Output, Failure> {
         if self.work.outcome == MockOutcome::Failed {
-            return Err(Failure::Failed("deterministic provider failed".into()));
+            return Err(Failure::Failed);
         }
         if self.work.result_delay_ms > 0 {
             supervisor.probe(Probe::ResultReady)?;

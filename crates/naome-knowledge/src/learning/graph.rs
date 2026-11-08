@@ -1,6 +1,7 @@
 //! Packed formula and action graphs with decision-local variable slots.
 
 use super::model::Decision;
+use crate::LearningGraphFailure as Failure;
 use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
 use naome_foundation::{
     FormulaView,
@@ -33,6 +34,26 @@ pub struct Graph {
     pub successes: Vec<usize>,
 }
 
+impl std::fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Capacity => "formula_graph_capacity",
+            Self::ActionArity => "action arity capacity",
+            Self::BoundIndexWidth => "bound index width",
+            Self::DanglingBoundVariable => "dangling bound variable",
+            Self::DecisionCapacity => "decision_capacity",
+            Self::MissingExpert => "successful action missing",
+            Self::MissingPremise => "action premise missing",
+        })
+    }
+}
+
+impl From<Failure> for String {
+    fn from(error: Failure) -> Self {
+        error.to_string()
+    }
+}
+
 struct Builder<'a> {
     nodes: Vec<Node>,
     formulas: HashMap<(FormulaView<'a>, usize), usize>,
@@ -41,17 +62,17 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn push(&mut self, node: Node) -> Result<usize, String> {
+    fn push(&mut self, node: Node) -> Result<usize, Failure> {
         if self.nodes.len() >= MAX_NODES {
-            return Err("formula_graph_capacity".into());
+            return Err(Failure::Capacity);
         }
         let index = self.nodes.len();
         self.nodes.push(node);
         Ok(index)
     }
-    fn pair(&mut self, roots: &[usize]) -> Result<usize, String> {
+    fn pair(&mut self, roots: &[usize]) -> Result<usize, Failure> {
         if roots.len() > 1 + naome_proof::program::ACTION_PREMISES {
-            return Err("action arity capacity".into());
+            return Err(Failure::ActionArity);
         }
         let Some((&first, rest)) = roots.split_first() else {
             return Ok(0);
@@ -67,28 +88,28 @@ impl<'a> Builder<'a> {
         })
     }
 
-    fn free_slot(&mut self, id: u32) -> Result<i32, String> {
+    fn free_slot(&mut self, id: u32) -> Result<i32, Failure> {
         let next = self.free.len() + 1;
         let slot = *self.free.entry(id).or_insert(next);
         if slot > MAX_NODES {
-            return Err("formula_graph_capacity".into());
+            return Err(Failure::Capacity);
         }
         Ok(slot as i32)
     }
 
-    fn variable(&mut self, variable: Variable, binders: usize) -> Result<usize, String> {
+    fn variable(&mut self, variable: Variable, binders: usize) -> Result<usize, Failure> {
         let (kind, symbol) = match variable {
             Variable::Free(id) => (6, self.free_slot(id)? as usize),
             Variable::Bound(index) => {
-                let index = usize::try_from(index).map_err(|_| "bound index width")?;
+                let index = usize::try_from(index).map_err(|_| Failure::BoundIndexWidth)?;
                 if index >= binders {
-                    return Err("dangling bound variable".into());
+                    return Err(Failure::DanglingBoundVariable);
                 }
                 (7, MAX_NODES + 1 + index)
             }
         };
         if symbol >= SYMBOLS {
-            return Err("formula_graph_capacity".into());
+            return Err(Failure::Capacity);
         }
         let symbol = symbol as i32;
         if let Some(index) = self.variables.get(&symbol) {
@@ -110,7 +131,7 @@ impl<'a> Builder<'a> {
         formula: FormulaView<'a>,
         binders: usize,
         depth: usize,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, Failure> {
         if depth == 0 {
             return Ok(0);
         }
@@ -178,20 +199,20 @@ impl Graph {
             &self.candidates,
         ))
     }
-    pub fn encode(decision: &Decision) -> Result<Self, String> {
+    pub fn encode(decision: &Decision) -> Result<Self, Failure> {
         Self::encode_at_depth(decision, usize::MAX)
     }
 
     /// A bounded view of existing checked operands, for replay choices whose
     /// full formulas cannot jointly fit the model's graph.
-    pub(super) fn encode_at_depth(decision: &Decision, depth: usize) -> Result<Self, String> {
+    pub(super) fn encode_at_depth(decision: &Decision, depth: usize) -> Result<Self, Failure> {
         if decision.context.len() > MAX_CONTEXT || decision.candidates.is_empty() {
-            return Err("decision_capacity".into());
+            return Err(Failure::DecisionCapacity);
         }
         let witnessed = decision
             .candidates
             .get(decision.expert)
-            .ok_or("successful action missing")?;
+            .ok_or(Failure::MissingExpert)?;
         // Equivalent universal effects share the checked target mass and
         // the same model representation, including a vacuous instantiation.
         let equivalent = |a: &super::model::Candidate, b: &super::model::Candidate| {
@@ -232,15 +253,10 @@ impl Graph {
             let premises = candidate
                 .premises
                 .iter()
-                .map(|i| {
-                    context
-                        .get(*i)
-                        .copied()
-                        .ok_or("action premise missing".into())
-                })
-                .collect::<Result<Vec<_>, String>>()?;
+                .map(|i| context.get(*i).copied().ok_or(Failure::MissingPremise))
+                .collect::<Result<Vec<_>, Failure>>()?;
             if premises.is_empty() {
-                return Err("action premise missing".into());
+                return Err(Failure::MissingPremise);
             }
             let conclusions = candidate
                 .consequences

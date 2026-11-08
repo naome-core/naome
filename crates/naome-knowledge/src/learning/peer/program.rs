@@ -657,10 +657,10 @@ fn operand_mp(
     };
     match Graph::encode(&decision) {
         Ok(graph) => Ok(Some(graph)),
-        Err(error) if error == "formula_graph_capacity" => {
-            Graph::encode_at_depth(&decision, 4).map(Some)
-        }
-        Err(error) => Err(error),
+        Err(crate::LearningGraphFailure::Capacity) => Graph::encode_at_depth(&decision, 4)
+            .map(Some)
+            .map_err(Into::into),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -755,7 +755,7 @@ fn graphs(
                 };
                 let encoded = match Graph::encode(&decision) {
                     Ok(graph) => Some(graph),
-                    Err(error) if error == "formula_graph_capacity" => {
+                    Err(crate::LearningGraphFailure::Capacity) => {
                         if let Some((left, right)) =
                             differing_operands(group[0].1.clone(), group[1].1.clone())
                         {
@@ -773,7 +773,7 @@ fn graphs(
                             None
                         }
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 };
                 if let Some(mut graph) = encoded {
                     graph.binding = crate::learning::digest(&(position, cited.as_bytes()));

@@ -4,7 +4,7 @@ use super::*;
 fn scoped_program_applies_two_premises_in_one_checked_action() {
     struct NoModel;
     impl Ranker for NoModel {
-        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
             Err("the applicable action closes without ranking".into())
         }
     }

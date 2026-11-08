@@ -24,9 +24,7 @@ impl Store {
         self.ensure_database()?;
         let result = write(&catalog);
         match (result, self.record_generation()) {
-            (Err(primary), Err(generation)) => Err(crate::Error::UncertainDurability(format!(
-                "{primary}; generation observation failed: {generation}"
-            ))),
+            (Err(primary @ crate::Error::UncertainDurability(_)), Err(_)) => Err(primary),
             (_, Err(generation)) => Err(generation),
             (result, Ok(())) => result,
         }

@@ -48,7 +48,7 @@ pub struct Graph {
     bytes: usize,
     context_bytes: usize,
     root: [u8; 32],
-    storage_error: Arc<Mutex<Option<String>>>,
+    storage_error: Arc<Mutex<Option<crate::Error>>>,
     store: Arc<Store>,
     checked_storage: Arc<CheckedStorage>,
     old_generations: Vec<Weak<CheckedStorage>>,
@@ -138,26 +138,24 @@ impl Graph {
 
     fn ensure_live(&self) -> Result<(), crate::Error> {
         match self.storage_error() {
-            Some(error) => Err(crate::Error::CorruptStorage(error)),
+            Some(error) => Err(error),
             None => Ok(()),
         }
     }
     pub(crate) fn program_failure(&self, error: &crate::Error) {
         if error.fatal() {
-            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            let mut halt = self
+                .storage_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            halt.get_or_insert_with(|| error.clone());
         }
     }
+
     fn cold<T, E: Into<crate::Error>>(&self, result: Result<T, E>) -> Result<T, crate::Error> {
         result.map_err(|error| {
             let error = error.into().storage();
-            if error.fatal() {
-                *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                    error
-                        .storage_detail()
-                        .unwrap_or("checked storage failure")
-                        .to_owned(),
-                );
-            }
+            self.program_failure(&error);
             error
         })
     }
@@ -586,13 +584,13 @@ impl Graph {
         let halt = self.storage_error.clone();
         let failure = halt.lock().unwrap_or_else(|error| {
             let mut failure = error.into_inner();
-            *failure = Some("checked storage halt lock poisoned".into());
+            failure.get_or_insert_with(|| {
+                crate::Error::CorruptStorage("checked storage halt lock poisoned".into())
+            });
             failure
         });
         if let Some(error) = &*failure {
-            return Err(crate::Error::CorruptStorage(format!(
-                "storage halted: {error}"
-            )));
+            return Err(error.clone());
         }
         self.old_generations.push(Arc::downgrade(&source));
         self.context = context;
@@ -826,7 +824,7 @@ impl Graph {
             _ => Err("unknown artifact input tag".into()),
         };
         if let Err(error) = &checked {
-            self.record_check_failure(error);
+            self.program_failure(error);
         }
         checked
     }
@@ -842,20 +840,9 @@ impl Graph {
         }
         check_normal_form_with_state(normal, context).map_err(|error| {
             let error = crate::Error::from(error);
-            self.record_check_failure(&error);
+            self.program_failure(&error);
             error
         })
-    }
-
-    fn record_check_failure(&self, error: &crate::Error) {
-        if error.fatal() {
-            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                error
-                    .storage_detail()
-                    .unwrap_or("checked storage failure")
-                    .to_owned(),
-            );
-        }
     }
 
     fn check_artifact(
@@ -890,7 +877,9 @@ impl Graph {
             }
         };
         if checked.id() != candidate.id || checked.statement() != candidate.statement {
-            return Err("checked identity mismatch".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::CheckedIdentityMismatch,
+            ));
         }
         Ok(checked)
     }
@@ -1057,7 +1046,7 @@ impl Graph {
     pub fn pending_ids(&self) -> Result<Vec<ArtifactId>, crate::Error> {
         self.pending_ids_after(None, crate::resources::active_limits().id_page)
     }
-    pub fn storage_error(&self) -> Option<String> {
+    pub fn storage_error(&self) -> Option<crate::Error> {
         self.storage_error
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1151,7 +1140,9 @@ impl Graph {
     ) -> Result<Option<crate::corpus::InventoryPage>, crate::Error> {
         self.ensure_live()?;
         if limit == 0 || limit > crate::resources::limits().inventory_page {
-            return Err(crate::Error::InputLimit("inventory page limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::InventoryPageLimit,
+            ));
         }
         let page = self.cold(
             self.store

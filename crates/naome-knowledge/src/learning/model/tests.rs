@@ -289,7 +289,7 @@ fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
     let source = super::super::tests::own_question();
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }

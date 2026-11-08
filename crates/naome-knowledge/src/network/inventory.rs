@@ -21,7 +21,7 @@ pub(super) fn response(
     }
     if limit == 0 {
         return Err(crate::Error::InputLimit(
-            "inventory page limit must be positive",
+            crate::InputLimit::InventoryPageLimitMustBePositive,
         ));
     }
     let Some(page) = graph.inventory_page(

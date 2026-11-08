@@ -84,8 +84,8 @@ fn failed_observations_pause_retained_work_and_recover_only_after_the_quiet_wind
         .clone();
     assert_eq!(paused.timestamp_ms, first.timestamp_ms);
     assert_eq!(
-        paused.budget.paused.as_deref(),
-        Some("hardware observation unavailable")
+        paused.budget.paused,
+        Some(crate::PauseReason::HardwareObservationUnavailable)
     );
     assert_eq!(paused.budget.batch_steps, 0);
     assert_eq!(paused.budget.concurrency, 0);

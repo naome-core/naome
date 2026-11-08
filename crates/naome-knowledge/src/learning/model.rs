@@ -94,7 +94,7 @@ pub struct Decision {
     pub expert: usize,
 }
 pub trait Ranker {
-    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String>;
+    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error>;
     fn plan(
         &mut self,
         d: &Decision,
@@ -525,8 +525,8 @@ fn loss_value(loss: &Tensor<1>) -> Result<f32, String> {
     Ok(value)
 }
 impl Ranker for Runtime {
-    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
-        self.scores_graph(&Graph::encode(d)?)
+    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
+        self.scores_graph(&Graph::encode(d)?).map_err(Into::into)
     }
     fn plan(
         &mut self,

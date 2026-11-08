@@ -1015,8 +1015,9 @@ impl Autonomous {
                             Err(error) => {
                                 pending.batch = None;
                                 emit(json!({"event":"proof_candidate_deferred","error":error}));
-                                if let Some(error) =
-                                    questions.storage_error().or_else(|| graph.storage_error())
+                                if let Some(error) = questions
+                                    .storage_error()
+                                    .or_else(|| graph.storage_error().map(String::from))
                                 {
                                     self.error = Some(error);
                                     return accepted;

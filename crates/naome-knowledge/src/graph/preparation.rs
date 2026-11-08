@@ -72,7 +72,7 @@ impl Preparation {
             .ok_or("checked batch count overflow")?;
         if count > crate::resources::limits().closure_objects {
             return Err(crate::Error::InputLimit(
-                "checked closure operation capacity",
+                crate::InputLimit::CheckedClosureOperationCapacity,
             ));
         }
         let bytes = bytes
@@ -141,7 +141,9 @@ impl Preparation {
     ) -> Result<ArtifactRegistration, crate::Error> {
         self.require_absent(graph, record.id)?;
         if checked.id() != record.id || checked.statement() != record.statement {
-            return Err("checked identity mismatch".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::CheckedIdentityMismatch,
+            ));
         }
         let growth = graph.registration_growth(&self.batch.context, &checked)?;
         let context_bytes = self

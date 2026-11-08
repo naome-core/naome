@@ -14,16 +14,40 @@ const QUESTION_EXPANSION_MAX_DEPTH: usize = 128;
 /// A rejected formal question encoding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionError {
-    Limit(&'static str),
+    Limit(QuestionLimit),
     Invalid(&'static str),
     MissingDefinition(crate::DefinitionId),
     Mathematical(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum QuestionLimit {
+    TargetNodes = 1,
+    TargetDepth = 2,
+    Bytes = 3,
+    DefinitionDecodeBytes = 4,
+    Dependencies = 5,
+    EncodedBytes = 6,
+}
+
+impl QuestionLimit {
+    fn label(self) -> &'static str {
+        match self {
+            Self::TargetNodes => "question target nodes",
+            Self::TargetDepth => "question target depth",
+            Self::Bytes => "question bytes",
+            Self::DefinitionDecodeBytes => "question definition decode bytes",
+            Self::Dependencies => "question dependencies",
+            Self::EncodedBytes => "encoded question bytes",
+        }
+    }
+}
+
 impl fmt::Display for QuestionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Limit(name) => write!(f, "question limit exceeded: {name}"),
+            Self::Limit(name) => write!(f, "question limit exceeded: {}", name.label()),
             Self::Invalid(reason) => write!(f, "invalid question: {reason}"),
             Self::MissingDefinition(id) => write!(f, "question definition unavailable: {id:?}"),
             Self::Mathematical(reason) => write!(f, "invalid question formula: {reason}"),
@@ -81,10 +105,10 @@ impl QuestionTarget {
         let core_nodes = nodes - leading;
         let core_depth = depth - leading;
         if core_nodes + 1 > max_nodes {
-            return Err(QuestionError::Limit("question target nodes"));
+            return Err(QuestionError::Limit(QuestionLimit::TargetNodes));
         }
         if core_depth + 1 > max_depth {
-            return Err(QuestionError::Limit("question target depth"));
+            return Err(QuestionError::Limit(QuestionLimit::TargetDepth));
         }
         let canonical_core = encoded[leading..].to_vec();
         let mut core = formula.view();

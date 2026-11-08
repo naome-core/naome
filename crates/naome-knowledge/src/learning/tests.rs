@@ -7,7 +7,7 @@ use super::*;
 
 struct UniversalChoice(usize);
 impl model::Ranker for UniversalChoice {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         let offered = d
             .candidates
             .iter()
@@ -771,7 +771,7 @@ impl ArtifactIo for MemoryStore {
 }
 struct Symbolic;
 impl model::Ranker for Symbolic {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         Ok(vec![0.; d.candidates.len()])
     }
 }

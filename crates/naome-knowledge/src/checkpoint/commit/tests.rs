@@ -100,8 +100,20 @@ fn uncertain_commit_blocks_the_old_owner_and_reopen_recovers_the_durable_result(
     let error = checkpoint
         .commit(&2u64, vec![Update::put("record", "one", &2u64).unwrap()])
         .unwrap_err();
-    assert!(matches!(error, CommitError::Uncertain(_)));
-    assert!(crate::Error::from(error).fatal());
+    assert!(matches!(
+        error,
+        CommitError::Uncertain(naome_storage::UncertainCommit::Commit { sqlite_code: None })
+    ));
+    let error = crate::Error::from(error);
+    assert!(error.fatal() && !error.retryable());
+    assert_eq!(
+        serde_json::to_value(error).unwrap(),
+        serde_json::json!({
+            "code": 0x0003_0001,
+            "retryable": false,
+            "fatal": true,
+        })
+    );
     assert!(checkpoint.header::<u64>().is_err());
     assert!(checkpoint.require_kinds(&["record"]).is_err());
     assert!(matches!(

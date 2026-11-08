@@ -383,7 +383,7 @@ mod tests {
             fn scores(
                 &mut self,
                 decision: &super::super::model::Decision,
-            ) -> Result<Vec<f32>, String> {
+            ) -> Result<Vec<f32>, crate::Error> {
                 Ok(vec![0.; decision.candidates.len()])
             }
         }

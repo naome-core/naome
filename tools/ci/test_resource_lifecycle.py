@@ -50,23 +50,23 @@ class ResourceLifecycleTests(unittest.TestCase):
         return clock.now
 
     def test_memory_only_recovery_keeps_its_original_40_second_bound(self):
-        self.assertGreaterEqual(self.recover("memory pressure", 35), 35)
+        self.assertGreaterEqual(self.recover(0x0004_0001, 35), 35)
         with self.assertRaises(AssertionError):
-            self.recover("memory pressure", 45)
+            self.recover(0x0004_0001, 45)
 
     def test_native_cpu_hold_is_retained_without_claiming_resume(self):
-        reason = lambda now: "memory pressure" if now < 10 else "sustained external CPU pressure"
+        reason = lambda now: 0x0004_0001 if now < 10 else 0x0004_0008
         self.assertGreaterEqual(self.recover(reason, 70), 40)
         self.assertIsNone(self.result)
         self.assertEqual(self.receipt["result"], "native_cpu_hold_preserved")
 
     def test_cleared_native_cpu_hold_can_qualify_observed_resume(self):
-        self.assertGreaterEqual(self.recover("sustained external CPU pressure", 35), 35)
+        self.assertGreaterEqual(self.recover(0x0004_0008, 35), 35)
         self.assertEqual(self.receipt["result"], "native_resume_observed")
 
     def test_cpu_hold_cannot_extend_the_original_whole_deadline(self):
         with self.assertRaises(AssertionError):
-            self.recover("sustained external CPU pressure", 125, deadline=30)
+            self.recover(0x0004_0008, 125, deadline=30)
         self.assertGreaterEqual(self.clock.now, 30)
         self.assertLess(self.clock.now, 30.3)
 
@@ -74,7 +74,7 @@ class ResourceLifecycleTests(unittest.TestCase):
         for change, message in (({"progress": True}, "productive work advanced"),
                                 ({"admission": True}, "paused node published")):
             with self.subTest(change=change), self.assertRaisesRegex(AssertionError, message):
-                self.recover("sustained external CPU pressure", 70, **change)
+                self.recover(0x0004_0008, 70, **change)
 
 
 class WorkWindowTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class WorkWindowTests(unittest.TestCase):
         def observation(node):
             value = capacity(clock.now) if callable(capacity) else capacity
             return {"snapshot": {"pid": pid, "timestamp_ms": 10000 - age, "budget": {"concurrency": value,
-                "paused": "sustained external CPU pressure" if value == 0 else None}}}
+                "paused": 0x0004_0008 if value == 0 else None}}}
         trial = type("Trial", (), {"deadline": deadline, "summary": {}})()
         node = type("Node", (), {"process": {"pid": 7}})()
         with patch("time.monotonic", side_effect=lambda: clock.now), patch("time.sleep", side_effect=clock.sleep), \
@@ -135,17 +135,17 @@ class OwnerStatusTests(unittest.TestCase):
     def test_pressure_transitions_preserve_the_owner_contract(self):
         for computation in ("running", "pausing", "paused"):
             self.check(self.status(computation=computation,
-                computation_reason=None if computation == "running" else "sustained external CPU pressure"))
+                computation_reason=None if computation == "running" else 0x0004_0008))
 
     def test_pressure_cannot_excuse_an_owner_or_proof_state_change(self):
         for change in ({"running": False}, {"accepted_artifacts": 1},
                        {"artifact_verification": "not_run"}, {"unknown": 1}):
             with self.subTest(change=change), self.assertRaises(AssertionError):
-                self.check(self.status(computation="paused", computation_reason="memory pressure", **change))
+                self.check(self.status(computation="paused", computation_reason=0x0004_0001, **change))
 
     def test_computation_state_and_reason_remain_validated(self):
-        for computation, reason in (("paused", None), ("pausing", ""), ("running", "memory pressure"),
-                                    ("stopped", None), ("unknown", "memory pressure")):
+        for computation, reason in (("paused", None), ("pausing", ""), ("running", 0x0004_0001),
+                                    ("stopped", None), ("unknown", 0x0004_0001)):
             with self.subTest(computation=computation, reason=reason), self.assertRaises(AssertionError):
                 self.check(self.status(computation=computation, computation_reason=reason))
 

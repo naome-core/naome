@@ -158,7 +158,7 @@ impl Intake {
         root.closure.advance(graph)?;
         if root.closure.member_count() > crate::resources::limits().closure_objects {
             return Err(crate::Error::InputLimit(
-                "cited closure dependency capacity",
+                crate::InputLimit::CitedClosureDependencyCapacity,
             ));
         }
         Ok(())

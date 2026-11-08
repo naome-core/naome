@@ -197,7 +197,9 @@ impl Closure {
             return Ok(());
         }
         if self.member_count() >= crate::resources::limits().closure_objects {
-            return Err(crate::Error::InputLimit("cited closure operation capacity"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::CitedClosureOperationCapacity,
+            ));
         }
         self.needed.insert(id);
         self.schedule.declare(id);
@@ -410,7 +412,7 @@ impl Closure {
             .is_none_or(|count| count > crate::resources::limits().closure_objects)
         {
             return Err(crate::Error::InputLimit(
-                "staged closure dependency capacity",
+                crate::InputLimit::StagedClosureDependencyCapacity,
             ));
         }
         self.needed.remove(&id);

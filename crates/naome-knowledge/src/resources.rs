@@ -175,7 +175,6 @@ resource_policy! {
         capacity dht_packet_bytes: usize = 4096;
         capacity relay_request_burst: usize = 4;
         capacity relay_reservations_per_peer: usize = 1;
-        capacity failure_detail_bytes: usize = 512;
         work supervisor_commands: usize = 8;
         work provider_events: usize = 16;
         capacity developer_objects: usize = 8;
@@ -629,7 +628,6 @@ impl Limits {
         for bytes in [
             self.diagnostic_bytes,
             self.dht_packet_bytes,
-            self.failure_detail_bytes,
             self.producer_bytes,
             self.command_bytes,
             self.identify_protocol_bytes,

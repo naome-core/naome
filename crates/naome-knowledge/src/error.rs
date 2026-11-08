@@ -1,5 +1,9 @@
 //! Operation outcomes retain their meaning until the presentation boundary.
-use std::{error::Error as StdError, fmt};
+use crate::{
+    EvidenceFailure, InputFault, InputLimit,
+    outcome::{DurabilityCode, OperationCode},
+};
+use std::{error::Error as StdError, fmt, num::NonZeroI32};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -78,6 +82,44 @@ pub struct CertificateFormatError {
     pub reason: FormatFailure,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct DurabilityFailure {
+    pub code: DurabilityCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sqlite_code: Option<NonZeroI32>,
+}
+
+impl DurabilityFailure {
+    pub(crate) fn new(code: DurabilityCode) -> Self {
+        Self {
+            code,
+            sqlite_code: None,
+        }
+    }
+
+    pub(crate) fn sqlite(code: DurabilityCode, error: &rusqlite::Error) -> Self {
+        Self {
+            code,
+            sqlite_code: naome_storage::sqlite_code(error),
+        }
+    }
+}
+
+impl From<naome_storage::UncertainCommit> for DurabilityFailure {
+    fn from(error: naome_storage::UncertainCommit) -> Self {
+        use naome_storage::UncertainCommit;
+        let (code, sqlite_code) = match error {
+            UncertainCommit::Commit { sqlite_code } => {
+                (DurabilityCode::CommitUnconfirmed, sqlite_code)
+            }
+            UncertainCommit::Rollback { sqlite_code } => {
+                (DurabilityCode::RollbackUnconfirmed, sqlite_code)
+            }
+        };
+        Self { code, sqlite_code }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     MemoryOverload {
@@ -90,7 +132,9 @@ pub enum Error {
         required: u128,
     },
     ExecutionLimit,
-    InputLimit(&'static str),
+    InputLimit(InputLimit),
+    InputFault(InputFault),
+    QuestionLimit(naome_proof::QuestionLimit),
     StaleAuthority,
     Deadline,
     InvalidInput(String),
@@ -105,7 +149,9 @@ pub enum Error {
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
     CorruptStorage(String),
-    UncertainDurability(String),
+    UncertainDurability(DurabilityFailure),
+    LearningEvidence(EvidenceFailure),
+    LearningGraph(crate::LearningGraphFailure),
 }
 impl Error {
     /// The same mathematical contract survives both native proof paths.
@@ -116,23 +162,28 @@ impl Error {
             _ => None,
         }
     }
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::MemoryOverload { .. } => "resource.memory_overload",
-            Self::DiskOverload { .. } => "resource.disk_overload",
-            Self::ExecutionLimit => "resource.execution_limit",
-            Self::InputLimit(_) => "input.limit",
-            Self::StaleAuthority => "publication.stale_authority",
-            Self::Deadline => "publication.deadline",
-            Self::InvalidInput(_) => "input.invalid",
-            Self::MissingQuestionDefinition(_) => "question.missing_definition",
-            Self::Proof { .. } => "proof.check",
-            Self::DiagnosticInspection(_) => "diagnostic.inspection",
-            Self::CertificateFormat(_) => "certificate.format",
-            Self::Stored(_) => "storage.invalid_record",
-            Self::CorruptStorage(_) => "storage.corrupt",
-            Self::UncertainDurability(_) => "storage.uncertain_durability",
-        }
+    pub fn code(&self) -> u32 {
+        let code = match self {
+            Self::MemoryOverload { .. } => OperationCode::MemoryOverload,
+            Self::DiskOverload { .. } => OperationCode::DiskOverload,
+            Self::ExecutionLimit => OperationCode::ExecutionLimit,
+            Self::InputLimit(limit) => return (*limit).into(),
+            Self::InputFault(fault) => return (*fault).into(),
+            Self::QuestionLimit(_) => OperationCode::QuestionLimit,
+            Self::StaleAuthority => OperationCode::StaleAuthority,
+            Self::Deadline => OperationCode::Deadline,
+            Self::InvalidInput(_) => OperationCode::InvalidInput,
+            Self::MissingQuestionDefinition(_) => OperationCode::MissingQuestionDefinition,
+            Self::Proof { .. } => OperationCode::ProofCheck,
+            Self::DiagnosticInspection(_) => OperationCode::DiagnosticInspection,
+            Self::CertificateFormat(_) => OperationCode::CertificateFormat,
+            Self::Stored(_) => OperationCode::InvalidStoredRecord,
+            Self::CorruptStorage(_) => OperationCode::CorruptStorage,
+            Self::UncertainDurability(failure) => return failure.code.into(),
+            Self::LearningEvidence(failure) => return failure.code().into(),
+            Self::LearningGraph(failure) => return (*failure).into(),
+        };
+        code.into()
     }
     pub fn retryable(&self) -> bool {
         if matches!(self, Self::Stored(_)) {
@@ -152,18 +203,11 @@ impl Error {
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
+            error @ (Self::InputFault(_) | Self::QuestionLimit(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof { .. } | Self::CertificateFormat(_)) if !error.retryable() => {
                 Self::Stored(Box::new(error))
             }
             other => other,
-        }
-    }
-    pub(crate) fn storage_detail(&self) -> Option<&str> {
-        match self {
-            Self::Stored(error) => error.detail(),
-            Self::Proof { message, .. } if self.fatal() => Some(message),
-            Self::CorruptStorage(message) | Self::UncertainDurability(message) => Some(message),
-            _ => None,
         }
     }
     pub(crate) fn fatal(&self) -> bool {
@@ -173,17 +217,6 @@ impl Error {
                 self,
                 Self::Stored(_) | Self::CorruptStorage(_) | Self::UncertainDurability(_)
             )
-    }
-    fn detail(&self) -> Option<&str> {
-        match self {
-            Self::Proof { message, .. }
-            | Self::InvalidInput(message)
-            | Self::CorruptStorage(message)
-            | Self::UncertainDurability(message) => Some(message),
-            Self::CertificateFormat(error) => Some(&error.message),
-            Self::Stored(error) => error.detail(),
-            _ => None,
-        }
     }
     fn format_error(&self) -> Option<(naome_checker::diagnostics::Digest, &FormatFailure)> {
         match self {
@@ -220,7 +253,13 @@ impl fmt::Display for Error {
                 "disk overload: available {available}, required reserve and work {required}"
             ),
             Self::ExecutionLimit => f.write_str("operation execution resources exhausted"),
-            Self::InputLimit(message) => f.write_str(message),
+            Self::InputLimit(limit) => f.write_str(limit.label()),
+            Self::InputFault(fault) => f.write_str(match fault {
+                InputFault::DescriptionAddressMismatch => "description proof address differs",
+                InputFault::ArtifactCompatibilityMismatch => "compatibility mismatch",
+                InputFault::CheckedIdentityMismatch => "checked identity mismatch",
+            }),
+            Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
             Self::MissingQuestionDefinition(id) => {
                 write!(f, "question definition unavailable: {id:?}")
@@ -229,8 +268,11 @@ impl fmt::Display for Error {
             Self::DiagnosticInspection(error) => error.fmt(f),
             Self::CertificateFormat(error) => f.write_str(&error.message),
             Self::Stored(error) => write!(f, "storage halted: {error}"),
-            Self::CorruptStorage(message) | Self::UncertainDurability(message) => {
-                write!(f, "storage halted: {message}")
+            Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
+            Self::LearningEvidence(error) => error.fmt(f),
+            Self::LearningGraph(error) => error.fmt(f),
+            Self::UncertainDurability(failure) => {
+                write!(f, "storage halted: {}", u32::from(failure.code))
             }
             Self::StaleAuthority => {
                 f.write_str("publication authority changed before durable commit")
@@ -248,6 +290,18 @@ impl StdError for Error {
         }
     }
 }
+impl From<crate::LearningGraphFailure> for Error {
+    fn from(error: crate::LearningGraphFailure) -> Self {
+        Self::LearningGraph(error)
+    }
+}
+
+impl From<EvidenceFailure> for Error {
+    fn from(error: EvidenceFailure) -> Self {
+        Self::LearningEvidence(error)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         use std::io::ErrorKind;
@@ -314,30 +368,76 @@ impl From<naome_checker::ContextError> for Error {
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut value = serializer.serialize_struct("OperationError", 8)?;
-        value.serialize_field("schema_version", &1)?;
-        value.serialize_field("code", self.code())?;
-        value.serialize_field("message", &self.to_string())?;
-        value.serialize_field("retryable", &self.retryable())?;
-        value.serialize_field("diagnostic", &self.diagnostic())?;
-        value.serialize_field(
-            "inspection_error",
-            &match self {
-                Self::DiagnosticInspection(error) => Some(error),
-                _ => None,
-            },
-        )?;
-        #[derive(serde::Serialize)]
-        struct Format<'a> {
-            input_digest: naome_checker::diagnostics::Digest,
-            reason: &'a FormatFailure,
+        if let Self::LearningEvidence(failure) = self {
+            return failure.serialize(serializer);
         }
-        let format_error = self.format_error().map(|(input_digest, reason)| Format {
-            input_digest,
-            reason,
-        });
-        value.serialize_field("format_error", &format_error)?;
-        value.serialize_field("fatal", &self.fatal())?;
+        if let Self::UncertainDurability(failure) = self {
+            let mut value = serializer.serialize_struct(
+                "DurabilityError",
+                3 + usize::from(failure.sqlite_code.is_some()),
+            )?;
+            value.serialize_field("code", &failure.code)?;
+            if let Some(sqlite_code) = failure.sqlite_code {
+                value.serialize_field("sqlite_code", &sqlite_code)?;
+            }
+            value.serialize_field("retryable", &false)?;
+            value.serialize_field("fatal", &true)?;
+            return value.end();
+        }
+        use serde::ser::SerializeMap;
+        let mut value = serializer.serialize_map(None)?;
+        value.serialize_entry("code", &self.code())?;
+        value.serialize_entry("retryable", &self.retryable())?;
+        value.serialize_entry("fatal", &self.fatal())?;
+        if let Some(diagnostic) = self.diagnostic() {
+            value.serialize_entry("diagnostic", diagnostic)?;
+        }
+        if let Self::DiagnosticInspection(error) = self {
+            value.serialize_entry("inspection_error", error)?;
+        }
+        if let Some((input_digest, reason)) = self.format_error() {
+            #[derive(serde::Serialize)]
+            struct Format<'a> {
+                input_digest: naome_checker::diagnostics::Digest,
+                reason: &'a FormatFailure,
+            }
+            value.serialize_entry(
+                "format_error",
+                &Format {
+                    input_digest,
+                    reason,
+                },
+            )?;
+        }
+        if let Self::Stored(cause) = self {
+            value.serialize_entry("cause_code", &cause.code())?;
+        }
+        if let Self::MemoryOverload {
+            requested,
+            charged,
+            budget,
+        } = self
+        {
+            value.serialize_entry("requested", requested)?;
+            value.serialize_entry("charged", charged)?;
+            value.serialize_entry("budget", budget)?;
+        }
+        if let Self::DiskOverload {
+            available,
+            required,
+        } = self
+        {
+            // JSON consumers can preserve the full integer using two u64 limbs.
+            let limbs = |value: u128| [(value >> 64) as u64, value as u64];
+            value.serialize_entry("available", &limbs(*available))?;
+            value.serialize_entry("required", &limbs(*required))?;
+        }
+        if let Self::QuestionLimit(limit) = self {
+            value.serialize_entry("limit", &(*limit as u8))?;
+        }
+        if let Self::MissingQuestionDefinition(id) = self {
+            value.serialize_entry("definition", id.as_bytes())?;
+        }
         value.end()
     }
 }

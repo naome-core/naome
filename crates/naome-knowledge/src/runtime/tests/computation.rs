@@ -51,7 +51,7 @@ async fn automatic_status_and_selection_preserve_identity_and_do_not_override_re
         512 << 20,
     )
     .unwrap();
-    snapshot.budget.paused = Some("operating system power saving".into());
+    snapshot.budget.paused = Some(crate::PauseReason::PowerSaving);
     snapshot.budget.concurrency = 0;
     snapshot.budget.batch_steps = 0;
     adaptive::publish(snapshot);
@@ -59,8 +59,8 @@ async fn automatic_status_and_selection_preserve_identity_and_do_not_override_re
     assert!(status.running);
     assert_eq!(status.computation, ComputationState::Pausing);
     assert_eq!(
-        status.computation_reason.as_deref(),
-        Some("operating system power saving")
+        status.computation_reason,
+        Some(crate::PauseReason::PowerSaving)
     );
     assert_eq!(status.accepted_artifacts, 3);
     drop(active);

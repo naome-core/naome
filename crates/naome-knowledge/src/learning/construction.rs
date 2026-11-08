@@ -109,7 +109,7 @@ pub fn construct(
 ) -> Result<(Option<proof::Verified>, usize), String> {
     struct Ordered;
     impl super::model::Ranker for Ordered {
-        fn scores(&mut self, d: &super::model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &super::model::Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -394,7 +394,7 @@ pub(super) fn pack_candidate(
             .iter()
             .all(|lemma| lemma.to_canonical_bytes().len() <= limit)
     {
-        return Err(error);
+        return Err(error.into());
     }
     let mut budget = repair::Budget::new(started, *remaining);
     let result = repair::portable_packet(verified, selection, &mut budget);

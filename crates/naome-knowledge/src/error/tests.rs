@@ -50,7 +50,7 @@ fn local_and_peer_certificate_errors_preserve_the_report_through_json_serializat
         InputFormat::Certificate
     );
     let binary_json = serde_json::to_value(&error).unwrap();
-    assert_eq!(binary_json["code"], "proof.check");
+    assert_eq!(binary_json["code"], u32::from(OperationCode::ProofCheck));
     assert_eq!(
         binary_json["diagnostic"]["failure"],
         local_json["diagnostic"]["failure"]
@@ -94,7 +94,7 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
         .ingest(envelope, std::time::Instant::now())
         .unwrap_err();
     let json = serde_json::to_value(&error).unwrap();
-    assert_eq!(json["code"], "certificate.format");
+    assert_eq!(json["code"], u32::from(OperationCode::CertificateFormat));
     assert_eq!(
         json["format_error"]["input_digest"],
         naome_checker::diagnostics::Digest::of(&bytes).to_string()
@@ -104,6 +104,9 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
     let stored = error.storage();
     let stored_json = serde_json::to_value(&stored).unwrap();
     assert!(stored.fatal() && !stored.retryable());
-    assert_eq!(stored_json["code"], "storage.invalid_record");
+    assert_eq!(
+        stored_json["code"],
+        u32::from(OperationCode::InvalidStoredRecord)
+    );
     assert_eq!(stored_json["format_error"], json["format_error"]);
 }

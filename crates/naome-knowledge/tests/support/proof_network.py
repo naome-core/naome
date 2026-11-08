@@ -803,7 +803,7 @@ class Driver:
             self.retain_proof("dependent", child)
             before = len(self.nodes[3].events)
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
-            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and "required dependency missing" in event.get("error", {}).get("message", ""), since=before)
+            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("error") == 0x0001_000B, since=before)
             status = self.nodes[3].status_snapshot()
             assert not status["pending"] and set(status["ids"]) == set(initial)
             assert len(stored_objects(self.nodes[3])) == len(initial)
@@ -839,10 +839,10 @@ class Driver:
                     expected_error = "malformed certificate"
                 elif label == "claimed_id":
                     object["artifact_id"] = "00" * 32
-                    expected_error = "description proof address differs"
+                    expected_error = 0x0007_0001
                 elif label == "compatibility":
                     object["compatibility"] = "00" * 32
-                    expected_error = "compatibility mismatch"
+                    expected_error = 0x0007_0002
                 elif label == "mathematical":
                     object["payload"] = "0000000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
                     expected_error = "mp.expected_implication"
@@ -851,7 +851,7 @@ class Driver:
                     unrelated = self.nodes[0].command("test_check", artifact=unrelated_source)["object"]
                     object["statement_id"] = unrelated["statement_id"]
                     q = question_fixture(60)
-                    expected_error = "checked identity mismatch"
+                    expected_error = 0x0007_0003
                 if label != "claimed_id":
                     object["artifact_id"] = artifact_id(object["statement_id"], object["payload"])
                 metadata = proof_metadata(object, q)
@@ -861,7 +861,7 @@ class Driver:
                 expected_event = "rejected" if label == "claimed_id" else "proof_skipped"
                 event = self.nodes[1].wait_event(lambda event: event.get("event") == expected_event and (
                     (event.get("error", {}).get("diagnostic") or {}).get("failure", {}).get("code") == expected_error
-                    if label == "mathematical" else expected_error in event.get("error", {}).get("message", "")), since=offset)
+                    if label == "mathematical" else event.get("error", {}).get("code") == expected_error), since=offset)
                 if label == "claimed_id":
                     assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get"
                                    and event.get("object_id") == object["artifact_id"]
@@ -875,12 +875,12 @@ class Driver:
             self.nodes[0].command("test_offer", peer=self.nodes[1].identity,
                                  metadata=self.nodes[0].command("describe", id=left["artifact_id"])["metadata"],
                                  test_compatibility="00" * 32)
-            self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and event.get("error") == "compatibility mismatch", since=offset)
+            self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and event.get("error") == 0x0001_0003, since=offset)
             self.summary["scenarios"]["reject_transport_compatibility"] = {"result": "pass"}
             for _ in range(3):
                 offset = len(self.nodes[0].events)
                 self.nodes[0].command("offer", peer=self.nodes[1].identity, id=left["artifact_id"])
-                self.nodes[0].wait_event(lambda event: event.get("event") == "offer_result" and event.get("status") == "duplicate", since=offset)
+                self.nodes[0].wait_event(lambda event: event.get("event") == "offer_result" and event.get("status") == 0x0005_0002, since=offset)
                 self.nodes[0].command("announce", id=left["artifact_id"])
                 time.sleep(0.2)
             status = self.nodes[1].status_snapshot()

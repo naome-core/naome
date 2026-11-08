@@ -171,7 +171,7 @@ def observe_work(trial, node, name, predicate, maximum, slots):
             assert 0 <= time.time() * 1000 - active['timestamp_ms'] < 5000, 'live owner budget observation is stale'
             budget = active['budget']
             assert type(budget['concurrency']) is int and budget['concurrency'] >= 0, budget
-            assert budget['paused'] is None or (isinstance(budget['paused'], str) and budget['paused']), budget
+            assert budget['paused'] is None or (type(budget['paused']) is int and 0x0004_0001 <= budget['paused'] <= 0x0004_000A), budget
             assert (budget['concurrency'] == 0) == (budget['paused'] is not None), budget
             receipt['samples'].append({'concurrency': budget['concurrency'], 'paused': budget['paused']})
             sample_at = time.monotonic() + 0.5

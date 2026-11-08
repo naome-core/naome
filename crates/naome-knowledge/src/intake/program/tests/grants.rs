@@ -128,7 +128,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_selecti
                 Some(crate::publication::PeerGrant::new())
             )
             .unwrap(),
-        "metadata_refreshed"
+        OfferStatus::MetadataRefreshed
     );
     assert_eq!(
         intake.programs.active.as_ref().unwrap().authority.until(),

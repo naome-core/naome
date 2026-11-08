@@ -7,6 +7,7 @@ use crate::{
     corpus::{InventoryCursor, InventorySnapshot},
     discovery, hex,
     object::{Metadata, id_bytes},
+    outcome::{OfferStatus, PeerFailure, WireFailure},
     quota::{Quota, Rate},
     wire::{Body, Codec, Frame, PROTOCOL},
 };
@@ -34,8 +35,6 @@ use inventory::response as inventory_response;
 use program_read::ProgramRead;
 mod worker;
 use std::sync::{Arc, atomic::Ordering};
-
-const OWNER_BUSY: &str = "node state owner busy";
 
 // JSON may encode one source byte as six bytes (for example, a control byte).
 // Leave additional bounded space for peer metadata and formatting.
@@ -1022,6 +1021,16 @@ pub(crate) fn shutdown_signal()
     })
 }
 
+fn peer_failure(error: &crate::Error) -> PeerFailure {
+    if error.fatal() {
+        PeerFailure::RequestFailed
+    } else if error.retryable() {
+        PeerFailure::ResourceUnavailable
+    } else {
+        PeerFailure::InvalidRequest
+    }
+}
+
 fn retryable_publication(error: &crate::Error) -> bool {
     error.retryable()
 }
@@ -1227,7 +1236,7 @@ impl Node {
                     let result = self.ingested(ingestion, "producer")?;
                     let metadata = self.graph.describe(id);
                     if let Some(error) = self.graph.storage_error() {
-                        return Err(error.into());
+                        return Err(error);
                     }
                     Ok(json!({"result":result,"object":object,
                     "metadata":metadata.as_ref().ok().and_then(Option::as_ref),
@@ -1507,8 +1516,8 @@ impl Node {
         peer: PeerId,
         artifact: ArtifactId,
         grant: Option<crate::publication::PeerGrant>,
-        result: Result<&'static str, crate::Error>,
-    ) -> Result<&'static str, crate::Error> {
+        result: Result<OfferStatus, crate::Error>,
+    ) -> Result<OfferStatus, crate::Error> {
         let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
             return result;
         };
@@ -1527,7 +1536,7 @@ impl Node {
             &self.graph,
             grant,
         )?;
-        Ok("awaiting_definition")
+        Ok(OfferStatus::AwaitingDefinition)
     }
 
     fn fetch_grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
@@ -1934,15 +1943,15 @@ impl Node {
                     );
                     let body = if !self.enabled.contains(&peer) {
                         Body::Error {
-                            reason: "peer disabled".into(),
+                            code: PeerFailure::Disabled,
                         }
                     } else if request.message.compatibility != crate::compatibility() {
                         Body::Error {
-                            reason: "compatibility mismatch".into(),
+                            code: PeerFailure::Incompatible,
                         }
                     } else if !self.charge(peer) {
                         Body::Error {
-                            reason: "peer rate limit".into(),
+                            code: PeerFailure::RateLimited,
                         }
                     } else {
                         self.request(peer, request.message.body, grant)?
@@ -2003,11 +2012,29 @@ impl Node {
                         json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from("required payload request failed")}),
                     );
                 }
-                emit(json!({"event":"request_failed","error":error.to_string()}));
+                use request_response::OutboundFailure as Failure;
+                let code = match &error {
+                    Failure::DialFailure => WireFailure::DialFailed,
+                    Failure::Timeout => WireFailure::TimedOut,
+                    Failure::ConnectionClosed => WireFailure::ConnectionClosed,
+                    Failure::UnsupportedProtocols => WireFailure::UnsupportedProtocols,
+                    Failure::Io(error) => crate::wire::stream_failure(error),
+                };
+                emit(json!({"event":"request_failed","error":code}));
             }
             SwarmEvent::Behaviour(BehaviourEvent::Exchange(
                 request_response::Event::InboundFailure { error, .. },
-            )) => emit(json!({"event":"inbound_failed","error":error.to_string()})),
+            )) => {
+                use request_response::InboundFailure as Failure;
+                let code = match &error {
+                    Failure::Timeout => WireFailure::TimedOut,
+                    Failure::ConnectionClosed => WireFailure::ConnectionClosed,
+                    Failure::UnsupportedProtocols => WireFailure::UnsupportedProtocols,
+                    Failure::ResponseOmission => WireFailure::ResponseOmitted,
+                    Failure::Io(error) => crate::wire::stream_failure(error),
+                };
+                emit(json!({"event":"inbound_failed","error":code}));
+            }
             _ => {}
         }
         Ok(())
@@ -2024,7 +2051,7 @@ impl Node {
                 Some(work) => Some(work),
                 None => {
                     return Ok(Body::Error {
-                        reason: "computation paused".into(),
+                        code: PeerFailure::ComputationPaused,
                     });
                 }
             }
@@ -2039,7 +2066,7 @@ impl Node {
             } => match inventory_response(&self.graph, known, after, limit) {
                 Ok(body) => body,
                 Err(error) if !error.fatal() => Body::Error {
-                    reason: error.to_string(),
+                    code: peer_failure(&error),
                 },
                 Err(error) => return Err(error.into()),
             },
@@ -2068,7 +2095,7 @@ impl Node {
                     })
                     .unwrap_or(Body::Missing),
                 Err(error) => Body::Error {
-                    reason: error.to_string(),
+                    code: peer_failure(&error),
                 },
             },
             Body::ProgramGet {
@@ -2079,7 +2106,7 @@ impl Node {
             } => {
                 if crate::resources::adaptive::network(1) == 0 {
                     Body::Error {
-                        reason: "program resources paused".into(),
+                        code: PeerFailure::ProgramResourcesPaused,
                     }
                 } else {
                     let maximum = (crate::resources::limits().proof_bytes / 2)
@@ -2093,7 +2120,7 @@ impl Node {
                         Ok(Some(chunk)) => Body::ProgramData { root, id, chunk },
                         Ok(None) => Body::Missing,
                         Err(error) => Body::Error {
-                            reason: error.to_string(),
+                            code: peer_failure(&error),
                         },
                     }
                 }
@@ -2104,11 +2131,9 @@ impl Node {
                     self.intake
                         .enqueue_program(peer, metadata, &self.graph, grant.clone());
                 match self.finish_description(peer, id, grant, queued) {
-                    Ok(status) => Body::Receipt {
-                        status: status.into(),
-                    },
+                    Ok(status) => Body::Receipt { status },
                     Err(error) => Body::Error {
-                        reason: error.to_string(),
+                        code: peer_failure(&error),
                     },
                 }
             }
@@ -2149,9 +2174,7 @@ impl Node {
                     self.finish_description(peer, ArtifactId::from_bytes(id), grant, queued)
                 });
                 match queued {
-                    Ok(status) => Body::Receipt {
-                        status: status.into(),
-                    },
+                    Ok(status) => Body::Receipt { status },
                     Err(error) => {
                         let event = if self.graph.storage_error().is_some() {
                             "storage_error"
@@ -2160,17 +2183,17 @@ impl Node {
                         };
                         emit(json!({"event":event,"error":error}));
                         Body::Error {
-                            reason: error.to_string(),
+                            code: peer_failure(&error),
                         }
                     }
                 }
             }
             _ => Body::Error {
-                reason: "unexpected request kind".into(),
+                code: PeerFailure::UnexpectedRequest,
             },
         };
         if let Some(error) = self.graph.storage_error() {
-            return Err(error);
+            return Err(error.into());
         }
         Ok(response)
     }
@@ -2213,7 +2236,7 @@ impl Node {
                         self.intake
                             .enqueue_program(peer, metadata, &self.graph, grant.clone());
                     match self.finish_description(peer, id, grant, queued) {
-                        Ok("duplicate") => {
+                        Ok(OfferStatus::Duplicate) => {
                             self.wanted.remove(&id);
                         }
                         Ok(_) => {}
@@ -2275,9 +2298,9 @@ impl Node {
                 let id = read.id;
                 self.intake.program_failed(peer, id);
                 let error = match body {
-                    Body::Error { reason } => reason,
-                    Body::Missing => "program input unavailable".into(),
-                    _ => "unexpected program response".into(),
+                    Body::Error { code } => code,
+                    Body::Missing => PeerFailure::RequiredPayloadMissing,
+                    _ => PeerFailure::UnexpectedResponse,
                 };
                 emit(
                     json!({"event":"program_transfer_deferred","id":hex(id.as_bytes()),"error":error}),
@@ -2333,7 +2356,7 @@ impl Node {
                     self.intake
                         .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
                 match self.finish_description(peer, id, grant, queued) {
-                    Ok("duplicate") => {
+                    Ok(OfferStatus::Duplicate) => {
                         self.wanted.remove(&id);
                     }
                     // Preserve attempts and the original bounded hint epoch
@@ -2374,39 +2397,42 @@ impl Node {
             (Flight::Offer { .. }, Body::Receipt { status }) => {
                 emit(json!({"event":"offer_result","status":status}))
             }
-            (Flight::Get { root, .. }, Body::Error { reason }) if reason == OWNER_BUSY => {
+            (
+                Flight::Get { root, .. },
+                Body::Error {
+                    code: PeerFailure::OwnerBusy,
+                },
+            ) => {
                 // Keep the existing approved closure and its original grant.
                 // Automatic request pacing retries without renewing authority.
                 emit(
                     json!({"event":"proof_deferred", "id":hex(root.as_bytes()),"error":crate::Error::ExecutionLimit}),
                 );
             }
-            (Flight::Get { root, .. }, Body::Error { reason }) => {
+            (Flight::Get { root, .. }, Body::Error { code }) => {
                 self.intake.abort(root);
-                emit(
-                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from(reason)}),
-                );
+                emit(json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":code}));
             }
             (Flight::Get { root, .. }, Body::Missing) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from("required dependency missing")}),
+                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":PeerFailure::RequiredPayloadMissing}),
                 );
             }
-            (_, Body::Error { reason }) => emit(json!({"event":"peer_error","error":reason})),
+            (_, Body::Error { code }) => emit(json!({"event":"peer_error","error":code})),
             // Keep the bounded attempt counter so the next retry rotates to
             // another peer. A missing descriptor is no decline authority.
             (Flight::Describe { .. }, Body::Missing) => {}
             (Flight::Get { root, .. }, _) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":crate::Error::from("unexpected required payload response")}),
+                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":PeerFailure::UnexpectedResponse}),
                 );
             }
             _ => emit(json!({"event":"rejected","error":"unexpected response kind"})),
         }
         if let Some(error) = self.graph.storage_error() {
-            return Err(error);
+            return Err(error.into());
         }
         Ok(())
     }

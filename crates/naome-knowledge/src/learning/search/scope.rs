@@ -389,8 +389,8 @@ fn search_scope(
         } else {
             let scores = match ranker.scores(&scope.decision(&facts, &offered, 0)) {
                 Ok(scores) => scores,
-                Err(error) if error == "formula_graph_capacity" => break,
-                Err(error) => return Err(error),
+                Err(crate::Error::LearningGraph(crate::LearningGraphFailure::Capacity)) => break,
+                Err(error) => return Err(error.into()),
             };
             if scores.len() != offered.len() || scores.iter().any(|score| !score.is_finite()) {
                 return Err("scope ranker scores differ from the offered actions".into());
@@ -461,12 +461,11 @@ fn decision_graphs(
                     graph.binding = super::super::digest(&(&target_bytes, &actions[..offset]));
                     graphs.push(graph);
                 }
-                Err(error)
-                    if matches!(
-                        error.as_str(),
-                        "formula_graph_capacity" | "action arity capacity"
-                    ) => {}
-                Err(error) => return Err(error),
+                Err(
+                    crate::LearningGraphFailure::Capacity
+                    | crate::LearningGraphFailure::ActionArity,
+                ) => {}
+                Err(error) => return Err(error.into()),
             }
         }
         facts.push(offered[selected].1.clone());

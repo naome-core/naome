@@ -12,7 +12,7 @@ pub(super) fn available(
         let observed = observer.refresh(path).map_err(|e| e.to_string())?;
         if let Some(reason) = &observed.budget.paused {
             return Err(format!(
-                "experiment interrupted by resource owner: {reason}"
+                "experiment interrupted by resource owner: {reason:?}"
             ));
         }
     }

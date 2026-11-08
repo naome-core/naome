@@ -27,7 +27,7 @@ impl Computation {
         self.status().0
     }
 
-    pub(crate) fn status(&self) -> (ComputationState, Option<String>) {
+    pub(crate) fn status(&self) -> (ComputationState, Option<crate::PauseReason>) {
         super::adaptive::inspect_work(|available, reason| {
             let state = if available {
                 ComputationState::Running
@@ -36,7 +36,7 @@ impl Computation {
             } else {
                 ComputationState::Pausing
             };
-            (state, reason.map(str::to_owned))
+            (state, reason)
         })
     }
 

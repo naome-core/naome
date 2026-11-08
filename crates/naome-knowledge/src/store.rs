@@ -154,10 +154,16 @@ impl Store {
         Ok(())
     }
     fn record_generation(&self) -> Result<(), crate::Error> {
-        let metadata = crate::storage::owned_file(&self.directory.join(DATABASE_FILE))
-            .map_err(crate::Error::UncertainDurability)?;
+        let metadata =
+            crate::storage::owned_file(&self.directory.join(DATABASE_FILE)).map_err(|_| {
+                crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+                    crate::DurabilityCode::CatalogGeneration,
+                ))
+            })?;
         *self.database_generation.lock().map_err(|_| {
-            crate::Error::UncertainDurability("proof catalog generation poisoned".into())
+            crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+                crate::DurabilityCode::CatalogGeneration,
+            ))
         })? = crate::storage::FileGeneration::of(&metadata);
         Ok(())
     }
@@ -410,9 +416,7 @@ impl Store {
         // rollback or ambiguous COMMIT. This grants no checked membership:
         // Graph remains halted on uncertain durability and replay is mandatory.
         match (result, self.record_generation()) {
-            (Err(primary), Err(generation)) => Err(crate::Error::UncertainDurability(format!(
-                "{primary}; generation observation failed: {generation}"
-            ))),
+            (Err(primary @ crate::Error::UncertainDurability(_)), Err(_)) => Err(primary),
             (_, Err(generation)) => Err(generation),
             (result, Ok(())) => result,
         }

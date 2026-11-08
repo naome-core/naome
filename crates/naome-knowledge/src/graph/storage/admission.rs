@@ -90,14 +90,10 @@ impl CheckedStorage {
                     let message = format!("checked admission close unresolved: {error}");
                     slot.0 = Some(connection);
                     slot.1 = Some(message.clone());
-                    let mut halt = self.halt.lock().unwrap_or_else(|error| error.into_inner());
-                    match &mut *halt {
-                        Some(primary) => {
-                            primary.push_str("; ");
-                            primary.push_str(&message);
-                        }
-                        None => *halt = Some(message),
-                    }
+                    self.halt
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .get_or_insert_with(|| crate::Error::CorruptStorage(message));
                 }
             }
         }
@@ -179,7 +175,9 @@ impl Drop for AdmissionPhase<'_> {
                 .halt
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            halt.get_or_insert_with(|| "checked admission aborted before publication".into());
+            halt.get_or_insert_with(|| {
+                crate::Error::CorruptStorage("checked admission aborted before publication".into())
+            });
         }
         // Recover poisoned gates only for fatal disposal, never continued use.
         // Source -> target is also the normal immutable-write lock order.

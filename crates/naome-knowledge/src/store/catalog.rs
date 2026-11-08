@@ -555,9 +555,12 @@ impl Catalog {
             return Err(error);
         }
 
-        transaction
-            .commit()
-            .map_err(|e| crate::Error::UncertainDurability(e.to_string()))?;
+        transaction.commit().map_err(|e| {
+            crate::Error::UncertainDurability(crate::DurabilityFailure::sqlite(
+                crate::DurabilityCode::CatalogCommit,
+                &e,
+            ))
+        })?;
         // A failure here is ambiguous durability. The Graph must halt and a
         // restart must replay the complete committed transaction.
         fail_at(cut, BatchCut::AfterCommit)?;

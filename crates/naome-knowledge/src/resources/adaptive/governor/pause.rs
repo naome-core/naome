@@ -7,7 +7,7 @@ const RECOVERY: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(super) struct Pause {
-    reason: Option<String>,
+    reason: Option<crate::PauseReason>,
     high_since: Option<Instant>,
     clear_since: Option<Instant>,
     needs_cpu: bool,
@@ -17,7 +17,7 @@ pub(super) struct Pause {
 }
 impl Pause {
     pub(super) fn unavailable(&mut self) {
-        self.reason = Some("hardware observation unavailable".into());
+        self.reason = Some(crate::PauseReason::HardwareObservationUnavailable);
         self.clear_since = None;
         self.high_since = None;
     }
@@ -37,13 +37,13 @@ impl Pause {
         }
         let cpu_pressure = high
             && now.saturating_duration_since(*self.high_since.get_or_insert(now)) >= CPU_CONFIRM;
-        let trigger = next.budget.paused.clone().or_else(|| {
+        let trigger = next.budget.paused.or_else(|| {
             if pressure.low_power == Some(true) {
-                Some("operating system power saving".into())
+                Some(crate::PauseReason::PowerSaving)
             } else if pressure.thermal == Some(true) {
-                Some("operating system thermal pressure".into())
+                Some(crate::PauseReason::ThermalPressure)
             } else if cpu_pressure {
-                Some("sustained external CPU pressure".into())
+                Some(crate::PauseReason::ExternalCpuPressure)
             } else {
                 None
             }
@@ -91,6 +91,6 @@ impl Pause {
                 self.clear_since = None;
             }
         }
-        next.budget.paused = self.reason.clone();
+        next.budget.paused = self.reason;
     }
 }

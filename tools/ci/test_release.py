@@ -440,7 +440,7 @@ class PackageTests(unittest.TestCase):
                     elif command != "status":
                         self.fail(f"unexpected lifecycle command: {command}")
                     return json.dumps({"running": running, "computation": computation if running else "stopped",
-                                       "computation_reason": "operating system memory pressure" if running and computation != "running" else None,
+                                       "computation_reason": 0x0004_0003 if running and computation != "running" else None,
                                        "artifact_verification": "checked" if running else "not_run"})
                 package.lifecycle(run, self.directory / computation)
                 self.assertEqual(operations, ["start", "status", "stop", "status"])

@@ -368,7 +368,7 @@ async fn receive(
         intake
             .enqueue_program(peer, metadata.clone(), &graph, None)
             .unwrap(),
-        "queued"
+        OfferStatus::Queued
     );
     let mut fetched = BTreeSet::new();
     let mut accepted = None;

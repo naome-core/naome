@@ -140,32 +140,39 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted artifacts {} ({verification})\n",
         status.accepted_artifacts,
     );
-    if let Some(reason) = &status.computation_reason {
-        let reason = reason
-            .chars()
-            .flat_map(char::escape_default)
-            .collect::<String>();
-        // The reason originates in the local resource policy; retain terminal
-        // escaping so passive diagnostics cannot acquire display authority.
-        writeln!(output, "    Computation reason: {reason}").expect("String write");
+    use crate::PauseReason;
+    if let Some(reason) = status.computation_reason {
+        let label = match reason {
+            PauseReason::MemoryPressure => "memory pressure",
+            PauseReason::DiskPressure => "disk pressure",
+            PauseReason::SystemMemoryPressure => "operating system memory pressure",
+            PauseReason::ProcessTreeMemoryPressure => "node process tree memory pressure",
+            PauseReason::HardwareObservationUnavailable => "hardware observation unavailable",
+            PauseReason::PowerSaving => "operating system power saving",
+            PauseReason::ThermalPressure => "operating system thermal pressure",
+            PauseReason::ExternalCpuPressure => "sustained external CPU pressure",
+            PauseReason::ResourceStateUnavailable => "resource state unavailable",
+            PauseReason::NoComputationBudget => "no computation budget",
+        };
+        writeln!(output, "    Computation reason: {label}").expect("String write");
     }
     if matches!(
         status.computation,
         crate::resources::ComputationState::Pausing | crate::resources::ComputationState::Paused
     ) {
-        let advice = match status.computation_reason.as_deref() {
-            Some("disk pressure") => Some("Free disk space on the node's filesystem."),
+        let advice = match status.computation_reason {
+            Some(PauseReason::DiskPressure) => Some("Free disk space on the node's filesystem."),
             Some(
-                "memory pressure"
-                | "node process tree memory pressure"
-                | "operating system memory pressure",
+                PauseReason::MemoryPressure
+                | PauseReason::ProcessTreeMemoryPressure
+                | PauseReason::SystemMemoryPressure,
             ) => Some("Reduce memory use on this host if the pause persists."),
-            Some("operating system power saving") => {
+            Some(PauseReason::PowerSaving) => {
                 Some("Check the host's power-saving setting if computation should resume.")
             }
-            Some("operating system thermal pressure") => Some("Let the host cool down."),
-            Some("sustained external CPU pressure") => Some("Let other CPU-intensive work finish."),
-            Some("hardware observation unavailable") => {
+            Some(PauseReason::ThermalPressure) => Some("Let the host cool down."),
+            Some(PauseReason::ExternalCpuPressure) => Some("Let other CPU-intensive work finish."),
+            Some(PauseReason::HardwareObservationUnavailable) => {
                 Some("Hardware observations are retried automatically.")
             }
             _ => None,

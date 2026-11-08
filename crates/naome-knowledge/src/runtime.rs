@@ -186,7 +186,7 @@ pub enum ArtifactVerification {
 pub struct Status {
     pub running: bool,
     pub computation: crate::resources::ComputationState,
-    pub computation_reason: Option<String>,
+    pub computation_reason: Option<crate::PauseReason>,
     pub accepted_artifacts: usize,
     pub artifact_verification: ArtifactVerification,
 }

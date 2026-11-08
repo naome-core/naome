@@ -68,7 +68,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
     let metadata = fixture(41).1;
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-        "queued"
+        OfferStatus::Queued
     );
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -90,7 +90,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
     );
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-        "metadata_refreshed"
+        OfferStatus::MetadataRefreshed
     );
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -187,7 +187,10 @@ async fn metadata_capacity_keeps_one_active_root_and_eight_bounded_waiting_descr
     approve(&mut intake, &mut questions, &mut graph).await;
     let selected = intake.needed();
     assert_eq!(intake.description_capacity(), 1);
-    assert_eq!(intake.enqueue(peer, next, &graph).unwrap(), "queued");
+    assert_eq!(
+        intake.enqueue(peer, next, &graph).unwrap(),
+        OfferStatus::Queued
+    );
     assert_eq!(intake.description_capacity(), 0);
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -429,17 +432,20 @@ async fn declined_metadata_does_not_poison_new_question_record_or_peer_for_same_
     ));
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-        "declined"
+        OfferStatus::Declined
     );
     let mut changed = metadata.clone();
     changed.question = format!("0202{}", changed.question);
-    assert_eq!(intake.enqueue(peer, changed, &graph).unwrap(), "queued");
+    assert_eq!(
+        intake.enqueue(peer, changed, &graph).unwrap(),
+        OfferStatus::Queued
+    );
     approve(&mut intake, &mut questions, &mut graph).await;
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     assert!(intake.authorizes(peer, id, id));
     assert_eq!(
         intake.enqueue(PeerId::random(), metadata, &graph).unwrap(),
-        "queued"
+        OfferStatus::Queued
     );
 }
 
@@ -465,7 +471,10 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
         Progress::Skipped(..)
     ));
     assert!(intake.needed().is_empty());
-    assert_eq!(intake.enqueue(peer, metadata, &graph).unwrap(), "queued");
+    assert_eq!(
+        intake.enqueue(peer, metadata, &graph).unwrap(),
+        OfferStatus::Queued
+    );
     approve(&mut intake, &mut questions, &mut graph).await;
     let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.payload(peer, root, root, object, &graph).unwrap();

@@ -221,7 +221,9 @@ fn probes(
         return Err("training evaluation knowledge differs".into());
     }
     if observations.len() > crate::resources::active_limits().question_page {
-        return Err(Error::InputLimit("training diagnostic page limit"));
+        return Err(Error::InputLimit(
+            crate::InputLimit::TrainingDiagnosticPageLimit,
+        ));
     }
     let mut result = BTreeMap::new();
     for probe in observations {

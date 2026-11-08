@@ -435,7 +435,7 @@ impl Graph {
         };
         match crate::learning::evidence::pack(&verified) {
             Ok(packet) => Ok((packet.len() <= crate::learning::knowledge::BYTES).then_some(packet)),
-            Err(error) if error.ends_with(" capacity") => Ok(None),
+            Err(crate::learning::evidence::Failure::Limit { .. }) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }

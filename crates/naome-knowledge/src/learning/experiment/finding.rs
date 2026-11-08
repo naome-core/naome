@@ -474,14 +474,14 @@ fn train(
             if let Some(reason) = &observed.budget.paused {
                 complete = false;
                 stopped = Some(unit);
-                stopped_reason = Some(reason.clone());
+                stopped_reason = Some(u32::from(*reason));
                 break;
             }
         }
-        if let Err(error) = native.execute(unit, None, job, engine, io) {
+        if native.execute(unit, None, job, engine, io).is_err() {
             complete = false;
             stopped = Some(unit);
-            stopped_reason = Some(error);
+            stopped_reason = Some(u32::from(crate::outcome::OperationCode::ExecutionFailed));
             break;
         }
         retained(io, native.blobs());
@@ -576,7 +576,7 @@ fn arm(
                     &path.join("interrupted.json"),
                     &json!({"round":round,"reason":reason,"resources":observed,"cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":start.elapsed().as_micros()}),
                 );
-                panic!("finder study paused by installed resource owner: {reason}");
+                panic!("finder study paused by installed resource owner: {reason:?}");
             }
         }
         let mut events = Vec::new();

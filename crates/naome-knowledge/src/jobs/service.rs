@@ -1,4 +1,5 @@
 use super::*;
+use crate::outcome::WorkerFailure;
 use journal::{Account, Disk, Journal};
 use libp2p::futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::{
@@ -495,7 +496,7 @@ impl Owner {
                     &mut self.journal,
                     &admission,
                     PeerStatus::Unsupported {
-                        reason: "reserved question or unsupported replay capacity".into(),
+                        reason: WorkerFailure::ReplayAdmissionLimit,
                     },
                 )?;
             } else {
@@ -798,7 +799,7 @@ impl Owner {
                 .expect("owned peer result");
             record.state = State::Expired;
             record.result = None;
-            record.failure = Some("peer replay finalization allowance expired".into());
+            record.failure = Some(WorkerFailure::Deadline);
         }
         let updates = self.disk.finish_peer(&mut self.journal, id)?;
         self.journal
@@ -826,11 +827,7 @@ impl Owner {
             record.state = State::InDoubt;
             record.acknowledged = false;
             record.result = None;
-            record.failure = outcome
-                .result
-                .as_ref()
-                .err()
-                .map(|error| failure_detail(error));
+            record.failure = outcome.result.as_ref().err().copied();
             let accounting = self.charge(id);
             self.running.remove(&id);
             self.clocks.remove(&id);
@@ -878,7 +875,7 @@ impl Owner {
             match outcome.result {
                 Ok(output) if !expired => record.result = Some(output),
                 Ok(_) => record.result = None,
-                Err(error) => record.failure = Some(failure_detail(&error)),
+                Err(error) => record.failure = Some(error),
             }
         }
         if let Some(cost) = record
@@ -1465,11 +1462,9 @@ impl Owner {
                     ))
                     .catch_unwind()
                     .await
-                    .unwrap_or_else(|_| process::Outcome {
+                    .unwrap_or(process::Outcome {
                         state: State::InDoubt,
-                        result: Err(
-                            "provider task panicked; cleanup requires reconciliation".into()
-                        ),
+                        result: Err(WorkerFailure::Panic),
                     });
                     (id, outcome)
                 }));
@@ -1670,7 +1665,7 @@ impl Owner {
                 record.state = State::InDoubt;
                 record.acknowledged = false;
                 record.result = None;
-                record.failure = outcome.result.err().map(|error| failure_detail(&error));
+                record.failure = outcome.result.err();
                 failure = Some(append_failure(
                     failure.take(),
                     "provider cleanup is unconfirmed",
@@ -1736,16 +1731,6 @@ fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: Sta
         state,
         result: Err(error.into()),
     });
-}
-
-fn failure_detail(error: &str) -> String {
-    error
-        .char_indices()
-        .take_while(|(index, ch)| {
-            index + ch.len_utf8() <= crate::resources::limits().failure_detail_bytes
-        })
-        .map(|(_, ch)| ch)
-        .collect()
 }
 
 fn output_reservation(input: &Input) -> usize {

@@ -27,7 +27,7 @@ fn inputs() -> (
 }
 struct NoNeural;
 impl super::super::model::Ranker for NoNeural {
-    fn scores(&mut self, _: &super::super::model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, _: &super::super::model::Decision) -> Result<Vec<f32>, crate::Error> {
         panic!("checked composition must not invent a neural decision");
     }
 }

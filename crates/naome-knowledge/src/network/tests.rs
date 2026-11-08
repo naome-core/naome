@@ -581,14 +581,32 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
             limit: 1,
         }),
     );
-    tokio::time::timeout(Duration::from_secs(2),async{
-        loop{
-            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message{message:request_response::Message::Response{request_id,response},..}))=client.select_next_some().await{
-                assert_eq!(request_id,id);
-                assert!(matches!(response.message.body,Body::Error{reason} if reason=="node state owner busy"));break;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                request_response::Event::Message {
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
+                    ..
+                },
+            )) = client.select_next_some().await
+            {
+                assert_eq!(request_id, id);
+                assert!(matches!(
+                    response.message.body,
+                    Body::Error {
+                        code: PeerFailure::OwnerBusy
+                    }
+                ));
+                break;
             }
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let network_seconds = measure.elapsed().as_secs_f64();
     // Metadata is retained in the bounded handoff while expensive checking is
     // stalled. A state-dependent inventory probe above still gets a prompt error.
@@ -607,7 +625,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
                         message: request_response::Message::Request { request, channel, .. }, ..
                     })) = event.unwrap().event {
                         assert!(matches!(request.message.body, Body::Offer { metadata } if metadata == offered));
-                        shared.behaviour_mut().exchange.send_response(channel, Frame::new(Body::Receipt { status: "queued".into() })).unwrap();
+                        shared.behaviour_mut().exchange.send_response(channel, Frame::new(Body::Receipt { status: OfferStatus::Queued })).unwrap();
                         break;
                     }
                 }

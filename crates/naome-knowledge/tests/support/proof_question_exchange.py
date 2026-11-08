@@ -105,8 +105,8 @@ class QuestionDriver(DiscoveryDriver):
             result = sender.command("produce", artifact=quantified_reflexivity(34))
             assert result["result"]["status"] == "accepted" and result["metadata"] is None, result
             error = result["metadata_error"]
-            assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
-            assert error["message"] == "question limit exceeded: question target depth", error
+            assert error["code"] == 0x0006_000D, error
+            assert error["limit"] == 2, error
             assert error["retryable"] is False and error["fatal"] is False, error
             assert result["object"]["artifact_id"] in sender.ids()
             self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["artifact_id"], "metadata_error": error}

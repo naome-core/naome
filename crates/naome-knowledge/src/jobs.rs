@@ -486,7 +486,7 @@ pub(crate) struct Record {
     pub state: State,
     pub result: Option<Output>,
     pub acknowledged: bool,
-    pub failure: Option<String>,
+    pub failure: Option<crate::outcome::WorkerFailure>,
 }
 
 #[derive(Clone, Debug)]
@@ -573,7 +573,7 @@ enum PeerStatus {
         trace_proof: String,
     },
     Unsupported {
-        reason: String,
+        reason: crate::outcome::WorkerFailure,
     },
 }
 enum Command {

@@ -55,7 +55,7 @@ def lifecycle(run, directory):
         computation = status.get("computation")
         reason = status.get("computation_reason")
         valid_computation = ((computation == "running" and reason is None)
-                             or (computation in ("pausing", "paused") and isinstance(reason, str) and bool(reason.strip())))
+                             or (computation in ("pausing", "paused") and type(reason) is int and 0x0004_0001 <= reason <= 0x0004_000A))
         if status.get("running") is not True or status.get("artifact_verification") != "checked" or not valid_computation:
             raise ValueError("extracted node is not ready with a valid computation state")
     finally:

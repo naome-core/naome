@@ -241,7 +241,7 @@ impl QuestionHandle {
     {
         if bytes.len() > naome_checker::question::QUESTION_BYTES {
             return Ok(Err(naome_checker::question::QuestionError::Limit(
-                "encoded question bytes",
+                naome_proof::QuestionLimit::EncodedBytes,
             )));
         }
         let (sender, reply) = oneshot::channel();
@@ -1036,8 +1036,11 @@ where
                 return Err(error);
             }
         };
-        self.apply_exchange(delta)
-            .map_err(crate::Error::UncertainDurability)?;
+        self.apply_exchange(delta).map_err(|_| {
+            crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+                crate::DurabilityCode::QuestionPublication,
+            ))
+        })?;
         self.finish_publication(root)?;
         Ok(admitted)
     }

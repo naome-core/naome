@@ -30,7 +30,7 @@ fn interrupted_or_paused_finalization_reopens_unchecked_and_reproduces_the_manif
             work.prepare_export(&quantum).unwrap();
         }
         let mut paused = quantum.clone();
-        paused.paused = Some("resource reduction".into());
+        paused.paused = Some(crate::PauseReason::MemoryPressure);
         paused.batch_steps = 0;
         assert!(!work.prepare_export(&paused).unwrap());
         drop(work);

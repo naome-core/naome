@@ -166,7 +166,9 @@ impl Metadata {
     > {
         let id = ArtifactId::from_bytes(id_bytes(&self.artifact_id)?);
         if ArtifactId::from_proof_id(ProofId::from_bytes(id_bytes(&self.proof_id)?)) != id {
-            return Err("description proof address differs".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::DescriptionAddressMismatch,
+            ));
         }
         let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
         let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
@@ -254,10 +256,14 @@ pub(crate) struct CandidateData {
 impl Candidate {
     pub(crate) fn for_admission(&self) -> Result<Self, crate::Error> {
         if self.bytes.len() > crate::resources::limits().proof_bytes {
-            return Err(crate::Error::InputLimit("artifact byte limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::ArtifactByteLimit,
+            ));
         }
         if self.dependencies.len() > crate::resources::limits().proof_dependencies {
-            return Err(crate::Error::InputLimit("dependency count limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::DependencyCountLimit,
+            ));
         }
         Ok(self.clone())
     }
@@ -471,7 +477,9 @@ impl BinaryArtifact {
         maximum_dependencies: usize,
     ) -> Result<Candidate, crate::Error> {
         if self.bytes.len() > maximum {
-            return Err(crate::Error::InputLimit("artifact byte limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::ArtifactByteLimit,
+            ));
         }
         let memory = crate::resources::MemoryLease::acquire(
             self.bytes
@@ -565,7 +573,9 @@ fn prepare_candidate(
             .collect(),
     };
     if dependencies.len() > maximum_dependencies {
-        return Err(crate::Error::InputLimit("dependency count limit"));
+        return Err(crate::Error::InputLimit(
+            crate::InputLimit::DependencyCountLimit,
+        ));
     }
     Ok(Candidate(std::sync::Arc::new(CandidateData {
         id,
@@ -594,7 +604,9 @@ fn dependencies_with_limit(
         }
     }
     if dependencies.len() > maximum {
-        return Err(crate::Error::InputLimit("dependency count limit"));
+        return Err(crate::Error::InputLimit(
+            crate::InputLimit::DependencyCountLimit,
+        ));
     }
     if dependencies.contains(&id) {
         return Err("dependency cycle".into());
@@ -628,10 +640,14 @@ impl Envelope {
             return Ok(None);
         }
         if self.compatibility != hex(&compatibility()) {
-            return Err("compatibility mismatch".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::ArtifactCompatibilityMismatch,
+            ));
         }
         if self.payload.len() > 2 * crate::resources::limits().proof_bytes {
-            return Err(crate::Error::InputLimit("artifact byte limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::ArtifactByteLimit,
+            ));
         }
         let _memory = crate::resources::MemoryLease::acquire(self.payload.len())?;
         let manifest =
@@ -663,7 +679,9 @@ impl Envelope {
         maximum_dependencies: usize,
     ) -> Result<Candidate, crate::Error> {
         if self.compatibility != hex(&compatibility()) {
-            return Err("compatibility mismatch".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::ArtifactCompatibilityMismatch,
+            ));
         }
         let id = ArtifactId::from_bytes(id_bytes(&self.artifact_id)?);
         let statement = self
@@ -679,7 +697,9 @@ impl Envelope {
             .transpose()?
             .map(ProofId::from_bytes);
         if self.payload.len() > 2 * maximum {
-            return Err(crate::Error::InputLimit("artifact byte limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::ArtifactByteLimit,
+            ));
         }
         let memory = crate::resources::MemoryLease::acquire(
             self.payload

@@ -159,7 +159,7 @@ fn technical_and_interrupted_records_preserve_uncertainty_without_fake_proofs() 
     ] {
         let mut record = owner.journal.records[&id].clone();
         record.state = state;
-        record.failure = Some("worker ended without a retained search unit".into());
+        record.failure = Some(WorkerFailure::Execution);
         let summary = ExperienceSummary::from_record(&record).unwrap().unwrap();
         summary.validate().unwrap();
         assert_eq!(summary.terminal, terminal);
@@ -185,7 +185,7 @@ fn failed_native_experience_reloads_from_the_existing_job_journal() {
             id,
             process::Outcome {
                 state: State::Failed,
-                result: Err("worker could not finish its reserved unit".into()),
+                result: Err(WorkerFailure::Execution),
             },
         )
         .unwrap();
@@ -372,7 +372,7 @@ fn bounded_journal_history_includes_terminal_failures_without_invented_training_
             failed,
             process::Outcome {
                 state: State::Failed,
-                result: Err("observed worker interruption".into()),
+                result: Err(WorkerFailure::Execution),
             },
         )
         .unwrap();
@@ -1564,7 +1564,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             &mut owner.journal,
             &admission,
             PeerStatus::Unsupported {
-                reason: "duplicate or no supported ambiguous decisions".into(),
+                reason: WorkerFailure::ReplayNotSelected,
             },
         )
         .unwrap();
@@ -1611,7 +1611,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             &mut owner.journal,
             &admission,
             PeerStatus::Unsupported {
-                reason: "duplicate or no supported ambiguous decisions".into(),
+                reason: WorkerFailure::ReplayNotSelected,
             },
         )
         .unwrap();

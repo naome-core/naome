@@ -1,5 +1,6 @@
 //! The production parent lifeline is independent of synchronous provider work.
 use super::*;
+use crate::outcome::WorkerFailure;
 use std::{
     io::{BufRead, Write},
     os::fd::AsRawFd,
@@ -92,18 +93,15 @@ enum Frame {
     },
     Failed {
         id: u64,
-        error: String,
     },
     Uncertain {
         id: u64,
-        error: String,
     },
     CleanupComplete {
         id: u64,
     },
     CleanupFailed {
         id: u64,
-        error: String,
     },
 }
 
@@ -157,12 +155,13 @@ pub(super) enum Event {
 
 pub(super) struct Outcome {
     pub state: State,
-    pub result: Result<Output, String>,
+    pub result: Result<Output, WorkerFailure>,
 }
 
 struct OwnedAttempt {
     disposition: std::sync::Mutex<Option<State>>,
     feedback: feedback::Attempt,
+    failure: Option<WorkerFailure>,
 }
 
 pub(super) async fn run(
@@ -176,6 +175,7 @@ pub(super) async fn run(
     let mut attempt = OwnedAttempt {
         disposition: std::sync::Mutex::new(None),
         feedback: feedback::Attempt::new(record.input.feedback_role()),
+        failure: None,
     };
     let result = run_owned(
         record,
@@ -197,6 +197,14 @@ pub(super) async fn run(
             State::Failed
         });
     attempt.feedback.finish(state);
+    let result = result.map_err(|_| {
+        attempt.failure.unwrap_or(match state {
+            State::Cancelled => WorkerFailure::Cancelled,
+            State::Expired => WorkerFailure::Deadline,
+            State::InDoubt => WorkerFailure::CleanupUnconfirmed,
+            _ => WorkerFailure::Execution,
+        })
+    });
     Outcome { state, result }
 }
 
@@ -211,6 +219,7 @@ async fn run_owned(
 ) -> Result<Output, String> {
     let disposition = &attempt.disposition;
     let feedback = &mut attempt.feedback;
+    let failure = &mut attempt.failure;
     let remaining_ms = remaining_ms.min(record.expires_ms.saturating_sub(wall_ms()?));
     if remaining_ms == 0 {
         *disposition.lock().expect("provider disposition owner") = Some(State::Expired);
@@ -575,18 +584,19 @@ async fn run_owned(
                     }
                     return Ok(output);
                 }
-                Frame::Uncertain { id, error } if ready && id == record.id => {
+                Frame::Uncertain { id } if ready && id == record.id => {
+                    *failure = Some(WorkerFailure::ProviderUncertain);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-                    return Err(error);
+                    return Err("provider effects require reconciliation".into());
                 }
-                Frame::Failed { id, error } if ready && id == record.id => {
-                    return Err(error);
+                Frame::Failed { id } if ready && id == record.id => {
+                    *failure = Some(WorkerFailure::ProviderRejected);
+                    return Err("provider rejected the attempt".into());
                 }
-                Frame::CleanupFailed { id, error } if id == record.id => {
+                Frame::CleanupFailed { id } if id == record.id => {
+                    *failure = Some(WorkerFailure::CleanupUnconfirmed);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-                    return Err(format!(
-                        "provider group termination is unconfirmed: {error}"
-                    ));
+                    return Err("provider group termination is unconfirmed".into());
                 }
                 _ => return Err("provider frame identity or lifecycle differs".into()),
             }
@@ -620,11 +630,9 @@ async fn run_owned(
                 .map_err(|_| "provider cleanup frame corruption")?
             {
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
-                Frame::CleanupFailed { id, error } if id == record.id => {
+                Frame::CleanupFailed { id } if id == record.id => {
                     cleaned = false;
-                    return Err(format!(
-                        "provider group termination is unconfirmed: {error}"
-                    ));
+                    return Err("provider group termination is unconfirmed".into());
                 }
                 Frame::Ready { id, .. }
                 | Frame::Feedback { id, .. }
@@ -679,11 +687,18 @@ async fn run_owned(
         cleaned = true;
     }
     if !cleaned {
+        *failure = Some(WorkerFailure::CleanupUnconfirmed);
         *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
         return Err("provider cleanup receipt is absent; recovery is uncertain".into());
     }
+    // A cleanup receipt confirms process custody. It cannot confirm effects
+    // reported as uncertain by the worker.
     *disposition.lock().expect("provider disposition owner") =
-        completion_state.filter(|state| *state != State::InDoubt);
+        if *failure == Some(WorkerFailure::ProviderUncertain) {
+            Some(State::InDoubt)
+        } else {
+            completion_state.filter(|state| *state != State::InDoubt)
+        };
     if let Some(error) = drain_error {
         return Err(match result {
             Err(primary) => format!("{primary}; {error}"),
@@ -960,10 +975,6 @@ fn supervise() -> Result<(), String> {
     if let Err(error) = child.finish() {
         let _ = emit(&Frame::CleanupFailed {
             id: start.record.id,
-            error: error
-                .chars()
-                .take(crate::resources::limits().failure_detail_bytes)
-                .collect(),
         });
         return Err(error);
     }
@@ -1097,14 +1108,8 @@ fn work() -> Result<(), String> {
             id: record.id,
             output,
         }),
-        Err(super::provider::Failure::Failed(error)) => emit(&Frame::Failed {
-            id: record.id,
-            error,
-        }),
-        Err(super::provider::Failure::Uncertain(error)) => emit(&Frame::Uncertain {
-            id: record.id,
-            error,
-        }),
+        Err(super::provider::Failure::Failed) => emit(&Frame::Failed { id: record.id }),
+        Err(super::provider::Failure::Uncertain) => emit(&Frame::Uncertain { id: record.id }),
     }
 }
 

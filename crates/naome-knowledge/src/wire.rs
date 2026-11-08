@@ -1,4 +1,8 @@
-use crate::{Envelope, object::Metadata};
+use crate::{
+    Envelope,
+    object::Metadata,
+    outcome::{OfferStatus, PeerFailure, WireFailure},
+};
 use libp2p::{
     StreamProtocol,
     futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -13,8 +17,7 @@ mod artifact;
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_ARTIFACT: u32 = 1 << 31;
-pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:json-control,packed-binary-artifact,defined-question-per-proof";
+pub(crate) const FRAME_CONTRACT: &str = "naome:frames:json-control-with-numeric-peer-outcomes,packed-binary-artifact,defined-question-per-proof";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,10 +86,10 @@ pub(crate) enum Body {
     },
     Missing,
     Receipt {
-        status: String,
+        status: OfferStatus,
     },
     Error {
-        reason: String,
+        code: PeerFailure,
     },
 }
 
@@ -135,13 +138,13 @@ impl Codec {
         let binary = header & BINARY_ARTIFACT != 0;
         let length = (header & !BINARY_ARTIFACT) as usize;
         if length > frame_limit() {
-            return Err(invalid("frame byte limit"));
+            return Err(WireFailure::FrameLimit.into());
         }
         let permit = self
             .budget
             .clone()
             .try_acquire_owned()
-            .map_err(|_| invalid("frame capacity"))?;
+            .map_err(|_| WireFailure::FrameCapacity)?;
         let commands = if binary {
             // Every instruction occupies at least two bytes on the wire.
             (length / 2).min(naome_proof::program::CHUNK_RECORDS)
@@ -155,12 +158,15 @@ impl Codec {
         stream.read_exact(&mut bytes).await?;
         let mut trailing = [0];
         if stream.read(&mut trailing).await? != 0 {
-            return Err(invalid("trailing frame bytes"));
+            return Err(WireFailure::TrailingFrameBytes.into());
         }
         let (message, expanded) = if binary {
-            artifact::decode(&bytes).map_err(invalid)?
+            artifact::decode(&bytes)?
         } else {
-            (serde_json::from_slice(&bytes).map_err(invalid)?, Vec::new())
+            (
+                serde_json::from_slice(&bytes).map_err(|_| WireFailure::ControlRecord)?,
+                Vec::new(),
+            )
         };
         Ok(Frame {
             message,
@@ -175,17 +181,24 @@ impl Codec {
         stream: &mut T,
         frame: Frame,
     ) -> io::Result<()> {
-        let _memory = crate::resources::MemoryLease::acquire(frame_limit()).map_err(invalid)?;
+        let _memory = crate::resources::MemoryLease::acquire(frame_limit())
+            .map_err(|_| WireFailure::FrameMemory)?;
         let binary = artifact::binary(&frame.message.body);
         let bytes = if binary {
-            artifact::encode(&frame.message).map_err(invalid)?
+            artifact::encode(&frame.message)?
         } else {
             let mut output = BoundedOutput(Vec::new());
-            serde_json::to_writer(&mut output, &frame.message).map_err(invalid)?;
+            serde_json::to_writer(&mut output, &frame.message).map_err(|error| {
+                if error.is_io() {
+                    WireFailure::FrameLimit
+                } else {
+                    WireFailure::ControlRecord
+                }
+            })?;
             output.0
         };
         if bytes.len() > frame_limit() {
-            return Err(invalid("frame byte limit"));
+            return Err(WireFailure::FrameLimit.into());
         }
         let header = (bytes.len() as u32) | if binary { BINARY_ARTIFACT } else { 0 };
         stream.write_all(&header.to_be_bytes()).await?;
@@ -203,9 +216,9 @@ fn frame_memory(
         length
             .checked_mul(if binary { 16 } else { 4 })
             .and_then(|bytes| bytes.checked_add(commands))
-            .ok_or_else(|| invalid("frame memory overflow"))?,
+            .ok_or(WireFailure::FrameMemory)?,
     )
-    .map_err(invalid)
+    .map_err(|_| WireFailure::FrameMemory.into())
 }
 
 fn frame_limit() -> usize {
@@ -216,7 +229,7 @@ struct BoundedOutput(Vec<u8>);
 impl std::io::Write for BoundedOutput {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > frame_limit().saturating_sub(self.0.len()) {
-            return Err(invalid("frame byte limit"));
+            return Err(WireFailure::FrameLimit.into());
         }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -226,8 +239,26 @@ impl std::io::Write for BoundedOutput {
     }
 }
 
-fn invalid(error: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+impl std::fmt::Display for WireFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        u32::from(*self).fmt(formatter)
+    }
+}
+
+impl std::error::Error for WireFailure {}
+
+impl From<WireFailure> for io::Error {
+    fn from(error: WireFailure) -> Self {
+        Self::new(io::ErrorKind::InvalidData, error)
+    }
+}
+
+pub(crate) fn stream_failure(error: &io::Error) -> WireFailure {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<WireFailure>())
+        .copied()
+        .unwrap_or(WireFailure::StreamIo)
 }
 
 impl request_response::Codec for Codec {

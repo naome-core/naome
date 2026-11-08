@@ -3,7 +3,10 @@ use crate::learning::{Evidence, Origin, State, curriculum, proof, search_questio
 
 struct Symbolic;
 impl crate::learning::model::Ranker for Symbolic {
-    fn scores(&mut self, decision: &crate::learning::model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(
+        &mut self,
+        decision: &crate::learning::model::Decision,
+    ) -> Result<Vec<f32>, crate::Error> {
         Ok(vec![0.; decision.candidates.len()])
     }
 }

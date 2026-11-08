@@ -4,7 +4,7 @@ use crate::learning::{model::*, search};
 fn checked(branching: bool) -> Pool {
     struct Ordered(bool);
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| {

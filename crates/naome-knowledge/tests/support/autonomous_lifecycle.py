@@ -35,7 +35,7 @@ def assert_node_status(value, *, running, accepted_artifacts=None):
         assert value["computation_reason"] is None, value
     else:
         assert value["computation"] in {"pausing", "paused"}, value
-        assert isinstance(value["computation_reason"], str) and value["computation_reason"], value
+        assert type(value["computation_reason"]) is int and 0x0004_0001 <= value["computation_reason"] <= 0x0004_000A, value
 
 
 class StartupWrapperExit(RuntimeError):

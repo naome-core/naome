@@ -202,17 +202,11 @@ impl Disk {
         let mut status = PeerStatus::Unsupported {
             reason: record
                 .failure
-                .clone()
-                .unwrap_or_else(|| "native reconstruction unavailable".into()),
+                .unwrap_or(crate::outcome::WorkerFailure::ReplayUnavailable),
         };
-        if let Some(Output::Native {
-            solution,
-            diagnostic,
-            ..
-        }) = &record.result
-        {
+        if let Some(Output::Native { solution, .. }) = &record.result {
             status = PeerStatus::Unsupported {
-                reason: diagnostic.clone(),
+                reason: crate::outcome::WorkerFailure::NoReplayCandidate,
             };
             if let Some(solution) = solution
                 && !solution.refuted
@@ -259,7 +253,7 @@ impl Disk {
                     };
                 } else {
                     status = PeerStatus::Unsupported {
-                        reason: "duplicate or no supported ambiguous decisions".into(),
+                        reason: crate::outcome::WorkerFailure::ReplayNotSelected,
                     };
                 }
             }

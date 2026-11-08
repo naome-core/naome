@@ -54,7 +54,7 @@ fn zero_overflow_codec_and_inconsistent_allocations_are_rejected() {
         serde_json::json!({"tuning":{"assessment_operations":usize::MAX}}),
         serde_json::json!({"tuning":{"network_config_bytes":usize::MAX}}),
         serde_json::json!({"tuning":{"command_bytes":64*MIB,"cli_commands":8}}),
-        serde_json::json!({"tuning":{"failure_detail_bytes":usize::MAX}}),
+        serde_json::json!({"tuning":{"diagnostic_bytes":usize::MAX}}),
         serde_json::json!({"tuning":{"identify_protocols":DEFAULT.identify_protocols+1}}),
         serde_json::json!({"tuning":{"identify_addresses":DEFAULT.identify_addresses+1}}),
         serde_json::json!({"tuning":{"replay_guard_bytes":385*MIB}}),
@@ -198,7 +198,7 @@ pub(crate) fn snapshot(paused: bool) -> Snapshot {
     )
     .unwrap();
     if paused {
-        snapshot.budget.paused = Some("sustained external CPU pressure".into());
+        snapshot.budget.paused = Some(crate::PauseReason::ExternalCpuPressure);
         snapshot.budget.concurrency = 0;
         snapshot.budget.batch_steps = 0;
         snapshot.budget.network_requests = 1;

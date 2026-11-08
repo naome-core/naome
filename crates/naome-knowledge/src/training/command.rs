@@ -45,7 +45,7 @@ pub fn questions(
 ) -> Result<QuestionPage, Error> {
     crate::resources::require_work_admission()?;
     if scan == 0 || scan > crate::resources::active_limits().id_page.min(16) {
-        return Err(Error::InputLimit("training suite page limit"));
+        return Err(Error::InputLimit(crate::InputLimit::TrainingSuitePageLimit));
     }
     let memory = crate::resources::MemoryLease::acquire(
         crate::resources::active_limits().question_cache_bytes,

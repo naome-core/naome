@@ -296,7 +296,10 @@ fn primitive(
     }
     struct Ordered;
     impl super::super::model::Ranker for Ordered {
-        fn scores(&mut self, decision: &super::super::model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(
+            &mut self,
+            decision: &super::super::model::Decision,
+        ) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; decision.candidates.len()])
         }
     }

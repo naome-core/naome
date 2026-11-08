@@ -1,4 +1,5 @@
 //! Receiver-owned, transient approval and complete proof-closure staging.
+use crate::outcome::OfferStatus;
 use crate::{
     Envelope, Graph,
     graph::CheckedBatch,
@@ -125,7 +126,7 @@ impl Intake {
         peer: PeerId,
         metadata: Metadata,
         graph: &Graph,
-    ) -> Result<&'static str, crate::Error> {
+    ) -> Result<OfferStatus, crate::Error> {
         self.enqueue_with_grant(peer, metadata, graph, None)
     }
     pub(crate) fn enqueue_with_grant(
@@ -134,10 +135,10 @@ impl Intake {
         metadata: Metadata,
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<&'static str, crate::Error> {
+    ) -> Result<OfferStatus, crate::Error> {
         let (id, statement, question) = metadata.compile(graph.checked_context())?;
         if graph.contains(id)? {
-            return Ok("duplicate");
+            return Ok(OfferStatus::Duplicate);
         }
         if let Some(root) = &mut self.active
             && root.description.transfer.root() == id
@@ -147,7 +148,7 @@ impl Intake {
                 return Err("refreshed parent metadata differs".into());
             }
             root.description.transfer = TransferGrant::new(peer, id, grant);
-            return Ok("metadata_refreshed");
+            return Ok(OfferStatus::MetadataRefreshed);
         }
         if let Some(waiting) = self
             .waiting
@@ -162,9 +163,9 @@ impl Intake {
             if let managed::Phase::Refresh { ready, .. } = &mut waiting.phase {
                 *ready = true;
                 waiting.description.transfer = TransferGrant::new(peer, id, grant);
-                return Ok("metadata_refreshed");
+                return Ok(OfferStatus::MetadataRefreshed);
             }
-            return Ok("queued_duplicate");
+            return Ok(OfferStatus::QueuedDuplicate);
         }
         let same = |description: &Description| {
             description.transfer.peer() == peer
@@ -178,13 +179,13 @@ impl Intake {
                 .as_ref()
                 .is_some_and(|root| same(&root.description))
         {
-            return Ok("queued_duplicate");
+            return Ok(OfferStatus::QueuedDuplicate);
         }
         if self
             .declined
             .contains_key(&(peer, id, statement, *question.record_id()))
         {
-            return Ok("declined");
+            return Ok(OfferStatus::Declined);
         }
         if self.queue.len() >= crate::resources::active_limits().queued_metadata {
             return Err("description queue capacity".into());
@@ -194,7 +195,7 @@ impl Intake {
             statement,
             question,
         });
-        Ok("queued")
+        Ok(OfferStatus::Queued)
     }
 
     pub(crate) fn needed(&self) -> Vec<(PeerId, ArtifactId, ArtifactId)> {

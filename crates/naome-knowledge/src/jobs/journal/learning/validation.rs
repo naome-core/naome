@@ -392,12 +392,6 @@ fn validate_peer(
             conversion_job,
             trace_proof,
         } => Some((*conversion_job, Some(trace_proof))),
-        PeerStatus::Unsupported { reason } => {
-            if reason.len() > crate::resources::limits().closure_bytes {
-                return Err("peer disposition capacity".into());
-            }
-            None
-        }
         _ => None,
     };
     if let Some((id, proof)) = job {

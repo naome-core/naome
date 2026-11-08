@@ -8,7 +8,7 @@ fn sparse_maps_are_charged_for_nodes_and_rejected_before_tree_allocation() {
     assert!(bound >= 63_200);
     assert_eq!(
         allocation_bound(source.as_bytes(), 63_199),
-        Err(Error::InputLimit("CLI JSON allocation limit"))
+        Err(Error::InputLimit(crate::InputLimit::CliJsonAllocationLimit))
     );
     let command = QueuedCommand::from_value(serde_json::from_str(&source).unwrap());
     let (parsed, memory) = command.parse().unwrap();

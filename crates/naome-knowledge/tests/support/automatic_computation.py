@@ -47,7 +47,7 @@ def memory_recovery(trial, node, frozen, accepted):
             receipt["result"] = "native_resume_observed"
             return status
         assert status["computation"] in {"pausing", "paused"}, status
-        cpu_hold = status["computation_reason"] == "sustained external CPU pressure"
+        cpu_hold = status["computation_reason"] == 0x0004_0008
         receipt["native_cpu_hold_observed"] |= cpu_hold
         assert checkpoints(node) == frozen, "productive work advanced during resource pause"
         assert node.ids() == accepted, "paused node published or admitted new work"
@@ -56,7 +56,7 @@ def memory_recovery(trial, node, frozen, accepted):
     # Recovery from our memory target remains bounded by forty seconds. A
     # separate live CPU hold must remain closed, not be disabled for this test.
     # This outcome proves retained work and control, not native resumption.
-    assert status and status["computation_reason"] == "sustained external CPU pressure", status
+    assert status and status["computation_reason"] == 0x0004_0008, status
     receipt["result"] = "native_cpu_hold_preserved"
     return None
 

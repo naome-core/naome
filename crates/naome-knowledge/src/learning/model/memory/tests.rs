@@ -4,7 +4,7 @@ use crate::learning::{self as native, search};
 fn observed() -> (search::derivation::Derivation, search::trace::Trace) {
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| if c.rule == Rule::ModusPonens { 1. } else { 0. })

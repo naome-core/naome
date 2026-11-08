@@ -66,7 +66,7 @@ pub(crate) struct Checkpoint {
     connection: Connection,
     domain: &'static str,
     data_version: i64,
-    uncertain: Option<String>,
+    uncertain: Option<naome_storage::UncertainCommit>,
     #[cfg(test)]
     pub(crate) last_write: (usize, usize),
 }
@@ -217,10 +217,8 @@ impl Checkpoint {
         self.path.parent().expect("canonical checkpoint parent")
     }
     fn ensure_generation(&self) -> Result<(), String> {
-        if let Some(error) = &self.uncertain {
-            return Err(format!(
-                "checkpoint requires replay after an uncertain write: {error}"
-            ));
+        if self.uncertain.is_some() {
+            return Err("checkpoint requires replay after an uncertain write".into());
         }
         crate::storage::sqlite_adapt(
             &self.connection,
@@ -437,7 +435,9 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                     || key.len() > 128
                     || payload.len() > MAX_ROW
                 {
-                    return Err(crate::Error::InputLimit("checkpoint record capacity"));
+                    return Err(crate::Error::InputLimit(
+                        crate::InputLimit::CheckpointRecordCapacity,
+                    ));
                 }
                 let existing: bool = connection
                     .query_row(

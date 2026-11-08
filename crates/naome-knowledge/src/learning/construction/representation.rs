@@ -93,7 +93,7 @@ mod tests {
     use naome_foundation::{Formula, FreeVariable};
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }

@@ -87,7 +87,7 @@ impl ResearchQuestion {
         dependencies: Vec<ArtifactId>,
     ) -> Result<Self, QuestionError> {
         if bytes.len() > QUESTION_BYTES {
-            return Err(QuestionError::Limit("question bytes"));
+            return Err(QuestionError::Limit(naome_proof::QuestionLimit::Bytes));
         }
         let record_id = hash(b"naome:state:question-record\0", &[&bytes]);
         Ok(Self {
@@ -160,7 +160,7 @@ impl ResearchQuestion {
                 }
                 naome_proof::DefinitionExpansionError::Access(
                     naome_proof::DefinitionAccessError::Limit,
-                ) => QuestionError::Limit("question definition decode bytes"),
+                ) => QuestionError::Limit(naome_proof::QuestionLimit::DefinitionDecodeBytes),
                 _ => QuestionError::Mathematical(error.to_string()),
             })?;
         let target = QuestionTarget::from_expanded_formula(expanded)?;
@@ -178,7 +178,7 @@ impl ResearchQuestion {
             .map_err(|error| QuestionError::Mathematical(error.to_string()))?
             .0;
         if bytes.len() > QUESTION_BYTES {
-            return Err(QuestionError::Limit("question bytes"));
+            return Err(QuestionError::Limit(naome_proof::QuestionLimit::Bytes));
         }
         if !formula.is_closed() {
             return Err(QuestionError::Invalid("question has free variables"));
@@ -189,7 +189,9 @@ impl ResearchQuestion {
             .map(ArtifactId::from_definition_id)
             .collect::<std::collections::BTreeSet<_>>();
         if dependencies.len() > super::AssessmentLimits::MAXIMUM.dependencies {
-            return Err(QuestionError::Limit("question dependencies"));
+            return Err(QuestionError::Limit(
+                naome_proof::QuestionLimit::Dependencies,
+            ));
         }
         Ok((bytes, dependencies.into_iter().collect()))
     }
@@ -326,7 +328,9 @@ impl ResearchQuestion {
         context: Option<&dyn crate::ContextView>,
     ) -> Result<Self, QuestionError> {
         if bytes.len() > QUESTION_BYTES {
-            return Err(QuestionError::Limit("encoded question bytes"));
+            return Err(QuestionError::Limit(
+                naome_proof::QuestionLimit::EncodedBytes,
+            ));
         }
         let question = match Formula::decode_shared(bytes) {
             Ok(formula) => Self::from_formula(formula)?,
@@ -349,7 +353,9 @@ fn decode_formula(bytes: &[u8]) -> Result<DefinedFormula, QuestionError> {
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, QuestionError> {
     if value.len() > 2 * QUESTION_BYTES {
-        return Err(QuestionError::Limit("encoded question bytes"));
+        return Err(QuestionError::Limit(
+            naome_proof::QuestionLimit::EncodedBytes,
+        ));
     }
     if !value
         .bytes()

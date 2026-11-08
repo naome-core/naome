@@ -73,7 +73,7 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
         timestamp_ms: 0,
         pid: std::process::id(),
     };
-    snapshot.budget.paused = Some("test pressure".into());
+    snapshot.budget.paused = Some(crate::PauseReason::MemoryPressure);
     adaptive::publish(snapshot.clone());
     assert!(
         check

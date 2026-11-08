@@ -141,7 +141,9 @@ pub(super) fn select(graph: &Graph, request: &Request) -> Result<Batch, Error> {
         || request.take > request.scan
         || request.training_roots.len() > limits.question_page
     {
-        return Err(Error::InputLimit("training selection page limit"));
+        return Err(Error::InputLimit(
+            crate::InputLimit::TrainingSelectionPageLimit,
+        ));
     }
     let _working = crate::resources::MemoryLease::acquire(limits.question_cache_bytes)?;
     let mut signals = profile(graph, request)?;

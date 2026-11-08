@@ -30,7 +30,6 @@ COUNT, FIRST = 4096, 8100
 LARGE_COUNT = 12288
 LINE_LIMIT, SOURCE_LIMIT = 524288, 65536
 RAW_LIMIT = 256 * 1024**2
-EXPECTED_METADATA_MESSAGE = "question limit exceeded: question target nodes"
 
 
 def streaming_digest(path):
@@ -315,8 +314,8 @@ def main():
                     assert bytes.fromhex(envelope["payload"]) == b"\0" + canonical
                     assert result["metadata"] is None, result
                     error = result["metadata_error"]
-                    assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
-                    assert error["message"] == EXPECTED_METADATA_MESSAGE, error
+                    assert error["code"] == 0x0006_000D, error
+                    assert error["limit"] == 1, error
                     assert error["retryable"] is False and error["fatal"] is False, error
                     identifiers.append(identifier)
                     timings.append(duration)

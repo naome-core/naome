@@ -8,7 +8,7 @@ impl Provider for OtherProvider {
     }
     fn execute(&mut self, _: u32, _: &mut dyn Supervisor) -> Result<(), Failure> {
         if self.uncertain {
-            Err(Failure::Uncertain("effect requires reconciliation".into()))
+            Err(Failure::Uncertain)
         } else {
             Ok(())
         }
@@ -90,7 +90,7 @@ fn another_provider_resumes_through_the_same_reservations_and_preserves_uncertai
     grants.1.clear();
     assert!(matches!(
         drive(&mut OtherProvider { uncertain: true }, &mut grants, 0),
-        Err(Failure::Uncertain(_))
+        Err(Failure::Uncertain)
     ));
     assert_eq!(grants.0, [(false, 1)]);
     assert_eq!(

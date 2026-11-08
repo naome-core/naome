@@ -6,7 +6,7 @@ struct Observed<'a> {
     calls: Vec<(String, Option<model::Memory>, model::Plan)>,
 }
 impl Ranker for Observed<'_> {
-    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
         self.runtime.scores(decision)
     }
     fn plan(

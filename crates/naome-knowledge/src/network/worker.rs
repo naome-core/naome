@@ -340,7 +340,7 @@ impl Transport {
                     let _ = driver.behaviour_mut().exchange.send_response(
                         channel,
                         Frame::new(Body::Error {
-                            reason: OWNER_BUSY.into(),
+                            code: PeerFailure::OwnerBusy,
                         }),
                     );
                     continue;
@@ -404,7 +404,7 @@ impl Transport {
                                 let _ = driver.behaviour_mut().exchange.send_response(
                                     channel,
                                     Frame::new(Body::Error {
-                                        reason: OWNER_BUSY.into(),
+                                        code: PeerFailure::OwnerBusy,
                                     }),
                                 );
                             }

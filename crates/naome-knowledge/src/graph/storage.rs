@@ -78,7 +78,7 @@ pub(super) struct CheckedStorage {
     cache: Arc<Mutex<Cache>>,
     path: PathBuf,
     owner: Arc<Owner>,
-    halt: Arc<Mutex<Option<String>>>,
+    halt: Arc<Mutex<Option<crate::Error>>>,
 }
 
 // A fatal disposable-index phase can close its connection while snapshots
@@ -288,7 +288,7 @@ impl CheckedStorage {
     pub(super) fn open(
         lease: Arc<Store>,
         cleanup_directory: bool,
-        halt: Arc<Mutex<Option<String>>>,
+        halt: Arc<Mutex<Option<crate::Error>>>,
     ) -> Result<Arc<Self>, String> {
         // The exclusive canonical lease excludes all prior live generations.
         for entry in fs::read_dir(lease.directory()).map_err(|e| e.to_string())? {
@@ -336,7 +336,7 @@ impl CheckedStorage {
     fn fresh(
         owner: Arc<Owner>,
         cache: Arc<Mutex<Cache>>,
-        halt: Arc<Mutex<Option<String>>>,
+        halt: Arc<Mutex<Option<crate::Error>>>,
         startup: bool,
     ) -> Result<Arc<Self>, String> {
         let number = NEXT_FILE
@@ -511,7 +511,10 @@ impl CheckedStorage {
         if let Err(error) = &result {
             // journal_mode=OFF cannot safely recover a partial sweep by rollback.
             // Graph::open propagates this error and discards the whole generation.
-            *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+            self.halt
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_or_insert_with(|| crate::Error::CorruptStorage(error.clone()));
         }
         result
     }
@@ -615,7 +618,10 @@ impl CheckedStorage {
     }
     fn record_error<T>(&self, result: Result<T, ContextError>) -> Result<T, ContextError> {
         if let Err(error) = &result {
-            *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            self.halt
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_or_insert_with(|| crate::Error::CorruptStorage(error.to_string()));
         }
         result
     }
@@ -852,7 +858,10 @@ impl Cache {
 }
 impl ContextStorage for CheckedStorage {
     fn record_failure(&self, error: &ContextError) {
-        *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        self.halt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(|| crate::Error::CorruptStorage(error.to_string()));
     }
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
         self.require_live().map_err(ContextError::Storage)?;

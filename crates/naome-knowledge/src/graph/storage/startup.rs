@@ -67,7 +67,10 @@ impl CheckedStorage {
         if let Err(error) = &result {
             // No roots escape this startup generation. Its OFF journal cannot
             // recover a partial flush; the next open discards it and replays.
-            *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+            self.halt
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_or_insert_with(|| crate::Error::CorruptStorage(error.clone()));
         }
         result
     }

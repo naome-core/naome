@@ -505,7 +505,7 @@ mod tests {
         let known = entry("0100000000010000000b0000000000000000000000");
         struct Ordered;
         impl Ranker for Ordered {
-            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
                 Ok(vec![0.; d.candidates.len()])
             }
         }

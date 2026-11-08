@@ -385,7 +385,7 @@ fn native_learning_progress_experiment() {
         .collect::<Vec<_>>();
     struct Ordered;
     impl model::Ranker for Ordered {
-        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -452,7 +452,7 @@ fn native_learning_progress_experiment() {
 fn selection_gate_headroom() {
     struct Ordered;
     impl model::Ranker for Ordered {
-        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }

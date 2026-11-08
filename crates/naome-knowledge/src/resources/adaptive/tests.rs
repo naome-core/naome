@@ -227,7 +227,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     assert!(
         exchange(&control, &endpoint, json!("status"), 2).await["report"]["status"]
             ["computation_reason"]
-            .is_string()
+            .is_u64()
     );
     publish(Snapshot::derive(selection(128 * MIB), hardware(), 512 * MIB).unwrap());
     assert_eq!(graph.resolve_pending().unwrap().0.len(), 1);

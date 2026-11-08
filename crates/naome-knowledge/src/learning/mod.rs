@@ -1049,8 +1049,9 @@ impl Exploring<'_> {
     }
 }
 impl model::Ranker for Exploring<'_> {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         self.scores_encoded(&graph::Graph::encode(d)?)
+            .map_err(Into::into)
     }
     fn plan(
         &mut self,

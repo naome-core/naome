@@ -41,7 +41,7 @@ pub(crate) fn allocation_bound(bytes: &[u8], limit: usize) -> Result<usize, Erro
         .deserialize(&mut decoder)
         .and_then(|()| decoder.end());
     if budget.exceeded || budget.charged > limit {
-        return Err(Error::InputLimit("CLI JSON allocation limit"));
+        return Err(Error::InputLimit(crate::InputLimit::CliJsonAllocationLimit));
     }
     result.map_err(|error| Error::InvalidInput(error.to_string()))?;
     Ok(budget.charged)

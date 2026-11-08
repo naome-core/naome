@@ -97,7 +97,7 @@ pub struct Budget {
     pub batch_steps: usize,
     pub network_requests: usize,
     pub yield_ms: u64,
-    pub paused: Option<String>,
+    pub paused: Option<crate::PauseReason>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -195,11 +195,11 @@ impl Snapshot {
             })
             .min(super::limits().flights);
         let paused = if memory < 8 * MIB || observed.process_rss > memory {
-            Some("memory pressure".into())
+            Some(crate::PauseReason::MemoryPressure)
         } else if observed.disk_available
             < super::limits().disk_reserve_bytes.saturating_add(2 * MIB)
         {
-            Some("disk pressure".into())
+            Some(crate::PauseReason::DiskPressure)
         } else {
             None
         };
@@ -291,12 +291,12 @@ pub(crate) fn work_available() -> bool {
     inspect_work(|available, _| available)
 }
 
-pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<&str>) -> R) -> R {
+pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<crate::PauseReason>) -> R) -> R {
     let Some(live) = LIVE.get() else {
         return inspect(true, None);
     };
     let Ok(live) = live.read() else {
-        return inspect(false, Some("resource state unavailable"));
+        return inspect(false, Some(crate::PauseReason::ResourceStateUnavailable));
     };
     let Some(live) = live.as_ref() else {
         return inspect(true, None);
@@ -307,8 +307,7 @@ pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<&str>) -> R) -> 
         available,
         budget
             .paused
-            .as_deref()
-            .or((!available).then_some("no computation budget")),
+            .or((!available).then_some(crate::PauseReason::NoComputationBudget)),
     )
 }
 

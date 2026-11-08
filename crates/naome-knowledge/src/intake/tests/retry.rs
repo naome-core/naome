@@ -103,7 +103,7 @@ async fn temporary_overload_retains_final_selection_without_declining_or_repeati
             if !intake.refresh_needed().is_empty() {
                 assert_eq!(
                     intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-                    "metadata_refreshed"
+                    OfferStatus::MetadataRefreshed
                 );
             }
             for (_, root, needed) in intake.needed() {

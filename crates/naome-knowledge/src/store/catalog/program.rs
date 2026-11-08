@@ -79,9 +79,12 @@ impl Catalog {
             )
             .map_err(sql_error)?;
         let value = progress(&transaction, manifest)?;
-        transaction
-            .commit()
-            .map_err(|e| crate::Error::UncertainDurability(e.to_string()))?;
+        transaction.commit().map_err(|e| {
+            crate::Error::UncertainDurability(crate::DurabilityFailure::sqlite(
+                crate::DurabilityCode::ProgramCommit,
+                &e,
+            ))
+        })?;
         Ok(value)
     }
     pub(in crate::store) fn program_manifest(
@@ -152,9 +155,12 @@ impl Catalog {
                 ],
             )
             .map_err(sql_error)?;
-        transaction
-            .commit()
-            .map_err(|e| crate::Error::UncertainDurability(e.to_string()))?;
+        transaction.commit().map_err(|e| {
+            crate::Error::UncertainDurability(crate::DurabilityFailure::sqlite(
+                crate::DurabilityCode::ProgramCommit,
+                &e,
+            ))
+        })?;
         Ok(value)
     }
     pub(in crate::store) fn program_chunk(

@@ -722,7 +722,7 @@ impl Search<'_> {
                     if let Some(report) = &mut self.frontier {
                         report.observe(state, depth);
                     }
-                    self.failure = Some(e);
+                    self.failure = Some(e.into());
                     self.terminal
                         .include(TerminalEvidence::Unsupported(Capacity::Graph));
                     return Ok(None);
@@ -1270,7 +1270,7 @@ mod witness_tests {
     use super::*;
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -1278,7 +1278,7 @@ mod witness_tests {
     fn the_last_allowed_transition_can_close_without_spending_another_expansion() {
         struct UnexpectedInference;
         impl Ranker for UnexpectedInference {
-            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, String> {
+            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
                 Err("a directly closing action must not invoke inference".into())
             }
         }
@@ -1418,7 +1418,7 @@ mod transposition_tests {
     fn depth_limited_failure_does_not_poison_a_later_shallower_subgoal() {
         struct Ordered;
         impl Ranker for Ordered {
-            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
                 Ok(vec![0.; d.candidates.len()])
             }
         }

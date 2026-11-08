@@ -272,7 +272,7 @@ fn symbolic_preferences_require_two_checked_completions_of_the_same_state() {
 fn witness_branch_sequences_keep_the_actual_fresh_variable_scope() {
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -316,7 +316,7 @@ fn witness_branch_sequences_keep_the_actual_fresh_variable_scope() {
 fn hindsight_does_not_invent_observation_of_a_rebased_checked_path() {
     struct Detour;
     impl Ranker for Detour {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| match c.rule {
@@ -366,7 +366,7 @@ fn unresolved_observation() -> super::super::super::experience::Observation {
     use crate::learning::{GenerationCost, Origin, digest, experience};
     struct BranchFirst;
     impl Ranker for BranchFirst {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| {

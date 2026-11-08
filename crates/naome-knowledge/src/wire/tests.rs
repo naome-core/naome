@@ -32,31 +32,47 @@ fn current_message_schema_requires_exact_fields_and_types() {
     assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge");
 }
 
+#[test]
+fn peer_outcomes_accept_only_codes_in_their_own_domain() {
+    let busy = Body::Error {
+        code: PeerFailure::OwnerBusy,
+    };
+    assert_eq!(
+        serde_json::to_vec(&busy).unwrap(),
+        br#"{"kind":"Error","code":65537}"#
+    );
+    assert!(matches!(
+        serde_json::from_slice::<Body>(br#"{"kind":"Error","code":65537}"#),
+        Ok(Body::Error {
+            code: PeerFailure::OwnerBusy
+        })
+    ));
+    for input in [
+        br#"{"kind":"Error","code":131073}"#.as_slice(),
+        br#"{"kind":"Error","code":131071}"#,
+        br#"{"kind":"Error","code":65537,"grant":true}"#,
+    ] {
+        assert!(serde_json::from_slice::<Body>(input).is_err());
+    }
+}
+
 #[tokio::test]
 async fn strict_frames_reject_oversize_trailing_and_truncation() {
     let codec = Codec::default();
     assert!(codec.read(&mut Cursor::new(encoded())).await.is_ok());
     let mut trailing = encoded();
     trailing.push(0);
-    assert!(
-        codec
-            .read(&mut Cursor::new(trailing))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("trailing")
+    assert_eq!(
+        stream_failure(&codec.read(&mut Cursor::new(trailing)).await.unwrap_err()),
+        WireFailure::TrailingFrameBytes
     );
     let mut truncated = encoded();
     truncated.pop();
     assert!(codec.read(&mut Cursor::new(truncated)).await.is_err());
     let header = (frame_limit() as u32 + 1).to_be_bytes().to_vec();
-    assert!(
-        codec
-            .read(&mut Cursor::new(header))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("byte limit")
+    assert_eq!(
+        stream_failure(&codec.read(&mut Cursor::new(header)).await.unwrap_err()),
+        WireFailure::FrameLimit
     );
 }
 
@@ -68,13 +84,9 @@ async fn frame_custody_is_shared_and_released_after_handling() {
     for _ in 0..crate::resources::active_limits().inbound_frames {
         retained.push(codec.read(&mut Cursor::new(encoded())).await.unwrap());
     }
-    assert!(
-        other
-            .read(&mut Cursor::new(encoded()))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("capacity")
+    assert_eq!(
+        stream_failure(&other.read(&mut Cursor::new(encoded())).await.unwrap_err()),
+        WireFailure::FrameCapacity
     );
     retained.pop();
     assert!(other.read(&mut Cursor::new(encoded())).await.is_ok());
@@ -210,12 +222,8 @@ async fn cold_artifact_frame_packs_exact_bytes_and_bounds_expansion() {
     let declared = packed + 4;
     let excessive = (crate::resources::limits().proof_bytes + 1) as u32;
     bytes[declared..declared + 4].copy_from_slice(&excessive.to_be_bytes());
-    assert!(
-        codec
-            .read(&mut Cursor::new(bytes))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("payload capacity")
+    assert_eq!(
+        stream_failure(&codec.read(&mut Cursor::new(bytes)).await.unwrap_err()),
+        WireFailure::ArtifactPayloadLimit
     );
 }

@@ -361,7 +361,7 @@ fn pressure_pauses_mid_transformation_and_resumes_every_mathematical_step() {
     let before = work.status().unwrap();
     assert!(!before.fully_checked);
     let mut paused = quantum.clone();
-    paused.paused = Some("memory pressure".into());
+    paused.paused = Some(crate::PauseReason::MemoryPressure);
     paused.batch_steps = 0;
     assert!(
         !work

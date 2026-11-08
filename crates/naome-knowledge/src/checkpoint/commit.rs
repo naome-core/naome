@@ -7,7 +7,7 @@ impl From<CommitError> for crate::Error {
     fn from(error: CommitError) -> Self {
         match error {
             CommitError::NotWritten(error) | CommitError::RolledBack(error) => error,
-            CommitError::Uncertain(error) => Self::UncertainDurability(error),
+            CommitError::Uncertain(error) => Self::UncertainDurability(error.into()),
         }
     }
 }
@@ -38,7 +38,7 @@ impl Checkpoint {
         #[cfg(test)]
         let cut = CUT.with(|cut| cut.take());
         if let Some(error) = &self.uncertain {
-            return Err(CommitError::Uncertain(error.clone()));
+            return Err(CommitError::Uncertain(*error));
         }
         #[cfg(test)]
         if cut == Some(Cut::BeforeWrite) {
@@ -50,7 +50,7 @@ impl Checkpoint {
             .map_err(|error| CommitError::NotWritten(crate::Error::InvalidInput(error)))?;
         if payload.len() > MAX_HEADER {
             return Err(CommitError::NotWritten(crate::Error::InputLimit(
-                "checkpoint header capacity",
+                crate::InputLimit::CheckpointHeaderCapacity,
             )));
         }
         let result = naome_storage::write(
@@ -86,7 +86,7 @@ impl Checkpoint {
         let result = result.and_then(|()| {
             if cut == Some(Cut::AfterCommit) {
                 Err(CommitError::Uncertain(
-                    "injected failure after durable checkpoint commit".into(),
+                    naome_storage::UncertainCommit::Commit { sqlite_code: None },
                 ))
             } else {
                 Ok(())
@@ -95,7 +95,7 @@ impl Checkpoint {
         if let Err(CommitError::Uncertain(error)) = &result {
             // No read or later write may infer which version won. A fresh
             // checkpoint owner must replay the canonical records after reopen.
-            self.uncertain = Some(error.clone());
+            self.uncertain = Some(*error);
         }
         result?;
         #[cfg(test)]

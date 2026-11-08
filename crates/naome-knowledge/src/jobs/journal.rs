@@ -1034,12 +1034,6 @@ fn validate_record(
     {
         return Err("research record identity, lifecycle, checkpoint or budget differs".into());
     }
-    if r.failure
-        .as_ref()
-        .is_some_and(|reason| reason.len() > crate::checkpoint::MAX_ROW)
-    {
-        return Err("research failure detail capacity".into());
-    }
     if let Some(output) = &r.result {
         output.validate_retained(&r.input)?;
         if let Output::Program { units } = output
