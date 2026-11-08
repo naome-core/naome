@@ -617,6 +617,9 @@ codes! {
     pub(crate) enum ExperimentStatus in 58 { NotReady = 1, ResourcePaused = 2, FrozenSolver = 3, ScheduledNoUpdate = 4, Complete = 5, Interrupted = 6, BudgetExhausted = 7 }
     pub(crate) enum ExperimentReason in 59 { ColdParentUnqualified = 1, ContinuationUnavailable = 2, ParentAbsent = 3 }
 
+    pub(crate) enum FinderLearningOutcome in 60 { CheckedResolution = 1, UnresolvedSearch = 2 }
+    pub(crate) enum FinderEvidenceOutcome in 61 { Candidate = 1, NoCandidate = 2, Rejected = 3, Failed = 4, Expired = 5, InDoubt = 6 }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,

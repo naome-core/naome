@@ -3,6 +3,20 @@ use crate::{checkpoint::tests::Directory, mocks};
 use std::time::{Duration, Instant};
 
 #[test]
+fn finder_outcomes_have_distinct_numeric_codes() {
+    let evidence = serde_json::to_value(Outcome::NoCandidate).unwrap();
+    assert_eq!(evidence, 0x003d_0002u32);
+    assert_eq!(
+        serde_json::from_value::<Outcome>(evidence).unwrap(),
+        Outcome::NoCandidate
+    );
+    assert!(serde_json::from_value::<Outcome>(0x003d_ffffu32.into()).is_err());
+    let event =
+        serde_json::json!({"outcome": crate::outcome::FinderLearningOutcome::CheckedResolution});
+    assert_eq!(event["outcome"], 0x003c_0001u32);
+}
+
+#[test]
 fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() {
     let directory = Directory::new();
     let graph = Graph::default();

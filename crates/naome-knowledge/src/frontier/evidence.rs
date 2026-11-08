@@ -8,15 +8,19 @@ pub(crate) use experience::tests::observed_completion;
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
 const MAX_RECORD: usize = 6 * naome_checker::question::QUESTION_BYTES + 4096;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Outcome {
-    Candidate,
-    NoCandidate,
-    Rejected,
-    Failed,
-    Expired,
-    InDoubt,
+pub(crate) use crate::outcome::FinderEvidenceOutcome as Outcome;
+
+impl Outcome {
+    const fn index(self) -> usize {
+        match self {
+            Self::Candidate => 0,
+            Self::NoCandidate => 1,
+            Self::Rejected => 2,
+            Self::Failed => 3,
+            Self::Expired => 4,
+            Self::InDoubt => 5,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,7 +92,7 @@ impl Record {
             .saturating_sub(u64::from(self.verified.is_some()))
     }
     pub(super) fn substantive_attempts(&self) -> u64 {
-        self.outcomes[..=Outcome::Rejected as usize]
+        self.outcomes[..=Outcome::Rejected.index()]
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
@@ -476,7 +480,7 @@ impl Evidence {
         record.model_checkpoint = completion.model_checkpoint.clone();
         record.experience = experience.cloned();
         record.last_outcome = outcome;
-        record.outcomes[outcome as usize] = record.outcomes[outcome as usize]
+        record.outcomes[outcome.index()] = record.outcomes[outcome.index()]
             .checked_add(1)
             .ok_or("research attempt overflow")?;
         record.units = record
@@ -659,10 +663,10 @@ impl Evidence {
         }
         record.last_outcome = Outcome::Rejected;
         record.prepared = None;
-        record.outcomes[Outcome::Candidate as usize] =
-            record.outcomes[Outcome::Candidate as usize].saturating_sub(1);
-        record.outcomes[Outcome::Rejected as usize] =
-            record.outcomes[Outcome::Rejected as usize].saturating_add(1);
+        record.outcomes[Outcome::Candidate.index()] =
+            record.outcomes[Outcome::Candidate.index()].saturating_sub(1);
+        record.outcomes[Outcome::Rejected.index()] =
+            record.outcomes[Outcome::Rejected.index()].saturating_add(1);
         self.put(question, &record)
     }
     pub(super) fn verified(

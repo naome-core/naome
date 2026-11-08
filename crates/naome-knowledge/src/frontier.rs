@@ -1136,7 +1136,7 @@ impl Frontier {
         if self.native && model.updates > before {
             crate::network::emit(serde_json::json!({
                 "event":crate::outcome::NodeEvent::FinderLearned, "resolution_id":crate::hex(question.resolution_id()),
-                "outcome":if resolved { "checked_resolution" } else { "unresolved_search" },
+                "outcome":if resolved { crate::outcome::FinderLearningOutcome::CheckedResolution } else { crate::outcome::FinderLearningOutcome::UnresolvedSearch },
                 "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
                 "supports":model.supports,"rehearsals":model.rehearsals,"utility_observations":model.utility_observations,
                 "model_weight":model.weight(question)
