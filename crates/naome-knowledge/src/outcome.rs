@@ -645,6 +645,8 @@ codes! {
         MemoryPrediction = 77,
         StatelessExplorationMemory = 78,
         InvalidActionScores = 79,
+        FormulaCacheBatchCapacity = 80,
+        FormulaCacheTensorDecode = 81,
     }
 
 }

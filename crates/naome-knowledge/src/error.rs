@@ -513,6 +513,10 @@ impl fmt::Display for Error {
                     "stateless exploration received memory"
                 }
                 crate::ResearchFailure::InvalidActionScores => "invalid native action scores",
+                crate::ResearchFailure::FormulaCacheBatchCapacity => "formula cache batch capacity",
+                crate::ResearchFailure::FormulaCacheTensorDecode => {
+                    "formula cache tensor decoding failed"
+                }
             }),
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")

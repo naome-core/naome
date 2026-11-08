@@ -134,6 +134,21 @@ fn cached_formula_rows_are_reused_across_roles_and_discarded_after_training() {
     );
     let size = runtime.formulas.borrow().len();
     assert!(size > 1);
+    let mut oversized = runtime.scoring_batch(&graph).unwrap();
+    let sentinel = oversized.nodes[0].clone();
+    oversized.nodes.resize(1025, sentinel);
+    let rejected = runtime.policy.valid().encode_cached(
+        &oversized,
+        &graph.context,
+        &mut runtime.formulas.borrow_mut(),
+    );
+    assert!(matches!(
+        rejected,
+        Err(crate::Error::Research(
+            crate::ResearchFailure::FormulaCacheBatchCapacity
+        ))
+    ));
+    assert_eq!(runtime.formulas.borrow().len(), size);
 
     let mut changed_context = graph.clone();
     changed_context.context.clear();
