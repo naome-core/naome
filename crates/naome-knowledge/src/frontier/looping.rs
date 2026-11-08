@@ -197,8 +197,12 @@ impl Frontier {
                     return Ok((witnesses, inputs));
                 }
             }
+            let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
             if self.native {
-                for group in crate::learning::scoped_cut_questions(question.proved_target()) {
+                for group in crate::learning::scoped_cut_questions(question.proved_target())
+                    .into_iter()
+                    .chain(routes.pair_questions())
+                {
                     let mut selected = Vec::new();
                     for helper in &group {
                         if let Some(id) = witness(helper.proved_target())? {
@@ -214,7 +218,6 @@ impl Frontier {
                     }
                 }
             }
-            let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
             let mut witnesses = Vec::new();
             let mut best_exact = usize::MAX;
             for (antecedent, distance) in routes.exact {
@@ -395,7 +398,9 @@ impl Frontier {
                     };
                     nodes[index].children.push(child);
                 }
-                for group in scoped {
+                let mut incomplete = Vec::new();
+                let pairs = routes.iter().flat_map(|routes| routes.pair_questions());
+                for group in scoped.into_iter().chain(pairs) {
                     let members = group
                         .iter()
                         .filter_map(|helper| {
@@ -407,9 +412,7 @@ impl Frontier {
                     if members.len() == group.len() {
                         nodes[index].cuts.push(members);
                     } else {
-                        nodes[index]
-                            .children
-                            .retain(|child| !members.contains(child));
+                        incomplete.extend(members);
                     }
                 }
                 if let Some(routes) = routes {
@@ -424,6 +427,11 @@ impl Frontier {
                         .collect::<Vec<_>>();
                     nodes[index].cuts.extend(independent);
                 }
+                let node = &mut nodes[index];
+                node.children.retain(|child| {
+                    !incomplete.contains(child)
+                        || node.cuts.iter().flatten().any(|cut| cut == child)
+                });
             }
             index += 1;
         }

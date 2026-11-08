@@ -41,9 +41,6 @@ pub(super) fn cut_helpers(
     bytes: usize,
 ) -> Vec<ResearchQuestion> {
     let routes = crate::learning::closed_cut_routes(goal.proved_target(), true);
-    let mut ranked = routes.exact;
-    ranked.extend(routes.quantified);
-    ranked.sort_by_key(|(_, distance)| *distance);
     let goal_nodes = goal.formula().view().node_count_and_depth().0;
     let valid = |helper: &ResearchQuestion| {
         helper.formula().view().node_count_and_depth().0 < goal_nodes
@@ -51,7 +48,10 @@ pub(super) fn cut_helpers(
             && independent_goal(helper, goal)
     };
     let mut questions = Vec::new();
-    for group in crate::learning::scoped_cut_questions(goal.proved_target()) {
+    for group in crate::learning::scoped_cut_questions(goal.proved_target())
+        .into_iter()
+        .chain(routes.pair_questions())
+    {
         if !group.iter().all(valid) {
             continue;
         }
@@ -70,6 +70,9 @@ pub(super) fn cut_helpers(
             return group;
         }
     }
+    let mut ranked = routes.exact;
+    ranked.extend(routes.quantified);
+    ranked.sort_by_key(|(_, distance)| *distance);
     questions.extend(
         ranked
             .into_iter()
