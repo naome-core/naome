@@ -695,21 +695,52 @@ impl State {
         if graphs.is_empty() {
             return Ok(false);
         }
+        let same_resolution = |e: &Example| {
+            ResearchQuestion::from_hex(&e.question)
+                .is_ok_and(|old| old.resolution_id() == q.resolution_id())
+        };
+        let support = matches!(example.tree, search::Tree::Program(_))
+            .then(|| coverage::program_support(&graphs));
+        let mut anchor_replacement = None;
+        if let Some(support) = support.as_ref() {
+            for (index, anchor) in self.anchors.iter().enumerate() {
+                if same_resolution(anchor)
+                    && coverage::Profile::has_program_support(anchor, support)?
+                {
+                    // Keep an owned rehearsal source if only a peer offered the
+                    // equivalent program.
+                    if native_steps >= proof_steps(target, &anchor.tree)?
+                        || matches!(anchor.origin, Origin::Local)
+                            && matches!(example.origin, Origin::Peer { .. })
+                    {
+                        return Ok(false);
+                    }
+                    anchor_replacement = Some(index);
+                    break;
+                }
+            }
+        }
         let previous = self
             .replay
             .iter()
             .enumerate()
-            .filter(|(_, e)| {
-                ResearchQuestion::from_hex(&e.question)
-                    .is_ok_and(|old| old.resolution_id() == q.resolution_id())
-            })
+            .filter(|(_, e)| same_resolution(e))
             .collect::<Vec<_>>();
         let mut replaced = None;
+        let mut retain_replay = true;
         if !previous.is_empty() {
+            let mut equivalent = None;
             let mut witnessed = std::collections::BTreeSet::new();
             let mut costs = Vec::new();
             for (i, e) in &previous {
-                costs.push((*i, proof_steps(target, &e.tree)?));
+                let steps = proof_steps(target, &e.tree)?;
+                if let Some(support) = support.as_ref()
+                    && coverage::Profile::has_program_support(e, support)?
+                {
+                    equivalent = Some((*i, steps));
+                    break;
+                }
+                costs.push((*i, steps));
                 if matches!(e.tree, search::Tree::Stored { .. }) {
                     continue;
                 }
@@ -724,20 +755,31 @@ impl State {
                     }
                 }
             }
-            let novel = graphs.iter().any(|g| {
-                g.successes
+            if let Some((index, steps)) = equivalent {
+                if native_steps >= steps {
+                    return Ok(false);
+                }
+                replaced = Some(index);
+            } else if anchor_replacement.is_some() && previous.len() >= 2 {
+                // An equivalent rehearsal update must not evict a different
+                // checked strategy from the active replay.
+                retain_replay = false;
+            } else {
+                let novel = graphs.iter().any(|g| {
+                    g.successes
+                        .iter()
+                        .any(|a| !witnessed.contains(&(g.key(), *a)))
+                });
+                let worst = *costs
                     .iter()
-                    .any(|a| !witnessed.contains(&(g.key(), *a)))
-            });
-            let worst = *costs
-                .iter()
-                .max_by_key(|(i, c)| (*c, std::cmp::Reverse(*i)))
-                .expect("retained strategy");
-            if !novel && native_steps >= worst.1 {
-                return Ok(false);
-            }
-            if previous.len() >= 2 {
-                replaced = Some(worst.0);
+                    .max_by_key(|(i, c)| (*c, std::cmp::Reverse(*i)))
+                    .expect("retained strategy");
+                if !novel && native_steps >= worst.1 {
+                    return Ok(false);
+                }
+                if previous.len() >= 2 {
+                    replaced = Some(worst.0);
+                }
             }
         }
         let mut next = self.clone();
@@ -822,7 +864,9 @@ impl State {
                 binding: digest(&example.tree),
             };
         }
-        if discovered
+        if let Some(index) = anchor_replacement {
+            next.anchors[index] = example.clone();
+        } else if discovered
             && next.anchors.len() < 4
             && !next.anchors.iter().any(|old| {
                 curriculum::owned::case(&old.question).is_some_and(|old| {
@@ -836,7 +880,9 @@ impl State {
         {
             next.anchors.push(example.clone());
         }
-        next.replay.push(example);
+        if retain_replay {
+            next.replay.push(example);
+        }
         while next.replay.len() > REPLAY || next.training_trace_bytes() > REPLAY * 8 * 1024 {
             if next.replay.is_empty() {
                 return Ok(false);
@@ -855,7 +901,9 @@ impl State {
             return Ok(false);
         }
 
-        if digest(&next.replay) == digest(&self.replay) {
+        if digest(&next.replay) == digest(&self.replay)
+            && digest(&next.anchors) == digest(&self.anchors)
+        {
             return Ok(false);
         }
         next.validate()?;

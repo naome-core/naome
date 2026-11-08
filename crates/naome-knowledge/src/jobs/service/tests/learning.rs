@@ -968,18 +968,21 @@ fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allow
     assert_eq!(after.native.as_ref().unwrap().io_bytes, 5);
 }
 
-fn binary_peer_admission() -> (PeerAdmission, String) {
+fn binary_peer_admission(
+    ordinal: u64,
+    prefix: &[naome_proof::program::Command],
+    secondary: naome_foundation::ZfcAxiom,
+) -> (PeerAdmission, String) {
     use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep, program::Command};
     let original = checked_solution();
     let question = crate::learning::tests::own_question();
     let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
-    let axiom = ProofCertificate::new(vec![ProofStep::ZfcAxiom(
-        naome_foundation::ZfcAxiom::Pairing,
-    )])
-    .unwrap();
+    let axiom = ProofCertificate::new(vec![ProofStep::ZfcAxiom(secondary)]).unwrap();
     let second =
         crate::learning::proof::check(axiom.clone(), &naome_checker::ArtifactState::new()).unwrap();
-    let commands = vec![
+    let offset = prefix.len() as u64;
+    let mut commands = prefix.to_vec();
+    commands.extend([
         Command::ProofReference {
             proof_id: crate::object::id_bytes(&original.proof_id).unwrap(),
         },
@@ -987,19 +990,19 @@ fn binary_peer_admission() -> (PeerAdmission, String) {
             proof_id: *second.proof_id().as_bytes(),
         },
         Command::Simplification {
-            antecedent: 0,
-            consequent: 1,
+            antecedent: offset,
+            consequent: offset + 1,
         },
         Command::ModusPonens {
-            premise: 0,
-            implication: 2,
+            premise: offset,
+            implication: offset + 2,
         },
         Command::ModusPonens {
-            premise: 1,
-            implication: 3,
+            premise: offset + 1,
+            implication: offset + 3,
         },
-        Command::Seal { proof: 4 },
-    ];
+        Command::Seal { proof: offset + 4 },
+    ]);
     let mut artifacts = original
         .helpers
         .iter()
@@ -1014,7 +1017,7 @@ fn binary_peer_admission() -> (PeerAdmission, String) {
     let proof = crate::hex(packet.manifest.proof_id().as_bytes());
     let admission = PeerAdmission {
         evidence: Some(crate::learning::peer::Source::Program(Box::new(packet))),
-        ordinal: 1,
+        ordinal,
         artifact: artifact.clone(),
         peer: libp2p::PeerId::random().to_string(),
         question: Some(question),
@@ -1027,7 +1030,7 @@ fn binary_peer_admission() -> (PeerAdmission, String) {
 fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
     let (directory, mut owner) = native();
     let original = checked_solution();
-    let (admission, proof) = binary_peer_admission();
+    let (admission, proof) = binary_peer_admission(1, &[], naome_foundation::ZfcAxiom::Pairing);
     let artifact = admission.artifact.clone();
     owner
         .disk
@@ -1055,6 +1058,99 @@ fn a_native_program_retains_its_peer_receipt_and_training_input_on_reopen() {
     let evidence = disk.replay_evidence(restored).unwrap();
     assert_eq!(evidence.len(), 1);
     assert_eq!(evidence[0].proof_id, proof);
+    assert!(restored.has_training_graphs(&evidence).unwrap());
+}
+
+#[test]
+fn peer_program_padding_does_not_advance_learning_after_reopen() {
+    use naome_foundation::ZfcAxiom::{self, Pairing, PowerSet, Union};
+    use naome_proof::program::Command;
+
+    // Several independent programs need the real checker lease in sequence.
+    // Give the journal scenario its own process-wide admission budget.
+    const TEST: &str = "jobs::service::tests::learning::peer_program_padding_does_not_advance_learning_after_reopen";
+    if std::env::var_os("NAOME_NATIVE_REPLAY_EQUIVALENCE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_NATIVE_REPLAY_EQUIVALENCE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+
+    fn learn(owner: &mut Owner, ordinal: u64, prefix: &[Command], secondary: ZfcAxiom) -> String {
+        let (admission, proof) = binary_peer_admission(ordinal, prefix, secondary);
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission)
+            .unwrap();
+        owner.fill_internal().unwrap();
+        let id = owner.journal.next_id - 1;
+        finish(owner, id, checked_solution());
+        proof
+    }
+
+    let padding = Command::Equal { left: 0, right: 1 };
+    let (directory, mut owner) = native();
+    let first = learn(&mut owner, 1, &[padding.clone(), padding.clone()], Pairing);
+    let before = learning(&owner);
+    assert_eq!(before["epoch"], 1);
+    assert_eq!(before["replay"][0]["proof_id"], first);
+
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
+
+    let duplicate = learn(
+        &mut owner,
+        2,
+        &[padding.clone(), padding.clone(), padding.clone()],
+        Pairing,
+    );
+    assert_ne!(first, duplicate);
+    assert_eq!(learning(&owner)["epoch"], before["epoch"]);
+    assert_eq!(learning(&owner)["replay"], before["replay"]);
+
+    let shorter = learn(&mut owner, 3, &[padding], Pairing);
+    assert_ne!(shorter, first);
+    let after = learning(&owner);
+    assert_eq!(after["epoch"], 2);
+    assert_eq!(after["peer_examples"], 1);
+    assert_eq!(after["replay"].as_array().unwrap().len(), 1);
+    assert_eq!(after["replay"][0]["proof_id"], shorter);
+    assert_eq!(after["anchors"][0]["proof_id"], shorter);
+
+    let alternative = learn(&mut owner, 4, &[], Union);
+    let other = learn(&mut owner, 5, &[], PowerSet);
+    let with_distinct_replays = learning(&owner);
+    assert_eq!(with_distinct_replays["epoch"], 4);
+    assert_eq!(with_distinct_replays["replay"].as_array().unwrap().len(), 2);
+    assert_eq!(with_distinct_replays["replay"][0]["proof_id"], alternative);
+    assert_eq!(with_distinct_replays["replay"][1]["proof_id"], other);
+
+    let same_cost = [Command::Member { element: 0, set: 1 }];
+    let duplicate = learn(&mut owner, 6, &same_cost, Pairing);
+    assert_ne!(shorter, duplicate);
+    assert_eq!(learning(&owner)["epoch"], 4);
+
+    let best = learn(&mut owner, 7, &[], Pairing);
+    let after = learning(&owner);
+    assert_eq!(after["epoch"], 5);
+    assert_eq!(after["peer_examples"], 1);
+    assert_eq!(after["model"], before["model"]);
+    assert_eq!(after["replay"], with_distinct_replays["replay"]);
+    assert_eq!(after["anchors"][0]["proof_id"], best);
+    drop(owner);
+
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let restored = journal.learning.as_ref().unwrap();
+    let evidence = disk.replay_evidence(restored).unwrap();
+    assert_eq!(evidence.len(), 3);
+    assert_eq!(evidence[0].proof_id, alternative);
+    assert_eq!(evidence[1].proof_id, other);
+    assert_eq!(evidence[2].proof_id, best);
     assert!(restored.has_training_graphs(&evidence).unwrap());
 }
 
@@ -1097,7 +1193,10 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
     let (directory, mut owner) = native();
     // Fixture construction also rechecks its program. Keep its cache off
     // the journal owner, as with a real separate worker.
-    let (admission, proof) = std::thread::spawn(binary_peer_admission).join().unwrap();
+    let (admission, proof) =
+        std::thread::spawn(|| binary_peer_admission(1, &[], naome_foundation::ZfcAxiom::Pairing))
+            .join()
+            .unwrap();
     owner
         .disk
         .enqueue_peer(&mut owner.journal, admission)

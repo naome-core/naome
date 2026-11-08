@@ -142,11 +142,16 @@ fn coverage_filter_keeps_exact_bits_and_rejects_an_unbounded_decode() {
     let profile = Profile::of(&crate::learning::tests::own_example()).unwrap();
     let bytes = serde_json::to_vec(&profile).unwrap();
     assert_eq!(serde_json::from_slice::<Profile>(&bytes).unwrap(), profile);
-    let forged = STANDARD_NO_PAD.encode(vec![0; PROFILE_BYTES + 1]);
-    assert!(
-        serde_json::from_value::<Profile>(serde_json::json!({"features": 1, "bits": forged}))
-            .unwrap_err()
-            .to_string()
-            .contains("capacity")
-    );
+    for (width, diagnostic) in [
+        (PROFILE_BYTES + 1, "width"),
+        (PROFILE_BYTES + SUPPORT_BYTES + 1, "capacity"),
+    ] {
+        let forged = STANDARD_NO_PAD.encode(vec![0; width]);
+        assert!(
+            serde_json::from_value::<Profile>(serde_json::json!({"features": 1, "bits": forged}))
+                .unwrap_err()
+                .to_string()
+                .contains(diagnostic)
+        );
+    }
 }
