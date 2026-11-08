@@ -677,6 +677,21 @@ impl fmt::Display for Error {
                     "finder support receipt identity differs"
                 }
                 crate::ResearchFailure::EvidenceSupportOverflow => "finder support count overflow",
+                crate::ResearchFailure::ExperienceJobBinding => {
+                    "finder experience differs from its completed job"
+                }
+                crate::ResearchFailure::ExperienceNativeBinding => {
+                    "finder experience differs from its native result"
+                }
+                crate::ResearchFailure::ExperienceTerminalState => {
+                    "finder experience lacks its terminal job state"
+                }
+                crate::ResearchFailure::ExperienceOutcome => {
+                    "finder outcome differs from its native experience"
+                }
+                crate::ResearchFailure::ExperienceStoredBinding => {
+                    "stored finder experience differs from its observation"
+                }
                 crate::ResearchFailure::EvidenceMissing => {
                     "established research evidence is missing"
                 }

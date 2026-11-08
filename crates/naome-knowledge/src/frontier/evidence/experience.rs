@@ -9,7 +9,7 @@ pub(super) fn completion<'a>(
     question: &ResearchQuestion,
     completion: &'a jobs::Completion,
     outcome: Outcome,
-) -> Result<Option<&'a ExperienceSummary>, String> {
+) -> Result<Option<&'a ExperienceSummary>, crate::Error> {
     let Some(summary) = &completion.experience else {
         return Ok(None);
     };
@@ -23,7 +23,7 @@ pub(super) fn completion<'a>(
         || summary.spent_ms != completion.spent_ms
         || summary.reserved_units != completion.reserved_units
     {
-        return Err("finder experience differs from its completed job".into());
+        return Err(crate::ResearchFailure::ExperienceJobBinding.into());
     }
     let expected_outcome = match (completion.state, &completion.result) {
         (
@@ -41,7 +41,7 @@ pub(super) fn completion<'a>(
                     != solution.as_ref().map(|s| crate::learning::digest(&s.tree))
                 || summary.trace.observed_branches != frontier.as_ref().map(crate::learning::digest)
             {
-                return Err("finder experience differs from its native result".into());
+                return Err(crate::ResearchFailure::ExperienceNativeBinding.into());
             }
             if solution.is_some() {
                 Outcome::Candidate
@@ -61,15 +61,15 @@ pub(super) fn completion<'a>(
         (jobs::State::InDoubt, _) if summary.terminal == TerminalEvidence::Interrupted => {
             Outcome::InDoubt
         }
-        _ => return Err("finder experience lacks its terminal job state".into()),
+        _ => return Err(crate::ResearchFailure::ExperienceTerminalState.into()),
     };
     if outcome != expected_outcome {
-        return Err("finder outcome differs from its native experience".into());
+        return Err(crate::ResearchFailure::ExperienceOutcome.into());
     }
     Ok(Some(summary))
 }
 
-pub(super) fn record(question: &ResearchQuestion, record: &Record) -> Result<(), String> {
+pub(super) fn record(question: &ResearchQuestion, record: &Record) -> Result<(), crate::Error> {
     if let Some(summary) = &record.experience {
         summary.validate()?;
         if summary.job != record.last_job
@@ -78,7 +78,7 @@ pub(super) fn record(question: &ResearchQuestion, record: &Record) -> Result<(),
             || summary.spent_ms > record.spent_ms
             || summary.reserved_units != record.last_units
         {
-            return Err("stored finder experience differs from its observation".into());
+            return Err(crate::ResearchFailure::ExperienceStoredBinding.into());
         }
     }
     Ok(())

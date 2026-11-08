@@ -861,6 +861,7 @@ codes! {
         RecoveryRecordIdentity = 130, RecoveryBytesOverflow = 131,
         EvidenceMissing = 132, EvidenceRandomState = 133, EvidenceObservationSequence = 134,
         EvidenceIdentity = 135, EvidenceHelperCapacity = 136, EvidenceHelperSource = 137, EvidenceOutcome = 138, EvidenceInitialization = 139, EvidenceDrawOverflow = 140, EvidenceObservationOverflow = 141, EvidenceCompletedReceipt = 142, EvidenceAttemptOverflow = 143, EvidenceWorkOverflow = 144, EvidenceTimeOverflow = 145, EvidencePlanBinding = 146, EvidencePlanCycle = 147, EvidencePreparedJob = 148, EvidenceCandidateRequired = 149, EvidenceProofSourceMissing = 150, EvidenceProofIdentity = 151, EvidenceSupportReceipt = 152, EvidenceSupportOverflow = 153,
+        ExperienceJobBinding = 154, ExperienceNativeBinding = 155, ExperienceTerminalState = 156, ExperienceOutcome = 157, ExperienceStoredBinding = 158,
     }
 
 }
