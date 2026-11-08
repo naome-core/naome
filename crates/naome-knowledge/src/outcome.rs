@@ -135,6 +135,8 @@ codes! {
         CommandFrameIncomplete = 6,
         CommandRead = 7,
         IdentityWidth = 8, HexWidth = 9, HexNoncanonical = 10,
+        PrerequisiteDuplicate = 11, PrerequisiteProgramInvalid = 12,
+        PrerequisiteOfferedProofMissing = 13,
     }
 
     pub enum InputLimit in 8 {
@@ -162,6 +164,10 @@ codes! {
         TrainingQuestionPageLimit = 22,
         TrainingSelectionPageLimit = 23,
         TrainingSuitePageLimit = 24,
+        PrerequisiteObjectCapacity = 25,
+        PrerequisiteArtifactBytes = 26,
+        PrerequisiteBytesOverflow = 27,
+        PrerequisiteByteCapacity = 28,
     }
 
     pub(crate) enum WorkerFailure in 9 {
@@ -727,6 +733,10 @@ impl InputLimit {
             Self::TrainingQuestionPageLimit => "training question page limit",
             Self::TrainingSelectionPageLimit => "training selection page limit",
             Self::TrainingSuitePageLimit => "training suite page limit",
+            Self::PrerequisiteObjectCapacity => "prerequisite object capacity",
+            Self::PrerequisiteArtifactBytes => "prerequisite artifact byte capacity",
+            Self::PrerequisiteBytesOverflow => "prerequisite byte overflow",
+            Self::PrerequisiteByteCapacity => "prerequisite byte capacity",
         }
     }
 }

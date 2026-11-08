@@ -120,7 +120,7 @@ impl Prerequisites {
         }
         Ok(selected)
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         let limits = crate::resources::limits();
         let mut ids = BTreeSet::new();
         let mut bytes = self
@@ -131,21 +131,30 @@ impl Prerequisites {
             .sum::<usize>();
         if self.0.artifacts.len() + self.0.programs.len() >= limits.closure_objects
             || self.0.programs.len() > knowledge::CAPACITY
-            || self.0.programs.iter().any(|entry| {
-                entry.validate_width().is_err()
-                    || !ids.insert(*entry.manifest.artifact_id().as_bytes())
-            })
         {
-            return Err("temporary prerequisite object capacity".into());
+            return Err(crate::InputLimit::PrerequisiteObjectCapacity.into());
+        }
+        for entry in &self.0.programs {
+            if entry.validate_width().is_err() {
+                return Err(crate::InputFault::PrerequisiteProgramInvalid.into());
+            }
+            if !ids.insert(*entry.manifest.artifact_id().as_bytes()) {
+                return Err(crate::InputFault::PrerequisiteDuplicate.into());
+            }
         }
         for artifact in &self.0.artifacts {
             let id = crate::object::id_bytes(&artifact.artifact_id)?;
-            if !ids.insert(id)
-                || artifact.compatibility != crate::hex(&crate::object::compatibility())
-                || artifact.payload.len() > 2 * limits.proof_bytes
-                || artifact.payload.len() % 2 != 0
-            {
-                return Err("temporary prerequisite identity or capacity".into());
+            if !ids.insert(id) {
+                return Err(crate::InputFault::PrerequisiteDuplicate.into());
+            }
+            if artifact.compatibility != crate::hex(&crate::object::compatibility()) {
+                return Err(crate::InputFault::ArtifactCompatibilityMismatch.into());
+            }
+            if artifact.payload.len() > 2 * limits.proof_bytes {
+                return Err(crate::InputLimit::PrerequisiteArtifactBytes.into());
+            }
+            if artifact.payload.len() % 2 != 0 {
+                return Err(crate::InputFault::HexWidth.into());
             }
             if let Some(statement) = &artifact.statement_id {
                 crate::object::id_bytes(statement)?;
@@ -155,7 +164,7 @@ impl Prerequisites {
             }
             bytes = bytes
                 .checked_add(artifact.payload.len() / 2)
-                .ok_or("temporary prerequisite byte overflow")?;
+                .ok_or(crate::InputLimit::PrerequisiteBytesOverflow)?;
         }
         if let Some(id) = self.0.offered {
             let artifact = crate::hex(
@@ -173,11 +182,11 @@ impl Prerequisites {
                     .iter()
                     .any(|a| a.artifact_id == artifact && a.statement_id.is_some())
             {
-                return Err("offered theorem absent from captured inputs".into());
+                return Err(crate::InputFault::PrerequisiteOfferedProofMissing.into());
             }
         }
         if bytes > limits.closure_bytes {
-            return Err("temporary prerequisite byte capacity".into());
+            return Err(crate::InputLimit::PrerequisiteByteCapacity.into());
         }
         Ok(())
     }

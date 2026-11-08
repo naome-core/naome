@@ -315,6 +315,11 @@ impl fmt::Display for Error {
                 InputFault::IdentityWidth => "identity width",
                 InputFault::HexWidth => "hex width",
                 InputFault::HexNoncanonical => "noncanonical hex",
+                InputFault::PrerequisiteDuplicate => "duplicate prerequisite",
+                InputFault::PrerequisiteProgramInvalid => "invalid prerequisite program",
+                InputFault::PrerequisiteOfferedProofMissing => {
+                    "offered theorem absent from captured inputs"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -569,6 +574,11 @@ impl From<crate::StartupFailure> for Error {
     }
 }
 
+impl From<InputLimit> for Error {
+    fn from(limit: InputLimit) -> Self {
+        Self::InputLimit(limit)
+    }
+}
 impl From<InputFault> for Error {
     fn from(error: InputFault) -> Self {
         Self::InputFault(error)

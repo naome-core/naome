@@ -165,6 +165,22 @@ fn full_prerequisites_compose_without_populating_the_neural_snapshot() {
 fn claimed_addresses_do_not_replace_checked_identity_or_complete_dependencies() {
     let (_, graph, required) = inputs();
     let full = graph.prerequisites(&required).unwrap().unwrap();
+    let mut duplicate = full.0.artifacts.clone();
+    duplicate.push(duplicate[0].clone());
+    assert!(matches!(
+        Prerequisites::new(duplicate),
+        Err(crate::Error::InputFault(
+            crate::InputFault::PrerequisiteDuplicate
+        ))
+    ));
+    let mut incompatible = full.0.artifacts.clone();
+    incompatible[0].compatibility = crate::hex(&[0; 32]);
+    assert!(matches!(
+        Prerequisites::new(incompatible),
+        Err(crate::Error::InputFault(
+            crate::InputFault::ArtifactCompatibilityMismatch
+        ))
+    ));
     let mut artifacts = full.0.artifacts.clone();
     artifacts[0].artifact_id = crate::hex(&[3; 32]);
     assert!(
