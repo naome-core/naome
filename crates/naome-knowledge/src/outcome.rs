@@ -119,6 +119,8 @@ codes! {
         ExecutionFailed = 14,
         ProgramCodec = 15,
         QuestionInput = 16,
+        ProgramInput = 17,
+        ProgramFormula = 18,
     }
 
     pub enum InputFault in 7 {

@@ -226,10 +226,10 @@ pub fn decode_graph_node(bytes: &[u8]) -> Result<(Node<[u8; 32]>, Properties), S
 
 /// Materialize only formulas admitted by the existing tree codec. Exceeding
 /// that representation returns None, without rejecting the graph formula.
-pub fn bounded_formula<I: Copy>(
+pub fn bounded_formula<I: Copy, E: From<naome_foundation::FormulaCodecError>>(
     root: I,
-    mut load: impl FnMut(I) -> Result<Node<I>, String>,
-) -> Result<Option<Formula>, String> {
+    mut load: impl FnMut(I) -> Result<Node<I>, E>,
+) -> Result<Option<Formula>, E> {
     let mut pending = vec![(root, 0u32)];
     let mut bytes = Vec::new();
     let mut count = 0;
@@ -272,7 +272,7 @@ pub fn bounded_formula<I: Copy>(
     }
     Formula::decode_canonical(&bytes)
         .map(Some)
-        .map_err(|e| e.to_string())
+        .map_err(Into::into)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -149,6 +149,8 @@ pub enum Error {
     LearningEvidence(EvidenceFailure),
     LearningGraph(crate::LearningGraphFailure),
     ProgramCodec(naome_proof::program::CodecFailure),
+    ProgramInput(naome_checker::program::ProgramFault),
+    ProgramFormula(naome_foundation::FormulaCodecError),
     QuestionInput(Box<naome_proof::QuestionError>),
     Runtime(crate::RuntimeFailure),
     Startup {
@@ -186,6 +188,8 @@ impl Error {
             Self::LearningEvidence(failure) => return failure.code().into(),
             Self::LearningGraph(failure) => return (*failure).into(),
             Self::ProgramCodec(_) => OperationCode::ProgramCodec,
+            Self::ProgramInput(_) => OperationCode::ProgramInput,
+            Self::ProgramFormula(_) => OperationCode::ProgramFormula,
             Self::QuestionInput(_) => OperationCode::QuestionInput,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Startup { code, .. } => return (*code).into(),
@@ -210,9 +214,11 @@ impl Error {
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
-            error @ (Self::InputFault(_) | Self::QuestionLimit(_) | Self::QuestionInput(_)) => {
-                Self::Stored(Box::new(error))
-            }
+            error @ (Self::InputFault(_)
+            | Self::QuestionLimit(_)
+            | Self::QuestionInput(_)
+            | Self::ProgramInput(_)
+            | Self::ProgramFormula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
                 if !error.retryable() =>
             {
@@ -294,6 +300,8 @@ impl fmt::Display for Error {
             Self::LearningEvidence(error) => error.fmt(f),
             Self::LearningGraph(error) => error.fmt(f),
             Self::ProgramCodec(error) => error.fmt(f),
+            Self::ProgramInput(error) => error.fmt(f),
+            Self::ProgramFormula(error) => error.fmt(f),
             Self::QuestionInput(error) => error.fmt(f),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
@@ -379,7 +387,8 @@ impl From<naome_checker::program::Error> for Error {
         match error {
             naome_checker::program::Error::Check(diagnostic) => Self::Proof(diagnostic.into()),
             naome_checker::program::Error::Inspection(error) => Self::DiagnosticInspection(error),
-            naome_checker::program::Error::Invalid(message) => Self::InvalidInput(message),
+            naome_checker::program::Error::Invalid(reason) => Self::ProgramInput(reason),
+            naome_checker::program::Error::Formula(error) => Self::ProgramFormula(error),
             naome_checker::program::Error::Codec(error) => error.into(),
             naome_checker::program::Error::Storage(error) => {
                 Self::CorruptStorage(error.to_string())
@@ -459,6 +468,15 @@ impl serde::Serialize for Error {
         };
         if let Self::ProgramCodec(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;
+        }
+        if let Self::ProgramInput(reason) = cause {
+            value.serialize_entry("reason", &(*reason as u8))?;
+        }
+        if let Self::ProgramFormula(reason) = cause {
+            value.serialize_entry(
+                "formula",
+                &naome_checker::diagnostics::FormulaFailure::from(reason),
+            )?;
         }
         if let Self::QuestionInput(reason) = cause {
             use naome_checker::diagnostics::{ExpansionFailure, FormulaFailure};
