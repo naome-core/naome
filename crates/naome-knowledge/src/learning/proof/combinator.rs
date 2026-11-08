@@ -17,6 +17,7 @@ pub(super) enum Kind {
         ProofId,
         Vec<super::super::definitions::Entry>,
     ),
+    CheckedInput(ProofId, Formula),
     Variable(usize, Formula),
     Kernel(Kernel),
     Generalize(FreeVariable, Arc<Combinator>),
@@ -71,8 +72,10 @@ impl Eq for Combinator {}
 impl Combinator {
     pub(super) fn formula(&self) -> Formula {
         match &self.kind {
-            Kind::Lemma(_, _, formula, _, _) => formula.clone(),
-            Kind::Variable(_, formula) | Kind::Apply(_, _, formula) => formula.clone(),
+            Kind::Lemma(_, _, formula, _, _)
+            | Kind::CheckedInput(_, formula)
+            | Kind::Variable(_, formula)
+            | Kind::Apply(_, _, formula) => formula.clone(),
             Kind::Kernel(k) => k.formula(),
             Kind::Generalize(v, b) => Formula::for_all(*v, b.formula()),
             Kind::K(a, b) => Logic::simplification(a.clone(), b.clone()),

@@ -193,6 +193,15 @@ pub(super) fn program_from_recipe(
     target: &Formula,
     recipe: proof::Recipe,
 ) -> Result<ProgramCandidate, String> {
+    program_from_recipe_with_inputs(target, recipe, &[], [])
+}
+
+pub(super) fn program_from_recipe_with_inputs(
+    target: &Formula,
+    recipe: proof::Recipe,
+    programs: &[super::peer::Packet],
+    inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
+) -> Result<ProgramCandidate, String> {
     let (steps, helpers) = program_recipe(recipe)?;
     let commands = naome_proof::program::Projection::from_inference_steps(&steps)?.into_commands();
     let artifacts = helpers
@@ -203,7 +212,12 @@ pub(super) fn program_from_recipe(
                 .map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let packet = super::peer::Packet::compose(target, &commands, &[], artifacts)?;
+    let packet = super::peer::Packet::compose(
+        target,
+        &commands,
+        programs,
+        inputs.into_iter().chain(artifacts),
+    )?;
     Ok(ProgramCandidate { packet, helpers })
 }
 

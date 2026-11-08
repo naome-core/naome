@@ -1172,26 +1172,6 @@ fn solve_with_report(
         seed: job.max(1),
         explore: budget >= 128,
     };
-    if budget != 0
-        && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
-    {
-        let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
-        if let Some(packet) = inputs.native_proof(question.proved_target(), context.required)? {
-            return program_generation(
-                packet,
-                Vec::new(),
-                question.proved_target(),
-                false,
-                GenerationCost {
-                    search_expansions: 1,
-                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
-                        as u64,
-                    ..GenerationCost::default()
-                },
-                Vec::new(),
-            );
-        }
-    }
     let Generation {
         mut solution,
         diagnostic,
@@ -1390,6 +1370,30 @@ fn search_question_report(
     let mut frontier = None;
     let mut executions = Vec::new();
     let mut certificate_failures = 0;
+    let mut required_knowledge = context.required.to_vec();
+    if remaining != 0
+        && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
+    {
+        let (candidate, work) =
+            inputs.native_proof(q.proved_target(), context.required, remaining, started)?;
+        remaining = remaining.saturating_sub(work);
+        if let Some(candidate) = candidate {
+            return program_generation(
+                candidate.packet,
+                candidate.helpers,
+                q.proved_target(),
+                false,
+                GenerationCost {
+                    search_expansions: budget - remaining,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                },
+                Vec::new(),
+            );
+        }
+        required_knowledge.retain(|id| !inputs.supplies_program(id));
+    }
     let retrieval_started = std::time::Instant::now();
     let dependency_checking = proof::checking_work().steps;
     let terms = context
@@ -1543,7 +1547,7 @@ fn search_question_report(
                 terminal: experience::TerminalEvidence::Unknown,
             }
         } else {
-            let selected = match knowledge::offer(&target, context.theorems, context.required) {
+            let selected = match knowledge::offer(&target, context.theorems, &required_knowledge) {
                 Ok(selected) => selected,
                 Err(error) if !terms.is_empty() => {
                     failure = format!("temporary_prerequisite_composition_unresolved: {error}");

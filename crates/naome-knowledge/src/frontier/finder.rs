@@ -31,6 +31,40 @@ fn open(formula: &Formula) -> Option<Formula> {
         .map_or(Some(0), |v| v.identifier().checked_add(1))?;
     formula.open_outer_universal(FreeVariable::new(fresh))
 }
+/// Closed antecedents on a bounded backward implication path to the goal.
+pub(super) fn closed_cut_sources(goal: &Formula) -> Vec<Formula> {
+    let mut body = goal.clone();
+    while let Some(opened) = open(&body) {
+        body = opened;
+    }
+    let mut rules = Vec::new();
+    for _ in 0..16 {
+        let Some((premise, conclusion)) = body.implication_parts() else {
+            break;
+        };
+        if let Some((antecedent, consequent)) = premise.implication_parts() {
+            rules.push((antecedent, consequent));
+        }
+        body = conclusion;
+    }
+
+    let mut reachable = vec![body];
+    let mut cursor = 0;
+    while let Some(wanted) = reachable.get(cursor).cloned() {
+        for (antecedent, consequent) in &rules {
+            if *consequent == wanted && !reachable.contains(antecedent) {
+                reachable.push(antecedent.clone());
+            }
+        }
+        cursor += 1;
+    }
+    reachable
+        .into_iter()
+        .skip(1)
+        .filter(Formula::is_closed)
+        .collect()
+}
+
 fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {
     let free = formula.free_variables().into_iter().collect::<Vec<_>>();
     if free.len() != 2 {

@@ -1650,3 +1650,5 @@ fn native_nat_program_reuse_from_a_received_catalog() {
         sample.peak_rss_bytes
     );
 }
+
+mod native_prerequisite;

@@ -151,14 +151,23 @@ impl Prerequisites {
         !self.0.programs.is_empty()
     }
 
+    pub(super) fn supplies_program(&self, id: &str) -> bool {
+        self.0
+            .programs
+            .iter()
+            .any(|packet| crate::hex(packet.manifest.proof_id().as_bytes()) == id)
+    }
+
     pub(super) fn native_proof(
         &self,
         target: &naome_foundation::Formula,
         required: &[String],
-    ) -> Result<Option<Packet>, String> {
+        maximum: usize,
+        started: std::time::Instant,
+    ) -> Result<(Option<super::construction::ProgramCandidate>, usize), String> {
         use naome_checker::ContextView;
         use naome_proof::{
-            ProofId,
+            ProofId, ProofStep,
             program::{Command, Projection},
         };
 
@@ -190,6 +199,9 @@ impl Prerequisites {
                     .proof_formula(header, header.canonical_length())
                     .map_err(|error| error.to_string())?
                     .ok_or("checked temporary prerequisite formula is missing")?;
+                if !formula.is_closed() {
+                    return Err("temporary prerequisite is not closed".into());
+                }
                 sources.push((id, formula.into_owned()));
             }
         }
@@ -199,38 +211,71 @@ impl Prerequisites {
                 .find(|(_, known)| known == formula)
                 .map(|(id, _)| *id)
         };
-        let commands = if let Some(id) = select(target) {
-            vec![
+        let direct = if let Some(id) = select(target) {
+            Some(vec![
                 Command::ProofReference {
                     proof_id: *id.as_bytes(),
                 },
                 Command::Seal { proof: 0 },
-            ]
-        } else {
-            let Some((left, right)) = super::conjunction_operands(target) else {
-                return Ok(None);
-            };
-            if left == right {
-                return Ok(None);
-            }
-            let (Some(left_id), Some(right_id)) = (select(&left), select(&right)) else {
-                return Ok(None);
-            };
+            ])
+        } else if let Some((left, right)) = super::conjunction_operands(target)
+            && left != right
+            && let (Some(left_id), Some(right_id)) = (select(&left), select(&right))
+        {
             let definitions = self.definitions(&[], required)?;
-            Projection::conjoin(&[
+            Some(Projection::conjoin(&[
                 (left_id, definitions::represent(&left, &definitions)?),
                 (right_id, definitions::represent(&right, &definitions)?),
-            ])
+            ]))
+        } else {
+            None
         };
         drop(context);
         drop(_work);
-        Packet::compose(
+        let artifacts = || artifacts.iter().map(|a| a.bytes.clone());
+        if let Some(commands) = direct {
+            let packet = Packet::compose(target, &commands, &self.0.programs, artifacts())?;
+            return Ok((
+                Some(super::construction::ProgramCandidate {
+                    packet,
+                    helpers: Vec::new(),
+                }),
+                1,
+            ));
+        }
+
+        let programs = self
+            .0
+            .programs
+            .iter()
+            .map(|packet| packet.manifest.proof_id())
+            .collect::<BTreeSet<_>>();
+        if sources.iter().all(|(id, _)| !programs.contains(id)) {
+            return Ok((None, 0));
+        }
+        let terms = sources
+            .into_iter()
+            .map(|(id, formula)| proof::Term::CheckedInput(id, formula))
+            .collect::<Vec<_>>();
+        let (term, work) = super::construction::composition::construct_term(
+            target, &terms, maximum, started, true,
+        )?;
+        let Some(term) = term else {
+            return Ok((None, work));
+        };
+        let recipe = proof::recipe(&term, target)?;
+        if !recipe.steps.iter().any(|step| {
+            matches!(step, ProofStep::ProofReference { proof_id } if programs.contains(proof_id))
+        }) {
+            return Ok((None, work));
+        }
+        let candidate = super::construction::program_from_recipe_with_inputs(
             target,
-            &commands,
+            recipe,
             &self.0.programs,
-            artifacts.iter().map(|a| a.bytes.clone()),
-        )
-        .map(Some)
+            artifacts(),
+        )?;
+        Ok((Some(candidate), work))
     }
 
     pub fn require(&self, base: &State, required: &[String]) -> Result<(), String> {
@@ -248,11 +293,7 @@ impl Prerequisites {
                     .as_bytes(),
             );
             if !self.0.artifacts.iter().any(|a| a.artifact_id == address)
-                && !self
-                    .0
-                    .programs
-                    .iter()
-                    .any(|program| crate::hex(program.manifest.proof_id().as_bytes()) == *id)
+                && !self.supplies_program(id)
             {
                 missing.push(id.clone());
             }

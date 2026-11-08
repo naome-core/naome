@@ -330,7 +330,16 @@ pub(crate) fn construct_term(
 ) -> Result<(Option<proof::Term>, usize), String> {
     let maximum = maximum.min(16);
     let mut context = context.to_vec();
-    let deduction_work = deductions(target, &mut context, maximum, started)?;
+    let deduction_work = if context
+        .iter()
+        .any(|term| matches!(term, proof::Term::CheckedInput(..)))
+    {
+        // Checked program references need their program context. The
+        // certificate-only obligation prepass cannot verify them in isolation.
+        0
+    } else {
+        deductions(target, &mut context, maximum, started)?
+    };
     let mut search = logic::Search::new(maximum.saturating_sub(deduction_work), started);
     if native {
         search = search.native();

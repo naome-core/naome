@@ -125,26 +125,42 @@ impl Frontier {
         use naome_checker::ContextView;
         use naome_proof::StatementId;
         let definitions = question.dependencies();
-        if planned.is_empty()
-            && let Some((left, right)) =
-                crate::learning::conjunction_operands(question.proved_target())
-            && left != right
-            && left.is_closed()
-            && right.is_closed()
-        {
-            // The Solver can directly compose these two closed operands.
-            let mut witnesses = Vec::with_capacity(2);
-            for operand in [left, right] {
+        if planned.is_empty() {
+            let witness = |operand: &Formula| -> Result<Option<String>, crate::Error> {
                 let bytes = operand
                     .encode_canonical()
                     .map_err(|error| error.to_string())?;
                 let statement = StatementId::of_canonical_formula(&bytes)
                     .ok_or("checked Finder operand statement width")?;
-                if let Some(header) = graph.checked_context().statement_header(statement)? {
-                    witnesses.push(crate::hex(header.proof_id().as_bytes()));
+                Ok(graph
+                    .checked_context()
+                    .statement_header(statement)?
+                    .map(|header| crate::hex(header.proof_id().as_bytes())))
+            };
+            if let Some((left, right)) =
+                crate::learning::conjunction_operands(question.proved_target())
+                && left != right
+                && left.is_closed()
+                && right.is_closed()
+                && let (Some(left), Some(right)) = (witness(&left)?, witness(&right)?)
+            {
+                let witnesses = vec![left, right];
+                if let Some(inputs) = graph.solving_inputs(&witnesses, definitions)? {
+                    return Ok((witnesses, inputs));
                 }
             }
-            if witnesses.len() == 2
+            let mut witnesses = Vec::new();
+            for antecedent in finder::closed_cut_sources(question.proved_target()) {
+                if let Some(id) = witness(&antecedent)?
+                    && !witnesses.contains(&id)
+                {
+                    witnesses.push(id);
+                    if witnesses.len() == 4 {
+                        break;
+                    }
+                }
+            }
+            if !witnesses.is_empty()
                 && let Some(inputs) = graph.solving_inputs(&witnesses, definitions)?
             {
                 return Ok((witnesses, inputs));
