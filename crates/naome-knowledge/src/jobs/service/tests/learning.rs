@@ -1069,11 +1069,11 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
     #[derive(Default)]
     struct Checkpoint(Option<crate::learning::Progress>);
     impl Supervisor for Checkpoint {
-        fn reserve(&mut self, unit: u32) -> Result<(), String> {
+        fn reserve(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
             assert_eq!(unit, 1);
             Ok(())
         }
-        fn checkpoint(&mut self, unit: u32) -> Result<(), String> {
+        fn checkpoint(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
             assert_eq!(self.0.as_ref().unwrap().unit, unit);
             Ok(())
         }
@@ -1092,7 +1092,7 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
         fn blocked_nanos(&self) -> u64 {
             0
         }
-        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), String> {
+        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), crate::outcome::WorkerFailure> {
             Ok(())
         }
     }

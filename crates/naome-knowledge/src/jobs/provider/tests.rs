@@ -23,15 +23,19 @@ impl Supervisor for Grants {
     fn blocked_nanos(&self) -> u64 {
         0
     }
-    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String> {
+    fn observe(
+        &mut self,
+        phase: Phase,
+        sample: Sample,
+    ) -> Result<(), crate::outcome::WorkerFailure> {
         self.1.push((phase, sample));
         Ok(())
     }
-    fn reserve(&mut self, unit: u32) -> Result<(), String> {
+    fn reserve(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
         self.0.push((false, unit));
         Ok(())
     }
-    fn checkpoint(&mut self, unit: u32) -> Result<(), String> {
+    fn checkpoint(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
         self.0.push((true, unit));
         Ok(())
     }
@@ -157,5 +161,31 @@ fn another_provider_resumes_through_the_same_reservations_and_preserves_uncertai
             .map(|(phase, sample)| (*phase, sample.succeeded))
             .collect::<Vec<_>>(),
         [(Phase::Setup, true), (Phase::Unit { unit: 1 }, false)]
+    );
+}
+
+#[test]
+fn supervisor_failure_survives_provider_drive() {
+    struct FailedGrant;
+    impl Supervisor for FailedGrant {
+        fn reserve(&mut self, _: u32) -> Result<(), crate::outcome::WorkerFailure> {
+            Err(crate::outcome::WorkerFailure::GrantIdentity)
+        }
+        fn checkpoint(&mut self, _: u32) -> Result<(), crate::outcome::WorkerFailure> {
+            unreachable!()
+        }
+        fn probe(&mut self, _: Probe) -> Result<(), String> {
+            unreachable!()
+        }
+        fn blocked_nanos(&self) -> u64 {
+            0
+        }
+        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), crate::outcome::WorkerFailure> {
+            Ok(())
+        }
+    }
+    let result = drive(&mut OtherProvider { uncertain: false }, &mut FailedGrant, 0);
+    assert!(
+        matches!(result, Err(Failure::Coded(code)) if u32::from(code) == u32::from(crate::outcome::WorkerFailure::GrantIdentity))
     );
 }

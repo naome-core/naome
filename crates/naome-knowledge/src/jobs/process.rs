@@ -844,15 +844,19 @@ fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
 }
 
 fn emit(frame: &Frame) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(frame).map_err(|e| e.to_string())?;
+    emit_coded(frame).map_err(|error| format!("{error:?}"))
+}
+
+fn emit_coded(frame: &Frame) -> Result<(), WorkerFailure> {
+    let mut bytes = serde_json::to_vec(frame).map_err(|_| WorkerFailure::FrameEncoding)?;
     bytes.push(b'\n');
     if bytes.len() > max_frame_bytes() {
-        return Err("provider output capacity".into());
+        return Err(WorkerFailure::FrameCapacity);
     }
     std::io::stdout()
         .write_all(&bytes)
         .and_then(|_| std::io::stdout().flush())
-        .map_err(|e| e.to_string())
+        .map_err(|_| WorkerFailure::PipeIo)
 }
 
 enum Message {
@@ -1153,22 +1157,30 @@ struct WorkerControl {
     descendants: Vec<Descendant>,
     blocked_nanos: u64,
 }
+fn grant_error_text(error: WorkerFailure) -> &'static str {
+    match error {
+        WorkerFailure::GrantClosed => "provider durable grant closed",
+        WorkerFailure::GrantDecoding => "provider durable grant invalid",
+        WorkerFailure::GrantIdentity => "provider durable grant identity differs",
+        _ => "provider durable grant failed",
+    }
+}
+
 impl WorkerControl {
-    fn grant_data(&mut self, next: u32) -> Result<Option<Vec<u8>>, String> {
+    fn grant_data(&mut self, next: u32) -> Result<Option<Vec<u8>>, WorkerFailure> {
         let waiting = Instant::now();
         let bytes = self.receiver.recv();
         self.blocked_nanos = self
             .blocked_nanos
             .saturating_add(waiting.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
-        let grant: Grant =
-            serde_json::from_slice(&bytes.map_err(|_| "provider durable grant closed")?)
-                .map_err(|e| e.to_string())?;
+        let grant: Grant = serde_json::from_slice(&bytes.map_err(|_| WorkerFailure::GrantClosed)?)
+            .map_err(|_| WorkerFailure::GrantDecoding)?;
         if grant.id != self.id || grant.next != next {
-            return Err("provider durable grant identity differs".into());
+            return Err(WorkerFailure::GrantIdentity);
         }
         Ok(grant.data)
     }
-    fn grant(&mut self, next: u32) -> Result<(), String> {
+    fn grant(&mut self, next: u32) -> Result<(), WorkerFailure> {
         self.grant_data(next).map(|_| ())
     }
 }
@@ -1188,7 +1200,8 @@ impl super::provider::Supervisor for WorkerControl {
         })?;
         serde_json::from_slice(
             &self
-                .grant_data(self.current_unit)?
+                .grant_data(self.current_unit)
+                .map_err(|error| grant_error_text(error).to_owned())?
                 .ok_or("history receipt missing")?,
         )
         .map_err(|e| e.to_string())
@@ -1205,7 +1218,8 @@ impl super::provider::Supervisor for WorkerControl {
             range,
             bytes: None,
         })?;
-        self.grant_data(self.current_unit)?
+        self.grant_data(self.current_unit)
+            .map_err(|error| grant_error_text(error).to_owned())?
             .ok_or("native model read response missing".into())
     }
     fn write_model(
@@ -1222,6 +1236,7 @@ impl super::provider::Supervisor for WorkerControl {
             bytes: Some(bytes),
         })?;
         self.grant(self.current_unit)
+            .map_err(|error| grant_error_text(error).to_owned())
     }
     fn learning(&mut self, unit: u32, progress: crate::learning::Progress) -> Result<(), String> {
         emit(&Frame::Learning {
@@ -1230,12 +1245,13 @@ impl super::provider::Supervisor for WorkerControl {
             progress: Box::new(progress),
         })?;
         self.grant(unit)
+            .map_err(|error| grant_error_text(error).to_owned())
     }
     fn blocked_nanos(&self) -> u64 {
         self.blocked_nanos
     }
-    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String> {
-        emit(&Frame::Feedback {
+    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Feedback {
             id: self.id,
             phase,
             sample,
@@ -1253,15 +1269,16 @@ impl super::provider::Supervisor for WorkerControl {
             records,
         })?;
         self.grant(unit)
+            .map_err(|error| grant_error_text(error).to_owned())
     }
-    fn reserve(&mut self, next: u32) -> Result<(), String> {
-        emit(&Frame::Reserve { id: self.id, next })?;
+    fn reserve(&mut self, next: u32) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Reserve { id: self.id, next })?;
         self.grant(next)?;
         self.current_unit = next;
         Ok(())
     }
-    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String> {
-        emit(&Frame::Progress {
+    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Progress {
             id: self.id,
             checkpoint,
         })?;

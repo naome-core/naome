@@ -229,6 +229,9 @@ codes! {
         FeedbackCheckpoint = 39,
         OutputDrainDeadline = 40,
         SupervisorExit = 41,
+        GrantClosed = 42,
+        GrantDecoding = 43,
+        GrantIdentity = 44,
     }
     pub enum LearningGraphFailure in 10 {
         Capacity = 1,

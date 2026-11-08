@@ -87,3 +87,55 @@ fn worker_failure_frame_preserves_registered_cause() {
     invalid[1]["code"] = 0xffff_ffff_u32.into();
     assert!(serde_json::from_value::<Frame>(invalid).is_err());
 }
+
+#[test]
+fn durable_grants_preserve_closed_invalid_and_identity_failures() {
+    fn control(receiver: sync_channel::Receiver<Vec<u8>>) -> WorkerControl {
+        WorkerControl {
+            id: 7,
+            current_unit: 0,
+            receiver,
+            descendants: Vec::new(),
+            blocked_nanos: 0,
+        }
+    }
+    let (sender, receiver) = sync_channel::sync_channel(1);
+    drop(sender);
+    assert_eq!(
+        control(receiver).grant_data(1),
+        Err(WorkerFailure::GrantClosed)
+    );
+    let (sender, receiver) = sync_channel::sync_channel(1);
+    sender.send(b"invalid".to_vec()).unwrap();
+    assert_eq!(
+        control(receiver).grant_data(1),
+        Err(WorkerFailure::GrantDecoding)
+    );
+    let (sender, receiver) = sync_channel::sync_channel(1);
+    sender
+        .send(
+            serde_json::to_vec(&Grant {
+                id: 7,
+                next: 2,
+                data: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        control(receiver).grant_data(1),
+        Err(WorkerFailure::GrantIdentity)
+    );
+    let (sender, receiver) = sync_channel::sync_channel(1);
+    sender
+        .send(
+            serde_json::to_vec(&Grant {
+                id: 7,
+                next: 1,
+                data: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(control(receiver).grant_data(1), Ok(None));
+}

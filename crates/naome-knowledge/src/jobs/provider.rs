@@ -22,6 +22,11 @@ impl From<crate::Error> for Failure {
         Self::Coded(crate::outcome::JobFailureCode::from_owner(&error))
     }
 }
+impl From<crate::outcome::WorkerFailure> for Failure {
+    fn from(error: crate::outcome::WorkerFailure) -> Self {
+        Self::Coded(error.into())
+    }
+}
 impl From<String> for Failure {
     fn from(_: String) -> Self {
         Self::Failed
@@ -68,11 +73,15 @@ pub(super) trait Supervisor {
     fn learning(&mut self, _unit: u32, _progress: crate::learning::Progress) -> Result<(), String> {
         Err("provider does not support local learning checkpoints".into())
     }
-    fn reserve(&mut self, next: u32) -> Result<(), String>;
-    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String>;
+    fn reserve(&mut self, next: u32) -> Result<(), crate::outcome::WorkerFailure>;
+    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), crate::outcome::WorkerFailure>;
     fn probe(&mut self, probe: Probe) -> Result<(), String>;
     fn blocked_nanos(&self) -> u64;
-    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String>;
+    fn observe(
+        &mut self,
+        phase: Phase,
+        sample: Sample,
+    ) -> Result<(), crate::outcome::WorkerFailure>;
 }
 pub(super) trait Provider {
     fn start(&mut self, _supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
