@@ -482,6 +482,17 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ModelBlobCapacity => "native model blob capacity",
                 crate::ResearchFailure::ModelChunkIndex => "native model chunk index",
                 crate::ResearchFailure::ModelChunkRange => "native model chunk range",
+                crate::ResearchFailure::HistoryRecordKeySyntax => "history record key syntax",
+                crate::ResearchFailure::HistoryRecordKeyEncoding => "history record key encoding",
+                crate::ResearchFailure::HistoryRequestJobMissing => {
+                    "history request lacks its original job"
+                }
+                crate::ResearchFailure::HistoryPageRequestMismatch => {
+                    "history page differs from its bounded request"
+                }
+                crate::ResearchFailure::HistoryCursorNotAdvanced => {
+                    "history cursor did not advance"
+                }
             }),
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")

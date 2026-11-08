@@ -619,6 +619,9 @@ codes! {
         ProviderProgramOriginalReservationMissing = 60,
         ResumedProviderProgramGroupDiffers = 61,
         ModelBlobCapacity = 62, ModelChunkIndex = 63, ModelChunkRange = 64,
+        HistoryRecordKeySyntax = 65, HistoryRecordKeyEncoding = 66,
+        HistoryRequestJobMissing = 67, HistoryPageRequestMismatch = 68,
+        HistoryCursorNotAdvanced = 69,
     }
 
 }

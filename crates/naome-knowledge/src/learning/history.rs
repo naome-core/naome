@@ -12,7 +12,7 @@ pub enum Lane {
     Records,
 }
 impl Lane {
-    fn key(self, key: &str) -> Result<(), String> {
+    fn key(self, key: &str) -> Result<(), crate::Error> {
         match self {
             Self::Sources => {
                 crate::object::id_bytes(key)?;
@@ -21,9 +21,9 @@ impl Lane {
             Self::Records => {
                 let id = key
                     .parse::<u64>()
-                    .map_err(|_| "history record key syntax")?;
+                    .map_err(|_| crate::ResearchFailure::HistoryRecordKeySyntax)?;
                 if id == 0 || id.to_string() != key {
-                    return Err("history record key encoding".into());
+                    return Err(crate::ResearchFailure::HistoryRecordKeyEncoding.into());
                 }
                 Ok(())
             }
@@ -40,7 +40,7 @@ pub struct Cursor {
     lane: Lane,
 }
 impl Cursor {
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), crate::Error> {
         for (lane, key) in [
             (Lane::Sources, &self.sources),
             (Lane::Records, &self.records),
@@ -82,9 +82,9 @@ pub struct Request {
     pub horizon: u64,
 }
 impl Request {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.horizon == 0 {
-            return Err("history request lacks its original job".into());
+            return Err(crate::ResearchFailure::HistoryRequestJobMissing.into());
         }
         if let Some(after) = &self.after {
             self.lane.key(after)?;
@@ -104,7 +104,7 @@ pub struct Receipt {
     pub read_cpu_micros: u64,
 }
 impl Receipt {
-    pub fn validate(&self, request: &Request) -> Result<(), String> {
+    pub fn validate(&self, request: &Request) -> Result<(), crate::Error> {
         request.validate()?;
         self.blob.validate()?;
         if self.request != *request
@@ -112,12 +112,12 @@ impl Receipt {
             || self.read_bytes > crate::resources::limits().native_model_blob_bytes
             || self.read_operations > 4 * SOURCES + 1
         {
-            return Err("history page differs from its bounded request".into());
+            return Err(crate::ResearchFailure::HistoryPageRequestMismatch.into());
         }
         if let Some(next) = &self.next {
             request.lane.key(next)?;
             if request.after.as_ref().is_some_and(|after| next <= after) {
-                return Err("history cursor did not advance".into());
+                return Err(crate::ResearchFailure::HistoryCursorNotAdvanced.into());
             }
         }
         Ok(())
