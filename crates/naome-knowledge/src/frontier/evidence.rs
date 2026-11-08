@@ -436,8 +436,12 @@ impl Evidence {
             return Ok(false);
         }
         let experience = experience::completion(question, completion, outcome)?;
+        // Evidence is keyed by the expanded resolution and must be replayable
+        // without depending on a node's mutable definition context.
+        let evidence_question = ResearchQuestion::from_formula(question.formula().clone())
+            .map_err(crate::Error::from)?;
         let mut record = self.get(question)?.unwrap_or(Record {
-            question: question.to_hex(),
+            question: evidence_question.to_hex(),
             model_checkpoint: None,
             experience: None,
             solver: self.solver.clone(),

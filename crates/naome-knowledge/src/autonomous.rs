@@ -1460,6 +1460,15 @@ impl Autonomous {
                             Err(_) => return accepted,
                         }
                     };
+                    // Mock solving consumes the expanded target, not a native
+                    // definition snapshot. Explicit theorem requirements must
+                    // still pass the ordinary prerequisite gate.
+                    let prerequisites =
+                        if !self.intervals.jobs.native_proof_learning && required.is_empty() {
+                            Default::default()
+                        } else {
+                            prerequisites
+                        };
                     match self.client.submit_after(
                         jobs::Input::Solve { question: solving },
                         context.binding(),

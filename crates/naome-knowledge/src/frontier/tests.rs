@@ -58,6 +58,47 @@ fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() 
     );
 }
 
+#[test]
+fn defined_question_evidence_replays_using_its_checked_primitive_target() {
+    use naome_foundation::FreeVariable;
+    use naome_proof::{DefinedFormula, DefinitionCertificate};
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let x = FreeVariable::new(0);
+    let definition = DefinitionCertificate::relation(1, DefinedFormula::equal(x, x)).unwrap();
+    graph
+        .produce(&crate::test_inputs::definition(&definition))
+        .unwrap();
+    let source = DefinedFormula::for_all(
+        x,
+        DefinedFormula::defined_relation(definition.definition_id(), [x]),
+    );
+    let question = ResearchQuestion::from_defined_formula(source, graph.checked_context()).unwrap();
+    let primitive = ResearchQuestion::from_formula(question.formula().clone()).unwrap();
+    assert_ne!(question.to_hex(), primitive.to_hex());
+    assert_eq!(question.resolution_id(), primitive.resolution_id());
+    let settings = jobs::Settings::default();
+    let mut frontier = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
+    frontier
+        .attempted(
+            &question,
+            &graph,
+            &completion(1, jobs::Output::NoCandidate, jobs::State::Complete),
+            Outcome::NoCandidate,
+        )
+        .unwrap();
+    assert_eq!(
+        frontier.evidence.get(&question).unwrap().unwrap().question,
+        primitive.to_hex()
+    );
+    drop(frontier);
+    let reopened = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
+    assert_eq!(
+        reopened.evidence.get(&question).unwrap().unwrap().last_job,
+        1
+    );
+}
+
 fn question(index: u64) -> ResearchQuestion {
     ResearchQuestion::from_hex(&mocks::create_question(index)).unwrap()
 }
