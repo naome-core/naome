@@ -43,17 +43,25 @@ pub struct Selection {
     pub custom: Option<Custom>,
 }
 impl Selection {
-    pub fn validate(&self) -> Result<(), String> {
-        match (&self.profile,&self.custom) {
-            (Profile::Custom,Some(c)) if c.memory_bytes>=8*MIB
-                && c.memory_bytes<=isize::MAX as u64 && c.concurrency>0
-                && c.concurrency<=c.memory_bytes as usize/65536
-                && c.cache_bytes>=4096 && c.cache_bytes<=c.memory_bytes/4
-                && c.batch_steps>0 && c.batch_steps<=c.memory_bytes as usize/8192
-                && c.network_requests>0 && c.network_requests<=c.memory_bytes as usize/65536=>Ok(()),
-            (Profile::Custom,_)=>Err("custom requires positive, internally consistent memory, concurrency, cache, batch and network limits".into()),
-            (_,None)=>Ok(()),
-            _=>Err("custom settings require the custom profile".into()),
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        match (&self.profile, &self.custom) {
+            (Profile::Custom, Some(c))
+                if c.memory_bytes >= 8 * MIB
+                    && c.memory_bytes <= isize::MAX as u64
+                    && c.concurrency > 0
+                    && c.concurrency <= c.memory_bytes as usize / 65536
+                    && c.cache_bytes >= 4096
+                    && c.cache_bytes <= c.memory_bytes / 4
+                    && c.batch_steps > 0
+                    && c.batch_steps <= c.memory_bytes as usize / 8192
+                    && c.network_requests > 0
+                    && c.network_requests <= c.memory_bytes as usize / 65536 =>
+            {
+                Ok(())
+            }
+            (Profile::Custom, _) => Err(crate::InputFault::ResourceCustomInvalid.into()),
+            (_, None) => Ok(()),
+            _ => Err(crate::InputFault::ResourceCustomProfileMismatch.into()),
         }
     }
 }
@@ -359,12 +367,17 @@ fn live_limit(capacity: usize, limit: impl FnOnce(&Budget) -> usize) -> usize {
         .map_or(capacity, |s| limit(&s.snapshot.budget).min(capacity))
 }
 
-pub fn load(directory: &Path) -> Result<Selection, String> {
+pub fn load(directory: &Path) -> Result<Selection, crate::Error> {
     let path = directory.join("resource-profile.json");
     let Some(bytes) = crate::storage::read_owned_snapshot(&path, 4096)? else {
         return Ok(Selection::default());
     };
-    let selection: Selection = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let selection: Selection =
+        serde_json::from_slice(&bytes).map_err(|error| crate::Error::ResourceProfileDecode {
+            reason: crate::error::json_fault(&error),
+            line: error.line(),
+            column: error.column(),
+        })?;
     selection.validate()?;
     Ok(selection)
 }

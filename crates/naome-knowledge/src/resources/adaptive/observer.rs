@@ -5,13 +5,14 @@ use std::time::Instant;
 
 #[derive(Debug)]
 pub(crate) enum ObservationError {
-    Settings(String),
+    Settings(crate::Error),
     Unavailable(String),
 }
 impl std::fmt::Display for ObservationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Settings(message) | Self::Unavailable(message) => f.write_str(message),
+            Self::Settings(error) => error.fmt(f),
+            Self::Unavailable(message) => f.write_str(message),
         }
     }
 }
@@ -19,7 +20,7 @@ impl From<ObservationError> for crate::Error {
     fn from(error: ObservationError) -> Self {
         match error {
             ObservationError::Unavailable(_) => Self::ExecutionLimit,
-            ObservationError::Settings(message) => Self::InvalidInput(message),
+            ObservationError::Settings(error) => error,
         }
     }
 }
@@ -60,7 +61,7 @@ impl Observer {
     fn poll_with(
         &mut self,
         now: Instant,
-        selection: impl FnOnce() -> Result<Selection, String>,
+        selection: impl FnOnce() -> Result<Selection, crate::Error>,
         sample: impl FnOnce() -> Result<observation::Sample, String>,
     ) -> Result<Option<&Snapshot>, ObservationError> {
         if !self.due(now) {

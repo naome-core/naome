@@ -60,3 +60,31 @@ fn profile_fifo_is_rejected_without_waiting_for_a_writer() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+#[test]
+fn invalid_resource_profile_retains_numeric_parse_and_limit_causes() {
+    let directory = Directory::new();
+    let path = directory.0.join("resource-profile.json");
+    fs::write(&path, br#"{"profile":4980991,"custom":null}"#).unwrap();
+    let error = load(&directory.0).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::ResourceProfileDecode {
+            reason: crate::JsonFault::Data,
+            ..
+        }
+    ));
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(value["reason"], u32::from(crate::JsonFault::Data));
+    let invalid = Selection {
+        profile: Profile::Custom,
+        custom: None,
+    };
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    let error = load(&directory.0).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::ResourceCustomInvalid)
+    );
+    assert!(!error.retryable());
+}

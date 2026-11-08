@@ -125,11 +125,15 @@ fn invalid_settings_are_distinct_from_a_retryable_telemetry_failure() {
     let error = observer
         .poll_with(
             Instant::now(),
-            || Err("invalid profile".into()),
+            || Err(crate::InputFault::ResourceCustomInvalid.into()),
             || panic!("invalid settings must not sample"),
         )
         .unwrap_err();
-    assert_eq!(error.to_string(), "invalid profile");
-    assert!(!crate::Error::from(error).retryable());
+    let error = crate::Error::from(error);
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::ResourceCustomInvalid)
+    );
+    assert!(!error.retryable());
     assert!(observer.snapshot.is_none());
 }

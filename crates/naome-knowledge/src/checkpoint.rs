@@ -488,12 +488,7 @@ pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, crate::Error> {
 }
 pub(crate) fn decode<T: DeserializeOwned + Serialize>(payload: &[u8]) -> Result<T, crate::Error> {
     let value: T = serde_json::from_slice(payload).map_err(|error| {
-        let reason = match error.classify() {
-            serde_json::error::Category::Io => crate::CheckpointJsonFault::Io,
-            serde_json::error::Category::Syntax => crate::CheckpointJsonFault::Syntax,
-            serde_json::error::Category::Data => crate::CheckpointJsonFault::Data,
-            serde_json::error::Category::Eof => crate::CheckpointJsonFault::Eof,
-        };
+        let reason = crate::error::json_fault(&error);
         crate::Error::CheckpointDecode {
             reason,
             line: error.line(),

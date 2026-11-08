@@ -317,8 +317,8 @@ fn uncertain_checkpoint_commit_requires_replay_before_any_read() {
 #[test]
 fn checkpoint_json_errors_keep_categories_positions_and_storage_fatality() {
     for (bytes, expected) in [
-        (b"{!".as_slice(), crate::CheckpointJsonFault::Syntax),
-        (b"{".as_slice(), crate::CheckpointJsonFault::Eof),
+        (b"{!".as_slice(), crate::JsonFault::Syntax),
+        (b"{".as_slice(), crate::JsonFault::Eof),
     ] {
         let error = decode::<serde_json::Value>(bytes).unwrap_err();
         assert!(
@@ -329,7 +329,7 @@ fn checkpoint_json_errors_keep_categories_positions_and_storage_fatality() {
     assert!(matches!(
         error,
         crate::Error::CheckpointDecode {
-            reason: crate::CheckpointJsonFault::Data,
+            reason: crate::JsonFault::Data,
             ..
         }
     ));
@@ -368,10 +368,7 @@ fn checkpoint_json_errors_keep_categories_positions_and_storage_fatality() {
         value["cause_code"],
         u32::from(crate::outcome::OperationCode::CheckpointDecode)
     );
-    assert_eq!(
-        value["reason"],
-        u32::from(crate::CheckpointJsonFault::Syntax)
-    );
+    assert_eq!(value["reason"], u32::from(crate::JsonFault::Syntax));
     assert_eq!(value["line"], 1);
 }
 

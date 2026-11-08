@@ -135,6 +135,7 @@ codes! {
         CheckpointDecode = 22,
         CheckpointSql = 23,
         StorageIo = 24,
+        ResourceProfileDecode = 25,
     }
 
     pub enum InputFault in 7 {
@@ -188,6 +189,8 @@ codes! {
         OwnedInputCapacity = 52,
         MarkerCorrupt = 53,
         MarkerParentMissing = 54,
+        ResourceCustomInvalid = 55,
+        ResourceCustomProfileMismatch = 56,
     }
 
     pub enum InputLimit in 8 {
@@ -726,7 +729,7 @@ codes! {
     pub(crate) enum ConnectionClose in 70 { Io = 1, KeepAliveTimeout = 2 }
     pub(crate) enum RelayClientEvent in 71 { ReservationAccepted = 1, OutboundCircuit = 2, InboundCircuit = 3 }
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
-    pub enum CheckpointJsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
+    pub enum JsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
     #[derive(Default)]
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }

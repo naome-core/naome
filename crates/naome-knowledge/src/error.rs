@@ -263,7 +263,12 @@ pub enum Error {
     QuestionRegistration(naome_checker::question::RejectionReason),
     DefinitionCheck(Box<naome_checker::DefinitionCheckError>),
     CheckpointDecode {
-        reason: crate::CheckpointJsonFault,
+        reason: crate::JsonFault,
+        line: usize,
+        column: usize,
+    },
+    ResourceProfileDecode {
+        reason: crate::JsonFault,
         line: usize,
         column: usize,
     },
@@ -329,6 +334,7 @@ impl Error {
             Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
+            Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
             Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Runtime(failure) => return (*failure).into(),
@@ -373,6 +379,7 @@ impl Error {
             | Self::QuestionRegistration(_)
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
+            | Self::ResourceProfileDecode { .. }
             | Self::CheckpointSql { .. }
             | Self::StorageIo { .. }
             | Self::ProgramInput(_)
@@ -519,6 +526,10 @@ impl fmt::Display for Error {
                 InputFault::OwnedInputCapacity => "local input byte capacity",
                 InputFault::MarkerCorrupt => "research initialization marker corruption",
                 InputFault::MarkerParentMissing => "research marker parent absent",
+                InputFault::ResourceCustomInvalid => "custom resource limits are inconsistent",
+                InputFault::ResourceCustomProfileMismatch => {
+                    "custom settings require the custom profile"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -562,6 +573,15 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "checkpoint SQLite failure {} ({sqlite_code:?})",
+                u32::from(*reason)
+            ),
+            Self::ResourceProfileDecode {
+                reason,
+                line,
+                column,
+            } => write!(
+                f,
+                "resource profile decode failure {} at {line}:{column}",
                 u32::from(*reason)
             ),
             Self::CheckpointDecode {
@@ -914,6 +934,15 @@ impl From<EvidenceFailure> for Error {
     }
 }
 
+pub(crate) fn json_fault(error: &serde_json::Error) -> crate::JsonFault {
+    match error.classify() {
+        serde_json::error::Category::Io => crate::JsonFault::Io,
+        serde_json::error::Category::Syntax => crate::JsonFault::Syntax,
+        serde_json::error::Category::Data => crate::JsonFault::Data,
+        serde_json::error::Category::Eof => crate::JsonFault::Eof,
+    }
+}
+
 pub(crate) fn storage_io_error(
     operation: crate::StorageIoOperation,
     error: std::io::Error,
@@ -1089,6 +1118,16 @@ impl serde::Serialize for Error {
             if let Some(code) = sqlite_code {
                 value.serialize_entry("sqlite_code", code)?;
             }
+        }
+        if let Self::ResourceProfileDecode {
+            reason,
+            line,
+            column,
+        } = cause
+        {
+            value.serialize_entry("reason", reason)?;
+            value.serialize_entry("line", line)?;
+            value.serialize_entry("column", column)?;
         }
         if let Self::CheckpointDecode {
             reason,
