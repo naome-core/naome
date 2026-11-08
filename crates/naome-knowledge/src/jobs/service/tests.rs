@@ -2,6 +2,7 @@ use super::*;
 mod allowance;
 mod checkpoint;
 mod fairness;
+mod learning;
 mod lifecycle;
 mod resource_calibration;
 use std::time::Duration;
@@ -895,7 +896,7 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
             index as u64,
         )));
         owner.save().unwrap();
-        owner.deliver(id);
+        owner.deliver(id).unwrap();
     }
     owner.save().unwrap();
     assert!(owner.journal.records.len() < total);

@@ -45,7 +45,7 @@ pub struct Formula(Node);
 
 /// Borrowed structural view. Projection copies no recursive subtrees and
 /// establishes no inference or independent well-formedness for an inner binder.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FormulaView<'a>(&'a Node);
 
 impl<'a> FormulaView<'a> {

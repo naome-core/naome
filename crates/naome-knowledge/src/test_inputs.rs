@@ -73,3 +73,20 @@ pub(crate) fn identity_function() -> String {
     let body = naome_proof::DefinedFormula::equal(variable(1), variable(0));
     definition(&DefinitionCertificate::function(1, body).unwrap())
 }
+
+pub(crate) fn relation_examples() -> [Formula; 8] {
+    let (a, b) = (variable(0), variable(1));
+    let ab = Formula::member(a, b);
+    let ba = Formula::member(b, a);
+    let equal = Formula::equal(a, b);
+    [
+        ab.clone(),
+        Formula::negate(ab.clone()),
+        Formula::implies(ab.clone(), equal.clone()),
+        Formula::conjunction(ab.clone(), ba.clone()),
+        Formula::disjunction(ab.clone(), ba.clone()),
+        Formula::implies(ab.clone(), ba.clone()),
+        Formula::implies(equal, ab.clone()),
+        Formula::biconditional(ab, ba),
+    ]
+}

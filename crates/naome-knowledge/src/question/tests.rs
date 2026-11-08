@@ -239,6 +239,7 @@ impl Directory {
             peers: Vec::new(),
             discovery: Some(discovery),
             producer_artifacts: sources,
+            formal_goal: None,
         }
     }
 }

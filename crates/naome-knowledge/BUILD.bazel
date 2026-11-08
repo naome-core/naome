@@ -1,3 +1,4 @@
+load("@bazel_skylib//rules:native_binary.bzl", "native_test")
 load("@crates//:crates.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
@@ -19,6 +20,12 @@ rust_library(
     compile_data = glob(
         [
             "src/**/*.hex",
+            "src/learning/curriculum.json",
+            "src/learning/curriculum/owned-exclusions.json",
+            "src/learning/curriculum/composition-retired.json",
+            "src/learning/adaptive-protocol.json",
+            "src/learning/recovery-protocol.json",
+            "src/learning/experiment/finding/comparison/longitudinal/protocol.json",
             "tests/fixtures/**",
         ],
         allow_empty = True,
@@ -37,6 +44,7 @@ rust_library(
 rust_test(
     name = "unit_tests",
     size = "medium",
+    args = ["--skip=learning::model::preservation::tests::"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -46,9 +54,20 @@ rust_test(
         "//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex",
         "//crates/naome-checker:tests/fixtures/membership-witness.program",
     ] + glob(["tests/fixtures/typed-membership/*.proof", "tests/fixtures/typed-membership/*.question"]),
+    env = {"RUST_TEST_THREADS": "2"},
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
+)
+
+native_test(
+    name = "preservation_tests",
+    size = "medium",
+    # Reuse the compiled crate, keeping this CPU training process exclusive.
+    tags = ["exclusive"],
+    args = ["learning::model::preservation::tests::"],
+    env = {"RUST_TEST_THREADS": "2"},
+    src = ":unit_tests",
 )
 
 rust_binary(

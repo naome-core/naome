@@ -166,6 +166,11 @@ resource_policy! {
     }
     fixed {
         capacity disk_reserve_bytes: u64 = 128 * 1024 * 1024;
+        // Native learning uses binary local chunks; proof and network caps are independent.
+        capacity native_model_chunk_bytes: usize = crate::learning::MODEL_REQUIREMENTS.chunk_bytes;
+        capacity native_model_blob_bytes: usize = crate::learning::MODEL_REQUIREMENTS.blob_bytes;
+        capacity native_model_io_bytes: usize = crate::learning::MODEL_REQUIREMENTS.io_bytes;
+        capacity native_model_work_bytes: usize = crate::learning::MODEL_REQUIREMENTS.work_bytes;
         capacity diagnostic_bytes: usize = 4096;
         capacity dht_packet_bytes: usize = 4096;
         capacity relay_request_burst: usize = 4;
@@ -798,6 +803,33 @@ impl Limits {
             + self.checker_cache_bytes
             + self.question_cache_bytes
             + self.checked_cache_bytes / 4
+    }
+    pub(crate) fn native_model_capacity(&self) -> Result<(), String> {
+        if self.native_model_chunk_bytes > 512 * 1024
+            || self
+                .native_model_chunk_bytes
+                .checked_mul(5)
+                .and_then(|n| n.checked_add(1024))
+                .is_none_or(|n| n > self.provider_stream_bytes)
+            || self.native_model_blob_bytes < 9 * 1024 * 1024
+            || self.native_model_blob_bytes > crate::checkpoint::MAX_ROW
+            || self.native_model_io_bytes < 512 * 1024 * 1024
+            || self.native_model_work_bytes < crate::learning::MODEL_REQUIREMENTS.work_bytes
+        {
+            return Err("native 1M model limits cannot preserve its bounded checkpoint and training requirements".into());
+        }
+        if self.allocation_budget()
+            < self
+                .native_model_work_bytes
+                .saturating_add(32 * 1024 * 1024)
+        {
+            return Err(format!(
+                "native 1M model requires a working allocation of at least {} bytes; calibrated capacity is {}",
+                self.native_model_work_bytes + 32 * 1024 * 1024,
+                self.allocation_budget()
+            ));
+        }
+        Ok(())
     }
     fn allocation_budget(&self) -> usize {
         self.memory_bytes - self.resident_reservation()

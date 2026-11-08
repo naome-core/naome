@@ -146,6 +146,7 @@ fn config(directory: PathBuf, port: u16, remote: PeerId, remote_port: u16) -> Co
             dht: false,
             ..Default::default()
         }),
+        formal_goal: None,
         producer_artifacts: Vec::new(),
     }
 }

@@ -116,6 +116,16 @@ impl CheckedProgram {
     pub fn result_digest(&self, position: u64) -> Result<([u8; 32], bool), Error> {
         self.engine.result_digest(position)
     }
+    /// Materializes an earlier proved operand when it fits the formula codec.
+    /// Open graph construction records and unproved expressions are not facts.
+    pub fn proved_formula(&self, position: u64) -> Result<Option<Formula>, Error> {
+        self.engine.live()?;
+        if !checker::Context::previous_node(&self.engine, position)?.proved {
+            return Ok(None);
+        }
+        self.engine.result_formula(position)
+    }
+
     /// The primitive instantiation axiom checked inside a fused instruction.
     /// The axiom is trace output and has no address as a program operand.
     pub fn instantiation_digest(&self, position: u64) -> Result<[u8; 32], Error> {

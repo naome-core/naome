@@ -137,6 +137,7 @@ fn three_roles_use_three_admitted_slots_and_a_reduction_only_drains_them() {
             Input::Find { question, .. } => Output::Question(question),
             Input::Solve { .. } => Output::NoCandidate,
             Input::Select { .. } => Output::Selected(true),
+            Input::Peer { .. } | Input::Train { .. } => unreachable!("ordinary-role fixture"),
         };
         owner
             .complete(
@@ -230,6 +231,7 @@ fn busy_events_cannot_steal_single_slot_admission_from_waiting_roles() {
             Input::Find { question, .. } => Output::Question(question),
             Input::Solve { .. } => Output::NoCandidate,
             Input::Select { .. } => Output::Selected(true),
+            Input::Peer { .. } | Input::Train { .. } => unreachable!("ordinary-role fixture"),
         };
         owner
             .complete(

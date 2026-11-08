@@ -37,35 +37,46 @@ impl Graph {
         helpers: &[String],
         question: &ResearchQuestion,
     ) -> Result<(ArtifactId, CheckedBatch), crate::Error> {
+        let (preparation, root) = self.stage_generated(helpers, Some((source, question)))?;
+        let root = root.ok_or("missing generated root")?;
+        Ok((root, preparation.finish(self, root)?))
+    }
+
+    pub(crate) fn prepare_generated_helpers(
+        &self,
+        helpers: &[String],
+    ) -> Result<CheckedBatch, crate::Error> {
+        Ok(self.stage_generated(helpers, None)?.0.into_prefix())
+    }
+
+    fn stage_generated(
+        &self,
+        helpers: &[String],
+        root: Option<(&str, &ResearchQuestion)>,
+    ) -> Result<(Preparation, Option<ArtifactId>), crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
-        // Capture before helper preparation can write immutable staged nodes.
-        // The shared batch path must never refresh this token after a copy starts.
-        if source.len() > 2 * crate::resources::limits().proof_bytes
-            || helpers.len() >= crate::resources::limits().closure_objects
-            || helpers
-                .iter()
-                .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
-            || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                > 2 * crate::resources::limits().closure_bytes
+        let limits = crate::resources::limits();
+        let sources = helpers
+            .iter()
+            .map(String::as_str)
+            .chain(root.map(|(source, _)| source));
+        let bytes = sources.clone().map(str::len).sum::<usize>();
+        if helpers.len() >= limits.closure_objects
+            || sources
+                .clone()
+                .any(|source| source.len() > 2 * limits.proof_bytes)
+            || bytes > 2 * limits.closure_bytes
         {
             return Err("generated closure input capacity".into());
         }
-        let mut preparation = Preparation::new(
-            self,
-            None,
-            (source.len() + helpers.iter().map(String::len).sum::<usize>()) / 2,
-            helpers.len() + 1,
-        )?;
+        // Capture before helpers can stage immutable nodes. The shared batch
+        // path must never refresh this token after a copy starts.
+        let mut preparation = Preparation::new(self, None, bytes / 2, helpers.len() + 1)?;
         let mut steps = 0usize;
         let mut bytes = 0usize;
-        let mut root = None;
-        for (position, source) in helpers
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once(source))
-            .enumerate()
-        {
+        let mut checked_root = None;
+        for (position, source) in sources.enumerate() {
             let checked = self.check_input(source, preparation.context())?;
             let record = checked.record(preparation.context())?;
             let id = record.id;
@@ -85,18 +96,24 @@ impl Graph {
             {
                 return Err("generated closure checker work capacity".into());
             }
-            root = Some(id);
-            // The last checked artifact is the root. All helpers must belong to
-            // its actual cited closure; no unrelated checked helper is admitted.
             if position == helpers.len() {
+                let (_, question) = root.expect("only the final source is the root");
                 question
                     .classify_checked_proof(checked.proof()?)
                     .map_err(crate::Error::from)?;
+                checked_root = Some(id);
             }
-            preparation.append_artifact(self, checked, record)?;
+            if position < helpers.len()
+                && let Some(existing) = self.binary_object(id)?
+            {
+                if !existing.same_content(&record) {
+                    return Err("generated helper identity collision".into());
+                }
+            } else {
+                preparation.append_artifact(self, checked, record)?;
+            }
         }
-        let root = root.ok_or("missing generated root")?;
-        Ok((root, preparation.finish(self, root)?))
+        Ok((preparation, checked_root))
     }
 
     pub(crate) fn batch_current(&self, batch: &CheckedBatch) -> Result<bool, crate::Error> {

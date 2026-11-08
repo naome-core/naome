@@ -80,3 +80,26 @@ fn wrappers_keep_dependency_metadata_and_memory_admission_before_parsing() {
         Err(crate::Error::MemoryOverload { .. })
     ));
 }
+
+#[test]
+fn statement_metadata_preserves_the_actual_sign_for_conjunctive_proof_feedback() {
+    let (goal, _) = crate::learning::tests::helper_goal();
+    for target in [goal.proved_target(), goal.refuted_target()] {
+        let proof = ProofId::from_bytes([7; 32]);
+        let metadata = Metadata {
+            artifact_id: crate::hex(ArtifactId::from_proof_id(proof).as_bytes()),
+            proof_id: crate::hex(proof.as_bytes()),
+            statement_id: crate::hex(target_id(target).unwrap().as_bytes()),
+            question: naome_checker::question::ResearchQuestion::from_formula(goal.core().clone())
+                .unwrap()
+                .to_hex(),
+        };
+        assert_eq!(
+            metadata
+                .statement_question(&naome_checker::ArtifactState::new())
+                .unwrap()
+                .formula(),
+            target
+        );
+    }
+}

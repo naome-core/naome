@@ -24,8 +24,9 @@ use naome_foundation::{FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAx
 
 pub use artifact::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactPayload, ArtifactPayloadError};
 pub use defined_formula::{
-    DefinedFormula, DefinedFormulaCodecError, DefinitionAccessError, DefinitionExpansionError,
-    DefinitionResolution, DefinitionResolver,
+    DefinedFormula, DefinedFormulaCodecError, DefinedFormulaNode, DefinedFormulaView,
+    DefinitionAccessError, DefinitionExpansionError, DefinitionResolution, DefinitionResolver,
+    Variable as DefinedVariable,
 };
 pub use definition::{
     DEFINITION_MAX_BYTES, DEFINITION_MAX_GRAPH_ARITY, DefinitionCertificate,
@@ -121,6 +122,24 @@ impl ProofCertificate {
             certificate: Arc::new(normal_form::normalize(self)),
             canonical_bytes: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Preserves the free-variable renaming used by normalization so a
+    /// checker-inspected open proof fragment can be closed in its original scope.
+    pub fn into_unchecked_normal_form_with_variables(
+        self,
+    ) -> (
+        ProofNormalForm,
+        std::collections::BTreeMap<FreeVariable, FreeVariable>,
+    ) {
+        let (certificate, variables) = normal_form::normalize_with_variables(self);
+        (
+            ProofNormalForm {
+                certificate: Arc::new(certificate),
+                canonical_bytes: Arc::new(OnceLock::new()),
+            },
+            variables,
+        )
     }
 }
 

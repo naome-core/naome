@@ -121,6 +121,7 @@ pub(crate) struct Autonomous {
     intervals: Intervals,
     client: jobs::Client,
     cursor: u64,
+    formal_goal: Option<ResearchQuestion>,
     next_question: Instant,
     next_proof: Instant,
     unanswered: VecDeque<ResearchQuestion>,
@@ -139,6 +140,7 @@ pub(crate) struct Autonomous {
     solving: BTreeMap<Identity, Solving>,
     publications: VecDeque<Publication>,
     error: Option<String>,
+    pending_receipt: Option<jobs::Receipt>,
     frontier: Option<crate::frontier::Frontier>,
     evidence_publications: VecDeque<EvidencePublication>,
 }
@@ -161,6 +163,7 @@ impl Autonomous {
             intervals,
             client,
             cursor: recovery.next_cursor,
+            formal_goal: None,
             next_question: now + Duration::from_millis(intervals.finding_ms()),
             next_proof: now + Duration::from_millis(intervals.solving_ms()),
             unanswered: unanswered
@@ -180,6 +183,7 @@ impl Autonomous {
             solving: BTreeMap::new(),
             publications: VecDeque::new(),
             error: None,
+            pending_receipt: None,
             frontier: None,
             evidence_publications: VecDeque::new(),
         }
@@ -195,7 +199,7 @@ impl Autonomous {
             directory,
             graph,
             seed,
-            self.intervals.jobs.solving,
+            self.intervals.jobs,
         )?);
         Ok(())
     }
@@ -211,25 +215,66 @@ impl Autonomous {
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
-
-    fn acknowledge(&mut self, job: u64) {
-        if job != 0
-            && let Err(error) = self.client.acknowledge(job)
-        {
-            self.error = Some(error);
-        }
+    /// A canonical question fixed by the stopped node's start configuration.
+    pub(crate) fn formal_goal(&mut self, source: Option<ResearchQuestion>) {
+        self.formal_goal = source;
     }
 
-    fn retire(&mut self, record: jobs::Record) {
+    fn receipt(&mut self, receipt: jobs::Receipt) -> bool {
+        debug_assert!(self.pending_receipt.is_none());
+        match self.client.try_receipt(&receipt) {
+            Ok(true) => true,
+            Ok(false) => {
+                self.pending_receipt = Some(receipt);
+                false
+            }
+            Err(error) => {
+                self.error = Some(error);
+                false
+            }
+        }
+    }
+    fn acknowledge(&mut self, job: u64) -> bool {
+        job == 0 || self.receipt(jobs::Receipt::Acknowledge(job))
+    }
+    fn accepted_learning(&mut self, job: u64, root: ArtifactId) -> bool {
+        job == 0
+            || !self.intervals.jobs.native_proof_learning
+            || self.receipt(jobs::Receipt::Accepted {
+                id: job,
+                root: crate::hex(root.as_bytes()),
+            })
+    }
+    fn recover_learning(&mut self, graph: &Graph, record: &jobs::Record) -> bool {
+        if let Some(jobs::Output::Native {
+            solution: Some(solution),
+            ..
+        }) = &record.result
+        {
+            let jobs::Input::Solve { question } = &record.input else {
+                return true;
+            };
+            let candidate = crate::learning::program::Candidate::artifact(solution, question)
+                .map_err(crate::Error::from);
+            match candidate.and_then(|root| graph.contains(root).map(|yes| (root, yes))) {
+                Ok((root, true)) => return self.accepted_learning(record.id, root),
+                Ok(_) => {}
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    fn retire(&mut self, record: jobs::Record) -> bool {
         if record.state == jobs::State::InDoubt {
             emit(
                 json!({"event":"research_recovery_hold","job":record.id,"reason":"provider effects or cleanup are uncertain"}),
             );
-            return;
+            return true;
         }
-        if let Err(error) = self.client.discard(record.input, record.binding) {
-            self.error = Some(error);
-        }
+        self.receipt(jobs::Receipt::Discard(record.input, record.binding))
     }
 
     fn retain(&mut self, question: ResearchQuestion) {
@@ -240,6 +285,21 @@ impl Autonomous {
         {
             self.unanswered.push_back(question);
         }
+    }
+
+    fn retry<F, Fut>(
+        &mut self,
+        question: ResearchQuestion,
+        questions: &mut question::LocalQuestions<F>,
+        graph: &Graph,
+    ) where
+        F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    {
+        // Rotate durable unresolved work before retrying a completed attempt.
+        // Its original admission remains in the backlog even when the parsed
+        // working page has room for only one question.
+        self.retain(questions.next_backlog(graph).unwrap_or(question));
     }
 
     fn defer_recovery(&mut self, record: jobs::Record, seen: question::Revision, now: Instant) {
@@ -264,7 +324,20 @@ impl Autonomous {
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        let mut accepted = Vec::new();
+        // One owner-held receipt is the only extra working item. Until the
+        // original bounded channel accepts it, no new autonomous work advances.
+        if let Some(receipt) = self.pending_receipt.take()
+            && !self.receipt(receipt)
+        {
+            return accepted;
+        }
         let now = Instant::now();
+        if (now >= self.next_question || now >= self.next_proof)
+            && let Some(frontier) = &mut self.frontier
+        {
+            frontier.feedback(self.client.feedback());
+        }
         while let Some(publication) = self.evidence_publications.pop_front() {
             let result = self
                 .frontier
@@ -277,7 +350,13 @@ impl Autonomous {
                     publication.root,
                 );
             match result {
-                Ok(()) => self.acknowledge(publication.job),
+                Ok(()) => {
+                    if !self.accepted_learning(publication.job, publication.root)
+                        || !self.acknowledge(publication.job)
+                    {
+                        return accepted;
+                    }
+                }
                 Err(error) if !error.fatal() => {
                     self.evidence_publications.push_front(publication);
                     return vec![];
@@ -328,7 +407,6 @@ impl Autonomous {
                 }
             }
         }
-        let mut accepted = Vec::new();
         // Reconcile at most one retained non-finding record per driver turn.
         // Selection is reacquired from current metadata/owner policy; solve
         // outputs remain untrusted and are resumed only for current obligations.
@@ -343,17 +421,36 @@ impl Autonomous {
                 {
                     self.recovered_other.push_back(record);
                 } else if record.state == jobs::State::InDoubt {
-                    self.retire(record);
+                    if !self.retire(record) {
+                        return accepted;
+                    }
                 } else if let Ok(question) =
                     ResearchQuestion::from_hex_with_context(source, graph.checked_context())
                 {
+                    let same_polarity = |candidate: &&ResearchQuestion| {
+                        candidate.resolution_id() == question.resolution_id()
+                            && candidate.negation_parity() == question.negation_parity()
+                    };
+                    let question = self
+                        .formal_goal
+                        .as_ref()
+                        .filter(same_polarity)
+                        .cloned()
+                        .or_else(|| {
+                            questions
+                                .owned_question(graph, &question)
+                                .filter(|candidate| same_polarity(&candidate))
+                        })
+                        .unwrap_or(question);
                     if self.solving.contains_key(question.resolution_id())
                         || self
                             .publications
                             .iter()
                             .any(|p| p.question.resolution_id() == question.resolution_id())
                     {
-                        self.retire(record);
+                        if !self.retire(record) {
+                            return accepted;
+                        }
                         return accepted;
                     }
                     let fresh = questions.generation_decision(graph, &question);
@@ -385,13 +482,22 @@ impl Autonomous {
                     } else if fresh.inconclusive() {
                         self.defer_recovery(record, revision, now);
                     } else {
-                        self.retire(record);
+                        if fresh.has_answer() && !self.recover_learning(graph, &record) {
+                            return accepted;
+                        }
+                        if !self.retire(record) {
+                            return accepted;
+                        }
                     }
                 } else {
-                    self.retire(record);
+                    if !self.retire(record) {
+                        return accepted;
+                    }
                 }
             } else {
-                self.retire(record);
+                if !self.retire(record) {
+                    return accepted;
+                }
             }
         }
         for _ in 0..self.admissions.len() {
@@ -416,10 +522,16 @@ impl Autonomous {
                     if admitted {
                         self.retain(pending.question);
                     }
-                    self.acknowledge(pending.job);
+                    if !self.acknowledge(pending.job) {
+                        return accepted;
+                    }
                 }
                 Err(oneshot::error::TryRecvError::Empty) => self.admissions.push_back(pending),
-                Err(_) => self.acknowledge(pending.job),
+                Err(_) => {
+                    if !self.acknowledge(pending.job) {
+                        return accepted;
+                    }
+                }
             }
         }
 
@@ -450,12 +562,16 @@ impl Autonomous {
                                 emit(
                                     json!({"event":"question_candidate_rejected","error":error.to_string()}),
                                 );
-                                self.acknowledge(completion.id);
+                                if !self.acknowledge(completion.id) {
+                                    return accepted;
+                                }
                             }
                         }
                     }
                     _ => {
-                        self.acknowledge(completion.id);
+                        if !self.acknowledge(completion.id) {
+                            return accepted;
+                        }
                         emit(json!({"event":"question_provider_failed","job":completion.id}));
                     }
                 },
@@ -491,7 +607,16 @@ impl Autonomous {
                     (_, Ok(jobs::Output::Proof { .. } | jobs::Output::Program { .. })) => {
                         Outcome::Candidate
                     }
-                    (_, Ok(jobs::Output::NoCandidate)) => Outcome::NoCandidate,
+                    (
+                        _,
+                        Ok(jobs::Output::Native {
+                            solution: Some(_), ..
+                        }),
+                    ) => Outcome::Candidate,
+                    (
+                        _,
+                        Ok(jobs::Output::NoCandidate | jobs::Output::Native { solution: None, .. }),
+                    ) => Outcome::NoCandidate,
                     _ => Outcome::Failed,
                 };
                 if let Err(error) = frontier.attempted(&solving.question, graph, observed, outcome)
@@ -505,6 +630,23 @@ impl Autonomous {
                     return accepted;
                 }
             }
+            if let Ok(completion) = &completion
+                && completion.id == 0
+                && completion
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.contains("required") && e.contains("prerequisites"))
+                && let Some(frontier) = &mut self.frontier
+            {
+                if let Err(error) = frontier.exhaust_helpers(&solving.question) {
+                    self.error = Some(error.to_string());
+                    return accepted;
+                }
+                emit(
+                    json!({"event":"lemma_loop_unavailable","resolution_id":crate::hex(&id),"reason":"checked prerequisite not retained by owner"}),
+                );
+            }
             match completion {
                 Ok(completion)
                     if matches!(
@@ -512,14 +654,54 @@ impl Autonomous {
                         jobs::State::Expired | jobs::State::InDoubt
                     ) =>
                 {
-                    self.acknowledge(completion.id);
                     questions.settle_backlog(&id);
                     emit(
                         json!({"event":"solve_obligation_held_or_expired","resolution_id":crate::hex(&id),
                         "state":format!("{:?}",completion.state)}),
                     );
+                    if !self.acknowledge(completion.id) {
+                        return accepted;
+                    }
                 }
                 Ok(completion) => match completion.result.clone() {
+                    Ok(jobs::Output::Native {
+                        solution: Some(solution),
+                        ..
+                    }) => {
+                        match program::Generated::native(completion.id, solution, &solving.question)
+                        {
+                            Ok(program) => self.publications.push_back(Publication {
+                                question: solving.question,
+                                job: completion.id,
+                                candidate: Candidate::Program(Box::new(program)),
+                                batch: None,
+                                announced: false,
+                                assessment: None,
+                                reply: None,
+                                attempts: 0,
+                                retry: now,
+                                expires: now
+                                    + Duration::from_millis(
+                                        self.intervals.jobs.selection.limits.horizon_ms,
+                                    ),
+                                seen: None,
+                                eligible: false,
+                            }),
+                            Err(error) if error.retryable() => {
+                                solving.completion = Some(completion);
+                                self.solving.insert(id, solving);
+                            }
+                            Err(error) => {
+                                emit(
+                                    json!({"event":"proof_candidate_rejected","job":completion.id,"error":error.to_string()}),
+                                );
+                                self.retry(solving.question, questions, graph);
+                                if !self.acknowledge(completion.id) {
+                                    return accepted;
+                                }
+                            }
+                        }
+                    }
                     Ok(jobs::Output::Proof { proof, helpers }) => {
                         match graph.prepare_generated(&proof, &helpers, &solving.question) {
                             Ok((root, batch)) => {
@@ -555,8 +737,13 @@ impl Autonomous {
                                     }
                                     return accepted;
                                 }
-                                self.acknowledge(completion.id);
-                                self.retain(solving.question);
+                                if !self.acknowledge(completion.id) {
+                                    return accepted;
+                                }
+                                self.retry(solving.question, questions, graph);
+                                if !self.acknowledge(completion.id) {
+                                    return accepted;
+                                }
                             }
                         }
                     }
@@ -583,12 +770,16 @@ impl Autonomous {
                         });
                     }
                     Ok(jobs::Output::NoCandidate) => {
-                        self.acknowledge(completion.id);
-                        self.retain(solving.question);
+                        self.retry(solving.question, questions, graph);
+                        if !self.acknowledge(completion.id) {
+                            return accepted;
+                        }
                     }
                     _ => {
-                        self.acknowledge(completion.id);
-                        self.retain(solving.question);
+                        self.retry(solving.question, questions, graph);
+                        if !self.acknowledge(completion.id) {
+                            return accepted;
+                        }
                     }
                 },
                 Err(oneshot::error::TryRecvError::Empty) => {
@@ -612,7 +803,9 @@ impl Autonomous {
                     }
                     Err(error) => {
                         graph.program_failure(&error);
-                        self.acknowledge(pending.job);
+                        if !self.acknowledge(pending.job) {
+                            return accepted;
+                        }
                         continue;
                     }
                 }
@@ -634,7 +827,9 @@ impl Autonomous {
                     continue;
                 }
                 if !decision.passed() {
-                    self.acknowledge(pending.job);
+                    if !self.acknowledge(pending.job) {
+                        return accepted;
+                    }
                     continue;
                 }
                 match pending
@@ -656,8 +851,10 @@ impl Autonomous {
                         emit(
                             json!({"event":"proof_candidate_rejected","job":pending.job,"error":error}),
                         );
-                        self.acknowledge(pending.job);
                         self.retain(pending.question);
+                        if !self.acknowledge(pending.job) {
+                            return accepted;
+                        }
                         continue;
                     }
                 }
@@ -681,10 +878,22 @@ impl Autonomous {
                 pending.announced = true;
             }
             if now >= pending.expires {
-                self.acknowledge(pending.job);
                 emit(
                     json!({"event":"publication_expired","resolution_id":crate::hex(pending.question.resolution_id())}),
                 );
+                if let Some(frontier) = &mut self.frontier
+                    && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
+                {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    } else {
+                        self.publications.push_back(pending);
+                    }
+                    return accepted;
+                }
+                if !self.acknowledge(pending.job) {
+                    return accepted;
+                }
                 continue;
             }
             let revision = questions.revision(graph);
@@ -693,7 +902,15 @@ impl Autonomous {
                 let fresh = questions.generation_decision(graph, &pending.question);
                 pending.eligible = fresh.passed();
                 if fresh.has_answer() {
-                    self.acknowledge(pending.job);
+                    if let Some((root, _)) = &pending.batch
+                        && graph.contains(*root).unwrap_or(false)
+                        && !self.accepted_learning(pending.job, *root)
+                    {
+                        return accepted;
+                    }
+                    if !self.acknowledge(pending.job) {
+                        return accepted;
+                    }
                     continue;
                 }
                 if !pending.eligible {
@@ -740,6 +957,7 @@ impl Autonomous {
                     .transpose();
                 match current {
                     Ok(Some(true)) => {
+                        let learning_root = pending.batch.as_ref().map(|(root, _)| *root);
                         let evidence_root =
                             pending.batch.as_ref().expect("current checked candidate").0;
                         let outcome = (|| -> Result<Vec<ArtifactId>, crate::Error> {
@@ -782,9 +1000,16 @@ impl Autonomous {
                                     continue;
                                 }
                                 accepted.extend(ids);
+                                if let Some(root) = learning_root
+                                    && !self.accepted_learning(pending.job, root)
+                                {
+                                    return accepted;
+                                }
                                 let job = pending.job;
                                 drop(pending);
-                                self.acknowledge(job);
+                                if !self.acknowledge(job) {
+                                    return accepted;
+                                }
                                 continue;
                             }
                             Err(error) => {
@@ -815,10 +1040,22 @@ impl Autonomous {
                 pending.assessment = Some(assessment);
             }
             if pending.attempts >= crate::resources::limits().publication_retries {
-                self.acknowledge(pending.job);
                 emit(
                     json!({"event":"publication_retry_limit","resolution_id":crate::hex(pending.question.resolution_id())}),
                 );
+                if let Some(frontier) = &mut self.frontier
+                    && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
+                {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    } else {
+                        self.publications.push_back(pending);
+                    }
+                    return accepted;
+                }
+                if !self.acknowledge(pending.job) {
+                    return accepted;
+                }
                 continue;
             }
             if now >= pending.retry
@@ -833,7 +1070,9 @@ impl Autonomous {
                     now + Duration::from_millis(self.intervals.jobs.selection.limits.horizon_ms),
                 );
                 if selected != pending.question {
-                    self.acknowledge(pending.job);
+                    if !self.acknowledge(pending.job) {
+                        return accepted;
+                    }
                     continue;
                 }
                 pending.reply = Some(reply);
@@ -855,6 +1094,82 @@ impl Autonomous {
             self.retain(question);
         }
 
+        let planned_work = if let Some(frontier) = &mut self.frontier {
+            let mut available = |q: &ResearchQuestion| {
+                let q = questions
+                    .owned_question(graph, q)
+                    .unwrap_or_else(|| q.clone());
+                questions.generation_decision(graph, &q).passed()
+                    || questions.assess(graph, &q).passed()
+            };
+            let result = if let Some(goal) = &self.formal_goal {
+                frontier
+                    .loop_work(goal, graph, &mut available)
+                    .map(|work| Some((goal.clone(), work)))
+            } else {
+                frontier.loop_focus(graph, &mut available)
+            };
+            match result {
+                Ok(work) => work,
+                Err(error) => {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    }
+                    return accepted;
+                }
+            }
+        } else {
+            None
+        };
+        let loop_goal = planned_work
+            .as_ref()
+            .map(|(goal, _)| goal.clone())
+            .or_else(|| self.formal_goal.clone());
+        let mut goal_requirements = Vec::new();
+        let mut required_goal = loop_goal.clone();
+        let mut loop_candidates = None;
+        if let Some((goal, work)) = planned_work {
+            required_goal = Some(work.target);
+            let planned = work.planned;
+            let pending = work
+                .pending
+                .into_iter()
+                .map(|q| questions.owned_question(graph, &q).unwrap_or(q))
+                .collect::<Vec<_>>();
+            if !planned.is_empty() {
+                loop_candidates = Some(if pending.is_empty() {
+                    vec![goal.clone()]
+                } else {
+                    pending.clone()
+                });
+            }
+            self.unanswered.retain(|q| {
+                if q.resolution_id() == goal.resolution_id() {
+                    return pending.is_empty();
+                }
+                !planned
+                    .iter()
+                    .any(|p| p.resolution_id() == q.resolution_id())
+                    || pending
+                        .iter()
+                        .any(|p| p.resolution_id() == q.resolution_id())
+            });
+            let waiting = !pending.is_empty();
+            for helper in pending {
+                if questions.generation_decision(graph, &helper).passed() {
+                    self.retain(helper);
+                }
+            }
+            if !waiting {
+                let original = questions
+                    .owned_question(graph, &goal)
+                    .unwrap_or_else(|| goal.clone());
+                if questions.generation_decision(graph, &original).passed() {
+                    self.retain(original);
+                }
+            }
+            goal_requirements = work.required;
+        }
         if now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
             && self.publications.len() + self.solving.len() + self.evidence_publications.len()
@@ -881,11 +1196,53 @@ impl Autonomous {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
                     let context = questions.formal_context(graph);
-                    match self.client.submit(
-                        jobs::Input::Solve {
-                            question: question.to_hex(),
-                        },
+                    let required = if required_goal
+                        .as_ref()
+                        .is_some_and(|g| g.resolution_id() == question.resolution_id())
+                    {
+                        goal_requirements.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let inputs = match &self.frontier {
+                        Some(frontier) => frontier.solving_inputs(graph, &question, &required),
+                        None => graph
+                            .solving_inputs(&required, &[])
+                            .map(|inputs| (required, inputs.unwrap_or_default())),
+                    };
+                    let (required, prerequisites) = match inputs {
+                        Ok(selected) => selected,
+                        Err(error) => {
+                            if error.fatal() {
+                                self.error = Some(error.to_string());
+                            }
+                            self.retain(question);
+                            return accepted;
+                        }
+                    };
+                    if !required.is_empty() || !question.dependencies().is_empty() {
+                        emit(json!({
+                            "event": "finder_checked_inputs",
+                            "resolution_id": crate::hex(question.resolution_id()),
+                            "proofs": required,
+                            "definitions": question.dependencies().iter().map(|id| crate::hex(id.as_bytes())).collect::<Vec<_>>(),
+                        }));
+                    }
+                    // Solver workers receive the checked primitive target. Keep the
+                    // original question here for the graph's checked publication metadata.
+                    let solving = if question.dependencies().is_empty() {
+                        question.to_hex()
+                    } else {
+                        match ResearchQuestion::from_formula(question.formula().clone()) {
+                            Ok(target) => target.to_hex(),
+                            Err(_) => return accepted,
+                        }
+                    };
+                    match self.client.submit_after(
+                        jobs::Input::Solve { question: solving },
                         context.binding(),
+                        required,
+                        prerequisites,
                     ) {
                         Ok(ticket) => {
                             self.solving.insert(
@@ -910,9 +1267,10 @@ impl Autonomous {
         if now >= self.next_question
             && self.finding.is_none()
             && self.admissions.len() < crate::resources::active_limits().finding_admissions
-            && self.unanswered.len() < crate::resources::active_limits().question_page
             && questions.available_local()
         {
+            // Admissions have their own bounded queue and durable backlog.
+            // A full parsed solve page must not stop independent discovery.
             self.next_question = now + Duration::from_millis(self.intervals.finding_ms());
             let (input, binding) = if let Some(record) = self.recovered_finding.pop_front() {
                 (record.input, record.binding)
@@ -924,6 +1282,17 @@ impl Autonomous {
                 };
                 self.cursor = next;
                 let source = if let Some(frontier) = &mut self.frontier {
+                    if self.formal_goal.as_ref().is_some_and(|question| {
+                        questions.generation_decision(graph, question).has_answer()
+                    }) {
+                        return accepted;
+                    }
+                    frontier.retain_goals(|question| {
+                        !questions.generation_decision(graph, question).has_answer()
+                    });
+                    if let Some(question) = &self.formal_goal {
+                        frontier.focus(question.clone());
+                    }
                     let mut eligible = |question: &ResearchQuestion| {
                         !self.admissions.iter().any(|pending| {
                             pending.question.resolution_id() == question.resolution_id()
@@ -937,8 +1306,30 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let candidates = frontier
-                        .candidates()
+                    let mut candidates = if let Some(pending) = &loop_candidates {
+                        pending.clone()
+                    } else if let Some(goal) = &loop_goal {
+                        match frontier.helpers_needed(goal) {
+                            Ok(false) => vec![goal.clone()],
+                            Ok(true) => frontier.goal_candidates(cursor, goal),
+                            Err(error) => {
+                                self.error = Some(error.to_string());
+                                return accepted;
+                            }
+                        }
+                    } else {
+                        frontier.candidate_page(cursor, &mut eligible)
+                    };
+                    // The explicit owner goal remains admissible even when a
+                    // bounded research-context cache cannot retain its copy.
+                    if let Some(goal) = &self.formal_goal
+                        && !candidates
+                            .iter()
+                            .any(|q| q.resolution_id() == goal.resolution_id())
+                    {
+                        candidates.push(goal.clone());
+                    }
+                    let candidates = candidates
                         .into_iter()
                         .filter(&mut eligible)
                         .collect::<Vec<_>>();

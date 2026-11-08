@@ -54,6 +54,10 @@ pub struct Config {
     /// A finite independently operated source queue, attempted once per second.
     #[serde(default)]
     pub producer_artifacts: Vec<String>,
+    /// Optional native question fixed while the node is stopped. It follows
+    /// ordinary finding, admission, solving and checked publication.
+    #[serde(default)]
+    pub formal_goal: Option<String>,
 }
 pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 
@@ -170,7 +174,12 @@ struct InventoryProgress {
     after: Option<InventoryCursor>,
     pages: usize,
 }
+struct PeerLearning {
+    client: crate::jobs::Client,
+    cursor: u64,
+}
 struct Node {
+    learning: Option<PeerLearning>,
     computation: Arc<crate::resources::Computation>,
     primary_listener: libp2p::core::transport::ListenerId,
     ready: bool,
@@ -369,6 +378,11 @@ where
         Some((intervals, startup)) => (Some(intervals), Some(startup)),
         None => (None, None),
     };
+    if config.formal_goal.is_some()
+        && autonomy.is_none_or(|intervals| !intervals.jobs.native_proof_learning)
+    {
+        return Err("formal_goal requires native proof learning in the ordinary runtime".into());
+    }
     if config.peers.len() > crate::resources::limits().configured_peers {
         return Err("peer count limit".into());
     }
@@ -396,6 +410,22 @@ where
     } else {
         Graph::open(&config.directory)?
     };
+    let formal_goal = config
+        .formal_goal
+        .as_deref()
+        .map(|source| {
+            let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
+                source,
+                graph.checked_context(),
+            )
+            .map_err(|e| e.to_string())?;
+            if !question.dependencies().is_empty() {
+                naome_checker::question::ResearchQuestion::from_formula(question.formula().clone())
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok::<_, String>(question)
+        })
+        .transpose()?;
     if let Some(startup) = &startup {
         startup.phase("checked");
     }
@@ -566,6 +596,7 @@ where
     let (swarm, mut events, mut transport) = worker::Transport::spawn(swarm, primary_listener);
     let enabled = BTreeSet::new();
     let mut node = Node {
+        learning: None,
         computation: control
             .as_ref()
             .map_or_else(Arc::default, |control| control.computation.clone()),
@@ -610,6 +641,12 @@ where
             cursor,
             node.computation.clone(),
         )?;
+        if intervals.jobs.native_proof_learning {
+            node.learning = Some(PeerLearning {
+                client: client.clone(),
+                cursor: recovery.peer_cursor,
+            });
+        }
         let questions = crate::question::LocalQuestions::<F>::managed(
             client.clone(),
             &directory,
@@ -620,6 +657,7 @@ where
         let mut autonomous =
             crate::autonomous::Autonomous::new(intervals, client, recovery, unanswered);
         autonomous.attach_frontier(&directory, &node.graph, seed)?;
+        autonomous.formal_goal(formal_goal);
         (Some(service), Some(autonomous), questions)
     } else {
         let mut questions = crate::question::LocalQuestions::new(selection);
@@ -774,8 +812,11 @@ where
         questions.cancel_closed();
         if let Some(autonomous) = &mut autonomous {
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
-            node.publish_admitted(&admitted, "mock_producer");
+            node.publish_admitted(&admitted,if node.learning.is_some(){"native_solver"}else{"mock_producer"});
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
+        }
+        if !stopping && work.is_some() && let Some(learning) = &mut node.learning {
+            learning.advance(&node.graph, questions.formal_context(&node.graph).binding())?;
         }
         if let Some(error) = questions.storage_error() { return Err(error.to_owned()); }
         node.requests();
@@ -983,6 +1024,86 @@ pub(crate) fn shutdown_signal()
 
 fn retryable_publication(error: &crate::Error) -> bool {
     error.retryable()
+}
+
+impl PeerLearning {
+    fn advance(&mut self, graph: &Graph, binding: crate::jobs::Binding) -> Result<(), String> {
+        let page = match graph.peer_learning_page(self.cursor) {
+            Ok(page) => page,
+            Err(error) if error.retryable() => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        for (ordinal, id, peer) in page {
+            match graph.learning_definition(id) {
+                Ok(Some(definition)) => {
+                    if self
+                        .client
+                        .definition_verified(ordinal, definition)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    self.cursor = ordinal;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) if error.retryable() => break,
+                Err(error) => return Err(error.to_string()),
+            }
+            let Some(peer) = peer else {
+                let packet = match graph.learning_certificate(id) {
+                    Ok(packet) => packet,
+                    Err(error) if error.retryable() => break,
+                    Err(error) => return Err(error.to_string()),
+                };
+                let observed = if let Some(packet) = packet {
+                    self.client
+                        .theorem_verified(ordinal, crate::learning::knowledge::Entry { packet })
+                } else {
+                    self.client.peer_cursor(ordinal)
+                };
+                if observed.is_err() {
+                    break;
+                }
+                self.cursor = ordinal;
+                continue;
+            };
+            let question = match graph.learning_question(id) {
+                Ok(q) => q,
+                Err(error) if error.retryable() => break,
+                Err(error) => return Err(error.to_string()),
+            };
+            use crate::learning::peer::Source;
+            let evidence = graph
+                .program_manifest(id)
+                .and_then(|manifest| match manifest {
+                    Some(manifest) => graph
+                        .peer_program(manifest)
+                        .map(|packet| packet.map(Box::new).map(Source::Program)),
+                    None => graph
+                        .learning_certificate(id)
+                        .map(|packet| packet.map(Source::Certificate)),
+                });
+            let evidence = match evidence {
+                Ok(value) => value,
+                Err(error) if error.retryable() => break,
+                Err(error) => return Err(error.to_string()),
+            };
+            let admission = crate::jobs::PeerAdmission {
+                evidence,
+                ordinal,
+                artifact: hex(id.as_bytes()),
+                peer: peer.to_string(),
+                question: question.map(|q| q.to_hex()),
+                binding: binding.clone(),
+            };
+            if self.client.peer_verified(admission).is_err() {
+                break;
+            }
+            self.cursor = ordinal;
+        }
+        Ok(())
+    }
 }
 
 impl Node {
