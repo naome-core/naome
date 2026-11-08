@@ -489,18 +489,19 @@ fn check_row(
     payload: &[u8],
     stored: &[u8],
     maximum: usize,
-) -> Result<(), String> {
-    if kind.is_empty()
-        || kind.len() > 16
-        || key.is_empty()
-        || key.len() > 128
-        || payload.len() > maximum
-        || stored != digest(domain, kind, key, payload)
-    {
-        return Err("checkpoint record digest or capacity differs".into());
+) -> Result<(), crate::Error> {
+    if kind.is_empty() || kind.len() > 16 || key.is_empty() || key.len() > 128 {
+        return Err(crate::InputFault::CheckpointRecordKey.into());
+    }
+    if payload.len() > maximum {
+        return Err(crate::InputFault::CheckpointRecordReadLimit.into());
+    }
+    if stored != digest(domain, kind, key, payload) {
+        return Err(crate::InputFault::CheckpointRecordDigest.into());
     }
     Ok(())
 }
+
 fn digest(domain: &str, kind: &str, key: &str, payload: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"naome:checkpoint:row:v1\0");

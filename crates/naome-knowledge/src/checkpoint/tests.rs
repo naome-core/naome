@@ -204,3 +204,49 @@ pub(crate) fn question_source(index: usize) -> String {
     }
     crate::test_inputs::question(Formula::for_all(x, formula)).to_hex()
 }
+
+#[test]
+fn row_read_limit_and_digest_failures_remain_distinct_and_fail_closed() {
+    let directory = Directory::new();
+    let path = directory.0.join("typed-row.sqlite3");
+    let checkpoint = Checkpoint::create(
+        &path,
+        "test",
+        &1u64,
+        vec![Update::put("record", "one", &"retained payload").unwrap()],
+    )
+    .unwrap();
+    let error = checkpoint.page("record", None, 1, 2).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointRecordReadLimit)
+    );
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["fatal"], true);
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(crate::InputFault::CheckpointRecordReadLimit)
+    );
+
+    checkpoint
+        .connection
+        .execute(
+            "UPDATE entries SET digest = zeroblob(32) WHERE kind = 'record' AND key = 'one'",
+            [],
+        )
+        .unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointRecordDigest)
+    );
+    assert_eq!(
+        serde_json::to_value(error.storage()).unwrap()["fatal"],
+        true
+    );
+    let count: i64 = checkpoint
+        .connection
+        .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+}

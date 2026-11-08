@@ -453,6 +453,9 @@ impl fmt::Display for Error {
                     "formal goal requires native proof learning"
                 }
                 InputFault::QuestionRegistryPopulated => "question registry is already populated",
+                InputFault::CheckpointRecordKey => "checkpoint record key or kind is invalid",
+                InputFault::CheckpointRecordReadLimit => "checkpoint record exceeds its read limit",
+                InputFault::CheckpointRecordDigest => "checkpoint record digest differs",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

@@ -150,6 +150,9 @@ codes! {
         RelayExternalAddress = 18,
         FormalGoalRequiresNative = 19,
         QuestionRegistryPopulated = 20,
+        CheckpointRecordKey = 21,
+        CheckpointRecordReadLimit = 22,
+        CheckpointRecordDigest = 23,
     }
 
     pub enum InputLimit in 8 {
