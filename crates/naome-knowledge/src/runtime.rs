@@ -163,7 +163,7 @@ pub(crate) fn log_error() -> Option<String> {
 /// Fatal daemon diagnostics use the same bounded owner as ordinary events.
 pub fn report_error(error: &crate::Error) {
     let event = serde_json::json!({"event":crate::outcome::NodeEvent::FatalError,"error":error});
-    if !emit_log(&event) {
+    if !emit_log(&event) || log_error().is_some() {
         use std::io::Write;
         let mut stderr = std::io::stderr().lock();
         if serde_json::to_writer(&mut stderr, &event).is_ok() {

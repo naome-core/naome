@@ -316,6 +316,42 @@ async fn stop_requires_directory_release_and_reports_offline_admissions_without_
 }
 
 #[test]
+fn failed_log_falls_back_to_a_structured_fatal_error_on_stderr() {
+    const CHILD: &str = "NAOME_FATAL_LOG_FALLBACK_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        let directory = Directory::new();
+        assert!(
+            LOG.set(Mutex::new(Log::open(&directory.0).unwrap()))
+                .is_ok()
+        );
+        let oversized = serde_json::json!({"detail": "x".repeat(crate::resources::limits().log_segment_bytes as usize)});
+        assert!(emit_log(&oversized));
+        assert!(log_error().is_some());
+        report_error(&crate::Error::Runtime(crate::RuntimeFailure::Log));
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::tests::failed_log_falls_back_to_a_structured_fatal_error_on_stderr",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let event: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        event["event"],
+        u32::from(crate::outcome::NodeEvent::FatalError)
+    );
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(crate::RuntimeFailure::Log)
+    );
+}
+
+#[test]
 fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events() {
     let directory = Directory::new();
     for name in ["node.log", "node.log.previous"] {
