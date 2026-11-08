@@ -123,3 +123,66 @@ fn a_valid_peer_deduction_can_include_an_action_the_local_policy_omits() {
     assert_eq!(&packet.target().unwrap(), target);
     assert!(program_graphs(target, &records).unwrap().is_empty());
 }
+
+#[test]
+fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
+    use crate::learning::{Prerequisites, solve_with_report};
+    let element = FreeVariable::new(30);
+    let binder = FreeVariable::new(31);
+    let mut target = Formula::member(element, FreeVariable::new(9));
+    for index in (0..9).rev() {
+        let left = Formula::member(binder, FreeVariable::new(index));
+        let right = Formula::member(binder, FreeVariable::new(index + 1));
+        target = Formula::implies(
+            Formula::for_all(binder, Formula::implies(left, right)),
+            target,
+        );
+    }
+    target = Formula::implies(Formula::member(element, FreeVariable::new(0)), target);
+    let goal = ResearchQuestion::from_formula(proof::close(target)).unwrap();
+    assert!(solve(&goal, 32).is_none());
+
+    let prefix = cut::plan(goal.proved_target()).expect("an admissible transport prefix");
+    let witness = solve(&prefix.question, 8).expect("an independently solvable cut");
+    witness.check_target(&prefix.question).unwrap();
+    let Tree::Program(packet) = witness.tree else {
+        panic!("native witness program");
+    };
+    let proof_id = packet.manifest.proof_id();
+    let required = [crate::hex(proof_id.as_bytes())];
+    let inputs = Prerequisites::from_inputs(Vec::new(), vec![*packet]).unwrap();
+    let mut engine = Engine::default();
+    let mut io = crate::learning::tests::MemoryStore::default();
+    let context = || SolveContext {
+        required: &required,
+        prerequisites: Some(&inputs),
+        native_programs: true,
+        ..Default::default()
+    };
+    let short = engine
+        .with(&Checkpoint::fresh(), &mut io, |runtime| {
+            solve_with_report(&goal.to_hex(), runtime, prefix.work() - 1, 1, context())
+        })
+        .unwrap();
+    assert!(short.solution.is_none());
+    let found = engine
+        .with(&Checkpoint::fresh(), &mut io, |runtime| {
+            solve_with_report(&goal.to_hex(), runtime, prefix.work(), 1, context())
+        })
+        .unwrap();
+    assert_eq!(found.cost.search_expansions, 17);
+    let root = found
+        .solution
+        .expect("a checked scoped proof using the prefix");
+    let independent = root.clone();
+    std::thread::spawn(move || independent.check_target(&goal))
+        .join()
+        .unwrap()
+        .unwrap();
+    let Tree::Program(root) = root.tree else {
+        panic!("native composed program");
+    };
+    assert!(root.commands().unwrap().iter().any(|command| matches!(
+        command, Command::ProofReference { proof_id: used } if used == proof_id.as_bytes()
+    )));
+}

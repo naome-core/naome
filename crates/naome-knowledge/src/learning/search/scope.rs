@@ -6,6 +6,7 @@ use naome_proof::{
     program::{Command, Projection, SCOPE_ASSUMPTIONS, ScopedAction},
 };
 
+pub(crate) mod cut;
 mod demand;
 #[cfg(test)]
 mod tests;

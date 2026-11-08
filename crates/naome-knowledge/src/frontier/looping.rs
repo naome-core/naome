@@ -187,6 +187,15 @@ impl Frontier {
                     return Ok((witnesses, inputs));
                 }
             }
+            if self.native
+                && let Some(helper) = crate::learning::scoped_cut_question(question.proved_target())
+                && let Some(id) = witness(helper.proved_target())?
+            {
+                let selected = vec![id];
+                if let Some(inputs) = graph.solving_inputs(&selected, definitions)? {
+                    return Ok((selected, inputs));
+                }
+            }
             let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
             let mut witnesses = Vec::new();
             let mut best_exact = usize::MAX;
@@ -337,6 +346,11 @@ impl Frontier {
                 let routes = (self.native && !sources.is_empty()).then(|| {
                     crate::learning::closed_cut_routes(nodes[index].question.proved_target(), true)
                 });
+                let scoped = if routes.is_some() {
+                    crate::learning::scoped_cut_question(nodes[index].question.proved_target())
+                } else {
+                    None
+                };
                 for source in sources {
                     let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
                     if helper.formula().view().node_count_and_depth().0
@@ -362,7 +376,9 @@ impl Frontier {
                         i
                     };
                     nodes[index].children.push(child);
-                    if routes.as_ref().is_some_and(|routes| {
+                    if scoped.as_ref().is_some_and(|cut| {
+                        cut.resolution_id() == nodes[child].question.resolution_id()
+                    }) || routes.as_ref().is_some_and(|routes| {
                         routes.contains(nodes[child].question.proved_target())
                     }) {
                         nodes[index].cuts.push(child);

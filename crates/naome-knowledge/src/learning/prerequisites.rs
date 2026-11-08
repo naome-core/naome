@@ -281,6 +281,28 @@ impl Prerequisites {
             ));
         }
 
+        if let [(id, formula)] = sources.as_slice()
+            && self
+                .0
+                .programs
+                .iter()
+                .any(|packet| packet.manifest.proof_id() == *id)
+            && let Some(cut) = super::search::scope::cut::plan(target)
+            && cut.question.proved_target() == formula
+            && cut.work() <= maximum
+            && started.elapsed() < std::time::Duration::from_millis(2500)
+        {
+            let packet =
+                Packet::compose(target, &cut.commands(*id), &self.0.programs, artifacts())?;
+            return Ok((
+                Some(super::construction::ProgramCandidate {
+                    packet,
+                    helpers: Vec::new(),
+                }),
+                cut.work(),
+            ));
+        }
+
         let programs = self
             .0
             .programs

@@ -4,6 +4,7 @@ mod calculus;
 mod construction;
 pub(crate) use construction::composition::closed_cut_routes;
 pub(crate) use construction::logic::conjunction as conjunction_operands;
+pub(crate) use search::scope::cut::question as scoped_cut_question;
 mod coverage;
 mod curriculum;
 pub(crate) mod definitions;

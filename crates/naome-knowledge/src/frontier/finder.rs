@@ -46,9 +46,13 @@ pub(super) fn cut_helpers(
     ranked.extend(routes.quantified);
     ranked.sort_by_key(|(_, distance)| *distance);
     let goal_nodes = goal.formula().view().node_count_and_depth().0;
-    let questions = ranked
+    let questions = crate::learning::scoped_cut_question(goal.proved_target())
         .into_iter()
-        .filter_map(|(formula, _)| ResearchQuestion::from_formula(formula).ok())
+        .chain(
+            ranked
+                .into_iter()
+                .filter_map(|(formula, _)| ResearchQuestion::from_formula(formula).ok()),
+        )
         .filter(|helper| {
             helper.formula().view().node_count_and_depth().0 < goal_nodes
                 && helper.resolution_id() != goal.resolution_id()
