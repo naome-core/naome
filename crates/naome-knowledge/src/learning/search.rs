@@ -255,9 +255,17 @@ fn offers(state: &State) -> Vec<Offer> {
         }
     }
     let target_fragments = super::knowledge::fragments(&state.goal);
+    let negatives = focus::existential(&state.goal).then(|| {
+        state
+            .facts
+            .iter()
+            .filter_map(|fact| fact.view().negated())
+            .collect::<std::collections::HashSet<_>>()
+    });
     let mut relevance_cache = HashMap::new();
-    let mut ranked: Vec<(usize, Offer)> = Vec::new();
-    let mut best_by_rule: [Option<(usize, Offer)>; 8] = Default::default();
+    type RankedOffer = ((bool, u8, usize), Offer);
+    let mut ranked: Vec<RankedOffer> = Vec::new();
+    let mut best_by_rule: [Option<RankedOffer>; 8] = Default::default();
     let mut direct_close = false;
     for action in result.into_iter().chain(fused_actions) {
         let fused = matches!(action, Action::InstantiateApply(..));
@@ -298,9 +306,29 @@ fn offers(state: &State) -> Vec<Offer> {
             })
             .max()
             .unwrap_or(0);
-        let score = usize::from(closes) * 1_000_000
-            + relevance * 4
-            + usize::from(!matches!(action, Action::Beta(_)));
+        // Preserve executable instances before the menu is truncated.
+        let instance_tier = negatives
+            .as_ref()
+            .filter(|_| matches!(action, Action::Instantiate(..)))
+            .map_or(0, |negatives| {
+                delta.additions[0]
+                    .iter()
+                    .map(|formula| {
+                        focus::instance_tier(
+                            formula.view(),
+                            false,
+                            |f| index.contains_key(&f),
+                            |f| negatives.contains(&f),
+                        )
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        let score = (
+            closes,
+            instance_tier,
+            relevance * 4 + usize::from(!matches!(action, Action::Beta(_))),
+        );
         let kind = match action {
             Action::Double(_) => 0,
             Action::NotImp(_) => 1,
@@ -312,9 +340,8 @@ fn offers(state: &State) -> Vec<Offer> {
             Action::Cite(_) => 7,
         };
         let candidate = (score, Offer { action, delta });
-        let compare = |a: &(usize, Offer), b: &(usize, Offer)| {
-            b.0.cmp(&a.0).then(a.1.action.cmp(&b.1.action))
-        };
+        let compare =
+            |a: &RankedOffer, b: &RankedOffer| b.0.cmp(&a.0).then(a.1.action.cmp(&b.1.action));
         let best = &mut best_by_rule[kind];
         if best
             .as_ref()
@@ -342,7 +369,15 @@ fn offers(state: &State) -> Vec<Offer> {
             selected.push(candidate);
         }
     }
-    selected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.action.cmp(&b.1.action)));
+    // The tier affects admission only. Keep the menu order for ranking and
+    // checked replay independent of the capacity preference.
+    selected.sort_by(
+        |((a_close, _, a_relevance), a), ((b_close, _, b_relevance), b)| {
+            (b_close, b_relevance)
+                .cmp(&(a_close, a_relevance))
+                .then(a.action.cmp(&b.action))
+        },
+    );
     selected.into_iter().map(|(_, offer)| offer).collect()
 }
 
