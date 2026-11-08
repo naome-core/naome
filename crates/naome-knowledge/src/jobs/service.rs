@@ -836,7 +836,7 @@ impl Owner {
             let retained = self.retain_uncertainty();
             return combine_outcomes(
                 Err("provider cleanup or effects require reconciliation".into()),
-                combine_outcomes(accounting, retained),
+                combine_outcomes(accounting.map_err(String::from), retained),
             );
         }
         let record = self
@@ -974,11 +974,9 @@ impl Owner {
         self.save_extra(Vec::new())
     }
     fn save_extra(&mut self, extra: Vec<crate::checkpoint::Update>) -> Result<(), crate::Error> {
-        let now = wall_ms().map_err(crate::Error::CorruptStorage)?;
+        let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err(crate::Error::CorruptStorage(
-                "research clock moved backwards; no fresh allowance".into(),
-            ));
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         self.journal.observed_ms = now;
         self.journal
@@ -1281,10 +1279,10 @@ impl Owner {
         Ok(())
     }
 
-    fn charge(&mut self, id: u64) -> Result<(), String> {
+    fn charge(&mut self, id: u64) -> Result<(), crate::Error> {
         let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err("research clock rollback".into());
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         let clock = if let Some(running) = self.running.get_mut(&id) {
             &mut running.clock
@@ -1297,13 +1295,13 @@ impl Owner {
             .as_nanos()
             .div_ceil(1_000_000)
             .try_into()
-            .map_err(|_| "research elapsed overflow")?;
+            .map_err(|_| crate::ResearchFailure::ElapsedOverflow)?;
         *clock = instant;
         let record = self
             .journal
             .records
             .get_mut(&id)
-            .ok_or("research accounting record absent")?;
+            .ok_or(crate::ResearchFailure::AccountingRecordMissing)?;
         record.spent_ms = record.spent_ms.saturating_add(elapsed);
         record.accounted_ms = now;
         self.journal.observed_ms = now;
@@ -1615,7 +1613,7 @@ impl Owner {
         let ids = self.running.keys().copied().collect::<Vec<_>>();
         for id in ids {
             if let Err(error) = self.charge(id) {
-                failure = Some(append_failure(failure.take(), &error));
+                failure = Some(append_failure(failure.take(), &error.to_string()));
             }
             let record = self
                 .journal
@@ -1642,7 +1640,7 @@ impl Owner {
         }
         while let Some((id, outcome)) = self.tasks.next().await {
             if let Err(error) = self.charge(id) {
-                failure = Some(append_failure(failure.take(), &error));
+                failure = Some(append_failure(failure.take(), &error.to_string()));
             }
             if outcome.state == State::InDoubt {
                 let record = self

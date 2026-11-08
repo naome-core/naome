@@ -25,7 +25,7 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
 }
 pub use outcome::{
     DurabilityCode, IngestStatus, InputFault, InputLimit, LearningGraphFailure, PauseReason,
-    RuntimeFailure, StartupFailure,
+    ResearchFailure, RuntimeFailure, StartupFailure,
 };
 mod frontier;
 pub use error::{CertificateFormatError, DurabilityFailure, Error};

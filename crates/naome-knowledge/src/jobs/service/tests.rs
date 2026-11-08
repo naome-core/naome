@@ -488,6 +488,24 @@ async fn failed_clock_accounting_still_drains_all_owned_tasks() {
 }
 
 #[test]
+fn accounting_clock_rollback_is_a_typed_fatal_cause() {
+    let (_directory, mut owner) = fixture(4);
+    let _receipt = submit(&mut owner, 1);
+    owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
+    let failure = owner.charge(1).unwrap_err();
+    assert_eq!(
+        failure,
+        crate::Error::Research(crate::ResearchFailure::ClockRollback)
+    );
+    assert!(failure.fatal());
+    let encoded = serde_json::to_value(failure).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
+}
+
+#[test]
 fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
     let (_directory, mut owner) = fixture(4);
     let _receipt = submit(&mut owner, 1);

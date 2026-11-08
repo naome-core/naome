@@ -572,6 +572,11 @@ codes! {
 
     pub enum ArtifactVerification in 32 { Checked = 1, NotRun = 2 }
 
+    pub enum ResearchFailure in 36 {
+        ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
+        ElapsedOverflow = 4, AccountingRecordMissing = 5,
+    }
+
 }
 
 impl InputLimit {

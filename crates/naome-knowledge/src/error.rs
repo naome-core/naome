@@ -154,6 +154,7 @@ pub enum Error {
     ProgramFormula(naome_foundation::FormulaCodecError),
     QuestionInput(Box<naome_proof::QuestionError>),
     Runtime(crate::RuntimeFailure),
+    Research(crate::ResearchFailure),
     Startup {
         code: crate::StartupFailure,
         reaped: bool,
@@ -194,6 +195,7 @@ impl Error {
             Self::ProgramFormula(_) => OperationCode::ProgramFormula,
             Self::QuestionInput(_) => OperationCode::QuestionInput,
             Self::Runtime(failure) => return (*failure).into(),
+            Self::Research(failure) => return (*failure).into(),
             Self::Startup { code, .. } => return (*code).into(),
         };
         code.into()
@@ -239,6 +241,7 @@ impl Error {
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
+                    | Self::Research(_)
                     | Self::Startup { .. }
             )
     }
@@ -312,6 +315,15 @@ impl fmt::Display for Error {
             Self::ProgramFormula(error) => error.fmt(f),
             Self::QuestionInput(error) => error.fmt(f),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
+            Self::Research(failure) => f.write_str(match failure {
+                crate::ResearchFailure::ClockBeforeEpoch => "wall clock is before research epoch",
+                crate::ResearchFailure::ClockOverflow => "research clock overflow",
+                crate::ResearchFailure::ClockRollback => "research clock rollback",
+                crate::ResearchFailure::ElapsedOverflow => "research elapsed overflow",
+                crate::ResearchFailure::AccountingRecordMissing => {
+                    "research accounting record absent"
+                }
+            }),
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
             Self::UncertainDurability(failure) => {
                 write!(f, "storage halted: {}", u32::from(failure.code))
@@ -344,6 +356,12 @@ impl From<crate::StartupFailure> for Error {
             code,
             reaped: false,
         }
+    }
+}
+
+impl From<crate::ResearchFailure> for Error {
+    fn from(error: crate::ResearchFailure) -> Self {
+        Self::Research(error)
     }
 }
 

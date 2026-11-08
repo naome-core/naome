@@ -791,13 +791,13 @@ fn request_key(input: &Input, binding: &Binding, settings: RoleSettings) -> Stri
     crate::hex(&hash.finalize())
 }
 
-fn wall_ms() -> Result<u64, String> {
+fn wall_ms() -> Result<u64, crate::Error> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "wall clock is before research epoch".to_owned())?
+        .map_err(|_| crate::ResearchFailure::ClockBeforeEpoch)?
         .as_millis()
         .try_into()
-        .map_err(|_| "research clock overflow".into())
+        .map_err(|_| crate::ResearchFailure::ClockOverflow.into())
 }
 
 pub(crate) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), String>> {
