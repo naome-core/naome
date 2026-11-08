@@ -83,6 +83,54 @@ fn a_wide_transport_scope_pays_for_each_actual_step_and_replays_its_choice() {
 }
 
 #[test]
+fn a_free_variable_does_not_hide_a_later_scoped_witness() {
+    let [a, b, c, d, witness] = [0, 1, 2, 3, 4].map(FreeVariable::new);
+    let initial = Formula::member(a, b);
+    let change_member = Formula::for_all(
+        witness,
+        Formula::implies(Formula::member(a, witness), Formula::member(c, witness)),
+    );
+    let change_set = Formula::for_all(
+        witness,
+        Formula::implies(Formula::member(witness, b), Formula::member(witness, d)),
+    );
+    let goal = Formula::conjunction(Formula::member(c, b), Formula::member(a, d));
+    let formula = [change_member, change_set, initial]
+        .into_iter()
+        .rev()
+        .fold(goal, |body, premise| Formula::implies(premise, body));
+    let question = ResearchQuestion::from_formula(proof::close(formula)).unwrap();
+    let context = SolveContext {
+        native_programs: true,
+        ..Default::default()
+    };
+    let attempt = |limit| search_question_report(&question.to_hex(), &mut Ordered, limit, &context);
+    assert!(attempt(2).unwrap().solution.is_none());
+    let result = attempt(3).unwrap();
+    assert_eq!(result.cost.search_expansions, 3);
+    let solution = result.solution.expect("both conjuncts must be proved");
+    solution.check_target(&question).unwrap();
+    let Tree::Program(packet) = solution.tree else {
+        panic!("expected native scoped proof");
+    };
+    let records = packet.commands().unwrap();
+    assert!(records.iter().any(|record| matches!(
+        record,
+        Command::Deduce { actions, .. }
+            if matches!(actions.as_slice(), [
+                ScopedAction::Instantiate { replacement: 1, .. },
+                ScopedAction::Instantiate { .. },
+                ScopedAction::Conjoin { .. }
+            ])
+    )));
+    assert!(
+        !program_graphs(question.proved_target(), &records)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn a_valid_peer_deduction_can_include_an_action_the_local_policy_omits() {
     let question = transport();
     let target = question.proved_target();

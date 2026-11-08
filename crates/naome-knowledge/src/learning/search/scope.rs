@@ -90,11 +90,18 @@ impl Scope {
         if variables.is_empty() {
             variables.insert(FreeVariable::new(0));
         }
+        // Open the structural binder with a fresh variable, then instantiate
+        // it with each actual witness. A witness may already occur free.
+        let binder = (0..=u32::MAX)
+            .map(FreeVariable::new)
+            .find(|variable| !variables.contains(variable))
+            .expect("bounded scope variables");
         for (index, universal) in facts.iter().enumerate() {
+            let Some(body) = universal.open_outer_universal(binder) else {
+                continue;
+            };
             for &replacement in variables.iter().take(8) {
-                let Some(instance) = universal.open_outer_universal(replacement) else {
-                    break;
-                };
+                let instance = body.clone().substitute_free(binder, replacement);
                 let mut add = |formula, premises| {
                     if !facts.contains(&formula) {
                         offered.push((
@@ -127,9 +134,13 @@ impl Scope {
                 self.goal.clone(),
             ));
         }
-        // Ensure a closing inference stays available even when there are
-        // more legal instances than the model's existing decision envelope.
-        offered.sort_by_key(|(_, result)| *result != self.goal);
+        // Preserve closing and immediately applicable inferences when bare
+        // instances compete for the bounded decision menu.
+        offered.sort_by_key(|(action, result)| {
+            let bare =
+                matches!(action, ScopedAction::Instantiate { premises, .. } if premises.is_empty());
+            (*result != self.goal, bare)
+        });
         offered.truncate(OFFERS);
         offered
     }
