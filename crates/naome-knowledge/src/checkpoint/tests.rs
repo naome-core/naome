@@ -469,3 +469,43 @@ fn checkpoint_direct_reads_and_kind_validation_retain_specific_failures() {
     );
     assert!(error.storage().fatal());
 }
+
+#[test]
+fn checkpoint_creation_reports_io_cause_without_creating_missing_parent() {
+    let directory = Directory::new();
+    let parent = directory.0.join("missing");
+    let path = parent.join("checkpoint.sqlite3");
+    let error = Checkpoint::create(&path, "test", &1u64, vec![])
+        .err()
+        .unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::outcome::OperationCode::CheckpointIo)
+    );
+    assert_eq!(
+        value["operation"],
+        u32::from(crate::CheckpointIoOperation::CreateStage)
+    );
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
+    assert_eq!(value["os_code"], nix::errno::Errno::ENOENT as i32);
+    assert!(!parent.exists());
+}
+
+#[test]
+fn oversized_initial_header_does_not_publish_and_stage_can_recover() {
+    let directory = Directory::new();
+    let path = directory.0.join("capacity.sqlite3");
+    let oversized = "x".repeat(MAX_HEADER);
+    let error = Checkpoint::create(&path, "test", &oversized, vec![])
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderCapacity)
+    );
+    assert!(error.storage().fatal());
+    assert!(!path.exists());
+    let recovered = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    assert_eq!(recovered.header::<u64>().unwrap(), 1);
+}

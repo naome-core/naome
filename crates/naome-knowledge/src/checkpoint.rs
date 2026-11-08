@@ -143,7 +143,7 @@ impl Checkpoint {
         domain: &'static str,
         header: &impl Serialize,
         updates: Vec<Update>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let stage = path.with_extension("initializing");
         if !stage.exists() {
             OpenOptions::new()
@@ -152,39 +152,39 @@ impl Checkpoint {
                 .mode(0o600)
                 .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
                 .open(&stage)
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| io_error(crate::CheckpointIoOperation::CreateStage, error))?;
         }
         let _ = owned(&stage)?;
         let mut connection = connect(&stage)?;
         let application: i64 = connection
             .pragma_query_value(None, "application_id", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let stage_version: i64 = connection
             .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let objects: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL",
                 [],
                 |r| r.get(0),
             )
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if application == 0 && stage_version == 0 && objects == 0 {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             for definition in SCHEMA {
-                transaction.execute_batch(definition).map_err(sql)?;
+                transaction.execute_batch(definition).map_err(sql_error)?;
             }
             transaction
                 .pragma_update(None, "application_id", APPLICATION_ID)
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             transaction
                 .pragma_update(None, "user_version", 1)
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             let payload = encode(header)?;
             if payload.len() > MAX_HEADER {
-                return Err("checkpoint header capacity".into());
+                return Err(crate::InputFault::CheckpointHeaderCapacity.into());
             }
             transaction
                 .execute(
@@ -195,22 +195,23 @@ impl Checkpoint {
                         digest(domain, "header", "1", &payload).as_slice()
                     ],
                 )
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             apply(&transaction, domain, &updates)?;
-            transaction.commit().map_err(sql)?;
+            transaction.commit().map_err(sql_error)?;
         }
         drop(connection);
         // A fully committed stage is reusable after a crash before rename.
         drop(Self::open(&stage, domain)?);
         File::open(&stage)
             .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| io_error(crate::CheckpointIoOperation::SyncStage, error))?;
         if path.exists() {
-            return Err("checkpoint publication target already exists".into());
+            return Err(crate::InputFault::CheckpointTargetExists.into());
         }
-        fs::rename(&stage, path).map_err(|e| e.to_string())?;
+        fs::rename(&stage, path)
+            .map_err(|error| io_error(crate::CheckpointIoOperation::Publish, error))?;
         sync_parent(path)?;
-        Ok(Self::open(path, domain)?)
+        Self::open(path, domain)
     }
 
     pub(crate) fn directory(&self) -> &Path {
@@ -529,29 +530,35 @@ fn digest(domain: &str, kind: &str, key: &str, payload: &[u8]) -> [u8; 32] {
     }
     hash.finalize().into()
 }
-fn connect(path: &Path) -> Result<Connection, String> {
-    let parent = fs::canonicalize(path.parent().ok_or("checkpoint parent missing")?)
-        .map_err(|e| e.to_string())?;
-    let path = parent.join(path.file_name().ok_or("checkpoint filename missing")?);
+fn connect(path: &Path) -> Result<Connection, crate::Error> {
+    let parent = fs::canonicalize(
+        path.parent()
+            .ok_or(crate::InputFault::CheckpointParentMissing)?,
+    )
+    .map_err(|error| io_error(crate::CheckpointIoOperation::ResolveParent, error))?;
+    let path = parent.join(
+        path.file_name()
+            .ok_or(crate::InputFault::CheckpointFilenameMissing)?,
+    );
     let connection = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
-    .map_err(sql)?;
+    .map_err(sql_error)?;
     crate::storage::sqlite_common(
         &connection,
         crate::resources::active_limits().checkpoint_cache_bytes,
     )
-    .map_err(sql)?;
+    .map_err(sql_error)?;
     connection
         .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA;")
-        .map_err(sql)?;
+        .map_err(sql_error)?;
     #[cfg(target_os = "macos")]
     connection
         .pragma_update(None, "fullfsync", true)
-        .map_err(sql)?;
+        .map_err(sql_error)?;
     Ok(connection)
 }
 fn owned(path: &Path) -> Result<fs::Metadata, String> {
@@ -565,10 +572,20 @@ fn version_of(connection: &Connection) -> Result<i64, crate::Error> {
 fn normalize(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-fn sync_parent(path: &Path) -> Result<(), String> {
-    File::open(path.parent().ok_or("checkpoint parent missing")?)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
+fn sync_parent(path: &Path) -> Result<(), crate::Error> {
+    File::open(
+        path.parent()
+            .ok_or(crate::InputFault::CheckpointParentMissing)?,
+    )
+    .and_then(|f| f.sync_all())
+    .map_err(|error| io_error(crate::CheckpointIoOperation::SyncParent, error))
+}
+fn io_error(operation: crate::CheckpointIoOperation, error: std::io::Error) -> crate::Error {
+    crate::Error::CheckpointIo {
+        operation,
+        kind: crate::outcome::io_fault_kind(&error),
+        os_code: error.raw_os_error().and_then(std::num::NonZeroI32::new),
+    }
 }
 fn sql_error(error: rusqlite::Error) -> crate::Error {
     let reason = match &error {

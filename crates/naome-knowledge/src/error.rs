@@ -271,6 +271,11 @@ pub enum Error {
         reason: crate::CheckpointSqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
+    CheckpointIo {
+        operation: crate::CheckpointIoOperation,
+        kind: crate::IoFaultKind,
+        os_code: Option<NonZeroI32>,
+    },
     Runtime(crate::RuntimeFailure),
     RuntimeContext {
         code: crate::RuntimeFailure,
@@ -325,6 +330,7 @@ impl Error {
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
+            Self::CheckpointIo { .. } => OperationCode::CheckpointIo,
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
@@ -368,6 +374,7 @@ impl Error {
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
             | Self::CheckpointSql { .. }
+            | Self::CheckpointIo { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
@@ -500,6 +507,11 @@ impl fmt::Display for Error {
                 InputFault::CheckpointCountWidth => "checkpoint count width",
                 InputFault::CheckpointReadWidth => "checkpoint read width",
                 InputFault::CheckpointUnexpectedKind => "unexpected checkpoint record kind",
+                InputFault::CheckpointParentMissing => "checkpoint parent missing",
+                InputFault::CheckpointFilenameMissing => "checkpoint filename missing",
+                InputFault::CheckpointTargetExists => {
+                    "checkpoint publication target already exists"
+                }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
@@ -527,6 +539,16 @@ impl fmt::Display for Error {
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::DefinitionCheck(reason) => write!(f, "definition check: {reason}"),
+            Self::CheckpointIo {
+                operation,
+                kind,
+                os_code,
+            } => write!(
+                f,
+                "checkpoint IO failure {}:{} ({os_code:?})",
+                u32::from(*operation),
+                u32::from(*kind)
+            ),
             Self::CheckpointSql {
                 reason,
                 sqlite_code,
@@ -1027,6 +1049,18 @@ impl serde::Serialize for Error {
         }
         if let Self::QuestionRegistration(reason) = cause {
             value.serialize_entry("reason", &reason.code())?;
+        }
+        if let Self::CheckpointIo {
+            operation,
+            kind,
+            os_code,
+        } = cause
+        {
+            value.serialize_entry("operation", operation)?;
+            value.serialize_entry("kind", kind)?;
+            if let Some(code) = os_code {
+                value.serialize_entry("os_code", code)?;
+            }
         }
         if let Self::CheckpointSql {
             reason,

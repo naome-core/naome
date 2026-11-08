@@ -133,6 +133,7 @@ codes! {
         DefinitionCheck = 21,
         CheckpointDecode = 22,
         CheckpointSql = 23,
+        CheckpointIo = 24,
     }
 
     pub enum InputFault in 7 {
@@ -176,6 +177,9 @@ codes! {
         CheckpointCountWidth = 42,
         CheckpointReadWidth = 43,
         CheckpointUnexpectedKind = 44,
+        CheckpointParentMissing = 45,
+        CheckpointFilenameMissing = 46,
+        CheckpointTargetExists = 47,
     }
 
     pub enum InputLimit in 8 {
@@ -706,7 +710,7 @@ codes! {
 
     pub(crate) enum RelayEventKind in 64 { ReservationAccepted = 1, ReservationDenied = 2, ReservationClosed = 3, ReservationTimedOut = 4, CircuitDenied = 5, CircuitAccepted = 6, CircuitClosed = 7 }
     pub(crate) enum RelayStatus in 65 { Ok = 1, ReservationRefused = 2, ResourceLimitExceeded = 3, PermissionDenied = 4, ConnectionFailed = 5, NoReservation = 6, MalformedMessage = 7, UnexpectedMessage = 8 }
-    pub(crate) enum IoFaultKind in 66 { NotFound = 1, PermissionDenied = 2, ConnectionRefused = 3, ConnectionReset = 4, ConnectionAborted = 5, NotConnected = 6, BrokenPipe = 7, TimedOut = 8, Interrupted = 9, UnexpectedEof = 10, Other = 11 }
+    pub enum IoFaultKind in 66 { NotFound = 1, PermissionDenied = 2, ConnectionRefused = 3, ConnectionReset = 4, ConnectionAborted = 5, NotConnected = 6, BrokenPipe = 7, TimedOut = 8, Interrupted = 9, UnexpectedEof = 10, Other = 11 }
     pub(crate) enum ServiceRole in 67 { Relay = 1 }
 
     pub(crate) enum ConnectionEndpoint in 68 { Dialer = 1, Listener = 2 }
@@ -716,6 +720,7 @@ codes! {
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
     pub enum CheckpointJsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
+    pub enum CheckpointIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5 }
 
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,

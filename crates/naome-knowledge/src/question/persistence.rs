@@ -89,7 +89,10 @@ impl Persistence {
                 backlog_cursor: None,
             };
             crate::checkpoint::Checkpoint::create(&path, CHECKPOINT_DOMAIN, &header, vec![])
-                .map_err(|_| crate::RuntimeFailure::QuestionCheckpointOpen)?
+                .map_err(|cause| crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionCheckpointOpen,
+                    cause: Box::new(cause),
+                })?
         };
         checkpoint
             .require_kinds(&["question", "admitted", "backlog", "queued", "publication"])
