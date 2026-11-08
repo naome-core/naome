@@ -197,12 +197,8 @@ impl Frontier {
                     return Ok((witnesses, inputs));
                 }
             }
-            let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
             if self.native {
-                for group in crate::learning::scoped_cut_questions(question.proved_target())
-                    .into_iter()
-                    .chain(routes.pair_questions())
-                {
+                for group in finder::cut_groups(question.proved_target()) {
                     let mut selected = Vec::new();
                     for helper in &group {
                         if let Some(id) = witness(helper.proved_target())? {
@@ -218,6 +214,7 @@ impl Frontier {
                     }
                 }
             }
+            let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
             let mut witnesses = Vec::new();
             let mut best_exact = usize::MAX;
             for (antecedent, distance) in routes.exact {
@@ -367,8 +364,8 @@ impl Frontier {
                 let routes = (self.native && !sources.is_empty()).then(|| {
                     crate::learning::closed_cut_routes(nodes[index].question.proved_target(), true)
                 });
-                let scoped = if routes.is_some() {
-                    crate::learning::scoped_cut_questions(nodes[index].question.proved_target())
+                let groups = if routes.is_some() {
+                    finder::cut_groups(nodes[index].question.proved_target())
                 } else {
                     Vec::new()
                 };
@@ -399,8 +396,7 @@ impl Frontier {
                     nodes[index].children.push(child);
                 }
                 let mut incomplete = Vec::new();
-                let pairs = routes.iter().flat_map(|routes| routes.pair_questions());
-                for group in scoped.into_iter().chain(pairs) {
+                for group in groups {
                     let members = group
                         .iter()
                         .filter_map(|helper| {

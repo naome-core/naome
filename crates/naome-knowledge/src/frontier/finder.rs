@@ -34,13 +34,75 @@ fn fresh_opening(formula: &Formula) -> Option<FreeVariable> {
 fn open(formula: &Formula) -> Option<Formula> {
     formula.open_outer_universal(fresh_opening(formula)?)
 }
+/// Direct Horn assumptions can consume two independently provable closed
+/// premises. Prefer the pair that activates fewer rules in the first two
+/// rounds of forward search, which spend from the same root allowance.
+fn closed_pairs(target: &Formula) -> Vec<[Formula; 2]> {
+    let mut goal = target.clone();
+    while let Some(opened) = open(&goal) {
+        goal = opened;
+    }
+    let mut rules = Vec::new();
+    for _ in 0..16 {
+        let Some((assumption, rest)) = goal.implication_parts() else {
+            break;
+        };
+        if let Some(rule) = assumption.implication_parts() {
+            rules.push(rule);
+        }
+        goal = rest;
+    }
+    let mut pairs = Vec::<(usize, [Formula; 2])>::new();
+    for (first, suffix) in &rules {
+        let Some((second, conclusion)) = suffix.implication_parts() else {
+            continue;
+        };
+        if conclusion != goal || !first.is_closed() || !second.is_closed() || first == &second {
+            continue;
+        }
+        if pairs
+            .iter()
+            .any(|(_, [a, b])| (a == first && b == &second) || (b == first && a == &second))
+        {
+            continue;
+        }
+        let pair = [first.clone(), second];
+        let mut facts = pair.iter().collect::<Vec<_>>();
+        let mut activated = 0u16;
+        for _ in 0..2 {
+            let mut round = Vec::new();
+            for (index, (premise, consequence)) in rules.iter().enumerate() {
+                let bit = 1 << index;
+                if activated & bit == 0 && facts.contains(&premise) {
+                    activated |= bit;
+                    round.push(consequence);
+                }
+            }
+            facts.extend(round);
+        }
+        pairs.push((activated.count_ones() as usize, pair));
+    }
+    pairs.sort_by_key(|(cost, _)| *cost);
+    pairs.into_iter().map(|(_, pair)| pair).collect()
+}
+
+/// Complete alternatives, in the order in which the Finder considers them.
+pub(super) fn cut_groups(target: &Formula) -> Vec<Vec<ResearchQuestion>> {
+    let mut groups = crate::learning::scoped_cut_questions(target);
+    groups.extend(closed_pairs(target).into_iter().filter_map(|pair| {
+        pair.into_iter()
+            .map(|formula| ResearchQuestion::from_formula(formula).ok())
+            .collect::<Option<Vec<_>>>()
+    }));
+    groups
+}
+
 /// Independently provable witnesses for the bounded routes to an open goal.
 pub(super) fn cut_helpers(
     goal: &ResearchQuestion,
     maximum: usize,
     bytes: usize,
 ) -> Vec<ResearchQuestion> {
-    let routes = crate::learning::closed_cut_routes(goal.proved_target(), true);
     let goal_nodes = goal.formula().view().node_count_and_depth().0;
     let valid = |helper: &ResearchQuestion| {
         helper.formula().view().node_count_and_depth().0 < goal_nodes
@@ -48,10 +110,7 @@ pub(super) fn cut_helpers(
             && independent_goal(helper, goal)
     };
     let mut questions = Vec::new();
-    for group in crate::learning::scoped_cut_questions(goal.proved_target())
-        .into_iter()
-        .chain(routes.pair_questions())
-    {
+    for group in cut_groups(goal.proved_target()) {
         if !group.iter().all(valid) {
             continue;
         }
@@ -70,6 +129,7 @@ pub(super) fn cut_helpers(
             return group;
         }
     }
+    let routes = crate::learning::closed_cut_routes(goal.proved_target(), true);
     let mut ranked = routes.exact;
     ranked.extend(routes.quantified);
     ranked.sort_by_key(|(_, distance)| *distance);
