@@ -60,3 +60,12 @@ fn worker_frame_rejects_unknown_codes_and_noncanonical_payloads() {
         );
     }
 }
+
+#[tokio::test]
+async fn truncated_provider_frame_has_a_machine_readable_cause() {
+    let (mut output, input) = tokio::io::duplex(64);
+    output.write_all(b"[1,{\"id\":1}").await.unwrap();
+    drop(output);
+    let mut frames = FrameReader::new(input);
+    assert_eq!(frames.next().await, Err(WorkerFailure::FrameTruncated));
+}
