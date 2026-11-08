@@ -73,6 +73,7 @@ fn matched_inference_device_memory_screen() {
                     left: i / 2,
                     right: i / 3,
                     role: 2,
+                    symbol: 0,
                 })
                 .collect(),
             goal: count - 1,
@@ -125,6 +126,7 @@ fn maximum_supported_batch_memory_is_bounded() {
             left: i / 2,
             right: i / 3,
             role: if i == 255 { 1 } else { 2 },
+            symbol: 0,
         })
         .collect();
     let graph = Graph {
@@ -192,6 +194,7 @@ fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
             left: 0,
             right: 0,
             role: 2,
+            symbol: 0,
         });
         larger.context.push(larger.nodes.len() - 1);
     }
@@ -222,7 +225,10 @@ fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
         }
     }
     let probability = burn::tensor::activation::log_softmax(
-        dense.policy.forward_dense(&batch, dense.recurrent()),
+        dense.policy.independent(
+            &Batch::from_dense_context(&sample, &dense.device).unwrap(),
+            dense.recurrent(),
+        ),
         1,
     )
     .exp();

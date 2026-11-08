@@ -348,6 +348,7 @@ fn features(target: &Formula, entries: &[Entry], selected: usize) -> Result<Deci
                 Ok(Candidate {
                     rule: Rule::DefinitionReference,
                     premises: vec![0],
+                    replacement: None,
                     consequences: vec![e.body()?],
                 })
             })

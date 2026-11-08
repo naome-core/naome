@@ -1,11 +1,13 @@
 //! A small learned graph representation and shared proof-action scorer.
 
-use super::super::graph::Batch;
+use super::super::graph::{Batch, SYMBOLS};
+mod cache;
 use burn::{
-    module::Module,
-    nn::{Embedding, EmbeddingConfig, Linear, LinearConfig},
-    tensor::{Bool, Device, Int, Tensor, activation::tanh, ops::IndexingUpdateOp},
+    module::{Module, Param},
+    nn::{Embedding, EmbeddingConfig, Initializer, Linear, LinearConfig},
+    tensor::{Bool, Device, Int, Tensor, activation::tanh},
 };
+pub(super) use cache::FormulaCache;
 
 pub const WIDTH: usize = 160;
 pub const LAYERS: usize = 6;
@@ -14,8 +16,10 @@ pub const READOUT: usize = 480;
 #[derive(Module, Debug)]
 pub struct Policy {
     kinds: Embedding,
+    symbols: Embedding,
     roles: Embedding,
-    messages: Vec<Linear>,
+    messages: Vec<Param<Tensor<2>>>,
+    transition: Linear,
     readout: Linear,
     output: Linear,
 }
@@ -42,18 +46,28 @@ impl Policy {
     /// adapting the existing action readout. This changes no inference feature.
     pub(super) fn readout_training(mut self) -> Self {
         self.kinds = self.kinds.no_grad();
+        self.symbols = self.symbols.no_grad();
         self.roles = self.roles.no_grad();
         self.messages = self.messages.into_iter().map(Module::no_grad).collect();
+        self.transition = self.transition.no_grad();
         self
     }
 
     pub fn new(device: &Device) -> Self {
         Self {
             kinds: EmbeddingConfig::new(19, WIDTH).init(device),
+            symbols: EmbeddingConfig::new(SYMBOLS, WIDTH).init(device),
             roles: EmbeddingConfig::new(4, WIDTH).init(device),
             messages: (0..LAYERS)
-                .map(|_| LinearConfig::new(4 * WIDTH, WIDTH).init(device))
+                .map(|_| {
+                    Initializer::Uniform {
+                        min: -0.5,
+                        max: 0.5,
+                    }
+                    .init([4, WIDTH], device)
+                })
                 .collect(),
+            transition: LinearConfig::new(4 * WIDTH, WIDTH).init(device),
             readout: LinearConfig::new(5 * WIDTH, READOUT).init(device),
             output: LinearConfig::new(READOUT, 1).init(device),
         }
@@ -69,85 +83,77 @@ impl Policy {
         self.readout(self.encode(batch), memory).0
     }
     pub(super) fn encode(&self, batch: &Batch) -> Encoded {
-        self.encode_with_context(batch, batch.context_mask())
+        self.encode_with_context(batch, self.formula_rows(batch))
     }
-    fn encode_with_context(&self, batch: &Batch, context_mask: Tensor<2, Bool>) -> Encoded {
-        let [_, n] = batch.kinds.dims();
-        let left = batch.left.clone().reshape([n]);
-        let right = batch.right.clone().reshape([n]);
-        let left_channels = batch
-            .left
-            .clone()
-            .unsqueeze_dim::<3>(2)
-            .expand([1, n, WIDTH]);
-        let right_channels = batch
-            .right
-            .clone()
-            .unsqueeze_dim::<3>(2)
-            .expand([1, n, WIDTH]);
-        self.encode_using(batch, context_mask, |h| {
+
+    fn embedding(&self, kinds: Tensor<2, Int>, symbols: Tensor<2, Int>) -> Tensor<3> {
+        self.kinds.forward(kinds) + self.symbols.forward(symbols)
+    }
+
+    fn message(
+        layer: &Param<Tensor<2>>,
+        current: Tensor<3>,
+        left: Tensor<3>,
+        right: Tensor<3>,
+    ) -> Tensor<3> {
+        let weight = layer.val();
+        let row = |i| {
+            weight
+                .clone()
+                .slice([i..i + 1, 0..WIDTH])
+                .unsqueeze_dim::<3>(0)
+        };
+        // Ordered operands have different trainable channels. Mixing adjacent
+        // channels also lets successive layers combine features.
+        let shifted = Tensor::cat(
+            vec![
+                current
+                    .clone()
+                    .slice([0..1, 0..current.dims()[1], 1..WIDTH]),
+                current.clone().slice([0..1, 0..current.dims()[1], 0..1]),
+            ],
+            2,
+        );
+        (current + tanh(shifted * row(0) + left * row(1) + right * row(2) + row(3)))
+            * std::f32::consts::FRAC_1_SQRT_2
+    }
+
+    fn next_rows(&self, batch: &Batch, layer: &Param<Tensor<2>>, h: Tensor<3>) -> Tensor<3> {
+        let n = batch.nodes.len();
+        let child = |indices: &Tensor<2, Int>| {
             if h.is_autodiff() {
-                // Preserve the original autodiff graph and accumulation order.
-                Tensor::zeros([1, n, WIDTH], &h.device())
-                    .scatter(1, left_channels.clone(), h.clone(), IndexingUpdateOp::Add)
-                    .scatter(1, right_channels.clone(), h, IndexingUpdateOp::Add)
-                    * batch.parent_scale.clone()
+                h.clone().gather(
+                    1,
+                    indices.clone().unsqueeze_dim::<3>(2).expand([1, n, WIDTH]),
+                )
             } else {
-                let flat = h.squeeze_dim::<2>(0);
-                // Preserve left-then-right and node order for every channel,
-                // while indexing each contiguous row only once.
-                Tensor::zeros([n, WIDTH], &flat.device())
-                    .select_assign(0, left.clone(), flat.clone(), IndexingUpdateOp::Add)
-                    .select_assign(0, right.clone(), flat, IndexingUpdateOp::Add)
+                h.clone()
+                    .squeeze_dim::<2>(0)
+                    .select(0, indices.clone().reshape([n]))
                     .unsqueeze_dim::<3>(0)
-                    * batch.parent_scale.clone()
             }
-        })
+        };
+        Self::message(layer, h.clone(), child(&batch.left), child(&batch.right))
+            * batch.valid.clone()
     }
-    fn encode_using(
-        &self,
-        batch: &Batch,
-        context_mask: Tensor<2, Bool>,
-        parents: impl Fn(Tensor<3>) -> Tensor<3>,
-    ) -> Encoded {
-        let [_, n] = batch.kinds.dims();
+
+    fn formula_rows(&self, batch: &Batch) -> Tensor<3> {
+        let mut h =
+            self.embedding(batch.kinds.clone(), batch.symbols.clone()) * batch.valid.clone();
+        for layer in &self.messages {
+            h = self.next_rows(batch, layer, h);
+        }
+        h
+    }
+
+    fn encode_with_context(&self, batch: &Batch, formula_rows: Tensor<3>) -> Encoded {
         let b = batch.goal.dims()[0];
         let c = batch.candidates.dims()[1];
-        let left = batch.left.clone().reshape([n]);
-        let right = batch.right.clone().reshape([n]);
-        let left_channels = batch
-            .left
-            .clone()
-            .unsqueeze_dim::<3>(2)
-            .expand([1, n, WIDTH]);
-        let right_channels = batch
-            .right
-            .clone()
-            .unsqueeze_dim::<3>(2)
-            .expand([1, n, WIDTH]);
-        let mut h = (self.kinds.forward(batch.kinds.clone())
-            + self.roles.forward(batch.roles.clone()))
-            * batch.valid.clone();
-        // Gradient retention is a leaf flag, not the active autodiff context.
+        // Node roles depend on the current decision and are added only after
+        // the shared structural encoder. The ranker sees context and actions.
+        let h = formula_rows + self.roles.forward(batch.roles.clone()) * batch.valid.clone();
         let differentiable = h.is_autodiff();
-        for layer in &self.messages {
-            let (left, right) = if differentiable {
-                (
-                    h.clone().gather(1, left_channels.clone()),
-                    h.clone().gather(1, right_channels.clone()),
-                )
-            } else {
-                let flat = h.clone().squeeze_dim::<2>(0);
-                (
-                    flat.clone().select(0, left.clone()).unsqueeze_dim::<3>(0),
-                    flat.select(0, right.clone()).unsqueeze_dim::<3>(0),
-                )
-            };
-            let joined = Tensor::cat(vec![h.clone(), left, right, parents(h.clone())], 2);
-            h = (h + tanh(layer.forward(joined)))
-                * std::f32::consts::FRAC_1_SQRT_2
-                * batch.valid.clone();
-        }
+        let context_mask = batch.context_mask();
         let flat = h.clone().squeeze_dim::<2>(0);
         let (goal, candidate) = if differentiable {
             let goal_indices = batch.goal.clone().reshape([b, 1]).expand([b, WIDTH]);
@@ -219,7 +225,7 @@ impl Policy {
             let input =
                 (fixed_goal.clone() + fixed_context.clone()) * std::f32::consts::FRAC_1_SQRT_2;
             let mut state = memory;
-            let block = self.messages.last().expect("fixed message layers");
+            let block = &self.transition;
             for _ in 0..2 {
                 let update = block.forward(Tensor::cat(
                     vec![
@@ -262,40 +268,6 @@ impl Policy {
             .squeeze_dim::<2>(2)
             .mask_fill(invalid, -10000.);
         (scores, successors)
-    }
-    #[cfg(test)]
-    pub fn forward_dense(&self, batch: &Batch, recurrent: bool) -> Tensor<2> {
-        let n = batch.kinds.dims()[1];
-        let left = batch.left.clone().into_data().try_to_vec::<i32>().unwrap();
-        let right = batch.right.clone().into_data().try_to_vec::<i32>().unwrap();
-        let mut weights = vec![0f32; n * n];
-        for parent in 1..n {
-            for child in [left[parent], right[parent]]
-                .into_iter()
-                .filter(|i| *i != 0)
-            {
-                weights[child as usize * n + parent] += 1.;
-            }
-        }
-        for row in weights.chunks_mut(n) {
-            let total: f32 = row.iter().sum();
-            if total > 0. {
-                for v in row {
-                    *v /= total;
-                }
-            }
-        }
-        let weights = Tensor::from_data(
-            burn::tensor::TensorData::new(weights, [1, n, n]),
-            &batch.kinds.device(),
-        );
-        let memory =
-            recurrent.then(|| Tensor::zeros([batch.goal.dims()[0], WIDTH], &batch.kinds.device()));
-        self.readout(
-            self.encode_using(batch, batch.context_mask(), |h| weights.clone().matmul(h)),
-            memory,
-        )
-        .0
     }
 }
 

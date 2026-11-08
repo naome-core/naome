@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use super::{Formula, FormulaView, FreeVariable, Node, Variable};
 
@@ -278,17 +279,17 @@ fn decode_node(
             decode_variable(cursor, binder_depth)?,
             decode_variable(cursor, binder_depth)?,
         )),
-        NOT => Ok(Node::Not(Box::new(decode_node(
+        NOT => Ok(Node::Not(Arc::new(decode_node(
             cursor,
             depth + 1,
             binder_depth,
             nodes,
         )?))),
         IMPLIES => Ok(Node::Implies(
-            Box::new(decode_node(cursor, depth + 1, binder_depth, nodes)?),
-            Box::new(decode_node(cursor, depth + 1, binder_depth, nodes)?),
+            Arc::new(decode_node(cursor, depth + 1, binder_depth, nodes)?),
+            Arc::new(decode_node(cursor, depth + 1, binder_depth, nodes)?),
         )),
-        FOR_ALL => Ok(Node::ForAll(Box::new(decode_node(
+        FOR_ALL => Ok(Node::ForAll(Arc::new(decode_node(
             cursor,
             depth + 1,
             binder_depth + 1,

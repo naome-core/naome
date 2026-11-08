@@ -148,6 +148,18 @@ impl Projection {
         result: u32,
         binders: &[FreeVariable],
     ) -> Vec<Command> {
+        Self::scoped_with_references(assumptions, actions, result, binders, &[])
+    }
+
+    /// Discharge a deduction and apply checked proof references to its leading
+    /// assumptions before generalizing the remaining goal.
+    pub fn scoped_with_references(
+        assumptions: &[ProofFormula],
+        actions: &[ScopedAction],
+        result: u32,
+        binders: &[FreeVariable],
+        references: &[crate::ProofId],
+    ) -> Vec<Command> {
         let mut builder = Builder::default();
         let assumptions = assumptions
             .iter()
@@ -158,6 +170,15 @@ impl Projection {
             actions: actions.to_vec(),
             result,
         });
+        for reference in references {
+            let premise = builder.push(Command::ProofReference {
+                proof_id: *reference.as_bytes(),
+            });
+            proof = builder.push(Command::ModusPonens {
+                premise,
+                implication: proof,
+            });
+        }
         for variable in binders.iter().rev() {
             proof = builder.push(Command::Generalization {
                 premise: proof,
@@ -172,27 +193,13 @@ impl Projection {
     /// Formula operands describe the discharged assumptions, while the
     /// references supply the proofs used to apply them.
     pub fn conjoin(operands: &[(crate::ProofId, ProofFormula); 2]) -> Vec<Command> {
-        let mut builder = Builder::default();
-        let assumptions = operands
-            .iter()
-            .map(|(_, formula)| builder.formula(formula))
-            .collect();
-        let mut proof = builder.push(Command::Deduce {
-            assumptions,
-            actions: vec![ScopedAction::Conjoin { left: 0, right: 1 }],
-            result: 2,
-        });
-        for (id, _) in operands {
-            let premise = builder.push(Command::ProofReference {
-                proof_id: *id.as_bytes(),
-            });
-            proof = builder.push(Command::ModusPonens {
-                premise,
-                implication: proof,
-            });
-        }
-        builder.push(Command::Seal { proof });
-        builder.commands
+        Self::scoped_with_references(
+            &[operands[0].1.clone(), operands[1].1.clone()],
+            &[ScopedAction::Conjoin { left: 0, right: 1 }],
+            2,
+            &[],
+            &[operands[0].0, operands[1].0],
+        )
     }
 
     pub fn into_commands(self) -> Vec<Command> {

@@ -89,7 +89,9 @@ pub(super) fn proof_steps(
         return Ok(*steps);
     }
     if let search::Tree::Program(packet) = tree {
-        peer::program_graphs(target, packet)?;
+        if &packet.target()? != target {
+            return Err("checked program target differs".into());
+        }
         return Ok(packet.manifest.commands as usize);
     }
     let checked = search::core::checked(target, tree)?.2;

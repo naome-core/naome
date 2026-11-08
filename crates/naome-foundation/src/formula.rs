@@ -11,7 +11,10 @@ pub use canonical::{
     FormulaCodecError,
 };
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// Identifies a free object-language variable.
 ///
@@ -37,7 +40,7 @@ impl FreeVariable {
 
 /// A well-formed formula in the primitive language of first-order set theory.
 ///
-/// The internal tree is private so dangling De Bruijn indices cannot enter the
+/// Shared subtrees are private so dangling De Bruijn indices cannot enter the
 /// public API. Formulas are constructed with free variables and quantifier
 /// constructors bind those variables structurally.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -105,9 +108,9 @@ impl PartialEq<Formula> for FormulaView<'_> {
 enum Node {
     Equal(Variable, Variable),
     Member(Variable, Variable),
-    Not(Box<Self>),
-    Implies(Box<Self>, Box<Self>),
-    ForAll(Box<Self>),
+    Not(Arc<Self>),
+    Implies(Arc<Self>, Arc<Self>),
+    ForAll(Arc<Self>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -132,15 +135,15 @@ impl Formula {
     /// Constructs a negation.
     #[must_use]
     pub fn negate(formula: Self) -> Self {
-        Self(Node::Not(Box::new(formula.0)))
+        Self(Node::Not(Arc::new(formula.0)))
     }
 
     /// Constructs an implication.
     #[must_use]
     pub fn implies(antecedent: Self, consequent: Self) -> Self {
         Self(Node::Implies(
-            Box::new(antecedent.0),
-            Box::new(consequent.0),
+            Arc::new(antecedent.0),
+            Arc::new(consequent.0),
         ))
     }
 
@@ -174,7 +177,7 @@ impl Formula {
         bind_free(&mut body.0, 0, &|candidate| {
             (candidate == variable).then_some(0)
         });
-        Self(Node::ForAll(Box::new(body.0)))
+        Self(Node::ForAll(Arc::new(body.0)))
     }
 
     pub(crate) fn for_all_many(variables: &[FreeVariable], mut body: Self) -> Self {
@@ -192,7 +195,7 @@ impl Formula {
 
         bind_free(&mut body.0, 0, &|variable| binders.get(&variable).copied());
         for _ in variables {
-            body = Self(Node::ForAll(Box::new(body.0)));
+            body = Self(Node::ForAll(Arc::new(body.0)));
         }
         body
     }
@@ -279,7 +282,7 @@ impl Formula {
     }
 
     pub(crate) fn vacuous_for_all(body: Self) -> Self {
-        Self(Node::ForAll(Box::new(body.0)))
+        Self(Node::ForAll(Arc::new(body.0)))
     }
 
     #[cfg(test)]
@@ -305,12 +308,12 @@ fn open_binder(node: &mut Node, depth: u32, replacement: FreeVariable) {
             open(left);
             open(right);
         }
-        Node::Not(body) => open_binder(body, depth, replacement),
+        Node::Not(body) => open_binder(Arc::make_mut(body), depth, replacement),
         Node::Implies(left, right) => {
-            open_binder(left, depth, replacement);
-            open_binder(right, depth, replacement);
+            open_binder(Arc::make_mut(left), depth, replacement);
+            open_binder(Arc::make_mut(right), depth, replacement);
         }
-        Node::ForAll(body) => open_binder(body, depth + 1, replacement),
+        Node::ForAll(body) => open_binder(Arc::make_mut(body), depth + 1, replacement),
     }
 }
 
@@ -365,17 +368,17 @@ fn bind_free(node: &mut Node, depth: u32, binding_index: &impl Fn(FreeVariable) 
             *left = bind_variable(*left, depth, binding_index);
             *right = bind_variable(*right, depth, binding_index);
         }
-        Node::Not(formula) => bind_free(formula, depth, binding_index),
+        Node::Not(formula) => bind_free(Arc::make_mut(formula), depth, binding_index),
         Node::Implies(antecedent, consequent) => {
-            bind_free(antecedent, depth, binding_index);
-            bind_free(consequent, depth, binding_index);
+            bind_free(Arc::make_mut(antecedent), depth, binding_index);
+            bind_free(Arc::make_mut(consequent), depth, binding_index);
         }
         Node::ForAll(body) => {
             let nested_depth = depth
                 .checked_add(1)
                 .expect("formula nesting exceeds the representable De Bruijn index");
 
-            bind_free(body, nested_depth, binding_index);
+            bind_free(Arc::make_mut(body), nested_depth, binding_index);
         }
     }
 }
@@ -386,10 +389,12 @@ fn map_free_variables(node: &mut Node, map: &mut impl FnMut(FreeVariable) -> Fre
             *left = map_free_variable(*left, map);
             *right = map_free_variable(*right, map);
         }
-        Node::Not(formula) | Node::ForAll(formula) => map_free_variables(formula, map),
+        Node::Not(formula) | Node::ForAll(formula) => {
+            map_free_variables(Arc::make_mut(formula), map)
+        }
         Node::Implies(antecedent, consequent) => {
-            map_free_variables(antecedent, map);
-            map_free_variables(consequent, map);
+            map_free_variables(Arc::make_mut(antecedent), map);
+            map_free_variables(Arc::make_mut(consequent), map);
         }
     }
 }

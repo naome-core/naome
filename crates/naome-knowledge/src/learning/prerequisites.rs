@@ -9,6 +9,7 @@ use std::{collections::BTreeSet, sync::Arc};
 struct Data {
     artifacts: Vec<Envelope>,
     programs: Vec<Packet>,
+    offered: Option<[u8; 32]>,
     #[serde(skip)]
     _memory: Option<Arc<crate::resources::MemoryLease>>,
 }
@@ -25,19 +26,25 @@ impl Serialize for Prerequisites {
 impl<'de> Deserialize<'de> for Prerequisites {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let data = Data::deserialize(deserializer)?;
-        Self::from_inputs(data.artifacts, data.programs).map_err(serde::de::Error::custom)
+        Self::from_inputs(data.artifacts, data.programs, data.offered)
+            .map_err(serde::de::Error::custom)
     }
 }
 impl Prerequisites {
     #[cfg(test)]
     pub fn new(artifacts: Vec<Envelope>) -> Result<Self, String> {
-        Self::from_inputs(artifacts, Vec::new())
+        Self::from_inputs(artifacts, Vec::new(), None)
     }
 
-    pub fn from_inputs(artifacts: Vec<Envelope>, programs: Vec<Packet>) -> Result<Self, String> {
+    pub fn from_inputs(
+        artifacts: Vec<Envelope>,
+        programs: Vec<Packet>,
+        offered: Option<[u8; 32]>,
+    ) -> Result<Self, String> {
         let mut value = Self(Arc::new(Data {
             artifacts,
             programs,
+            offered,
             _memory: None,
         }));
         value.validate()?;
@@ -74,6 +81,10 @@ impl Prerequisites {
                 .programs
                 .iter()
                 .all(|input| self.0.programs.contains(input))
+            && requested
+                .0
+                .offered
+                .is_none_or(|id| self.0.offered == Some(id))
     }
     pub fn has_definitions(&self) -> bool {
         self.0
@@ -142,6 +153,25 @@ impl Prerequisites {
                 .checked_add(artifact.payload.len() / 2)
                 .ok_or("temporary prerequisite byte overflow")?;
         }
+        if let Some(id) = self.0.offered {
+            let artifact = crate::hex(
+                naome_proof::ArtifactId::from_proof_id(naome_proof::ProofId::from_bytes(id))
+                    .as_bytes(),
+            );
+            if !self
+                .0
+                .programs
+                .iter()
+                .any(|p| p.manifest.proof_id().as_bytes() == &id)
+                && !self
+                    .0
+                    .artifacts
+                    .iter()
+                    .any(|a| a.artifact_id == artifact && a.statement_id.is_some())
+            {
+                return Err("offered theorem absent from captured inputs".into());
+            }
+        }
         if bytes > limits.closure_bytes {
             return Err("temporary prerequisite byte capacity".into());
         }
@@ -149,6 +179,71 @@ impl Prerequisites {
     }
     pub fn has_programs(&self) -> bool {
         !self.0.programs.is_empty()
+    }
+
+    pub(super) fn has_offer(&self) -> bool {
+        self.0.offered.is_some()
+    }
+
+    pub(super) fn search_native_lemma(
+        &self,
+        target: &naome_foundation::Formula,
+        ranker: &mut dyn super::model::Ranker,
+        maximum: usize,
+        started: std::time::Instant,
+    ) -> Result<(Option<Packet>, usize), String> {
+        use naome_checker::ContextView;
+        use naome_proof::{ProofId, program::Command};
+
+        let _work =
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)
+                .map_err(|error| error.to_string())?;
+        let artifacts = self
+            .0
+            .artifacts
+            .iter()
+            .map(|a| a.clone().prepare())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
+        let id = ProofId::from_bytes(self.0.offered.ok_or("offered theorem missing")?);
+        let header = context
+            .proof_header(id)
+            .map_err(|e| e.to_string())?
+            .ok_or("offered theorem failed context binding")?;
+        if header.canonical_length() > naome_checker::question::QUESTION_BYTES {
+            return Ok((None, 0));
+        }
+        let formula = context
+            .proof_formula(header, header.canonical_length())
+            .map_err(|e| e.to_string())?
+            .ok_or("offered theorem formula missing")?;
+        let (commands, used) = if formula.as_ref() == target {
+            (
+                Some(vec![
+                    Command::ProofReference {
+                        proof_id: *id.as_bytes(),
+                    },
+                    Command::Seal { proof: 0 },
+                ]),
+                1,
+            )
+        } else {
+            super::search::scope::search_with_lemma(target, id, &formula, ranker, maximum, started)?
+        };
+        drop(context);
+        drop(_work);
+        let packet = commands
+            .map(|commands| {
+                Packet::compose(
+                    target,
+                    &commands,
+                    &self.0.programs,
+                    artifacts.iter().map(|a| a.bytes.clone()),
+                )
+            })
+            .transpose()?;
+        Ok((packet, used))
     }
 
     pub(super) fn native_proof(

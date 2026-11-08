@@ -2,6 +2,7 @@
 pub mod core;
 pub(crate) mod derivation;
 pub(crate) mod frontier;
+mod instantiation;
 pub(super) mod scope;
 pub(crate) mod trace;
 use super::calculus::{self as c, Names};
@@ -15,7 +16,7 @@ use naome_foundation::{Formula, FreeVariable};
 use naome_proof::ProofStep;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
 };
 
@@ -26,6 +27,7 @@ pub enum Action {
     Mp(usize, usize),
     Beta(usize),
     Instantiate(usize, u32),
+    InstantiateApply(usize, u32, usize),
     Witness(usize, u32),
     Substitute(usize, usize),
     Cite(usize),
@@ -101,11 +103,6 @@ struct Prepared {
     double: usize,
 }
 
-fn insert(state: &mut State, f: Formula) {
-    if !state.facts.contains(&f) {
-        state.facts.push(f)
-    }
-}
 fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, String> {
     let used: BTreeSet<_> = formulas.flat_map(|f| f.free_variables()).collect();
     (0..=u32::MAX)
@@ -179,7 +176,20 @@ fn close(state: &State) -> Option<(usize, usize)> {
 }
 
 fn actions(state: &State) -> Vec<Action> {
+    offers(state)
+        .into_iter()
+        .map(|offer| offer.action)
+        .collect()
+}
+
+fn offers(state: &State) -> Vec<Offer> {
+    let mut index = HashMap::with_capacity(state.facts.len());
+    for (position, fact) in state.facts.iter().enumerate() {
+        index.entry(fact.view()).or_insert(position);
+    }
+    let already_closed = close(state).is_some();
     let mut result = Vec::new();
+    let mut fused_actions = Vec::new();
     for (i, f) in state.facts.iter().enumerate() {
         if f.view().negated().and_then(|g| g.negated()).is_some() {
             result.push(Action::Double(i));
@@ -205,17 +215,29 @@ fn actions(state: &State) -> Vec<Action> {
                 result.push(Action::Witness(i, variable.identifier()));
             }
         } else if let Some((a, b)) = f.view().implication_parts() {
-            if !state.facts.iter().any(|g| g.view() == b) {
-                if let Some(j) = state.facts.iter().position(|g| g.view() == a) {
+            if !index.contains_key(&b) {
+                if let Some(j) = index.get(&a).copied() {
                     result.push(Action::Mp(i, j));
                 } else {
                     result.push(Action::Beta(i));
                 }
             }
-        } else if matches!(
-            f.view().graph_node(),
-            naome_foundation::graph::Node::ForAll(_)
-        ) {
+        } else if let Some(universal) = instantiation::Universal::new(f) {
+            let first = state
+                .domain
+                .first()
+                .copied()
+                .unwrap_or(FreeVariable::new(0));
+            let mut fused = BTreeSet::new();
+            for (premise, replacement) in universal.applications(&state.facts, first) {
+                if state.domain.contains(&replacement) && fused.insert(replacement) {
+                    fused_actions.push(Action::InstantiateApply(
+                        i,
+                        replacement.identifier(),
+                        premise,
+                    ));
+                }
+            }
             for v in &state.domain {
                 result.push(Action::Instantiate(i, v.identifier()));
             }
@@ -223,12 +245,7 @@ fn actions(state: &State) -> Vec<Action> {
         if let Some((from, to)) = f.view().equality_variables()
             && from != to
         {
-            for (j, g) in state.facts.iter().enumerate() {
-                let substituted = g.clone().substitute_free(from, to);
-                if substituted != *g && !state.facts.contains(&substituted) {
-                    result.push(Action::Substitute(i, j));
-                }
-            }
+            result.extend((0..state.facts.len()).map(|j| Action::Substitute(i, j)));
         }
     }
     for (i, formula) in state.knowledge.iter().enumerate() {
@@ -236,26 +253,43 @@ fn actions(state: &State) -> Vec<Action> {
             result.push(Action::Cite(i));
         }
     }
-    result.retain(|a| {
-        !state.used.contains(a)
-            && next(state, a)
-                .is_ok_and(|children| children.iter().any(|child| child.facts != state.facts))
-    });
-    // Rank the entire bounded frontier before the neural 16-action envelope.
-    // Reserve the strongest action of each rule, then fill by goal relevance.
     let target_fragments = super::knowledge::fragments(&state.goal);
-    let mut relevance_cache = std::collections::HashMap::new();
-    let mut score = |action: &Action| -> usize {
-        let Ok(children) = next(state, action) else {
-            return 0;
+    let mut relevance_cache = HashMap::new();
+    let mut ranked: Vec<(usize, Offer)> = Vec::new();
+    let mut best_by_rule: [Option<(usize, Offer)>; 8] = Default::default();
+    let mut direct_close = false;
+    for action in result.into_iter().chain(fused_actions) {
+        let fused = matches!(action, Action::InstantiateApply(..));
+        if (fused && direct_close) || state.used.contains(&action) {
+            continue;
+        }
+        let Ok(delta) = transition(state, &action, &index) else {
+            continue;
         };
-        let closes = children.iter().all(|child| close(child).is_some());
-        let relevance = children
+        if delta.branches().iter().all(Vec::is_empty) {
+            continue;
+        }
+        let closes = already_closed
+            || delta.branches().iter().all(|added| {
+                added.iter().any(|fact| {
+                    let negative = Formula::negate(fact.clone());
+                    fact.view().negated().is_some_and(|body| {
+                        index.contains_key(&body) || added.iter().any(|a| a.view() == body)
+                    }) || index.contains_key(&negative.view())
+                        || added.contains(&negative)
+                })
+            });
+        if fused && !closes {
+            continue;
+        }
+        direct_close |= !fused && closes;
+        let relevance = delta
+            .branches()
             .iter()
-            .flat_map(|child| child.facts.iter().skip(state.facts.len()))
-            .map(|f| {
-                *relevance_cache.entry(f.clone()).or_insert_with(|| {
-                    super::knowledge::fragments(f)
+            .flatten()
+            .map(|formula| {
+                *relevance_cache.entry(formula.clone()).or_insert_with(|| {
+                    super::knowledge::fragments(formula)
                         .intersection(&target_fragments)
                         .map(Vec::len)
                         .sum::<usize>()
@@ -263,50 +297,113 @@ fn actions(state: &State) -> Vec<Action> {
             })
             .max()
             .unwrap_or(0);
-        usize::from(closes) * 1_000_000
+        let score = usize::from(closes) * 1_000_000
             + relevance * 4
-            + usize::from(!matches!(action, Action::Beta(_)))
-    };
-    let mut ranked: Vec<_> = result.into_iter().map(|a| (score(&a), a)).collect();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let kind = |a: &Action| match a {
-        Action::Double(_) => 0,
-        Action::NotImp(_) => 1,
-        Action::Mp(..) => 2,
-        Action::Beta(_) => 3,
-        Action::Instantiate(..) => 4,
-        Action::Witness(..) => 5,
-        Action::Substitute(..) => 6,
-        Action::Cite(_) => 7,
-    };
-    let mut kinds = BTreeSet::new();
-    let mut selected = Vec::new();
-    for (_, a) in &ranked {
-        if kinds.insert(kind(a)) {
-            selected.push(a.clone());
+            + usize::from(!matches!(action, Action::Beta(_)));
+        let kind = match action {
+            Action::Double(_) => 0,
+            Action::NotImp(_) => 1,
+            Action::Mp(..) => 2,
+            Action::Beta(_) => 3,
+            Action::Instantiate(..) | Action::InstantiateApply(..) => 4,
+            Action::Witness(..) => 5,
+            Action::Substitute(..) => 6,
+            Action::Cite(_) => 7,
+        };
+        let candidate = (score, Offer { action, delta });
+        let compare = |a: &(usize, Offer), b: &(usize, Offer)| {
+            b.0.cmp(&a.0).then(a.1.action.cmp(&b.1.action))
+        };
+        let best = &mut best_by_rule[kind];
+        if best
+            .as_ref()
+            .is_none_or(|old| compare(&candidate, old).is_lt())
+        {
+            *best = Some(candidate.clone());
+        }
+        let position = ranked.partition_point(|old| compare(old, &candidate).is_lt());
+        if position < 16 {
+            if ranked.len() == 16 {
+                ranked.pop();
+            }
+            ranked.insert(position, candidate);
         }
     }
-    for (_, a) in &ranked {
-        if selected.len() >= 16 {
+    let mut selected: Vec<_> = best_by_rule.into_iter().flatten().collect();
+    for candidate in ranked {
+        if selected.len() == 16 {
             break;
         }
-        if !selected.contains(a) {
-            selected.push(a.clone());
+        if !selected
+            .iter()
+            .any(|(_, offer)| offer.action == candidate.1.action)
+        {
+            selected.push(candidate);
         }
     }
-    selected.sort_by_key(|a| {
-        ranked
+    selected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.action.cmp(&b.1.action)));
+    selected.into_iter().map(|(_, offer)| offer).collect()
+}
+
+#[derive(Clone)]
+struct Offer {
+    action: Action,
+    delta: Delta,
+}
+
+#[derive(Clone)]
+struct Delta {
+    additions: [Vec<Formula>; 2],
+    count: usize,
+    witness: Option<FreeVariable>,
+}
+impl Delta {
+    fn branches(&self) -> &[Vec<Formula>] {
+        &self.additions[..self.count]
+    }
+
+    fn apply(&self, state: &State, action: &Action) -> Vec<State> {
+        self.branches()
             .iter()
-            .position(|(_, b)| b == a)
-            .expect("ranked action")
-    });
-    selected
+            .map(|added| {
+                let mut child = state.clone();
+                child.used.insert(action.clone());
+                child.facts.extend(added.iter().cloned());
+                child.domain.extend(self.witness);
+                child
+            })
+            .collect()
+    }
 }
 
 fn decision(
     goal: &Formula,
     state: &State,
     actions: &[Action],
+    expert: usize,
+) -> Result<Decision, String> {
+    let index = state
+        .facts
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.view(), i))
+        .collect();
+    let offers = actions
+        .iter()
+        .map(|action| {
+            Ok(Offer {
+                action: action.clone(),
+                delta: transition(state, action, &index)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    decision_for(goal, state, &offers, expert)
+}
+
+fn decision_for(
+    goal: &Formula,
+    state: &State,
+    offers: &[Offer],
     expert: usize,
 ) -> Result<Decision, String> {
     let mut context: Vec<_> = state
@@ -317,13 +414,14 @@ fn decision(
         })
         .collect();
     let mut candidates = Vec::new();
-    for a in actions {
-        let (rule, premises) = match *a {
+    for offer in offers {
+        let (rule, premises) = match offer.action {
             Action::Double(i) => (Rule::DoubleNegation, vec![i]),
             Action::NotImp(i) => (Rule::NegatedImplication, vec![i]),
             Action::Mp(i, j) => (Rule::ModusPonens, vec![i, j]),
             Action::Beta(i) => (Rule::ImplicationBranch, vec![i]),
             Action::Instantiate(i, _) => (Rule::UniversalInstance, vec![i]),
+            Action::InstantiateApply(i, _, premise) => (Rule::UniversalInstance, vec![i, premise]),
             Action::Witness(i, _) => (Rule::ExistentialWitness, vec![i]),
             Action::Substitute(i, j) => (Rule::EqualitySubstitution, vec![i, j]),
             Action::Cite(i) => {
@@ -343,16 +441,20 @@ fn decision(
         let mut consequences = Vec::new();
         // Features are derived from the same bounded transition used by live
         // search and proof replay. They contain no future proof or label.
-        for child in next(state, a)? {
-            for formula in child.facts.into_iter().skip(state.facts.len()) {
-                if !consequences.contains(&formula) {
-                    consequences.push(formula);
-                }
+        for formula in offer.delta.branches().iter().flatten() {
+            if !consequences.contains(formula) {
+                consequences.push(formula.clone());
             }
         }
         candidates.push(Candidate {
             rule,
             premises,
+            replacement: match offer.action {
+                Action::Instantiate(_, value)
+                | Action::InstantiateApply(_, value, _)
+                | Action::Witness(_, value) => Some(FreeVariable::new(value)),
+                _ => None,
+            },
             consequences,
         });
     }
@@ -365,8 +467,31 @@ fn decision(
 }
 
 fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
-    let mut state = state.clone();
-    state.used.insert(action.clone());
+    let index = state
+        .facts
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.view(), i))
+        .collect();
+    Ok(transition(state, action, &index)?.apply(state, action))
+}
+
+fn transition(
+    state: &State,
+    action: &Action,
+    index: &HashMap<naome_foundation::FormulaView<'_>, usize>,
+) -> Result<Delta, String> {
+    let mut delta = Delta {
+        additions: Default::default(),
+        count: 1,
+        witness: None,
+    };
+    let mut add = |branch: usize, formula: Formula| {
+        let added = &mut delta.additions[branch];
+        if !index.contains_key(&formula.view()) && !added.contains(&formula) {
+            added.push(formula);
+        }
+    };
     match *action {
         Action::Cite(i) => {
             let formula = state
@@ -374,7 +499,7 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 .get(i)
                 .ok_or("theorem candidate index")?
                 .clone();
-            insert(&mut state, formula);
+            add(0, formula);
         }
         Action::Double(i) => {
             let f = state.facts[i]
@@ -383,7 +508,7 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 .and_then(|g| g.negated())
                 .ok_or("double action mismatch")?
                 .to_owned();
-            insert(&mut state, f);
+            add(0, f);
         }
         Action::NotImp(i) => {
             let (a, b) = state.facts[i]
@@ -393,8 +518,8 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 .ok_or("not implication action mismatch")?;
             let a = a.to_owned();
             let b = c::not(b.to_owned());
-            insert(&mut state, a);
-            insert(&mut state, b);
+            add(0, a);
+            add(0, b);
         }
         Action::Mp(i, j) => {
             let (a, b) = state.facts[i]
@@ -405,7 +530,7 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 return Err("MP premise mismatch".into());
             }
             let b = b.to_owned();
-            insert(&mut state, b);
+            add(0, b);
         }
         Action::Beta(i) => {
             let (a, b) = state.facts[i]
@@ -414,19 +539,38 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 .ok_or("beta action mismatch")?;
             let a = c::not(a.to_owned());
             let b = b.to_owned();
-            let mut other = state.clone();
-            insert(&mut state, a);
-            insert(&mut other, b);
-            return Ok(vec![state, other]);
+            add(0, a);
+            add(1, b);
+            delta.count = 2;
         }
-        Action::Instantiate(i, v) => {
+        Action::Instantiate(i, v) | Action::InstantiateApply(i, v, _) => {
             let f = &state.facts[i];
-            let x = fresh(std::iter::once(f.clone()))?;
-            let f = f
-                .open_outer_universal(x)
-                .ok_or("universal action mismatch")?
-                .substitute_free(x, FreeVariable::new(v));
-            insert(&mut state, f);
+            let variable = FreeVariable::new(v);
+            let f = if let Some(instance) = f.open_outer_universal(variable) {
+                instance
+            } else {
+                let x = fresh(std::iter::once(f.clone()))?;
+                f.open_outer_universal(x)
+                    .ok_or("universal action mismatch")?
+                    .substitute_free(x, variable)
+            };
+            let result = if let Action::InstantiateApply(_, _, premise) = *action {
+                let (antecedent, consequent) = f
+                    .view()
+                    .implication_parts()
+                    .ok_or("instantiated implication expected")?;
+                if state
+                    .facts
+                    .get(premise)
+                    .is_none_or(|fact| fact.view() != antecedent)
+                {
+                    return Err("instantiated premise differs".into());
+                }
+                consequent.to_owned()
+            } else {
+                f
+            };
+            add(0, result);
         }
         Action::Witness(i, v) => {
             let variable = FreeVariable::new(v);
@@ -445,9 +589,9 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
             let opened = universal
                 .open_outer_universal(variable)
                 .ok_or("witness universal")?;
-            insert(&mut state, c::not(opened));
-            insert(&mut state, Formula::equal(variable, variable));
-            state.domain.push(variable);
+            add(0, c::not(opened));
+            add(0, Formula::equal(variable, variable));
+            delta.witness = Some(variable);
         }
         Action::Substitute(i, j) => {
             let (a, b) = state.facts[i]
@@ -455,10 +599,10 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 .equality_variables()
                 .ok_or("equality action mismatch")?;
             let f = state.facts[j].clone().substitute_free(a, b);
-            insert(&mut state, f);
+            add(0, f);
         }
     }
-    Ok(vec![state])
+    Ok(delta)
 }
 
 pub struct ResultTree {
@@ -490,7 +634,7 @@ impl Search<'_> {
         state: &State,
         depth: usize,
         parent: Option<trace::Branch>,
-        memory: Option<&super::model::Memory>,
+        incoming: Option<(&super::model::Plan, usize)>,
     ) -> Result<Option<Tree>, String> {
         if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
             if let Some(report) = &mut self.frontier {
@@ -526,35 +670,43 @@ impl Search<'_> {
             return Ok(None);
         }
         let state_binding = trace::binding(state)?;
+        let offers = offers(state);
+        let actions: Vec<_> = offers.iter().map(|offer| offer.action.clone()).collect();
+        let offered = super::digest(&actions);
+        let memory = incoming
+            .map(|(plan, selected)| plan.child(selected, state_binding.clone(), offered.clone()))
+            .transpose()?
+            .flatten();
         let key = super::digest(&(
             &state_binding,
             32usize.saturating_sub(depth),
             self.ranker.identity(),
-            memory,
+            memory.as_ref(),
         ));
         if self.exhausted.contains(&key) {
             return Ok(None);
         }
-        let actions = actions(state);
         if actions.is_empty() {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
             return Ok(None);
         }
-        let d = decision(&self.goal, state, &actions, 0)?;
-        if let Err(e) = Graph::encode(&d) {
-            if let Some(report) = &mut self.frontier {
-                report.observe(state, depth);
+        let d = decision_for(&self.goal, state, &offers, 0)?;
+        let mut graph = match Graph::encode(&d) {
+            Ok(graph) => graph,
+            Err(e) => {
+                if let Some(report) = &mut self.frontier {
+                    report.observe(state, depth);
+                }
+                self.failure = Some(e);
+                self.terminal
+                    .include(TerminalEvidence::Unsupported(Capacity::Graph));
+                return Ok(None);
             }
-            self.failure = Some(e);
-            self.terminal
-                .include(TerminalEvidence::Unsupported(Capacity::Graph));
-            return Ok(None);
-        }
-        let plan = self
-            .ranker
-            .plan(&d, &state_binding, &super::digest(&actions), memory)?;
+        };
+        graph.binding = state_binding;
+        let plan = self.ranker.plan(&d, &graph, &offered, memory.as_ref())?;
         let scores = &plan.scores;
         if scores.len() != actions.len() || scores.iter().any(|s| !s.is_finite()) {
             return Err("invalid native action scores".into());
@@ -574,8 +726,8 @@ impl Search<'_> {
                 .as_mut()
                 .map(|recorder| {
                     recorder.begin(
-                        state,
-                        &actions,
+                        &graph.binding,
+                        &offered,
                         selected,
                         (actions.len() > 1).then_some(scores.as_slice()),
                         parent,
@@ -588,15 +740,16 @@ impl Search<'_> {
             let mut children = Vec::new();
             let mut success = true;
             let mut attempted = 0;
-            for (index, child) in next(state, &actions[selected])?.into_iter().enumerate() {
+            let offer = &offers[selected];
+            for (index, child) in offer
+                .delta
+                .apply(state, &offer.action)
+                .into_iter()
+                .enumerate()
+            {
                 attempted += 1;
                 // Each alternative and sibling starts from the same saved
                 // selected-parent memory, never the preceding failed branch.
-                let child_memory = plan.child(
-                    selected,
-                    trace::binding(&child)?,
-                    super::digest(&self::actions(&child)),
-                )?;
                 if let Some(tree) = self.branch(
                     &child,
                     depth + 1,
@@ -604,7 +757,7 @@ impl Search<'_> {
                         event,
                         child: index,
                     }),
-                    child_memory.as_ref(),
+                    Some((&plan, selected)),
                 )? {
                     children.push(tree)
                 } else {
@@ -808,6 +961,13 @@ fn replay(
         Action::Instantiate(i, v) => add_term(
             &mut updated,
             c::instantiate(facts[i].clone(), FreeVariable::new(v))?,
+        ),
+        Action::InstantiateApply(i, v, premise) => add_term(
+            &mut updated,
+            c::app(
+                c::instantiate(facts[i].clone(), FreeVariable::new(v))?,
+                facts[premise].clone(),
+            )?,
         ),
         Action::Witness(i, v) => {
             let variable = FreeVariable::new(v);

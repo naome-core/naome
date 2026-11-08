@@ -108,6 +108,7 @@ fn renaming_keeps_action_structure_but_changing_variable_sharing_does_not() {
             candidates: vec![Candidate {
                 rule: Rule::UniversalInstance,
                 premises: vec![0],
+                replacement: None,
                 consequences: vec![p],
             }],
             expert: 0,

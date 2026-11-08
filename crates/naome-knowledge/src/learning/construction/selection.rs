@@ -156,6 +156,7 @@ fn features(target: &Formula, offers: &[Offer], selected: usize) -> Decision {
         candidates.push(Candidate {
             rule: Rule::ConstructionPlan,
             premises,
+            replacement: None,
             consequences: Vec::new(),
         });
     }
