@@ -267,3 +267,23 @@ fn invalid_role_settings_report_machine_readable_reason() {
         u32::from(crate::ResearchFailure::InvalidRoleLimits)
     );
 }
+
+#[test]
+fn research_command_capacity_and_service_stop_have_distinct_codes() {
+    let owner = Manual::new();
+    for ordinal in 0..crate::resources::limits().job_commands {
+        owner.client.peer_cursor(ordinal as u64).unwrap();
+    }
+    let full = owner.client.peer_cursor(99).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(full).unwrap()["code"],
+        u32::from(crate::ResearchFailure::CommandQueueFull)
+    );
+    let client = owner.client.clone();
+    drop(owner);
+    let stopped = client.peer_cursor(100).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(stopped).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ServiceStopped)
+    );
+}

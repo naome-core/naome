@@ -515,10 +515,10 @@ impl Ticket {
         }
         result
     }
-    pub(crate) async fn completed(&mut self) -> Result<Completion, String> {
+    pub(crate) async fn completed(&mut self) -> Result<Completion, crate::Error> {
         let result = (&mut self.receiver)
             .await
-            .map_err(|_| "research service stopped".into());
+            .map_err(|_| crate::Error::from(crate::ResearchFailure::ServiceStopped));
         if result.is_ok() {
             self.received = true;
         }
@@ -624,6 +624,13 @@ pub(crate) struct Client {
     feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
 }
 
+fn command_send_error<T>(error: mpsc::error::TrySendError<T>) -> crate::Error {
+    match error {
+        mpsc::error::TrySendError::Full(_) => crate::ResearchFailure::CommandQueueFull.into(),
+        mpsc::error::TrySendError::Closed(_) => crate::ResearchFailure::ServiceStopped.into(),
+    }
+}
+
 impl Client {
     pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
         self.feedback
@@ -635,34 +642,34 @@ impl Client {
         &self,
         ordinal: u64,
         theorem: crate::learning::knowledge::Entry,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::TheoremVerified { ordinal, theorem })
-            .map_err(|_| "theorem observation capacity or stopped service".into())
+            .map_err(command_send_error)
     }
     pub(crate) fn definition_verified(
         &self,
         ordinal: u64,
         definition: crate::learning::definitions::Entry,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::DefinitionVerified {
                 ordinal,
                 definition,
             })
-            .map_err(|_| "definition learning command capacity or stopped service".into())
+            .map_err(command_send_error)
     }
-    pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), String> {
+    pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::PeerCursor(ordinal))
-            .map_err(|_| "peer cursor capacity or stopped service".into())
+            .map_err(command_send_error)
     }
-    pub(crate) fn peer_verified(&self, admission: PeerAdmission) -> Result<(), String> {
+    pub(crate) fn peer_verified(&self, admission: PeerAdmission) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::PeerVerified(admission))
-            .map_err(|_| "peer learning command capacity or stopped service".into())
+            .map_err(command_send_error)
     }
-    pub(crate) fn try_receipt(&self, receipt: &Receipt) -> Result<bool, String> {
+    pub(crate) fn try_receipt(&self, receipt: &Receipt) -> Result<bool, crate::Error> {
         let command = match receipt {
             Receipt::Acknowledge(id) => Command::Acknowledge(*id),
             Receipt::Accepted { id, root } => Command::Accepted {
@@ -675,7 +682,7 @@ impl Client {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                Err("research receipt service stopped".into())
+                Err(crate::ResearchFailure::ServiceStopped.into())
             }
         }
     }
@@ -755,11 +762,11 @@ impl Client {
             .map_err(|_| "research recovery capacity or stopped service")?;
         Ok(receive)
     }
-    pub(crate) fn acknowledge(&self, id: u64) -> Result<(), String> {
+    pub(crate) fn acknowledge(&self, id: u64) -> Result<(), crate::Error> {
         if self.try_receipt(&Receipt::Acknowledge(id))? {
             Ok(())
         } else {
-            Err("research acknowledgement capacity".into())
+            Err(crate::ResearchFailure::CommandQueueFull.into())
         }
     }
 }
