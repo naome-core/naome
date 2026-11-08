@@ -51,7 +51,7 @@ fn later(source: &Source) -> acquisition::FrozenRound {
         state.observe_result(
             row["question"].as_str().unwrap(),
             !row["solution"].is_null(),
-            row["diagnostic"].as_str().unwrap(),
+            &serde_json::from_value(row["experience"]["terminal"].clone()).unwrap(),
             row["elapsed_micros"].as_u64().unwrap(),
             128,
         );

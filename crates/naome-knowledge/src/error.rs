@@ -152,6 +152,8 @@ pub enum Error {
     UncertainDurability(DurabilityFailure),
     LearningEvidence(EvidenceFailure),
     LearningGraph(crate::LearningGraphFailure),
+    ProgramCodec(naome_proof::program::CodecFailure),
+    QuestionInput(Box<naome_proof::QuestionError>),
     Runtime(crate::RuntimeFailure),
     Startup {
         code: crate::StartupFailure,
@@ -187,6 +189,8 @@ impl Error {
             Self::UncertainDurability(failure) => return failure.code.into(),
             Self::LearningEvidence(failure) => return failure.code().into(),
             Self::LearningGraph(failure) => return (*failure).into(),
+            Self::ProgramCodec(_) => OperationCode::ProgramCodec,
+            Self::QuestionInput(_) => OperationCode::QuestionInput,
             Self::Runtime(failure) => return (*failure).into(),
             Self::Startup { code, .. } => return (*code).into(),
         };
@@ -210,8 +214,12 @@ impl Error {
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
-            error @ (Self::InputFault(_) | Self::QuestionLimit(_)) => Self::Stored(Box::new(error)),
-            error @ (Self::Proof { .. } | Self::CertificateFormat(_)) if !error.retryable() => {
+            error @ (Self::InputFault(_) | Self::QuestionLimit(_) | Self::QuestionInput(_)) => {
+                Self::Stored(Box::new(error))
+            }
+            error @ (Self::Proof { .. } | Self::CertificateFormat(_) | Self::ProgramCodec(_))
+                if !error.retryable() =>
+            {
                 Self::Stored(Box::new(error))
             }
             other => other,
@@ -282,6 +290,8 @@ impl fmt::Display for Error {
             Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
             Self::LearningEvidence(error) => error.fmt(f),
             Self::LearningGraph(error) => error.fmt(f),
+            Self::ProgramCodec(error) => error.fmt(f),
+            Self::QuestionInput(error) => error.fmt(f),
             Self::Runtime(failure) => write!(f, "runtime failure {}", u32::from(*failure)),
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
             Self::UncertainDurability(failure) => {
@@ -303,6 +313,12 @@ impl StdError for Error {
         }
     }
 }
+impl From<naome_proof::program::CodecFailure> for Error {
+    fn from(error: naome_proof::program::CodecFailure) -> Self {
+        Self::ProgramCodec(error)
+    }
+}
+
 impl From<crate::StartupFailure> for Error {
     fn from(code: crate::StartupFailure) -> Self {
         Self::Startup {
@@ -368,6 +384,7 @@ impl From<naome_checker::program::Error> for Error {
             },
             naome_checker::program::Error::Inspection(error) => Self::DiagnosticInspection(error),
             naome_checker::program::Error::Invalid(message) => Self::InvalidInput(message),
+            naome_checker::program::Error::Codec(error) => error.into(),
             naome_checker::program::Error::Storage(error) => {
                 Self::CorruptStorage(error.to_string())
             }
@@ -437,8 +454,34 @@ impl serde::Serialize for Error {
                 },
             )?;
         }
-        if let Self::Stored(cause) = self {
-            value.serialize_entry("cause_code", &cause.code())?;
+        let cause = match self {
+            Self::Stored(cause) => {
+                value.serialize_entry("cause_code", &cause.code())?;
+                cause
+            }
+            _ => self,
+        };
+        if let Self::ProgramCodec(reason) = cause {
+            value.serialize_entry("reason", &(*reason as u8))?;
+        }
+        if let Self::QuestionInput(reason) = cause {
+            use naome_checker::diagnostics::{ExpansionFailure, FormulaFailure};
+            use naome_proof::QuestionError;
+            match reason.as_ref() {
+                QuestionError::Invalid(fault) => {
+                    value.serialize_entry("reason", &(*fault as u8))?
+                }
+                QuestionError::Formula(error) => {
+                    value.serialize_entry("formula", &FormulaFailure::from(error))?
+                }
+                QuestionError::DefinedFormula(error) => {
+                    value.serialize_entry("formula", &FormulaFailure::from(error))?
+                }
+                QuestionError::Expansion(error) => {
+                    value.serialize_entry("expansion", &ExpansionFailure::from(error))?
+                }
+                _ => {}
+            }
         }
         if let Self::MemoryOverload {
             requested,

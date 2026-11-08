@@ -9,9 +9,16 @@ const CELLS: usize = SKILLS * LEVELS as usize * 3;
 /// A bounded search miss measures ability only when its actual search or time
 /// allowance ended. Unsupported representations and technical errors are
 /// unavailable observations, never unsuccessful mathematical outcomes.
-pub(crate) fn completion(solved: bool, diagnostic: &str) -> Option<bool> {
-    (solved || diagnostic.contains("search_budget") || diagnostic.contains("deadline"))
-        .then_some(solved)
+pub(crate) fn completion(
+    solved: bool,
+    terminal: &crate::learning::experience::TerminalEvidence,
+) -> Option<bool> {
+    (solved
+        || matches!(
+            terminal,
+            crate::learning::experience::TerminalEvidence::Budget(_)
+        ))
+    .then_some(solved)
 }
 
 /// Coarse, overlapping operation families derived from actual primitive syntax.
@@ -283,6 +290,24 @@ impl Feedback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_observed_budget_end_counts_as_an_unsolved_completion() {
+        use crate::learning::experience::{Budget, Capacity, TerminalEvidence};
+
+        assert_eq!(
+            completion(false, &TerminalEvidence::Budget(Budget::Time)),
+            Some(false)
+        );
+        for terminal in [
+            TerminalEvidence::Unsupported(Capacity::Graph),
+            TerminalEvidence::TechnicalFailure,
+            TerminalEvidence::Interrupted,
+            TerminalEvidence::Unknown,
+        ] {
+            assert_eq!(completion(false, &terminal), None);
+        }
+    }
     #[test]
     fn mastery_and_failure_change_reachable_bands_without_mixing_checkpoints_or_budgets() {
         let easy =

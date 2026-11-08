@@ -211,7 +211,9 @@ impl Disk {
                 if unit > record.reserved_units || !matches!(record.input, Input::Solve { .. }) {
                     return Err("provider program reservation missing".into());
                 }
-                naome_proof::program::decode_records(bytes).map(|_| ())
+                naome_proof::program::decode_records(bytes)
+                    .map(|_| ())
+                    .map_err(Into::into)
             },
         )?;
         let header: Header = checkpoint
@@ -745,7 +747,7 @@ impl Disk {
                 naome_proof::program::CHUNK_BYTES,
             )?
             .ok_or("provider program group missing")?;
-        naome_proof::program::decode_records(&records)
+        naome_proof::program::decode_records(&records).map_err(Into::into)
     }
     pub(super) fn save_program_group(
         &mut self,

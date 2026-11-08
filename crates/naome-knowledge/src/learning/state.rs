@@ -388,13 +388,13 @@ impl State {
         &mut self,
         question: &str,
         solved: bool,
-        diagnostic: &str,
+        terminal: &experience::TerminalEvidence,
         micros: u64,
         budget: u32,
     ) {
         self.observe_attempt(
             question,
-            crate::training::ability::completion(solved, diagnostic),
+            crate::training::ability::completion(solved, terminal),
             micros,
             budget,
         );

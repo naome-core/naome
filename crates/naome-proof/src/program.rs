@@ -22,6 +22,8 @@ pub const SCOPE_ACTIONS: usize = 32;
 pub const ACTION_PREMISES: usize = 8;
 
 mod binary;
+mod codec_failure;
+pub use codec_failure::CodecFailure;
 mod projection;
 mod stream;
 pub use binary::{decode_command, encode_command};

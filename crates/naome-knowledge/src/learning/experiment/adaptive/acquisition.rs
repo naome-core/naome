@@ -148,7 +148,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
             state.observe_result(
                 &q.to_hex(),
                 solution.is_some(),
-                row["diagnostic"].as_str().unwrap(),
+                &serde_json::from_value(row["experience"]["terminal"].clone()).unwrap(),
                 row["elapsed_micros"].as_u64().unwrap(),
                 128,
             );

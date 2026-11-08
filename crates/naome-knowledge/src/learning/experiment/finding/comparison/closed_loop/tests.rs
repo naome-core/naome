@@ -42,7 +42,7 @@ fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
     let job = 42;
     let completion = completed_search(&state, &q, job, &generation, context(&state), SEARCH, 0);
     let mut control = state.clone();
-    control.observe_result(&q.to_hex(), true, "", 0, SEARCH as u32);
+    control.observe_result(&q.to_hex(), true, &generation.terminal, 0, SEARCH as u32);
     assert!(
         control.validate().is_err(),
         "fixture must cross the actual existing byte boundary"

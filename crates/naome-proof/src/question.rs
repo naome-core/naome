@@ -15,9 +15,35 @@ const QUESTION_EXPANSION_MAX_DEPTH: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuestionError {
     Limit(QuestionLimit),
-    Invalid(&'static str),
+    Invalid(QuestionFault),
     MissingDefinition(crate::DefinitionId),
-    Mathematical(String),
+    Formula(naome_foundation::FormulaCodecError),
+    DefinedFormula(crate::DefinedFormulaCodecError),
+    Expansion(crate::DefinitionExpansionError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum QuestionFault {
+    FreeVariables = 1,
+    ProgramConclusionLimit = 2,
+    MissingContext = 3,
+    Noncanonical = 4,
+    ConclusionMismatch = 5,
+    HexEncoding = 6,
+}
+
+impl QuestionFault {
+    fn label(self) -> &'static str {
+        match self {
+            Self::FreeVariables => "question has free variables",
+            Self::ProgramConclusionLimit => "program conclusion exceeds the formula codec",
+            Self::MissingContext => "question needs a checked definition context",
+            Self::Noncanonical => "noncanonical question formula",
+            Self::ConclusionMismatch => "proof conclusion does not match a question target",
+            Self::HexEncoding => "question hex",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,9 +74,11 @@ impl fmt::Display for QuestionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Limit(name) => write!(f, "question limit exceeded: {}", name.label()),
-            Self::Invalid(reason) => write!(f, "invalid question: {reason}"),
+            Self::Invalid(reason) => write!(f, "invalid question: {}", reason.label()),
             Self::MissingDefinition(id) => write!(f, "question definition unavailable: {id:?}"),
-            Self::Mathematical(reason) => write!(f, "invalid question formula: {reason}"),
+            Self::Formula(reason) => write!(f, "invalid question formula: {reason}"),
+            Self::DefinedFormula(reason) => write!(f, "invalid question formula: {reason}"),
+            Self::Expansion(reason) => write!(f, "invalid question formula: {reason}"),
         }
     }
 }
@@ -92,11 +120,9 @@ impl QuestionTarget {
         max_nodes: usize,
         max_depth: usize,
     ) -> Result<Self, QuestionError> {
-        let encoded = formula
-            .encode_canonical()
-            .map_err(|e| QuestionError::Mathematical(e.to_string()))?;
+        let encoded = formula.encode_canonical().map_err(QuestionError::Formula)?;
         if !formula.is_closed() {
-            return Err(QuestionError::Invalid("question has free variables"));
+            return Err(QuestionError::Invalid(QuestionFault::FreeVariables));
         }
         let (nodes, depth) = formula.view().node_count_and_depth();
         // 0x02 is the existing Foundation canonical NOT tag. Removing only

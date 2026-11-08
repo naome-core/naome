@@ -5,6 +5,7 @@ pub enum Error {
     Check(Box<crate::diagnostics::ProofDiagnostic>),
     Inspection(crate::diagnostics::InspectionError),
     Invalid(String),
+    Codec(naome_proof::program::CodecFailure),
     Storage(rusqlite::Error),
     Context(crate::ContextError),
 }
@@ -32,6 +33,7 @@ impl fmt::Display for Error {
             ),
             Self::Inspection(error) => error.fmt(f),
             Self::Invalid(message) => f.write_str(message),
+            Self::Codec(error) => error.fmt(f),
             Self::Storage(error) => write!(f, "{error}"),
             Self::Context(error) => write!(f, "{error}"),
         }
@@ -55,11 +57,16 @@ impl serde::Serialize for Error {
             Self::Check(_) => "proof_check",
             Self::Inspection(_) => "diagnostic_inspection",
             Self::Invalid(_) => "program_input",
+            Self::Codec(_) => "program_codec",
             Self::Storage(_) => "program_storage",
             Self::Context(_) => "checked_context",
         };
         value.serialize_field("code", code)?;
-        value.serialize_field("message", &self.to_string())?;
+        if let Self::Codec(reason) = self {
+            value.serialize_field("reason", &(*reason as u8))?;
+        } else {
+            value.serialize_field("message", &self.to_string())?;
+        }
         value.serialize_field("diagnostic", &self.diagnostic())?;
         value.serialize_field(
             "inspection_error",
@@ -69,6 +76,11 @@ impl serde::Serialize for Error {
             },
         )?;
         value.end()
+    }
+}
+impl From<naome_proof::program::CodecFailure> for Error {
+    fn from(error: naome_proof::program::CodecFailure) -> Self {
+        Self::Codec(error)
     }
 }
 impl From<String> for Error {

@@ -215,14 +215,14 @@ impl Progress {
         self.development_before.observe(
             &target,
             32,
-            crate::training::ability::completion(result.before.solved, &result.before.diagnostic),
+            crate::training::ability::completion(result.before.solved, &result.before.terminal),
             result.before.micros,
         );
         self.development_after.checkpoint = digest(candidate);
         self.development_after.observe(
             &target,
             32,
-            crate::training::ability::completion(result.after.solved, &result.after.diagnostic),
+            crate::training::ability::completion(result.after.solved, &result.after.terminal),
             result.after.micros,
         );
         let (skills, _) = crate::training::ability::signature(&target);
@@ -1329,6 +1329,7 @@ fn solve_with_report(
         terminal,
     })
 }
+#[cfg(test)]
 fn solve_with_definitions(
     source: &str,
     model: &mut model::Runtime,

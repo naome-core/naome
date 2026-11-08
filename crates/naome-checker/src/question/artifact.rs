@@ -66,7 +66,7 @@ impl ResearchQuestion {
         proof: &crate::program::CheckedProgram,
     ) -> Result<Self, QuestionError> {
         let formula = proof.conclusion().ok_or(QuestionError::Invalid(
-            "program conclusion exceeds the formula codec",
+            naome_proof::QuestionFault::ProgramConclusionLimit,
         ))?;
         Self::from_formula(formula.clone())
     }
@@ -77,7 +77,7 @@ impl ResearchQuestion {
         let bytes = target
             .formula()
             .encode_canonical()
-            .map_err(|error| QuestionError::Mathematical(error.to_string()))?;
+            .map_err(QuestionError::Formula)?;
         Self::new(bytes, target, Vec::new())
     }
 
@@ -138,12 +138,11 @@ impl ResearchQuestion {
         let (bytes, dependencies) = Self::definition_source(&formula)?;
         if dependencies.is_empty() {
             return Self::from_formula(
-                Formula::decode_canonical(&bytes)
-                    .map_err(|e| QuestionError::Mathematical(e.to_string()))?,
+                Formula::decode_canonical(&bytes).map_err(QuestionError::Formula)?,
             );
         }
         let context = context.ok_or(QuestionError::Invalid(
-            "question needs a checked definition context",
+            naome_proof::QuestionFault::MissingContext,
         ))?;
         let context = crate::context::cache::ReadContext::new(context);
         // A primitive node uses at most eleven bytes. Each referenced
@@ -161,7 +160,7 @@ impl ResearchQuestion {
                 naome_proof::DefinitionExpansionError::Access(
                     naome_proof::DefinitionAccessError::Limit,
                 ) => QuestionError::Limit(naome_proof::QuestionLimit::DefinitionDecodeBytes),
-                _ => QuestionError::Mathematical(error.to_string()),
+                _ => QuestionError::Expansion(error),
             })?;
         let target = QuestionTarget::from_expanded_formula(expanded)?;
         Self::new(bytes, target, dependencies)
@@ -175,13 +174,15 @@ impl ResearchQuestion {
                 QUESTION_TARGET_MAX_NODES - 1,
                 QUESTION_TARGET_MAX_DEPTH as u32 - 1,
             )
-            .map_err(|error| QuestionError::Mathematical(error.to_string()))?
+            .map_err(QuestionError::DefinedFormula)?
             .0;
         if bytes.len() > QUESTION_BYTES {
             return Err(QuestionError::Limit(naome_proof::QuestionLimit::Bytes));
         }
         if !formula.is_closed() {
-            return Err(QuestionError::Invalid("question has free variables"));
+            return Err(QuestionError::Invalid(
+                naome_proof::QuestionFault::FreeVariables,
+            ));
         }
         let dependencies = formula
             .definition_references()
@@ -207,7 +208,9 @@ impl ResearchQuestion {
         let formula = decode_formula(&bytes)?;
         let (canonical, dependencies) = Self::definition_source(&formula)?;
         if canonical != bytes {
-            return Err(QuestionError::Invalid("noncanonical question formula"));
+            return Err(QuestionError::Invalid(
+                naome_proof::QuestionFault::Noncanonical,
+            ));
         }
         Ok(!dependencies.is_empty())
     }
@@ -305,7 +308,7 @@ impl ResearchQuestion {
             Ok(QuestionOutcome::Refuted)
         } else {
             Err(QuestionError::Invalid(
-                "proof conclusion does not match a question target",
+                naome_proof::QuestionFault::ConclusionMismatch,
             ))
         }
     }
@@ -335,20 +338,21 @@ impl ResearchQuestion {
         let question = match Formula::decode_shared(bytes) {
             Ok(formula) => Self::from_formula(formula)?,
             Err(error) if context.is_none() => {
-                return Err(QuestionError::Mathematical(error.to_string()));
+                return Err(QuestionError::Formula(error));
             }
             Err(_) => Self::compile_defined(decode_formula(bytes)?, context)?,
         };
         if question.canonical_bytes() != bytes {
-            return Err(QuestionError::Invalid("noncanonical question formula"));
+            return Err(QuestionError::Invalid(
+                naome_proof::QuestionFault::Noncanonical,
+            ));
         }
         Ok(question)
     }
 }
 
 fn decode_formula(bytes: &[u8]) -> Result<DefinedFormula, QuestionError> {
-    DefinedFormula::decode_canonical(bytes)
-        .map_err(|error| QuestionError::Mathematical(error.to_string()))
+    DefinedFormula::decode_canonical(bytes).map_err(QuestionError::DefinedFormula)
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, QuestionError> {
@@ -361,9 +365,11 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, QuestionError> {
         .bytes()
         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return Err(QuestionError::Invalid("question hex"));
+        return Err(QuestionError::Invalid(
+            naome_proof::QuestionFault::HexEncoding,
+        ));
     }
-    hex::decode(value).map_err(|_| QuestionError::Invalid("question hex"))
+    hex::decode(value).map_err(|_| QuestionError::Invalid(naome_proof::QuestionFault::HexEncoding))
 }
 
 #[cfg(test)]

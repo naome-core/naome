@@ -73,7 +73,7 @@ fn prepare_meta_source(seed: u64, context: usize, cuts: [usize; 2], dir: &Path) 
         common.state.observe_result(
             &q.source,
             !row["solution"].is_null(),
-            row["diagnostic"].as_str().unwrap(),
+            &serde_json::from_value(row["experience"]["terminal"].clone()).unwrap(),
             row["elapsed_micros"].as_u64().unwrap(),
             128,
         );

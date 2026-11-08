@@ -9,10 +9,6 @@ use std::{
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    if let Err(error) = naome_knowledge::resources::initialize_from_environment() {
-        eprintln!("{error}");
-        std::process::exit(1);
-    }
     if let Err(error) = execute().await {
         eprintln!("{error}");
         std::process::exit(1);
@@ -21,6 +17,15 @@ async fn main() {
 
 async fn execute() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["outcome-catalog"] {
+        let outcomes = naome_knowledge::OUTCOME_CODES
+            .iter()
+            .map(|(domain, name, code)| json!({"domain": domain, "name": name, "code": code}))
+            .collect::<Vec<_>>();
+        println!("{}", json!(outcomes));
+        return Ok(());
+    }
+    naome_knowledge::resources::initialize_from_environment()?;
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["init", directory] => {
             let directory = Path::new(directory);
@@ -49,13 +54,6 @@ async fn execute() -> Result<(), String> {
         },
         ["training", "--help"] => { println!("{}", naome_knowledge::training::HELP); Ok(()) },
         ["training", directory, request] => naome_knowledge::training::run(Path::new(directory), Path::new(request)),
-        ["outcome-catalog"] => {
-            let outcomes = naome_knowledge::OUTCOME_CODES.iter().map(|(domain, name, code)| {
-                json!({"domain": domain, "name": name, "code": code})
-            }).collect::<Vec<_>>();
-            println!("{}", json!(outcomes));
-            Ok(())
-        },
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
                 "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"routing":network::routing_contract(),"limits":{

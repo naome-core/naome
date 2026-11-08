@@ -355,7 +355,7 @@ fn prepare(seed: u64, path: &Path) -> (State, MemoryStore, Vec<(String, Solution
         state.observe_result(
             &q.to_hex(),
             result.solution.is_some(),
-            &result.diagnostic,
+            &result.terminal,
             result.cost.generation_micros,
             SEARCH as u32,
         );
@@ -671,7 +671,7 @@ fn arm(
             state.observe_result(
                 &q.to_hex(),
                 result.solution.is_some(),
-                &result.diagnostic,
+                &result.terminal,
                 label_micros,
                 SEARCH as u32,
             );

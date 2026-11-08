@@ -926,9 +926,7 @@ impl Owner {
             if let (
                 Input::Solve { question },
                 Some(Output::Native {
-                    solution,
-                    diagnostic,
-                    ..
+                    solution, terminal, ..
                 }),
             ) = (&record.input, &record.result)
                 && let Some(native) = &record.native
@@ -937,7 +935,7 @@ impl Owner {
                 learning.observe_result(
                     question,
                     solution.is_some(),
-                    diagnostic,
+                    terminal,
                     record.spent_ms.saturating_mul(1000),
                     native.base.search_budget(),
                 );

@@ -117,6 +117,8 @@ codes! {
         CorruptStorage = 12,
         QuestionLimit = 13,
         ExecutionFailed = 14,
+        ProgramCodec = 15,
+        QuestionInput = 16,
     }
 
     pub enum InputFault in 7 {

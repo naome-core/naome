@@ -139,7 +139,7 @@ fn replay(
         state.observe_result(
             &q.to_hex(),
             generated.solution.is_some(),
-            &generated.diagnostic,
+            &generated.terminal,
             recorded,
             SEARCH as u32,
         );

@@ -110,7 +110,7 @@ fn read_commands(manifest: &Manifest, tail: &mut &[u8]) -> Result<Vec<Command>, 
         return Err("peer program replay command capacity".into());
     }
     (0..manifest.commands)
-        .map(|_| decode_command(take(tail)?))
+        .map(|_| decode_command(take(tail)?).map_err(Into::into))
         .collect()
 }
 

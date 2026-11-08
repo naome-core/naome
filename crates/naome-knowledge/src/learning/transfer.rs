@@ -73,6 +73,8 @@ impl Summary {
 }
 pub(super) struct Outcome {
     pub solved: bool,
+    pub terminal: super::experience::TerminalEvidence,
+    #[cfg(test)]
     pub diagnostic: String,
     pub micros: u64,
     #[cfg(test)]
@@ -92,21 +94,26 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
 ) -> Result<Evaluation, String> {
     let mut solve = |checkpoint: &super::Checkpoint| {
         let start = std::time::Instant::now();
-        let (solution, diagnostic, _) = engine.with(checkpoint, io, |runtime| {
-            super::solve_with_definitions(
+        let generation = engine.with(checkpoint, io, |runtime| {
+            super::solve_with_report(
                 source,
                 runtime,
                 32,
                 job,
-                &base.definitions,
-                &base.knowledge,
+                super::SolveContext {
+                    definitions: &base.definitions,
+                    theorems: &base.knowledge,
+                    ..Default::default()
+                },
             )
         })?;
         Ok::<_, String>(Outcome {
-            solved: solution.is_some(),
+            solved: generation.solution.is_some(),
+            terminal: generation.terminal,
             #[cfg(test)]
-            proof_id: solution.map(|s| s.proof_id),
-            diagnostic,
+            proof_id: generation.solution.map(|s| s.proof_id),
+            #[cfg(test)]
+            diagnostic: generation.diagnostic,
             micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         })
     };
