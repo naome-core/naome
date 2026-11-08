@@ -677,6 +677,19 @@ impl fmt::Display for Error {
                     "finder support receipt identity differs"
                 }
                 crate::ResearchFailure::EvidenceSupportOverflow => "finder support count overflow",
+                crate::ResearchFailure::FrontierFormulaCapacity => "open branch formula capacity",
+                crate::ResearchFailure::FrontierFormulaEncoding => "open branch formula encoding",
+                crate::ResearchFailure::FrontierObservationCapacity => {
+                    "open branch observation capacity"
+                }
+                crate::ResearchFailure::FrontierTargetBinding => {
+                    "open branch target binding differs"
+                }
+                crate::ResearchFailure::FrontierStateCapacity => "open branch state capacity",
+                crate::ResearchFailure::FrontierAssumptionBinding => {
+                    "open branch assumptions or variable binding differs"
+                }
+                crate::ResearchFailure::FrontierSerialization => "open branch serialization failed",
                 crate::ResearchFailure::ExperienceTerminalCandidate => {
                     "terminal evidence differs from the checked candidate"
                 }

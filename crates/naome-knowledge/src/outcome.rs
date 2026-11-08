@@ -863,6 +863,7 @@ codes! {
         EvidenceIdentity = 135, EvidenceHelperCapacity = 136, EvidenceHelperSource = 137, EvidenceOutcome = 138, EvidenceInitialization = 139, EvidenceDrawOverflow = 140, EvidenceObservationOverflow = 141, EvidenceCompletedReceipt = 142, EvidenceAttemptOverflow = 143, EvidenceWorkOverflow = 144, EvidenceTimeOverflow = 145, EvidencePlanBinding = 146, EvidencePlanCycle = 147, EvidencePreparedJob = 148, EvidenceCandidateRequired = 149, EvidenceProofSourceMissing = 150, EvidenceProofIdentity = 151, EvidenceSupportReceipt = 152, EvidenceSupportOverflow = 153,
         ExperienceJobBinding = 154, ExperienceNativeBinding = 155, ExperienceTerminalState = 156, ExperienceOutcome = 157, ExperienceStoredBinding = 158,
         ExperienceTerminalCandidate = 159, ExperienceNativeContext = 160, ExperienceResultMissing = 161, ExperienceCheckpointMissing = 162, ExperienceExecutionMismatch = 163, ExperiencePeerSyntax = 164, ExperiencePeerEncoding = 165, ExperienceReceiptIdentity = 166, ExperienceTraceMismatch = 167, ExperienceLineage = 168, ExperienceObservationBinding = 169,
+        FrontierFormulaCapacity = 170, FrontierFormulaEncoding = 171, FrontierObservationCapacity = 172, FrontierTargetBinding = 173, FrontierStateCapacity = 174, FrontierAssumptionBinding = 175, FrontierSerialization = 176,
     }
 
 }
