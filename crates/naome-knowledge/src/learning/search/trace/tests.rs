@@ -201,18 +201,11 @@ impl Ranker for Distracted {
             .candidates
             .iter()
             .map(|choice| {
-                if found_block
-                    && choice
-                        .consequences
-                        .iter()
-                        .any(|result| contains(result.view(), &decision.goal))
-                {
-                    2.
-                } else if choice.rule == Rule::NegatedImplication {
-                    1.
-                } else {
-                    0.
-                }
+                let reaches_goal = choice
+                    .consequences
+                    .iter()
+                    .any(|result| contains(result.view(), &decision.goal));
+                if found_block == reaches_goal { 1. } else { 0. }
             })
             .collect())
     }
@@ -257,7 +250,10 @@ fn a_budgeted_detour_recovers_a_checked_decision_for_replay() {
         .expect("the alternative closes within the original budget");
     assert!(found.expansions < 48);
     let trace = found.execution.unwrap();
-    let repair = trace.repair.as_ref().expect("the detour was observed");
+    let repair = trace
+        .repair
+        .as_ref()
+        .unwrap_or_else(|| panic!("no repair retained after {} expansions", found.expansions));
     let failed = &trace.events[repair.failed];
     assert_eq!(failed.start, 1);
     assert_eq!(failed.end, 16);
