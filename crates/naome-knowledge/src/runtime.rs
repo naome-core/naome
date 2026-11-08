@@ -432,11 +432,28 @@ impl Control {
         Ok(hash.finalize().into())
     }
 
+    #[cfg(test)]
     pub(crate) async fn respond(
+        &self,
+        stream: UnixStream,
+        count: usize,
+        ready: bool,
+    ) -> Result<bool, crate::outcome::ControlFailure> {
+        self.respond_tracked(
+            stream,
+            count,
+            ready,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .await
+    }
+
+    pub(crate) async fn respond_tracked(
         &self,
         mut stream: UnixStream,
         count: usize,
         ready: bool,
+        authenticated: &std::sync::atomic::AtomicBool,
     ) -> Result<bool, crate::outcome::ControlFailure> {
         use crate::outcome::ControlFailure;
         let request: Request = tokio::time::timeout(
@@ -449,6 +466,7 @@ impl Control {
         if request.version != 1 || request.token != self.endpoint.token {
             return Err(ControlFailure::InstanceMismatch);
         }
+        authenticated.store(true, std::sync::atomic::Ordering::Release);
         #[cfg(feature = "developer-tools")]
         if std::env::var("NAOME_DEV_CONTROL_SENDBUF_BYTES").as_deref() == Ok("1024") {
             socket2::SockRef::from(&stream)

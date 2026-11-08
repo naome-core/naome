@@ -504,7 +504,13 @@ impl Controls {
             let Some(control) = control else {
                 return Ok(());
             };
-            let mut pending = libp2p::futures::stream::FuturesUnordered::new();
+            type Response = std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<bool, crate::outcome::ControlFailure>>
+                        + Send,
+                >,
+            >;
+            let mut pending: Vec<(Arc<AtomicBool>, Response)> = Vec::new();
             let mut stopping = false;
             let mut stop_watch = Some(control.stop_watch());
             let mut deadline = None;
@@ -513,6 +519,7 @@ impl Controls {
                     return Ok(());
                 }
                 tokio::select! {
+                    biased;
                     _ = &mut halt, if !stopping => {
                         stopping = true; deadline = Some(tokio::time::Instant::now() + crate::resources::limits().control_timeout);
                     },
@@ -523,15 +530,29 @@ impl Controls {
                         match deadline { Some(until) => tokio::time::sleep_until(until).await,
                             None => std::future::pending().await }
                     }, if stopping => return Ok(()),
-                    stream = control.accept(), if !stopping && pending.len() < crate::resources::active_limits().control_clients => {
+                    (response, index, _) = async { libp2p::futures::future::select_all(pending.iter_mut().map(|(_, future)| future)).await }, if !pending.is_empty() => {
+                        drop(pending.remove(index));
+                        if let Err(error) = response { emit(json!({"event":crate::outcome::NodeEvent::ControlRejected, "error":error})); }
+                    },
+                    stream = control.accept(), if !stopping => {
                         let stream = stream?;
+                        let limit = crate::resources::active_limits().control_clients;
+                        if pending.len() >= limit {
+                            // Make room only by cancelling an unauthenticated, incomplete request.
+                            // Authenticated operations, especially stop, must finish their response.
+                            if let Some(index) = pending.iter().position(|(authenticated, _)| !authenticated.load(Ordering::Acquire)) {
+                                drop(pending.remove(index));
+                            } else {
+                                continue;
+                            }
+                        }
+                        if limit == 0 { continue; }
                         let control = control.clone();
                         let count = status.count.load(Ordering::Acquire);
                         let ready = status.ready.load(Ordering::Acquire);
-                        pending.push(async move { control.respond(stream, count, ready).await });
-                    },
-                    response = pending.next(), if !pending.is_empty() => {
-                        if let Some(Err(error)) = response { emit(json!({"event":crate::outcome::NodeEvent::ControlRejected, "error":error})); }
+                        let authenticated = Arc::new(AtomicBool::new(false));
+                        let marker = authenticated.clone();
+                        pending.push((authenticated, Box::pin(async move { control.respond_tracked(stream, count, ready, &marker).await })));
                     },
                 }
             }
