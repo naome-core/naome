@@ -196,6 +196,28 @@ fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
 #[test]
 fn a_long_transport_requires_both_checked_segments_under_the_local_allowance() {
     use crate::learning::{Prerequisites, solve_with_report};
+    // Independent checker work uses a process-wide memory lease. Keep this
+    // regression in its own process so parallel tests share no checker pool.
+    const CASE: &str = concat!(
+        "learning::search::scope::tests::",
+        "a_long_transport_requires_both_checked_segments_under_the_local_allowance"
+    );
+    const CHILD: &str = "NAOME_LONG_TRANSPORT_SCOPE_TEST";
+    if std::env::var(CHILD).as_deref() != Ok(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env(CHILD, CASE)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("running 1 test"),
+            "{}\n{}",
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let subject = FreeVariable::new(0);
     let binder = FreeVariable::new(40);
     let atom = |index: u32, point| {
