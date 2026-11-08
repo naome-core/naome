@@ -210,20 +210,40 @@ async fn cold_artifact_frame_packs_exact_bytes_and_bounds_expansion() {
         )
         .await
         .unwrap();
-    let mut bytes = output.into_inner();
+    let bytes = output.into_inner();
     assert!(bytes.len() < object.payload.len() / 4);
     let decoded = codec.read(&mut Cursor::new(&bytes)).await.unwrap();
-    assert!(matches!(decoded.message.body,
-        Body::Object { root, object: decoded, question: None } if root == [3; 32] && decoded == object));
+    assert!(matches!(&decoded.message.body,
+        Body::Object { root, object: decoded, question: None } if *root == [3; 32] && decoded == &object));
 
     // Five fixed addresses, kind and option flags precede the packed length.
     let packed = 4 + 5 * 32 + 1 + 2;
     assert_ne!(bytes[packed] & 0x80, 0);
     let declared = packed + 4;
+    let payload = declared + 4;
+    drop(decoded);
+    let capacity = codec.budget.available_permits();
+
+    let mut oversized = bytes.clone();
     let excessive = (crate::resources::limits().proof_bytes + 1) as u32;
-    bytes[declared..declared + 4].copy_from_slice(&excessive.to_be_bytes());
-    assert_eq!(
-        stream_failure(&codec.read(&mut Cursor::new(bytes)).await.unwrap_err()),
-        WireFailure::ArtifactPayloadLimit
-    );
+    oversized[declared..payload].copy_from_slice(&excessive.to_be_bytes());
+
+    let mut wrong_length = bytes.clone();
+    let expanded = (object.payload.len() / 2 + 1) as u32;
+    wrong_length[declared..payload].copy_from_slice(&expanded.to_be_bytes());
+
+    let mut corrupt = bytes.clone();
+    let question_flag = corrupt.len() - 1;
+    corrupt[payload..question_flag].fill(0xff);
+
+    for (frame, expected) in [
+        (oversized, WireFailure::ArtifactPayloadLimit),
+        (wrong_length, WireFailure::ArtifactCompression),
+        (corrupt, WireFailure::ArtifactCompression),
+    ] {
+        let error = codec.read(&mut Cursor::new(frame)).await.unwrap_err();
+        assert_eq!(stream_failure(&error), expected);
+        assert_eq!(codec.budget.available_permits(), capacity);
+        assert!(codec.read(&mut Cursor::new(&bytes)).await.is_ok());
+    }
 }

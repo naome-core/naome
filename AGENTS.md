@@ -200,9 +200,10 @@ binary restoration, macOS multicast preflight, and discovery evidence capture
 in `.github/workflows/rust-tests.yml`. Documentation tests remain explicit;
 `--all-targets` does not run them.
 
-The `test` profile optimizes Ed25519/Curve25519 and both SHA-2 versions at
-level 2 while retaining debug assertions and overflow checks. Other workspace
-packages retain their default test optimization level; `dev` and `release`
+The `test` profile optimizes Ed25519/Curve25519, both SHA-2 versions, and
+the native learning CPU tensor and f32 matrix kernels at level 2 while
+retaining debug assertions and overflow checks. Workspace packages retain
+their default test optimization level; `dev` and `release`
 settings are unchanged. For comparisons, set `CARGO_INCREMENTAL=0` and record
 compilation and execution separately.
 

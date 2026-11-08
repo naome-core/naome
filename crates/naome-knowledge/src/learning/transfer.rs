@@ -77,7 +77,7 @@ pub(super) struct Outcome {
     #[cfg(test)]
     pub diagnostic: crate::outcome::GenerationOutcome,
     pub micros: u64,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "developer-tools"))]
     pub proof_id: Option<String>,
 }
 pub(super) struct Evaluation {
@@ -110,7 +110,7 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
         Ok::<_, String>(Outcome {
             solved: generation.solution.is_some(),
             terminal: generation.terminal,
-            #[cfg(test)]
+            #[cfg(all(test, feature = "developer-tools"))]
             proof_id: generation.solution.map(|s| s.proof_id),
             #[cfg(test)]
             diagnostic: generation.diagnostic,
@@ -121,11 +121,11 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
         before: solve(&base.model)?,
         after: solve(candidate)?,
     };
-    #[cfg(test)]
+    #[cfg(all(test, feature = "developer-tools"))]
     observation::record(source, &result)?;
     Ok(result)
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "developer-tools"))]
 pub(super) mod observation;
 #[cfg(test)]
 mod tests;

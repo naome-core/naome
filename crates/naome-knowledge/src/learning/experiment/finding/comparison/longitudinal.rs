@@ -9,6 +9,7 @@ mod calibration;
 mod checkpoint;
 mod design;
 mod tests;
+#[cfg(feature = "developer-tools")]
 mod trajectory;
 
 const PROTOCOL: &str = include_str!("longitudinal/protocol.json");
@@ -129,6 +130,7 @@ fn freeze_longitudinal_common_sources() {
     sources::freeze(seed, 1, &design.holdout, &output);
 }
 
+#[cfg(feature = "developer-tools")]
 #[test]
 #[ignore = "five-phase current-owner trajectory; requires admitted calibration and a separate immutable grant"]
 fn run_longitudinal_trajectory() {

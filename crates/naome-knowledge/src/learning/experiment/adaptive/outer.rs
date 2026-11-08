@@ -1,6 +1,8 @@
 //! Matched initial and genuinely retained lower-state meta-training trials.
 use super::*;
+#[cfg(feature = "developer-tools")]
 mod preservation;
+#[cfg(feature = "developer-tools")]
 mod recovery;
 
 pub(super) struct Controllers {

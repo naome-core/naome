@@ -1,15 +1,23 @@
 //! Preregistered, aggregate-budget native comparison. Never run by ordinary CI.
-use super::knowledge::{Store, admit_discovery};
+use super::knowledge::Store;
+#[cfg(feature = "developer-tools")]
+use super::knowledge::admit_discovery;
 use super::*;
 use serde_json::{Value, json};
+#[cfg(feature = "developer-tools")]
 mod adjudicate;
 mod budget;
 mod inputs;
+#[cfg(feature = "developer-tools")]
 mod run;
+#[cfg(feature = "developer-tools")]
 mod sequential;
+#[cfg(feature = "developer-tools")]
 use budget::{EXPANSIONS, Meter, SLICE};
+#[cfg(feature = "developer-tools")]
 use inputs::Inputs;
 
+#[cfg(feature = "developer-tools")]
 #[test]
 #[ignore = "explicit finite five-arm recursive lemma experiment"]
 fn matched_recursive_lemma_loop() {
@@ -126,5 +134,5 @@ fn matched_recursive_lemma_loop() {
     );
 }
 
-#[cfg(test)]
+#[cfg(feature = "developer-tools")]
 mod tests;

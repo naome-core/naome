@@ -226,6 +226,7 @@ fn meta_update_preserves_the_reloaded_selection_instead_of_recomputing_base_cont
 #[cfg(feature = "system-tests")]
 #[test]
 fn final_meta_update_keeps_the_selected_history_context_across_restart() {
+    let started = std::time::Instant::now();
     let (mut job, page, receipt) = fixture();
     assert_eq!(job.base.preparation, Preparation::Meta);
     let mut io = crate::learning::tests::MemoryStore::default();
@@ -236,9 +237,19 @@ fn final_meta_update_keeps_the_selected_history_context_across_restart() {
     let mut engine = Engine::default();
     let last = job.units();
     assert_eq!(last, model::TRAINING_UNITS + EVALUATIONS + 1);
-    for unit in 1..last {
+    eprintln!("Meta replay fixture: {:?}", started.elapsed());
+
+    let started = std::time::Instant::now();
+    for unit in 1..=model::TRAINING_UNITS {
         job.execute(unit, None, 2, &mut engine, &mut io).unwrap();
     }
+    eprintln!("Meta replay training: {:?}", started.elapsed());
+
+    let started = std::time::Instant::now();
+    for unit in model::TRAINING_UNITS + 1..last {
+        job.execute(unit, None, 2, &mut engine, &mut io).unwrap();
+    }
+    eprintln!("Meta replay qualification: {:?}", started.elapsed());
     job.validate().unwrap();
     let progress = job.progress.as_ref().unwrap();
     let prepared = progress.prepared.clone().unwrap();
@@ -246,6 +257,7 @@ fn final_meta_update_keeps_the_selected_history_context_across_restart() {
     assert_eq!(selection.context, prepared.context);
     assert_ne!(selection.context, meta::context(&job.base));
     assert_eq!(progress.candidate.as_ref().unwrap().updates, 250);
+    let started = std::time::Instant::now();
     let mut resumed: Job =
         crate::checkpoint::decode(&crate::checkpoint::encode(&job).unwrap()).unwrap();
     job.execute(last, None, 2, &mut engine, &mut io).unwrap();
@@ -273,4 +285,8 @@ fn final_meta_update_keeps_the_selected_history_context_across_restart() {
     );
     assert_eq!(completed.model, restored.model);
     assert_eq!(completed.prepared, Some(prepared));
+    eprintln!(
+        "Meta update with restart comparison: {:?}",
+        started.elapsed()
+    );
 }
