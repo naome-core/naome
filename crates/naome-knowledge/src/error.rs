@@ -364,6 +364,7 @@ impl fmt::Display for Error {
                 InputFault::PrerequisiteObligationMissing => {
                     "prerequisite definition obligation missing"
                 }
+                InputFault::RegularFileRequired => "regular file required",
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),

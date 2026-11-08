@@ -169,7 +169,37 @@ fn oversized_configuration_still_rejects_before_decoding() {
         vec![b' '; crate::resources::limits().network_config_bytes + 1],
     )
     .unwrap();
-    assert_eq!(read_config(&file.path()).err().unwrap(), "file byte limit");
+    assert!(matches!(
+        read_config(&file.path()),
+        Err(crate::Error::InputLimit(
+            crate::InputLimit::BoundedFileBytes
+        ))
+    ));
+}
+
+#[test]
+fn configuration_failures_preserve_read_and_parse_codes() {
+    let file = ConfigFile::new();
+    std::fs::write(file.path(), b"{").unwrap();
+    assert!(matches!(
+        read_config(&file.path()),
+        Err(crate::Error::Runtime(
+            crate::RuntimeFailure::NetworkConfigParse
+        ))
+    ));
+    assert!(matches!(
+        read_config(&file.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::RegularFileRequired
+        ))
+    ));
+    std::fs::remove_file(file.path()).unwrap();
+    assert!(matches!(
+        read_config(&file.path()),
+        Err(crate::Error::Runtime(
+            crate::RuntimeFailure::BoundedFileOpen
+        ))
+    ));
 }
 
 #[tokio::test]

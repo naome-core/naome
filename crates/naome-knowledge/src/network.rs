@@ -294,7 +294,7 @@ pub(crate) async fn run_autonomous(
 }
 
 /// Ordinary peers use the node's automatic research selection.
-pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
+pub async fn run(config: Config, test_controls: bool) -> Result<(), crate::Error> {
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
@@ -309,7 +309,6 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
         None,
     )
     .await
-    .map_err(Into::into)
 }
 
 /// Runs the existing Gossip node with a bounded Rust-only local question inbox.
@@ -323,7 +322,7 @@ pub async fn run_with_questions<F, Fut>(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
     selection: F,
-) -> Result<(), String>
+) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
@@ -339,7 +338,6 @@ where
         None,
     )
     .await
-    .map_err(Into::into)
 }
 
 /// Runs local question intake without a selection provider. The formal result
@@ -349,7 +347,7 @@ pub async fn run_with_questions_without_selection(
     config: Config,
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
     run_inner(
@@ -365,7 +363,6 @@ pub async fn run_with_questions_without_selection(
         None,
     )
     .await
-    .map_err(Into::into)
 }
 
 pub(crate) async fn run_inner<F, Fut>(
@@ -2788,12 +2785,12 @@ impl Node {
     }
 }
 
-pub fn read_config(path: &Path) -> Result<Config, String> {
+pub fn read_config(path: &Path) -> Result<Config, crate::Error> {
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| crate::RuntimeFailure::NetworkConfigParse)?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()

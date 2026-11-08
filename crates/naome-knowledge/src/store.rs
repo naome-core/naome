@@ -587,20 +587,28 @@ fn sync_directory(directory: &Path) -> Result<(), crate::Error> {
     Ok(())
 }
 pub(crate) fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, crate::Error> {
-    let file = File::open(path).map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    let file = File::open(path).map_err(|_| crate::RuntimeFailure::BoundedFileOpen)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| crate::RuntimeFailure::BoundedFileMetadata)?;
     if !metadata.is_file() {
-        return Err("non-regular file".into());
+        return Err(crate::Error::InputFault(
+            crate::InputFault::RegularFileRequired,
+        ));
     }
     if metadata.len() > maximum as u64 {
-        return Err("file byte limit".into());
+        return Err(crate::Error::InputLimit(
+            crate::InputLimit::BoundedFileBytes,
+        ));
     }
     let mut bytes = Vec::new();
     file.take(maximum as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| crate::RuntimeFailure::BoundedFileRead)?;
     if bytes.len() > maximum {
-        return Err("file byte limit".into());
+        return Err(crate::Error::InputLimit(
+            crate::InputLimit::BoundedFileBytes,
+        ));
     }
     Ok(bytes)
 }

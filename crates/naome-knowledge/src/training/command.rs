@@ -114,21 +114,28 @@ pub fn execute(graph: &Graph, command: &Command) -> Result<Response, Error> {
 /// Reads one owned regular bounded JSON request and streams one JSON response.
 /// The external learner owns training, resource metering and immutable model
 /// identities. This command never enables training in the ordinary node.
-pub fn run(directory: &Path, input: &Path) -> Result<(), String> {
+pub fn run(directory: &Path, input: &Path) -> Result<(), Error> {
+    use crate::RuntimeFailure;
     let limits = crate::resources::limits();
     let budget = limits
         .command_parse_budget()
-        .ok_or("training command parse budget")?;
-    let _memory = crate::resources::MemoryLease::acquire(budget).map_err(|e| e.to_string())?;
-    let bytes = crate::storage::read_owned(input, limits.command_bytes)?
-        .ok_or("training request file missing")?;
-    crate::resources::json::allocation_bound(&bytes, budget).map_err(|e| e.to_string())?;
-    let command: Command = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let graph = Graph::open(directory).map_err(|e| e.to_string())?;
-    let response = execute(&graph, &command).map_err(|e| e.to_string())?;
+        .ok_or(crate::InputLimit::CliJsonAllocationBudgetOverflow)?;
+    let _memory = crate::resources::MemoryLease::acquire(budget)?;
+    let bytes = crate::storage::read_owned(input, limits.command_bytes)
+        .map_err(|_| RuntimeFailure::TrainingRequestRead)?
+        .ok_or(RuntimeFailure::TrainingRequestMissing)?;
+    crate::resources::json::allocation_bound(&bytes, budget)?;
+    let command: Command =
+        serde_json::from_slice(&bytes).map_err(|_| RuntimeFailure::TrainingRequestParse)?;
+    let graph = Graph::open(directory)?;
+    let response = execute(&graph, &command)?;
     let mut output = std::io::stdout().lock();
-    serde_json::to_writer(&mut output, &response).map_err(|e| e.to_string())?;
-    output.write_all(b"\n").map_err(|e| e.to_string())
+    serde_json::to_writer(&mut output, &response)
+        .map_err(|_| RuntimeFailure::TrainingResponseWrite)?;
+    output
+        .write_all(b"\n")
+        .map_err(|_| RuntimeFailure::TrainingResponseWrite)?;
+    Ok(())
 }
 
 pub const HELP: &str = "usage: naome-knowledge-dev training <node-directory> <request.json>\n\

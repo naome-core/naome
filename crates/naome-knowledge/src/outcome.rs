@@ -143,6 +143,7 @@ codes! {
         PrerequisiteDuplicate = 11, PrerequisiteProgramInvalid = 12,
         PrerequisiteOfferedProofMissing = 13,
         PrerequisiteNotClosed = 14, PrerequisiteObligationMissing = 15,
+        RegularFileRequired = 16,
     }
 
     pub enum InputLimit in 8 {
@@ -177,6 +178,7 @@ codes! {
         PrerequisiteStepsOverflow = 29,
         PrerequisiteCheckerCapacity = 30,
         PrerequisiteDefinitionCapacity = 31,
+        BoundedFileBytes = 32,
     }
 
     pub(crate) enum WorkerFailure in 9 {
@@ -312,6 +314,18 @@ codes! {
         AutonomousFinding = 31,
         AutonomousSolving = 32,
         AutonomousCursor = 33,
+        TrainingRequestRead = 34,
+        TrainingRequestMissing = 35,
+        TrainingRequestParse = 36,
+        TrainingResponseWrite = 37,
+        DeveloperIdentityCreate = 38,
+        DeveloperIdentityEncode = 39,
+        DeveloperIdentityWrite = 40,
+        DeveloperRelay = 41,
+        BoundedFileOpen = 43,
+        BoundedFileMetadata = 44,
+        BoundedFileRead = 45,
+        NetworkConfigParse = 46,
     }
 
     pub enum StartupFailure in 13 {
@@ -774,6 +788,7 @@ impl InputLimit {
             Self::PrerequisiteStepsOverflow => "prerequisite step overflow",
             Self::PrerequisiteCheckerCapacity => "prerequisite checker capacity",
             Self::PrerequisiteDefinitionCapacity => "prerequisite definition capacity",
+            Self::BoundedFileBytes => "bounded file byte limit",
         }
     }
 }
