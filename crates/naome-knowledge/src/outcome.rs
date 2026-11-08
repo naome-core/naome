@@ -638,6 +638,16 @@ codes! {
 
     pub(crate) enum FixtureResult in 63 { Pass = 1, Fail = 2, Running = 3 }
 
+    pub(crate) enum RelayEventKind in 64 { ReservationAccepted = 1, ReservationDenied = 2, ReservationClosed = 3, ReservationTimedOut = 4, CircuitDenied = 5, CircuitAccepted = 6, CircuitClosed = 7 }
+    pub(crate) enum RelayStatus in 65 { Ok = 1, ReservationRefused = 2, ResourceLimitExceeded = 3, PermissionDenied = 4, ConnectionFailed = 5, NoReservation = 6, MalformedMessage = 7, UnexpectedMessage = 8 }
+    pub(crate) enum IoFaultKind in 66 { NotFound = 1, PermissionDenied = 2, ConnectionRefused = 3, ConnectionReset = 4, ConnectionAborted = 5, NotConnected = 6, BrokenPipe = 7, TimedOut = 8, Interrupted = 9, UnexpectedEof = 10, Other = 11 }
+    pub(crate) enum ServiceRole in 67 { Relay = 1 }
+
+    pub(crate) enum ConnectionEndpoint in 68 { Dialer = 1, Listener = 2 }
+    pub(crate) enum ConnectionPort in 69 { New = 1, Reused = 2 }
+    pub(crate) enum ConnectionClose in 70 { Io = 1, KeepAliveTimeout = 2 }
+    pub(crate) enum RelayClientEvent in 71 { ReservationAccepted = 1, OutboundCircuit = 2, InboundCircuit = 3 }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
@@ -709,6 +719,24 @@ codes! {
         OfferedProofFormulaMissing = 87,
     }
 
+}
+
+pub(crate) fn io_fault_kind(error: &std::io::Error) -> crate::outcome::IoFaultKind {
+    use crate::outcome::IoFaultKind as Code;
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::NotFound => Code::NotFound,
+        ErrorKind::PermissionDenied => Code::PermissionDenied,
+        ErrorKind::ConnectionRefused => Code::ConnectionRefused,
+        ErrorKind::ConnectionReset => Code::ConnectionReset,
+        ErrorKind::ConnectionAborted => Code::ConnectionAborted,
+        ErrorKind::NotConnected => Code::NotConnected,
+        ErrorKind::BrokenPipe => Code::BrokenPipe,
+        ErrorKind::TimedOut => Code::TimedOut,
+        ErrorKind::Interrupted => Code::Interrupted,
+        ErrorKind::UnexpectedEof => Code::UnexpectedEof,
+        _ => Code::Other,
+    }
 }
 
 /// A worker or owner failure code, restricted to outcomes valid for a job.

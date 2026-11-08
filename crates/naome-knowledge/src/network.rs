@@ -1084,6 +1084,61 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, crate::Error>>) {
     }
 }
 
+fn connection_endpoint(endpoint: &libp2p::core::ConnectedPoint) -> Value {
+    use crate::outcome::{ConnectionEndpoint as Kind, ConnectionPort as Port};
+    use libp2p::core::{ConnectedPoint, Endpoint, transport::PortUse};
+    match endpoint {
+        ConnectedPoint::Dialer {
+            address,
+            role_override,
+            port_use,
+        } => json!({
+            "kind":Kind::Dialer, "address":address.to_string(),
+            "role":match role_override { Endpoint::Dialer => Kind::Dialer, Endpoint::Listener => Kind::Listener },
+            "port":match port_use { PortUse::New => Port::New, PortUse::Reuse => Port::Reused },
+        }),
+        ConnectedPoint::Listener {
+            local_addr,
+            send_back_addr,
+        } => json!({
+            "kind":Kind::Listener, "local":local_addr.to_string(), "remote":send_back_addr.to_string(),
+        }),
+    }
+}
+
+fn connection_close(cause: Option<&libp2p::swarm::ConnectionError>) -> Option<Value> {
+    use crate::outcome::ConnectionClose as Code;
+    cause.map(|cause| match cause {
+        libp2p::swarm::ConnectionError::IO(error) => json!({"kind":Code::Io,"io_kind":crate::outcome::io_fault_kind(error),"os_code":error.raw_os_error()}),
+        libp2p::swarm::ConnectionError::KeepAliveTimeout => json!({"kind":Code::KeepAliveTimeout}),
+    })
+}
+
+fn relay_client_event(event: relay::client::Event) -> Value {
+    use crate::outcome::{NodeEvent, RelayClientEvent as Kind};
+    macro_rules! limit_value {
+        ($limit:expr) => { $limit.map(|limit| json!({"duration":limit.duration().map(|duration| json!({"seconds":duration.as_secs(),"nanoseconds":duration.subsec_nanos()})),"bytes":limit.data_in_bytes()})) };
+    }
+    match event {
+        relay::client::Event::ReservationReqAccepted {
+            relay_peer_id,
+            renewal,
+            limit,
+        } => {
+            json!({"event":NodeEvent::RelayClient,"kind":Kind::ReservationAccepted,"peer":relay_peer_id.to_string(),"renewed":renewal,"limit":limit_value!(limit)})
+        }
+        relay::client::Event::OutboundCircuitEstablished {
+            relay_peer_id,
+            limit,
+        } => {
+            json!({"event":NodeEvent::RelayClient,"kind":Kind::OutboundCircuit,"peer":relay_peer_id.to_string(),"limit":limit_value!(limit)})
+        }
+        relay::client::Event::InboundCircuitEstablished { src_peer_id, limit } => {
+            json!({"event":NodeEvent::RelayClient,"kind":Kind::InboundCircuit,"peer":src_peer_id.to_string(),"limit":limit_value!(limit)})
+        }
+    }
+}
+
 pub(crate) fn emit(value: Value) {
     if crate::runtime::emit_log(&value) {
         return;
@@ -2058,7 +2113,7 @@ impl Node {
                 self.next_inventory.remove(&peer_id);
                 emit(
                     json!({"event":crate::outcome::NodeEvent::Connected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
-                    "connections":num_established.get(), "relayed":relayed, "endpoint":format!("{endpoint:?}")}),
+                    "connections":num_established.get(), "relayed":relayed, "endpoint":connection_endpoint(&endpoint)}),
                 );
                 if relayed && self.discovery.config.hole_punch {
                     emit(
@@ -2106,7 +2161,7 @@ impl Node {
                 }
                 emit(
                     json!({"event":crate::outcome::NodeEvent::Disconnected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
-                    "connections":num_established, "cause":format!("{cause:?}")}),
+                    "connections":num_established, "cause":connection_close(cause.as_ref())}),
                 );
             }
             SwarmEvent::NewExternalAddrCandidate { address } => {
@@ -2157,9 +2212,7 @@ impl Node {
                 }
             }
             SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
-                emit(
-                    json!({"event":crate::outcome::NodeEvent::RelayClient, "detail":format!("{event:?}")}),
-                );
+                emit(relay_client_event(event));
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
                 json!({"event":crate::outcome::NodeEvent::DialFailed,"peer":peer_id.map(|peer|peer.to_string()),

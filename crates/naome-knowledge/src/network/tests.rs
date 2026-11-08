@@ -996,3 +996,70 @@ async fn control_remains_responsive_with_incomplete_clients() {
     drop(slow);
     controls.shutdown().await.unwrap();
 }
+
+#[test]
+fn transport_events_keep_endpoint_close_and_relay_client_context_structured() {
+    use crate::outcome::{
+        ConnectionClose, ConnectionEndpoint, ConnectionPort, IoFaultKind, NodeEvent,
+        RelayClientEvent,
+    };
+    use libp2p::core::{ConnectedPoint, Endpoint, transport::PortUse};
+    let address = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+    let dialer = connection_endpoint(&ConnectedPoint::Dialer {
+        address,
+        role_override: Endpoint::Listener,
+        port_use: PortUse::Reuse,
+    });
+    assert_eq!(dialer["kind"], u32::from(ConnectionEndpoint::Dialer));
+    assert_eq!(dialer["role"], u32::from(ConnectionEndpoint::Listener));
+    assert_eq!(dialer["port"], u32::from(ConnectionPort::Reused));
+    let listener = connection_endpoint(&ConnectedPoint::Listener {
+        local_addr: "/ip4/127.0.0.1/tcp/12".parse().unwrap(),
+        send_back_addr: "/ip4/127.0.0.1/tcp/13".parse().unwrap(),
+    });
+    assert_eq!(listener["kind"], u32::from(ConnectionEndpoint::Listener));
+    assert_eq!(listener["remote"], "/ip4/127.0.0.1/tcp/13");
+    assert!(connection_close(None).is_none());
+    let cause = libp2p::swarm::ConnectionError::IO(std::io::Error::from(
+        std::io::ErrorKind::ConnectionReset,
+    ));
+    let value = connection_close(Some(&cause)).unwrap();
+    assert_eq!(value["kind"], u32::from(ConnectionClose::Io));
+    assert_eq!(value["io_kind"], u32::from(IoFaultKind::ConnectionReset));
+    assert_eq!(
+        connection_close(Some(&libp2p::swarm::ConnectionError::KeepAliveTimeout)).unwrap()["kind"],
+        u32::from(ConnectionClose::KeepAliveTimeout)
+    );
+    let peer = identity::Keypair::generate_ed25519().public().to_peer_id();
+    for (event, code) in [
+        (
+            relay::client::Event::ReservationReqAccepted {
+                relay_peer_id: peer,
+                renewal: true,
+                limit: None,
+            },
+            RelayClientEvent::ReservationAccepted,
+        ),
+        (
+            relay::client::Event::OutboundCircuitEstablished {
+                relay_peer_id: peer,
+                limit: None,
+            },
+            RelayClientEvent::OutboundCircuit,
+        ),
+        (
+            relay::client::Event::InboundCircuitEstablished {
+                src_peer_id: peer,
+                limit: None,
+            },
+            RelayClientEvent::InboundCircuit,
+        ),
+    ] {
+        let event = relay_client_event(event);
+        assert_eq!(event["event"], u32::from(NodeEvent::RelayClient));
+        assert_eq!(event["kind"], u32::from(code));
+        assert_eq!(event["peer"], peer.to_string());
+        assert!(event["limit"].is_null());
+        assert!(event.get("detail").is_none());
+    }
+}

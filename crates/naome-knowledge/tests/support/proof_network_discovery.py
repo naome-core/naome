@@ -266,6 +266,14 @@ class DiscoveryDriver(Driver):
                 connections = {event["connection_id"]:event for event in node.events
                     if event.get("event") == 0x00170009 and event.get("peer") != self.relay.identity}
                 assert connections and all(event["relayed"] is True for event in connections.values())
+                assert all(event["endpoint"]["kind"] in (0x00440001, 0x00440002)
+                           for event in connections.values())
+                reservations = [event for event in node.events
+                                if event.get("event") == 0x00170053 and event.get("kind") == 0x00470001]
+                assert reservations and all(event["peer"] == self.relay.identity
+                                            and event["limit"]["bytes"] > 0
+                                            and event["limit"]["duration"]["seconds"] > 0
+                                            for event in reservations)
                 objects = [event for event in node.events if event.get("event") == 0x00170013
                     and event.get("kind") == 0x1a0008 and event.get("relayed") is True
                     and event.get("object_id") in expected]
@@ -273,7 +281,8 @@ class DiscoveryDriver(Driver):
                 assert all(event["connection_id"] in connections for event in objects)
                 assert any(event.get("event") == 0x00170001 and event.get("source") == 0x180001 for event in node.events)
                 transfers.append({"node":node.index, "connections":connections, "object_responses":objects})
-            assert any("CircuitReqAccepted" in event.get("detail", "") for event in self.relay.events)
+            assert any(event.get("event") == 0x00170056 and event.get("kind") == 0x00400006
+                       for event in self.relay.events)
             self.summary["scenarios"]["proof_payload_requires_relay_circuit"] = {
                 "result":FixtureResult.PASS, "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
             self.relay.stop()

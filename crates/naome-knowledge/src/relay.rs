@@ -41,6 +41,64 @@ struct Behaviour {
     relay: relay::Behaviour,
 }
 
+fn relay_status(status: relay::StatusCode) -> crate::outcome::RelayStatus {
+    use crate::outcome::RelayStatus as Code;
+    match status {
+        relay::StatusCode::OK => Code::Ok,
+        relay::StatusCode::ReservationRefused => Code::ReservationRefused,
+        relay::StatusCode::ResourceLimitExceeded => Code::ResourceLimitExceeded,
+        relay::StatusCode::PermissionDenied => Code::PermissionDenied,
+        relay::StatusCode::ConnectionFailed => Code::ConnectionFailed,
+        relay::StatusCode::NoReservation => Code::NoReservation,
+        relay::StatusCode::MalformedMessage => Code::MalformedMessage,
+        relay::StatusCode::UnexpectedMessage => Code::UnexpectedMessage,
+    }
+}
+
+fn relay_event(event: relay::Event) -> serde_json::Value {
+    use crate::outcome::{NodeEvent, RelayEventKind as Kind};
+    match event {
+        relay::Event::ReservationReqAccepted {
+            src_peer_id,
+            renewed,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationAccepted,"source":src_peer_id.to_string(),"renewed":renewed})
+        }
+        relay::Event::ReservationReqDenied {
+            src_peer_id,
+            status,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationDenied,"source":src_peer_id.to_string(),"status":relay_status(status)})
+        }
+        relay::Event::ReservationClosed { src_peer_id } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationClosed,"source":src_peer_id.to_string()})
+        }
+        relay::Event::ReservationTimedOut { src_peer_id } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationTimedOut,"source":src_peer_id.to_string()})
+        }
+        relay::Event::CircuitReqDenied {
+            src_peer_id,
+            dst_peer_id,
+            status,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::CircuitDenied,"source":src_peer_id.to_string(),"destination":dst_peer_id.to_string(),"status":relay_status(status)})
+        }
+        relay::Event::CircuitReqAccepted {
+            src_peer_id,
+            dst_peer_id,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::CircuitAccepted,"source":src_peer_id.to_string(),"destination":dst_peer_id.to_string()})
+        }
+        relay::Event::CircuitClosed {
+            src_peer_id,
+            dst_peer_id,
+            error,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::CircuitClosed,"source":src_peer_id.to_string(),"destination":dst_peer_id.to_string(),"error":error.map(|error| json!({"kind":crate::outcome::io_fault_kind(&error),"os_code":error.raw_os_error()}))})
+        }
+    }
+}
+
 fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     // The default library limiter retains one bucket per historical identity.
     // Use an explicit count and short finite window for this bounded service.
@@ -214,7 +272,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                         }
                     }
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => network::emit(json!({"event":crate::outcome::NodeEvent::RelayService, "detail":format!("{event:?}")})),
+                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => network::emit(relay_event(event)),
                 _ => {}
             },
             _ = tick.tick() => {
@@ -233,7 +291,9 @@ pub async fn run(path: &Path) -> Result<(), String> {
             signal = &mut shutdown => { signal?; break; }
         }
     }
-    network::emit(json!({"event":crate::outcome::NodeEvent::Stopped, "role":"relay"}));
+    network::emit(
+        json!({"event":crate::outcome::NodeEvent::Stopped, "role":crate::outcome::ServiceRole::Relay}),
+    );
     Ok(())
 }
 
