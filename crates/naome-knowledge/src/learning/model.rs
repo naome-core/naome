@@ -150,6 +150,7 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("model.rs"));
     hash.update(include_str!("search.rs"));
     hash.update(include_str!("search/frontier.rs"));
+    hash.update(include_str!("search/focus.rs"));
     hash.update(include_str!("search/instantiation.rs"));
     hash.update(include_str!("search/scope.rs"));
     hash.update(include_str!("search/trace.rs"));
