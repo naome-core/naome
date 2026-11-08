@@ -356,7 +356,7 @@ impl Persistence {
     pub(super) fn publications(
         &self,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Vec<(naome_proof::ArtifactId, ResearchQuestion)>, String> {
+    ) -> Result<Vec<(naome_proof::ArtifactId, ResearchQuestion)>, crate::Error> {
         self.checkpoint
             .page(
                 "publication",
@@ -367,9 +367,10 @@ impl Persistence {
             .into_iter()
             .map(|(key, bytes)| {
                 let root = naome_proof::ArtifactId::from_bytes(crate::object::id_bytes(&key)?);
-                let encoded: String = crate::checkpoint::decode(&bytes)?;
+                let encoded: String = crate::checkpoint::decode(&bytes)
+                    .map_err(|_| crate::RuntimeFailure::QuestionStorage)?;
                 let question = ResearchQuestion::from_hex_with_context(&encoded, context)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 Ok((root, question))
             })
             .collect()

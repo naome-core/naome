@@ -339,6 +339,7 @@ codes! {
         RelayTransport = 51,
         RelayBehaviour = 52,
         RelayListener = 53,
+        PublicationRecoveryTarget = 54,
     }
 
     pub enum StartupFailure in 13 {

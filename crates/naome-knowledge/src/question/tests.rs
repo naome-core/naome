@@ -1212,6 +1212,45 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
 }
 
 #[test]
+fn publication_recovery_rejects_a_mismatched_checked_root_without_losing_the_outbox() {
+    let directory = Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let envelope = graph.author(PROOF).unwrap();
+    let root = graph.ingest(envelope, Instant::now()).unwrap().id;
+    let target = (0..3)
+        .map(|i| question(&crate::mocks::create_question(i)))
+        .find(|candidate| !graph.resolves_question(root, candidate).unwrap())
+        .unwrap();
+    let mut local = Managed::new(None);
+    local.attach_persistence(&directory.0, &graph).unwrap();
+    local
+        .persistence
+        .as_mut()
+        .unwrap()
+        .stage_publication(root, &target)
+        .unwrap();
+    let before = graph.content_root();
+    let error = local.recover_publications(&graph).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::Runtime(crate::RuntimeFailure::PublicationRecoveryTarget)
+    ));
+    assert!(error.fatal());
+    assert_eq!(local.registry.len(), 0);
+    assert_eq!(graph.content_root(), before);
+    assert_eq!(
+        local
+            .persistence
+            .as_ref()
+            .unwrap()
+            .publications(graph.checked_context())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn publication_outbox_recovers_each_durable_cut_without_losing_original_source() {
     for cut in 0..4 {
         let directory = Directory::new();

@@ -1087,7 +1087,7 @@ where
         Ok(())
     }
 
-    pub(crate) fn recover_publications(&mut self, graph: &Graph) -> Result<(), String> {
+    pub(crate) fn recover_publications(&mut self, graph: &Graph) -> Result<(), crate::Error> {
         loop {
             let entries = match &self.persistence {
                 Some(p) => p.publications(graph.checked_context())?,
@@ -1099,25 +1099,26 @@ where
             for (root, question) in entries {
                 if graph.contains(root)? {
                     if !graph.resolves_question(root, &question)? {
-                        return Err("publication recovery target differs from checked graph".into());
+                        return Err(crate::RuntimeFailure::PublicationRecoveryTarget.into());
                     }
                     let mut registry = self.registry.clone();
                     if !registry
                         .contains_record(question.record_id())
-                        .map_err(|e| e.to_string())?
+                        .map_err(crate::Error::from)?
                     {
                         registry
                             .insert(
                                 RegisteredQuestion::from_research_question(&question)
-                                    .map_err(|e| format!("publication recovery: {e:?}"))?,
+                                    .map_err(crate::Error::from)?,
                             )
-                            .map_err(|e| format!("publication recovery: {e:?}"))?;
+                            .map_err(crate::Error::from)?;
                     }
                     self.apply_exchange(QuestionDelta {
                         registry,
                         question,
                         insert: true,
-                    })?;
+                    })
+                    .map_err(|_| crate::RuntimeFailure::QuestionRetention)?;
                 }
                 self.persistence
                     .as_mut()
