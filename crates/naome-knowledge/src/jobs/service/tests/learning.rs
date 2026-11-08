@@ -973,46 +973,7 @@ fn binary_peer_admission(
     prefix: &[naome_proof::program::Command],
     secondary: naome_foundation::ZfcAxiom,
 ) -> (PeerAdmission, String) {
-    use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep, program::Command};
-    let original = checked_solution();
-    let question = crate::learning::tests::own_question();
-    let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();
-    let axiom = ProofCertificate::new(vec![ProofStep::ZfcAxiom(secondary)]).unwrap();
-    let second =
-        crate::learning::proof::check(axiom.clone(), &naome_checker::ArtifactState::new()).unwrap();
-    let offset = prefix.len() as u64;
-    let mut commands = prefix.to_vec();
-    commands.extend([
-        Command::ProofReference {
-            proof_id: crate::object::id_bytes(&original.proof_id).unwrap(),
-        },
-        Command::ProofReference {
-            proof_id: *second.proof_id().as_bytes(),
-        },
-        Command::Simplification {
-            antecedent: offset,
-            consequent: offset + 1,
-        },
-        Command::ModusPonens {
-            premise: offset,
-            implication: offset + 2,
-        },
-        Command::ModusPonens {
-            premise: offset + 1,
-            implication: offset + 3,
-        },
-        Command::Seal { proof: offset + 4 },
-    ]);
-    let mut artifacts = original
-        .helpers
-        .iter()
-        .chain(std::iter::once(&original.source))
-        .map(|hex| std::sync::Arc::from(crate::unhex(hex).unwrap()))
-        .collect::<Vec<_>>();
-    artifacts.push(ArtifactPayload::Proof(axiom).to_canonical_bytes().into());
-    let packet =
-        crate::learning::peer::Packet::compose(q.proved_target(), &commands, &[], artifacts)
-            .unwrap();
+    let (question, packet) = crate::learning::tests::binary_program(prefix, secondary);
     let artifact = crate::hex(packet.manifest.artifact_id().as_bytes());
     let proof = crate::hex(packet.manifest.proof_id().as_bytes());
     let admission = PeerAdmission {

@@ -107,6 +107,26 @@ impl Example {
         }
         Ok(&source.trace)
     }
+    fn checked_graphs(
+        &self,
+        target: &naome_foundation::Formula,
+        evidence: &[Evidence],
+    ) -> Result<(Option<search::Tree>, Vec<graph::Graph>), String> {
+        let tree = self.trajectory(evidence)?;
+        if let search::Tree::Program(packet) = tree {
+            if self.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
+                return Err("peer replay snapshot program differs".into());
+            }
+            return Ok((None, peer::program_graphs(target, packet)?));
+        }
+        let (core, _, verified) = search::core::checked(target, tree)?;
+        if crate::hex(verified.native_id.as_bytes()) != self.proof_id {
+            return Err("peer replay snapshot proof differs".into());
+        }
+        let graphs = search::compile(target, &core)?.1;
+        Ok((Some(core), graphs))
+    }
+
     pub fn evidence_job(&self) -> Option<u64> {
         matches!(self.tree, search::Tree::Stored { .. }).then_some(self.job)
     }

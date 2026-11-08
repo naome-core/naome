@@ -739,6 +739,50 @@ pub(crate) fn own_solution() -> Solution {
         .unwrap()
 }
 
+pub(crate) fn binary_program(
+    prefix: &[naome_proof::program::Command],
+    secondary: ZfcAxiom,
+) -> (String, peer::Packet) {
+    use naome_proof::{ArtifactPayload, ProofCertificate, ProofStep, program::Command};
+    let original = own_solution();
+    let question = own_question();
+    let q = ResearchQuestion::from_hex(&question).unwrap();
+    let axiom = ProofCertificate::new(vec![ProofStep::ZfcAxiom(secondary)]).unwrap();
+    let second = proof::check(axiom.clone(), &naome_checker::ArtifactState::new()).unwrap();
+    let offset = prefix.len() as u64;
+    let mut commands = prefix.to_vec();
+    commands.extend([
+        Command::ProofReference {
+            proof_id: crate::object::id_bytes(&original.proof_id).unwrap(),
+        },
+        Command::ProofReference {
+            proof_id: *second.proof_id().as_bytes(),
+        },
+        Command::Simplification {
+            antecedent: offset,
+            consequent: offset + 1,
+        },
+        Command::ModusPonens {
+            premise: offset,
+            implication: offset + 2,
+        },
+        Command::ModusPonens {
+            premise: offset + 1,
+            implication: offset + 3,
+        },
+        Command::Seal { proof: offset + 4 },
+    ]);
+    let mut artifacts = original
+        .helpers
+        .iter()
+        .chain(std::iter::once(&original.source))
+        .map(|hex| std::sync::Arc::from(crate::unhex(hex).unwrap()))
+        .collect::<Vec<_>>();
+    artifacts.push(ArtifactPayload::Proof(axiom).to_canonical_bytes().into());
+    let packet = peer::Packet::compose(q.proved_target(), &commands, &[], artifacts).unwrap();
+    (question, packet)
+}
+
 #[test]
 fn targeted_preparation_rehearses_owned_anchors_without_duplicate_source_weight() {
     let solution = own_solution();

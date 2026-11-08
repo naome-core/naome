@@ -62,11 +62,7 @@ fn example(
     } else {
         q.proved_target()
     };
-    let (core, _, verified) = search::core::checked(target, example.trajectory(evidence)?)?;
-    if crate::hex(verified.native_id.as_bytes()) != example.proof_id {
-        return Err("finder utility proof identity differs".into());
-    }
-    let graphs = search::compile(target, &core)?.1;
+    let (_, graphs) = example.checked_graphs(target, evidence)?;
     Ok(graphs
         .into_iter()
         .find(|g| g.candidates.len() > 1)
@@ -93,10 +89,9 @@ impl State {
         }
         let wall = std::time::Instant::now();
         let cpu = meta::cpu_micros()?;
-        // This small diagnostic shares the admitted native job's original work
-        // envelope. Its rechecks, backward passes and IO count in job elapsed.
-        let _memory = crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)
-            .map_err(|e| e.to_string())?;
+        // Checked programs acquire their own workspace during reconstruction.
+        // Hold only the admitted reference graphs between phases.
+        let mut reference_memory = Vec::new();
         let mut references = Vec::new();
         let mut questions = Vec::new();
         let mut graphs = Vec::new();
@@ -108,6 +103,10 @@ impl State {
         {
             match example(anchor, evidence) {
                 Ok(Some((q, g))) => {
+                    reference_memory.push(
+                        crate::resources::MemoryLease::acquire(g.work_bytes())
+                            .map_err(|e| e.to_string())?,
+                    );
                     references.push(anchor.proof_id.clone());
                     questions.push(q);
                     graphs.push(g);
@@ -133,6 +132,10 @@ impl State {
                 Ok(None) => continue,
                 Err(error) => return Err(error),
             };
+            // Replay has completed before reserving the gradient workspace.
+            let _memory =
+                crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)
+                    .map_err(|e| e.to_string())?;
             passes += 2;
             let Some(alignment) =
                 engine.with(model, io, |runtime| runtime.utility_alignment(&g, &graphs))?

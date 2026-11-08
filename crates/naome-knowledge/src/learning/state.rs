@@ -597,20 +597,7 @@ impl State {
             } else {
                 q.proved_target()
             };
-            let tree = e.trajectory(evidence)?;
-            let (core, graphs) = if let search::Tree::Program(packet) = tree {
-                if e.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
-                    return Err("peer replay snapshot program differs".into());
-                }
-                (None, peer::program_graphs(target, packet)?)
-            } else {
-                let (core, _, verified) = search::core::checked(target, tree)?;
-                if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
-                    return Err("peer replay snapshot proof differs".into());
-                }
-                let graphs = search::compile(target, &core)?.1;
-                (Some(core), graphs)
-            };
+            let (core, graphs) = e.checked_graphs(target, evidence)?;
             pool.add(
                 matches!(e.origin, Origin::Peer { .. }),
                 &case.dependency,
