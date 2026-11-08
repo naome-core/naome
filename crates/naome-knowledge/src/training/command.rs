@@ -122,7 +122,10 @@ pub fn run(directory: &Path, input: &Path) -> Result<(), Error> {
         .ok_or(crate::InputLimit::CliJsonAllocationBudgetOverflow)?;
     let _memory = crate::resources::MemoryLease::acquire(budget)?;
     let bytes = crate::storage::read_owned(input, limits.command_bytes)
-        .map_err(|_| RuntimeFailure::TrainingRequestRead)?
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: RuntimeFailure::TrainingRequestRead,
+            cause: Box::new(cause),
+        })?
         .ok_or(RuntimeFailure::TrainingRequestMissing)?;
     crate::resources::json::allocation_bound(&bytes, budget)?;
     let command: Command =

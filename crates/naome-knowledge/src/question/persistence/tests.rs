@@ -357,12 +357,19 @@ fn corrupted_registry_marker_is_rejected_without_replacement() {
     let directory = crate::checkpoint::tests::Directory::new();
     let marker = directory.0.join("question-registry.initialized");
     std::fs::write(&marker, b"invalid marker").unwrap();
-    assert!(matches!(
-        Persistence::open(&directory.0, PrefilterPolicy::default()),
-        Err(crate::Error::Runtime(
-            crate::RuntimeFailure::QuestionMarkerRead
-        ))
-    ));
+    let error = Persistence::open(&directory.0, PrefilterPolicy::default())
+        .err()
+        .unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::RuntimeFailure::QuestionMarkerRead)
+    );
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::MarkerCorrupt)
+    );
+    assert_eq!(value["fatal"], true);
     assert_eq!(std::fs::read(&marker).unwrap(), b"invalid marker");
     assert!(!directory.0.join("research/questions.sqlite3").exists());
 }

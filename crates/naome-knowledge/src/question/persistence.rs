@@ -69,8 +69,12 @@ impl Persistence {
         let root = crate::storage::research_directory(directory)?;
         let path = root.join("questions.sqlite3");
         let marker = directory.join("question-registry.initialized");
-        let established = crate::storage::marker_valid(&marker, MARKER)
-            .map_err(|_| crate::RuntimeFailure::QuestionMarkerRead)?;
+        let established = crate::storage::marker_valid(&marker, MARKER).map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::QuestionMarkerRead,
+                cause: Box::new(cause),
+            }
+        })?;
         let checkpoint = if path.exists() {
             crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN).map_err(
                 |cause| crate::Error::RuntimeContext {
@@ -117,8 +121,12 @@ impl Persistence {
             fault: std::sync::Mutex::new(None),
         };
         if !established {
-            crate::storage::write_marker(&marker, MARKER)
-                .map_err(|_| crate::RuntimeFailure::QuestionMarkerWrite)?;
+            crate::storage::write_marker(&marker, MARKER).map_err(|cause| {
+                crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionMarkerWrite,
+                    cause: Box::new(cause),
+                }
+            })?;
         }
         Ok(persistence)
     }
