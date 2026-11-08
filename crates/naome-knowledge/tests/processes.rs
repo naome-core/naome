@@ -41,6 +41,80 @@ fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
     );
 }
 
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn cold_helper_fetches_definitions_for_cooperative_work() {
+    use naome_checker::question::ResearchQuestion;
+    use naome_foundation::{Formula, FreeVariable};
+    use naome_proof::{ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate};
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let x = FreeVariable::new(0);
+    let body = Formula::member(x, x);
+    let definition =
+        DefinitionCertificate::relation(1, DefinedFormula::from_primitive(&body).unwrap()).unwrap();
+    let id = ArtifactId::from_definition_id(definition.definition_id());
+    let defined = DefinedFormula::for_all(
+        x,
+        DefinedFormula::defined_relation(definition.definition_id(), [x]),
+    );
+    let source = defined.encode_canonical_with_limits(1023, 31).unwrap().0;
+    let resolution = ResearchQuestion::from_formula(Formula::for_all(x, body)).unwrap();
+    let mut artifact = vec![ArtifactPayload::DEFINITION_TAG];
+    artifact.extend(definition.canonical_bytes());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = std::env::temp_dir().join(format!(
+        "naome-defined-workgroup-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let seed = output.with_extension("seed");
+    std::fs::create_dir(&seed).unwrap();
+    {
+        let mut graph = naome_knowledge::Graph::open(&seed).unwrap();
+        let envelope = graph.author(&naome_knowledge::hex(&artifact)).unwrap();
+        let receipt = graph.ingest(envelope, std::time::Instant::now()).unwrap();
+        assert_eq!(receipt.status, "accepted");
+    }
+    let result = Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg(root.join("crates/naome-knowledge/tests/support/defined_workgroup.py"))
+        .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
+        .arg(&output)
+        .args(["--seed"])
+        .arg(&seed)
+        .args([
+            "--timeout",
+            "120",
+            "--definition-id",
+            &naome_knowledge::hex(id.as_bytes()),
+            "--question",
+            &naome_knowledge::hex(&source),
+            "--resolution",
+            &naome_knowledge::hex(resolution.resolution_id()),
+            "--target",
+            &resolution.to_hex(),
+            "--profile",
+            if cfg!(debug_assertions) {
+                "test"
+            } else {
+                "release"
+            },
+        ])
+        .output()
+        .expect("defined workgroup process scenario");
+    std::fs::remove_dir_all(&seed).unwrap();
+    assert!(
+        result.status.success(),
+        "defined workgroup evidence at {}\n{}\n{}",
+        output.display(),
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
 #[ignore = "Bounded public produce/compaction mechanism screen"]
