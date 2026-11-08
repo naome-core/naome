@@ -57,7 +57,7 @@ impl Checkpoint {
             TransactionBehavior::Immediate,
             write_error,
             |transaction| {
-                if version_of(transaction).map_err(crate::Error::CorruptStorage)?
+                if version_of(transaction).map_err(crate::Error::fatal_storage)?
                     != self.data_version
                 {
                     return Err(

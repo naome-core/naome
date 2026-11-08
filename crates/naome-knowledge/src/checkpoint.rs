@@ -85,20 +85,20 @@ impl Checkpoint {
         let connection = connect(path)?;
         let application: i64 = connection
             .pragma_query_value(None, "application_id", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if application != APPLICATION_ID || version != 1 {
             return Err(crate::InputFault::CheckpointIdentity.into());
         }
         let definitions = connection
             .prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name")
-            .map_err(sql)?
+            .map_err(sql_error)?
             .query_map([], |r| r.get::<_, String>(0))
-            .map_err(sql)?
+            .map_err(sql_error)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if definitions.len() != SCHEMA.len()
             || definitions
                 .iter()
@@ -109,7 +109,7 @@ impl Checkpoint {
         }
         let integrity: String = connection
             .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if integrity != "ok" {
             return Err(crate::InputFault::CheckpointIntegrity.into());
         }
@@ -128,7 +128,7 @@ impl Checkpoint {
         let observed: i64 = checkpoint
             .connection
             .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if u64::try_from(observed).ok() != Some(expected) {
             return Err(crate::InputFault::CheckpointRowCount.into());
         }
@@ -224,7 +224,7 @@ impl Checkpoint {
             &self.connection,
             crate::resources::active_limits().checkpoint_cache_bytes,
         )
-        .map_err(sql)?;
+        .map_err(sql_error)?;
         let current = owned(&self.path)?;
         if current.dev() != self.identity.dev() || current.ino() != self.identity.ino() {
             return Err(crate::InputFault::CheckpointFileReplaced.into());
@@ -238,11 +238,11 @@ impl Checkpoint {
         self.ensure_generation()?;
         let (domain, payload, stored, count): (String, Vec<u8>, Vec<u8>, i64) = self.connection.query_row(
             "SELECT substr(domain,1,129), substr(header,1,1048577), substr(digest,1,33), entry_count FROM checkpoint WHERE singleton = 1", [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().map_err(sql)?.ok_or(crate::InputFault::CheckpointHeaderCardinality)?;
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().map_err(sql_error)?.ok_or(crate::InputFault::CheckpointHeaderCardinality)?;
         let rows: i64 = self
             .connection
             .query_row("SELECT count(*) FROM checkpoint", [], |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if rows != 1 {
             return Err(crate::InputFault::CheckpointHeaderCardinality.into());
         }
@@ -274,7 +274,7 @@ impl Checkpoint {
         let maximum = maximum.min(MAX_ROW);
         let row: Option<(Vec<u8>, Vec<u8>)> = self.connection.query_row(
             "SELECT substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind = ?1 AND key = ?2",
-            params![kind, key, (maximum + 1) as i64], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(sql)?;
+            params![kind, key, (maximum + 1) as i64], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(sql_error)?;
         row.map(|(payload, stored)| {
             check_row(self.domain, kind, key, &payload, &stored, maximum)?;
             decode(&payload)
@@ -290,14 +290,14 @@ impl Checkpoint {
     ) -> Result<(), crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
-        let mut statement = self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?2), substr(digest,1,33) FROM entries WHERE kind = ?1 ORDER BY key").map_err(sql)?;
+        let mut statement = self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?2), substr(digest,1,33) FROM entries WHERE kind = ?1 ORDER BY key").map_err(sql_error)?;
         let mut rows = statement
             .query(params![kind, (maximum + 1) as i64])
-            .map_err(sql)?;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let key: String = row.get(0).map_err(sql)?;
-            let payload: Vec<u8> = row.get(1).map_err(sql)?;
-            let stored: Vec<u8> = row.get(2).map_err(sql)?;
+            .map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let key: String = row.get(0).map_err(sql_error)?;
+            let payload: Vec<u8> = row.get(1).map_err(sql_error)?;
+            let stored: Vec<u8> = row.get(2).map_err(sql_error)?;
             check_row(self.domain, kind, &key, &payload, &stored, maximum)?;
             visit(&key, &payload)?;
         }
@@ -316,7 +316,7 @@ impl Checkpoint {
         if records == 0 || bytes == 0 {
             return Err(crate::InputFault::CheckpointPageBudget.into());
         }
-        let mut statement=self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind=?1 AND key>?2 ORDER BY key LIMIT ?4").map_err(sql)?;
+        let mut statement=self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind=?1 AND key>?2 ORDER BY key LIMIT ?4").map_err(sql_error)?;
         let mut rows = statement
             .query(params![
                 kind,
@@ -325,13 +325,13 @@ impl Checkpoint {
                     .map_err(|_| crate::InputFault::CheckpointPageByteWidth)?,
                 i64::try_from(records).map_err(|_| crate::InputFault::CheckpointPageRecordWidth)?
             ])
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let mut page = Vec::new();
         let mut retained = 0usize;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let key: String = row.get(0).map_err(sql)?;
-            let payload: Vec<u8> = row.get(1).map_err(sql)?;
-            let stored: Vec<u8> = row.get(2).map_err(sql)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let key: String = row.get(0).map_err(sql_error)?;
+            let payload: Vec<u8> = row.get(1).map_err(sql_error)?;
+            let stored: Vec<u8> = row.get(2).map_err(sql_error)?;
             check_row(
                 self.domain,
                 kind,
@@ -557,10 +557,10 @@ fn connect(path: &Path) -> Result<Connection, String> {
 fn owned(path: &Path) -> Result<fs::Metadata, String> {
     crate::storage::owned_file(path)
 }
-fn version_of(connection: &Connection) -> Result<i64, String> {
+fn version_of(connection: &Connection) -> Result<i64, crate::Error> {
     connection
         .pragma_query_value(None, "data_version", |r| r.get(0))
-        .map_err(sql)
+        .map_err(sql_error)
 }
 fn normalize(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -569,6 +569,18 @@ fn sync_parent(path: &Path) -> Result<(), String> {
     File::open(path.parent().ok_or("checkpoint parent missing")?)
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())
+}
+fn sql_error(error: rusqlite::Error) -> crate::Error {
+    let reason = match &error {
+        rusqlite::Error::SqliteFailure(..) => crate::CheckpointSqlFault::Engine,
+        rusqlite::Error::QueryReturnedNoRows => crate::CheckpointSqlFault::MissingRow,
+        rusqlite::Error::InvalidColumnType(..) => crate::CheckpointSqlFault::ColumnType,
+        _ => crate::CheckpointSqlFault::Other,
+    };
+    crate::Error::CheckpointSql {
+        reason,
+        sqlite_code: naome_storage::sqlite_code(&error),
+    }
 }
 fn sql(error: rusqlite::Error) -> String {
     format!("transactional checkpoint: {error}")

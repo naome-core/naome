@@ -419,3 +419,26 @@ fn checkpoint_header_domain_and_digest_failures_keep_specific_causes() {
     );
     assert!(error.storage().fatal());
 }
+
+#[test]
+fn checkpoint_sql_read_failure_retains_native_code_and_fails_closed() {
+    let directory = Directory::new();
+    let path = directory.0.join("missing-table.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    checkpoint
+        .connection
+        .execute("DROP TABLE entries", [])
+        .unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    let value = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(value["fatal"], true);
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::outcome::OperationCode::CheckpointSql)
+    );
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::CheckpointSqlFault::Engine)
+    );
+    assert_eq!(value["sqlite_code"], rusqlite::ffi::SQLITE_ERROR);
+}

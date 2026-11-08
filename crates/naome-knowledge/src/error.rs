@@ -267,6 +267,10 @@ pub enum Error {
         line: usize,
         column: usize,
     },
+    CheckpointSql {
+        reason: crate::CheckpointSqlFault,
+        sqlite_code: Option<NonZeroI32>,
+    },
     Runtime(crate::RuntimeFailure),
     RuntimeContext {
         code: crate::RuntimeFailure,
@@ -320,6 +324,7 @@ impl Error {
             Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
+            Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
@@ -362,6 +367,7 @@ impl Error {
             | Self::QuestionRegistration(_)
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
+            | Self::CheckpointSql { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
@@ -518,6 +524,14 @@ impl fmt::Display for Error {
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::DefinitionCheck(reason) => write!(f, "definition check: {reason}"),
+            Self::CheckpointSql {
+                reason,
+                sqlite_code,
+            } => write!(
+                f,
+                "checkpoint SQLite failure {} ({sqlite_code:?})",
+                u32::from(*reason)
+            ),
             Self::CheckpointDecode {
                 reason,
                 line,
@@ -1010,6 +1024,16 @@ impl serde::Serialize for Error {
         }
         if let Self::QuestionRegistration(reason) = cause {
             value.serialize_entry("reason", &reason.code())?;
+        }
+        if let Self::CheckpointSql {
+            reason,
+            sqlite_code,
+        } = cause
+        {
+            value.serialize_entry("reason", reason)?;
+            if let Some(code) = sqlite_code {
+                value.serialize_entry("sqlite_code", code)?;
+            }
         }
         if let Self::CheckpointDecode {
             reason,
