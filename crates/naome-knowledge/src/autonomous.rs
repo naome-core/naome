@@ -560,7 +560,7 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 emit(
-                                    json!({"event":"question_candidate_rejected","error":error.to_string()}),
+                                    json!({"event":"question_candidate_rejected","error":crate::Error::from(error)}),
                                 );
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
@@ -693,7 +693,7 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 emit(
-                                    json!({"event":"proof_candidate_rejected","job":completion.id,"error":error.to_string()}),
+                                    json!({"event":"proof_candidate_rejected","job":completion.id,"error":error}),
                                 );
                                 self.retry(solving.question, questions, graph);
                                 if !self.acknowledge(completion.id) {
