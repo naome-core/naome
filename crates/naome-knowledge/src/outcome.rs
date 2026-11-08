@@ -778,6 +778,10 @@ codes! {
         NativeCertificateConclusion = 107,
         NativeDefinitionHelpers = 108,
         NativeSourceIdentity = 109,
+        DefinitionSnapshotCapacity = 110,
+        DefinitionSelectionIndex = 111,
+        DefinitionAvailability = 112,
+        DefinitionTraceSnapshotMissing = 113,
     }
 
 }

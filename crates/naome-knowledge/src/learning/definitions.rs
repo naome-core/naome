@@ -20,8 +20,9 @@ pub struct Entry {
     pub obligation: Option<Vec<u8>>,
 }
 impl Entry {
-    pub fn certificate(&self) -> Result<DefinitionCertificate, String> {
-        DefinitionCertificate::from_canonical_bytes(&self.certificate).map_err(|e| e.to_string())
+    pub fn certificate(&self) -> Result<DefinitionCertificate, crate::Error> {
+        DefinitionCertificate::from_canonical_bytes(&self.certificate)
+            .map_err(|error| crate::object::definition_error(&self.certificate, error))
     }
     pub fn address(&self) -> Result<ArtifactId, String> {
         Ok(self.certificate()?.definition_id().into())
@@ -36,7 +37,7 @@ impl Entry {
     pub fn bytes(&self) -> usize {
         self.certificate.len() + self.obligation.as_ref().map_or(0, Vec::len)
     }
-    pub fn artifact(&self) -> Result<String, String> {
+    pub fn artifact(&self) -> Result<String, crate::Error> {
         Ok(crate::hex(
             &naome_proof::ArtifactPayload::Definition(self.certificate()?).to_canonical_bytes(),
         ))
@@ -44,11 +45,14 @@ impl Entry {
 }
 
 // The graph admits each tagged artifact against the earlier checked prefix.
-pub(super) fn append_artifacts(entries: &[Entry], sources: &mut Vec<String>) -> Result<(), String> {
+pub(super) fn append_artifacts(
+    entries: &[Entry],
+    sources: &mut Vec<String>,
+) -> Result<(), crate::Error> {
     for entry in entries {
         if let Some(bytes) = &entry.obligation {
-            let certificate =
-                ProofCertificate::from_canonical_bytes(bytes).map_err(|error| error.to_string())?;
+            let certificate = ProofCertificate::from_canonical_bytes(bytes)
+                .map_err(|error| crate::object::certificate_error(bytes, error))?;
             let witness = super::proof::artifact(&certificate);
             if !sources.contains(&witness) {
                 sources.push(witness);
@@ -66,9 +70,9 @@ pub(crate) fn fits(entries: &[Entry]) -> bool {
     entries.len() <= CAPACITY && entries.iter().map(Entry::bytes).sum::<usize>() <= BYTES
 }
 
-pub fn context(entries: &[Entry]) -> Result<ArtifactState, String> {
+pub fn context(entries: &[Entry]) -> Result<ArtifactState, crate::Error> {
     if !fits(entries) {
-        return Err("definition reference snapshot capacity".into());
+        return Err(crate::ResearchFailure::DefinitionSnapshotCapacity.into());
     }
     let mut context = ArtifactState::new();
     for entry in entries {
@@ -77,43 +81,44 @@ pub fn context(entries: &[Entry]) -> Result<ArtifactState, String> {
     Ok(context)
 }
 
-pub fn register(context: &mut ArtifactState, entry: &Entry) -> Result<(), String> {
+pub fn register(context: &mut ArtifactState, entry: &Entry) -> Result<(), crate::Error> {
     if entry.bytes() > BYTES {
-        return Err("definition reference snapshot capacity".into());
+        return Err(crate::ResearchFailure::DefinitionSnapshotCapacity.into());
     }
     if let Some(bytes) = &entry.obligation {
-        let certificate =
-            ProofCertificate::from_canonical_bytes(bytes).map_err(|e| e.to_string())?;
-        let checked = super::proof::check(certificate, context).map_err(|e| e.to_string())?;
+        let certificate = ProofCertificate::from_canonical_bytes(bytes)
+            .map_err(|error| crate::object::certificate_error(bytes, error))?;
+        let checked = super::proof::check(certificate, context)?;
         if !context.contains_proof(checked.proof_id()) {
-            context
-                .register_proof_for_verification(checked)
-                .map_err(|e| e.to_string())?;
+            context.register_proof_for_verification(checked)?;
         }
     }
-    let checked = naome_checker::check_definition_with_state(entry.certificate()?, context)
-        .map_err(|e| e.to_string())?;
+    let checked = naome_checker::check_definition_with_state(entry.certificate()?, context)?;
     if !context.contains_definition(entry.certificate()?.definition_id()) {
-        context
-            .register_definition(checked)
-            .map_err(|e| e.to_string())?;
+        context.register_definition(checked)?;
     }
     Ok(())
 }
-pub fn proof_context(tree: &super::search::Tree) -> Result<ArtifactState, String> {
+pub fn proof_context(tree: &super::search::Tree) -> Result<ArtifactState, crate::Error> {
     use super::search::Tree;
     match tree {
         Tree::Scoped { target, actions } => {
             let verified = super::search::scope::verified(target, actions)?;
-            super::proof::lemma_context(&verified.definitions, &verified.lemmas)
+            Ok(super::proof::lemma_context(
+                &verified.definitions,
+                &verified.lemmas,
+            )?)
         }
         Tree::Knowledge { .. } => {
             let verified = super::knowledge::verified(tree)?;
-            super::proof::lemma_context(&verified.definitions, &verified.lemmas)
+            Ok(super::proof::lemma_context(
+                &verified.definitions,
+                &verified.lemmas,
+            )?)
         }
         Tree::Constructed { packet, .. }
         | Tree::Composed { packet, .. }
-        | Tree::Certificate(packet) => super::evidence::context(packet),
+        | Tree::Certificate(packet) => Ok(super::evidence::context(packet)?),
         Tree::Definitions {
             entries,
             selected,
@@ -123,11 +128,13 @@ pub fn proof_context(tree: &super::search::Tree) -> Result<ArtifactState, String
             let mut context = proof_context(proof)?;
             register(
                 &mut context,
-                entries.get(*selected).ok_or("definition selection index")?,
+                entries
+                    .get(*selected)
+                    .ok_or(crate::ResearchFailure::DefinitionSelectionIndex)?,
             )?;
             Ok(context)
         }
-        Tree::Stored { .. } => Err("source context requires its owned trace snapshot".into()),
+        Tree::Stored { .. } => Err(crate::ResearchFailure::DefinitionTraceSnapshotMissing.into()),
         _ => Ok(ArtifactState::new()),
     }
 }
@@ -423,18 +430,22 @@ pub fn choose(
     Ok(Some((entries, selected)))
 }
 
-pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
+pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, crate::Error> {
     if let super::search::Tree::Scoped { target, actions } = tree {
-        return super::knowledge::helpers(&super::search::scope::verified(target, actions)?);
+        return Ok(super::knowledge::helpers(&super::search::scope::verified(
+            target, actions,
+        )?)?);
     }
     if matches!(tree, super::search::Tree::Knowledge { .. }) {
-        return super::knowledge::helpers(&super::knowledge::verified(tree)?);
+        return Ok(super::knowledge::helpers(&super::knowledge::verified(
+            tree,
+        )?)?);
     }
     if let super::search::Tree::Constructed { packet: bytes, .. }
     | super::search::Tree::Composed { packet: bytes, .. }
     | super::search::Tree::Certificate(bytes) = tree
     {
-        return super::evidence::helpers(bytes);
+        return Ok(super::evidence::helpers(bytes)?);
     }
     let super::search::Tree::Definitions {
         entries,
@@ -445,10 +456,12 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
     else {
         return Ok(Vec::new());
     };
-    let entry = entries.get(*selected).ok_or("definition selection index")?;
+    let entry = entries
+        .get(*selected)
+        .ok_or(crate::ResearchFailure::DefinitionSelectionIndex)?;
     entries
         .get(..*available)
-        .ok_or("definition availability differs")?;
+        .ok_or(crate::ResearchFailure::DefinitionAvailability)?;
     let mut sources = helpers(proof)?;
     append_artifacts(std::slice::from_ref(entry), &mut sources)?;
     Ok(sources)
@@ -494,6 +507,28 @@ mod tests {
             obligation: None,
         }
     }
+    #[test]
+    fn invalid_definition_and_obligation_retain_structured_diagnostics() {
+        let invalid = Entry {
+            certificate: vec![255],
+            obligation: None,
+        };
+        let error = context(&[invalid]).err().unwrap();
+        assert!(matches!(error, crate::Error::CertificateFormat(ref value)
+        if matches!(value.reason, crate::FormatFailure::UnknownTag {
+            domain: crate::FormatTagClass::DefinitionKind, tag: 255
+        })));
+
+        let mut invalid_witness = entry("0100000000010000000b0000000000000000000000");
+        let certificate = ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+            proof_id: naome_proof::ProofId::from_bytes([7; 32]),
+        }])
+        .unwrap();
+        invalid_witness.obligation = Some(certificate.to_canonical_bytes());
+        let error = context(&[invalid_witness]).err().unwrap();
+        assert!(error.diagnostic().is_some());
+    }
+
     #[test]
     fn discovered_definitions_are_atomic_references_and_reused_after_restart() {
         let q = naome_checker::question::ResearchQuestion::from_hex(

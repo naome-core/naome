@@ -622,6 +622,14 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::HistoryPreparedChanged => {
                     "prepared replay changed across continuation"
                 }
+                crate::ResearchFailure::DefinitionSnapshotCapacity => {
+                    "definition reference snapshot capacity"
+                }
+                crate::ResearchFailure::DefinitionSelectionIndex => "definition selection index",
+                crate::ResearchFailure::DefinitionAvailability => "definition availability differs",
+                crate::ResearchFailure::DefinitionTraceSnapshotMissing => {
+                    "source context requires its owned trace snapshot"
+                }
                 crate::ResearchFailure::ExpectedProofArtifact => {
                     "expected a canonical proof artifact"
                 }
