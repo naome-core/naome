@@ -392,7 +392,7 @@ impl Runtime {
         parent: &Checkpoint,
         updates: u64,
         io: &mut I,
-    ) -> Result<Checkpoint, String> {
+    ) -> Result<Checkpoint, crate::Error> {
         let model = canonical_checkpoint(
             self.policy
                 .clone()
@@ -556,7 +556,7 @@ pub(super) fn test_update<I: ArtifactIo + ?Sized>(
 ) -> Result<Checkpoint, String> {
     let mut runtime = Runtime::load(checkpoint, io)?;
     runtime.train(&Pool::from_graphs(graphs), rng, 1)?;
-    runtime.checkpoint(checkpoint, 1, io)
+    Ok(runtime.checkpoint(checkpoint, 1, io)?)
 }
 /// Only two concrete model lifetimes coexist: incumbent and current candidate.
 /// Their binary identities stay outside controller state and accepted mathematics.
@@ -734,7 +734,7 @@ impl Engine {
         cursor: &mut u64,
         phase: super::meta::Phase,
         io: &mut I,
-    ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
+    ) -> Result<Option<(Checkpoint, f32, f32)>, crate::Error> {
         self.cost = TrainingCost::default();
         let (evidence, observations) = material;
         let rich_targets = self.rich_targets();
@@ -761,10 +761,10 @@ impl Engine {
                 #[cfg(test)]
                 if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
-                    self.with(&state.model, io, |runtime| {
-                        pool.reference_focus(&state.feedback, |g| {
+                    self.with_error(&state.model, io, |runtime| {
+                        Ok(pool.reference_focus(&state.feedback, |g| {
                             runtime.scores_graph(g).map_err(Into::into)
-                        })
+                        })?)
                     })?;
                     self.cost.preparation_micros = micros(preparation);
                 }
@@ -789,10 +789,10 @@ impl Engine {
         };
         if current_focus && !pool.is_empty() {
             let preparation = std::time::Instant::now();
-            self.with(c, io, |runtime| {
-                pool.focus(&state.feedback, |g| {
+            self.with_error(c, io, |runtime| {
+                Ok(pool.focus(&state.feedback, |g| {
                     runtime.scores_graph(g).map_err(Into::into)
-                })
+                })?)
             })?;
             self.cost.preparation_micros = micros(preparation);
         } else if !phase.focused {
@@ -827,14 +827,14 @@ impl Engine {
         rng: &mut u64,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
-        self.train_using(
+        Ok(self.train_using(
             c,
             graphs,
             rng,
             super::meta::Plan::balanced().phase(0),
             None,
             io,
-        )
+        )?)
     }
     fn train_using<I: ArtifactIo + ?Sized>(
         &mut self,
@@ -844,7 +844,7 @@ impl Engine {
         phase: super::meta::Phase,
         preservation_pool: Option<&Pool>,
         io: &mut I,
-    ) -> Result<(Checkpoint, f32, f32), String> {
+    ) -> Result<(Checkpoint, f32, f32), crate::Error> {
         let started = std::time::Instant::now();
         let mut runtime = self.take(c, io)?;
         self.cost.load_micros = micros(started);

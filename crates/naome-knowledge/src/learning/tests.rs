@@ -1818,3 +1818,31 @@ fn model_owner_failure_keeps_its_code_through_model_loading() {
         .unwrap_err();
     assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantDecoding));
 }
+
+#[test]
+fn model_write_failure_keeps_its_code_through_training_execution() {
+    struct FailedWrite;
+    impl ArtifactIo for FailedWrite {
+        fn read(&mut self, _: &Blob, _: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
+            unreachable!()
+        }
+        fn write(
+            &mut self,
+            _: &Blob,
+            _: std::ops::Range<usize>,
+            _: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            Err(crate::WorkerFailure::GrantClosed.into())
+        }
+    }
+    let mut state = fixed_state();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    let before = digest(&job);
+    let error = job
+        .execute(1, None, 1, &mut Engine::default(), &mut FailedWrite)
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantClosed));
+    assert_eq!(digest(&job), before);
+}
