@@ -133,7 +133,7 @@ pub(super) fn acquire(
     let mut newly_admitted = false;
     if let Some(solution) = &solution {
         newly_admitted = admit_discovery(graph, &q, solution).unwrap_or_else(|error| {
-            eprintln!("{}", serde_json::json!({"event":crate::outcome::NodeEvent::OwnAdmissionFailed,"job":job,"solution":solution,"error":error.to_string()}));
+            eprintln!("{}", serde_json::json!({"event":crate::outcome::NodeEvent::OwnAdmissionFailed,"job":job,"solution":solution,"error":error}));
             panic!("own search failed ordinary graph admission: {error}")
         });
         let root = crate::object::proof_address(&solution.proof_id).unwrap();

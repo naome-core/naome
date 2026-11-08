@@ -167,7 +167,7 @@ pub(super) fn execute(
         }
         job += 1;
         let training = if arm == Arm::FrozenWeights || phase.is_multiple_of(2) {
-            json!({"status":"scheduled_no_update","selected_model":state.model})
+            json!({"status":crate::outcome::ExperimentStatus::ScheduledNoUpdate,"selected_model":state.model})
         } else {
             state.preparation = if arm == Arm::FixedChoices {
                 Preparation::Balanced

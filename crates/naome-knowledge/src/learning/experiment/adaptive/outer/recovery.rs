@@ -86,7 +86,7 @@ fn warm(
     assert_eq!(state.model, parent.state.model);
     if !state.needs_training() {
         write(&directory.join("input-state.json"), &state);
-        return serde_json::json!({"complete":false,"reason":"no_eligible_continuation_epoch","elapsed":clock.elapsed()});
+        return serde_json::json!({"complete":false,"reason":crate::outcome::ExperimentReason::ContinuationUnavailable,"elapsed":clock.elapsed()});
     }
     let mut io = history::Io {
         store: fork_store(&source.common.store),
@@ -263,7 +263,7 @@ fn bounded_source_recovery_comparison() {
         }
         let mut parent = parent.unwrap();
         if !parent.promoted {
-            rows.push(serde_json::json!({"context":context,"warm_coverage":false,"reason":"no_genuine_parent"}));
+            rows.push(serde_json::json!({"context":context,"warm_coverage":false,"reason":crate::outcome::ExperimentReason::ParentAbsent}));
             write(&output.join("trials.json"), &rows);
             continue;
         }

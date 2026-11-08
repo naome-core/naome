@@ -246,15 +246,7 @@ impl Binding {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Purpose {
-    Assessment,
-    Admission,
-    Initial,
-    Final,
-    Publication,
-}
+pub(crate) use crate::outcome::SelectionPurpose as Purpose;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]

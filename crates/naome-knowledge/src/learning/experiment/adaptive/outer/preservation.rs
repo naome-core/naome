@@ -159,7 +159,7 @@ fn verified_own_preservation_comparison() {
         }
         let mut parent = parent.unwrap();
         if !parent.promoted {
-            all_rows.push(serde_json::json!({"context":context,"warm_coverage":false,"reason":"no_genuinely_qualified_cold_parent"}));
+            all_rows.push(serde_json::json!({"context":context,"warm_coverage":false,"reason":crate::outcome::ExperimentReason::ColdParentUnqualified}));
             write(&path.join("trials.json"), &all_rows);
             continue;
         }

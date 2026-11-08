@@ -167,7 +167,10 @@ fn replay(
         }))
         .collect::<Vec<_>>();
     let training = train(&mut state, &mut engine, &mut io, 100_000, path, &sources);
-    assert_eq!(training["status"], "complete");
+    assert_eq!(
+        training["status"],
+        serde_json::json!(crate::outcome::ExperimentStatus::Complete)
+    );
     assert_eq!(
         state.model,
         serde_json::from_value::<Checkpoint>(expected["rounds"][0]["model"].clone()).unwrap(),

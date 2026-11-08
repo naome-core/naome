@@ -612,6 +612,11 @@ codes! {
     pub enum FormatResource in 43 { Steps = 1, Bytes = 2, Nodes = 3 }
     pub enum FormatTagClass in 44 { ProofStep = 1, ZfcAxiom = 2 }
 
+    pub(crate) enum SelectionPurpose in 57 { Assessment = 1, Admission = 2, Initial = 3, Final = 4, Publication = 5 }
+
+    pub(crate) enum ExperimentStatus in 58 { NotReady = 1, ResourcePaused = 2, FrozenSolver = 3, ScheduledNoUpdate = 4, Complete = 5, Interrupted = 6, BudgetExhausted = 7 }
+    pub(crate) enum ExperimentReason in 59 { ColdParentUnqualified = 1, ContinuationUnavailable = 2, ParentAbsent = 3 }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,
@@ -782,6 +787,21 @@ mod catalog_tests {
 #[cfg(test)]
 mod job_failure_tests {
     use super::*;
+
+    #[test]
+    fn experiment_outcomes_use_distinct_registered_codes() {
+        let result = serde_json::json!({
+            "status": ExperimentStatus::Interrupted,
+            "reason": ExperimentReason::ContinuationUnavailable,
+        });
+        assert_eq!(result["status"], 0x003a_0006_u32);
+        assert_eq!(result["reason"], 0x003b_0002_u32);
+        assert_eq!(
+            serde_json::from_value::<ExperimentStatus>(result["status"].clone()).unwrap(),
+            ExperimentStatus::Interrupted
+        );
+        assert!(serde_json::from_value::<ExperimentReason>(0x003b_ffff_u32.into()).is_err());
+    }
 
     #[test]
     fn event_context_codes_round_trip_and_reject_unknown_values() {

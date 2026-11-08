@@ -209,6 +209,37 @@ fn job_states_use_registered_codes_and_reject_unknown_values() {
 }
 
 #[test]
+fn selection_purposes_use_registered_codes_and_reject_unknown_values() {
+    for (purpose, code) in [
+        (Purpose::Assessment, 0x0039_0001u32),
+        (Purpose::Admission, 0x0039_0002),
+        (Purpose::Initial, 0x0039_0003),
+        (Purpose::Final, 0x0039_0004),
+        (Purpose::Publication, 0x0039_0005),
+    ] {
+        assert_eq!(serde_json::to_value(purpose).unwrap(), code);
+        assert_eq!(
+            serde_json::from_value::<Purpose>(code.into()).unwrap(),
+            purpose
+        );
+    }
+    assert!(serde_json::from_value::<Purpose>(0x0039_0006u32.into()).is_err());
+    let input = Input::Select {
+        question: crate::mocks::create_question(0),
+        purpose: Purpose::Admission,
+        root: None,
+    };
+    let mut encoded = serde_json::to_value(&input).unwrap();
+    assert_eq!(encoded["purpose"], 0x0039_0002u32);
+    assert_eq!(
+        serde_json::from_value::<Input>(encoded.clone()).unwrap(),
+        input
+    );
+    encoded["purpose"] = 0x0039_0006u32.into();
+    assert!(serde_json::from_value::<Input>(encoded).is_err());
+}
+
+#[test]
 fn cooperative_job_binding_is_limited_to_solving() {
     let binding = Binding::new([1; 32], [2; 32]).for_cooperation();
     assert!(

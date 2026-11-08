@@ -108,7 +108,7 @@ fn run(input: Input, output: &Path) -> Result<(), String> {
         || arm["retained_updates"] != 0
         || arm["rounds"].as_array().is_none_or(|rows| rows.len() != 1)
         || arm["rounds"][0]["trial"] != trial
-        || trial["status"] != "complete"
+        || trial["status"] != serde_json::json!(crate::outcome::ExperimentStatus::Complete)
         || trial["retained_update"] != false
         || trial["selected_model"]
             != serde_json::to_value(&state.model).map_err(|e| e.to_string())?
