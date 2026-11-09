@@ -904,6 +904,8 @@ codes! {
         AbilityProfileCapacity = 491, AbilityUtilityBinding = 492, AbilityCheckpointBinding = 493, FinderUtilityCapacity = 494, FinderUtilityIdentity = 495, FinderExampleEligibility = 496, FinderProofIdentity = 497, UtilityGradientInvalid = 498, UtilityReferenceCapacity = 499,
         MetaUpdateExperienceMissing = 500, MetaOptimizationNonFinite = 501, MetaOptimizerCounterOverflow = 502, MetaWeightWidth = 503, MetaOptimizerWidth = 504, MetaOptimizerCounter = 505, MetaWeightValue = 506, MetaOptimizerValue = 507, MetaSecondMoment = 508, MetaExperienceBinding = 509,
         ModelChunkMissing = 510, ModelChunkLength = 511, ModelDigestMismatch = 512, ModelReceiptMissing = 513,
+        ReplaySourceJobMissing = 514, ReplaySourceSolutionMissing = 515, ReplaySampleMismatch = 516, ReplayResultMissing = 517, ReplayIdentityMismatch = 518, ReplayOwnReceiptMissing = 519, ReplayPeerReceiptMissing = 520, ReplayPeerReceiptMismatch = 521, ReplayProvenanceMismatch = 522, PeerQueueOrdinalMismatch = 523,
+        PeerOrdinalZero = 524, PeerSyntax = 525, PeerEncoding = 526, PeerOwnerDisabled = 527, PeerArtifactMismatch = 528, PeerConversionJobMissing = 529, PeerConversionReceiptMissing = 530, PeerConversionOriginMismatch = 531, PeerLearningStateMissing = 532, TheoremCapacity = 533, TheoremNotClosed = 534,
     }
 
 }

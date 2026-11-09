@@ -1534,6 +1534,49 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationActionLabel => {
                     "preservation prefix action lacks a checked label"
                 }
+                crate::ResearchFailure::ReplaySourceJobMissing => "peer replay source job absent",
+                crate::ResearchFailure::ReplaySourceSolutionMissing => {
+                    "checked replay source solution missing"
+                }
+                crate::ResearchFailure::ReplaySampleMismatch => {
+                    "native replay sample source differs"
+                }
+                crate::ResearchFailure::ReplayResultMissing => "native replay source result absent",
+                crate::ResearchFailure::ReplayIdentityMismatch => {
+                    "native replay source identity differs"
+                }
+                crate::ResearchFailure::ReplayOwnReceiptMissing => {
+                    "native replay lacks admitted own receipt"
+                }
+                crate::ResearchFailure::ReplayPeerReceiptMissing => {
+                    "native peer replay receipt absent"
+                }
+                crate::ResearchFailure::ReplayPeerReceiptMismatch => {
+                    "native peer replay receipt differs"
+                }
+                crate::ResearchFailure::ReplayProvenanceMismatch => {
+                    "native replay source provenance differs"
+                }
+                crate::ResearchFailure::PeerQueueOrdinalMismatch => {
+                    "peer learning queue ordinal differs"
+                }
+                crate::ResearchFailure::PeerOrdinalZero => "peer learning ordinal is zero",
+                crate::ResearchFailure::PeerSyntax => "peer learning source syntax",
+                crate::ResearchFailure::PeerEncoding => "peer learning source encoding",
+                crate::ResearchFailure::PeerOwnerDisabled => "peer learning owner is disabled",
+                crate::ResearchFailure::PeerArtifactMismatch => {
+                    "theorem observation artifact differs"
+                }
+                crate::ResearchFailure::PeerConversionJobMissing => "peer conversion job missing",
+                crate::ResearchFailure::PeerConversionReceiptMissing => {
+                    "peer conversion admission receipt missing"
+                }
+                crate::ResearchFailure::PeerConversionOriginMismatch => {
+                    "peer conversion origin differs"
+                }
+                crate::ResearchFailure::PeerLearningStateMissing => "peer learning state missing",
+                crate::ResearchFailure::TheoremCapacity => "theorem snapshot capacity",
+                crate::ResearchFailure::TheoremNotClosed => "theorem is not closed",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

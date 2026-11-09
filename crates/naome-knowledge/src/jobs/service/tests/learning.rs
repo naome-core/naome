@@ -1875,3 +1875,49 @@ fn model_verification_reports_missing_and_corrupted_chunk_without_caching() {
         "corrupted data must not enter the verification cache"
     );
 }
+
+#[test]
+fn peer_queue_reports_invalid_ordinal_without_consuming_the_row() {
+    let (_directory, mut owner) = native();
+    let (mut admission, _) = binary_peer_admission();
+    admission.ordinal = 0;
+    assert_eq!(
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission.clone())
+            .unwrap_err(),
+        crate::Error::from(crate::ResearchFailure::PeerOrdinalZero),
+    );
+    admission.ordinal = 2;
+    let valid_question = admission.question.replace("invalid".into());
+    let expected = naome_checker::question::ResearchQuestion::from_hex("invalid").unwrap_err();
+    assert_eq!(
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission.clone())
+            .unwrap_err(),
+        crate::Error::from(expected),
+    );
+    admission.question = valid_question;
+    owner
+        .disk
+        .save_with(
+            &mut owner.journal,
+            vec![
+                crate::checkpoint::Update::put("peer_pending", format!("{:020}", 1), &admission)
+                    .unwrap(),
+            ],
+        )
+        .unwrap();
+    for _ in 0..2 {
+        let error = owner.disk.pending_peer().unwrap_err();
+        assert_eq!(
+            error,
+            crate::Error::from(crate::ResearchFailure::PeerQueueOrdinalMismatch)
+        );
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::PeerQueueOrdinalMismatch),
+        );
+    }
+}

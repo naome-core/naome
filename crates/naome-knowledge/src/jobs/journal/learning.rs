@@ -7,7 +7,7 @@ impl Disk {
     pub(in crate::jobs) fn replay_evidence(
         &self,
         state: &crate::learning::State,
-    ) -> Result<Vec<crate::learning::Evidence>, String> {
+    ) -> Result<Vec<crate::learning::Evidence>, crate::Error> {
         let mut result = std::collections::BTreeMap::new();
         for example in state
             .training_sources()
@@ -20,14 +20,14 @@ impl Disk {
                     &example.job.to_string(),
                     crate::checkpoint::MAX_ROW,
                 )?
-                .ok_or("peer replay source job absent")?;
+                .ok_or(crate::ResearchFailure::ReplaySourceJobMissing)?;
             validation::validate_source(&self.checkpoint, example, &source)?;
             let Some(Output::Native {
                 solution: Some(solution),
                 ..
             }) = source.result
             else {
-                return Err("checked replay source solution missing".into());
+                return Err(crate::ResearchFailure::ReplaySourceSolutionMissing.into());
             };
             let trace = solution.tree;
             result.insert(
@@ -45,30 +45,29 @@ impl Disk {
         &mut self,
         journal: &mut Journal,
         admission: PeerAdmission,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if admission.ordinal == 0 {
-            return Err("peer learning ordinal is zero".into());
+            return Err(crate::ResearchFailure::PeerOrdinalZero.into());
         }
         crate::object::id_bytes(&admission.artifact)?;
         admission.binding.validate()?;
         let peer: libp2p::PeerId = admission
             .peer
             .parse()
-            .map_err(|_| "peer learning source syntax")?;
+            .map_err(|_| crate::ResearchFailure::PeerSyntax)?;
         if peer.to_string() != admission.peer {
-            return Err("peer learning source encoding".into());
+            return Err(crate::ResearchFailure::PeerEncoding.into());
         }
         if let Some(evidence) = &admission.evidence {
             evidence.validate_width()?;
         }
         if let Some(question) = &admission.question {
-            naome_checker::question::ResearchQuestion::from_hex(question)
-                .map_err(|e| e.to_string())?;
+            naome_checker::question::ResearchQuestion::from_hex(question)?;
         }
         let learning = journal
             .learning
             .as_mut()
-            .ok_or("peer learning owner is disabled")?;
+            .ok_or(crate::ResearchFailure::PeerOwnerDisabled)?;
         if let Some(packet) = admission
             .evidence
             .as_ref()
@@ -89,7 +88,7 @@ impl Disk {
                 &admission.artifact,
                 packet,
             )? {
-                return Err("theorem observation artifact differs".into());
+                return Err(crate::ResearchFailure::PeerArtifactMismatch.into());
             }
             learning.remember_theorem(entry)?;
         }
@@ -119,9 +118,9 @@ impl Disk {
             )?);
         }
         learning.peer_cursor = learning.peer_cursor.max(admission.ordinal);
-        self.save_with(journal, updates).map_err(String::from)
+        self.save_with(journal, updates)
     }
-    pub(in crate::jobs) fn pending_peer(&self) -> Result<Option<PeerAdmission>, String> {
+    pub(in crate::jobs) fn pending_peer(&self) -> Result<Option<PeerAdmission>, crate::Error> {
         let mut rows = self.checkpoint.page(
             "peer_pending",
             None,
@@ -133,7 +132,7 @@ impl Disk {
         };
         let admission: PeerAdmission = crate::checkpoint::decode(&payload)?;
         if key != format!("{:020}", admission.ordinal) {
-            return Err("peer learning queue ordinal differs".into());
+            return Err(crate::ResearchFailure::PeerQueueOrdinalMismatch.into());
         }
         Ok(Some(admission))
     }
@@ -142,7 +141,7 @@ impl Disk {
         journal: &mut Journal,
         admission: &PeerAdmission,
         status: PeerStatus,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let receipt = PeerReceipt {
             admission: admission.clone(),
             status,
@@ -157,17 +156,16 @@ impl Disk {
                 },
             ],
         )
-        .map_err(String::from)
     }
     pub(in crate::jobs) fn finish_peer(
         &self,
         journal: &mut Journal,
         id: u64,
-    ) -> Result<Vec<crate::checkpoint::Update>, String> {
+    ) -> Result<Vec<crate::checkpoint::Update>, crate::Error> {
         let record = journal
             .records
             .get(&id)
-            .ok_or("peer conversion job missing")?;
+            .ok_or(crate::ResearchFailure::PeerConversionJobMissing)?;
         let Input::Peer {
             question,
             artifact,
@@ -184,7 +182,7 @@ impl Disk {
                 artifact,
                 crate::resources::limits().closure_bytes,
             )?
-            .ok_or("peer conversion admission receipt missing")?;
+            .ok_or(crate::ResearchFailure::PeerConversionReceiptMissing)?;
         if matches!(
             receipt.status,
             PeerStatus::Learned { .. } | PeerStatus::Unsupported { .. }
@@ -195,7 +193,7 @@ impl Disk {
             || receipt.admission.question.as_ref() != Some(question)
             || receipt.admission.evidence.as_ref() != Some(evidence)
         {
-            return Err("peer conversion origin differs".into());
+            return Err(crate::ResearchFailure::PeerConversionOriginMismatch.into());
         }
         let mut sample = None;
         let mut seen = None;
@@ -227,9 +225,8 @@ impl Disk {
                 let learning = journal
                     .learning
                     .as_mut()
-                    .ok_or("peer learning state missing")?;
-                let q = naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .ok_or(crate::ResearchFailure::PeerLearningStateMissing)?;
+                let q = naome_checker::question::ResearchQuestion::from_hex(question)?;
                 let key = crate::hex(q.resolution_id());
                 let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
                 let unseen = self

@@ -40,13 +40,13 @@ pub(super) mod packet {
     }
 }
 impl Entry {
-    pub fn verified(&self) -> Result<proof::Verified, String> {
+    pub fn verified(&self) -> Result<proof::Verified, crate::Error> {
         if self.packet.len() > BYTES {
-            return Err("theorem snapshot capacity".into());
+            return Err(crate::ResearchFailure::TheoremCapacity.into());
         }
         let verified = evidence::checked(&self.packet)?;
         if !verified.target.free_variables().is_empty() {
-            return Err("theorem is not closed".into());
+            return Err(crate::ResearchFailure::TheoremNotClosed.into());
         }
         Ok(verified)
     }

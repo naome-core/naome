@@ -421,7 +421,7 @@ impl Owner {
         Ok(())
     }
 
-    fn recover_internal(&mut self) -> Result<(), String> {
+    fn recover_internal(&mut self) -> Result<(), crate::Error> {
         let ids = self
             .journal
             .records
@@ -441,7 +441,7 @@ impl Owner {
                     match check_peer_completion(record, record.result.as_ref()) {
                         Ok(()) => {}
                         Err(error) if error.retryable() => continue,
-                        Err(error) => return Err(error.into()),
+                        Err(error) => return Err(error),
                     }
                 }
                 self.finish_peer_completion(id)?;
@@ -485,7 +485,7 @@ impl Owner {
         self.internal_receivers.insert(record.id, receive);
         Ok(Some(record.id))
     }
-    fn fill_internal(&mut self) -> Result<(), String> {
+    fn fill_internal(&mut self) -> Result<(), crate::Error> {
         if !self.settings.native_proof_learning {
             return Ok(());
         }
@@ -787,7 +787,7 @@ impl Owner {
 
     /// Atomically acknowledge the worker result and commit its replay receipt.
     /// The exact source was rechecked by this owner before entering here.
-    fn finish_peer_completion(&mut self, id: u64) -> Result<(), String> {
+    fn finish_peer_completion(&mut self, id: u64) -> Result<(), crate::Error> {
         self.charge(id)?;
         if self.journal.records[&id].state == State::Complete
             && allowance_expired(&self.journal, id)?
@@ -899,7 +899,7 @@ impl Owner {
                 self.running.remove(&id);
                 return Ok(());
             }
-            return self.finish_peer_completion(id).map_err(crate::Error::from);
+            return self.finish_peer_completion(id);
         }
         if self
             .waiters
@@ -1019,7 +1019,7 @@ impl Owner {
         input: Input,
         binding: Binding,
         reply: oneshot::Sender<Completion>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.submit_after(input, binding, Vec::new(), Default::default(), reply)
     }
     fn submit_after(
@@ -1029,7 +1029,7 @@ impl Owner {
         required: Vec<String>,
         prerequisites: crate::learning::Prerequisites,
         reply: oneshot::Sender<Completion>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if reply.is_closed() {
             return Ok(());
         }
