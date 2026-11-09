@@ -356,20 +356,20 @@ impl Job {
 
     /// Bind worker reports to the plan and candidate already retained by this
     /// job owner. Re-delivery of a persisted unit is exactly idempotent.
-    pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), String> {
+    pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), crate::Error> {
         if next
             .meta_update
             .as_ref()
             .is_some_and(|u| u.experience.job != job)
         {
-            return Err("meta experience source job differs".into());
+            return Err(crate::ResearchFailure::ProgressMetaJobBinding.into());
         }
         if let Some(previous) = &self.progress {
             if next.unit == previous.unit {
                 return if digest(&next) == digest(previous) {
                     Ok(())
                 } else {
-                    Err("repeated learning checkpoint differs".into())
+                    Err(crate::ResearchFailure::ProgressRepeatedMismatch.into())
                 };
             }
             if next.unit != previous.unit + 1
@@ -384,7 +384,7 @@ impl Job {
                     != 0
                 || (previous.transfer.after ^ next.transfer.after) & previous.transfer.observed != 0
             {
-                return Err("learning plan or measured continuation differs".into());
+                return Err(crate::ResearchFailure::ProgressContinuationMismatch.into());
             }
             if let Some(update) = &next.meta_update
                 && (update.experience.candidate_model != previous.candidate.as_ref().map(digest)
@@ -395,18 +395,18 @@ impl Job {
                             .wall_micros
                             .saturating_sub(previous.meta_wall_micros))
             {
-                return Err("meta outcome differs from its retained trial".into());
+                return Err(crate::ResearchFailure::ProgressMetaTrialBinding.into());
             }
         } else if next.unit != 1 {
-            return Err("learning checkpoint lacks its first unit".into());
+            return Err(crate::ResearchFailure::ProgressFirstUnit.into());
         }
         if !self.preserves_incumbent_transfer(&next) {
-            return Err("learning checkpoint loses an incumbent transfer success".into());
+            return Err(crate::ResearchFailure::ProgressTransferLoss.into());
         }
         let previous = self.progress.replace(next);
         if let Err(error) = self.validate() {
             self.progress = previous;
-            return Err(error.into());
+            return Err(error);
         }
         Ok(())
     }

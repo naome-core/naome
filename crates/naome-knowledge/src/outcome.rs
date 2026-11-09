@@ -893,6 +893,7 @@ codes! {
         JobParentSnapshot = 373, JobHistoryRequestBinding = 374, JobHistoryRequestMissing = 375, JobReplaySnapshotBinding = 376, JobArtifactLifetimeCapacity = 377, JobArtifactReservation = 378, JobReplayReceiptBinding = 379, JobReplayPreparationMissing = 380, JobObservationWorkOverflow = 381, JobObservationBinding = 382, JobMetaPlanContext = 383, JobMetaPlanMissing = 384, JobMetaCost = 385, JobMetaUpdatePlanMissing = 386, JobMetaUpdateBinding = 387, JobMetaUpdateMissing = 388, JobCheckpointCapacity = 389, JobPromotionBinding = 390, JobTransferCoverage = 391, JobDevelopmentBinding = 392, JobCompositionBinding = 393, JobModelQualification = 394, JobSamplingContinuation = 395, JobQualificationSequence = 396, JobFinderBinding = 397, JobCheckpointUnit = 398, JobPrerequisiteRole = 399,
         LearningExampleOwner = 400, LearningExampleEligibility = 401, LearningReplayPointer = 402, LearningProgramProvenance = 403, LearningProofProvenance = 404, LearningProgramTarget = 405, LearningDefinitionUtility = 406, LearningStateCapacity = 407, LearningReplayStrategyCapacity = 408, LearningFeedbackModel = 409,
         LearningFixedSnapshotCapacity = 410, LearningMetaHeadroom = 411, LearningMetaBatchCapacity = 412, LearningLocalCountOverflow = 413, LearningPeerCountOverflow = 414, LearningSequenceOverflow = 415, LearningRevisionOverflow = 416,
+        ProgressMetaJobBinding = 417, ProgressRepeatedMismatch = 418, ProgressContinuationMismatch = 419, ProgressMetaTrialBinding = 420, ProgressFirstUnit = 421, ProgressTransferLoss = 422,
     }
 
 }

@@ -376,9 +376,15 @@ fn retained_training_plan_and_measured_cost_cannot_change_between_units() {
     assert_eq!(before, digest(&job));
     let mut altered = progress.clone();
     altered.plan.as_mut().unwrap().plan.phases[0].focused ^= true;
-    assert!(job.retain_progress(51, altered.clone()).is_err());
+    assert_eq!(
+        job.retain_progress(51, altered.clone()).unwrap_err(),
+        crate::ResearchFailure::ProgressRepeatedMismatch.into()
+    );
     altered.unit = 2;
-    assert!(job.retain_progress(51, altered).is_err());
+    assert_eq!(
+        job.retain_progress(51, altered).unwrap_err(),
+        crate::ResearchFailure::ProgressContinuationMismatch.into()
+    );
     progress.unit = 2;
     progress.cpu_micros = 9;
     assert!(job.retain_progress(51, progress.clone()).is_err());
@@ -682,7 +688,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         worker_job
             .retain_progress(44, invalid_promotion.progress.clone().unwrap())
             .unwrap_err(),
-        "learning checkpoint loses an incumbent transfer success"
+        crate::ResearchFailure::ProgressTransferLoss.into()
     );
 
     let restored: Job =

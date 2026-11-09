@@ -1500,6 +1500,24 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::ProgressMetaJobBinding => {
+                    "meta experience source job differs"
+                }
+                crate::ResearchFailure::ProgressRepeatedMismatch => {
+                    "repeated learning checkpoint differs"
+                }
+                crate::ResearchFailure::ProgressContinuationMismatch => {
+                    "learning plan or measured continuation differs"
+                }
+                crate::ResearchFailure::ProgressMetaTrialBinding => {
+                    "meta outcome differs from its retained trial"
+                }
+                crate::ResearchFailure::ProgressFirstUnit => {
+                    "learning checkpoint lacks its first unit"
+                }
+                crate::ResearchFailure::ProgressTransferLoss => {
+                    "learning checkpoint loses an incumbent transfer success"
+                }
                 crate::ResearchFailure::LearningFixedSnapshotCapacity => {
                     "fixed learning snapshot exceeds working byte capacity"
                 }
