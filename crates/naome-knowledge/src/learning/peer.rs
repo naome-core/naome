@@ -41,7 +41,7 @@ pub(crate) fn extract_source(
     question: &str,
     artifact: &str,
     source: &Source,
-) -> Result<Solution, String> {
+) -> Result<Solution, crate::Error> {
     let Source::Program(packet) = source else {
         return extract(
             question,
@@ -50,14 +50,13 @@ pub(crate) fn extract_source(
         );
     };
     let meter = crate::resources::feedback::Meter::start();
-    let question =
-        super::ResearchQuestion::from_hex(question).map_err(|error| error.to_string())?;
+    let question = super::ResearchQuestion::from_hex(question).map_err(crate::Error::from)?;
     if crate::hex(packet.manifest.artifact_id().as_bytes()) != artifact {
-        return Err("peer program artifact identity differs".into());
+        return Err(crate::ResearchFailure::PeerProgramArtifact.into());
     }
     let replay = packet.replay(question.proved_target())?;
     if replay.graphs.is_empty() {
-        return Err("peer program has no supported ambiguous inference".into());
+        return Err(crate::ResearchFailure::PeerProgramInference.into());
     }
     let sample = meter.finish(0, true);
     let steps = packet.manifest.commands as usize;
@@ -95,7 +94,7 @@ fn program_binding(
             != naome_proof::program::formula_hash(question.proved_target())
         || !matches!(&solution.tree, Tree::Program(actual) if **actual == *packet)
     {
-        return Err("peer replay source differs from checked program".into());
+        return Err(crate::ResearchFailure::PeerProgramBinding.into());
     }
     Ok(question)
 }
@@ -112,9 +111,7 @@ pub(crate) fn validate_job_source(
         Source::Program(packet) => {
             program_binding(question, artifact, packet, solution).map(|_| ())
         }
-        Source::Certificate(bytes) => {
-            validate_solution(question, artifact, bytes, solution).map_err(Into::into)
-        }
+        Source::Certificate(bytes) => validate_solution(question, artifact, bytes, solution),
     }
 }
 
@@ -130,21 +127,24 @@ pub(crate) fn validate_source(
     let question = program_binding(question, artifact, packet, solution)?;
     let replay = packet.replay(question.proved_target())?;
     if replay.graphs.is_empty() {
-        return Err("peer program has no supported ambiguous inference".into());
+        return Err(crate::ResearchFailure::PeerProgramInference.into());
     }
     Ok(())
 }
 
-pub(super) fn program_graphs(target: &Formula, packet: &Packet) -> Result<Vec<Graph>, String> {
+pub(super) fn program_graphs(
+    target: &Formula,
+    packet: &Packet,
+) -> Result<Vec<Graph>, crate::Error> {
     Ok(packet.replay(target)?.graphs.materialize())
 }
-pub(super) fn program_states(target: &Formula, packet: &Packet) -> Result<usize, String> {
+pub(super) fn program_states(target: &Formula, packet: &Packet) -> Result<usize, crate::Error> {
     Ok(packet.replay(target)?.graphs.unique())
 }
 pub(super) fn program_definitions(
     target: &Formula,
     packet: &Packet,
-) -> Result<Vec<naome_proof::DefinitionId>, String> {
+) -> Result<Vec<naome_proof::DefinitionId>, crate::Error> {
     Ok(packet.replay(target)?.definitions.clone())
 }
 
@@ -154,7 +154,7 @@ pub fn validate_solution(
     artifact: &str,
     bytes: &[u8],
     solution: &Solution,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let key = super::digest(&(question, artifact, bytes, solution));
     if VERIFIED.with(|cache| cache.borrow().contains(&key)) {
         return Ok(());
@@ -165,7 +165,7 @@ pub fn validate_solution(
         || super::digest(&solution.tree) != super::digest(&expected.tree)
         || crate::hex(solution.checked()?.proof_id().as_bytes()) != solution.proof_id
     {
-        return Err("peer replay source differs from checked native DAG".into());
+        return Err(crate::ResearchFailure::PeerDagBinding.into());
     }
     VERIFIED.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -189,7 +189,7 @@ pub fn pack_closure(
     let certificate = ProofCertificate::from_canonical_bytes(bytes).map_err(|e| e.to_string())?;
     let context = proof::lemma_context(definitions, lemmas)?;
     let checked =
-        crate::learning::proof::check(certificate, &context).map_err(|e| e.to_string())?;
+        crate::learning::proof::check(certificate, &context).map_err(|error| error.to_string())?;
     let verified = proof::verify(
         &Term::Native {
             certificate: checked.normal_form().certificate().clone(),
@@ -474,17 +474,17 @@ fn checked_mp<'a>(
     Ok(Graph::encode(&decision).ok())
 }
 
-pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution, String> {
+pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution, crate::Error> {
     let started = std::time::Instant::now();
-    let q =
-        naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
+    let q = naome_checker::question::ResearchQuestion::from_hex(question)
+        .map_err(crate::Error::from)?;
     let (term, graphs) = compile(q.proved_target(), bytes)?;
     if graphs.is_empty() {
-        return Err("peer DAG has no supported ambiguous inference".into());
+        return Err(crate::ResearchFailure::PeerDagInference.into());
     }
     let verified = proof::verify(&term, q.proved_target())?;
     if !matches_artifact(&crate::hex(verified.native_id.as_bytes()), artifact, bytes)? {
-        return Err("peer artifact identity differs".into());
+        return Err(crate::ResearchFailure::PeerArtifactIdentity.into());
     }
     Ok(Solution {
         helpers: super::evidence::helpers(bytes)?,
@@ -509,12 +509,16 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
 }
 
 /// A certificate retains its own checked artifact identity.
-pub fn matches_artifact(proof_id: &str, artifact: &str, bytes: &[u8]) -> Result<bool, String> {
+pub fn matches_artifact(
+    proof_id: &str,
+    artifact: &str,
+    bytes: &[u8],
+) -> Result<bool, crate::Error> {
     let evidence = super::evidence::decode(bytes)?;
-    let certificate =
-        ProofCertificate::from_canonical_bytes(&evidence.certificate).map_err(|e| e.to_string())?;
+    let certificate = ProofCertificate::from_canonical_bytes(&evidence.certificate)
+        .map_err(|e| crate::object::certificate_error(&evidence.certificate, e))?;
     let context = super::evidence::context(bytes)?;
-    let checked = proof::check(certificate, &context).map_err(|e| e.to_string())?;
+    let checked = proof::check(certificate, &context)?;
     if crate::hex(checked.proof_id().as_bytes()) != proof_id {
         return Ok(false);
     }
@@ -579,7 +583,13 @@ mod tests {
                 .any(|rule| g.nodes[*c].kind == rule.kind())
             })
         }));
-        assert!(extract(&question, &"ff".repeat(32), &compressed).is_err());
+        let error = extract(&question, &"ff".repeat(32), &compressed)
+            .err()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::PeerArtifactIdentity)
+        );
         assert!(super::super::evidence::decode(&u32::MAX.to_le_bytes()).is_err());
         let mut corrupted = compressed.clone();
         *corrupted.last_mut().unwrap() ^= 1;

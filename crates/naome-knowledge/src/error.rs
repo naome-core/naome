@@ -842,6 +842,22 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerCitationFormulaMissing => {
                     "peer cited statement missing"
                 }
+                crate::ResearchFailure::PeerProgramArtifact => {
+                    "peer program artifact identity differs"
+                }
+                crate::ResearchFailure::PeerProgramInference => {
+                    "peer program has no supported ambiguous inference"
+                }
+                crate::ResearchFailure::PeerProgramBinding => {
+                    "peer replay source differs from checked program"
+                }
+                crate::ResearchFailure::PeerDagBinding => {
+                    "peer replay source differs from checked native DAG"
+                }
+                crate::ResearchFailure::PeerDagInference => {
+                    "peer DAG has no supported ambiguous inference"
+                }
+                crate::ResearchFailure::PeerArtifactIdentity => "peer artifact identity differs",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }
