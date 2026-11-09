@@ -175,7 +175,7 @@ fn coverage_graph_failure_keeps_the_missing_index() {
     let error = structure(&graph, &[17]).unwrap_err();
     assert_eq!(
         error,
-        crate::Error::CoverageIndex {
+        crate::Error::ResearchIndex {
             code: crate::ResearchFailure::CoverageGraphReference,
             index: 17
         }

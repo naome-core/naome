@@ -312,7 +312,12 @@ pub enum Error {
         cause: Box<Error>,
     },
     Research(crate::ResearchFailure),
-    CoverageIndex {
+    ResearchMismatch {
+        code: crate::ResearchFailure,
+        expected: u64,
+        actual: u64,
+    },
+    ResearchIndex {
         code: crate::ResearchFailure,
         index: usize,
     },
@@ -383,7 +388,9 @@ impl Error {
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
-            Self::CoverageIndex { code, .. } => return (*code).into(),
+            Self::ResearchMismatch { code, .. } | Self::ResearchIndex { code, .. } => {
+                return (*code).into();
+            }
             Self::CompositionReplay { .. } => {
                 return crate::ResearchFailure::CompositionReplayMismatch.into();
             }
@@ -1517,6 +1524,22 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationActionLabel => {
                     "preservation prefix action lacks a checked label"
                 }
+                crate::ResearchFailure::MetaUpdateExperienceMissing => {
+                    "meta update lacks real trial experience"
+                }
+                crate::ResearchFailure::MetaOptimizationNonFinite => "non-finite meta optimization",
+                crate::ResearchFailure::MetaOptimizerCounterOverflow => {
+                    "meta optimizer counter overflow"
+                }
+                crate::ResearchFailure::MetaWeightWidth => "meta weight width differs",
+                crate::ResearchFailure::MetaOptimizerWidth => "meta optimizer width differs",
+                crate::ResearchFailure::MetaOptimizerCounter => "meta optimizer counter differs",
+                crate::ResearchFailure::MetaWeightValue => "invalid meta weight value",
+                crate::ResearchFailure::MetaOptimizerValue => "invalid meta optimizer value",
+                crate::ResearchFailure::MetaSecondMoment => "negative meta optimizer second moment",
+                crate::ResearchFailure::MetaExperienceBinding => {
+                    "meta optimization experience differs from its original model or selected plan"
+                }
                 crate::ResearchFailure::UtilityGradientInvalid => {
                     "non-finite native utility gradient"
                 }
@@ -1838,8 +1861,17 @@ impl fmt::Display for Error {
                     "offered theorem formula missing"
                 }
             }),
-            Self::CoverageIndex { code, index } => {
-                write!(f, "coverage failure {} at {index}", u32::from(*code))
+            Self::ResearchMismatch {
+                code,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "research failure {}: {actual} != {expected}",
+                u32::from(*code)
+            ),
+            Self::ResearchIndex { code, index } => {
+                write!(f, "research failure {} at {index}", u32::from(*code))
             }
             Self::CompositionReplay { work, maximum } => {
                 write!(f, "composition replay differs at work {work}/{maximum}")
@@ -2078,7 +2110,14 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
-        if let Self::CoverageIndex { index, .. } = cause {
+        if let Self::ResearchMismatch {
+            expected, actual, ..
+        } = cause
+        {
+            value.serialize_entry("expected", expected)?;
+            value.serialize_entry("actual", actual)?;
+        }
+        if let Self::ResearchIndex { index, .. } = cause {
             value.serialize_entry("index", index)?;
         }
         if let Self::CompositionReplay { work, maximum } = cause {

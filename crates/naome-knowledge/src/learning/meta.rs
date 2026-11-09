@@ -342,10 +342,7 @@ impl Engine {
             || experience.context != selection.context
             || experience.plan != selection.plan
         {
-            return Err(
-                "meta optimization experience differs from its original model or selected plan"
-                    .into(),
-            );
+            return Err(crate::ResearchFailure::MetaExperienceBinding.into());
         }
         // The job owner binds this immutable selection to the prepared history.
         // Recomputing context from the base would discard that actual input.

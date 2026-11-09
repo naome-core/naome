@@ -140,7 +140,7 @@ impl Profile {
                         if let Some(reference) = reference {
                             let reference = reference as usize;
                             if reference >= index {
-                                return Err(crate::Error::CoverageIndex {
+                                return Err(crate::Error::ResearchIndex {
                                     code: crate::ResearchFailure::CoverageDependencyOrder,
                                     index: reference,
                                 });
@@ -173,7 +173,7 @@ impl Profile {
                     *graph
                         .candidates
                         .get(*action)
-                        .ok_or(crate::Error::CoverageIndex {
+                        .ok_or(crate::Error::ResearchIndex {
                             code: crate::ResearchFailure::CoverageActionMissing,
                             index: *action,
                         })?;
@@ -232,7 +232,7 @@ fn structure(graph: &Graph, roots: &[usize]) -> Result<Vec<(i32, usize, usize)>,
         if let Some(id) = ids.get(&at) {
             return Ok(*id);
         }
-        let node = graph.nodes.get(at).ok_or(crate::Error::CoverageIndex {
+        let node = graph.nodes.get(at).ok_or(crate::Error::ResearchIndex {
             code: crate::ResearchFailure::CoverageGraphReference,
             index: at,
         })?;
