@@ -6,6 +6,7 @@ mod defined_exchange;
 mod definitions;
 #[cfg(unix)]
 mod typed_proof;
+mod workgroups;
 use libp2p::{futures::StreamExt, tcp};
 use naome_checker::question::ResearchQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};

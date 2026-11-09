@@ -76,6 +76,15 @@ pub(crate) struct Frontier {
     treatment: Treatment,
 }
 impl Frontier {
+    /// Structural overlap is a scheduling hint, not a proof dependency.
+    pub(crate) fn related(left: &ResearchQuestion, right: &ResearchQuestion) -> bool {
+        if left.resolution_id() == right.resolution_id() {
+            return true;
+        }
+        let left = finder::semantics::fragments(left);
+        let right = finder::semantics::fragments(right);
+        !left.is_disjoint(&right)
+    }
     #[cfg(test)]
     pub(crate) fn learning_snapshot(&self) -> serde_json::Value {
         serde_json::json!({"model":self.evidence.model(),"curriculum":self.evidence.learning()})

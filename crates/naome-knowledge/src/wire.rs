@@ -14,7 +14,7 @@ pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledg
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_ARTIFACT: u32 = 1 << 31;
 pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:json-control,packed-binary-artifact,defined-question-per-proof";
+    "naome:frames:json-control,packed-binary-artifact,defined-question-per-proof,cooperative-work";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +27,16 @@ pub(crate) struct Message {
 #[cfg_attr(test, derive(Clone))]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum Body {
+    WorkOffer {
+        goal: [u8; 32],
+        question: String,
+    },
+    WorkStatus {
+        goal: [u8; 32],
+        question: [u8; 32],
+        active: bool,
+        sequence: u64,
+    },
     Inventory {
         known: Option<[u8; 32]>,
         after: Option<crate::corpus::InventoryCursor>,
