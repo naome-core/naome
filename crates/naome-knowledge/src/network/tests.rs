@@ -1152,6 +1152,7 @@ fn denied_dial_retains_bounded_gate_cause() {
         std::io::ErrorKind::PermissionDenied,
         cause.clone(),
     ));
+    assert_eq!(admission_cause(&denied), Some(&cause));
     let error = libp2p::swarm::DialError::Denied { cause: denied };
     assert_eq!(
         dial_failure(&error),

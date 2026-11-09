@@ -1193,6 +1193,10 @@ fn dial_cause(error: &libp2p::swarm::DialError) -> Option<&crate::Error> {
     let libp2p::swarm::DialError::Denied { cause } = error else {
         return None;
     };
+    admission_cause(cause)
+}
+
+fn admission_cause(cause: &libp2p::swarm::ConnectionDenied) -> Option<&crate::Error> {
     cause
         .downcast_ref::<std::io::Error>()?
         .get_ref()?
@@ -2155,9 +2159,13 @@ impl Node {
                     ListenError::Denied { cause } => admission_failure(cause),
                     ListenError::Transport(_) => WireFailure::TransportNegotiation,
                 };
+                let cause = match &error {
+                    ListenError::Denied { cause } => admission_cause(cause),
+                    _ => None,
+                };
                 emit(
                     json!({"event":crate::outcome::NodeEvent::IncomingConnectionFailed, "connection_id":connection_id.to_string(),
-                    "local":local_addr.to_string(), "remote":send_back_addr.to_string(), "error":code}),
+                    "local":local_addr.to_string(), "remote":send_back_addr.to_string(), "error":code, "cause":cause}),
                 );
             }
             SwarmEvent::ConnectionClosed {

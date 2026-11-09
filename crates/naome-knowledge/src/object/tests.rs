@@ -94,6 +94,14 @@ fn statement_metadata_preserves_the_actual_sign_for_conjunctive_proof_feedback()
                 .unwrap()
                 .to_hex(),
         };
+        let mut mismatch = metadata.clone();
+        mismatch.statement_id = crate::hex(&[0; 32]);
+        assert_eq!(
+            mismatch
+                .compile(&naome_checker::ArtifactState::new())
+                .unwrap_err(),
+            crate::Error::from(crate::InputFault::DescriptionStatementMismatch)
+        );
         assert_eq!(
             metadata
                 .statement_question(&naome_checker::ArtifactState::new())

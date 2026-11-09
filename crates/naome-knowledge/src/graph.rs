@@ -258,14 +258,14 @@ impl Graph {
                     .proof_formula(header, naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
                     .map_err(crate::Error::from),
             )?
-            .ok_or("checked proof conclusion missing")?;
+            .ok_or(crate::InputFault::CheckedConclusionMissing)?;
         let derived =
             naome_checker::question::ResearchQuestion::from_formula(conclusion.into_owned())
                 .map_err(crate::Error::from)?;
         if derived.formula() != derived.positive_target()
             && derived.formula() != derived.negative_target()
         {
-            return Err("description statement does not match a question target".into());
+            return Err(crate::InputFault::DescriptionStatementMismatch.into());
         }
         let metadata = Metadata {
             artifact_id: crate::hex(id.as_bytes()),

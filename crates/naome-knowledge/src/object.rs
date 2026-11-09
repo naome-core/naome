@@ -158,7 +158,7 @@ impl ProgramMetadata {
             }
         }
         if !matches {
-            return Err("description statement does not match a question target".into());
+            return Err(crate::InputFault::DescriptionStatementMismatch.into());
         }
         Ok(Some(question))
     }
@@ -178,7 +178,7 @@ impl Metadata {
             question.negative_target()
         };
         naome_checker::question::ResearchQuestion::from_formula(target.clone())
-            .map_err(|e| crate::Error::from(e.to_string()))
+            .map_err(crate::Error::from)
     }
     pub(crate) fn compile(
         &self,
@@ -205,7 +205,7 @@ impl Metadata {
         let positive = target_id(question.positive_target())?;
         let negative = target_id(question.negative_target())?;
         if statement != positive && statement != negative {
-            return Err("description statement does not match a question target".into());
+            return Err(crate::InputFault::DescriptionStatementMismatch.into());
         }
         Ok((id, statement, question))
     }
@@ -214,10 +214,9 @@ impl Metadata {
 // Early address binding uses the unchanged checker framing. Only a checked
 // conclusion and classify_checked_proof establish the eventual resolution.
 pub(crate) fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::Error> {
-    let bytes = formula
-        .encode_canonical()
-        .map_err(|error| error.to_string())?;
-    StatementId::of_canonical_formula(&bytes).ok_or("statement identity width".into())
+    let bytes = formula.encode_canonical()?;
+    StatementId::of_canonical_formula(&bytes)
+        .ok_or(crate::InputFault::StatementIdentityWidth.into())
 }
 
 pub fn compatibility() -> [u8; 32] {
