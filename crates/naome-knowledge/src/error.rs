@@ -777,6 +777,40 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::SearchWitnessNegation => "witness negation",
                 crate::ResearchFailure::SearchWitnessUniversal => "witness universal",
                 crate::ResearchFailure::SearchEqualityAction => "equality action mismatch",
+                crate::ResearchFailure::ReplayDepth => "native replay depth",
+                crate::ResearchFailure::ReplayState => "replay formula state mismatch",
+                crate::ResearchFailure::ReplayPositiveIndex => "closing positive index",
+                crate::ResearchFailure::ReplayNegativeIndex => "closing negative index",
+                crate::ResearchFailure::ReplayClosure => "forged tableau closure",
+                crate::ResearchFailure::ReplayNestedAxiom => "unsupported nested axiom trace",
+                crate::ResearchFailure::ReplayAction => "replay action not offered",
+                crate::ResearchFailure::ReplayArity => "replay branch arity mismatch",
+                crate::ResearchFailure::ReplayTheoremIndex => "replay theorem index",
+                crate::ResearchFailure::ReplayWitness => "replay witness",
+                crate::ResearchFailure::ReplayWitnessBody => "replay witness body",
+                crate::ResearchFailure::ReplayWitnessDischarge => {
+                    "witness discharge changed the universal"
+                }
+                crate::ResearchFailure::ReplayEquality => "replay equality",
+                crate::ResearchFailure::ReplayBranch => "replay beta",
+                crate::ResearchFailure::ReplayScopedTarget => "scope trace target binding differs",
+                crate::ResearchFailure::ReplayTheoremTarget => {
+                    "theorem trace target binding differs"
+                }
+                crate::ResearchFailure::ReplayDefinitionAvailability => {
+                    "definition availability differs"
+                }
+                crate::ResearchFailure::ReplayDefinitionIndex => "definition selection index",
+                crate::ResearchFailure::ReplayDefinitionUnused => {
+                    "selected definition is not used by the checked proof"
+                }
+                crate::ResearchFailure::ReplayOwnedSnapshot => {
+                    "peer replay requires its owned journal snapshot"
+                }
+                crate::ResearchFailure::ReplayAxiomIndex => "unknown native axiom",
+                crate::ResearchFailure::ReplayAxiomTarget => "axiom target differs",
+                crate::ResearchFailure::ReplayAssumptionWrapper => "assumption wrapper",
+                crate::ResearchFailure::ReplayCompiledTarget => "compiled native target mismatch",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }

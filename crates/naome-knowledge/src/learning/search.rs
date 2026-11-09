@@ -987,30 +987,34 @@ fn replay(
     graphs: &mut Vec<Graph>,
     knowledge: &[Term],
     depth: usize,
-) -> Result<(Term, Term), String> {
+) -> Result<(Term, Term), crate::Error> {
     let goal = &state.goal;
     if depth > 40 {
-        return Err("native replay depth".into());
+        return Err(crate::ResearchFailure::ReplayDepth.into());
     }
     if facts.iter().map(Term::formula).collect::<Vec<_>>() != state.facts {
-        return Err("replay formula state mismatch".into());
+        return Err(crate::ResearchFailure::ReplayState.into());
     }
     if let Tree::Close(a, b) = tree {
-        let p = facts.get(*a).ok_or("closing positive index")?;
-        let n = facts.get(*b).ok_or("closing negative index")?;
+        let p = facts
+            .get(*a)
+            .ok_or(crate::ResearchFailure::ReplayPositiveIndex)?;
+        let n = facts
+            .get(*b)
+            .ok_or(crate::ResearchFailure::ReplayNegativeIndex)?;
         if n.formula() != c::not(p.formula()) {
-            return Err("forged tableau closure".into());
+            return Err(crate::ResearchFailure::ReplayClosure.into());
         }
         return Ok((p.clone(), n.clone()));
     }
     let Tree::Step { action, children } = tree else {
-        return Err("unsupported nested axiom trace".into());
+        return Err(crate::ResearchFailure::ReplayNestedAxiom.into());
     };
     let offered = actions(state);
     let expert = offered
         .iter()
         .position(|a| a == action)
-        .ok_or("replay action not offered")?;
+        .ok_or(crate::ResearchFailure::ReplayAction)?;
     if offered.len() > 1 {
         let mut graph = Graph::encode(&decision(goal, state, &offered, expert)?)?;
         graph.binding = trace::binding(state)?;
@@ -1018,13 +1022,16 @@ fn replay(
     }
     let states = next(state, action)?;
     if states.len() != children.len() {
-        return Err("replay branch arity mismatch".into());
+        return Err(crate::ResearchFailure::ReplayArity.into());
     }
     let mut updated = facts.to_vec();
     match *action {
         Action::Cite(i) => add_term(
             &mut updated,
-            knowledge.get(i).ok_or("replay theorem index")?.clone(),
+            knowledge
+                .get(i)
+                .ok_or(crate::ResearchFailure::ReplayTheoremIndex)?
+                .clone(),
         ),
         Action::Double(i) => add_term(&mut updated, c::double_elim(facts[i].clone(), names)?),
         Action::NotImp(i) => {
@@ -1050,11 +1057,11 @@ fn replay(
                 .formula()
                 .view()
                 .negated()
-                .ok_or("replay witness")?
+                .ok_or(crate::ResearchFailure::ReplayWitness)?
                 .to_owned();
             let opened = universal
                 .open_outer_universal(variable)
-                .ok_or("replay witness body")?;
+                .ok_or(crate::ResearchFailure::ReplayWitnessBody)?;
             let (id, witness) = names.assumption(c::not(opened.clone()));
             add_term(&mut updated, witness);
             add_term(
@@ -1073,13 +1080,16 @@ fn replay(
             let body = c::raa(opened, id, positive, negative, names)?;
             let all = Term::Generalize(variable, Box::new(body));
             if all.formula() != universal {
-                return Err("witness discharge changed the universal".into());
+                return Err(crate::ResearchFailure::ReplayWitnessDischarge.into());
             }
             return Ok((all, facts[i].clone()));
         }
         Action::Substitute(i, j) => {
             let f = facts[i].formula();
-            let (a, b) = f.view().equality_variables().ok_or("replay equality")?;
+            let (a, b) = f
+                .view()
+                .equality_variables()
+                .ok_or(crate::ResearchFailure::ReplayEquality)?;
             add_term(
                 &mut updated,
                 c::substitute(facts[i].clone(), facts[j].clone(), a, b)?,
@@ -1087,7 +1097,10 @@ fn replay(
         }
         Action::Beta(i) => {
             let f = facts[i].formula();
-            let (a, b) = f.view().implication_parts().ok_or("replay beta")?;
+            let (a, b) = f
+                .view()
+                .implication_parts()
+                .ok_or(crate::ResearchFailure::ReplayBranch)?;
             let a = a.to_owned();
             let b = b.to_owned();
             let (id, na) = names.assumption(c::not(a.clone()));
@@ -1130,16 +1143,16 @@ fn replay(
     )
 }
 
-pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), String> {
+pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), crate::Error> {
     if let Tree::Scoped {
         target: encoded,
         actions,
     } = tree
     {
-        if target.encode_canonical().map_err(|e| e.to_string())? != *encoded {
-            return Err("scope trace target binding differs".into());
+        if target.encode_canonical().map_err(crate::Error::from)? != *encoded {
+            return Err(crate::ResearchFailure::ReplayScopedTarget.into());
         }
-        return scope::compile(target, actions);
+        return scope::compile(target, actions).map_err(Into::into);
     }
     if let Tree::Knowledge {
         entries,
@@ -1147,8 +1160,8 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         proof,
     } = tree
     {
-        if target.encode_canonical().map_err(|e| e.to_string())? != *encoded {
-            return Err("theorem trace target binding differs".into());
+        if target.encode_canonical().map_err(crate::Error::from)? != *encoded {
+            return Err(crate::ResearchFailure::ReplayTheoremTarget.into());
         }
         super::knowledge::validate(entries)?;
         return compile_tableau(target, proof, entries);
@@ -1161,9 +1174,11 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
     } = tree
     {
         if *available > entries.len() {
-            return Err("definition availability differs".into());
+            return Err(crate::ResearchFailure::ReplayDefinitionAvailability.into());
         }
-        let entry = entries.get(*selected).ok_or("definition selection index")?;
+        let entry = entries
+            .get(*selected)
+            .ok_or(crate::ResearchFailure::ReplayDefinitionIndex)?;
         let _ = super::definitions::context(entries)?;
         let (term, mut graphs) = compile(target, proof)?;
         if super::construction::composition::scoped_operands(target, proof, entry)?.is_some() {
@@ -1179,13 +1194,12 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
         let source = super::proof::source_with_definitions(&verified, &definitions)?;
         let context = super::proof::lemma_context(&definitions, &verified.lemmas)?;
-        let checked =
-            crate::learning::proof::check_artifact(&source, &context).map_err(|e| e.to_string())?;
+        let checked = crate::learning::proof::check_artifact(&source, &context)?;
         if !checked
             .direct_artifact_dependencies()
             .contains(&entry.address()?)
         {
-            return Err("selected definition is not used by the checked proof".into());
+            return Err(crate::ResearchFailure::ReplayDefinitionUnused.into());
         }
         if entries.len() > 1 {
             graphs.push(super::definitions::decision(target, entries, *selected)?);
@@ -1201,7 +1215,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         ));
     }
     if matches!(tree, Tree::Stored { .. }) {
-        return Err("peer replay requires its owned journal snapshot".into());
+        return Err(crate::ResearchFailure::ReplayOwnedSnapshot.into());
     }
     if let Tree::Composed {
         packet,
@@ -1227,12 +1241,14 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         return Ok((term, graphs));
     }
     if let Tree::Certificate(bytes) = tree {
-        return super::peer::compile(target, bytes);
+        return super::peer::compile(target, bytes).map_err(Into::into);
     }
     if let Tree::Axiom(index) = tree {
-        let axiom = *AXIOMS.get(*index as usize).ok_or("unknown native axiom")?;
+        let axiom = *AXIOMS
+            .get(*index as usize)
+            .ok_or(crate::ResearchFailure::ReplayAxiomIndex)?;
         if axiom.formula() != *target {
-            return Err("axiom target differs".into());
+            return Err(crate::ResearchFailure::ReplayAxiomTarget.into());
         }
         return Ok((c::axiom(ProofStep::ZfcAxiom(axiom))?, Vec::new()));
     }
@@ -1242,7 +1258,7 @@ fn compile_tableau(
     target: &Formula,
     tree: &Tree,
     entries: &[super::knowledge::Entry],
-) -> Result<(Term, Vec<Graph>), String> {
+) -> Result<(Term, Vec<Graph>), crate::Error> {
     let knowledge = entries
         .iter()
         .map(super::knowledge::Entry::term)
@@ -1290,14 +1306,18 @@ fn compile_tableau(
         term = if let Some(v) = v {
             Term::Generalize(v, Box::new(term))
         } else {
-            Term::Lambda(id, f.ok_or("assumption wrapper")?, Box::new(term))
+            Term::Lambda(
+                id,
+                f.ok_or(crate::ResearchFailure::ReplayAssumptionWrapper)?,
+                Box::new(term),
+            )
         };
     }
     for _ in 0..p.double {
         term = c::double_intro(term, &mut names)?;
     }
     if term.formula() != *target {
-        return Err("compiled native target mismatch".into());
+        return Err(crate::ResearchFailure::ReplayCompiledTarget.into());
     }
     Ok((term, graphs))
 }
@@ -1315,6 +1335,16 @@ pub(super) const AXIOMS: [naome_foundation::ZfcAxiom; 7] = [
 #[cfg(test)]
 mod witness_tests {
     use super::*;
+    #[test]
+    fn invalid_native_axiom_index_has_registered_failure() {
+        let target = Formula::equal(FreeVariable::new(0), FreeVariable::new(0));
+        let error = compile(&target, &Tree::Axiom(u8::MAX)).err().unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::ReplayAxiomIndex)
+        );
+    }
+
     struct Ordered;
     impl Ranker for Ordered {
         fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
