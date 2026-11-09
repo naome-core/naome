@@ -1891,8 +1891,14 @@ fn model_verification_reports_missing_and_corrupted_chunk_without_caching() {
 #[test]
 fn peer_queue_reports_invalid_ordinal_without_consuming_the_row() {
     let (_directory, mut owner) = native();
-    let (mut admission, _) = binary_peer_admission();
-    admission.ordinal = 0;
+    let mut admission = PeerAdmission {
+        evidence: None,
+        ordinal: 0,
+        artifact: crate::hex(&[7; 32]),
+        peer: libp2p::PeerId::random().to_string(),
+        question: None,
+        binding: Binding::new([1; 32], [2; 32]),
+    };
     assert_eq!(
         owner
             .disk
