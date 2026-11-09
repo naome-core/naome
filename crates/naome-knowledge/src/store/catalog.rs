@@ -1619,5 +1619,38 @@ fn fail_at(cut: Option<BatchCut>, position: BatchCut) -> Result<(), crate::Error
 }
 
 fn sql_error(error: rusqlite::Error) -> crate::Error {
-    crate::Error::CorruptStorage(format!("proof catalog: {error}"))
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+    crate::Error::CatalogSql {
+        reason,
+        sqlite_code,
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_constraint_failure_keeps_class_and_extended_code() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE item (id INTEGER PRIMARY KEY); INSERT INTO item VALUES (1);",
+        )
+        .unwrap();
+        let source = db.execute("INSERT INTO item VALUES (1)", []).unwrap_err();
+        let expected = crate::error::sqlite_fault(&source);
+        let error = sql_error(source);
+        assert!(error.fatal());
+        assert!(!error.retryable());
+        assert!(
+            matches!(error, crate::Error::CatalogSql { reason, sqlite_code } if (reason, sqlite_code) == expected)
+        );
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(
+            value["code"],
+            u32::from(crate::outcome::OperationCode::CatalogSql)
+        );
+        assert_eq!(value["reason"], u32::from(expected.0));
+        assert_eq!(value["sqlite_code"], expected.1.unwrap().get());
+    }
 }
