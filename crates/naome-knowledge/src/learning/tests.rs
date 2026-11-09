@@ -1158,8 +1158,23 @@ fn a_peer_certificate_cannot_be_reclassified_as_a_local_discovery_trace() {
     completed(&mut job, solution.clone());
     job.validate_generated_trace().unwrap();
     solution.tree = search::Tree::Certificate(evidence::pack(&verified).unwrap());
+    completed(&mut job, solution.clone());
+    assert_eq!(
+        job.validate_generated_trace().unwrap_err(),
+        crate::ResearchFailure::GeneratedTraceMissing.into()
+    );
+    solution.tree = search::Tree::Composed {
+        packet: Vec::new(),
+        inputs: vec!["input".into()],
+        work: 1,
+    };
     completed(&mut job, solution);
-    assert!(job.validate_generated_trace().is_err());
+    assert!(matches!(
+        job.validate_generated_trace(),
+        Err(crate::Error::LearningEvidence(
+            crate::EvidenceFailure::Framing
+        ))
+    ));
 }
 
 #[test]

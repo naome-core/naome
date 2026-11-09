@@ -439,34 +439,34 @@ impl Job {
             1
         }
     }
-    pub fn validate_generated_trace(&self) -> Result<(), String> {
-        fn generated(tree: &search::Tree) -> bool {
+    pub fn validate_generated_trace(&self) -> Result<(), crate::Error> {
+        fn generated(tree: &search::Tree) -> Result<(), crate::Error> {
             match tree {
                 search::Tree::Composed {
                     packet,
                     inputs,
                     work,
                     ..
-                } => construction::composition::validate(packet, inputs, *work).is_ok(),
+                } => construction::composition::validate(packet, inputs, *work),
                 search::Tree::Certificate(_)
                 | search::Tree::Stored { .. }
                 | search::Tree::Constructed {
                     selection: None, ..
-                } => false,
+                } => Err(crate::ResearchFailure::GeneratedTraceMissing.into()),
                 search::Tree::Knowledge { proof, .. } | search::Tree::Definitions { proof, .. } => {
                     generated(proof)
                 }
-                search::Tree::Step { children, .. } => children.iter().all(generated),
-                _ => true,
+                search::Tree::Step { children, .. } => {
+                    for child in children {
+                        generated(child)?;
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
             }
         }
-        if self
-            .progress
-            .as_ref()
-            .and_then(|p| p.result.as_ref())
-            .is_some_and(|s| !generated(&s.tree))
-        {
-            return Err("local discovery lacks its generated decision trace".into());
+        if let Some(solution) = self.progress.as_ref().and_then(|p| p.result.as_ref()) {
+            generated(&solution.tree)?;
         }
         Ok(())
     }
