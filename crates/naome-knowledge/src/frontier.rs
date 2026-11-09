@@ -1083,7 +1083,7 @@ impl Frontier {
         root: ArtifactId,
     ) -> Result<(), crate::Error> {
         if !Self::checked_target(graph, root, question)? {
-            return Err("research evidence lacks a checked exact solution".into());
+            return Err(crate::InputFault::EvidenceExactSolutionMissing.into());
         }
         let before = self.evidence.model().updates;
         if let Some((units, millis)) = self.evidence.verified(question, job, root)? {
@@ -1093,7 +1093,7 @@ impl Frontier {
         if self.native {
             let actual_goal = graph
                 .describe(root)?
-                .ok_or("checked goal disappeared")?
+                .ok_or(crate::InputFault::EvidenceGoalMissing)?
                 .statement_question(graph.checked_context())?;
             for dependency in graph.direct_dependencies(root)? {
                 if let Some(lemma) = self.evidence.support(

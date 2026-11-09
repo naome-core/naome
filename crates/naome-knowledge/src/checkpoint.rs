@@ -487,7 +487,10 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                 connection
                     .execute(
                         "UPDATE checkpoint SET entry_count = entry_count - ?1 WHERE singleton = 1",
-                        params![i64::try_from(removed).map_err(|_| "checkpoint removal width")?],
+                        params![
+                            i64::try_from(removed)
+                                .map_err(|_| crate::InputFault::CheckpointRemovalWidth)?
+                        ],
                     )
                     .map_err(commit::write_error)?;
             }

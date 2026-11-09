@@ -967,7 +967,7 @@ where
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
         if !self.exchange_eligible(graph, question, assessment) {
-            return Err("stale or declined question selection".into());
+            return Err(crate::InputFault::QuestionSelectionStale.into());
         }
         let fresh = self.evaluate_record(
             graph,
@@ -979,7 +979,7 @@ where
             return Err(crate::Error::ExecutionLimit);
         }
         if !fresh.passed() {
-            return Err("question no longer passes fresh formal checks".into());
+            return Err(crate::InputFault::QuestionFreshCheckFailed.into());
         }
         Ok(QuestionAssessment {
             prefilter: fresh,
@@ -1004,7 +1004,7 @@ where
                 return Err(crate::Error::ExecutionLimit);
             }
             if fresh.novelty().is_none() {
-                return Err("missing fresh node-local novelty".into());
+                return Err(crate::InputFault::QuestionNoveltyMissing.into());
             }
             let entry =
                 RegisteredQuestion::from_research_question(question).map_err(crate::Error::from)?;
