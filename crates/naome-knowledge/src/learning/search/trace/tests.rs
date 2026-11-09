@@ -87,7 +87,13 @@ fn altered_state_action_scores_parent_or_work_are_rejected() {
             4 => trace.events[0].end = trace.attempts + 1,
             _ => trace.events[0].ranks = Some(vec![f32::NAN.to_bits()]),
         }
-        assert!(trace.validate().is_err(), "mutation {mutation}");
+        let error = trace.validate().unwrap_err();
+        if mutation == 0 {
+            assert_eq!(
+                serde_json::to_value(&error).unwrap()["code"],
+                u32::from(crate::ResearchFailure::TraceStateBinding)
+            );
+        }
     }
     let other =
         naome_checker::question::ResearchQuestion::from_hex("040101000000000100000000").unwrap();

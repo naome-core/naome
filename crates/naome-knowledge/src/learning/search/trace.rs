@@ -4,21 +4,21 @@ use super::*;
 
 pub(crate) const BYTES: usize = 2 * frontier::BYTES;
 
-fn encode(formula: &Formula) -> Result<String, String> {
+fn encode(formula: &Formula) -> Result<String, crate::Error> {
     formula
         .encode_canonical()
         .map(|b| crate::hex(&b))
-        .map_err(|e| e.to_string())
+        .map_err(crate::Error::from)
 }
-fn decode(source: &str) -> Result<Formula, String> {
+fn decode(source: &str) -> Result<Formula, crate::Error> {
     let bytes = crate::object::unhex(source)?;
     if crate::hex(&bytes) != source {
-        return Err("search observation formula encoding".into());
+        return Err(crate::ResearchFailure::TraceFormulaEncoding.into());
     }
-    Formula::decode_canonical(&bytes).map_err(|e| e.to_string())
+    Formula::decode_canonical(&bytes).map_err(crate::Error::from)
 }
 
-pub(super) fn binding(state: &State) -> Result<String, String> {
+pub(super) fn binding(state: &State) -> Result<String, crate::Error> {
     Ok(super::super::digest(&(
         encode(&state.goal)?,
         state
@@ -105,7 +105,7 @@ impl Trace {
     pub(crate) fn windows(
         &self,
         checked: &[(usize, &super::derivation::Derivation)],
-    ) -> Result<Vec<Vec<(usize, usize)>>, String> {
+    ) -> Result<Vec<Vec<(usize, usize)>>, crate::Error> {
         self.validate()?;
         let matches: Vec<_> = self
             .events
@@ -157,7 +157,7 @@ impl Trace {
     pub(crate) fn reconcile(
         &self,
         checked: &super::derivation::Derivation,
-    ) -> Result<Vec<(usize, String)>, String> {
+    ) -> Result<Vec<(usize, String)>, crate::Error> {
         self.validate()?;
         if self.target != checked.source_target {
             return Ok(Vec::new());
@@ -180,28 +180,28 @@ impl Trace {
             .collect())
     }
 
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         self.states().map(drop)
     }
 
-    fn states(&self) -> Result<Vec<State>, String> {
+    fn states(&self) -> Result<Vec<State>, crate::Error> {
         crate::object::id_bytes(&self.target)?;
         if crate::checkpoint::encode(self)?.len() > BYTES
             || self.events.len() > self.attempts
             || self.omitted != self.attempts - self.events.len()
         {
-            return Err("search observation capacity or coverage differs".into());
+            return Err(crate::ResearchFailure::TraceCapacity.into());
         }
         let Some(root) = &self.root else {
             return if self.events.is_empty() {
                 Ok(Vec::new())
             } else {
-                Err("search events lack their original context".into())
+                Err(crate::ResearchFailure::TraceRootMissing.into())
             };
         };
         let target = decode(&root.target)?;
         if self.target != super::super::digest(&root.target) {
-            return Err("search observation target differs".into());
+            return Err(crate::ResearchFailure::TraceTargetMismatch.into());
         }
         let mut initial = prepare(&target)?.state;
         for reference in &root.knowledge {
@@ -209,7 +209,7 @@ impl Trace {
             crate::object::id_bytes(&reference.packet)?;
         }
         if root.knowledge.len() > super::super::knowledge::CAPACITY {
-            return Err("search observation theorem capacity differs".into());
+            return Err(crate::ResearchFailure::TraceTheoremCapacity.into());
         }
         initial.knowledge_context = root
             .knowledge
@@ -226,22 +226,22 @@ impl Trace {
             std::collections::BTreeMap::<Option<Branch>, (usize, Option<Vec<u32>>)>::new();
         for (index, event) in self.events.iter().enumerate() {
             if event.start != index || event.end <= event.start || event.end > self.attempts {
-                return Err("search observation expansion order differs".into());
+                return Err(crate::ResearchFailure::TraceExpansionOrder.into());
             }
             let state = if let Some(parent) = event.parent {
                 let previous = self
                     .events
                     .get(parent.event)
                     .filter(|_| parent.event < index)
-                    .ok_or("search observation parent is not an earlier action")?;
+                    .ok_or(crate::ResearchFailure::TraceParentOrder)?;
                 if parent.child >= previous.children_attempted || event.end > previous.end {
-                    return Err("search observation branch ancestry differs".into());
+                    return Err(crate::ResearchFailure::TraceBranchAncestry.into());
                 }
                 let before = &states[parent.event];
                 let offered = actions(before);
                 next(before, &offered[previous.selected])?
                     .get(parent.child)
-                    .ok_or("search observation branch is not offered")?
+                    .ok_or(crate::ResearchFailure::TraceBranchNotOffered)?
                     .clone()
             } else {
                 initial.clone()
@@ -251,7 +251,7 @@ impl Trace {
                 || event.offered != super::super::digest(&offered)
                 || event.selected >= offered.len()
             {
-                return Err("search observation state or action binding differs".into());
+                return Err(crate::ResearchFailure::TraceStateBinding.into());
             }
             match &event.ranks {
                 Some(ranks)
@@ -259,7 +259,7 @@ impl Trace {
                         && ranks.len() == offered.len()
                         && ranks.iter().all(|bits| f32::from_bits(*bits).is_finite()) => {}
                 None if offered.len() == 1 => {}
-                _ => return Err("search observation ranking shape differs".into()),
+                _ => return Err(crate::ResearchFailure::TraceRankingShape.into()),
             }
             let visit = visits
                 .entry(event.parent)
@@ -273,7 +273,7 @@ impl Trace {
                 });
             }
             if visit.1 != event.ranks || order.get(visit.0) != Some(&event.selected) {
-                return Err("search observation differs from its attempted ranking order".into());
+                return Err(crate::ResearchFailure::TraceRankingOrder.into());
             }
             visit.0 += 1;
             let children = next(&state, &offered[event.selected])?;
@@ -281,7 +281,7 @@ impl Trace {
                 || event.children_attempted > children.len()
                 || event.closed && event.children_attempted != children.len()
             {
-                return Err("search observation executed branch count differs".into());
+                return Err(crate::ResearchFailure::TraceBranchCount.into());
             }
             states.push(state);
         }
@@ -289,7 +289,7 @@ impl Trace {
             let event = self
                 .events
                 .get(repair.failed)
-                .ok_or("repair has no recorded attempt")?;
+                .ok_or(crate::ResearchFailure::TraceRepairAttemptMissing)?;
             if event.closed
                 || event.selected == repair.selected
                 || event
@@ -298,7 +298,7 @@ impl Trace {
                     .is_none_or(|scores| repair.selected >= scores.len())
                 || repair.proof.is_empty()
             {
-                return Err("repair decision differs from its failed attempt".into());
+                return Err(crate::ResearchFailure::TraceRepairDecision.into());
             }
         }
         Ok(states)
@@ -314,11 +314,14 @@ impl Trace {
         &self,
         target: &Formula,
         knowledge: &[super::super::knowledge::Entry],
-    ) -> Result<Option<Graph>, String> {
+    ) -> Result<Option<Graph>, crate::Error> {
         let Some(repair) = &self.repair else {
             return Ok(None);
         };
-        let root = self.root.as_ref().ok_or("repair has no search root")?;
+        let root = self
+            .root
+            .as_ref()
+            .ok_or(crate::ResearchFailure::TraceRepairRootMissing)?;
         if encode(target)? != root.target {
             return Ok(None);
         }
@@ -334,14 +337,12 @@ impl Trace {
                         .iter()
                         .find(|entry| super::super::digest(entry) == reference.packet)
                         .cloned()
-                        .ok_or("repair lacks its original theorem snapshot")
+                        .ok_or(crate::ResearchFailure::TraceRepairSnapshotMissing)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             proof = Tree::Knowledge {
                 entries,
-                target: target
-                    .encode_canonical()
-                    .map_err(|error| error.to_string())?,
+                target: target.encode_canonical().map_err(crate::Error::from)?,
                 proof: Box::new(proof),
             };
         }
@@ -349,11 +350,11 @@ impl Trace {
         let graph = graphs
             .into_iter()
             .find(|graph| graph.binding == event.state && graph.expert == repair.selected)
-            .ok_or("checked repair does not use the alternative at its recorded state")?;
+            .ok_or(crate::ResearchFailure::TraceRepairAlternative)?;
         let recipe = super::super::proof::recipe(&term, target)?;
         let candidate = super::super::construction::program_from_recipe(target, recipe)?;
         if candidate.packet.target()? != *target {
-            return Err("checked repair conclusion differs".into());
+            return Err(crate::ResearchFailure::TraceRepairConclusion.into());
         }
         Ok(Some(graph))
     }
@@ -361,7 +362,7 @@ impl Trace {
     pub(crate) fn validate_question(
         &self,
         question: &naome_checker::question::ResearchQuestion,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.validate()?;
         let targets = [question.proved_target(), question.refuted_target()]
             .into_iter()
@@ -371,7 +372,7 @@ impl Trace {
             .iter()
             .any(|target| super::super::digest(target) == self.target)
         {
-            return Err("search observation belongs to a different question".into());
+            return Err(crate::ResearchFailure::TraceQuestionBinding.into());
         }
         Ok(())
     }
@@ -380,7 +381,7 @@ impl Trace {
         &self,
         question: &naome_checker::question::ResearchQuestion,
         knowledge: &[super::super::knowledge::Entry],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.validate_question(question)?;
         self.context(knowledge)?;
         Ok(())
@@ -389,7 +390,7 @@ impl Trace {
     pub(super) fn context(
         &self,
         knowledge: &[super::super::knowledge::Entry],
-    ) -> Result<Vec<Term>, String> {
+    ) -> Result<Vec<Term>, crate::Error> {
         let Some(root) = &self.root else {
             return Ok(Vec::new());
         };
@@ -398,12 +399,12 @@ impl Trace {
             let entry = knowledge
                 .iter()
                 .find(|entry| super::super::digest(entry) == reference.packet)
-                .ok_or("search observation lacks its exact theorem snapshot")?;
+                .ok_or(crate::ResearchFailure::TraceSnapshotMissing)?;
             let checked = entry.verified()?;
             if encode(&checked.target)? != reference.formula
                 || crate::hex(checked.native_id.as_bytes()) != reference.proof
             {
-                return Err("search observation theorem identity differs".into());
+                return Err(crate::ResearchFailure::TraceTheoremIdentity.into());
             }
             terms.push(Term::Native {
                 certificate: checked.certificate,
@@ -417,16 +418,16 @@ impl Trace {
 
     /// Reconstruct only closed subtrees whose actual required transitions all
     /// fit in the stored prefix. The caller must independently check each one.
-    pub(super) fn closed_subtrees(&self) -> Result<Vec<(usize, State, Tree)>, String> {
+    pub(super) fn closed_subtrees(&self) -> Result<Vec<(usize, State, Tree)>, crate::Error> {
         let states = self.states()?;
         fn rebuild(
             trace: &Trace,
             states: &[State],
             index: usize,
             depth: usize,
-        ) -> Result<Option<Tree>, String> {
+        ) -> Result<Option<Tree>, crate::Error> {
             if depth > 40 {
-                return Err("observed closed branch depth differs".into());
+                return Err(crate::ResearchFailure::TraceClosedDepth.into());
             }
             let event = &trace.events[index];
             if !event.closed {
@@ -457,7 +458,7 @@ impl Trace {
                     .map(|(i, _)| i)
                     .collect();
                 if matching.len() > 1 {
-                    return Err("observed branch has multiple terminal completions".into());
+                    return Err(crate::ResearchFailure::TraceMultipleTerminals.into());
                 }
                 let Some(index) = matching.first() else {
                     return Ok(None);
@@ -490,7 +491,7 @@ impl Recorder {
     pub fn new(
         target: &Formula,
         knowledge: &[super::super::knowledge::CheckedEntry<'_>],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let root = Root {
             target: encode(target)?,
             knowledge: knowledge
@@ -502,7 +503,7 @@ impl Recorder {
                         packet: super::super::digest(entry.entry),
                     })
                 })
-                .collect::<Result<_, String>>()?,
+                .collect::<Result<_, crate::Error>>()?,
         };
         let mut trace = Trace {
             target: super::super::digest(&root.target),
@@ -528,9 +529,9 @@ impl Recorder {
         ranks: Option<&[f32]>,
         parent: Option<Branch>,
         start: usize,
-    ) -> Result<Option<usize>, String> {
+    ) -> Result<Option<usize>, crate::Error> {
         if start != self.trace.attempts {
-            return Err("search observation skipped an attempted action".into());
+            return Err(crate::ResearchFailure::TraceSkippedAttempt.into());
         }
         self.trace.attempts += 1;
         self.trace.omitted += 1;
@@ -581,8 +582,9 @@ impl Recorder {
         failed: usize,
         selected: usize,
         proof: &Tree,
-    ) -> Result<(), String> {
-        let proof = serde_json::to_string(proof).map_err(|error| error.to_string())?;
+    ) -> Result<(), crate::Error> {
+        let proof =
+            serde_json::to_string(proof).map_err(|_| crate::ResearchFailure::TraceSerialization)?;
         if proof.len() > BYTES {
             return Ok(());
         }

@@ -689,6 +689,76 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::FrontierAssumptionBinding => {
                     "open branch assumptions or variable binding differs"
                 }
+                crate::ResearchFailure::TraceFormulaEncoding => {
+                    "search observation formula encoding"
+                }
+                crate::ResearchFailure::TraceCapacity => {
+                    "search observation capacity or coverage differs"
+                }
+                crate::ResearchFailure::TraceRootMissing => {
+                    "search events lack their original context"
+                }
+                crate::ResearchFailure::TraceTargetMismatch => "search observation target differs",
+                crate::ResearchFailure::TraceTheoremCapacity => {
+                    "search observation theorem capacity differs"
+                }
+                crate::ResearchFailure::TraceExpansionOrder => {
+                    "search observation expansion order differs"
+                }
+                crate::ResearchFailure::TraceParentOrder => {
+                    "search observation parent is not an earlier action"
+                }
+                crate::ResearchFailure::TraceBranchAncestry => {
+                    "search observation branch ancestry differs"
+                }
+                crate::ResearchFailure::TraceBranchNotOffered => {
+                    "search observation branch is not offered"
+                }
+                crate::ResearchFailure::TraceStateBinding => {
+                    "search observation state or action binding differs"
+                }
+                crate::ResearchFailure::TraceRankingShape => {
+                    "search observation ranking shape differs"
+                }
+                crate::ResearchFailure::TraceRankingOrder => {
+                    "search observation differs from its attempted ranking order"
+                }
+                crate::ResearchFailure::TraceBranchCount => {
+                    "search observation executed branch count differs"
+                }
+                crate::ResearchFailure::TraceRepairAttemptMissing => {
+                    "repair has no recorded attempt"
+                }
+                crate::ResearchFailure::TraceRepairDecision => {
+                    "repair decision differs from its failed attempt"
+                }
+                crate::ResearchFailure::TraceRepairRootMissing => "repair has no search root",
+                crate::ResearchFailure::TraceRepairSnapshotMissing => {
+                    "repair lacks its original theorem snapshot"
+                }
+                crate::ResearchFailure::TraceRepairAlternative => {
+                    "checked repair does not use the alternative at its recorded state"
+                }
+                crate::ResearchFailure::TraceRepairConclusion => {
+                    "checked repair conclusion differs"
+                }
+                crate::ResearchFailure::TraceQuestionBinding => {
+                    "search observation belongs to a different question"
+                }
+                crate::ResearchFailure::TraceSnapshotMissing => {
+                    "search observation lacks its exact theorem snapshot"
+                }
+                crate::ResearchFailure::TraceTheoremIdentity => {
+                    "search observation theorem identity differs"
+                }
+                crate::ResearchFailure::TraceClosedDepth => "observed closed branch depth differs",
+                crate::ResearchFailure::TraceMultipleTerminals => {
+                    "observed branch has multiple terminal completions"
+                }
+                crate::ResearchFailure::TraceSkippedAttempt => {
+                    "search observation skipped an attempted action"
+                }
+                crate::ResearchFailure::TraceSerialization => "search trace serialization failed",
                 crate::ResearchFailure::FrontierSerialization => "open branch serialization failed",
                 crate::ResearchFailure::ExperienceTerminalCandidate => {
                     "terminal evidence differs from the checked candidate"

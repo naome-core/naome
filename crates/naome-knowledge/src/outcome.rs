@@ -864,6 +864,7 @@ codes! {
         ExperienceJobBinding = 154, ExperienceNativeBinding = 155, ExperienceTerminalState = 156, ExperienceOutcome = 157, ExperienceStoredBinding = 158,
         ExperienceTerminalCandidate = 159, ExperienceNativeContext = 160, ExperienceResultMissing = 161, ExperienceCheckpointMissing = 162, ExperienceExecutionMismatch = 163, ExperiencePeerSyntax = 164, ExperiencePeerEncoding = 165, ExperienceReceiptIdentity = 166, ExperienceTraceMismatch = 167, ExperienceLineage = 168, ExperienceObservationBinding = 169,
         FrontierFormulaCapacity = 170, FrontierFormulaEncoding = 171, FrontierObservationCapacity = 172, FrontierTargetBinding = 173, FrontierStateCapacity = 174, FrontierAssumptionBinding = 175, FrontierSerialization = 176,
+        TraceFormulaEncoding = 177, TraceCapacity = 178, TraceRootMissing = 179, TraceTargetMismatch = 180, TraceTheoremCapacity = 181, TraceExpansionOrder = 182, TraceParentOrder = 183, TraceBranchAncestry = 184, TraceBranchNotOffered = 185, TraceStateBinding = 186, TraceRankingShape = 187, TraceRankingOrder = 188, TraceBranchCount = 189, TraceRepairAttemptMissing = 190, TraceRepairDecision = 191, TraceRepairRootMissing = 192, TraceRepairSnapshotMissing = 193, TraceRepairAlternative = 194, TraceRepairConclusion = 195, TraceQuestionBinding = 196, TraceSnapshotMissing = 197, TraceTheoremIdentity = 198, TraceClosedDepth = 199, TraceMultipleTerminals = 200, TraceSkippedAttempt = 201, TraceSerialization = 202,
     }
 
 }
