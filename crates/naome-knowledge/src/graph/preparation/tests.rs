@@ -142,3 +142,19 @@ fn a_checked_program_rebinds_registration_after_graph_and_copy_changes_before_pu
     assert!(graph.contains(root).unwrap());
     assert!(graph.storage_error().is_none());
 }
+
+#[test]
+fn staged_closure_reports_missing_and_duplicate_roots() {
+    let graph = Graph::default();
+    let root = naome_proof::ArtifactId::from_bytes([1; 32]);
+    let dependencies = BTreeSet::new();
+    assert_eq!(
+        require_closure(&graph, root, std::iter::empty()),
+        Err(crate::InputFault::StagedRootMissing.into())
+    );
+    assert_eq!(
+        require_closure(&graph, root, [(root, &dependencies), (root, &dependencies)]),
+        Err(crate::InputFault::StagedObjectDuplicate.into())
+    );
+    assert_eq!(graph.accepted_count(), 0);
+}
