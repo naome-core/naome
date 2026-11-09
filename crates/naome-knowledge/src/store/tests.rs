@@ -556,12 +556,12 @@ fn genuine_sqlite_full_preserves_live_state_and_halts_admission() {
     graph.test_database_full();
     let object = large_fixture();
     let before = graph.content_root();
-    let error = graph.ingest(object, Instant::now()).unwrap_err();
-    assert!(
-        error.contains("full"),
-        "actual SQLite failure required: {error}"
-    );
-    assert!(graph.storage_error().is_some());
+    graph.ingest(object, Instant::now()).unwrap_err();
+    assert!(matches!(
+        graph.storage_error(),
+        Some(crate::Error::CatalogSql { reason: crate::SqlFault::Engine, sqlite_code: Some(code) })
+            if code.get() == rusqlite::ffi::SQLITE_FULL
+    ));
     assert_eq!(graph.content_root(), before);
     drop(graph);
     assert!(Graph::open(&directory.0).unwrap().ids().is_empty());

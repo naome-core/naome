@@ -145,9 +145,11 @@ pub(super) struct Catalog {
 
 impl Catalog {
     pub(super) fn open(path: &Path, database_id: [u8; 32]) -> Result<Self, crate::Error> {
-        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+        })?;
         if !regular_unaliased(&metadata) {
-            return Err("proof catalog must be a regular file".into());
+            return Err(crate::InputFault::CatalogFileType.into());
         }
         let connection = open_connection(path)?;
         verify_application(&connection)?;
@@ -174,11 +176,15 @@ impl Catalog {
                 .write(true)
                 .create_new(true)
                 .open(path)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(crate::StorageIoOperation::CreateStage, error)
+                })?;
         }
-        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+        })?;
         if !regular_unaliased(&metadata) {
-            return Err("catalog initialization stage is not a regular file".into());
+            return Err(crate::InputFault::CatalogStageFileType.into());
         }
         let connection = open_connection(path)?;
         let application: i64 = connection
@@ -192,7 +198,7 @@ impl Catalog {
             )
             .map_err(sql_error)?;
         if application != 0 || objects != 0 {
-            return Err("catalog initialization stage is not empty".into());
+            return Err(crate::InputFault::CatalogStageNotEmpty.into());
         }
         let cache_bytes = configure(&connection)?;
         initialize_schema(&connection, database_id)?;
@@ -204,7 +210,9 @@ impl Catalog {
                 .unwrap_or_else(|| Path::new("."));
             fs::File::open(parent)
                 .and_then(|directory| directory.sync_all())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(crate::StorageIoOperation::SyncParent, error)
+                })?;
         }
         verify_schema(&connection)?;
         read_meta(&connection, Some(database_id))?;
@@ -220,9 +228,11 @@ impl Catalog {
     /// Recovery may inspect an existing inactive catalog before the enclosing
     /// lineage receipt was written. This never creates or repairs a schema.
     pub(super) fn inspect_identity(path: &Path) -> Result<[u8; 32], crate::Error> {
-        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+        })?;
         if !regular_unaliased(&metadata) {
-            return Err("proof catalog must be a regular file".into());
+            return Err(crate::InputFault::CatalogFileType.into());
         }
         let connection = open_connection(path)?;
         verify_application(&connection)?;
@@ -272,19 +282,20 @@ impl Catalog {
             let mut statement=transaction.prepare("SELECT p.replay_order,substr(p.id,1,33),substr(c.peer,1,129) FROM artifacts p JOIN commits c ON p.origin_commit=c.id WHERE p.replay_order>?1 ORDER BY p.replay_order LIMIT ?2").map_err(sql_error)?;
             let mut rows = statement
                 .query(params![
-                    i64::try_from(after).map_err(|_| "peer learning cursor width")?,
+                    i64::try_from(after).map_err(|_| crate::InputFault::CatalogPeerCursorWidth)?,
                     sql_width(limit)?
                 ])
                 .map_err(sql_error)?;
             while let Some(row) = rows.next().map_err(sql_error)? {
                 let ordinal = u64::try_from(row.get::<_, i64>(0).map_err(sql_error)?)
-                    .map_err(|_| "peer learning ordinal")?;
+                    .map_err(|_| crate::InputFault::CatalogPeerOrdinalWidth)?;
                 let id = ArtifactId::from_bytes(key(row.get(1).map_err(sql_error)?)?);
                 let text: Option<String> = row.get(2).map_err(sql_error)?;
                 let peer = text
                     .map(|text| {
-                        let peer: libp2p::PeerId =
-                            text.parse().map_err(|_| "peer learning origin syntax")?;
+                        let peer: libp2p::PeerId = text
+                            .parse()
+                            .map_err(|_| crate::InputFault::CatalogPeerOriginSyntax)?;
                         if peer.to_string() != text {
                             return Err(crate::Error::from("peer learning origin encoding"));
                         }
@@ -292,7 +303,7 @@ impl Catalog {
                     })
                     .transpose()?;
                 if ordinal <= after {
-                    return Err("peer learning ordinal differs".into());
+                    return Err(crate::InputFault::CatalogPeerOrdinalMismatch.into());
                 }
                 values.push((ordinal, id, peer));
             }
@@ -639,7 +650,8 @@ impl Catalog {
             .connection
             .pragma_query_value(None, "page_count", |row| row.get(0))
             .map_err(sql_error)?;
-        u64::try_from(pages).map_err(|_| "catalog page count width".into())
+        u64::try_from(pages)
+            .map_err(|_| crate::Error::from(crate::InputFault::CatalogPageCountWidth))
     }
 }
 
@@ -708,15 +720,15 @@ fn prepare<'a>(
     let mut bytes = 0usize;
     for object in objects {
         if prepared.len() >= crate::resources::limits().batch_objects {
-            return Err("catalog batch object count limit".into());
+            return Err(crate::InputFault::CatalogBatchCount.into());
         }
         let candidate = object;
         let payload = candidate.bytes.to_vec();
         bytes = bytes
             .checked_add(payload.len())
-            .ok_or("catalog batch byte overflow")?;
+            .ok_or(crate::InputFault::CatalogBatchByteOverflow)?;
         if bytes > crate::resources::limits().batch_bytes {
-            return Err("catalog batch byte capacity".into());
+            return Err(crate::InputFault::CatalogBatchByteCapacity.into());
         }
         let id = *candidate.id.as_bytes();
         let member = Member {
@@ -744,11 +756,11 @@ fn prepare<'a>(
             )
             .is_some()
         {
-            return Err("duplicate catalog batch proof ID".into());
+            return Err(crate::InputFault::CatalogBatchDuplicateProof.into());
         }
     }
     if prepared.is_empty() {
-        return Err("empty catalog batch".into());
+        return Err(crate::InputFault::CatalogBatchEmpty.into());
     }
     Ok(prepared)
 }
@@ -775,8 +787,13 @@ fn open_connection(path: &Path) -> Result<Connection, crate::Error> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let path = fs::canonicalize(parent)
-        .map_err(|error| error.to_string())?
-        .join(path.file_name().ok_or("proof catalog filename missing")?);
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::ResolveParent, error)
+        })?
+        .join(
+            path.file_name()
+                .ok_or(crate::InputFault::CatalogFilenameMissing)?,
+        );
     let connection = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -806,7 +823,7 @@ fn configure(connection: &Connection) -> Result<usize, crate::Error> {
         .pragma_query_value(None, "journal_mode", |row| row.get(0))
         .map_err(sql_error)?;
     if journal != "delete" {
-        return Err("catalog journal mode differs".into());
+        return Err(crate::InputFault::CatalogJournalMode.into());
     }
     for (name, expected) in [
         ("synchronous", 3),
@@ -820,7 +837,7 @@ fn configure(connection: &Connection) -> Result<usize, crate::Error> {
         (
             "busy_timeout",
             i64::try_from(crate::resources::limits().sqlite_busy_timeout.as_millis())
-                .map_err(|_| "catalog busy timeout width")?,
+                .map_err(|_| crate::InputFault::CatalogBusyTimeoutWidth)?,
         ),
         ("trusted_schema", 0),
     ] {
@@ -837,7 +854,7 @@ fn configure(connection: &Connection) -> Result<usize, crate::Error> {
             .pragma_query_value(None, "fullfsync", |row| row.get(0))
             .map_err(sql_error)?;
         if fullfsync != 1 {
-            return Err("catalog fullfsync differs".into());
+            return Err(crate::InputFault::CatalogFullSync.into());
         }
     }
     Ok(cache_bytes)
@@ -927,8 +944,8 @@ fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<M
     if active != corpus_root.is_some() {
         return Err(crate::InputFault::CatalogActivationRoot.into());
     }
-    let count = usize::try_from(count).map_err(|_| "catalog count width")?;
-    let bytes = usize::try_from(bytes).map_err(|_| "catalog byte width")?;
+    let count = usize::try_from(count).map_err(|_| crate::InputFault::CatalogCountWidth)?;
+    let bytes = usize::try_from(bytes).map_err(|_| crate::InputFault::CatalogByteWidth)?;
     if !active && (count != 0 || bytes != 0) {
         return Err(crate::InputFault::CatalogInitialData.into());
     }
@@ -962,8 +979,10 @@ fn validate_catalog(
         let ordinal = replay_ordinal(row.get(1).map_err(sql_error)?)?;
         observed = observed
             .checked_add(1)
-            .ok_or("catalog replay count overflow")?;
-        if ordinal != u64::try_from(observed).map_err(|_| "catalog replay count width")? {
+            .ok_or(crate::InputFault::CatalogReplayCountOverflow)?;
+        if ordinal
+            != u64::try_from(observed).map_err(|_| crate::InputFault::CatalogReplayCountWidth)?
+        {
             return Err(crate::InputFault::CatalogReplayOrderIncomplete.into());
         }
         let stored_ordinal: Option<i64> = proof_order
@@ -1018,11 +1037,14 @@ fn read_record(
     let Some(length) = length else {
         return Ok(None);
     };
-    let length = usize::try_from(length).map_err(|_| "catalog payload length width")?;
+    let length =
+        usize::try_from(length).map_err(|_| crate::InputFault::CatalogPayloadLengthWidth)?;
     if length == 0 || length > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES {
         return Err(crate::InputFault::CatalogPayloadLength.into());
     }
-    let bytes = length.checked_mul(4).ok_or("proof memory overflow")?;
+    let bytes = length
+        .checked_mul(4)
+        .ok_or(crate::InputFault::CatalogProofMemoryOverflow)?;
     let memory = match admission {
         ReadAdmission::Work => crate::resources::MemoryLease::acquire(bytes),
         ReadAdmission::CommitReadback => crate::resources::MemoryLease::acquire_drain(bytes),
@@ -1244,10 +1266,10 @@ fn corpus_summary(connection: &Connection) -> Result<Summary, crate::Error> {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(sql_error)?;
-    let count = usize::try_from(count).map_err(|_| "catalog count width")?;
-    let bytes = usize::try_from(bytes).map_err(|_| "catalog byte width")?;
+    let count = usize::try_from(count).map_err(|_| crate::InputFault::CatalogCountWidth)?;
+    let bytes = usize::try_from(bytes).map_err(|_| crate::InputFault::CatalogByteWidth)?;
     if invalid != 0 {
-        return Err("catalog payload width differs".into());
+        return Err(crate::InputFault::CatalogPayloadWidth.into());
     }
     let mut fingerprint = naome_checker::context::SetFingerprint::default();
     let mut statement = connection
@@ -1257,7 +1279,7 @@ fn corpus_summary(connection: &Connection) -> Result<Summary, crate::Error> {
     while let Some(row) = rows.next().map_err(sql_error)? {
         fingerprint
             .push(key(row.get(0).map_err(sql_error)?)?)
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::Error::from)?;
     }
     let root = crate::corpus::root(count, fingerprint.finish())?;
     Ok(Summary { root, count, bytes })
@@ -1272,13 +1294,13 @@ fn commit_summary(
     let count = preceding
         .count
         .checked_add(objects.len())
-        .ok_or("catalog count overflow")?;
+        .ok_or(crate::InputFault::CatalogCountOverflow)?;
     let bytes = objects
         .values()
         .try_fold(preceding.bytes, |total, object| {
             total
                 .checked_add(object.member.length)
-                .ok_or("catalog byte overflow")
+                .ok_or(crate::InputFault::CatalogByteOverflow)
         })?;
     let root = match next_root {
         Some(root) => root,
@@ -1287,7 +1309,7 @@ fn commit_summary(
         #[cfg(test)]
         None => corpus_summary(connection)?.root,
         #[cfg(not(test))]
-        None => return Err("checked successor fingerprint missing".into()),
+        None => return Err(crate::InputFault::CatalogSuccessorFingerprintMissing.into()),
     };
     let summary = Summary { root, count, bytes };
     let changed = connection.execute(
@@ -1295,7 +1317,7 @@ fn commit_summary(
         params![summary.root.as_slice(), sql_width(summary.count)?, sql_width(summary.bytes)?],
     ).map_err(sql_error)?;
     if changed != 1 {
-        return Err("catalog metadata update count differs".into());
+        return Err(crate::InputFault::CatalogMetadataUpdateCount.into());
     }
     let meta = read_meta(connection, None)?;
     check_expected_summary(&meta, summary)?;
@@ -1343,7 +1365,7 @@ fn insert_commit(
     for object in objects.values() {
         let member = &object.member;
         if proof_exists(connection, member.id)? {
-            return Err("concrete proof already belongs to another commit".into());
+            return Err(crate::InputFault::CatalogProofAlreadyOwned.into());
         } else {
             let replay_order = preceding_count
                 .checked_add(object.input_order)
@@ -1399,13 +1421,13 @@ fn verify_commit(
         )
         .map_err(sql_error)?;
     if stored_peer.as_deref() != peer {
-        return Err("catalog commit peer origin differs".into());
+        return Err(crate::InputFault::CatalogCommitPeerOrigin.into());
     }
     let mut expected = objects.keys();
     let members = visit_members(connection, commit, |member, source| {
         if expected.next() != Some(&member) || source.as_deref() != question_for(questions, member)
         {
-            return Err("existing catalog commit membership differs".into());
+            return Err(crate::InputFault::CatalogCommitMembership.into());
         }
         Ok(())
     })?;
@@ -1414,7 +1436,7 @@ fn verify_commit(
         || members != objects.len()
         || !objects.contains_key(&root)
     {
-        return Err("existing catalog commit membership differs".into());
+        return Err(crate::InputFault::CatalogCommitMembership.into());
     }
     for object in objects.values() {
         verify_proof(connection, object, commit)?;
@@ -1432,7 +1454,7 @@ fn verify_proof(
         expected.member.id,
         ReadAdmission::CommitReadback,
     )?
-    .ok_or("catalog commit proof missing")?;
+    .ok_or(crate::InputFault::CatalogCommitProofMissing)?;
     if record.member != expected.member
         || record.object.bytes.as_ref() != expected.payload.as_slice()
         || record.origin != commit
@@ -1457,7 +1479,7 @@ fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 3
                 .last()
                 .is_some_and(|previous| *previous >= target)
         {
-            return Err("catalog dependency ordering or width differs".into());
+            return Err(crate::InputFault::CatalogDependencyOrdering.into());
         }
         dependencies.push(target);
     }
@@ -1484,12 +1506,12 @@ fn visit_members(
     while let Some(row) = rows.next().map_err(sql_error)? {
         let id = key(row.get(0).map_err(sql_error)?)?;
         if previous.is_some_and(|previous| previous >= id) {
-            return Err("catalog membership ordering differs".into());
+            return Err(crate::InputFault::CatalogMembershipOrdering.into());
         }
         count = count
             .checked_add(1)
-            .ok_or("catalog membership count overflow")?;
-        u32::try_from(count).map_err(|_| "catalog commit count width")?;
+            .ok_or(crate::InputFault::CatalogMembershipCountOverflow)?;
+        u32::try_from(count).map_err(|_| crate::InputFault::CatalogCommitCountWidth)?;
         visit(id, row.get(1).map_err(sql_error)?)?;
         previous = Some(id);
     }
@@ -1505,19 +1527,19 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
         let id = key(row.get(0).map_err(sql_error)?)?;
         let root = key(row.get(1).map_err(sql_error)?)?;
         let count = usize::try_from(row.get::<_, i64>(2).map_err(sql_error)?)
-            .map_err(|_| "catalog commit count width")?;
+            .map_err(|_| crate::InputFault::CatalogCommitCountWidth)?;
         let peer: Option<String> = row.get(3).map_err(sql_error)?;
         let mut digest = CommitDigest::new(root, count, peer.as_deref())?;
         visit_members(connection, id, |member, question| {
             let record = read_record(connection, member, ReadAdmission::Work)?
-                .ok_or("missing catalog commit proof")?;
+                .ok_or(crate::InputFault::CatalogValidationCommitProofMissing)?;
             if let Some(manifest) = record.object.program()? {
                 program::require_complete(connection, &manifest)?;
             } else {
                 record.object.clone().prepare_retained()?;
             }
             if record.origin != id {
-                return Err("catalog proof belongs to a different originating commit".into());
+                return Err(crate::InputFault::CatalogProofOwnerMismatch.into());
             }
             digest.push(&record.member, question.as_deref())
         })?;
@@ -1580,7 +1602,8 @@ fn count(connection: &Connection, table: &str) -> Result<usize, crate::Error> {
             row.get(0)
         })
         .map_err(sql_error)?;
-    usize::try_from(count).map_err(|_| "catalog relation count width".into())
+    usize::try_from(count)
+        .map_err(|_| crate::Error::from(crate::InputFault::CatalogRelationCountWidth))
 }
 
 fn begin(
@@ -1593,24 +1616,24 @@ fn begin(
 fn key(bytes: Vec<u8>) -> Result<[u8; 32], crate::Error> {
     bytes
         .try_into()
-        .map_err(|_| "catalog identity width".into())
+        .map_err(|_| crate::Error::from(crate::InputFault::CatalogIdentityWidth))
 }
 
 fn replay_ordinal(value: i64) -> Result<u64, crate::Error> {
-    let ordinal = u64::try_from(value).map_err(|_| "catalog replay ordinal width")?;
+    let ordinal = u64::try_from(value).map_err(|_| crate::InputFault::CatalogOrdinalWidth)?;
     if ordinal == 0 {
-        return Err("catalog replay ordinal must be positive".into());
+        return Err(crate::InputFault::CatalogOrdinalZero.into());
     }
     Ok(ordinal)
 }
 
 fn sql_width(value: usize) -> Result<i64, crate::Error> {
-    i64::try_from(value).map_err(|_| "catalog integer width".into())
+    i64::try_from(value).map_err(|_| crate::Error::from(crate::InputFault::CatalogIntegerWidth))
 }
 
 fn page_limit(limit: usize, maximum: usize) -> Result<(), crate::Error> {
     if limit == 0 || limit > maximum {
-        return Err("catalog page limit outside supported bounds".into());
+        return Err(crate::InputFault::CatalogPageLimit.into());
     }
     Ok(())
 }
@@ -1635,6 +1658,19 @@ fn sql_error(error: rusqlite::Error) -> crate::Error {
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
+
+    #[test]
+    fn invalid_catalog_page_limit_keeps_numeric_cause() {
+        assert_eq!(
+            page_limit(0, 64).unwrap_err(),
+            crate::Error::from(crate::InputFault::CatalogPageLimit)
+        );
+        assert_eq!(
+            page_limit(65, 64).unwrap_err(),
+            crate::Error::from(crate::InputFault::CatalogPageLimit)
+        );
+        assert!(page_limit(64, 64).is_ok());
+    }
 
     #[test]
     fn sqlite_constraint_failure_keeps_class_and_extended_code() {
