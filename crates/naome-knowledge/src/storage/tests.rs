@@ -129,3 +129,16 @@ fn owned_file_validation_reports_type_links_and_missing_metadata() {
     assert!(error.storage().fatal());
     assert_eq!(fs::read(&path).unwrap(), b"kept");
 }
+
+#[test]
+fn research_directory_rejects_an_alias_without_touching_its_target() {
+    let directory = Directory::new();
+    let target = directory.0.join("target");
+    fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, directory.0.join("research")).unwrap();
+    assert_eq!(
+        research_directory(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::ResearchDirectoryInvalid)
+    );
+    assert!(target.is_dir());
+}

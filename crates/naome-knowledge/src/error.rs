@@ -841,6 +841,7 @@ impl fmt::Display for Error {
                 InputFault::CheckedPruneReclaimIncomplete => "startup checked storage reclaim is incomplete",
                 InputFault::CheckedIndexFileType => "checked index is not a regular file",
                 InputFault::CheckedIndexFileLinks => "checked index has linked aliases",
+                InputFault::ResearchDirectoryInvalid => "research path must be one owned directory",
                 InputFault::DisposableIndexOwned => "disposable index already owned",
                 InputFault::DisposableIndexSequence => "disposable index sequence exhausted",
                 InputFault::DisposableIndexClock => "disposable index clock before epoch",

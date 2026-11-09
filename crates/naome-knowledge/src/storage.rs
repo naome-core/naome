@@ -28,17 +28,32 @@ pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, crate::Err
             if metadata.is_dir()
                 && !metadata.file_type().is_symlink()
                 && metadata.uid() == nix::unistd::geteuid().as_raw() => {}
-        Ok(_) => return Err("research path must be one owned directory".into()),
+        Ok(_) => return Err(crate::InputFault::ResearchDirectoryInvalid.into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if marker_valid(&directory.join("research.initialized"), RESEARCH_MARKER)? {
                 return Err(crate::RuntimeFailure::ResearchDirectoryMissing.into());
             }
-            fs::create_dir(&path).map_err(|e| e.to_string())?;
+            fs::create_dir(&path).map_err(|error| {
+                crate::error::storage_io_error(
+                    crate::StorageIoOperation::CreateResearchDirectory,
+                    error,
+                )
+            })?;
             File::open(directory)
                 .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(
+                        crate::StorageIoOperation::SyncResearchParent,
+                        error,
+                    )
+                })?;
         }
-        Err(e) => return Err(e.into()),
+        Err(error) => {
+            return Err(crate::error::storage_io_error(
+                crate::StorageIoOperation::InspectResearchDirectory,
+                error,
+            ));
+        }
     }
     Ok(path)
 }
