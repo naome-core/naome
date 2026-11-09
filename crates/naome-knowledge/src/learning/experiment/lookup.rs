@@ -116,7 +116,8 @@ pub fn evaluate(
                             (0..scores.len())
                                 .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))
                                 .unwrap()
-                        }),
+                        })
+                        .map_err(crate::Error::from),
                     Err(error) => Err(error.clone()),
                 };
                 let selected = prediction.as_ref().ok().copied();

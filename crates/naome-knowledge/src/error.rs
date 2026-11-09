@@ -942,6 +942,14 @@ impl fmt::Display for Error {
                     "definition binder space exhausted"
                 }
                 crate::ResearchFailure::DefinitionBinder => "definition binder cannot be opened",
+                crate::ResearchFailure::DefinitionProposalBinder => {
+                    "definition proposal binder space exhausted"
+                }
+                crate::ResearchFailure::DefinitionProposalUniversal => {
+                    "definition proposal universal cannot be opened"
+                }
+                crate::ResearchFailure::DefinitionScores => "definition reference scores differ",
+                crate::ResearchFailure::DefinitionChoicesEmpty => "definition choices empty",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }

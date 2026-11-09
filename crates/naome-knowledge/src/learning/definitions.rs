@@ -244,17 +244,17 @@ pub(super) fn represent(
     naome_proof::ProofFormula::from_defined(defined(formula, entries)?).map_err(crate::Error::from)
 }
 
-pub fn discover(target: &Formula) -> Result<Option<Entry>, String> {
+pub fn discover(target: &Formula) -> Result<Option<Entry>, crate::Error> {
     Ok(discover_many(target, 1)?.into_iter().next())
 }
 /// Conservative proposals are available before construction search starts.
 /// The bound and byte budget are shared with the checked definition snapshot.
-pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, String> {
+pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, crate::Error> {
     fn visit(
         f: &Formula,
         counts: &mut BTreeMap<Vec<u8>, (Formula, usize)>,
         work: &mut usize,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         *work += 1;
         if *work > 2048 {
             return Ok(());
@@ -262,7 +262,7 @@ pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, Str
         let (body, arguments) = canonical(f);
         let nodes = body.view().node_count_and_depth().0;
         if (1..=4).contains(&arguments.len()) && (5..=64).contains(&nodes) {
-            let bytes = body.encode_canonical().map_err(|e| e.to_string())?;
+            let bytes = body.encode_canonical().map_err(crate::Error::from)?;
             if bytes.len() <= 768 {
                 counts.entry(bytes).or_insert((body, 0)).1 += 1;
             }
@@ -278,10 +278,10 @@ pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, Str
                 let v = (0..=u32::MAX)
                     .map(FreeVariable::new)
                     .find(|v| !used.contains(v))
-                    .ok_or("definition proposal binder")?;
+                    .ok_or(crate::ResearchFailure::DefinitionProposalBinder)?;
                 visit(
                     &f.open_outer_universal(v)
-                        .ok_or("definition proposal universal")?,
+                        .ok_or(crate::ResearchFailure::DefinitionProposalUniversal)?,
                     counts,
                     work,
                 )?;
@@ -319,9 +319,11 @@ pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, Str
         }
         let certificate = DefinitionCertificate::relation(
             arity as u32,
-            DefinedFormula::from_primitive(&body).map_err(|e| e.to_string())?,
+            DefinedFormula::from_primitive(&body).map_err(crate::Error::from)?,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| {
+            crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+        })?;
         let entry = Entry {
             certificate: certificate.to_canonical_bytes(),
             obligation: None,
@@ -336,15 +338,23 @@ pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, Str
     Ok(entries)
 }
 
-pub fn decision(target: &Formula, entries: &[Entry], selected: usize) -> Result<Graph, String> {
+pub fn decision(
+    target: &Formula,
+    entries: &[Entry],
+    selected: usize,
+) -> Result<Graph, crate::Error> {
     let mut graph = Graph::encode(&features(target, entries, selected)?)?;
     graph.binding = super::digest(&(
-        target.encode_canonical().map_err(|e| e.to_string())?,
+        target.encode_canonical().map_err(crate::Error::from)?,
         entries,
     ));
     Ok(graph)
 }
-fn features(target: &Formula, entries: &[Entry], selected: usize) -> Result<Decision, String> {
+fn features(
+    target: &Formula,
+    entries: &[Entry],
+    selected: usize,
+) -> Result<Decision, crate::Error> {
     Ok(Decision {
         context: vec![Binding {
             formula: target.clone(),
@@ -361,14 +371,14 @@ fn features(target: &Formula, entries: &[Entry], selected: usize) -> Result<Deci
                     consequences: vec![e.body()?],
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?,
+            .collect::<Result<Vec<_>, crate::Error>>()?,
     })
 }
 pub fn choices(
     target: &Formula,
     known: &[Entry],
     available_only: bool,
-) -> Result<Vec<Entry>, String> {
+) -> Result<Vec<Entry>, crate::Error> {
     let fragments = super::knowledge::fragments(target);
     let mut ranked = Vec::new();
     for (i, entry) in known.iter().enumerate() {
@@ -395,7 +405,7 @@ pub fn choices(
     }
     Ok(entries)
 }
-pub fn construction_choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> {
+pub fn construction_choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, crate::Error> {
     let mut entries = choices(target, known, false)?;
     for entry in discover_many(target, CAPACITY)? {
         if !entries.contains(&entry)
@@ -412,7 +422,7 @@ pub fn choose(
     known: &[Entry],
     available_only: bool,
     ranker: &mut dyn Ranker,
-) -> Result<Option<(Vec<Entry>, usize)>, String> {
+) -> Result<Option<(Vec<Entry>, usize)>, crate::Error> {
     let entries = choices(target, known, available_only)?;
     if entries.is_empty() {
         return Ok(None);
@@ -424,11 +434,11 @@ pub fn choose(
     }
     let scores = ranker.scores(&decision)?;
     if scores.len() != entries.len() || scores.iter().any(|s| !s.is_finite()) {
-        return Err("definition reference scores differ".into());
+        return Err(crate::ResearchFailure::DefinitionScores.into());
     }
     let selected = (0..scores.len())
         .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))
-        .ok_or("definition choices empty")?;
+        .ok_or(crate::ResearchFailure::DefinitionChoicesEmpty)?;
     Ok(Some((entries, selected)))
 }
 
@@ -540,6 +550,27 @@ mod tests {
         invalid_witness.obligation = Some(certificate.to_canonical_bytes());
         let error = context(&[invalid_witness]).err().unwrap();
         assert!(error.diagnostic().is_some());
+    }
+
+    #[test]
+    fn invalid_definition_scores_have_registered_failure() {
+        struct Invalid;
+        impl Ranker for Invalid {
+            fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
+                Ok(vec![f32::NAN; decision.candidates.len()])
+            }
+        }
+        let q = naome_checker::question::ResearchQuestion::from_hex(
+            "040403020301010000000101000000000202030101000000000100000001020001000000010100000001020301010000000101000000000202030101000000000100000001020001000000010100000001",
+        ).unwrap();
+        let entry = discover(q.proved_target()).unwrap().unwrap();
+        let error = choose(q.proved_target(), &[entry], true, &mut Invalid)
+            .err()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::DefinitionScores)
+        );
     }
 
     #[test]
