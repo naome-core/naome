@@ -868,3 +868,45 @@ fn resource_initialization_failure_retains_machine_readable_cause() {
     );
     assert_eq!(event["error"]["cause"]["line"], 1);
 }
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn developer_identity_creation_reports_the_os_cause_without_overwriting_key() {
+    let directory = std::env::temp_dir().join(format!(
+        "naome-dev-identity-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let binary = env!("CARGO_BIN_EXE_naome-knowledge-dev");
+    let first = Command::new(binary)
+        .arg("init")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let key = std::fs::read(directory.join("identity.key")).unwrap();
+    let second = Command::new(binary)
+        .arg("init")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    let event: serde_json::Value = serde_json::from_slice(&second.stderr).unwrap();
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(naome_knowledge::RuntimeFailure::DeveloperIdentityCreate)
+    );
+    assert_eq!(
+        event["error"]["cause"]["kind"],
+        u32::from(naome_knowledge::IoFaultKind::AlreadyExists)
+    );
+    assert_eq!(std::fs::read(directory.join("identity.key")).unwrap(), key);
+    std::fs::remove_dir_all(directory).unwrap();
+}

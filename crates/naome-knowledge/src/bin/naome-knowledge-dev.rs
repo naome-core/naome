@@ -49,7 +49,12 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
     {
         ["init", directory] => {
             let directory = Path::new(directory);
-            fs::create_dir_all(directory).map_err(|_| Failure::DeveloperIdentityCreate)?;
+            fs::create_dir_all(directory).map_err(|cause| {
+                naome_knowledge::Error::RuntimeContext {
+                    code: Failure::DeveloperIdentityCreate,
+                    cause: Box::new(cause.into()),
+                }
+            })?;
             let key = identity::Keypair::generate_ed25519();
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -60,17 +65,23 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
             }
             let mut file = options
                 .open(directory.join("identity.key"))
-                .map_err(|_| Failure::DeveloperIdentityCreate)?;
+                .map_err(|cause| naome_knowledge::Error::RuntimeContext {
+                    code: Failure::DeveloperIdentityCreate,
+                    cause: Box::new(cause.into()),
+                })?;
             file.write_all(
                 &key.to_protobuf_encoding()
                     .map_err(|_| Failure::DeveloperIdentityEncode)?,
             )
             .and_then(|_| file.sync_all())
-            .map_err(|_| Failure::DeveloperIdentityWrite)?;
+            .map_err(|cause| naome_knowledge::Error::RuntimeContext {
+                code: Failure::DeveloperIdentityWrite,
+                cause: Box::new(cause.into()),
+            })?;
             println!(
                 "{}",
                 json!({"peer_id":key.public().to_peer_id().to_string(),
-                "config":{"directory":fs::canonicalize(directory).map_err(|_| Failure::DeveloperIdentityCreate)?, "listen":"/ip4/0.0.0.0/tcp/0", "peers":[],
+                "config":{"directory":fs::canonicalize(directory).map_err(|cause| naome_knowledge::Error::RuntimeContext { code: Failure::DeveloperIdentityCreate, cause: Box::new(cause.into()) })?, "listen":"/ip4/0.0.0.0/tcp/0", "peers":[],
                 "discovery":network::DiscoveryConfig::default(),"producer_artifacts":[]}})
             );
             Ok(())
