@@ -741,3 +741,19 @@ fn malformed_proof_command_reports_committed_prefix_without_input_text() {
     );
     assert_eq!(work.status().unwrap().commands, 2);
 }
+
+#[test]
+fn proof_owner_reports_replacement_without_touching_it() {
+    let directory = Directory::new();
+    let work = Work::open(&directory.path()).unwrap();
+    let replacement = directory.0.join("replacement");
+    fs::write(&replacement, b"foreign").unwrap();
+    fs::rename(&replacement, directory.path()).unwrap();
+    let error = work.status().unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::ProofWorkChanged)
+    );
+    drop(work);
+    assert_eq!(fs::read(directory.path()).unwrap(), b"foreign");
+}
