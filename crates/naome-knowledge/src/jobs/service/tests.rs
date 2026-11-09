@@ -563,10 +563,24 @@ fn established_state_and_kernel_slot_identity_cannot_be_silently_replaced() {
         } else {
             fs::remove_file(path).unwrap();
         }
-        assert!(
-            Disk::open(&directory.0, settings, 0).is_err(),
-            "missing {missing} granted fresh state"
-        );
+        let error = Disk::open(&directory.0, settings, 0)
+            .err()
+            .expect("missing state must be rejected");
+        if missing == "slot-0.lock" {
+            assert!(
+                matches!(&error, crate::Error::ResearchSlot { index: 0, cause } if matches!(cause.as_ref(), crate::Error::Io { kind: crate::IoFaultKind::NotFound, .. }))
+            );
+            let encoded = serde_json::to_value(error).unwrap();
+            assert_eq!(
+                encoded["code"],
+                u32::from(crate::RuntimeFailure::ResearchSlot)
+            );
+            assert_eq!(encoded["index"], 0);
+            assert_eq!(
+                encoded["cause"]["kind"],
+                u32::from(crate::IoFaultKind::NotFound)
+            );
+        }
     }
     let (directory, owner) = fixture(4);
     let settings = owner.settings;
@@ -575,11 +589,12 @@ fn established_state_and_kernel_slot_identity_cannot_be_silently_replaced() {
     let replacement = directory.0.join("replacement");
     fs::write(&replacement, []).unwrap();
     fs::rename(replacement, path).unwrap();
-    assert!(
-        Disk::open(&directory.0, settings, 0)
-            .err()
-            .unwrap()
-            .contains("slot identity")
+    assert_eq!(
+        Disk::open(&directory.0, settings, 0).err().unwrap(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::SlotIdentityMismatch,
+            index: 0,
+        }
     );
 }
 

@@ -389,19 +389,31 @@ impl Disk {
         let now = wall_ms()?;
         journal.validate(settings)?;
         for (index, expected) in journal.slots.iter().enumerate() {
-            let file =
-                slot_file(&root, index, false).map_err(|_| crate::RuntimeFailure::ResearchSlot)?;
-            let metadata = file.file().metadata().map_err(|e| e.to_string())?;
+            let file = slot_file(&root, index, false)?;
+            let metadata = file.file().metadata().map_err(|e| slot_error(index, e))?;
             if (metadata.dev(), metadata.ino()) != *expected {
-                return Err("research physical slot identity differs".into());
+                return Err(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::SlotIdentityMismatch,
+                    index,
+                });
             }
         }
         let mut reconfiguration_locks = Vec::new();
         if old_workers != crate::resources::limits().workers {
             for index in 0..journal.slots.len() {
-                let file = slot_file(&root, index, false)
-                    .map_err(|_| crate::RuntimeFailure::ResearchSlot)?;
-                file.try_lock().map_err(|_|"provider slot reconfiguration requires every previous physical worker to drain")?;
+                let file = slot_file(&root, index, false)?;
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        return Err(crate::Error::ResearchIndex {
+                            code: crate::ResearchFailure::SlotWorkersActive,
+                            index,
+                        });
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => {
+                        return Err(slot_error(index, error));
+                    }
+                }
                 reconfiguration_locks.push(file);
             }
             journal.slots = install_slots(&root)?;
@@ -860,27 +872,36 @@ impl Disk {
     /// Stable kernel locks cap physical provider lifetimes across a daemon
     /// crash. Supervisors, workers and their owned descendants retain the same
     /// open description until exit; a restart never signals a persisted PID.
-    pub(super) fn slot(&self, lane: usize) -> Result<Option<File>, String> {
-        let count = *self.workers.get(lane).ok_or("research slot lane differs")?;
+    pub(super) fn slot(&self, lane: usize) -> Result<Option<File>, crate::Error> {
+        let count = *self
+            .workers
+            .get(lane)
+            .ok_or(crate::ResearchFailure::SlotLaneInvalid)?;
         let first = self.workers[..lane].iter().sum::<usize>();
         let range = first..first + count;
-        let root = self.path.parent().ok_or("research slot parent absent")?;
+        let root = self
+            .path
+            .parent()
+            .ok_or(crate::ResearchFailure::SlotParentMissing)?;
         for index in range {
             let file = slot_file(root, index, false)?;
-            let metadata = file.file().metadata().map_err(|e| e.to_string())?;
+            let metadata = file.file().metadata().map_err(|e| slot_error(index, e))?;
             if self.slots.get(index) != Some(&(metadata.dev(), metadata.ino())) {
-                return Err("research physical slot identity differs".into());
+                return Err(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::SlotIdentityMismatch,
+                    index,
+                });
             }
             match file.try_lock() {
                 Ok(()) => {
-                    file.file().sync_all().map_err(|e| e.to_string())?;
+                    file.file().sync_all().map_err(|e| slot_error(index, e))?;
                     File::open(root)
                         .and_then(|f| f.sync_all())
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| slot_error(index, e))?;
                     return Ok(Some(file.into_file()));
                 }
                 Err(std::fs::TryLockError::WouldBlock) => {}
-                Err(error) => return Err(format!("research slot lock: {error}")),
+                Err(std::fs::TryLockError::Error(error)) => return Err(slot_error(index, error)),
             }
         }
         Ok(None)
@@ -1090,27 +1111,41 @@ fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result
     Ok(())
 }
 
-fn slot_file(root: &Path, index: usize, create: bool) -> Result<crate::storage::LockFile, String> {
+fn slot_error(index: usize, error: std::io::Error) -> crate::Error {
+    crate::Error::ResearchSlot {
+        index,
+        cause: Box::new(error.into()),
+    }
+}
+
+fn slot_file(
+    root: &Path,
+    index: usize,
+    create: bool,
+) -> Result<crate::storage::LockFile, crate::Error> {
     let path = root.join(format!("slot-{index}.lock"));
     (if create {
         crate::storage::LockFile::open(&path)
     } else {
         crate::storage::LockFile::existing(&path)
     })
-    .map_err(|e| format!("research slot-{index} unavailable: {e}"))
+    .map_err(|error| slot_error(index, error))
 }
 
-fn install_slots(root: &Path) -> Result<Vec<(u64, u64)>, String> {
+fn install_slots(root: &Path) -> Result<Vec<(u64, u64)>, crate::Error> {
     let mut slots = Vec::new();
     for index in 0..crate::resources::limits().workers.iter().sum() {
         let file = slot_file(root, index, true)?;
-        file.file().sync_all().map_err(|e| e.to_string())?;
-        let metadata = file.file().metadata().map_err(|e| e.to_string())?;
+        file.file().sync_all().map_err(|e| slot_error(index, e))?;
+        let metadata = file.file().metadata().map_err(|e| slot_error(index, e))?;
         slots.push((metadata.dev(), metadata.ino()));
     }
     File::open(root)
         .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())?;
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::ResearchSlot,
+            cause: Box::new(cause.into()),
+        })?;
     Ok(slots)
 }
 

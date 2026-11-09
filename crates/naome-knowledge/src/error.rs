@@ -330,6 +330,10 @@ pub enum Error {
         code: crate::RuntimeFailure,
         cause: Box<Error>,
     },
+    ResearchSlot {
+        index: usize,
+        cause: Box<Error>,
+    },
     Research(crate::ResearchFailure),
     ModelDigestMismatch(Box<ModelDigestMismatch>),
     External(Box<ExternalFailure>),
@@ -408,6 +412,7 @@ impl Error {
             Self::Io { .. } => OperationCode::Io,
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
+            Self::ResearchSlot { .. } => return crate::RuntimeFailure::ResearchSlot.into(),
             Self::Research(failure) => return (*failure).into(),
             Self::External(failure) => return failure.code.into(),
             Self::ModelDigestMismatch(_) => {
@@ -494,6 +499,7 @@ impl Error {
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
                     | Self::RuntimeContext { .. }
+                    | Self::ResearchSlot { .. }
                     | Self::ResearchCombined { .. }
                     | Self::Startup { .. }
             )
@@ -1692,6 +1698,10 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::JobHorizonOverflow => "research horizon overflow",
                 crate::ResearchFailure::QueuedJobMissing => "queued research job absent",
                 crate::ResearchFailure::CompletionJobMissing => "completion research identity absent",
+                crate::ResearchFailure::SlotLaneInvalid => "research slot lane differs",
+                crate::ResearchFailure::SlotParentMissing => "research slot parent absent",
+                crate::ResearchFailure::SlotIdentityMismatch => "research physical slot identity differs",
+                crate::ResearchFailure::SlotWorkersActive => "provider slot reconfiguration requires every previous physical worker to drain",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
@@ -2041,6 +2051,7 @@ impl fmt::Display for Error {
                     "offered theorem formula missing"
                 }
             }),
+            Self::ResearchSlot { index, cause } => write!(f, "research slot {index}: {cause}"),
             Self::ModelDigestMismatch(_) => f.write_str("native model checkpoint content differs"),
             Self::External(failure) => write!(f, "external research failure {}", u32::from(failure.code)),
             Self::ResearchMismatch {
@@ -2077,6 +2088,7 @@ impl StdError for Error {
         match self {
             Self::Stored(error) => Some(error),
             Self::RuntimeContext { cause, .. } => Some(cause),
+            Self::ResearchSlot { cause, .. } => Some(cause),
             Self::ResearchCombined { primary, .. } => Some(primary),
             Self::DiagnosticInspection(error) => Some(error),
             _ => None,
@@ -2259,6 +2271,10 @@ impl serde::Serialize for Error {
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
         if let Self::RuntimeContext { cause, .. } = self {
+            value.serialize_entry("cause", cause)?;
+        }
+        if let Self::ResearchSlot { index, cause } = self {
+            value.serialize_entry("index", index)?;
             value.serialize_entry("cause", cause)?;
         }
         if let Self::ResearchCombined { primary, cleanup } = self {
