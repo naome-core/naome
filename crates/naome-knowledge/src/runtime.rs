@@ -1269,7 +1269,12 @@ pub async fn execute() -> Result<(), crate::Error> {
         .map_err(|_| Failure::Output)?;
         return Ok(());
     }
-    crate::storage::private_directory(&directory).map_err(|_| Failure::Directory)?;
+    crate::storage::private_directory(&directory).map_err(|cause| {
+        crate::Error::RuntimeContext {
+            code: Failure::Directory,
+            cause: Box::new(cause),
+        }
+    })?;
     let directory = fs::canonicalize(directory).map_err(|_| Failure::Directory)?;
     let _lock = operation_lock(&directory)
         .await

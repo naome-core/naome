@@ -856,6 +856,7 @@ impl fmt::Display for Error {
                 InputFault::CheckedPruneReclaimIncomplete => "startup checked storage reclaim is incomplete",
                 InputFault::CheckedIndexFileType => "checked index is not a regular file",
                 InputFault::CheckedIndexFileLinks => "checked index has linked aliases",
+                InputFault::NodeDirectoryInvalid => "node state must be one owned directory",
                 InputFault::CalibrationDescriptorReserve => "available descriptors cannot preserve reserves",
                 InputFault::CalibrationMemoryReserve => "available hardware cannot preserve checker and replay reserves",
                 InputFault::CalibrationCpuWidth => "CPU capacity width",

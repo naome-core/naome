@@ -10,15 +10,19 @@ pub(crate) const RESEARCH_MARKER: &[u8] = b"naome-research-jobs\n";
 
 /// Node state contains the identity key and private local research records.
 /// Tighten only the owned node directory, without changing parent directories.
-pub(crate) fn private_directory(directory: &Path) -> Result<(), String> {
-    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
-    let metadata = fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
+pub(crate) fn private_directory(directory: &Path) -> Result<(), crate::Error> {
+    use crate::StorageIoOperation as Operation;
+    fs::create_dir_all(directory)
+        .map_err(|error| crate::error::storage_io_error(Operation::CreateNodeDirectory, error))?;
+    let directory = fs::canonicalize(directory)
+        .map_err(|error| crate::error::storage_io_error(Operation::ResolveNodeDirectory, error))?;
+    let metadata = fs::symlink_metadata(&directory)
+        .map_err(|error| crate::error::storage_io_error(Operation::InspectNodeDirectory, error))?;
     if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
-        return Err("node state must be one owned directory".into());
+        return Err(crate::InputFault::NodeDirectoryInvalid.into());
     }
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())
+        .map_err(|error| crate::error::storage_io_error(Operation::SecureNodeDirectory, error))
 }
 
 pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, crate::Error> {

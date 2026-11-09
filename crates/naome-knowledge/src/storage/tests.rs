@@ -29,7 +29,13 @@ fn node_state_is_private_without_modifying_parent_permissions_and_aliases_keep_o
     );
     let file = parent.join("file");
     fs::write(&file, b"unchanged").unwrap();
-    assert!(private_directory(&file).is_err());
+    assert!(matches!(
+        private_directory(&file),
+        Err(crate::Error::StorageIo {
+            operation: crate::StorageIoOperation::CreateNodeDirectory,
+            ..
+        })
+    ));
     assert_eq!(fs::read(&file).unwrap(), b"unchanged");
     fs::remove_dir_all(parent).unwrap();
 }
