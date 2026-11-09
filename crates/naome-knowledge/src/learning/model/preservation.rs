@@ -190,12 +190,7 @@ impl Preservation {
             prefixes
                 .iter()
                 .position(|p| name.starts_with(p))
-                .ok_or_else(|| {
-                    backend_failure(
-                        crate::ResearchFailure::PreservationUnknownField,
-                        Some(name.to_owned()),
-                    )
-                })
+                .ok_or_else(|| backend_failure(crate::ResearchFailure::PreservationUnknownField))
         };
         for (key, value) in reader.metadata() {
             let i = group(key)?;

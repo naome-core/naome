@@ -285,13 +285,11 @@ pub struct Runtime {
     #[cfg(test)]
     contextual_preservation: bool,
 }
-// Upstream Burn errors expose free-form detail; retain a bounded fingerprint and
-// a stable category without exporting potentially sensitive text.
-fn backend_failure(code: crate::ResearchFailure, detail: Option<String>) -> crate::Error {
-    use sha2::{Digest as _, Sha256};
+// Backend text may contain paths or other sensitive values. Expose only the
+// registered category and structured fields explicitly selected below.
+fn backend_failure(code: crate::ResearchFailure) -> crate::Error {
     crate::Error::External(Box::new(crate::ExternalFailure {
         code,
-        detail_digest: detail.map(|value| Sha256::digest(value.as_bytes()).into()),
         expected_type: None,
         actual_type: None,
     }))
@@ -299,28 +297,29 @@ fn backend_failure(code: crate::ResearchFailure, detail: Option<String>) -> crat
 fn pack_failure(error: burn_pack::Error) -> crate::Error {
     use crate::ResearchFailure as F;
     use burn_pack::Error as E;
-    let (code, detail) = match error {
-        E::InvalidHeader => (F::BackendPackHeader, None),
-        E::InvalidMagicNumber => (F::BackendPackMagic, None),
-        E::InvalidVersion => (F::BackendPackVersion, None),
-        E::MetadataSerializationError(s) => (F::BackendPackMetadataWrite, Some(s)),
-        E::MetadataDeserializationError(s) => (F::BackendPackMetadataRead, Some(s)),
-        E::IoError(s) => (F::BackendPackIo, Some(s)),
-        E::TensorNotFound(s) => (F::BackendPackTensorMissing, Some(s)),
-        E::TensorBytesSizeMismatch(s) => (F::BackendPackTensorSize, Some(s)),
-        E::ValidationError(s) => (F::BackendPackValidation, Some(s)),
-        E::AlreadyExists(s) => (F::BackendPackExists, Some(s)),
+    let code = match error {
+        E::InvalidHeader => F::BackendPackHeader,
+        E::InvalidMagicNumber => F::BackendPackMagic,
+        E::InvalidVersion => F::BackendPackVersion,
+        E::MetadataSerializationError(_) => F::BackendPackMetadataWrite,
+        E::MetadataDeserializationError(_) => F::BackendPackMetadataRead,
+        E::IoError(_) => F::BackendPackIo,
+        E::TensorNotFound(_) => F::BackendPackTensorMissing,
+        E::TensorBytesSizeMismatch(_) => F::BackendPackTensorSize,
+        E::ValidationError(_) => F::BackendPackValidation,
+        E::AlreadyExists(_) => F::BackendPackExists,
     };
-    backend_failure(code, detail)
+    backend_failure(code)
 }
 fn record_failure(error: burn::store::RecordError) -> crate::Error {
     use burn::store::RecordError as E;
-    let (code, detail) = match error {
-        E::Io(s) => (crate::ResearchFailure::BackendRecordIo, s),
-        E::Validation(s) => (crate::ResearchFailure::BackendRecordValidation, s),
+    let code = match error {
+        E::Io(_) => crate::ResearchFailure::BackendRecordIo,
+        E::Validation(_) => crate::ResearchFailure::BackendRecordValidation,
     };
-    backend_failure(code, Some(detail))
+    backend_failure(code)
 }
+
 fn tensor_element_type(value: burn::tensor::DType) -> crate::TensorElementType {
     use crate::TensorElementType as T;
     use burn::tensor::{BoolStore, DType};
@@ -367,7 +366,7 @@ fn tensor_data_failure(error: burn::tensor::DataError) -> crate::Error {
         E::InvalidByteLength { .. } => F::TensorByteLengthInvalid,
         E::ElementCountMismatch { .. } => unreachable!(),
     };
-    let mut failure = backend_failure(code, Some(error.to_string()));
+    let mut failure = backend_failure(code);
     if let (Some((expected, actual)), crate::Error::External(details)) = (types, &mut failure) {
         details.expected_type = Some(tensor_element_type(expected));
         details.actual_type = Some(tensor_element_type(actual));

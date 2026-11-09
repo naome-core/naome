@@ -232,13 +232,11 @@ pub struct ModelDigestMismatch {
     pub actual: [u8; 32],
 }
 
-/// Bounded identity for a backend error whose upstream detail is unstructured.
+/// Structured backend failure without exposing unstructured upstream detail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalFailure {
     /// Stable category of the backend failure.
     pub code: crate::ResearchFailure,
-    /// SHA-256 of upstream detail, if available. Guessable details can be inferred.
-    pub detail_digest: Option<[u8; 32]>,
     /// Expected or source tensor element class, when the backend reports it.
     pub expected_type: Option<crate::TensorElementType>,
     /// Actual or destination tensor element class, when the backend reports it.
@@ -2977,11 +2975,6 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
-        if let Self::External(details) = cause
-            && let Some(digest) = details.detail_digest
-        {
-            value.serialize_entry("detail_digest", &digest)?;
-        }
         if let Self::External(details) = cause {
             if let Some(expected) = details.expected_type {
                 value.serialize_entry("expected_type", &expected)?;

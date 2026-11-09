@@ -431,7 +431,7 @@ fn checkpoint_update_overflow_is_reported_before_writing_artifacts() {
 }
 
 #[test]
-fn model_backend_errors_have_categories_and_bounded_detail() {
+fn model_backend_errors_preserve_categories_without_exposing_detail() {
     let error = canonical_checkpoint(Bytes::from_bytes_vec(Vec::new())).unwrap_err();
     assert_eq!(
         error.code(),
@@ -447,13 +447,13 @@ fn model_backend_errors_have_categories_and_bounded_detail() {
         "another tensor".into(),
     ));
     assert_eq!(first, same);
-    assert_ne!(first, different);
+    assert_eq!(first, different);
     let json = serde_json::to_value(first).unwrap();
     assert_eq!(
         json["code"],
         u32::from(crate::ResearchFailure::BackendRecordValidation)
     );
-    assert_eq!(json["detail_digest"].as_array().unwrap().len(), 32);
+    assert!(!json.as_object().unwrap().contains_key("detail_digest"));
     assert!(!json.to_string().contains("private tensor path"));
 }
 
@@ -506,11 +506,11 @@ fn training_loss_and_tensor_data_failures_keep_machine_causes() {
         json["actual_type"],
         u32::from(crate::TensorElementType::I64)
     );
-    assert_eq!(
-        serde_json::to_value(error).unwrap()["detail_digest"]
-            .as_array()
+    assert!(
+        !serde_json::to_value(error)
             .unwrap()
-            .len(),
-        32
+            .as_object()
+            .unwrap()
+            .contains_key("detail_digest")
     );
 }
