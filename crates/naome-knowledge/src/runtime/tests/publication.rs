@@ -37,3 +37,31 @@ async fn dropping_a_prepared_listener_preserves_a_published_replacement() {
     assert!(status.running);
     assert_eq!(status.accepted_artifacts, 7);
 }
+
+#[test]
+fn control_rejects_invalid_nonce_and_preserves_foreign_socket_path() {
+    let directory = Directory::new();
+    assert!(matches!(
+        Control::prepare(&directory.0, "invalid".into()),
+        Err(crate::Error::InputFault(
+            crate::InputFault::ControlNonceInvalid
+        ))
+    ));
+    let canonical = fs::canonicalize(&directory.0).unwrap();
+    let socket = socket_path(&canonical);
+    let mut foreign = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&socket)
+        .unwrap();
+    foreign.write_all(b"foreign").unwrap();
+    drop(foreign);
+    assert!(matches!(
+        Control::prepare(&directory.0, "ab".repeat(32)),
+        Err(crate::Error::InputFault(
+            crate::InputFault::ControlSocketPath
+        ))
+    ));
+    assert_eq!(fs::read(&socket).unwrap(), b"foreign");
+    fs::remove_file(socket).unwrap();
+}

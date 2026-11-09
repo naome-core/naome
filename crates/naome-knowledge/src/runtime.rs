@@ -333,15 +333,16 @@ impl Control {
     pub(crate) fn bind_test(
         directory: &Path,
         ownership: std::sync::Arc<crate::store::Store>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let mut control = Self::bind_token(directory, "01".repeat(32))?;
         control.ownership = Some(ownership);
         Ok(control)
     }
 
     /// Called only after Graph::open owns and revalidates this directory.
-    pub(crate) fn bind(directory: &Path, startup: Option<Startup>) -> Result<Self, String> {
-        let token = std::env::var(DAEMON_NONCE).map_err(|_| "missing internal launch nonce")?;
+    pub(crate) fn bind(directory: &Path, startup: Option<Startup>) -> Result<Self, crate::Error> {
+        let token =
+            std::env::var(DAEMON_NONCE).map_err(|_| crate::InputFault::ControlNonceMissing)?;
         let mut control = Self::prepare(directory, token)?;
         control.startup = startup;
         Ok(control)
@@ -351,18 +352,18 @@ impl Control {
         directory: &Path,
         startup: Option<Startup>,
         ownership: std::sync::Arc<crate::store::Store>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let mut control = Self::bind(directory, startup)?;
         control.ownership = Some(ownership);
         Ok(control)
     }
 
-    pub(crate) async fn accept(&self) -> Result<UnixStream, String> {
+    pub(crate) async fn accept(&self) -> Result<UnixStream, crate::Error> {
         self.listener
             .accept()
             .await
             .map(|(stream, _)| stream)
-            .map_err(|e| e.to_string())
+            .map_err(crate::Error::from)
     }
 
     pub(crate) fn stopping(&self) -> bool {
@@ -376,30 +377,32 @@ impl Control {
     }
 
     #[cfg(test)]
-    fn bind_token(directory: &Path, token: String) -> Result<Self, String> {
+    fn bind_token(directory: &Path, token: String) -> Result<Self, crate::Error> {
         let control = Self::prepare(directory, token)?;
         control.publish()?;
         Ok(control)
     }
 
-    fn prepare(directory: &Path, token: String) -> Result<Self, String> {
-        if token.len() != 64 || crate::unhex(&token)?.len() != 32 {
-            return Err("invalid internal launch nonce".into());
+    fn prepare(directory: &Path, token: String) -> Result<Self, crate::Error> {
+        if token.len() != 64
+            || crate::unhex(&token)
+                .map_err(|_| crate::InputFault::ControlNonceInvalid)?
+                .len()
+                != 32
+        {
+            return Err(crate::InputFault::ControlNonceInvalid.into());
         }
-        let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+        let directory = fs::canonicalize(directory)?;
         let socket = socket_path(&directory);
         match fs::symlink_metadata(&socket) {
-            Ok(metadata) if metadata.file_type().is_socket() => {
-                fs::remove_file(&socket).map_err(|error| error.to_string())?
-            }
-            Ok(_) => return Err("local control path is not a socket".into()),
+            Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(&socket)?,
+            Ok(_) => return Err(crate::InputFault::ControlSocketPath.into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(error.into()),
         }
-        let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
-            .map_err(|error| error.to_string())?;
-        let metadata = fs::symlink_metadata(&socket).map_err(|error| error.to_string())?;
+        let listener = UnixListener::bind(&socket)?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        let metadata = fs::symlink_metadata(&socket)?;
         let socket_identity = (metadata.dev(), metadata.ino());
         let endpoint = Endpoint {
             version: 1,
@@ -422,20 +425,20 @@ impl Control {
     /// Advertise the listener only after fallible startup state validation. A
     /// failed initializer must report its error before the parent aborts it on
     /// a control connection that closed without a response.
-    pub(crate) fn publish(&self) -> Result<(), String> {
+    pub(crate) fn publish(&self) -> Result<(), crate::Error> {
         let temporary = self.directory.join(".control-incoming");
         if temporary.exists() {
-            fs::remove_file(&temporary).map_err(|error| error.to_string())?;
+            fs::remove_file(&temporary)?;
         }
         write_new(
             &temporary,
-            &serde_json::to_vec(&self.endpoint).map_err(|error| error.to_string())?,
+            &serde_json::to_vec(&self.endpoint)
+                .map_err(|_| crate::InputFault::ControlEndpointEncode)?,
         )?;
-        fs::rename(temporary, self.directory.join("control.json"))
-            .map_err(|error| error.to_string())?;
+        fs::rename(temporary, self.directory.join("control.json"))?;
         File::open(&self.directory)
             .and_then(|file| file.sync_all())
-            .map_err(|error| error.to_string())
+            .map_err(crate::Error::from)
     }
 
     pub(crate) fn selection(&self) -> Result<[u8; 32], String> {

@@ -949,17 +949,20 @@ where
         None => Ok(()),
     };
     let cleanup = cleanup
-        .and(control_cleanup.map_err(|_| crate::Error::from(crate::RuntimeFailure::Cleanup)))
+        .and(
+            control_cleanup.map_err(|cause| crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::Cleanup,
+                cause: Box::new(cause),
+            }),
+        )
         .and(transport_cleanup.map_err(|_| crate::Error::from(crate::RuntimeFailure::Cleanup)));
     match (outcome, cleanup) {
-        (Err(primary), Err(_)) => {
-            emit(
-                json!({"event":crate::outcome::NodeEvent::ShutdownFailed,"error":crate::RuntimeFailure::Cleanup}),
-            );
+        (Err(primary), Err(error)) => {
+            emit(json!({"event":crate::outcome::NodeEvent::ShutdownFailed,"error":error}));
             return Err(primary);
         }
         (Err(error), _) => return Err(error),
-        (_, Err(_)) => return Err(crate::RuntimeFailure::Cleanup.into()),
+        (_, Err(error)) => return Err(error),
         _ => {}
     }
     emit(

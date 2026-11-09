@@ -223,7 +223,7 @@ pub(super) struct TransportEvent {
 
 pub(super) struct Transport {
     stop: Option<oneshot::Sender<()>>,
-    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    task: Option<tokio::task::JoinHandle<Result<(), crate::Error>>>,
 }
 impl Transport {
     pub(super) fn spawn(
@@ -429,7 +429,7 @@ impl Transport {
             },
         )
     }
-    pub(super) async fn shutdown(&mut self) -> Result<(), String> {
+    pub(super) async fn shutdown(&mut self) -> Result<(), crate::Error> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -492,7 +492,7 @@ pub(super) struct PublishedStatus {
 
 pub(super) struct Controls {
     stop: Option<oneshot::Sender<()>>,
-    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    task: Option<tokio::task::JoinHandle<Result<(), crate::Error>>>,
 }
 impl Controls {
     pub(super) fn spawn(
@@ -562,14 +562,18 @@ impl Controls {
             task: Some(task),
         }
     }
-    pub(super) async fn shutdown(&mut self) -> Result<(), String> {
+    pub(super) async fn shutdown(&mut self) -> Result<(), crate::Error> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
         match self.task.take() {
-            Some(task) => task
-                .await
-                .map_err(|e| format!("control task failed: {e}"))?,
+            Some(task) => task.await.map_err(|error| {
+                if error.is_cancelled() {
+                    crate::InputFault::ControlTaskCancelled
+                } else {
+                    crate::InputFault::ControlTaskFailed
+                }
+            })?,
             None => Ok(()),
         }
     }

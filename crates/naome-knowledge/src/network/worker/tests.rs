@@ -31,3 +31,25 @@ fn peer_and_request_revocation_leave_unrelated_roots_and_node_lifetime_valid() {
     assert_eq!(root_a.check().unwrap_err(), crate::Error::StaleAuthority);
     assert!(local.check().is_ok());
 }
+
+#[tokio::test]
+async fn control_shutdown_preserves_owner_failure_and_distinguishes_cancellation() {
+    let expected = crate::Error::from(crate::InputFault::ControlSocketPath);
+    let failure = expected.clone();
+    let mut controls = Controls {
+        stop: None,
+        task: Some(tokio::spawn(async move { Err(failure) })),
+    };
+    assert_eq!(controls.shutdown().await.unwrap_err(), expected);
+
+    let task = tokio::spawn(async { std::future::pending::<Result<(), crate::Error>>().await });
+    task.abort();
+    let mut controls = Controls {
+        stop: None,
+        task: Some(task),
+    };
+    assert_eq!(
+        controls.shutdown().await.unwrap_err(),
+        crate::Error::from(crate::InputFault::ControlTaskCancelled)
+    );
+}
