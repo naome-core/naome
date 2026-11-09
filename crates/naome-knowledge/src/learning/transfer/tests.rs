@@ -35,8 +35,14 @@ fn incomplete_or_duplicate_observations_cannot_qualify() {
     let mut s = Summary::default();
     s.record(0, false, true).unwrap();
     assert!(!s.accepts());
-    assert!(s.record(0, false, true).is_err());
-    assert!(s.record(2, false, true).is_err());
+    assert_eq!(
+        s.record(0, false, true).unwrap_err(),
+        crate::ResearchFailure::TransferSequence.into()
+    );
+    assert_eq!(
+        s.record(2, false, true).unwrap_err(),
+        crate::ResearchFailure::TransferSequence.into()
+    );
     s.observed |= 1 << CASES;
     assert!(s.validate().is_err());
     assert!(

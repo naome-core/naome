@@ -60,9 +60,9 @@ impl Plan {
             ],
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.phases.iter().any(|p| p.ranking_quarters > 2) {
-            return Err("meta plan objective bound".into());
+            return Err(crate::ResearchFailure::MetaPlanObjective.into());
         }
         Ok(())
     }

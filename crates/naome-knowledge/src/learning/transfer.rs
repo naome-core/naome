@@ -16,19 +16,19 @@ impl Summary {
     pub fn prefix(count: usize) -> u32 {
         (1u32 << count.min(CASES)) - 1
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.observed & !ALL != 0
             || self.observed & self.observed.wrapping_add(1) != 0
             || (self.before | self.after) & !self.observed != 0
         {
-            return Err("noncanonical transfer outcome coverage".into());
+            return Err(crate::ResearchFailure::TransferCoverageInvalid.into());
         }
         Ok(())
     }
-    pub fn record(&mut self, index: usize, before: bool, after: bool) -> Result<(), String> {
+    pub fn record(&mut self, index: usize, before: bool, after: bool) -> Result<(), crate::Error> {
         self.validate()?;
         if index >= CASES || self.observed != Self::prefix(index) {
-            return Err("transfer evaluation sequence differs".into());
+            return Err(crate::ResearchFailure::TransferSequence.into());
         }
         self.before |= u32::from(before) << index;
         self.after |= u32::from(after) << index;

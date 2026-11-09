@@ -900,6 +900,7 @@ codes! {
         CoverageFilterInvalid = 453, CoverageProgramIdentity = 454, CoverageProofIdentity = 455, CoverageDependencyOrder = 456, CoverageActionMissing = 457, CoverageGraphReference = 458,
         PoolHindsightSourceCapacity = 459, PoolMaskWorkOverflow = 460, PoolMaskWorkCapacity = 461, PoolHindsightWorkOverflow = 462, PoolHindsightWorkCapacity = 463, PoolObservationLineage = 464, PoolSequenceWorkOverflow = 465, PoolSequenceWorkCapacity = 466, PoolSequenceBinding = 467, PoolWitnessWorkOverflow = 468, PoolDerivedWorkOverflow = 469, PoolDerivedWorkCapacity = 470, PoolGraphWorkOverflow = 471, PoolGraphWorkCapacity = 472,
         PreservationRootBranch = 473, PreservationPredecessor = 474, PreservationBranchBinding = 475, PreservationActionLabel = 476, PoolPredictionInvalid = 477,
+        ModelCheckpointBinding = 478, MetaCheckpointBinding = 479, MetaCheckpointShape = 480, MetaTransferIncomplete = 481, MetaPromotionBinding = 482, MetaTrialDimensions = 483, MetaMemoryCapacity = 484, MetaTrialDuplicate = 485, MetaSelectionValues = 486, MetaPlanObjective = 487, MetaMemoryPhase = 488, TransferCoverageInvalid = 489, TransferSequence = 490,
     }
 
 }

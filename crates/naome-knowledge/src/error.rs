@@ -1517,6 +1517,29 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationActionLabel => {
                     "preservation prefix action lacks a checked label"
                 }
+                crate::ResearchFailure::ModelCheckpointBinding => {
+                    "native model specification or paired optimizer differs"
+                }
+                crate::ResearchFailure::MetaCheckpointBinding => {
+                    "meta paired input/optimizer binding differs"
+                }
+                crate::ResearchFailure::MetaCheckpointShape => "meta checkpoint shape differs",
+                crate::ResearchFailure::MetaTransferIncomplete => {
+                    "meta transfer outcome is not a complete owned trial"
+                }
+                crate::ResearchFailure::MetaPromotionBinding => {
+                    "meta retained model lacks protected family transfer gain"
+                }
+                crate::ResearchFailure::MetaTrialDimensions => "meta trial dimensions differ",
+                crate::ResearchFailure::MetaMemoryCapacity => "meta experience memory capacity",
+                crate::ResearchFailure::MetaTrialDuplicate => "duplicate meta source trial",
+                crate::ResearchFailure::MetaSelectionValues => "meta selection values differ",
+                crate::ResearchFailure::MetaPlanObjective => "meta plan objective bound",
+                crate::ResearchFailure::MetaMemoryPhase => "meta memory phase encoding differs",
+                crate::ResearchFailure::TransferCoverageInvalid => {
+                    "noncanonical transfer outcome coverage"
+                }
+                crate::ResearchFailure::TransferSequence => "transfer evaluation sequence differs",
                 crate::ResearchFailure::PoolPredictionInvalid => {
                     "preparation prediction shape or value differs"
                 }

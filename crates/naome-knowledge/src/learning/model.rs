@@ -215,7 +215,21 @@ fn checkpoint_specification_binds_effective_corpus_data() {
     let mut mismatched = checkpoint.clone();
     mismatched.specification = specification_for(&corpus);
     assert_ne!(mismatched.specification, checkpoint.specification);
-    assert!(mismatched.validate().is_err());
+    assert_eq!(
+        mismatched.validate().unwrap_err(),
+        crate::ResearchFailure::ModelCheckpointBinding.into()
+    );
+    let mut invalid_blob = checkpoint.clone();
+    let blob = Blob {
+        sha256: "00".repeat(32),
+        bytes: 0,
+    };
+    invalid_blob.model = Some(blob.clone());
+    invalid_blob.optimizer = Some(blob);
+    assert_eq!(
+        invalid_blob.validate().unwrap_err(),
+        crate::ResearchFailure::ModelBlobCapacity.into()
+    );
     checkpoint.validate().unwrap();
 }
 
@@ -229,12 +243,12 @@ impl Checkpoint {
             optimizer: None,
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.specification != specification()
             || self.model.is_some() != self.optimizer.is_some()
             || self.model.is_none() && self.updates != 0
         {
-            return Err("native model specification or paired optimizer differs".into());
+            return Err(crate::ResearchFailure::ModelCheckpointBinding.into());
         }
         for blob in self.blobs() {
             blob.validate()?;
