@@ -501,7 +501,7 @@ where
         &config.directory.join("identity.key"),
         1024,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| crate::InputFault::IdentityKeyDecode)?;
     let own_id = key.public().to_peer_id();
     #[cfg(unix)]
     let control = if autonomy.is_some() {
@@ -531,10 +531,10 @@ where
         || settings.relays.len() > crate::resources::limits().relay_peers
         || settings.external_addresses.len() > crate::resources::limits().addresses_per_contact
     {
-        return Err("discovery configuration capacity".into());
+        return Err(crate::InputLimit::NetworkDiscoveryCapacity.into());
     }
     if settings.relay_only && (settings.relays.is_empty() || settings.mdns) {
-        return Err("relay-only mode requires configured relays and disables mDNS".into());
+        return Err(crate::InputFault::NetworkRelayPolicy.into());
     }
     let mut book = discovery::Book::new(own_id, automatic, &settings);
     let mut configured = BTreeMap::new();
@@ -542,42 +542,42 @@ where
         let id: PeerId = peer
             .id
             .parse()
-            .map_err(|error| format!("relay ID: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkRelayId)?;
         let address: Multiaddr = peer
             .address
             .parse()
-            .map_err(|error| format!("relay address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkRelayAddress)?;
         book.pin(id, &address, true)?;
     }
     for peer in &settings.bootstrap {
         let id: PeerId = peer
             .id
             .parse()
-            .map_err(|error| format!("bootstrap ID: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkBootstrapId)?;
         let address: Multiaddr = peer
             .address
             .parse()
-            .map_err(|error| format!("bootstrap address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkBootstrapAddress)?;
         book.pin(id, &address, false)?;
     }
     for peer in config.peers {
         let id: PeerId = peer
             .id
             .parse()
-            .map_err(|error| format!("peer ID: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkPeerId)?;
         let address: Multiaddr = peer
             .address
             .parse()
-            .map_err(|error| format!("peer address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkPeerAddress)?;
         book.pin(id, &address, false)?;
         if configured.insert(id, address).is_some() {
-            return Err("duplicate peer".into());
+            return Err(crate::InputFault::NetworkDuplicatePeer.into());
         }
     }
     let listen: Multiaddr = config
         .listen
         .parse()
-        .map_err(|error| format!("listen address: {error}"))?;
+        .map_err(|_| crate::InputFault::NetworkListenAddress)?;
     require_tcp_address(&listen)?;
     let mut allowed = allow_block_list::Behaviour::default();
     for id in book.contacts.keys() {
@@ -605,16 +605,16 @@ where
         .max_transmit_size(crate::resources::limits().gossip_packet_bytes)
         .heartbeat_interval(crate::resources::limits().gossip_heartbeat)
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| crate::RuntimeFailure::NetworkGossipConfig)?;
     let mut gossip = gossipsub::Behaviour::new(
         gossipsub::MessageAuthenticity::Signed(key.clone()),
         gossip_config,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| crate::RuntimeFailure::NetworkGossipBehaviour)?;
     let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);
     gossip
         .subscribe(&topic)
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| crate::RuntimeFailure::NetworkGossipSubscribe)?;
     let exchange = exchange::Exchange::new(
         request_response::Behaviour::with_codec(
             Codec::default(),
@@ -629,9 +629,9 @@ where
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_other_transport(move |key| transport::tcp(key, tcp_book))
-        .map_err(|error| error.to_string())?
+        .map_err(|_| crate::RuntimeFailure::NetworkTransport)?
         .with_relay_client(noise::Config::new, yamux_config)
-        .map_err(|error| error.to_string())?
+        .map_err(|_| crate::RuntimeFailure::NetworkRelayTransport)?
         .with_behaviour(|_, relay| Behaviour {
             gate: discovery::Gate(book.clone()),
             allowed: (!automatic).then_some(allowed).into(),
@@ -641,7 +641,7 @@ where
             gossip,
             exchange,
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|_| crate::RuntimeFailure::NetworkBehaviour)?
         .with_swarm_config(|config| {
             config
                 .with_idle_connection_timeout(crate::resources::limits().idle_connection_timeout)
@@ -649,14 +649,16 @@ where
         })
         .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
-    let primary_listener = swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    let primary_listener = swarm
+        .listen_on(listen)
+        .map_err(|_| crate::RuntimeFailure::NetworkListener)?;
     for address in &settings.external_addresses {
         let address: Multiaddr = address
             .parse()
-            .map_err(|error| format!("external address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkExternalAddress)?;
         let address = discovery::routing_address(&address, own_id, &book.lock().relays)?;
         if settings.relay_only && !discovery::is_relayed(&address) {
-            return Err("relay-only mode must not advertise direct endpoints".into());
+            return Err(crate::InputFault::NetworkDirectAdvertisement.into());
         }
         swarm.add_external_address(address);
     }
@@ -971,14 +973,14 @@ where
     Ok(())
 }
 
-pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), String> {
+pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), crate::Error> {
     use libp2p::multiaddr::Protocol;
     let mut protocols = address.iter();
     if !matches!(protocols.next(), Some(Protocol::Ip4(_) | Protocol::Ip6(_)))
         || !matches!(protocols.next(), Some(Protocol::Tcp(_)))
         || protocols.next().is_some()
     {
-        return Err("expected /ip4 or /ip6 address with one TCP endpoint".into());
+        return Err(crate::InputFault::NetworkListenAddress.into());
     }
     Ok(())
 }

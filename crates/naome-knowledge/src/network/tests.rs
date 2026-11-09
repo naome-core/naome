@@ -1164,3 +1164,19 @@ fn denied_dial_retains_bounded_gate_cause() {
         u32::from(crate::InputFault::RouteEndpointInvalid)
     );
 }
+
+#[test]
+fn listener_contract_returns_a_numeric_address_failure() {
+    let valid: Multiaddr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
+    assert!(require_tcp_address(&valid).is_ok());
+    let invalid: Multiaddr = "/ip4/127.0.0.1/udp/1234".parse().unwrap();
+    let error = require_tcp_address(&invalid).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::NetworkListenAddress)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputFault::NetworkListenAddress)
+    );
+}
