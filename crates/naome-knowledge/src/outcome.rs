@@ -887,6 +887,9 @@ codes! {
         PeerProgramFrameWidth = 350, PeerProgramFrameTruncated = 351, PeerProgramCommandCapacity = 352,
         PeerProgramWorkOverflow = 353, PeerProgramWorkCapacity = 354, PeerProgramContextCapacity = 355,
         PeerProgramDependencyTrailing = 356, PeerProgramStepOverflow = 357, PeerProgramStepCapacity = 358, PeerProgramObjectCapacity = 359,
+        PeerProgramFrameOutputWidth = 360, PeerProgramPacketCapacity = 361, PeerProgramContextBytesOverflow = 362,
+        PeerProgramContextBytesCapacity = 363, PeerPrerequisiteProofBinding = 364, PeerPrerequisiteStatement = 365,
+        PeerPrerequisiteDefinitionBinding = 366, PeerPrerequisiteObligationMissing = 367, PeerPrerequisiteObligationBinding = 368, PeerProgramConclusionCapacity = 369, PeerProgramConclusionMismatch = 370, PeerPrerequisiteFormulaMissing = 371,
     }
 
 }

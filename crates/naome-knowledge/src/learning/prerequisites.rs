@@ -263,7 +263,7 @@ impl Prerequisites {
         &self,
         target: &naome_foundation::Formula,
         required: &[String],
-    ) -> Result<Option<Packet>, String> {
+    ) -> Result<Option<Packet>, crate::Error> {
         use naome_checker::ContextView;
         use naome_proof::{
             ProofId,
@@ -271,33 +271,21 @@ impl Prerequisites {
         };
 
         let _work =
-            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)
-                .map_err(|error| error.to_string())?;
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
         let artifacts = self
             .0
             .artifacts
             .iter()
-            .map(|envelope| {
-                envelope
-                    .clone()
-                    .prepare()
-                    .map_err(|error| error.to_string())
-            })
+            .map(|envelope| envelope.clone().prepare())
             .collect::<Result<Vec<_>, _>>()?;
         let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
         let mut sources = Vec::new();
         for id in required {
-            let id = ProofId::from_bytes(
-                crate::object::id_bytes(id).map_err(|error| error.to_string())?,
-            );
-            if let Some(header) = context
-                .proof_header(id)
-                .map_err(|error| error.to_string())?
-            {
+            let id = ProofId::from_bytes(crate::object::id_bytes(id)?);
+            if let Some(header) = context.proof_header(id)? {
                 let formula = context
-                    .proof_formula(header, header.canonical_length())
-                    .map_err(|error| error.to_string())?
-                    .ok_or("checked temporary prerequisite formula is missing")?;
+                    .proof_formula(header, header.canonical_length())?
+                    .ok_or(crate::ResearchFailure::PeerPrerequisiteFormulaMissing)?;
                 sources.push((id, formula.into_owned()));
             }
         }

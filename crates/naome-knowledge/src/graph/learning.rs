@@ -328,7 +328,7 @@ impl Graph {
                     .map(|dependency| (dependency, None)),
             );
         }
-        crate::learning::peer::Packet::pack(manifest, &commands, &context).map_err(Into::into)
+        crate::learning::peer::Packet::pack(manifest, &commands, &context)
     }
 
     pub(crate) fn learning_certificate(

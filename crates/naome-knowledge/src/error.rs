@@ -1466,6 +1466,42 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramStepCapacity => {
                     "peer program context step capacity"
                 }
+                crate::ResearchFailure::PeerProgramFrameOutputWidth => {
+                    "peer program output frame width"
+                }
+                crate::ResearchFailure::PeerProgramPacketCapacity => {
+                    "native program replay packet capacity"
+                }
+                crate::ResearchFailure::PeerProgramContextBytesOverflow => {
+                    "peer program context byte overflow"
+                }
+                crate::ResearchFailure::PeerProgramContextBytesCapacity => {
+                    "peer program context byte capacity"
+                }
+                crate::ResearchFailure::PeerPrerequisiteProofBinding => {
+                    "temporary prerequisite checked binding differs"
+                }
+                crate::ResearchFailure::PeerPrerequisiteStatement => {
+                    "temporary prerequisite checked statement differs"
+                }
+                crate::ResearchFailure::PeerPrerequisiteDefinitionBinding => {
+                    "temporary definition checked binding differs"
+                }
+                crate::ResearchFailure::PeerPrerequisiteObligationMissing => {
+                    "temporary definition checked obligation is missing"
+                }
+                crate::ResearchFailure::PeerPrerequisiteObligationBinding => {
+                    "temporary definition checked obligation differs"
+                }
+                crate::ResearchFailure::PeerProgramConclusionCapacity => {
+                    "peer replay formula capacity"
+                }
+                crate::ResearchFailure::PeerPrerequisiteFormulaMissing => {
+                    "checked temporary prerequisite formula is missing"
+                }
+                crate::ResearchFailure::PeerProgramConclusionMismatch => {
+                    "peer program conclusion differs"
+                }
                 crate::ResearchFailure::PeerProgramObjectCapacity => {
                     "peer program context object capacity"
                 }

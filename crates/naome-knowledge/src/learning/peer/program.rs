@@ -45,8 +45,9 @@ mod binary {
     }
 }
 
-fn frame(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
-    let width = u32::try_from(bytes.len()).map_err(|_| "peer program frame width")?;
+fn frame(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), crate::Error> {
+    let width = u32::try_from(bytes.len())
+        .map_err(|_| crate::ResearchFailure::PeerProgramFrameOutputWidth)?;
     out.extend_from_slice(&width.to_le_bytes());
     out.extend_from_slice(bytes);
     Ok(())
@@ -114,7 +115,7 @@ fn read_commands(manifest: &Manifest, tail: &mut &[u8]) -> Result<Vec<Command>, 
         .collect()
 }
 
-fn write_commands(out: &mut Vec<u8>, commands: &[Command]) -> Result<(), String> {
+fn write_commands(out: &mut Vec<u8>, commands: &[Command]) -> Result<(), crate::Error> {
     for command in commands {
         frame(out, &encode_command(command)?)?;
     }
@@ -243,7 +244,7 @@ impl Packet {
         manifest: Manifest,
         commands: &[Command],
         context: &[Arc<[u8]>],
-    ) -> Result<Option<Self>, String> {
+    ) -> Result<Option<Self>, crate::Error> {
         let mut raw = Vec::new();
         write_commands(&mut raw, commands)?;
         for artifact in context {
@@ -264,7 +265,7 @@ impl Packet {
     pub(crate) fn context_record(
         manifest: &Manifest,
         commands: &[Command],
-    ) -> Result<Arc<[u8]>, String> {
+    ) -> Result<Arc<[u8]>, crate::Error> {
         let mut record = MANIFEST_MAGIC.to_vec();
         frame(&mut record, &manifest.canonical_bytes()?)?;
         write_commands(&mut record, commands)?;
@@ -292,14 +293,14 @@ impl Packet {
         self.bytes.len()
     }
 
-    pub(crate) fn target(&self) -> Result<Formula, String> {
+    pub(crate) fn target(&self) -> Result<Formula, crate::Error> {
         Ok(self.rechecked()?.target.clone())
     }
 
     pub(super) fn replay(&self, target: &Formula) -> Result<Arc<Replay>, crate::Error> {
         let replay = self.rechecked()?;
         if &replay.target != target {
-            return Err("peer program conclusion differs".into());
+            return Err(crate::ResearchFailure::PeerProgramConclusionMismatch.into());
         }
         Ok(replay)
     }
@@ -352,7 +353,7 @@ impl Packet {
         commands: &[Command],
         programs: &[Self],
         artifacts: impl IntoIterator<Item = Arc<[u8]>>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         use naome_proof::{
             StatementId,
             program::{Prefix, formula_hash, stream_hash},
@@ -365,11 +366,9 @@ impl Packet {
         for command in commands.iter().rev() {
             stream_root = stream_hash(&encode_command(command)?, stream_root);
         }
-        let bytes = target
-            .encode_canonical()
-            .map_err(|error| error.to_string())?;
-        let statement =
-            StatementId::of_canonical_formula(&bytes).ok_or("native program statement width")?;
+        let bytes = target.encode_canonical()?;
+        let statement = StatementId::of_canonical_formula(&bytes)
+            .ok_or(crate::ResearchFailure::CandidateStatementWidth)?;
         let manifest = Manifest {
             commands: prefix.commands,
             input_bytes: prefix.input_bytes,
@@ -380,7 +379,7 @@ impl Packet {
         };
         let context = Self::ordered_inputs(programs, artifacts)?;
         let packet = Self::pack(manifest, commands, &context)?
-            .ok_or("native program replay packet capacity")?;
+            .ok_or(crate::ResearchFailure::PeerProgramPacketCapacity)?;
         packet.replay(target)?;
         Ok(packet)
     }
@@ -388,17 +387,17 @@ impl Packet {
     fn ordered_inputs(
         programs: &[Self],
         artifacts: impl IntoIterator<Item = Arc<[u8]>>,
-    ) -> Result<Vec<Arc<[u8]>>, String> {
+    ) -> Result<Vec<Arc<[u8]>>, crate::Error> {
         let mut context = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut extent = 0usize;
-        let mut append = |bytes: Arc<[u8]>| -> Result<(), String> {
+        let mut append = |bytes: Arc<[u8]>| -> Result<(), crate::Error> {
             if seen.insert(crate::learning::digest(&bytes.as_ref())) {
                 extent = extent
                     .checked_add(bytes.len() + 4)
-                    .ok_or("peer program context byte overflow")?;
+                    .ok_or(crate::ResearchFailure::PeerProgramContextBytesOverflow)?;
                 if extent > crate::resources::limits().closure_bytes {
-                    return Err("peer program context byte capacity".into());
+                    return Err(crate::ResearchFailure::PeerProgramContextBytesCapacity.into());
                 }
                 context.push(bytes);
             }
@@ -424,7 +423,7 @@ impl Packet {
     pub(crate) fn checked_inputs(
         programs: &[Self],
         artifacts: &[crate::object::Candidate],
-    ) -> Result<DiskArtifactState, String> {
+    ) -> Result<DiskArtifactState, crate::Error> {
         let mut inputs = InputChecker::new(0);
         for record in Self::ordered_inputs(programs, artifacts.iter().map(|a| a.bytes.clone()))? {
             inputs.register(&record)?;
@@ -434,36 +433,32 @@ impl Packet {
                 crate::object::CandidatePayload::Proof(_) => {
                     let header = inputs
                         .context
-                        .artifact_proof_header(artifact.id)
-                        .map_err(|error| error.to_string())?
-                        .ok_or("temporary prerequisite checked binding differs")?;
+                        .artifact_proof_header(artifact.id)?
+                        .ok_or(crate::ResearchFailure::PeerPrerequisiteProofBinding)?;
                     if Some(header.statement_id()) != artifact.statement {
-                        return Err("temporary prerequisite checked statement differs".into());
+                        return Err(crate::ResearchFailure::PeerPrerequisiteStatement.into());
                     }
                 }
                 crate::object::CandidatePayload::Definition(definition) => {
                     let id = definition.definition_id();
-                    if inputs
-                        .context
-                        .definition_canonical_length(id)
-                        .map_err(|error| error.to_string())?
-                        .is_none()
-                    {
-                        return Err("temporary definition checked binding differs".into());
+                    if inputs.context.definition_canonical_length(id)?.is_none() {
+                        return Err(
+                            crate::ResearchFailure::PeerPrerequisiteDefinitionBinding.into()
+                        );
                     }
                     if let Some(obligation) = artifact.obligation {
                         let header = inputs
                             .context
-                            .proof_header(obligation)
-                            .map_err(|error| error.to_string())?
-                            .ok_or("temporary definition checked obligation is missing")?;
+                            .proof_header(obligation)?
+                            .ok_or(crate::ResearchFailure::PeerPrerequisiteObligationMissing)?;
                         let checked = naome_checker::check_definition_with_state(
                             definition.clone(),
                             &inputs.context,
-                        )
-                        .map_err(|error| error.to_string())?;
+                        )?;
                         if Some(header.statement_id()) != checked.obligation_statement_id() {
-                            return Err("temporary definition checked obligation differs".into());
+                            return Err(
+                                crate::ResearchFailure::PeerPrerequisiteObligationBinding.into()
+                            );
                         }
                     }
                 }
@@ -487,7 +482,7 @@ impl Packet {
         let mut definitions = Vec::new();
         let target = checked
             .conclusion()
-            .ok_or("peer replay formula capacity")?
+            .ok_or(crate::ResearchFailure::PeerProgramConclusionCapacity)?
             .clone();
         for command in &commands {
             if let Command::DefinedRelation { definition_id, .. } = command {
@@ -862,6 +857,12 @@ mod capacity_tests {
         };
         assert_eq!(
             packet.decoded().unwrap_err(),
+            crate::Error::Compression(expected)
+        );
+        assert_eq!(
+            Packet::checked_inputs(std::slice::from_ref(&packet), &[])
+                .err()
+                .unwrap(),
             crate::Error::Compression(expected)
         );
         assert!(matches!(super::super::super::evidence::decode(&bytes),
