@@ -1500,6 +1500,18 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::ReplaySnapshotMissing => "owned replay snapshot missing",
+                crate::ResearchFailure::ReplaySnapshotBinding => {
+                    "owned replay snapshot binding differs"
+                }
+                crate::ResearchFailure::ReplayCoverageBinding => {
+                    "owned replay coverage binding differs"
+                }
+                crate::ResearchFailure::ReplayTrainingSplit => "training split differs",
+                crate::ResearchFailure::ReplayProgramBinding => {
+                    "peer replay snapshot program differs"
+                }
+                crate::ResearchFailure::ReplayProofBinding => "peer replay snapshot proof differs",
                 crate::ResearchFailure::RoleHistoryFormat => {
                     "research historical role value exceeds its format"
                 }

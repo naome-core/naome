@@ -77,7 +77,10 @@ pub(crate) struct Evidence {
     pub trace: search::Tree,
 }
 impl Example {
-    fn trajectory<'a>(&'a self, evidence: &'a [Evidence]) -> Result<&'a search::Tree, String> {
+    fn trajectory<'a>(
+        &'a self,
+        evidence: &'a [Evidence],
+    ) -> Result<&'a search::Tree, crate::Error> {
         let search::Tree::Stored {
             bytes,
             ref binding,
@@ -90,21 +93,18 @@ impl Example {
         let source = evidence
             .iter()
             .find(|e| e.job == self.job && e.proof_id == self.proof_id)
-            .ok_or("owned replay snapshot missing")?;
-        if serde_json::to_vec(&source.trace)
-            .map_err(|e| e.to_string())?
-            .len()
-            != bytes
+            .ok_or(crate::ResearchFailure::ReplaySnapshotMissing)?;
+        if crate::checkpoint::encode(&source.trace)?.len() != bytes
             || digest(&source.trace) != *binding
         {
-            return Err("owned replay snapshot binding differs".into());
+            return Err(crate::ResearchFailure::ReplaySnapshotBinding.into());
         }
         let restored = Self {
             tree: source.trace.clone(),
             ..self.clone()
         };
         if coverage::Profile::of(&restored)? != *coverage {
-            return Err("owned replay coverage binding differs".into());
+            return Err(crate::ResearchFailure::ReplayCoverageBinding.into());
         }
         Ok(&source.trace)
     }

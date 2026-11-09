@@ -546,7 +546,7 @@ impl State {
         Ok(())
     }
     #[cfg(test)]
-    pub(super) fn training_pool(&self, evidence: &[Evidence]) -> Result<pool::Pool, String> {
+    pub(super) fn training_pool(&self, evidence: &[Evidence]) -> Result<pool::Pool, crate::Error> {
         self.training_pool_for(
             evidence,
             !matches!(self.preparation, Preparation::Balanced) && {
@@ -565,7 +565,7 @@ impl State {
         &self,
         evidence: &[Evidence],
         rehearsal: bool,
-    ) -> Result<pool::Pool, String> {
+    ) -> Result<pool::Pool, crate::Error> {
         self.checked_pool(
             self.training_sources()
                 .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job)),
@@ -579,7 +579,7 @@ impl State {
         &self,
         evidence: &[Evidence],
         training: &pool::Pool,
-    ) -> Result<pool::Pool, String> {
+    ) -> Result<pool::Pool, crate::Error> {
         self.checked_pool(
             self.anchors
                 .iter()
@@ -593,10 +593,11 @@ impl State {
         sources: impl Iterator<Item = &'a Example>,
         evidence: &[Evidence],
         mut pool: pool::Pool,
-    ) -> Result<pool::Pool, String> {
+    ) -> Result<pool::Pool, crate::Error> {
         for e in sources {
-            let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
-            let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
+            let q = ResearchQuestion::from_hex(&e.question)?;
+            let case = curriculum::owned::case(&e.question)
+                .ok_or(crate::ResearchFailure::ReplayTrainingSplit)?;
             let target = if e.refuted {
                 q.refuted_target()
             } else {
@@ -605,13 +606,13 @@ impl State {
             let tree = e.trajectory(evidence)?;
             let (core, graphs) = if let search::Tree::Program(packet) = tree {
                 if e.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
-                    return Err("peer replay snapshot program differs".into());
+                    return Err(crate::ResearchFailure::ReplayProgramBinding.into());
                 }
                 (None, peer::program_graphs(target, packet)?)
             } else {
                 let (core, _, verified) = search::core::checked(target, tree)?;
                 if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
-                    return Err("peer replay snapshot proof differs".into());
+                    return Err(crate::ResearchFailure::ReplayProofBinding.into());
                 }
                 let graphs = search::compile(target, &core)?.1;
                 (Some(core), graphs)
@@ -633,11 +634,11 @@ impl State {
         Ok(pool)
     }
     #[cfg(test)]
-    pub(crate) fn has_training_graphs(&self, evidence: &[Evidence]) -> Result<bool, String> {
+    pub(crate) fn has_training_graphs(&self, evidence: &[Evidence]) -> Result<bool, crate::Error> {
         Ok(!self.training_pool(evidence)?.graphs().is_empty())
     }
     #[cfg(test)]
-    pub(super) fn training_graphs(&self) -> Result<Vec<graph::Graph>, String> {
+    pub(super) fn training_graphs(&self) -> Result<Vec<graph::Graph>, crate::Error> {
         Ok(self.training_pool(&[])?.graphs().to_vec())
     }
     #[cfg(test)]

@@ -87,15 +87,18 @@ fn stored_coverage_is_rederived_from_the_checked_source_before_training() {
         unreachable!()
     };
     coverage.bits[0] ^= 1;
-    assert!(
+    assert_eq!(
         reference
             .trajectory(std::slice::from_ref(&evidence))
-            .unwrap_err()
-            .contains("coverage binding")
+            .unwrap_err(),
+        crate::ResearchFailure::ReplayCoverageBinding.into()
     );
     let mut state = State::fresh();
     state.replay.push(reference);
-    assert!(state.training_pool(&[evidence]).is_err());
+    assert_eq!(
+        state.training_pool(&[evidence]).err().unwrap(),
+        crate::ResearchFailure::ReplayCoverageBinding.into()
+    );
 }
 #[test]
 fn renaming_keeps_action_structure_but_changing_variable_sharing_does_not() {
