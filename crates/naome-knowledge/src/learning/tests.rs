@@ -1894,3 +1894,20 @@ fn native_artifact_check_preserves_proof_and_format_diagnostics() {
         domain: crate::FormatTagClass::ArtifactPayload, tag: 255
     })));
 }
+
+#[test]
+fn job_validation_preserves_snapshot_and_missing_theorem_diagnostics() {
+    let mut job = fixed_state().job();
+    job.base_hash = "different".into();
+    assert_eq!(
+        job.validate().unwrap_err(),
+        crate::ResearchFailure::JobParentSnapshot.into()
+    );
+    let mut job = fixed_state().job();
+    let id = [42; 32];
+    job.required = vec![crate::hex(&id)];
+    assert_eq!(
+        job.validate().unwrap_err(),
+        crate::Error::MissingRequiredTheorem(naome_proof::ProofId::from_bytes(id))
+    );
+}

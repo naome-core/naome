@@ -406,7 +406,7 @@ impl Job {
         let previous = self.progress.replace(next);
         if let Err(error) = self.validate() {
             self.progress = previous;
-            return Err(error);
+            return Err(error.into());
         }
         Ok(())
     }
@@ -470,16 +470,16 @@ impl Job {
         }
         Ok(())
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if digest(&self.base) != self.base_hash {
-            return Err("learning parent snapshot differs".into());
+            return Err(crate::ResearchFailure::JobParentSnapshot.into());
         }
         self.base.validate()?;
         if !self.prerequisites.is_empty()
             && (self.training
                 || self.required.is_empty() && !self.prerequisites.has_optional_context())
         {
-            return Err("temporary prerequisites lack a solving role".into());
+            return Err(crate::ResearchFailure::JobPrerequisiteRole.into());
         }
         if self.required.len() > knowledge::CAPACITY
             || self
@@ -489,19 +489,19 @@ impl Job {
                 .len()
                 != self.required.len()
         {
-            return Err("required theorem set capacity or duplicate".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         self.prerequisites.require(&self.base, &self.required)?;
         if let Some(request) = &self.history_request {
             request.validate()?;
             if !self.training || !self.base.history_cursor.matches(request) {
-                return Err("history request differs from its training parent".into());
+                return Err(crate::ResearchFailure::JobHistoryRequestBinding.into());
             }
             if let Some(receipt) = &self.history {
                 receipt.validate(request)?;
             }
         } else if self.history.is_some() {
-            return Err("history receipt lacks its original request".into());
+            return Err(crate::ResearchFailure::JobHistoryRequestMissing.into());
         }
         let mut expected = if self.training {
             self.base
@@ -515,10 +515,7 @@ impl Job {
         expected.dedup();
         let actual = self.evidence.iter().map(|e| e.job).collect::<Vec<_>>();
         if expected != actual
-            || serde_json::to_vec(&self.evidence)
-                .map_err(|e| e.to_string())?
-                .len()
-                > REPLAY * 8 * 1024 + 4096
+            || crate::checkpoint::encode(&self.evidence)?.len() > REPLAY * 8 * 1024 + 4096
             || self.evidence.iter().any(|e| {
                 !self.base.examples().any(|r| {
                     r.job == e.job
@@ -530,7 +527,7 @@ impl Job {
                 })
             })
         {
-            return Err("peer replay snapshot binding differs".into());
+            return Err(crate::ResearchFailure::JobReplaySnapshotBinding.into());
         }
 
         if self.written.len() > 2 * (model::TRAINING_UNITS as usize + 2)
@@ -540,11 +537,11 @@ impl Job {
                     / crate::resources::limits().native_model_chunk_bytes
                     * 2
         {
-            return Err("native artifact lifetime allowance".into());
+            return Err(crate::ResearchFailure::JobArtifactLifetimeCapacity.into());
         }
         for (unit, blob) in &self.written {
             if *unit == 0 || *unit > self.units() {
-                return Err("native artifact reservation differs".into());
+                return Err(crate::ResearchFailure::JobArtifactReservation.into());
             }
             blob.validate()?;
         }
@@ -557,10 +554,10 @@ impl Job {
                     || prepared.available > history::SOURCES
                     || prepared.retained > prepared.available
                 {
-                    return Err("prepared replay lacks its original history receipt".into());
+                    return Err(crate::ResearchFailure::JobReplayReceiptBinding.into());
                 }
             } else if self.history_request.is_some() && self.units() > 1 {
-                return Err("training progress lacks its frozen replay preparation".into());
+                return Err(crate::ResearchFailure::JobReplayPreparationMissing.into());
             }
             p.terminal.validate(p.result.as_ref())?;
             if p.executions.len() > 2
@@ -572,13 +569,17 @@ impl Job {
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
                     != p.executions.len()
-                || p.executions.iter().try_fold(0usize, |n, trace| {
-                    trace.validate()?;
-                    n.checked_add(trace.attempts)
-                        .ok_or_else(|| "search observation work overflow".to_owned())
-                })? > p.cost.as_ref().map_or(0, |cost| cost.search_expansions)
+                || p.executions.iter().try_fold(
+                    0usize,
+                    |n, trace| -> Result<usize, crate::Error> {
+                        trace.validate()?;
+                        n.checked_add(trace.attempts).ok_or_else(|| {
+                            crate::ResearchFailure::JobObservationWorkOverflow.into()
+                        })
+                    },
+                )? > p.cost.as_ref().map_or(0, |cost| cost.search_expansions)
             {
-                return Err("search observations exceed the actual bounded execution".into());
+                return Err(crate::ResearchFailure::JobObservationBinding.into());
             }
             if let Some(selection) = &p.plan {
                 selection.validate()?;
@@ -587,18 +588,21 @@ impl Job {
                         .as_ref()
                         .map_or_else(|| meta::context(&self.base), |r| r.context)
                 {
-                    return Err("meta plan context differs from its parent".into());
+                    return Err(crate::ResearchFailure::JobMetaPlanContext.into());
                 }
             } else if self.units() > 1 && self.base.preparation == Preparation::Meta {
-                return Err("native meta trial lacks its selected plan".into());
+                return Err(crate::ResearchFailure::JobMetaPlanMissing.into());
             }
             if p.meta_cpu_micros > p.cpu_micros || p.meta_wall_micros > p.wall_micros {
-                return Err("meta cost exceeds actual job cost".into());
+                return Err(crate::ResearchFailure::JobMetaCost.into());
             }
             if let Some(update) = &p.meta_update {
                 update.model.validate()?;
                 update.experience.validate()?;
-                let selected = p.plan.as_ref().ok_or("meta update without selected plan")?;
+                let selected = p
+                    .plan
+                    .as_ref()
+                    .ok_or(crate::ResearchFailure::JobMetaUpdatePlanMissing)?;
                 if self.units() == 1
                     || p.unit != self.units()
                     || self.base.preparation != Preparation::Meta
@@ -620,24 +624,20 @@ impl Job {
                     || !update.first_loss.is_finite()
                     || !update.last_loss.is_finite()
                 {
-                    return Err(
-                        "meta experience or optimizer is not bound to the actual completed trial"
-                            .into(),
-                    );
+                    return Err(crate::ResearchFailure::JobMetaUpdateBinding.into());
                 }
             } else if self.units() > 1
                 && p.unit == self.units()
                 && self.base.preparation == Preparation::Meta
             {
-                return Err("completed meta trial lacks its real update".into());
+                return Err(crate::ResearchFailure::JobMetaUpdateMissing.into());
             }
-            if serde_json::to_vec(p)
-                .map_err(|e| e.to_string())?
+            if crate::checkpoint::encode(p)?
                 .len()
                 .checked_mul(self.units() as usize)
                 .is_none_or(|bytes| bytes > crate::resources::limits().provider_stream_bytes / 2)
             {
-                return Err("local checkpoints exceed original provider stream capacity".into());
+                return Err(crate::ResearchFailure::JobCheckpointCapacity.into());
             }
 
             p.model.validate()?;
@@ -647,7 +647,7 @@ impl Job {
                     || p.development_regression
                     || !p.transfer.supports_recorded_promotion())
             {
-                return Err("retained promotion lacks complete protected transfer gain".into());
+                return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             p.transfer.validate()?;
             let expected_transfer = transfer::Summary::prefix(
@@ -656,12 +656,12 @@ impl Job {
                     .min(transfer::CASES as u32) as usize,
             );
             if p.first_loss.is_some() && p.transfer.observed != expected_transfer {
-                return Err("transfer coverage differs from the retained unit".into());
+                return Err(crate::ResearchFailure::JobTransferCoverage.into());
             }
             p.development_before.validate()?;
             p.development_after.validate()?;
             if p.development_before.checkpoint != digest(&self.base.model) {
-                return Err("development observations differ from their incumbent".into());
+                return Err(crate::ResearchFailure::JobDevelopmentBinding.into());
             }
             if let Some(solution) = &p.result
                 && !matches!(&solution.tree, search::Tree::Program(_))
@@ -670,7 +670,7 @@ impl Job {
                 if let Some(inputs) = solution.tree.composition()
                     && inputs.iter().any(|id| !self.required.contains(id))
                 {
-                    return Err("composition differs from requested prerequisites".into());
+                    return Err(crate::ResearchFailure::JobCompositionBinding.into());
                 }
                 let definitions = self
                     .prerequisites
@@ -692,13 +692,13 @@ impl Job {
                     && p.promotions == self.base.promotions
                     && p.model != self.base.model
             {
-                return Err("native model changed before successful qualification".into());
+                return Err(crate::ResearchFailure::JobModelQualification.into());
             }
             if p.rng < self.base.draws
                 || p.rng.saturating_sub(self.base.draws)
                     > u64::from(model::TRAINING_UNITS) * model::UPDATES_PER_UNIT * 16
             {
-                return Err("native sampling continuation differs".into());
+                return Err(crate::ResearchFailure::JobSamplingContinuation.into());
             }
             if p.promotions < self.base.promotions
                 || p.promotions > self.base.promotions.saturating_add(1)
@@ -707,16 +707,16 @@ impl Job {
                 || p.trained < self.base.trained
                 || p.trained > self.base.epoch
             {
-                return Err("native qualification sequence differs".into());
+                return Err(crate::ResearchFailure::JobQualificationSequence.into());
             }
             if let Some(utility) = &p.finder {
                 utility.validate()?;
                 if utility.checkpoint != digest(&p.model) || p.unit != self.units() {
-                    return Err("native finder diagnostic source differs".into());
+                    return Err(crate::ResearchFailure::JobFinderBinding.into());
                 }
             }
             if p.unit == 0 || p.unit > self.units() {
-                return Err("learning checkpoint unit differs".into());
+                return Err(crate::ResearchFailure::JobCheckpointUnit.into());
             }
             if let Some(candidate) = &p.candidate {
                 candidate.validate()?;

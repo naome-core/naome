@@ -1500,6 +1500,81 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::JobPrerequisiteRole => {
+                    "temporary prerequisites lack a solving role"
+                }
+                crate::ResearchFailure::JobParentSnapshot => "learning parent snapshot differs",
+                crate::ResearchFailure::JobHistoryRequestBinding => {
+                    "history request differs from its training parent"
+                }
+                crate::ResearchFailure::JobHistoryRequestMissing => {
+                    "history receipt lacks its original request"
+                }
+                crate::ResearchFailure::JobReplaySnapshotBinding => {
+                    "peer replay snapshot binding differs"
+                }
+                crate::ResearchFailure::JobArtifactLifetimeCapacity => {
+                    "native artifact lifetime allowance"
+                }
+                crate::ResearchFailure::JobArtifactReservation => {
+                    "native artifact reservation differs"
+                }
+                crate::ResearchFailure::JobReplayReceiptBinding => {
+                    "prepared replay lacks its original history receipt"
+                }
+                crate::ResearchFailure::JobReplayPreparationMissing => {
+                    "training progress lacks its frozen replay preparation"
+                }
+                crate::ResearchFailure::JobObservationWorkOverflow => {
+                    "search observation work overflow"
+                }
+                crate::ResearchFailure::JobObservationBinding => {
+                    "search observations exceed the actual bounded execution"
+                }
+                crate::ResearchFailure::JobMetaPlanContext => {
+                    "meta plan context differs from its parent"
+                }
+                crate::ResearchFailure::JobMetaPlanMissing => {
+                    "native meta trial lacks its selected plan"
+                }
+                crate::ResearchFailure::JobMetaCost => "meta cost exceeds actual job cost",
+                crate::ResearchFailure::JobMetaUpdatePlanMissing => {
+                    "meta update without selected plan"
+                }
+                crate::ResearchFailure::JobMetaUpdateBinding => {
+                    "meta experience or optimizer is not bound to the actual completed trial"
+                }
+                crate::ResearchFailure::JobMetaUpdateMissing => {
+                    "completed meta trial lacks its real update"
+                }
+                crate::ResearchFailure::JobCheckpointCapacity => {
+                    "local checkpoints exceed original provider stream capacity"
+                }
+                crate::ResearchFailure::JobPromotionBinding => {
+                    "retained promotion lacks complete protected transfer gain"
+                }
+                crate::ResearchFailure::JobTransferCoverage => {
+                    "transfer coverage differs from the retained unit"
+                }
+                crate::ResearchFailure::JobDevelopmentBinding => {
+                    "development observations differ from their incumbent"
+                }
+                crate::ResearchFailure::JobCompositionBinding => {
+                    "composition differs from requested prerequisites"
+                }
+                crate::ResearchFailure::JobModelQualification => {
+                    "native model changed before successful qualification"
+                }
+                crate::ResearchFailure::JobSamplingContinuation => {
+                    "native sampling continuation differs"
+                }
+                crate::ResearchFailure::JobQualificationSequence => {
+                    "native qualification sequence differs"
+                }
+                crate::ResearchFailure::JobFinderBinding => {
+                    "native finder diagnostic source differs"
+                }
+                crate::ResearchFailure::JobCheckpointUnit => "learning checkpoint unit differs",
                 crate::ResearchFailure::GeneratedTraceMissing => {
                     "local discovery lacks its generated decision trace"
                 }

@@ -346,7 +346,6 @@ impl Disk {
         native.history = Some(receipt.clone());
         if let Err(error) = native
             .validate()
-            .map_err(crate::Error::from)
             .and_then(|()| self.save_with(journal, updates))
         {
             journal
