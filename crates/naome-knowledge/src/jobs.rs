@@ -6,6 +6,7 @@
 //! records may be compacted, but obligation budgets and sequence IDs survive.
 
 mod allowance;
+mod catalog;
 mod journal;
 mod process;
 mod program;
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
+pub(crate) use catalog::CatalogSource;
 pub(crate) use service::Recovery;
 pub(crate) use service::Service;
 
@@ -196,6 +198,9 @@ pub(crate) struct Binding {
     pub selection: String,
     /// Whether this finite solving job was offered by another node.
     pub cooperative: bool,
+    /// Exact native source captured from the checked catalog for this retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<CatalogSource>,
 }
 
 impl Binding {
@@ -206,6 +211,7 @@ impl Binding {
             compatibility: crate::hex(&crate::compatibility()),
             selection: identity(&provider::DEFAULT_PROVIDER),
             cooperative: false,
+            catalog: None,
         }
     }
 
@@ -238,6 +244,9 @@ impl Binding {
         self.validate()?;
         if self.cooperative && !matches!(input, Input::Solve { .. }) {
             return Err(crate::InputFault::CooperativeRole.into());
+        }
+        if self.catalog.is_some() && (self.cooperative || !matches!(input, Input::Solve { .. })) {
+            return Err(crate::InputFault::PrerequisiteRoots.into());
         }
         Ok(())
     }
@@ -723,6 +732,9 @@ impl Client {
             return Err(crate::InputFault::RequiredTheorems.into());
         }
         prerequisites.validate()?;
+        if binding.catalog.is_some() && (!required.is_empty() || !prerequisites.is_empty()) {
+            return Err(crate::InputFault::PrerequisiteRoots.into());
+        }
         if !prerequisites.is_empty()
             && (!matches!(input, Input::Solve { .. })
                 || required.is_empty() && !prerequisites.has_optional_context())

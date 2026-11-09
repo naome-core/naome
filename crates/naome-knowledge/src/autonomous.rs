@@ -1479,11 +1479,30 @@ impl Autonomous {
                             return accepted;
                         }
                     };
-                    if !required.is_empty() || !question.dependencies().is_empty() {
+                    let mut binding = context.binding();
+                    if required.is_empty()
+                        && prerequisites.is_empty()
+                        && let Some(frontier) = &self.frontier
+                    {
+                        match frontier.catalog_retry(graph, &question) {
+                            Ok(catalog) => binding.catalog = catalog,
+                            Err(error) if error.fatal() => {
+                                self.error = Some(error);
+                                self.retain(question);
+                                return accepted;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    if !required.is_empty()
+                        || !question.dependencies().is_empty()
+                        || binding.catalog.is_some()
+                    {
                         emit(json!({
                             "event": crate::outcome::NodeEvent::FinderCheckedInputs,
                             "resolution_id": crate::hex(question.resolution_id()),
-                            "proofs": required,
+                            "proofs": required.iter().cloned().chain(binding.catalog.iter()
+                                .map(|source| crate::hex(source.proof_id().as_bytes()))).collect::<Vec<_>>(),
                             "definitions": question.dependencies().iter().map(|id| crate::hex(id.as_bytes())).collect::<Vec<_>>(),
                         }));
                     }
@@ -1508,7 +1527,7 @@ impl Autonomous {
                         };
                     match self.client.submit_after(
                         jobs::Input::Solve { question: solving },
-                        context.binding(),
+                        binding,
                         required,
                         prerequisites,
                     ) {

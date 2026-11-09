@@ -324,6 +324,23 @@ impl Frontier {
         Ok((planned.to_vec(), inputs))
     }
 
+    pub(crate) fn catalog_retry(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+    ) -> Result<Option<crate::jobs::CatalogSource>, crate::Error> {
+        if self.native
+            && self
+                .evidence
+                .get(question)?
+                .is_some_and(|record| record.paid_open_search())
+        {
+            crate::jobs::CatalogSource::for_local_scope(graph, question.proved_target())
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Exact planned cuts for an earlier open goal. The formal owner decides
     /// whether it can already supply an independently checked local proof.
     pub(crate) fn local_cut_candidates(

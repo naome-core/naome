@@ -22,16 +22,11 @@ fn bytes_key(bytes: &[u8]) -> StatementId {
 }
 
 pub(super) fn key(formula: &Formula) -> StatementId {
-    let wildcard = formula.clone().map_free_variables(|_| FreeVariable::new(0));
-    bytes_key(
-        &wildcard
-            .encode_canonical()
-            .expect("checked formula pattern"),
-    )
+    universal_pattern(formula).expect("checked formula pattern")
 }
 
 pub(super) fn projections(formula: &Formula) -> Vec<StatementId> {
-    let Some((opened, _)) = open(formula, &BTreeSet::new()) else {
+    let Some((opened, _)) = open(formula, &BTreeSet::new(), MAX_INSTANTIATIONS) else {
         return Vec::new();
     };
     let wildcard = opened.map_free_variables(|_| FreeVariable::new(0));
@@ -50,11 +45,12 @@ pub(super) fn projections(formula: &Formula) -> Vec<StatementId> {
 fn open(
     formula: &Formula,
     excluded: &BTreeSet<FreeVariable>,
+    maximum: usize,
 ) -> Option<(Formula, Vec<FreeVariable>)> {
     let mut current = formula.clone();
     let mut variables = Vec::new();
     let mut identifier = u32::MAX;
-    for _ in 0..MAX_INSTANTIATIONS {
+    for _ in 0..maximum.min(MAX_INSTANTIATIONS) {
         while excluded.contains(&FreeVariable::new(identifier))
             || current
                 .free_variables()
@@ -76,7 +72,11 @@ fn open(
 // Both inputs are well-formed canonical formulas. Compare their prefix shapes
 // and bind only outer parameters to free variables: a target's inner bound
 // variable must never be captured by specialization.
-fn match_variables(pattern: &[u8], target: &[u8]) -> Option<BTreeMap<FreeVariable, FreeVariable>> {
+fn match_variables(
+    pattern: &[u8],
+    target: &[u8],
+    is_parameter: impl Fn(FreeVariable) -> bool,
+) -> Option<BTreeMap<FreeVariable, FreeVariable>> {
     if pattern.len() != target.len() {
         return None;
     }
@@ -92,11 +92,11 @@ fn match_variables(pattern: &[u8], target: &[u8]) -> Option<BTreeMap<FreeVariabl
             for _ in 0..2 {
                 let p = &pattern[position..position + 5];
                 let t = &target[position..position + 5];
-                if p[0] == 0 {
+                let from = FreeVariable::new(u32::from_be_bytes(p[1..].try_into().ok()?));
+                if p[0] == 0 && is_parameter(from) {
                     if t[0] != 0 {
                         return None;
                     }
-                    let from = FreeVariable::new(u32::from_be_bytes(p[1..].try_into().ok()?));
                     let to = FreeVariable::new(u32::from_be_bytes(t[1..].try_into().ok()?));
                     if assignments
                         .insert(from, to)
@@ -112,6 +112,45 @@ fn match_variables(pattern: &[u8], target: &[u8]) -> Option<BTreeMap<FreeVariabl
         }
     }
     Some(assignments)
+}
+
+/// Checked catalog key for possible universal specializations of a local
+/// formula. A matching key is only an index hint.
+pub fn universal_pattern(
+    target: &Formula,
+) -> Result<StatementId, naome_foundation::FormulaCodecError> {
+    let wildcard = target.clone().map_free_variables(|_| FreeVariable::new(0));
+    Ok(bytes_key(&wildcard.encode_canonical()?))
+}
+
+/// Return the free-variable operands that specialize a universal source to
+/// the exact local formula. Free variables outside the opened prefix are fixed.
+pub fn universal_operands(
+    source: &Formula,
+    target: &Formula,
+    maximum: usize,
+) -> Result<Option<Vec<FreeVariable>>, naome_foundation::FormulaCodecError> {
+    let Some((opened, variables)) = open(source, &target.free_variables(), maximum) else {
+        return Ok(None);
+    };
+    let Some(assignments) = match_variables(
+        &opened.encode_canonical()?,
+        &target.encode_canonical()?,
+        |variable| variables.contains(&variable),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        variables
+            .iter()
+            .map(|variable| {
+                assignments
+                    .get(variable)
+                    .copied()
+                    .unwrap_or(FreeVariable::new(0))
+            })
+            .collect(),
+    ))
 }
 
 pub(super) struct Specialized {
@@ -141,7 +180,7 @@ pub(super) fn specialize(
             .ok_or(LIMIT)?,
     )?;
     let excluded = target.free_variables();
-    let Some((opened, variables)) = open(source, &excluded) else {
+    let Some((opened, variables)) = open(source, &excluded, MAX_INSTANTIATIONS) else {
         return Ok(None);
     };
     let target_bytes = target.encode_canonical().map_err(|_| LIMIT)?;
@@ -149,7 +188,7 @@ pub(super) fn specialize(
     let assignments = loop {
         work.formula(source_bytes.len(), 8)?;
         let candidate = current.encode_canonical().map_err(|_| LIMIT)?;
-        if let Some(assignments) = match_variables(&candidate, &target_bytes) {
+        if let Some(assignments) = match_variables(&candidate, &target_bytes, |_| true) {
             break assignments;
         }
         let Some((_, consequent)) = current.implication_parts() else {

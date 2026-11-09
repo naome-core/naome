@@ -1728,6 +1728,7 @@ fn native_nat_program_reuse_from_a_received_catalog() {
 }
 
 mod native_prerequisite;
+pub(crate) use native_prerequisite::{catalog_case, publish_catalog_solution};
 #[test]
 fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
     let (_, [lemma, _]) = helper_goal();

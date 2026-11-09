@@ -102,6 +102,25 @@ impl Record {
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
+    pub(super) fn paid_open_search(&self) -> bool {
+        use crate::learning::experience::{Capacity, TerminalEvidence};
+
+        self.last_outcome == Outcome::NoCandidate
+            && self.verified.is_none()
+            && self.prepared.is_none()
+            && self.experience.as_ref().is_some_and(|experience| {
+                let expansions = experience
+                    .cost
+                    .as_ref()
+                    .map_or(0, |cost| cost.search_expansions);
+                experience.terminal.observed_search_failure(expansions)
+                    || expansions > 0
+                        && matches!(
+                            experience.terminal,
+                            TerminalEvidence::Unsupported(Capacity::Facts | Capacity::Graph)
+                        )
+            })
+    }
     fn validate(&self, key: &str, observations: u64) -> Result<(), crate::Error> {
         let question = ResearchQuestion::from_hex(&self.question).map_err(crate::Error::from)?;
         experience::record(&question, self)?;

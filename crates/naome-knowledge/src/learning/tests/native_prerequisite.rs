@@ -986,3 +986,78 @@ fn a_known_local_cut_is_checked_inline_under_the_original_search_budget() {
         "internal cut does not match the requested proof path"
     );
 }
+
+pub(crate) fn catalog_case(graph: &mut crate::Graph) -> (ResearchQuestion, naome_proof::ProofId) {
+    use naome_proof::program::ScopedAction;
+
+    let names = [10, 11, 12].map(FreeVariable::new);
+    let donors = [3, 20, 41].map(|mask| donor(mask).2);
+    let closed = donors.each_ref().map(|packet| packet.target().unwrap());
+    let opened = closed.each_ref().map(|formula| {
+        names.into_iter().fold(formula.clone(), |body, name| {
+            body.open_outer_universal(name).unwrap()
+        })
+    });
+    let [left, middle, right] = opened;
+    let body = Formula::conjunction(left, Formula::conjunction(middle, right));
+    let close = |formula| {
+        names
+            .into_iter()
+            .rev()
+            .fold(formula, |body, name| Formula::for_all(name, body))
+    };
+    let mut actions = Vec::new();
+    let mut results = Vec::new();
+    let result = |actions: &[ScopedAction]| (donors.len() + actions.len() - 1) as u32;
+    for donor in 0..donors.len() as u32 {
+        let mut premise = donor;
+        for name in names {
+            actions.push(ScopedAction::Instantiate {
+                universal: premise,
+                replacement: name.identifier(),
+                premises: Vec::new(),
+            });
+            premise = result(&actions);
+        }
+        results.push(premise);
+    }
+    actions.push(ScopedAction::Conjoin {
+        left: results[1],
+        right: results[2],
+    });
+    actions.push(ScopedAction::Conjoin {
+        left: results[0],
+        right: result(&actions),
+    });
+    let commands = Projection::scoped_with_references(
+        &closed.map(Into::into),
+        &actions,
+        result(&actions),
+        &names,
+        &donors.each_ref().map(|packet| packet.manifest.proof_id()),
+    );
+    for packet in &donors {
+        register_program(graph, packet);
+    }
+    let source = peer::Packet::compose(&close(body.clone()), &commands, &donors, []).unwrap();
+    register_program(graph, &source);
+    let [a, _, c] = names;
+    let d = FreeVariable::new(13);
+    let guard = Formula::for_all(d, Formula::implies(body, Formula::member(d, a)));
+    let target = close(Formula::implies(guard, Formula::member(c, a)));
+    (
+        ResearchQuestion::from_formula(target).unwrap(),
+        source.manifest.proof_id(),
+    )
+}
+
+pub(crate) fn publish_catalog_solution(
+    graph: &mut crate::Graph,
+    solution: &Solution,
+) -> naome_proof::ArtifactId {
+    let search::Tree::Program(program) = &solution.tree else {
+        panic!("catalog result must use the native program format");
+    };
+    register_program(graph, program);
+    program.manifest.artifact_id()
+}

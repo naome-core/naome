@@ -1142,42 +1142,54 @@ fn peer_program_padding_does_not_advance_learning_after_reopen() {
     assert!(restored.has_training_graphs(&evidence).unwrap());
 }
 
+use crate::jobs::provider::{self, Probe, Supervisor};
+use crate::resources::feedback::{Phase, Sample};
+
+#[derive(Default)]
+struct WorkerCheckpoint(Option<crate::learning::Progress>);
+impl Supervisor for WorkerCheckpoint {
+    fn reserve(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
+        assert_eq!(unit, 1);
+        Ok(())
+    }
+    fn checkpoint(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
+        assert_eq!(self.0.as_ref().unwrap().unit, unit);
+        Ok(())
+    }
+    fn learning(
+        &mut self,
+        unit: u32,
+        progress: crate::learning::Progress,
+    ) -> Result<(), crate::outcome::WorkerFailure> {
+        assert_eq!(unit, 1);
+        assert!(self.0.replace(progress).is_none());
+        Ok(())
+    }
+    fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
+        Ok(())
+    }
+    fn blocked_nanos(&self) -> u64 {
+        0
+    }
+    fn observe(&mut self, _: Phase, _: Sample) -> Result<(), crate::outcome::WorkerFailure> {
+        Ok(())
+    }
+}
+
+fn drive_native(record: Record) -> (crate::learning::Progress, Output) {
+    std::thread::spawn(move || {
+        let mut provider = provider::select(&record).unwrap();
+        let mut checkpoint = WorkerCheckpoint::default();
+        let output =
+            provider::drive(provider.as_mut(), &mut checkpoint, record.checkpoint).unwrap();
+        (checkpoint.0.unwrap(), output)
+    })
+    .join()
+    .unwrap()
+}
+
 #[test]
 fn peer_program_completion_retries_memory_pressure_after_worker_success() {
-    use crate::jobs::provider::{self, Probe, Supervisor};
-    use crate::resources::feedback::{Phase, Sample};
-
-    #[derive(Default)]
-    struct Checkpoint(Option<crate::learning::Progress>);
-    impl Supervisor for Checkpoint {
-        fn reserve(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
-            assert_eq!(unit, 1);
-            Ok(())
-        }
-        fn checkpoint(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
-            assert_eq!(self.0.as_ref().unwrap().unit, unit);
-            Ok(())
-        }
-        fn learning(
-            &mut self,
-            unit: u32,
-            progress: crate::learning::Progress,
-        ) -> Result<(), crate::outcome::WorkerFailure> {
-            assert_eq!(unit, 1);
-            assert!(self.0.replace(progress).is_none());
-            Ok(())
-        }
-        fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
-            Ok(())
-        }
-        fn blocked_nanos(&self) -> u64 {
-            0
-        }
-        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), crate::outcome::WorkerFailure> {
-            Ok(())
-        }
-    }
-
     let (directory, mut owner) = native();
     // Fixture construction also rechecks its program. Keep its cache off
     // the journal owner, as with a real separate worker.
@@ -1194,14 +1206,7 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
     let record = owner.journal.records[&id].clone();
-    let (progress, output) = std::thread::spawn(move || {
-        let mut provider = provider::select(&record).unwrap();
-        let mut checkpoint = Checkpoint::default();
-        let output = provider::drive(provider.as_mut(), &mut checkpoint, 0).unwrap();
-        (checkpoint.0.unwrap(), output)
-    })
-    .join()
-    .unwrap();
+    let (progress, output) = drive_native(record);
     let Output::Native {
         solution: Some(solution),
         ..
@@ -2000,4 +2005,134 @@ fn peer_queue_reports_invalid_ordinal_without_consuming_the_row() {
             u32::from(crate::ResearchFailure::PeerQueueOrdinalMismatch),
         );
     }
+}
+
+#[test]
+fn catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen() {
+    use crate::frontier::{Frontier, evidence::Outcome};
+    use crate::learning::Origin;
+
+    fn run(owner: &mut Owner, id: u64) -> Completion {
+        owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+        owner.reserve(id, 1).unwrap();
+        let (progress, output) = drive_native(owner.journal.records[&id].clone());
+        let record = owner.journal.records.get_mut(&id).unwrap();
+        record
+            .native
+            .as_mut()
+            .unwrap()
+            .retain_progress(id, progress)
+            .unwrap();
+        record.checkpoint = 1;
+        owner
+            .complete(
+                id,
+                process::Outcome {
+                    state: State::Complete,
+                    result: Ok(output),
+                },
+            )
+            .unwrap();
+        completion(&owner.journal.records[&id]).unwrap()
+    }
+
+    crate::resources::tests::budget(false);
+    let graph_dir = Directory::new();
+    let frontier_dir = Directory::new();
+    let mut graph = crate::Graph::open(&graph_dir.0).unwrap();
+    let (question, donor) = crate::learning::tests::catalog_case(&mut graph);
+    drop(graph);
+    let mut graph = crate::Graph::open(&graph_dir.0).unwrap();
+    let mut gate = crate::question::LocalQuestions::new(Some(|_| std::future::ready(Ok(true))));
+    assert!(gate.generation_decision(&graph, &question).passed());
+
+    let (directory, mut owner) = native();
+    let settings = owner.settings;
+    let model = learning(&owner)["model"].clone();
+    let binding = gate.formal_context(&graph).binding();
+    let input = Input::Solve {
+        question: question.to_hex(),
+    };
+    let mut frontier = Frontier::open(&frontier_dir.0, &graph, 937, settings).unwrap();
+    assert!(frontier.catalog_retry(&graph, &question).unwrap().is_none());
+    let (reply, _receiver) = oneshot::channel();
+    owner.submit(input.clone(), binding.clone(), reply).unwrap();
+    let first = owner.journal.next_id - 1;
+    let miss = run(&mut owner, first);
+    assert!(matches!(
+        miss.result,
+        Ok(Output::Native { solution: None, .. })
+    ));
+    assert_eq!(
+        miss.experience
+            .as_ref()
+            .unwrap()
+            .cost
+            .as_ref()
+            .unwrap()
+            .search_expansions,
+        128
+    );
+    frontier
+        .attempted(&question, &graph, &miss, Outcome::NoCandidate)
+        .unwrap();
+    owner.journal.records.get_mut(&first).unwrap().acknowledged = true;
+    owner.save().unwrap();
+    drop(frontier);
+
+    let frontier = Frontier::open(&frontier_dir.0, &graph, 937, settings).unwrap();
+    let (required, prerequisites) = frontier.solving_inputs(&graph, &question, &[]).unwrap();
+    assert!(required.is_empty() && prerequisites.is_empty());
+    let source = frontier.catalog_retry(&graph, &question).unwrap().unwrap();
+    assert_eq!(source.proof_id(), donor);
+    let mut retry_binding = binding;
+    retry_binding.catalog = Some(source);
+    let (reply, _receiver) = oneshot::channel();
+    owner.submit(input, retry_binding.clone(), reply).unwrap();
+    let retry = owner.journal.next_id - 1;
+    assert!(retry > first);
+    assert_eq!(owner.journal.records[&retry].binding, retry_binding);
+    drop(owner);
+
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
+    assert_eq!(owner.journal.records[&retry].binding, retry_binding);
+    let complete = run(&mut owner, retry);
+    let solved = complete.experience.unwrap();
+    assert!(matches!(solved.origin, Origin::Local));
+    assert_eq!(solved.checkpoint, miss.experience.unwrap().checkpoint);
+    assert_eq!(solved.cost.as_ref().unwrap().search_expansions, 5);
+    let Output::Native {
+        solution: Some(solution),
+        ..
+    } = complete.result.unwrap()
+    else {
+        panic!("retry must produce a checked native proof");
+    };
+    assert!(
+        retry_binding
+            .catalog
+            .as_ref()
+            .unwrap()
+            .supports(&solution)
+            .unwrap()
+    );
+    solution.check_target(&question).unwrap();
+    let root = crate::learning::tests::publish_catalog_solution(&mut graph, &solution);
+    assert!(graph.contains(root).unwrap());
+    assert_eq!(learning(&owner)["accepted"], 0);
+    owner
+        .disk
+        .accept_learning(&mut owner.journal, retry, &crate::hex(root.as_bytes()))
+        .unwrap();
+    let after = learning(&owner);
+    assert_eq!(after["model"], model);
+    eprintln!(
+        "catalog-retry published={} source={} search_expansions={} replay_samples={} model_policy={}",
+        solution.proof_id,
+        crate::hex(donor.as_bytes()),
+        128 + solution.cost.search_expansions,
+        after["accepted"],
+        solved.policy,
+    );
 }

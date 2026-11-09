@@ -1036,6 +1036,16 @@ fn validate_record(
         {
             return Err(crate::ResearchFailure::JournalMetaJob.into());
         }
+        if let Some(source) = &r.binding.catalog {
+            if !native.required.is_empty() || !native.prerequisites.is_empty() {
+                return Err(crate::InputFault::PrerequisiteRoots.into());
+            }
+            if let Some(solution) = native.progress.as_ref().and_then(|p| p.result.as_ref())
+                && !source.supports(solution)?
+            {
+                return Err(crate::ResearchFailure::OfferedProofBinding.into());
+            }
+        }
         match &r.input {
             Input::Solve { question } => {
                 native.validate_generated_trace()?;
@@ -1066,7 +1076,7 @@ fn validate_record(
         {
             return Err(crate::ResearchFailure::JournalProviderRole.into());
         }
-    } else if r.provider == crate::learning::PROVIDER {
+    } else if r.provider == crate::learning::PROVIDER || r.binding.catalog.is_some() {
         return Err(crate::ResearchFailure::JournalProviderMissing.into());
     }
     r.binding.validate_role(&r.input)?;

@@ -10,6 +10,8 @@ use naome_proof::{
     program::{ACTION_PREMISES, SCOPE_ASSUMPTIONS},
 };
 
+mod catalog;
+
 mod witness;
 
 const SEGMENT_ACTIONS: usize = if ACTIONS < ACTION_PREMISES - 1 {

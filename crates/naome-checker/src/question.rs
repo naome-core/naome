@@ -27,6 +27,7 @@ mod equivalence;
 mod fixtures;
 pub(crate) mod index;
 mod instantiation;
+pub use instantiation::{universal_operands, universal_pattern};
 mod registry;
 pub use registry::{QuestionRegistry, QuestionRegistryCopy};
 

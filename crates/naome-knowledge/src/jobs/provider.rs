@@ -229,9 +229,29 @@ impl Provider for Native {
             .native
             .as_mut()
             .ok_or(crate::WorkerFailure::NativeSnapshotMissing)?;
+        let mut catalog_result = None;
+        let mut catalog_cpu = 0;
+        if unit == job.units()
+            && job
+                .progress
+                .as_ref()
+                .is_none_or(|progress| progress.unit != unit)
+            && let (Input::Solve { question }, Some(catalog)) =
+                (&self.record.input, &self.record.binding.catalog)
+        {
+            let started = Instant::now();
+            let cpu = crate::learning::meta::cpu_micros()?;
+            catalog_result = catalog.solve_local_scope(question)?.map(|solution| {
+                (
+                    solution,
+                    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                )
+            });
+            catalog_cpu = crate::learning::meta::cpu_micros()?.saturating_sub(cpu);
+        }
         job.execute(
             unit,
-            if matches!(self.record.input, Input::Peer { .. }) {
+            if catalog_result.is_some() || matches!(self.record.input, Input::Peer { .. }) {
                 None
             } else {
                 question
@@ -240,6 +260,18 @@ impl Provider for Native {
             &mut self.engine,
             owner,
         )?;
+        if let Some((solution, wall)) = catalog_result {
+            let progress = job
+                .progress
+                .as_mut()
+                .ok_or(crate::WorkerFailure::NativeProgressMissing)?;
+            progress.cpu_micros = progress.cpu_micros.saturating_add(catalog_cpu);
+            progress.wall_micros = progress.wall_micros.saturating_add(wall);
+            progress.cost = Some((*solution.cost).clone());
+            progress.terminal = crate::learning::experience::TerminalEvidence::certified(&solution);
+            progress.generation = Some(crate::outcome::GenerationOutcome::CertifiedProgram);
+            progress.result = Some(solution);
+        }
         if let Input::Peer {
             evidence,
             question,

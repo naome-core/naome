@@ -1042,6 +1042,25 @@ impl Owner {
         if reply.is_closed() {
             return Ok(());
         }
+        if binding.catalog.is_some()
+            && (!self.settings.native_proof_learning
+                || binding.cooperative
+                || !matches!(input, Input::Solve { .. })
+                || !required.is_empty()
+                || !prerequisites.is_empty())
+        {
+            reject(reply, binding, AdmissionFailure::PrerequisitesNotRetained);
+            return Ok(());
+        }
+        if self.journal.records.values().any(|record| {
+            (binding.catalog.is_some() || record.binding.catalog.is_some())
+                && record.input == input
+                && !record.acknowledged
+                && record.binding != binding
+        }) {
+            reject(reply, binding, AdmissionFailure::InFlightPrerequisites);
+            return Ok(());
+        }
         if !required.is_empty() || !prerequisites.is_empty() {
             if !matches!(input, Input::Solve { .. })
                 || self
