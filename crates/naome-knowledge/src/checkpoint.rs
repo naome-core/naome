@@ -51,7 +51,7 @@ impl Update {
         kind: &'static str,
         key: impl ToString,
         value: &impl Serialize,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         Ok(Self::Put {
             kind,
             key: key.to_string(),

@@ -808,7 +808,7 @@ impl Frontier {
             && let Some(current) = self.evidence.get(question)?
         {
             for source in current.helpers {
-                let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
+                let helper = ResearchQuestion::from_hex(&source)?;
                 if let Some(producer) = self.evidence.get(&helper)?
                     && producer.verified_at > record.last_attempt_at
                     && let Some(root) = producer.verified

@@ -509,3 +509,23 @@ fn oversized_initial_header_does_not_publish_and_stage_can_recover() {
     let recovered = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
     assert_eq!(recovered.header::<u64>().unwrap(), 1);
 }
+
+#[test]
+fn update_encoding_failure_preserves_its_machine_cause() {
+    struct Invalid;
+    impl serde::Serialize for Invalid {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("private detail"))
+        }
+    }
+    let error = match Update::put("kind", "key", &Invalid) {
+        Err(error) => error,
+        Ok(_) => panic!("invalid serializer unexpectedly succeeded"),
+    };
+    assert_eq!(error, crate::InputFault::CheckpointEncoding.into());
+    assert!(
+        !serde_json::to_string(&error)
+            .unwrap()
+            .contains("private detail")
+    );
+}
