@@ -120,7 +120,7 @@ async fn relay_startup_failures_keep_distinct_machine_codes() {
     let config = directory.0.join("relay.json");
     assert!(matches!(
         run(&config).await,
-        Err(Error::Runtime(RuntimeFailure::BoundedFileOpen))
+        Err(Error::RuntimeContext { code: RuntimeFailure::BoundedFileOpen, cause }) if matches!(*cause, Error::StorageIo { operation: crate::StorageIoOperation::OpenInput, kind: crate::IoFaultKind::NotFound, .. })
     ));
     std::fs::write(&config, b"{").unwrap();
     assert!(matches!(

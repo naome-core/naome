@@ -628,10 +628,20 @@ fn sync_directory(directory: &Path) -> Result<(), crate::Error> {
     Ok(())
 }
 pub(crate) fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, crate::Error> {
-    let file = File::open(path).map_err(|_| crate::RuntimeFailure::BoundedFileOpen)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| crate::RuntimeFailure::BoundedFileMetadata)?;
+    let file = File::open(path).map_err(|error| {
+        bounded_file_error(
+            crate::RuntimeFailure::BoundedFileOpen,
+            crate::StorageIoOperation::OpenInput,
+            error,
+        )
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        bounded_file_error(
+            crate::RuntimeFailure::BoundedFileMetadata,
+            crate::StorageIoOperation::InspectInput,
+            error,
+        )
+    })?;
     if !metadata.is_file() {
         return Err(crate::Error::InputFault(
             crate::InputFault::RegularFileRequired,
@@ -645,13 +655,30 @@ pub(crate) fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, crate
     let mut bytes = Vec::new();
     file.take(maximum as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| crate::RuntimeFailure::BoundedFileRead)?;
+        .map_err(|error| {
+            bounded_file_error(
+                crate::RuntimeFailure::BoundedFileRead,
+                crate::StorageIoOperation::ReadInput,
+                error,
+            )
+        })?;
     if bytes.len() > maximum {
         return Err(crate::Error::InputLimit(
             crate::InputLimit::BoundedFileBytes,
         ));
     }
     Ok(bytes)
+}
+
+fn bounded_file_error(
+    code: crate::RuntimeFailure,
+    operation: crate::StorageIoOperation,
+    error: std::io::Error,
+) -> crate::Error {
+    crate::Error::RuntimeContext {
+        code,
+        cause: Box::new(crate::error::storage_io_error(operation, error)),
+    }
 }
 
 #[cfg(test)]

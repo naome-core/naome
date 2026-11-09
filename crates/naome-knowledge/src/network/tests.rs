@@ -260,9 +260,7 @@ fn configuration_failures_preserve_read_and_parse_codes() {
     std::fs::remove_file(file.path()).unwrap();
     assert!(matches!(
         read_config(&file.path()),
-        Err(crate::Error::Runtime(
-            crate::RuntimeFailure::BoundedFileOpen
-        ))
+        Err(crate::Error::RuntimeContext { code: crate::RuntimeFailure::BoundedFileOpen, cause }) if matches!(*cause, crate::Error::StorageIo { operation: crate::StorageIoOperation::OpenInput, kind: crate::IoFaultKind::NotFound, .. })
     ));
 }
 
