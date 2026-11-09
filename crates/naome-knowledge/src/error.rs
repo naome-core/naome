@@ -927,6 +927,13 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::LogicNegatedImplication => "negated implication expected",
                 crate::ResearchFailure::LogicFreshVariable => "fresh variable space",
                 crate::ResearchFailure::LogicUniversalPremise => "universal premise expected",
+                crate::ResearchFailure::ProofExpansion => "primitive formula expansion failed",
+                crate::ResearchFailure::ProofReferenceReplacement => {
+                    "exact native references cannot be replaced during proof encoding"
+                }
+                crate::ResearchFailure::ProofRepresentationMismatch => {
+                    "typed representation changed the checked conclusion"
+                }
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }

@@ -564,6 +564,11 @@ mod tests {
                 .any(|g| g.nodes[g.candidates[1]].kind == Rule::DefinitionReference.kind())
         );
         let (_, _, checked) = search::core::checked(q.proved_target(), &wrapped).unwrap();
+        let error = proof::source_with_definitions(&checked, &[]).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::ProofReferenceReplacement)
+        );
         let source = proof::source(&checked).unwrap();
         let helper_sources = helpers(&wrapped).unwrap();
         let directory = crate::checkpoint::tests::Directory::new();

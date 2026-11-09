@@ -583,7 +583,7 @@ pub(crate) fn check_artifact(
                     domain: crate::FormatTagClass::ArtifactPayload,
                     tag,
                 }),
-                other => crate::Error::InvalidInput(other.to_string()),
+                _ => format(crate::FormatFailure::Unsupported),
             },
         )?;
     let naome_proof::ArtifactPayload::Proof(certificate) = payload else {
@@ -595,15 +595,15 @@ pub(crate) fn check_artifact(
 pub(super) fn define_steps(
     steps: &[ProofStep],
     definitions: &[super::definitions::Entry],
-) -> Result<Vec<ProofStep>, String> {
+) -> Result<Vec<ProofStep>, crate::Error> {
     let rewrite = |value: &naome_proof::ProofFormula| {
         if value.as_defined().is_some() {
             return Ok(value.clone());
         }
         let primitive = value
             .expand_with(&ArtifactState::new())
-            .map_err(|error| error.to_string())?;
-        super::definitions::represent(primitive.as_ref(), definitions)
+            .map_err(|_| crate::ResearchFailure::ProofExpansion)?;
+        super::definitions::represent(primitive.as_ref(), definitions).map_err(crate::Error::from)
     };
     steps
         .iter()
@@ -675,26 +675,28 @@ pub(super) fn define_steps(
                 _ => step.clone(),
             })
         })
-        .collect::<Result<Vec<_>, String>>()
+        .collect::<Result<Vec<_>, crate::Error>>()
 }
 
 pub fn source_with_definitions(
     proof: &Verified,
     definitions: &[super::definitions::Entry],
-) -> Result<String, String> {
+) -> Result<String, crate::Error> {
     if proof
         .definitions
         .iter()
         .any(|entry| !definitions.contains(entry))
     {
-        return Err("exact native references cannot be replaced during proof encoding".into());
+        return Err(crate::ResearchFailure::ProofReferenceReplacement.into());
     }
     let steps = define_steps(proof.certificate.steps(), definitions)?;
-    let certificate = ProofCertificate::new(steps).map_err(|error| error.to_string())?;
+    let certificate = ProofCertificate::new(steps).map_err(|error| {
+        crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+    })?;
     let context = lemma_context(definitions, &proof.lemmas)?;
-    let checked = check(certificate, &context).map_err(|error| error.to_string())?;
+    let checked = check(certificate, &context).map_err(crate::Error::from)?;
     if checked.conclusion() != &proof.target {
-        return Err("typed representation changed the checked conclusion".into());
+        return Err(crate::ResearchFailure::ProofRepresentationMismatch.into());
     }
     Ok(artifact(checked.normal_form().certificate()))
 }
