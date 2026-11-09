@@ -301,6 +301,10 @@ pub enum Error {
         cause: Box<Error>,
     },
     Research(crate::ResearchFailure),
+    CompositionReplay {
+        work: usize,
+        maximum: usize,
+    },
     Worker(crate::WorkerFailure),
     ResearchCombined {
         primary: Box<Error>,
@@ -359,6 +363,9 @@ impl Error {
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
+            Self::CompositionReplay { .. } => {
+                return crate::ResearchFailure::CompositionReplayMismatch.into();
+            }
             Self::Worker(failure) => return (*failure).into(),
             Self::ResearchCombined { .. } => {
                 return crate::ResearchFailure::MultipleFailures.into();
@@ -1379,10 +1386,21 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::OfferedProofBinding => {
                     "offered theorem failed context binding"
                 }
+                crate::ResearchFailure::CompositionTraceCapacity => "composition trace capacity",
+                crate::ResearchFailure::CompositionInputBinding => {
+                    "composition input binding differs"
+                }
+                crate::ResearchFailure::CompositionCheckedInputMissing => {
+                    "composition checked input missing"
+                }
+                crate::ResearchFailure::CompositionReplayMismatch => "composition replay differs",
                 crate::ResearchFailure::OfferedProofFormulaMissing => {
                     "offered theorem formula missing"
                 }
             }),
+            Self::CompositionReplay { work, maximum } => {
+                write!(f, "composition replay differs at work {work}/{maximum}")
+            }
             Self::ResearchCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
             }
@@ -1566,6 +1584,10 @@ impl serde::Serialize for Error {
         value.serialize_entry("code", &self.code())?;
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
+        if let Self::CompositionReplay { work, maximum } = self {
+            value.serialize_entry("work", work)?;
+            value.serialize_entry("maximum", maximum)?;
+        }
         if let Self::RuntimeContext { cause, .. } = self {
             value.serialize_entry("cause", cause)?;
         }

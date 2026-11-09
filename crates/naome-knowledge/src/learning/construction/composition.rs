@@ -3,7 +3,7 @@ use super::{logic, proof};
 use naome_foundation::Formula;
 use std::{collections::BTreeSet, time::Instant};
 
-pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>, String> {
+pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>, crate::Error> {
     let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
     let mut ids = context
         .proof_conclusions()
@@ -16,18 +16,18 @@ pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>
         .cloned()
         .collect())
 }
-pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), String> {
+pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), crate::Error> {
     if inputs.is_empty()
         || inputs.len() > super::super::knowledge::CAPACITY
         || inputs.iter().collect::<BTreeSet<_>>().len() != inputs.len()
         || work == 0
         || work > 16
     {
-        return Err("composition trace capacity".into());
+        return Err(crate::ResearchFailure::CompositionTraceCapacity.into());
     }
     let verified = super::super::evidence::checked(packet)?;
     if used(&verified, inputs)? != inputs {
-        return Err("composition input binding differs".into());
+        return Err(crate::ResearchFailure::CompositionInputBinding.into());
     }
     let mut state = super::super::definitions::context(&verified.definitions)?;
     let mut preceding = Vec::new();
@@ -37,7 +37,7 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
         .iter()
         .chain(std::iter::once(&verified.certificate))
     {
-        let checked = proof::check(certificate.clone(), &state).map_err(|e| e.to_string())?;
+        let checked = proof::check(certificate.clone(), &state)?;
         let id = crate::hex(checked.proof_id().as_bytes());
         if inputs.contains(&id) {
             available.insert(
@@ -52,7 +52,7 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
         }
         preceding.push(certificate.clone());
         if !state.contains_proof(checked.proof_id()) {
-            state.register_proof(checked).map_err(|e| e.to_string())?;
+            state.register_proof(checked)?;
         }
     }
     let terms = inputs
@@ -60,14 +60,15 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
         .map(|id| {
             available
                 .remove(id)
-                .ok_or("composition checked input missing")
+                .ok_or(crate::ResearchFailure::CompositionCheckedInputMissing)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let (replayed, replay_work) = construct(&verified.target, &terms, work, Instant::now())?;
     if replay_work > work || replayed.is_none_or(|p| p.native_id != verified.native_id) {
-        return Err(format!(
-            "composition reconstruction differs at work {replay_work}/{work}"
-        ));
+        return Err(crate::Error::CompositionReplay {
+            work: replay_work,
+            maximum: work,
+        });
     }
     Ok(())
 }
@@ -346,6 +347,27 @@ pub(crate) fn construct_term(
 mod diagnostic_tests {
     use super::*;
     use naome_foundation::FreeVariable;
+
+    #[test]
+    fn validation_preserves_evidence_failure_and_replay_work() {
+        assert!(matches!(
+            validate(&[], &["input".into()], 1),
+            Err(crate::Error::LearningEvidence(
+                crate::learning::evidence::Failure::Framing
+            ))
+        ));
+        let error = crate::Error::CompositionReplay {
+            work: 3,
+            maximum: 2,
+        };
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(
+            value["code"],
+            u32::from(crate::ResearchFailure::CompositionReplayMismatch)
+        );
+        assert_eq!(value["work"], 3);
+        assert_eq!(value["maximum"], 2);
+    }
 
     #[test]
     fn scoped_operands_preserves_malformed_evidence_diagnostic() {
