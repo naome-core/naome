@@ -1175,3 +1175,12 @@ fn malformed_stored_exchange_question_halts_with_decoder_cause() {
     );
     assert_eq!(graph.storage_error(), Some(expected));
 }
+
+#[test]
+fn inventory_page_limit_has_a_machine_readable_cause() {
+    let graph = Graph::default();
+    assert_eq!(
+        graph.ids_page(None, 0).unwrap_err(),
+        crate::InputFault::InventoryPageLimit.into()
+    );
+}

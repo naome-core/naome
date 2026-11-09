@@ -90,7 +90,7 @@ impl Graph {
     fn backlog(&self) -> Result<std::sync::MutexGuard<'_, pending::PendingStore>, crate::Error> {
         self.backlog
             .lock()
-            .map_err(|_| "proof backlog lock poisoned".into())
+            .map_err(|_| crate::InputFault::BacklogLockPoisoned.into())
     }
     pub(crate) fn ownership(&self) -> Arc<Store> {
         self.store.clone()
@@ -343,8 +343,12 @@ impl Graph {
             for (ordinal, record) in page {
                 observe()?;
                 graph.cold(graph.checked_storage.adapt_cache())?;
-                if ordinal != after.checked_add(1).ok_or("replay ordinal overflow")? {
-                    return Err("durable replay order is incomplete".into());
+                if ordinal
+                    != after
+                        .checked_add(1)
+                        .ok_or(crate::InputFault::ReplayOrdinalOverflow)?
+                {
+                    return Err(crate::InputFault::ReplayOrderIncomplete.into());
                 }
                 if let Some(manifest) = record.program()? {
                     graph
@@ -353,7 +357,7 @@ impl Graph {
                     graph.bytes = graph
                         .bytes
                         .checked_add(record.bytes.len())
-                        .ok_or("replayed payload byte overflow")?;
+                        .ok_or(crate::InputFault::ReplayPayloadBytesOverflow)?;
                     graph.count = graph
                         .count
                         .checked_add(1)
@@ -365,7 +369,7 @@ impl Graph {
                 graph.bytes = graph
                     .bytes
                     .checked_add(candidate.bytes.len())
-                    .ok_or("replayed payload byte overflow")?;
+                    .ok_or(crate::InputFault::ReplayPayloadBytesOverflow)?;
                 let mut ready = true;
                 for dependency in &candidate.dependencies {
                     if !graph.cold(
@@ -379,14 +383,14 @@ impl Graph {
                     }
                 }
                 if !ready {
-                    return Err("durable graph has missing or cyclic dependencies".into());
+                    return Err(crate::InputFault::ReplayDependencyMissing.into());
                 }
                 let (context, growth) = graph.cold(graph.check_candidate(candidate))?;
                 graph.context = context;
                 graph.context_bytes = graph
                     .context_bytes
                     .checked_add(growth)
-                    .ok_or("checked context byte overflow")?;
+                    .ok_or(crate::InputFault::ReplayContextBytesOverflow)?;
                 graph.count = graph
                     .count
                     .checked_add(1)
@@ -399,13 +403,14 @@ impl Graph {
             }
         }
         if graph.count != summary.count
-            || after != u64::try_from(summary.count).map_err(|_| "replay count width")?
+            || after
+                != u64::try_from(summary.count).map_err(|_| crate::InputFault::ReplayCountWidth)?
         {
-            return Err("mathematical replay count differs from catalog".into());
+            return Err(crate::InputFault::ReplayCountMismatch.into());
         }
         let root = crate::corpus::root(graph.count, graph.context.artifact_set_fingerprint())?;
         if root != summary.root || graph.bytes != summary.bytes {
-            return Err("mathematically replayed corpus differs from catalog".into());
+            return Err(crate::InputFault::ReplayCorpusMismatch.into());
         }
         graph.store.finish_replay(root)?;
         graph.root = root;
@@ -510,10 +515,10 @@ impl Graph {
             let bytes = self
                 .cold(source.allocated_bytes())?
                 .checked_mul(2)
-                .ok_or("compaction disk overflow")?;
+                .ok_or(crate::InputFault::CompactionDiskOverflow)?;
             let disk = match crate::resources::DiskLease::acquire(
                 self.store.directory(),
-                u64::try_from(bytes).map_err(|_| "compaction disk width")?,
+                u64::try_from(bytes).map_err(|_| crate::InputFault::CompactionDiskWidth)?,
             ) {
                 Ok(disk) => disk,
                 Err(error) if error.retryable() => return Ok(None),
@@ -614,7 +619,7 @@ impl Graph {
     pub fn author(&self, encoded: &str) -> Result<Envelope, crate::Error> {
         self.ensure_live()?;
         if encoded.len() > 2 * crate::resources::limits().proof_bytes {
-            return Err("producer artifact byte limit".into());
+            return Err(crate::InputFault::ProducerArtifactBytes.into());
         }
         let checked = self.check_input(encoded, &self.context)?;
         self.cold(checked.record(&self.context))
@@ -627,19 +632,19 @@ impl Graph {
         crate::resources::require_work_admission()?;
         self.maintain_checked_storage()?;
         if encoded.len() > 2 * crate::resources::limits().proof_bytes {
-            return Err("producer artifact byte limit".into());
+            return Err(crate::InputFault::ProducerArtifactBytes.into());
         }
         let disk = self.reserve_publication(encoded.len() / 2, 1)?;
         let checked = self.check_input(encoded, &self.context)?;
         let record = self.cold(checked.record(&self.context))?;
         if record.bytes.len() > crate::resources::limits().proof_bytes {
-            return Err("proof byte limit".into());
+            return Err(crate::InputFault::ProofBytes.into());
         }
         let id = record.id;
         let envelope = record.envelope();
         if let Some(existing) = self.binary_object(id)? {
             if !existing.same_content(&record) {
-                return Err("proof identity collision".into());
+                return Err(crate::InputFault::ProofIdentityCollision.into());
             }
             return Ok((
                 envelope,
@@ -672,7 +677,7 @@ impl Graph {
         let id = candidate.id;
         if let Some(existing) = self.binary_object(id)? {
             if !existing.same_content(&candidate.record()) {
-                return Err("proof identity collision".into());
+                return Err(crate::InputFault::ProofIdentityCollision.into());
             }
             return Ok(Ingest {
                 status: crate::IngestStatus::Duplicate,
@@ -830,7 +835,7 @@ impl Graph {
                     .map(CheckedArtifact::Definition)
                     .map_err(crate::Error::from)
             }
-            _ => Err("unknown artifact input tag".into()),
+            _ => Err(crate::InputFault::ArtifactInputTag.into()),
         };
         if let Err(error) = &checked {
             self.program_failure(error);
@@ -874,12 +879,12 @@ impl Graph {
                 if let Some(statement) = definition.obligation_statement_id() {
                     let witness = candidate
                         .obligation
-                        .ok_or("function obligation witness missing")?;
+                        .ok_or(crate::InputFault::FunctionWitnessMissing)?;
                     let header = self
                         .cold(context.proof_header(witness).map_err(crate::Error::from))?
-                        .ok_or("function obligation proof missing")?;
+                        .ok_or(crate::InputFault::FunctionProofMissing)?;
                     if header.statement_id() != statement {
-                        return Err("function obligation proof conclusion differs".into());
+                        return Err(crate::InputFault::FunctionConclusionMismatch.into());
                     }
                 }
                 CheckedArtifact::Definition(definition)
@@ -957,13 +962,13 @@ impl Graph {
         let index = objects
             .checked_mul(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
             .and_then(|n| n.checked_mul(16))
-            .ok_or("publication disk estimate overflow")?;
+            .ok_or(crate::InputFault::PublicationDiskOverflow)?;
         let work = bytes
             .checked_mul(4)
             .and_then(|n| n.checked_add(index))
             .and_then(|n| n.checked_add(1024 * 1024))
-            .ok_or("publication disk estimate overflow")?;
-        u64::try_from(work).map_err(|_| "publication disk width".into())
+            .ok_or(crate::InputFault::PublicationDiskOverflow)?;
+        u64::try_from(work).map_err(|_| crate::InputFault::PublicationDiskWidth.into())
     }
 
     fn admit(&mut self, candidate: Candidate) -> Result<(), crate::Error> {
@@ -1074,7 +1079,7 @@ impl Graph {
         let stored = self.cold(self.store.contains(id, self.fixed_summary()))?;
         if checked != stored {
             return self.cold(Err::<_, crate::Error>(
-                "checked canonical membership differs".into(),
+                crate::InputFault::CheckedMembershipMismatch.into(),
             ));
         }
         Ok(checked)
@@ -1096,7 +1101,7 @@ impl Graph {
         let object = self.cold(self.store.get_binary(id, self.fixed_summary()))?;
         if checked != object.is_some() {
             return self.cold(Err::<_, crate::Error>(
-                "checked canonical membership differs".into(),
+                crate::InputFault::CheckedMembershipMismatch.into(),
             ));
         }
         Ok(object)
@@ -1113,7 +1118,7 @@ impl Graph {
     ) -> Result<Box<[ArtifactId]>, crate::Error> {
         self.binary_object(id)?
             .map(|object| object.dependencies.iter().copied().collect())
-            .ok_or_else(|| "checked dependency root is missing".into())
+            .ok_or_else(|| crate::InputFault::CheckedDependencyMissing.into())
     }
     pub fn ids_page(
         &self,
@@ -1122,7 +1127,7 @@ impl Graph {
     ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         if limit == 0 || limit > crate::resources::active_limits().id_page {
-            return Err("inventory page limit".into());
+            return Err(crate::InputFault::InventoryPageLimit.into());
         }
         let expected = self.cold(
             self.context
@@ -1134,7 +1139,7 @@ impl Graph {
         let actual = self.cold(self.store.ids_page(after, limit, self.fixed_summary()))?;
         if actual != expected {
             return self.cold(Err::<_, crate::Error>(
-                "canonical inventory differs from checked set".into(),
+                crate::InputFault::CheckedInventorySetMismatch.into(),
             ));
         }
         Ok(expected)
