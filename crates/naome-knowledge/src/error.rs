@@ -1617,6 +1617,10 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::JournalNativeModelChunkIndex => "native model chunk index",
                 crate::ResearchFailure::JournalOwnLearningReceiptIdentity => "own learning receipt identity",
                 crate::ResearchFailure::JournalPeerAdmissionSyntax => "peer admission syntax",
+                crate::ResearchFailure::ModelInitializationPoisoned => "native model initialization poisoned",
+                crate::ResearchFailure::ModelParameterCountMismatch => "native graph policy parameter count differs",
+                crate::ResearchFailure::ModelOptimizerRestorationMismatch => "native optimizer did not restore exactly",
+                crate::ResearchFailure::ModelUpdatesOverflow => "native model updates overflow",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

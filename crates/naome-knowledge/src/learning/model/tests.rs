@@ -411,3 +411,21 @@ fn indexed_context_inference_on_a_checked_scope() {
         crate::learning::digest(&actual)
     );
 }
+
+#[test]
+fn checkpoint_update_overflow_is_reported_before_writing_artifacts() {
+    let mut io = MemoryStore::default();
+    let mut parent = Checkpoint::fresh();
+    let runtime = Runtime::load(&parent, &mut io).unwrap();
+    parent.updates = u64::MAX;
+    let error = runtime.checkpoint(&parent, 1, &mut io).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::ModelUpdatesOverflow)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ModelUpdatesOverflow)
+    );
+    assert!(io.0.is_empty());
+}

@@ -341,7 +341,7 @@ impl Runtime {
             static INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _guard = INITIALIZATION
                 .lock()
-                .map_err(|_| "native model initialization poisoned")?;
+                .map_err(|_| crate::ResearchFailure::ModelInitializationPoisoned)?;
             device.seed(checkpoint.seed);
             struct StableParameters(u64);
             impl ModuleMapper for StableParameters {
@@ -358,8 +358,13 @@ impl Runtime {
             drop(policy.clone().into_record());
             policy
         };
-        if policy.num_params() != PARAMETERS {
-            return Err("native graph policy parameter count differs".into());
+        let actual = policy.num_params();
+        if actual != PARAMETERS {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::ModelParameterCountMismatch,
+                expected: PARAMETERS as u64,
+                actual: actual as u64,
+            });
         }
         let mut optimizer = AdamConfig::new().init();
         let mut preservation = preservation::Preservation::fresh(&policy);
@@ -379,7 +384,7 @@ impl Runtime {
             let restored =
                 preservation.encode(optimizer.into_bytes().map_err(|e| e.to_string())?)?;
             if Blob::of(&restored[..]) != Blob::of(&bytes) {
-                return Err("native optimizer did not restore exactly".into());
+                return Err(crate::ResearchFailure::ModelOptimizerRestorationMismatch.into());
             }
         }
         Ok(Self {
@@ -407,6 +412,10 @@ impl Runtime {
         updates: u64,
         io: &mut I,
     ) -> Result<Checkpoint, crate::Error> {
+        let total_updates = parent
+            .updates
+            .checked_add(updates)
+            .ok_or(crate::ResearchFailure::ModelUpdatesOverflow)?;
         let model = canonical_checkpoint(
             self.policy
                 .clone()
@@ -420,10 +429,7 @@ impl Runtime {
         Ok(Checkpoint {
             specification: parent.specification.clone(),
             seed: parent.seed,
-            updates: parent
-                .updates
-                .checked_add(updates)
-                .ok_or("native model updates overflow")?,
+            updates: total_updates,
             model: Some(artifact::save(io, &model[..])?),
             optimizer: Some(artifact::save(io, &optimizer[..])?),
         })
