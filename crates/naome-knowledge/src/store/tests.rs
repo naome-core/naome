@@ -49,11 +49,21 @@ fn directory_ownership_ends_with_its_last_owner_despite_inherited_descriptors() 
     let inherited = owner._lock.0.file().try_clone().unwrap();
     let retained = owner.clone();
     drop(owner);
-    assert!(Store::open(&directory.0).is_err());
+    assert!(matches!(
+        Store::open(&directory.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CatalogDirectoryOwned
+        ))
+    ));
     drop(retained);
     let reopened = Store::open(&directory.0).unwrap();
     drop(inherited);
-    assert!(Store::open(&directory.0).is_err());
+    assert!(matches!(
+        Store::open(&directory.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CatalogDirectoryOwned
+        ))
+    ));
     drop(reopened);
     drop(Store::open(&directory.0).unwrap());
 }
@@ -150,11 +160,14 @@ fn namespace_metadata_errors_are_not_treated_as_absence() {
     let directory = Directory::new();
     let blocked = directory.0.join("not-a-directory");
     fs::write(&blocked, b"unrelated bytes").unwrap();
-    assert!(
-        catalog_leaf_exists(&blocked.join(DATABASE_FILE))
-            .unwrap_err()
-            .contains("cannot inspect")
-    );
+    assert!(matches!(
+        catalog_leaf_exists(&blocked.join(DATABASE_FILE)),
+        Err(crate::Error::StorageIo {
+            operation: crate::StorageIoOperation::InspectOwnedFile,
+            kind: crate::IoFaultKind::NotADirectory,
+            ..
+        })
+    ));
     assert!(!catalog_leaf_exists(&directory.0.join(DATABASE_FILE)).unwrap());
     assert_eq!(fs::read(&blocked).unwrap(), b"unrelated bytes");
 }
