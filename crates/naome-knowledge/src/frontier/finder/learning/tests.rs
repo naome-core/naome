@@ -363,3 +363,29 @@ fn current_curriculum_rejects_corrupt_recipes_and_replay_descriptors() {
     learning.samples[0].offer.descriptor.bindings[0] = f32::NAN;
     assert!(learning.validate().is_err());
 }
+
+#[test]
+fn overflowing_replay_cursor_preserves_pending_and_model() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let question = q("04040300010000000101000000000001000000000100000001");
+    learning.selected(
+        &question,
+        Some(Recipe {
+            operator: 0,
+            level: 0,
+        }),
+    );
+    learning.cursor = u64::MAX;
+    let before_learning = serde_json::to_value(&learning).unwrap();
+    let before_model = model.clone();
+    let error = learning
+        .remember(&mut model, &question, Some(&checkpoint()), true, 1, 1)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::FinderCursorOverflow)
+    );
+    assert_eq!(serde_json::to_value(&learning).unwrap(), before_learning);
+    assert_eq!(model, before_model);
+}
