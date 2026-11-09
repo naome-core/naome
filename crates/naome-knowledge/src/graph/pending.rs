@@ -105,12 +105,12 @@ impl PendingStore {
         })
     }
     fn has_path(
-        &self,
+        &mut self,
         starts: &[String],
         target: &str,
         timeout: std::time::Duration,
     ) -> Result<bool, crate::Error> {
-        self.checkpoint.query(|connection| {
+        self.checkpoint.query_mut(|connection| {
         let deadline = std::time::Instant::now()
             .checked_add(timeout)
             .ok_or("cycle traversal deadline overflow")?;
@@ -427,5 +427,43 @@ mod outcome_tests {
             u32::from(crate::outcome::OperationCode::BacklogSql)
         );
         assert_eq!(value["sqlite_code"], sqlite_code.unwrap().get());
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    #[test]
+    fn cycle_query_clears_deadline_hook_after_expiry() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let mut pending = PendingStore::open(&directory.0).unwrap();
+        let from = "a".repeat(64);
+        let to = "b".repeat(64);
+        pending
+            .checkpoint
+            .commit(
+                &pending.header,
+                vec![Update::put("edge", format!("{from}{to}"), &true).unwrap()],
+            )
+            .unwrap();
+        assert!(
+            pending
+                .has_path(
+                    std::slice::from_ref(&from),
+                    &to,
+                    std::time::Duration::from_secs(1)
+                )
+                .unwrap()
+        );
+        assert!(matches!(
+            pending.has_path(std::slice::from_ref(&from), &to, std::time::Duration::ZERO),
+            Err(crate::Error::ExecutionLimit)
+        ));
+        let value: i64 = pending
+            .checkpoint
+            .query(|db| db.query_row("SELECT 1", [], |row| row.get(0)).map_err(sql))
+            .unwrap();
+        assert_eq!(value, 1);
     }
 }

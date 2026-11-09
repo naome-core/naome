@@ -403,6 +403,19 @@ impl Checkpoint {
         Ok(result)
     }
 
+    /// Runs a bounded operation that must temporarily change connection hooks.
+    pub(crate) fn query_mut<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, crate::Error>,
+    ) -> Result<T, crate::Error> {
+        self.ensure_generation()
+            .map_err(crate::Error::fatal_storage)?;
+        let result = operation(&mut self.connection)?;
+        self.ensure_generation()
+            .map_err(crate::Error::fatal_storage)?;
+        Ok(result)
+    }
+
     fn scan_all(
         &self,
         mut visit: impl FnMut(&str, &str, &[u8]) -> Result<(), crate::Error>,

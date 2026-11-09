@@ -265,7 +265,7 @@ fn row_read_limit_and_digest_failures_remain_distinct_and_fail_closed() {
 fn external_checkpoint_change_and_replacement_keep_specific_fail_closed_causes() {
     let directory = Directory::new();
     let path = directory.0.join("owner.sqlite3");
-    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    let mut checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
     let outside = Connection::open(&path).unwrap();
     outside
         .execute("UPDATE checkpoint SET header = X'32'", [])
@@ -276,6 +276,12 @@ fn external_checkpoint_change_and_replacement_keep_specific_fail_closed_causes()
         u32::from(crate::InputFault::CheckpointOutsideOwner)
     );
     let error = checkpoint.query(|_| Ok(())).unwrap_err();
+    assert!(error.fatal());
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["cause_code"],
+        u32::from(crate::InputFault::CheckpointOutsideOwner)
+    );
+    let error = checkpoint.query_mut(|_| Ok(())).unwrap_err();
     assert!(error.fatal());
     assert_eq!(
         serde_json::to_value(error).unwrap()["cause_code"],
