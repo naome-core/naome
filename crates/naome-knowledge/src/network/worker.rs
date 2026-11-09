@@ -434,9 +434,13 @@ impl Transport {
             let _ = stop.send(());
         }
         match self.task.take() {
-            Some(task) => task
-                .await
-                .map_err(|e| format!("transport task failed: {e}"))?,
+            Some(task) => task.await.map_err(|error| {
+                if error.is_cancelled() {
+                    crate::InputFault::TransportTaskCancelled
+                } else {
+                    crate::InputFault::TransportTaskFailed
+                }
+            })?,
             None => Ok(()),
         }
     }

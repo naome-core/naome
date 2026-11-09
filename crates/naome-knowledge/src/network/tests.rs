@@ -1181,3 +1181,30 @@ fn listener_contract_returns_a_numeric_address_failure() {
         u32::from(crate::InputFault::NetworkListenAddress)
     );
 }
+
+#[test]
+fn shutdown_preserves_all_independent_failures() {
+    let research = crate::Error::from(crate::ResearchFailure::PeerOrdinalZero);
+    let control = crate::Error::from(crate::InputFault::ControlTaskFailed);
+    let transport = crate::Error::from(crate::InputFault::TransportTaskCancelled);
+    let result = combine_shutdown(
+        Err(research.clone()),
+        Err(control.clone()),
+        Err(transport.clone()),
+    )
+    .unwrap_err();
+    assert_eq!(
+        result,
+        crate::Error::RuntimeCombined {
+            primary: Box::new(crate::Error::RuntimeCombined {
+                primary: Box::new(research),
+                cleanup: Box::new(control),
+            }),
+            cleanup: Box::new(transport),
+        }
+    );
+    let value = serde_json::to_value(result).unwrap();
+    assert!(value["primary"]["primary"]["code"].is_number());
+    assert!(value["primary"]["cleanup"]["code"].is_number());
+    assert!(value["cleanup"]["code"].is_number());
+}

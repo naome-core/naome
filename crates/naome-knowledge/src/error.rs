@@ -402,6 +402,10 @@ pub enum Error {
         primary: Box<Error>,
         cleanup: Box<Error>,
     },
+    RuntimeCombined {
+        primary: Box<Error>,
+        cleanup: Box<Error>,
+    },
     Startup {
         code: crate::StartupFailure,
         reaped: bool,
@@ -497,6 +501,7 @@ impl Error {
                 return crate::ResearchFailure::MultipleFailures.into();
             }
             Self::StorageCombined { .. } => OperationCode::StorageCombined,
+            Self::RuntimeCombined { .. } => return crate::RuntimeFailure::Cleanup.into(),
             Self::Startup { code, .. } => return (*code).into(),
             Self::StartupCleanup { .. } => return crate::RuntimeFailure::Cleanup.into(),
             Self::StartupChildExit { .. } => OperationCode::StartupChildExit,
@@ -581,6 +586,7 @@ impl Error {
                     | Self::ResearchSlot { .. }
                     | Self::ResearchCombined { .. }
                     | Self::StorageCombined { .. }
+                    | Self::RuntimeCombined { .. }
                     | Self::Startup { .. }
                     | Self::StartupCleanup { .. }
             )
@@ -913,6 +919,8 @@ impl fmt::Display for Error {
                 InputFault::StartupHandoffExisting => "startup handoff requires a new daemon",
                 InputFault::StartupLifelineMissing => "startup parent lifeline missing",
                 InputFault::ResourceSnapshotEncoding => "effective resource snapshot encoding failed",
+                InputFault::TransportTaskCancelled => "transport task cancelled",
+                InputFault::TransportTaskFailed => "transport task failed",
                 InputFault::StartupAbortReport => "startup abort report failed",
                 InputFault::StartupDeadline => "node startup deadline",
                 InputFault::StartupAcknowledgementDeadline => "node startup acknowledgement deadline",
@@ -2563,7 +2571,7 @@ impl fmt::Display for Error {
             Self::CompositionReplay { work, maximum } => {
                 write!(f, "composition replay differs at work {work}/{maximum}")
             }
-            Self::ResearchCombined { primary, cleanup } | Self::StorageCombined { primary, cleanup } => {
+            Self::ResearchCombined { primary, cleanup } | Self::StorageCombined { primary, cleanup } | Self::RuntimeCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
             }
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
@@ -2590,9 +2598,9 @@ impl StdError for Error {
             Self::RuntimeContext { cause, .. } => Some(cause),
             Self::ResearchContext { cause, .. } | Self::StorageContext { cause, .. } => Some(cause),
             Self::ResearchSlot { cause, .. } => Some(cause),
-            Self::ResearchCombined { primary, .. } | Self::StorageCombined { primary, .. } => {
-                Some(primary)
-            }
+            Self::ResearchCombined { primary, .. }
+            | Self::StorageCombined { primary, .. }
+            | Self::RuntimeCombined { primary, .. } => Some(primary),
             Self::DiagnosticInspection(error) => Some(error),
             _ => None,
         }
@@ -2822,7 +2830,8 @@ impl serde::Serialize for Error {
             value.serialize_entry("cause", cause)?;
         }
         if let Self::ResearchCombined { primary, cleanup }
-        | Self::StorageCombined { primary, cleanup } = self
+        | Self::StorageCombined { primary, cleanup }
+        | Self::RuntimeCombined { primary, cleanup } = self
         {
             value.serialize_entry("primary", primary)?;
             value.serialize_entry("cleanup", cleanup)?;

@@ -950,14 +950,7 @@ where
         Some(service) => service.shutdown().await,
         None => Ok(()),
     };
-    let cleanup = cleanup
-        .and(
-            control_cleanup.map_err(|cause| crate::Error::RuntimeContext {
-                code: crate::RuntimeFailure::Cleanup,
-                cause: Box::new(cause),
-            }),
-        )
-        .and(transport_cleanup.map_err(|_| crate::Error::from(crate::RuntimeFailure::Cleanup)));
+    let cleanup = combine_shutdown(cleanup, control_cleanup, transport_cleanup);
     match (outcome, cleanup) {
         (Err(primary), Err(error)) => {
             emit(json!({"event":crate::outcome::NodeEvent::ShutdownFailed,"error":error}));
@@ -971,6 +964,27 @@ where
         json!({"event":crate::outcome::NodeEvent::Stopped, "root":hex(&node.graph.content_root())}),
     );
     Ok(())
+}
+
+fn combine_shutdown(
+    research: Result<(), crate::Error>,
+    control: Result<(), crate::Error>,
+    transport: Result<(), crate::Error>,
+) -> Result<(), crate::Error> {
+    let mut failure = None;
+    for error in [research, control, transport]
+        .into_iter()
+        .filter_map(Result::err)
+    {
+        failure = Some(match failure {
+            Some(primary) => crate::Error::RuntimeCombined {
+                primary: Box::new(primary),
+                cleanup: Box::new(error),
+            },
+            None => error,
+        });
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), crate::Error> {
