@@ -826,11 +826,11 @@ fn startup_prune_requires_a_finished_page_and_leaves_runtime_successors_unchange
             .unwrap(),
         0
     );
-    assert!(
+    assert_eq!(
         successor
             .prune_startup(&DiskArtifactState::new(successor.clone()))
-            .unwrap_err()
-            .contains("incremental vacuum")
+            .unwrap_err(),
+        crate::Error::from(crate::InputFault::CheckedPruneVacuumMode)
     );
     assert!(
         successor
@@ -847,14 +847,15 @@ fn startup_prune_requires_a_finished_page_and_leaves_runtime_successors_unchange
 
     let (graph, _, _) = startup_prune_graph();
     graph.checked_storage.begin_write_phase().unwrap();
-    assert!(
-        graph
-            .checked_storage
-            .prune_startup(&graph.context)
-            .unwrap_err()
-            .contains("finished replay page")
+    let error = graph
+        .checked_storage
+        .prune_startup(&graph.context)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::CheckedPruneUnfinishedPage)
     );
-    assert!(graph.storage_error().is_some());
+    assert_eq!(graph.storage_error(), Some(error.fatal_storage()));
     // The failed owner is discarded; journal_mode=OFF is never rolled back for reuse.
 }
 
