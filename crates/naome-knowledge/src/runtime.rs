@@ -276,22 +276,25 @@ fn socket_path(directory: &Path) -> PathBuf {
     ))
 }
 
-fn endpoint(directory: &Path) -> Result<Option<Endpoint>, String> {
+fn endpoint(directory: &Path) -> Result<Option<Endpoint>, crate::Error> {
     let path = directory.join("control.json");
     if !path.exists() {
         return Ok(None);
     }
     let endpoint: Endpoint =
         serde_json::from_slice(&crate::store::read_bounded(&path, control_limit())?)
-            .map_err(|error| error.to_string())?;
+            .map_err(control_json)?;
     if endpoint.version != 1
         || endpoint.socket != socket_path(directory)
         || endpoint.pid <= 1
         || endpoint.pid > i32::MAX as u32
         || endpoint.token.len() != 64
-        || crate::unhex(&endpoint.token)?.len() != 32
+        || crate::unhex(&endpoint.token)
+            .map_err(|_| crate::InputFault::ControlEndpointInvalid)?
+            .len()
+            != 32
     {
-        return Err("invalid local control endpoint".into());
+        return Err(crate::InputFault::ControlEndpointInvalid.into());
     }
     Ok(Some(endpoint))
 }
@@ -552,30 +555,44 @@ pub(crate) async fn requested_stop(watch: &mut Option<tokio::sync::watch::Receiv
     }
 }
 
-async fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result<T, String> {
+fn control_json(error: serde_json::Error) -> crate::Error {
+    let reason = match crate::error::json_fault(&error) {
+        crate::JsonFault::Io => crate::InputFault::ControlJsonIo,
+        crate::JsonFault::Syntax => crate::InputFault::ControlJsonSyntax,
+        crate::JsonFault::Data => crate::InputFault::ControlJsonData,
+        crate::JsonFault::Eof => crate::InputFault::ControlJsonEof,
+    };
+    reason.into()
+}
+
+async fn read_frame<T: serde::de::DeserializeOwned>(
+    stream: &mut UnixStream,
+) -> Result<T, crate::Error> {
     let limit = control_limit();
     tokio::time::timeout(crate::resources::limits().control_timeout, async {
         let mut bytes = Vec::new();
         BufReader::new(stream)
             .take(limit as u64 + 1)
             .read_until(b'\n', &mut bytes)
-            .await
-            .map_err(|error| error.to_string())?;
-        if bytes.len() > limit || bytes.last() != Some(&b'\n') {
-            return Err("local control frame limit or incomplete request".into());
+            .await?;
+        if bytes.len() > limit {
+            return Err(crate::InputFault::ControlFrameLimit.into());
         }
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+        if bytes.last() != Some(&b'\n') {
+            return Err(crate::InputFault::ControlFrameIncomplete.into());
+        }
+        serde_json::from_slice(&bytes).map_err(control_json)
     })
     .await
-    .map_err(|_| "local control read timeout")?
+    .map_err(|_| crate::InputFault::ControlReadTimeout)?
 }
 
-async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), String> {
+async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), crate::Error> {
     let limit = control_limit();
-    let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    let mut bytes = serde_json::to_vec(value).map_err(control_json)?;
     bytes.push(b'\n');
     if bytes.len() > limit {
-        return Err("local control response limit".into());
+        return Err(crate::InputFault::ControlFrameLimit.into());
     }
     tokio::time::timeout(crate::resources::limits().control_timeout, async {
         // Unix sockets may round a requested small send buffer up beyond
@@ -592,15 +609,15 @@ async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result
         stream.write_all(&bytes).await
     })
     .await
-    .map_err(|_| "local control write timeout")?
-    .map_err(|error| error.to_string())
+    .map_err(|_| crate::InputFault::ControlWriteTimeout)?
+    .map_err(crate::Error::from)
 }
 
 async fn request(
     directory: &Path,
     operation: Operation,
     launch: Option<&str>,
-) -> Result<Option<Status>, String> {
+) -> Result<Option<Status>, crate::Error> {
     let Some(endpoint) = endpoint(directory)? else {
         return Ok(None);
     };
@@ -612,7 +629,7 @@ async fn request(
         UnixStream::connect(&endpoint.socket),
     )
     .await
-    .map_err(|_| "local control connect timeout")?;
+    .map_err(|_| crate::InputFault::ControlConnectTimeout)?;
     let mut stream = match connected {
         Ok(stream) => stream,
         Err(error)
@@ -623,7 +640,7 @@ async fn request(
         {
             return Ok(None);
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(error.into()),
     };
     write_frame(
         &mut stream,
@@ -636,7 +653,7 @@ async fn request(
     .await?;
     let response: Response = read_frame(&mut stream).await?;
     if response.token != endpoint.token {
-        return Err("local control response instance mismatch".into());
+        return Err(crate::InputFault::ControlResponseMismatch.into());
     }
     let Report::Status { status } = response.report;
     Ok(Some(status))
@@ -785,7 +802,7 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
     Ok((config, intervals.validate()?))
 }
 
-async fn stopped_status(directory: &Path) -> Result<Status, String> {
+async fn stopped_status(directory: &Path) -> Result<Status, crate::Error> {
     let store = crate::store::Store::open(directory)?;
     Ok(Status {
         running: false,
@@ -796,7 +813,7 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
     })
 }
 
-async fn status(directory: &Path) -> Result<Status, String> {
+async fn status(directory: &Path) -> Result<Status, crate::Error> {
     if let Some(status) = request(directory, Operation::Status, None).await? {
         return Ok(status);
     }
@@ -1138,14 +1155,14 @@ async fn abort_start(child: &mut Child) -> Result<(), String> {
     }
 }
 
-async fn stop(directory: &Path) -> Result<Status, String> {
+async fn stop(directory: &Path) -> Result<Status, crate::Error> {
     let owned = endpoint(directory)?;
     if request(directory, Operation::Stop, None).await?.is_none() {
         return stopped_status(directory).await;
     }
     let pid = nix::unistd::Pid::from_raw(
         i32::try_from(owned.expect("successful control request has endpoint").pid)
-            .map_err(|_| "invalid daemon process identity")?,
+            .map_err(|_| crate::InputFault::StopProcessIdentity)?,
     );
     // Stop is nonce-authenticated; this callback only queries group liveness.
     wait_for_stop(
@@ -1160,25 +1177,26 @@ async fn wait_for_stop(
     directory: &Path,
     deadline: Instant,
     mut observe_group: impl FnMut() -> nix::Result<()>,
-) -> Result<Status, String> {
+) -> Result<Status, crate::Error> {
     loop {
         let exited = match observe_group() {
             Err(nix::errno::Errno::ESRCH) => true,
             // A denied query is inconclusive; only a later ESRCH proves exit.
             Err(nix::errno::Errno::EPERM) => false,
             Ok(()) => false,
-            Err(error) => return Err(format!("observe daemon process group: {error}")),
+            Err(error) => return Err(std::io::Error::from_raw_os_error(error as i32).into()),
         };
         match stopped_status(directory).await {
             Ok(status) if exited => return Ok(status),
             Ok(_) if Instant::now() >= deadline => {
-                return Err(
-                    "node directory released but daemon process group exit is unconfirmed".into(),
-                );
+                return Err(crate::InputFault::StopProcessGroupUnconfirmed.into());
             }
             Ok(_) => tokio::time::sleep(crate::resources::limits().lifecycle_poll_interval).await,
             Err(error) if Instant::now() >= deadline => {
-                return Err(format!("node did not release its directory: {error}"));
+                return Err(crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::StopReleaseUnconfirmed,
+                    cause: Box::new(error),
+                });
             }
             Err(_) => tokio::time::sleep(crate::resources::limits().lifecycle_poll_interval).await,
         }
@@ -1265,8 +1283,18 @@ pub async fn execute() -> Result<(), crate::Error> {
             .await?
         }
         "start" => start(&directory).await?,
-        "stop" => stop(&directory).await.map_err(|_| Failure::Stop)?,
-        "status" => status(&directory).await.map_err(|_| Failure::Status)?,
+        "stop" => stop(&directory)
+            .await
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: Failure::Stop,
+                cause: Box::new(cause),
+            })?,
+        "status" => status(&directory)
+            .await
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: Failure::Status,
+                cause: Box::new(cause),
+            })?,
         _ => unreachable!(),
     };
     cli::print(command, json, &status).map_err(|_| Failure::Output.into())

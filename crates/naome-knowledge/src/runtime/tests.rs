@@ -283,9 +283,9 @@ async fn stop_fails_closed_when_group_exit_remains_denied_at_the_deadline() {
         observed > 1,
         "denied observation must be retried until the deadline"
     );
-    assert!(
-        error.contains("process group exit is unconfirmed"),
-        "{error}"
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::StopProcessGroupUnconfirmed)
     );
 }
 
@@ -298,7 +298,9 @@ async fn stop_requires_directory_release_and_reports_offline_admissions_without_
     })
     .await
     .unwrap_err();
-    assert!(held.contains("knowledge directory already owned"), "{held}");
+    assert!(
+        matches!(held, crate::Error::RuntimeContext { code: crate::RuntimeFailure::StopReleaseUnconfirmed, cause } if *cause == crate::Error::from(crate::InputFault::CatalogDirectoryOwned))
+    );
     drop(graph);
     let (helper, _, _) = closure();
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -597,4 +599,33 @@ fn machine_status_uses_registered_computation_and_verification_codes() {
     );
     encoded["computation"] = 0x001f_0005u32.into();
     assert!(serde_json::from_value::<Status>(encoded).is_err());
+}
+
+#[tokio::test]
+async fn control_frames_report_bounded_and_structured_failures() {
+    use tokio::io::AsyncWriteExt;
+    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    writer.write_all(b"{\n").await.unwrap();
+    let error = read_frame::<Request>(&mut reader).await.err().unwrap();
+    assert_eq!(error, crate::Error::from(crate::InputFault::ControlJsonEof));
+
+    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    writer.write_all(b"{}").await.unwrap();
+    writer.shutdown().await.unwrap();
+    let error = read_frame::<Request>(&mut reader).await.err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::ControlFrameIncomplete)
+    );
+}
+
+#[tokio::test]
+async fn status_preserves_invalid_endpoint_cause() {
+    let directory = Directory::new();
+    fs::write(directory.0.join("control.json"), b"{} ").unwrap();
+    let error = status(&directory.0).await.unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::ControlJsonData)
+    );
 }
