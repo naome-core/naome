@@ -1505,6 +1505,36 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::PoolHindsightSourceCapacity => {
+                    "native hindsight source capacity"
+                }
+                crate::ResearchFailure::PoolMaskWorkOverflow => "native target mask work overflow",
+                crate::ResearchFailure::PoolMaskWorkCapacity => "native target mask work capacity",
+                crate::ResearchFailure::PoolHindsightWorkOverflow => {
+                    "native hindsight work overflow"
+                }
+                crate::ResearchFailure::PoolHindsightWorkCapacity => {
+                    "native hindsight work capacity"
+                }
+                crate::ResearchFailure::PoolObservationLineage => {
+                    "observed training lineage differs"
+                }
+                crate::ResearchFailure::PoolSequenceWorkOverflow => "native sequence work overflow",
+                crate::ResearchFailure::PoolSequenceWorkCapacity => "native sequence work capacity",
+                crate::ResearchFailure::PoolSequenceBinding => {
+                    "checked sequence differs from its admitted replay"
+                }
+                crate::ResearchFailure::PoolWitnessWorkOverflow => {
+                    "native witness pool work overflow"
+                }
+                crate::ResearchFailure::PoolDerivedWorkOverflow => {
+                    "native derived pool work overflow"
+                }
+                crate::ResearchFailure::PoolDerivedWorkCapacity => {
+                    "native derived pool work capacity"
+                }
+                crate::ResearchFailure::PoolGraphWorkOverflow => "native pool work overflow",
+                crate::ResearchFailure::PoolGraphWorkCapacity => "native pool work capacity",
                 crate::ResearchFailure::CoverageFilterInvalid => {
                     "replay coverage filter capacity or occupancy"
                 }

@@ -898,6 +898,7 @@ codes! {
         RoleHistoryFormat = 443, OutputFrontierRole = 444, OutputFrontierResolved = 445, OutputTypeCapacity = 446,
         ReplaySnapshotMissing = 447, ReplaySnapshotBinding = 448, ReplayCoverageBinding = 449, ReplayTrainingSplit = 450, ReplayProgramBinding = 451, ReplayProofBinding = 452,
         CoverageFilterInvalid = 453, CoverageProgramIdentity = 454, CoverageProofIdentity = 455, CoverageDependencyOrder = 456, CoverageActionMissing = 457, CoverageGraphReference = 458,
+        PoolHindsightSourceCapacity = 459, PoolMaskWorkOverflow = 460, PoolMaskWorkCapacity = 461, PoolHindsightWorkOverflow = 462, PoolHindsightWorkCapacity = 463, PoolObservationLineage = 464, PoolSequenceWorkOverflow = 465, PoolSequenceWorkCapacity = 466, PoolSequenceBinding = 467, PoolWitnessWorkOverflow = 468, PoolDerivedWorkOverflow = 469, PoolDerivedWorkCapacity = 470, PoolGraphWorkOverflow = 471, PoolGraphWorkCapacity = 472,
     }
 
 }

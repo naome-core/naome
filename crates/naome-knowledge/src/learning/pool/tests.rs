@@ -175,10 +175,11 @@ fn preservation_pool_cannot_allocate_beyond_the_training_pools_remaining_allowan
         .unwrap();
     assert_eq!(training.work_bytes, bytes);
     let mut preservation = training.remaining();
-    assert!(
+    assert_eq!(
         preservation
             .add(false, "own", "family", "proof", vec![graph])
-            .is_err()
+            .unwrap_err(),
+        crate::ResearchFailure::PoolGraphWorkCapacity.into()
     );
     assert!(
         preservation.graphs().is_empty(),
