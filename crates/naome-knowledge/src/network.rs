@@ -2853,7 +2853,10 @@ pub fn read_config(path: &Path) -> Result<Config, crate::Error> {
         path,
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|_| crate::RuntimeFailure::NetworkConfigParse)?;
+    .map_err(|error| crate::Error::RuntimeContext {
+        code: crate::RuntimeFailure::NetworkConfigParse,
+        cause: Box::new(crate::error::config_decode(error)),
+    })?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()

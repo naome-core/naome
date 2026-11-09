@@ -245,12 +245,17 @@ fn formal_goal_keeps_the_question_checker_failure() {
 fn configuration_failures_preserve_read_and_parse_codes() {
     let file = ConfigFile::new();
     std::fs::write(file.path(), b"{").unwrap();
-    assert!(matches!(
-        read_config(&file.path()),
-        Err(crate::Error::Runtime(
-            crate::RuntimeFailure::NetworkConfigParse
-        ))
-    ));
+    let error = read_config(&file.path()).err().unwrap();
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::RuntimeFailure::NetworkConfigParse)
+    );
+    assert_eq!(json["cause"]["reason"], u32::from(crate::JsonFault::Eof));
+    assert_eq!(json["cause"]["line"], 1);
+    assert!(
+        matches!(error, crate::Error::RuntimeContext { code: crate::RuntimeFailure::NetworkConfigParse, cause } if matches!(*cause, crate::Error::ConfigDecode { reason: crate::JsonFault::Eof, .. }))
+    );
     assert!(matches!(
         read_config(&file.0),
         Err(crate::Error::InputFault(

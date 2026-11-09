@@ -130,7 +130,10 @@ pub async fn run(path: &Path) -> Result<(), crate::Error> {
         path,
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|_| RuntimeFailure::RelayConfigParse)?;
+    .map_err(|error| crate::Error::RuntimeContext {
+        code: crate::RuntimeFailure::RelayConfigParse,
+        cause: Box::new(crate::error::config_decode(error)),
+    })?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()

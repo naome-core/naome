@@ -125,7 +125,7 @@ async fn relay_startup_failures_keep_distinct_machine_codes() {
     std::fs::write(&config, b"{").unwrap();
     assert!(matches!(
         run(&config).await,
-        Err(Error::Runtime(RuntimeFailure::RelayConfigParse))
+        Err(Error::RuntimeContext { code: RuntimeFailure::RelayConfigParse, cause }) if matches!(*cause, Error::ConfigDecode { reason: crate::JsonFault::Eof, .. })
     ));
     std::fs::write(
         &config,

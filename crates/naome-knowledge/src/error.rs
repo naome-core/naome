@@ -296,6 +296,11 @@ pub enum Error {
         line: usize,
         column: usize,
     },
+    ConfigDecode {
+        reason: crate::JsonFault,
+        line: usize,
+        column: usize,
+    },
     ResourceValidation {
         reason: crate::ResourceValidationReason,
         field: Option<crate::resources::ResourceField>,
@@ -436,6 +441,7 @@ impl Error {
             Self::QuestionRegistration(_) => OperationCode::QuestionRegistration,
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
+            Self::ConfigDecode { .. } => OperationCode::ConfigDecode,
             Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
             Self::ResourceValidation { .. } => OperationCode::ResourceValidation,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
@@ -505,6 +511,7 @@ impl Error {
             | Self::QuestionRegistration(_)
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
+            | Self::ConfigDecode { .. }
             | Self::ResourceProfileDecode { .. }
             | Self::ResourceValidation { .. }
             | Self::CheckpointSql { .. }
@@ -979,6 +986,7 @@ impl fmt::Display for Error {
                 "resource profile decode failure {} at {line}:{column}",
                 u32::from(*reason)
             ),
+            Self::ConfigDecode { reason, line, column } => write!(f, "configuration decode failure {} at {line}:{column}", u32::from(*reason)),
             Self::CheckpointDecode {
                 reason,
                 line,
@@ -2507,6 +2515,14 @@ impl From<EvidenceFailure> for Error {
     }
 }
 
+pub(crate) fn config_decode(error: serde_json::Error) -> Error {
+    Error::ConfigDecode {
+        reason: json_fault(&error),
+        line: error.line(),
+        column: error.column(),
+    }
+}
+
 pub(crate) fn json_fault(error: &serde_json::Error) -> crate::JsonFault {
     match error.classify() {
         serde_json::error::Category::Io => crate::JsonFault::Io,
@@ -2830,6 +2846,11 @@ impl serde::Serialize for Error {
             value.serialize_entry("column", column)?;
         }
         if let Self::CheckpointDecode {
+            reason,
+            line,
+            column,
+        }
+        | Self::ConfigDecode {
             reason,
             line,
             column,
