@@ -929,6 +929,7 @@ codes! {
         ProviderPidOverflow = 687, ProviderTermSignal = 688, ProviderKillSignal = 689, ProviderChildKill = 690, ProviderWaitFailed = 691, ProviderReapDeadline = 692, ProviderGroupProbe = 693, ProviderGroupUnconfirmed = 694,
         TheoremDuplicate = 695, RequiredTheoremCapacity = 696, TheoremStepOverflow = 697, TheoremAvailabilityMismatch = 698, ConstructionAvailabilityMismatch = 699, DefinitionSnapshotMismatch = 700,
         ConstructionScoreCount = 701, ConstructionScoreNonFinite = 702, ConstructionSourceNotClosed = 703, ConstructionSelectionIndex = 704, ConstructionMeaningMismatch = 705, ConstructionRootMissing = 706, ConstructionHelperForward = 707, ConstructionHelperWidth = 708, ConstructionRecipeEmpty = 709, ConstructionRecipeRootMismatch = 710,
+        RepairDeadline = 711, RepairWorkAllowance = 712, RepairProtectedProof = 713, RepairHelperConclusion = 714, RepairProtectedHelper = 715, RepairRootConclusion = 716, RepairClosureCapacity = 717, PartitionFreshVariable = 718, PartitionBinderMissing = 719, PartitionReferenceMismatch = 720, PartitionConclusionMissing = 721, PartitionVariableInventory = 722, PartitionOriginMissing = 723, PartitionTargetMismatch = 724, PartitionArtifactCapacity = 725, PartitionReplayMismatch = 726, PartitionCutMissing = 727,
     }
 
 }

@@ -385,7 +385,7 @@ pub(super) fn pack_candidate(
     selection: Option<&selection::Selection>,
     started: std::time::Instant,
     remaining: &mut usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, crate::Error> {
     let error = match evidence::pack(verified) {
         Ok(packet) => return Ok(packet),
         Err(error) => error,

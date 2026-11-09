@@ -1785,6 +1785,23 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ConstructionHelperWidth => "native helper operand width",
                 crate::ResearchFailure::ConstructionRecipeEmpty => "empty native helper recipe",
                 crate::ResearchFailure::ConstructionRecipeRootMismatch => "native helper root differs",
+                crate::ResearchFailure::RepairDeadline => "construction repair deadline",
+                crate::ResearchFailure::RepairWorkAllowance => "construction repair work allowance",
+                crate::ResearchFailure::RepairProtectedProof => "construction repair would replace a supplied proof",
+                crate::ResearchFailure::RepairHelperConclusion => "construction repair changed a helper conclusion",
+                crate::ResearchFailure::RepairProtectedHelper => "construction repair would replace a supplied helper",
+                crate::ResearchFailure::RepairRootConclusion => "construction repair changed the root conclusion",
+                crate::ResearchFailure::RepairClosureCapacity => "repaired construction source closure exceeds capacity",
+                crate::ResearchFailure::PartitionFreshVariable => "fresh instantiation name",
+                crate::ResearchFailure::PartitionBinderMissing => "closed cut binder missing",
+                crate::ResearchFailure::PartitionReferenceMismatch => "cut changed a native local step reference",
+                crate::ResearchFailure::PartitionConclusionMissing => "missing checked open conclusion",
+                crate::ResearchFailure::PartitionVariableInventory => "bounded complete native free-variable inventory required",
+                crate::ResearchFailure::PartitionOriginMissing => "normalized free variable has no source origin",
+                crate::ResearchFailure::PartitionTargetMismatch => "partition target or native size differs",
+                crate::ResearchFailure::PartitionArtifactCapacity => "partition artifact exceeds capacity",
+                crate::ResearchFailure::PartitionReplayMismatch => "partition source replay differs",
+                crate::ResearchFailure::PartitionCutMissing => "no portable construction partition cut",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
