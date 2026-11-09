@@ -594,7 +594,7 @@ impl Graph {
         let failure = halt.lock().unwrap_or_else(|error| {
             let mut failure = error.into_inner();
             failure.get_or_insert_with(|| {
-                crate::Error::CorruptStorage("checked storage halt lock poisoned".into())
+                crate::Error::from(crate::InputFault::CheckedStorageHaltPoisoned).fatal_storage()
             });
             failure
         });
@@ -1164,9 +1164,7 @@ impl Graph {
                         .contains_artifact(*id)
                         .map_err(crate::Error::from),
                 )? {
-                    return self.cold(Err(crate::Error::CorruptStorage(
-                        "canonical inventory differs from checked set".into(),
-                    )));
+                    return self.cold(Err(crate::InputFault::CheckedInventoryMismatch));
                 }
             }
         }

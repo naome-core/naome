@@ -675,6 +675,8 @@ impl fmt::Display for Error {
                 InputFault::ProgramDescriptionId => "program description identity mismatch",
                 InputFault::StoredQuestionProofHeaderMissing => "checked proof header missing",
                 InputFault::StoredQuestionBinding => "stored exchange question does not bind the checked proof",
+                InputFault::CheckedStorageHaltPoisoned => "checked storage halt lock poisoned",
+                InputFault::CheckedInventoryMismatch => "canonical inventory differs from checked set",
                 InputFault::ResourceObservationDirectory => {
                     "resource observation directory is unavailable"
                 }
