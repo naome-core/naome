@@ -19,10 +19,10 @@ impl Names {
 pub fn not(formula: Formula) -> Formula {
     Formula::negate(formula)
 }
-pub fn app(function: Term, argument: Term) -> Result<Term, String> {
+pub fn app(function: Term, argument: Term) -> Result<Term, crate::Error> {
     Term::apply(function, argument)
 }
-pub fn axiom(step: ProofStep) -> Result<Term, String> {
+pub fn axiom(step: ProofStep) -> Result<Term, crate::Error> {
     Ok(Term::Kernel(Kernel::new(step)?))
 }
 #[cfg(all(test, feature = "developer-tools"))]
@@ -30,7 +30,7 @@ pub fn identity(formula: Formula, names: &mut Names) -> Term {
     let (id, value) = names.assumption(formula.clone());
     Term::Lambda(id, formula, Box::new(value))
 }
-pub fn classical(a: Formula, b: Formula) -> Result<Term, String> {
+pub fn classical(a: Formula, b: Formula) -> Result<Term, crate::Error> {
     axiom(ProofStep::ClassicalContraposition {
         antecedent: a.into(),
         consequent: b.into(),
@@ -43,10 +43,10 @@ pub fn explosion(
     negative: Term,
     goal: Formula,
     names: &mut Names,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let p = positive.formula();
     if negative.formula() != not(p.clone()) {
-        return Err("contradiction operands differ".into());
+        return Err(crate::ResearchFailure::LogicContradiction.into());
     }
     let (id, _) = names.assumption(not(goal.clone()));
     let bridge = Term::Lambda(id, not(goal.clone()), Box::new(negative));
@@ -61,7 +61,7 @@ pub fn raa(
     positive: Term,
     negative: Term,
     names: &mut Names,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     // A fixed closed logical theorem keeps the intermediate formulas small;
     // choosing T -> T here duplicates an arbitrarily large goal at each RAA.
     let variable = FreeVariable::new(0);
@@ -75,19 +75,19 @@ pub fn raa(
     app(app(classical(i, goal.clone())?, bridge)?, witness)
 }
 
-pub fn double_elim(value: Term, names: &mut Names) -> Result<Term, String> {
+pub fn double_elim(value: Term, names: &mut Names) -> Result<Term, crate::Error> {
     let formula = value.formula();
     let p = formula
         .view()
         .negated()
         .and_then(|f| f.negated())
-        .ok_or("double negation expected")?
+        .ok_or(crate::ResearchFailure::LogicDoubleNegation)?
         .to_owned();
     let (id, np) = names.assumption(not(p.clone()));
     raa(p, id, np, value, names)
 }
 
-pub fn double_intro(value: Term, names: &mut Names) -> Result<Term, String> {
+pub fn double_intro(value: Term, names: &mut Names) -> Result<Term, crate::Error> {
     let p = value.formula();
     let nnp = not(not(p.clone()));
     let (id, nnnp) = names.assumption(not(nnp.clone()));
@@ -102,7 +102,7 @@ pub fn neg_intro(
     positive: Term,
     negative: Term,
     names: &mut Names,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let (id, nnp) = names.assumption(not(not(p.clone())));
     let value = double_elim(nnp, names)?;
     let a = app(
@@ -116,13 +116,13 @@ pub fn neg_intro(
     raa(not(p), id, a, b, names)
 }
 
-pub fn not_implies(value: Term, names: &mut Names) -> Result<(Term, Term), String> {
+pub fn not_implies(value: Term, names: &mut Names) -> Result<(Term, Term), crate::Error> {
     let f = value.formula();
     let (a, b) = f
         .view()
         .negated()
         .and_then(|f| f.implication_parts())
-        .ok_or("negated implication expected")?;
+        .ok_or(crate::ResearchFailure::LogicNegatedImplication)?;
     let a = a.to_owned();
     let b = b.to_owned();
     let (id, na) = names.assumption(not(a.clone()));
@@ -137,16 +137,16 @@ pub fn not_implies(value: Term, names: &mut Names) -> Result<(Term, Term), Strin
     Ok((positive, negative))
 }
 
-pub fn instantiate(value: Term, replacement: FreeVariable) -> Result<Term, String> {
+pub fn instantiate(value: Term, replacement: FreeVariable) -> Result<Term, crate::Error> {
     let formula = value.formula();
     let used = formula.free_variables();
     let variable = (0..=u32::MAX)
         .map(FreeVariable::new)
         .find(|v| *v != replacement && !used.contains(v))
-        .ok_or("fresh variable space")?;
+        .ok_or(crate::ResearchFailure::LogicFreshVariable)?;
     let body = formula
         .open_outer_universal(variable)
-        .ok_or("universal premise expected")?;
+        .ok_or(crate::ResearchFailure::LogicUniversalPremise)?;
     let law = axiom(ProofStep::UniversalInstantiation {
         variable,
         replacement,
@@ -160,7 +160,7 @@ pub fn substitute(
     value: Term,
     from: FreeVariable,
     to: FreeVariable,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let law = axiom(ProofStep::EqualitySubstitution {
         from,
         to,

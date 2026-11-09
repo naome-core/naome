@@ -872,6 +872,8 @@ codes! {
         PeerProgramArtifact = 266, PeerProgramInference = 267, PeerProgramBinding = 268, PeerDagBinding = 269, PeerDagInference = 270, PeerArtifactIdentity = 271,
         EvidenceCheckerCapacity = 272, EvidenceCanonicalBinding = 273, EvidenceTargetBinding = 274,
         NativeDagTargetMismatch = 275, NativeTermTargetMismatch = 276, NativeCheckedTargetMismatch = 277, KnowledgeTraceMissing = 278,
+        ProofApplicationShape = 279, ProofApplicationAntecedent = 280, ProofCombinatorShape = 281, ProofCombinatorAntecedent = 282, ProofGeneralizationCapture = 283, ProofUnboundVariable = 284, ProofLemmaTarget = 285, ProofSealedTarget = 286, ProofUndischargedAssumption = 287, ProofIndexWidth = 288,
+        LogicOpenLemma = 289, LogicLemmaInstantiation = 290, LogicProjectionShape = 291, LogicProjectionResult = 292, LogicExistentialGoal = 293, LogicExistentialPremise = 294, LogicEigenvariableEscape = 295, LogicExistentialElimination = 296, LogicExistentialOpening = 297, LogicContradiction = 298, LogicDoubleNegation = 299, LogicNegatedImplication = 300, LogicFreshVariable = 301, LogicUniversalPremise = 302,
     }
 
 }

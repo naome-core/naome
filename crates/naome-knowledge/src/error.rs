@@ -883,6 +883,50 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::NativeCheckedTargetMismatch => {
                     "checked certificate proves a different target"
                 }
+                crate::ResearchFailure::ProofApplicationShape => {
+                    "application requires an implication"
+                }
+                crate::ResearchFailure::ProofApplicationAntecedent => {
+                    "application antecedent differs"
+                }
+                crate::ResearchFailure::ProofCombinatorShape => {
+                    "combinator application requires an implication"
+                }
+                crate::ResearchFailure::ProofCombinatorAntecedent => {
+                    "combinator application antecedent differs"
+                }
+                crate::ResearchFailure::ProofGeneralizationCapture => {
+                    "generalization eigenvariable occurs in an assumption"
+                }
+                crate::ResearchFailure::ProofUnboundVariable => {
+                    "unbound variable during bracket abstraction"
+                }
+                crate::ResearchFailure::ProofLemmaTarget => "construction lemma target differs",
+                crate::ResearchFailure::ProofSealedTarget => {
+                    "sealed native recipe conclusion differs"
+                }
+                crate::ResearchFailure::ProofUndischargedAssumption => {
+                    "certificate still has an assumption"
+                }
+                crate::ResearchFailure::ProofIndexWidth => "proof index width",
+                crate::ResearchFailure::LogicOpenLemma => "open construction lemma",
+                crate::ResearchFailure::LogicLemmaInstantiation => {
+                    "construction lemma instantiation"
+                }
+                crate::ResearchFailure::LogicProjectionShape => "conjunction projection",
+                crate::ResearchFailure::LogicProjectionResult => "projection result",
+                crate::ResearchFailure::LogicExistentialGoal => "existential goal",
+                crate::ResearchFailure::LogicExistentialPremise => "existential premise",
+                crate::ResearchFailure::LogicEigenvariableEscape => {
+                    "existential eigenvariable escapes"
+                }
+                crate::ResearchFailure::LogicExistentialElimination => "existential elimination",
+                crate::ResearchFailure::LogicExistentialOpening => "existential opening",
+                crate::ResearchFailure::LogicContradiction => "contradiction operands differ",
+                crate::ResearchFailure::LogicDoubleNegation => "double negation expected",
+                crate::ResearchFailure::LogicNegatedImplication => "negated implication expected",
+                crate::ResearchFailure::LogicFreshVariable => "fresh variable space",
+                crate::ResearchFailure::LogicUniversalPremise => "universal premise expected",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }
