@@ -1294,7 +1294,11 @@ pub async fn execute() -> Result<(), crate::Error> {
         code: Failure::Arguments,
         cause: Box::new(cause),
     })?;
-    let _replay_guard = replay_guard::optional(command).map_err(|_| Failure::ReplayGuard)?;
+    let _replay_guard =
+        replay_guard::optional(command).map_err(|cause| crate::Error::RuntimeContext {
+            code: Failure::ReplayGuard,
+            cause: Box::new(cause),
+        })?;
     let directory = directory().map_err(|cause| crate::Error::RuntimeContext {
         code: Failure::Directory,
         cause: Box::new(cause),

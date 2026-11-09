@@ -65,3 +65,26 @@ fn final_usage_and_both_reserves_preserve_total_rss_limit() {
     assert!(check_usage(1, 0, 2).is_err());
     assert!(check_usage(2, own_rss_bytes(), 2).is_err());
 }
+
+#[test]
+fn replay_rejections_keep_machine_readable_causes() {
+    assert!(matches!(
+        Descriptor::parse("invalid", 1),
+        Err(crate::Error::InputFault(
+            crate::InputFault::ReplayDescriptor
+        ))
+    ));
+    let mut state = Grants::new(descriptor(), 1);
+    assert_eq!(
+        state.push(&[b'x'; MAX_FRAME + 1], 2),
+        Err(crate::InputFault::ReplayFrameLimit.into())
+    );
+    assert_eq!(
+        check_usage(2, 1, 2),
+        Err(crate::InputFault::ReplayDeadline.into())
+    );
+    assert_eq!(
+        check_usage(1, 0, 2),
+        Err(crate::InputFault::ReplayMemory.into())
+    );
+}
