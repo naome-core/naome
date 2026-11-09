@@ -297,7 +297,7 @@ impl State {
         *self = next;
         Ok(true)
     }
-    pub fn require_theorems(&self, required: &[String]) -> Result<(), String> {
+    pub fn require_theorems(&self, required: &[String]) -> Result<(), crate::Error> {
         if required.len() > knowledge::CAPACITY
             || required
                 .iter()
@@ -305,15 +305,16 @@ impl State {
                 .len()
                 != required.len()
         {
-            return Err("required theorem capacity".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         for id in required {
-            crate::object::id_bytes(id)?;
-            if !self.knowledge.iter().any(|e| {
-                e.verified()
-                    .is_ok_and(|p| crate::hex(p.native_id.as_bytes()) == *id)
-            }) {
-                return Err("required checked theorem not retained".into());
+            let id = naome_proof::ProofId::from_bytes(crate::object::id_bytes(id)?);
+            if !self
+                .knowledge
+                .iter()
+                .any(|e| e.verified().is_ok_and(|p| p.native_id == id))
+            {
+                return Err(crate::Error::MissingRequiredTheorem(id));
             }
         }
         Ok(())

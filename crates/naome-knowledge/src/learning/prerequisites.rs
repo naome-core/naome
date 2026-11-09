@@ -329,20 +329,16 @@ impl Prerequisites {
         .map(Some)
     }
 
-    pub fn require(&self, base: &State, required: &[String]) -> Result<(), String> {
+    pub fn require(&self, base: &State, required: &[String]) -> Result<(), crate::Error> {
         self.validate()?;
         if required.len() > knowledge::CAPACITY
             || required.iter().collect::<BTreeSet<_>>().len() != required.len()
         {
-            return Err("required theorem capacity or duplicate".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         let mut missing = Vec::new();
         for id in required {
-            let address = crate::hex(
-                crate::object::proof_address(id)
-                    .map_err(|e| e.to_string())?
-                    .as_bytes(),
-            );
+            let address = crate::hex(crate::object::proof_address(id)?.as_bytes());
             if !self.0.artifacts.iter().any(|a| a.artifact_id == address)
                 && !self
                     .0

@@ -325,3 +325,23 @@ fn prerequisite_reconstruction_preserves_preparation_memory_failure() {
         Err(crate::Error::MemoryOverload { .. })
     ));
 }
+
+#[test]
+fn missing_required_theorem_keeps_its_identity() {
+    let id = [42; 32];
+    let required = vec![crate::hex(&id)];
+    let error = Prerequisites::default()
+        .require(&State::fresh(), &required)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::MissingRequiredTheorem(naome_proof::ProofId::from_bytes(id))
+    );
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::outcome::OperationCode::MissingRequiredTheorem)
+    );
+    assert_eq!(json["proof_id"], serde_json::json!(id));
+    assert!(error.storage().fatal());
+}

@@ -245,6 +245,7 @@ pub enum Error {
     Deadline,
     InvalidInput(String),
     MissingQuestionDefinition(naome_proof::DefinitionId),
+    MissingRequiredTheorem(naome_proof::ProofId),
     Proof(std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>),
     DiagnosticInspection(naome_checker::diagnostics::InspectionError),
     CertificateFormat(Box<CertificateFormatError>),
@@ -346,6 +347,7 @@ impl Error {
             Self::Deadline => OperationCode::Deadline,
             Self::InvalidInput(_) => OperationCode::InvalidInput,
             Self::MissingQuestionDefinition(_) => OperationCode::MissingQuestionDefinition,
+            Self::MissingRequiredTheorem(_) => OperationCode::MissingRequiredTheorem,
             Self::Proof(_) => OperationCode::ProofCheck,
             Self::DiagnosticInspection(_) => OperationCode::DiagnosticInspection,
             Self::CertificateFormat(_) => OperationCode::CertificateFormat,
@@ -414,6 +416,7 @@ impl Error {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
             error @ (Self::InputFault(_)
+            | Self::MissingRequiredTheorem(_)
             | Self::QuestionLimit(_)
             | Self::QuestionInput(_)
             | Self::QuestionRegistration(_)
@@ -610,6 +613,7 @@ impl fmt::Display for Error {
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
             Self::InvalidInput(message) => f.write_str(message),
+            Self::MissingRequiredTheorem(id) => write!(f, "required theorem unavailable: {id:?}"),
             Self::MissingQuestionDefinition(id) => {
                 write!(f, "question definition unavailable: {id:?}")
             }
@@ -1953,6 +1957,9 @@ impl serde::Serialize for Error {
         }
         if let Self::QuestionLimit(limit) = self {
             value.serialize_entry("limit", &(*limit as u8))?;
+        }
+        if let Self::MissingRequiredTheorem(id) = cause {
+            value.serialize_entry("proof_id", id.as_bytes())?;
         }
         if let Self::MissingQuestionDefinition(id) = self {
             value.serialize_entry("definition", id.as_bytes())?;
