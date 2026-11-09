@@ -71,7 +71,9 @@ pub(crate) fn create_padded_proof(question: &ResearchQuestion, padding: usize) -
 
 /// Accepts supported candidates after the independent formal prefilter.
 /// Structural research ranking belongs to the node, not this provider.
-pub fn select_question(_: ResearchQuestion) -> std::future::Ready<Result<bool, String>> {
+pub fn select_question(
+    _: ResearchQuestion,
+) -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>> {
     std::future::ready(Ok(true))
 }
 

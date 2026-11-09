@@ -285,7 +285,8 @@ pub(crate) async fn run_autonomous(
         None::<
             fn(
                 naome_checker::question::ResearchQuestion,
-            ) -> std::future::Ready<Result<bool, String>>,
+            )
+                -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
         >,
         commands,
         Some((intervals, startup)),
@@ -325,7 +326,9 @@ pub async fn run_with_questions<F, Fut>(
 ) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<bool, crate::question::SelectionProviderError>>
+        + Send
+        + 'static,
 {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
@@ -357,7 +360,8 @@ pub async fn run_with_questions_without_selection(
         None::<
             fn(
                 naome_checker::question::ResearchQuestion,
-            ) -> std::future::Ready<Result<bool, String>>,
+            )
+                -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
         >,
         commands,
         None,
@@ -375,7 +379,9 @@ pub(crate) async fn run_inner<F, Fut>(
 ) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<bool, crate::question::SelectionProviderError>>
+        + Send
+        + 'static,
 {
     let (stop, cancel) = tokio::sync::oneshot::channel();
     let (reply, result) = tokio::sync::oneshot::channel();
@@ -466,7 +472,9 @@ pub(crate) async fn run_owner<F, Fut>(
 ) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<bool, crate::question::SelectionProviderError>>
+        + Send
+        + 'static,
 {
     // Register before publishing readiness or performing synchronous owner work.
     let shutdown = shutdown_signal()?;

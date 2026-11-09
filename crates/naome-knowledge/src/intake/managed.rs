@@ -81,7 +81,8 @@ impl Intake {
     ) -> Result<WaitingStep, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let now = Instant::now();
         let id = waiting.description.transfer.root();
@@ -142,7 +143,8 @@ impl Intake {
     ) -> Progress
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let now = Instant::now();
         let revision = questions.revision(graph);

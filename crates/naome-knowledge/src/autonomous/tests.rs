@@ -12,7 +12,9 @@ use std::{
     },
 };
 
-type Questions = LocalQuestions<fn(ResearchQuestion) -> Ready<Result<bool, String>>>;
+type Questions = LocalQuestions<
+    fn(ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>>,
+>;
 fn questions() -> Questions {
     LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _))
 }
@@ -29,7 +31,7 @@ async fn admitted<F, Fut>(
     question: &ResearchQuestion,
 ) where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     let (reply, receiver) = oneshot::channel();
     questions.process(question::Command::Admit(question.clone(), reply), graph);

@@ -143,7 +143,8 @@ impl Intake {
     ) -> Result<(), crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let Some(root) = &mut self.active else {
             return Ok(());

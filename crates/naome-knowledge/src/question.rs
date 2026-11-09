@@ -32,6 +32,11 @@ mod persistence;
 use context::SelectionContext;
 pub(crate) use context::{FormalContext, Revision};
 
+/// The selection provider could not make a decision. The failure is reported as
+/// `SelectionResult::ProviderFailed`; arbitrary provider text is not published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionProviderError;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionAssessment {
     NotRun,
@@ -419,7 +424,7 @@ pub(crate) struct LocalQuestions<F> {
 impl<F, Fut> LocalQuestions<F>
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     pub(crate) fn new(provider: Option<F>) -> Self {
         Self {

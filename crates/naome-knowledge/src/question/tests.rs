@@ -16,7 +16,11 @@ const PROOF: &str = "0000000001110000000b000000000000000000000000000000000000010
 const QUESTION: &str = "040101000000000100000000";
 const SOLVED: &str = "04020402040203030101000000000100000001020301010000000001000000020200010000000001000000000203020301010000000001000000020200010000000001000000000101000000000100000001";
 
-type Managed = LocalQuestions<fn(ResearchQuestion) -> std::future::Ready<Result<bool, String>>>;
+type Managed = LocalQuestions<
+    fn(
+        ResearchQuestion,
+    ) -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
+>;
 
 #[tokio::test]
 async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
@@ -398,7 +402,7 @@ async fn running_node_prefilter_reaches_separate_selection_without_storing_quest
             let ordinal = observed.fetch_add(1, Ordering::SeqCst);
             async move {
                 if ordinal == 2 {
-                    Err("bounded provider fixture failure".into())
+                    Err(SelectionProviderError)
                 } else {
                     Ok(false)
                 }
@@ -1068,7 +1072,7 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
                 let _owned = owned;
                 match ordinal {
                     0 => Ok(false),
-                    1 => Err("fixture selection failure".into()),
+                    1 => Err(SelectionProviderError),
                     _ => std::future::pending().await,
                 }
             }

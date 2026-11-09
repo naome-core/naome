@@ -244,7 +244,8 @@ impl Programs {
     ) -> Progress
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         self.declined.retain(|_, until| *until > Instant::now());
         if self.active.is_none()

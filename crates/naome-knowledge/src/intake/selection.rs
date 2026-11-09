@@ -58,7 +58,8 @@ impl Selection {
     ) -> Result<bool, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if self.pending.is_some() {
             return Err(crate::InputFault::SelectionPending.into());
@@ -96,7 +97,8 @@ impl Selection {
     ) -> Result<Option<SelectionStage>, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let Some(pending) = &mut self.pending else {
             return Ok(None);
@@ -145,7 +147,8 @@ impl Selection {
     ) -> Result<crate::question::QuestionDelta, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if self
             .initial
@@ -170,7 +173,8 @@ impl Selection {
     ) -> Result<Vec<ArtifactId>, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if transfer.root() != self.root {
             return Err(crate::InputFault::SelectionRootMismatch.into());
@@ -199,7 +203,8 @@ impl Selection {
     ) -> Result<bool, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let valid = self.selected().is_some_and(|assessment| {
             questions.exchange_eligible(graph, &self.question, assessment)

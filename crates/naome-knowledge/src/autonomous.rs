@@ -243,7 +243,8 @@ impl Autonomous {
     ) -> bool
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let primary = self
             .formal_goal
@@ -327,7 +328,8 @@ impl Autonomous {
         graph: &Graph,
     ) where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         // Rotate durable unresolved work before retrying a completed attempt.
         // Its original admission remains in the backlog even when the parsed
@@ -355,7 +357,8 @@ impl Autonomous {
     ) -> Vec<ArtifactId>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let mut accepted = Vec::new();
         // One owner-held receipt is the only extra working item. Until the

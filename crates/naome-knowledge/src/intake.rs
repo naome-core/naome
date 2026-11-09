@@ -462,7 +462,8 @@ impl Intake {
     ) -> Progress
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         match self.advance_definition(graph) {
             Progress::Waiting => {}

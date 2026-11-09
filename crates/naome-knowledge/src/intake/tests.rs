@@ -43,10 +43,12 @@ fn fixture(index: usize) -> (Envelope, Metadata) {
     (object, producer.describe(id).unwrap().unwrap())
 }
 
-fn accepting(_: ResearchQuestion) -> Ready<Result<bool, String>> {
+fn accepting(_: ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>> {
     ready(Ok(true))
 }
-type Questions = LocalQuestions<fn(ResearchQuestion) -> Ready<Result<bool, String>>>;
+type Questions = LocalQuestions<
+    fn(ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>>,
+>;
 fn new_questions() -> Questions {
     LocalQuestions::new(Some(accepting as fn(_) -> _))
 }
@@ -103,7 +105,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
 async fn selection<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     assert!(!questions.available());
     let result = questions.completed().await;
@@ -113,7 +115,7 @@ where
 fn registered<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph) -> usize
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     let (sender, mut receiver) = oneshot::channel();
     questions.process(Command::Context(sender), graph);
@@ -123,7 +125,7 @@ where
 async fn approve<F, Fut>(intake: &mut Intake, questions: &mut LocalQuestions<F>, graph: &mut Graph)
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     assert!(matches!(
         intake.advance(graph, questions),
@@ -338,8 +340,11 @@ async fn absent_false_error_and_timeout_selection_never_authorize_payloads() {
         let mut questions = LocalQuestions::new(Some(move |_| async move {
             match mode {
                 0 => Ok(false),
-                1 => Err("selection failed".into()),
-                _ => std::future::pending::<Result<bool, String>>().await,
+                1 => Err(crate::question::SelectionProviderError),
+                _ => {
+                    std::future::pending::<Result<bool, crate::question::SelectionProviderError>>()
+                        .await
+                }
             }
         }));
         let mut intake = Intake::default();
@@ -744,7 +749,7 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
                 } else if mode == 0 {
                     Ok(false)
                 } else if mode == 1 {
-                    Err("final selection failed".into())
+                    Err(crate::question::SelectionProviderError)
                 } else {
                     std::future::pending().await
                 }
