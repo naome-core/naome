@@ -201,3 +201,17 @@ fn cleanup_failure_retains_signal_stage_and_os_cause() {
     );
     assert!(failure.fatal());
 }
+
+#[test]
+fn cleanup_failure_frame_carries_a_registered_cause() {
+    let cause = JobFailureCode::from_owner(&crate::Error::from(
+        crate::ResearchFailure::ProviderReapDeadline,
+    ));
+    let bytes = serde_json::to_vec(&Frame::CleanupFailed { id: 42, cause }).unwrap();
+    assert!(
+        matches!(serde_json::from_slice::<Frame>(&bytes), Ok(Frame::CleanupFailed { id: 42, cause: actual }) if actual == cause)
+    );
+    let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    invalid[1]["cause"] = 0xffff_ffff_u32.into();
+    assert!(serde_json::from_value::<Frame>(invalid).is_err());
+}

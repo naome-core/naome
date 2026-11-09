@@ -99,7 +99,7 @@ worker_frames! {
     Failed { id: u64 => u64 = id, code: crate::outcome::JobFailureCode => crate::outcome::JobFailureCode = code },
     Uncertain { id: u64 => u64 = id },
     CleanupComplete { id: u64 => u64 = id },
-    CleanupFailed { id: u64 => u64 = id },
+    CleanupFailed { id: u64 => u64 = id, cause: JobFailureCode => JobFailureCode = cause },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -618,7 +618,10 @@ async fn run_owned(
                 Frame::Failed { id, code } if ready && id == record.id => {
                     return Err(code);
                 }
-                Frame::CleanupFailed { id } if id == record.id => {
+                Frame::CleanupFailed { id, cause } if id == record.id => {
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchCleanupFailed,"job":id,"cause":cause}),
+                    );
                     *failure = Some(WorkerFailure::CleanupUnconfirmed);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
                     return Err(WorkerFailure::CleanupUnconfirmed.into());
@@ -655,7 +658,10 @@ async fn run_owned(
                 .map_err(|_| WorkerFailure::FrameEncoding)?
             {
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
-                Frame::CleanupFailed { id } if id == record.id => {
+                Frame::CleanupFailed { id, cause } if id == record.id => {
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchCleanupFailed,"job":id,"cause":cause}),
+                    );
                     cleaned = false;
                     return Err(WorkerFailure::CleanupUnconfirmed.into());
                 }
@@ -1009,6 +1015,7 @@ fn supervise() -> Result<(), crate::Error> {
     if let Err(error) = child.finish() {
         let _ = emit(&Frame::CleanupFailed {
             id: start.record.id,
+            cause: JobFailureCode::from_owner(&error),
         });
         return Err(error);
     }

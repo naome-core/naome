@@ -648,6 +648,7 @@ codes! {
         WorkgroupMember = 110,
         WorkgroupReceipt = 111,
         ResourceObservationFailure = 112,
+        ResearchCleanupFailed = 113,
     }
     pub(crate) enum EventSource in 24 {
         Fetch = 1,
