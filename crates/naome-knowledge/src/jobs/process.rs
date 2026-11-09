@@ -875,7 +875,7 @@ struct Worker {
     teardown_started: bool,
 }
 impl Worker {
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<(), crate::Error> {
         self.teardown_started = true;
         stop_worker(&mut self.child)
     }
@@ -1010,7 +1010,7 @@ fn supervise() -> Result<(), crate::Error> {
         let _ = emit(&Frame::CleanupFailed {
             id: start.record.id,
         });
-        return Err(error.into());
+        return Err(error);
     }
     emit(&Frame::CleanupComplete {
         id: start.record.id,
@@ -1026,18 +1026,43 @@ fn supervise() -> Result<(), crate::Error> {
     }
 }
 
-fn stop_worker(child: &mut Child) -> Result<(), String> {
+fn process_error(code: crate::ResearchFailure, error: std::io::Error) -> crate::Error {
+    let cause = crate::Error::Io {
+        kind: crate::outcome::io_fault_kind(&error),
+        os_code: error.raw_os_error().and_then(std::num::NonZeroI32::new),
+    };
+    crate::Error::ResearchContext {
+        code,
+        cause: Box::new(cause),
+    }
+}
+
+fn combine_cleanup(primary: crate::Error, errors: &[crate::Error]) -> crate::Error {
+    errors
+        .iter()
+        .cloned()
+        .fold(primary, |primary, cleanup| crate::Error::ResearchCombined {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        })
+}
+
+fn stop_worker(child: &mut Child) -> Result<(), crate::Error> {
     // Hold the live unreaped Child while signalling its separate provider group.
     // A pre-start cancellation may precede setsid; direct Child.kill covers it.
-    let group =
-        nix::unistd::Pid::from_raw(i32::try_from(child.id()).map_err(|_| "provider PID overflow")?);
+    let group = nix::unistd::Pid::from_raw(
+        i32::try_from(child.id()).map_err(|_| crate::ResearchFailure::ProviderPidOverflow)?,
+    );
     let mut signal_errors = Vec::new();
     match nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGTERM) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
         // Darwin skips zombies when signalling a group and can return EPERM
         // for a zombie-only group. Retain the denial until actual absence is
         // observed after reaping; a denial alone never confirms cleanup.
-        Err(error) => signal_errors.push(format!("provider TERM group: {error}")),
+        Err(error) => signal_errors.push(process_error(
+            crate::ResearchFailure::ProviderTermSignal,
+            std::io::Error::from_raw_os_error(error as i32),
+        )),
     }
     // Rust's portable Child API reaps on try_wait. Keep the leader unreaped
     // through both signals instead, including when it exits during this grace.
@@ -1045,28 +1070,39 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
     // Stop the original leader before the last group signal. This also covers
     // early cancellation while the worker is still creating its own group.
     if let Err(error) = child.kill() {
-        signal_errors.push(format!("provider direct Child kill: {error}"));
+        signal_errors.push(process_error(
+            crate::ResearchFailure::ProviderChildKill,
+            error,
+        ));
     }
     // Retain the unreaped leader through the final group signal. Its PID
     // cannot be recycled while we own this Child, even after its exit.
     match nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        Err(error) => signal_errors.push(format!("provider KILL group: {error}")),
+        Err(error) => signal_errors.push(process_error(
+            crate::ResearchFailure::ProviderKillSignal,
+            std::io::Error::from_raw_os_error(error as i32),
+        )),
     }
     // All signals are finished before any reaping can release the leader PID.
     let until = Instant::now() + Duration::from_secs(1);
     loop {
         if child
             .try_wait()
-            .map_err(|e| format!("provider wait: {e}"))?
+            .map_err(|e| {
+                combine_cleanup(
+                    process_error(crate::ResearchFailure::ProviderWaitFailed, e),
+                    &signal_errors,
+                )
+            })?
             .is_some()
         {
             break;
         }
         if Instant::now() >= until {
-            return Err(format!(
-                "provider Child reaping deadline; {}",
-                signal_errors.join("; ")
+            return Err(combine_cleanup(
+                crate::ResearchFailure::ProviderReapDeadline.into(),
+                &signal_errors,
             ));
         }
         std::thread::sleep(crate::resources::limits().cleanup_poll_interval);
@@ -1078,14 +1114,16 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
             Ok(()) | Err(nix::errno::Errno::EPERM) if Instant::now() < until => {
                 std::thread::sleep(crate::resources::limits().cleanup_poll_interval)
             }
-            _ => {
-                return Err(format!(
-                    "provider group termination is unconfirmed{}",
-                    if signal_errors.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", signal_errors.join("; "))
-                    }
+            result => {
+                if let Err(error) = result {
+                    signal_errors.push(process_error(
+                        crate::ResearchFailure::ProviderGroupProbe,
+                        std::io::Error::from_raw_os_error(error as i32),
+                    ));
+                }
+                return Err(combine_cleanup(
+                    crate::ResearchFailure::ProviderGroupUnconfirmed.into(),
+                    &signal_errors,
                 ));
             }
         }

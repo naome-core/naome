@@ -167,3 +167,37 @@ fn provider_lifeline_reports_truncation_and_capacity_with_codes() {
     assert_eq!(line(&mut valid, 3).unwrap(), b"ok\n");
     assert_eq!(line(&mut valid, 5).unwrap(), b"next\n");
 }
+
+#[test]
+fn cleanup_failure_retains_signal_stage_and_os_cause() {
+    let signal = process_error(
+        crate::ResearchFailure::ProviderTermSignal,
+        std::io::Error::from_raw_os_error(nix::errno::Errno::EACCES as i32),
+    );
+    let failure = combine_cleanup(
+        crate::ResearchFailure::ProviderReapDeadline.into(),
+        &[signal],
+    );
+    let json = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::ResearchFailure::MultipleFailures)
+    );
+    assert_eq!(
+        json["primary"]["code"],
+        u32::from(crate::ResearchFailure::ProviderReapDeadline)
+    );
+    assert_eq!(
+        json["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::ProviderTermSignal)
+    );
+    assert_eq!(
+        json["cleanup"]["cause"]["kind"],
+        u32::from(crate::IoFaultKind::PermissionDenied)
+    );
+    assert_eq!(
+        json["cleanup"]["cause"]["os_code"],
+        nix::errno::Errno::EACCES as i32
+    );
+    assert!(failure.fatal());
+}

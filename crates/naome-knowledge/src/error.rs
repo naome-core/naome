@@ -350,6 +350,10 @@ pub enum Error {
         code: crate::ResearchFailure,
         job: u64,
     },
+    ResearchContext {
+        code: crate::ResearchFailure,
+        cause: Box<Error>,
+    },
     CompositionReplay {
         work: usize,
         maximum: usize,
@@ -424,7 +428,8 @@ impl Error {
             }
             Self::ResearchMismatch { code, .. }
             | Self::ResearchIndex { code, .. }
-            | Self::ResearchJob { code, .. } => {
+            | Self::ResearchJob { code, .. }
+            | Self::ResearchContext { code, .. } => {
                 return (*code).into();
             }
             Self::CompositionReplay { .. } => {
@@ -1756,6 +1761,14 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ProviderRoleMismatch => "structural finder role differs",
                 crate::ResearchFailure::ProviderUnknown => "unknown research provider",
                 crate::ResearchFailure::MockProgramUnit => "invalid mock program unit",
+                crate::ResearchFailure::ProviderPidOverflow => "provider PID overflow",
+                crate::ResearchFailure::ProviderTermSignal => "provider TERM group signal failed",
+                crate::ResearchFailure::ProviderKillSignal => "provider KILL group signal failed",
+                crate::ResearchFailure::ProviderChildKill => "provider child kill failed",
+                crate::ResearchFailure::ProviderWaitFailed => "provider child wait failed",
+                crate::ResearchFailure::ProviderReapDeadline => "provider child reaping deadline",
+                crate::ResearchFailure::ProviderGroupProbe => "provider group observation failed",
+                crate::ResearchFailure::ProviderGroupUnconfirmed => "provider group termination is unconfirmed",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
@@ -2121,6 +2134,7 @@ impl fmt::Display for Error {
                 write!(f, "research failure {} at {index}", u32::from(*code))
             }
             Self::ResearchJob { code, job } => write!(f, "research failure {} for job {job}", u32::from(*code)),
+            Self::ResearchContext { code, cause } => write!(f, "research failure {}: {cause}", u32::from(*code)),
             Self::CompositionReplay { work, maximum } => {
                 write!(f, "composition replay differs at work {work}/{maximum}")
             }
@@ -2143,6 +2157,7 @@ impl StdError for Error {
         match self {
             Self::Stored(error) => Some(error),
             Self::RuntimeContext { cause, .. } => Some(cause),
+            Self::ResearchContext { cause, .. } => Some(cause),
             Self::ResearchSlot { cause, .. } => Some(cause),
             Self::ResearchCombined { primary, .. } => Some(primary),
             Self::DiagnosticInspection(error) => Some(error),
@@ -2326,6 +2341,9 @@ impl serde::Serialize for Error {
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
         if let Self::RuntimeContext { cause, .. } = self {
+            value.serialize_entry("cause", cause)?;
+        }
+        if let Self::ResearchContext { cause, .. } = self {
             value.serialize_entry("cause", cause)?;
         }
         if let Self::ResearchSlot { index, cause } = self {
