@@ -2,6 +2,15 @@
 use super::*;
 use crate::learning::history::{Lane, PAGE_BYTES, Page, Receipt, Request, SOURCES, Source};
 
+// The prepared snapshot also contains the replay (at most 32 KiB) and the
+// job's existing evidence. Of its remaining 8 KiB, reserve half for the
+// receipt and envelope. The full page is an upper bound on its observations.
+fn records_page_bytes(evidence_bytes: usize) -> usize {
+    (PAGE_BYTES + 4096)
+        .saturating_sub(evidence_bytes)
+        .min(PAGE_BYTES)
+}
+
 impl Disk {
     pub(in crate::jobs) fn history_page(
         &mut self,
@@ -39,7 +48,8 @@ impl Disk {
         }
         let started = crate::learning::meta::cpu_micros()?;
         if request.lane == Lane::Records {
-            return self.experience_page(journal, id, request, started);
+            let bytes = records_page_bytes(crate::checkpoint::encode(&native.evidence)?.len());
+            return self.experience_page(journal, id, request, started, bytes);
         }
         let mut read_bytes = 0usize;
         let mut read_operations = 1usize;
@@ -221,6 +231,7 @@ impl Disk {
         id: u64,
         request: &Request,
         started: u64,
+        page_bytes: usize,
     ) -> Result<Receipt, crate::Error> {
         let mut page = Page {
             request: request.clone(),
@@ -266,7 +277,7 @@ impl Disk {
                 observation,
             });
             page.examined.push((key.clone(), record.id));
-            if crate::checkpoint::encode(&page)?.len() > PAGE_BYTES {
+            if crate::checkpoint::encode(&page)?.len() > page_bytes {
                 page.records.pop();
                 page.examined.pop();
                 if page.examined.is_empty() {
