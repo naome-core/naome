@@ -99,7 +99,7 @@ impl Profile {
             cells: BTreeMap::new(),
         }
     }
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         crate::object::id_bytes(&self.checkpoint)?;
         if self.cells.len() > CELLS
             || self.cells.iter().any(|(key, c)| {
@@ -108,7 +108,7 @@ impl Profile {
                     || c[1] > c[0]
             })
         {
-            return Err("ability observations exceed their bounded contract".into());
+            return Err(crate::ResearchFailure::AbilityProfileCapacity.into());
         }
         Ok(())
     }
@@ -259,17 +259,17 @@ impl Feedback {
             gains: [0; SKILLS],
         }
     }
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         if let Some(utility) = &self.utility {
             utility.validate()?;
             if utility.checkpoint != self.checkpoint {
-                return Err("finder utility checkpoint differs".into());
+                return Err(crate::ResearchFailure::AbilityUtilityBinding.into());
             }
         }
         if self.attempts.checkpoint != self.checkpoint
             || self.development.checkpoint != self.checkpoint
         {
-            return Err("ability checkpoint binding differs".into());
+            return Err(crate::ResearchFailure::AbilityCheckpointBinding.into());
         }
         self.attempts.validate()?;
         self.development.validate()
@@ -291,6 +291,15 @@ impl Feedback {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ability_feedback_preserves_binding_failure_code() {
+        let mut feedback = Feedback::fresh("11".repeat(32));
+        feedback.development.checkpoint = "22".repeat(32);
+        assert_eq!(
+            feedback.validate().unwrap_err(),
+            crate::ResearchFailure::AbilityCheckpointBinding.into()
+        );
+    }
     #[test]
     fn only_an_observed_budget_end_counts_as_an_unsolved_completion() {
         use crate::learning::experience::{Budget, Capacity, TerminalEvidence};

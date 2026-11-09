@@ -901,6 +901,7 @@ codes! {
         PoolHindsightSourceCapacity = 459, PoolMaskWorkOverflow = 460, PoolMaskWorkCapacity = 461, PoolHindsightWorkOverflow = 462, PoolHindsightWorkCapacity = 463, PoolObservationLineage = 464, PoolSequenceWorkOverflow = 465, PoolSequenceWorkCapacity = 466, PoolSequenceBinding = 467, PoolWitnessWorkOverflow = 468, PoolDerivedWorkOverflow = 469, PoolDerivedWorkCapacity = 470, PoolGraphWorkOverflow = 471, PoolGraphWorkCapacity = 472,
         PreservationRootBranch = 473, PreservationPredecessor = 474, PreservationBranchBinding = 475, PreservationActionLabel = 476, PoolPredictionInvalid = 477,
         ModelCheckpointBinding = 478, MetaCheckpointBinding = 479, MetaCheckpointShape = 480, MetaTransferIncomplete = 481, MetaPromotionBinding = 482, MetaTrialDimensions = 483, MetaMemoryCapacity = 484, MetaTrialDuplicate = 485, MetaSelectionValues = 486, MetaPlanObjective = 487, MetaMemoryPhase = 488, TransferCoverageInvalid = 489, TransferSequence = 490,
+        AbilityProfileCapacity = 491, AbilityUtilityBinding = 492, AbilityCheckpointBinding = 493, FinderUtilityCapacity = 494, FinderUtilityIdentity = 495, FinderExampleEligibility = 496, FinderProofIdentity = 497,
     }
 
 }

@@ -1517,6 +1517,27 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationActionLabel => {
                     "preservation prefix action lacks a checked label"
                 }
+                crate::ResearchFailure::AbilityProfileCapacity => {
+                    "ability observations exceed their bounded contract"
+                }
+                crate::ResearchFailure::AbilityUtilityBinding => {
+                    "finder utility checkpoint differs"
+                }
+                crate::ResearchFailure::AbilityCheckpointBinding => {
+                    "ability checkpoint binding differs"
+                }
+                crate::ResearchFailure::FinderUtilityCapacity => {
+                    "native finder utility capacity differs"
+                }
+                crate::ResearchFailure::FinderUtilityIdentity => {
+                    "native finder utility identity differs"
+                }
+                crate::ResearchFailure::FinderExampleEligibility => {
+                    "finder utility requires eligible local training proofs"
+                }
+                crate::ResearchFailure::FinderProofIdentity => {
+                    "finder utility proof identity differs"
+                }
                 crate::ResearchFailure::ModelCheckpointBinding => {
                     "native model specification or paired optimizer differs"
                 }
