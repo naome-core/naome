@@ -1911,3 +1911,23 @@ fn job_validation_preserves_snapshot_and_missing_theorem_diagnostics() {
         crate::Error::MissingRequiredTheorem(naome_proof::ProofId::from_bytes(id))
     );
 }
+
+#[test]
+fn state_mutation_preserves_causes_and_rejects_overflow_atomically() {
+    let mut state = State::fresh();
+    let invalid = definitions::Entry {
+        certificate: vec![],
+        obligation: None,
+    };
+    let expected = invalid.certificate().unwrap_err();
+    assert_eq!(state.remember_definition(invalid).unwrap_err(), expected);
+    assert!(state.definitions.is_empty());
+
+    state.local_examples = u64::MAX;
+    let before = digest(&state);
+    assert_eq!(
+        state.consider(own_example(), true).unwrap_err(),
+        crate::ResearchFailure::LearningLocalCountOverflow.into()
+    );
+    assert_eq!(digest(&state), before);
+}

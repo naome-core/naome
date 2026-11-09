@@ -1500,6 +1500,21 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::LearningFixedSnapshotCapacity => {
+                    "fixed learning snapshot exceeds working byte capacity"
+                }
+                crate::ResearchFailure::LearningMetaHeadroom => {
+                    "meta context exceeds the frozen matched headroom"
+                }
+                crate::ResearchFailure::LearningMetaBatchCapacity => {
+                    "matched meta context cannot retain a learning batch"
+                }
+                crate::ResearchFailure::LearningLocalCountOverflow => {
+                    "local learning count overflow"
+                }
+                crate::ResearchFailure::LearningPeerCountOverflow => "peer learning count overflow",
+                crate::ResearchFailure::LearningSequenceOverflow => "learning sequence overflow",
+                crate::ResearchFailure::LearningRevisionOverflow => "learning revision overflow",
                 crate::ResearchFailure::LearningExampleOwner => {
                     "learning example lacks an owned job"
                 }
