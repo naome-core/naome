@@ -402,3 +402,32 @@ fn registry_startup_preserves_corrupt_checkpoint_header_cause() {
         .unwrap();
     assert_eq!(digest, vec![0; 32]);
 }
+
+#[test]
+fn stored_question_rejects_wrong_identity_and_admission_binding() {
+    let question = ResearchQuestion::from_hex("02040001000000000100000000").unwrap();
+    let key = crate::hex(question.record_id());
+    let mut entry = Entry {
+        encoded: question.to_hex(),
+        kind: Kind::Exchange,
+        first: None,
+    };
+    assert_eq!(
+        validate_entry("wrong", &entry, &question),
+        Err(crate::InputFault::QuestionRecordBinding.into())
+    );
+    entry.kind = Kind::Prepared;
+    entry.first = Some(FirstAdmission {
+        record: "01".repeat(32),
+        input: "02".repeat(32),
+        policy: "03".repeat(32),
+        snapshot_before: "04".repeat(32),
+        snapshot_after: "05".repeat(32),
+        registry_before: "06".repeat(32),
+        registry_after: "07".repeat(32),
+    });
+    assert_eq!(
+        validate_entry(&key, &entry, &question),
+        Err(crate::InputFault::QuestionFirstRecordBinding.into())
+    );
+}
