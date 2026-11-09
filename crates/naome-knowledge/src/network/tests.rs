@@ -1208,3 +1208,41 @@ fn shutdown_preserves_all_independent_failures() {
     assert!(value["primary"]["cleanup"]["code"].is_number());
     assert!(value["cleanup"]["code"].is_number());
 }
+
+#[test]
+fn dial_transport_failures_preserve_bounded_structured_causes() {
+    use libp2p::core::transport::TransportError;
+    let address: Multiaddr = "/dns4/example.org/tcp/1234".parse().unwrap();
+    let error = libp2p::swarm::DialError::Transport(vec![
+        (
+            address.clone(),
+            TransportError::Other(std::io::Error::other(WireFailure::DnsCapacity)),
+        ),
+        (
+            address,
+            TransportError::Other(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                WireFailure::DnsNoAddress,
+            )),
+        ),
+    ]);
+    let value = serde_json::to_value(transport_failures(&error).unwrap()).unwrap();
+    assert_eq!(value["total"], 2);
+    assert_eq!(
+        value["codes"],
+        json!([WireFailure::DnsCapacity, WireFailure::DnsNoAddress])
+    );
+    let limit = crate::resources::limits().addresses_per_contact;
+    let address: Multiaddr = "/dns4/example.org/tcp/1234".parse().unwrap();
+    let nested = || {
+        TransportError::Other(std::io::Error::other(std::io::Error::other(
+            WireFailure::DnsCapacity,
+        )))
+    };
+    let errors = (0..limit + 2)
+        .map(|_| (address.clone(), nested()))
+        .collect();
+    let failures = transport_failures(&libp2p::swarm::DialError::Transport(errors)).unwrap();
+    assert_eq!(failures.total, limit + 2);
+    assert_eq!(failures.codes, vec![WireFailure::DnsCapacity; limit]);
+}

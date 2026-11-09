@@ -354,6 +354,9 @@ codes! {
         InvalidInventory = 38,
         ContactRetirementCapacity = 39,
         HolePunchFailed = 40,
+        DnsCapacity = 41,
+        DnsNoAddress = 42,
+        TransportAddressUnsupported = 43,
     }
 
     pub enum RuntimeFailure in 12 {

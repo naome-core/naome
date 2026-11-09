@@ -1209,6 +1209,52 @@ fn dial_failure(error: &libp2p::swarm::DialError) -> WireFailure {
     }
 }
 
+#[derive(serde::Serialize)]
+struct TransportFailures {
+    total: usize,
+    codes: Vec<WireFailure>,
+}
+
+fn transport_failures(error: &libp2p::swarm::DialError) -> Option<TransportFailures> {
+    let libp2p::swarm::DialError::Transport(errors) = error else {
+        return None;
+    };
+    let codes = errors
+        .iter()
+        .take(crate::resources::limits().addresses_per_contact)
+        .map(|(_, error)| match error {
+            libp2p::core::transport::TransportError::MultiaddrNotSupported(_) => {
+                WireFailure::TransportAddressUnsupported
+            }
+            libp2p::core::transport::TransportError::Other(error) => {
+                let mut source: Option<&(dyn std::error::Error + 'static)> = error
+                    .get_ref()
+                    .map(|inner| inner as &(dyn std::error::Error + 'static));
+                for _ in 0..8 {
+                    let Some(current) = source else { break };
+                    if let Some(code) = current.downcast_ref::<WireFailure>() {
+                        return *code;
+                    }
+                    source = current
+                        .downcast_ref::<std::io::Error>()
+                        .and_then(std::io::Error::get_ref)
+                        .map(|inner| inner as &(dyn std::error::Error + 'static))
+                        .or_else(|| current.source());
+                }
+                if error.kind() == std::io::ErrorKind::TimedOut {
+                    WireFailure::TimedOut
+                } else {
+                    WireFailure::StreamIo
+                }
+            }
+        })
+        .collect();
+    Some(TransportFailures {
+        total: errors.len(),
+        codes,
+    })
+}
+
 fn dial_cause(error: &libp2p::swarm::DialError) -> Option<&crate::Error> {
     let libp2p::swarm::DialError::Denied { cause } = error else {
         return None;
@@ -2286,7 +2332,7 @@ impl Node {
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
                 json!({"event":crate::outcome::NodeEvent::DialFailed,"peer":peer_id.map(|peer|peer.to_string()),
-                    "stage":crate::outcome::DialStage::Transport, "error":dial_failure(&error), "cause":dial_cause(&error)}),
+                    "stage":crate::outcome::DialStage::Transport, "error":dial_failure(&error), "cause":dial_cause(&error), "transport_errors":transport_failures(&error)}),
             ),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,
