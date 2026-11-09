@@ -265,6 +265,7 @@ pub enum Error {
     LearningGraph(crate::LearningGraphFailure),
     ProgramCodec(naome_proof::program::CodecFailure),
     ProgramProjection(naome_proof::program::ProjectionFailure),
+    Compression(crate::CompressionFailure),
     ProgramInput(naome_checker::program::ProgramFault),
     Formula(naome_foundation::FormulaCodecError),
     QuestionInput(Box<naome_proof::QuestionError>),
@@ -352,6 +353,7 @@ impl Error {
             Self::LearningGraph(failure) => return (*failure).into(),
             Self::ProgramCodec(_) => OperationCode::ProgramCodec,
             Self::ProgramProjection(_) => OperationCode::ProgramProjection,
+            Self::Compression(_) => OperationCode::Compression,
             Self::ProgramInput(_) => OperationCode::ProgramInput,
             Self::Formula(_) => OperationCode::Formula,
             Self::QuestionInput(_) => OperationCode::QuestionInput,
@@ -420,7 +422,8 @@ impl Error {
             | Self::CertificateFormat(_)
             | Self::CertificateConstruction(_)
             | Self::ProgramCodec(_)
-            | Self::ProgramProjection(_))
+            | Self::ProgramProjection(_)
+            | Self::Compression(_))
                 if !error.retryable() =>
             {
                 Self::Stored(Box::new(error))
@@ -616,6 +619,7 @@ impl fmt::Display for Error {
             Self::LearningGraph(error) => error.fmt(f),
             Self::ProgramCodec(error) => error.fmt(f),
             Self::ProgramProjection(error) => error.fmt(f),
+            Self::Compression(error) => error.fmt(f),
             Self::ProgramInput(error) => error.fmt(f),
             Self::Formula(error) => error.fmt(f),
             Self::QuestionInput(error) => error.fmt(f),
@@ -1665,6 +1669,9 @@ impl serde::Serialize for Error {
         }
         if let Self::ProgramCodec(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;
+        }
+        if let Self::Compression(reason) = cause {
+            value.serialize_entry("compression", reason)?;
         }
         if let Self::ProgramProjection(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;

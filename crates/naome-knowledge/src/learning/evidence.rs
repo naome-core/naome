@@ -28,7 +28,7 @@ pub enum Failure {
         maximum: usize,
     },
     Framing,
-    Compression,
+    Compression(crate::CompressionFailure),
     Definitions,
 }
 
@@ -45,7 +45,7 @@ impl Failure {
         match self {
             Self::Limit { .. } => EvidenceCode::Limit,
             Self::Framing => EvidenceCode::Framing,
-            Self::Compression => EvidenceCode::Compression,
+            Self::Compression(_) => EvidenceCode::Compression,
             Self::Definitions => EvidenceCode::Definitions,
         }
     }
@@ -56,10 +56,10 @@ impl serde::Serialize for Failure {
         use serde::ser::SerializeStruct;
         let mut output = serializer.serialize_struct(
             "EvidenceFailure",
-            if matches!(self, Self::Limit { .. }) {
-                4
-            } else {
-                1
+            match self {
+                Self::Limit { .. } => 4,
+                Self::Compression(_) => 2,
+                _ => 1,
             },
         )?;
         output.serialize_field("code", &self.code())?;
@@ -72,6 +72,9 @@ impl serde::Serialize for Failure {
             output.serialize_field("resource", &(resource as u8))?;
             output.serialize_field("actual", &actual)?;
             output.serialize_field("maximum", &maximum)?;
+        }
+        if let Self::Compression(reason) = self {
+            output.serialize_field("compression", reason)?;
         }
         output.end()
     }
@@ -129,9 +132,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Evidence, Failure> {
     }
     let mut decoded = vec![0; size];
     let actual = lz4_flex::block::decompress_into(&bytes[4..], &mut decoded)
-        .map_err(|_| Failure::Compression)?;
+        .map_err(|error| Failure::Compression(error.into()))?;
     if actual != size {
-        return Err(Failure::Framing);
+        return Err(Failure::Compression(
+            crate::CompressionFailure::SizeMismatch {
+                expected: size,
+                actual,
+            },
+        ));
     }
     let mut cursor = 0usize;
     fn number(bytes: &[u8], cursor: &mut usize) -> Result<usize, Failure> {

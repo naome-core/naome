@@ -354,14 +354,18 @@ impl Packet {
             .ok_or(crate::ResearchFailure::PeerProgramFrameWidth)?;
         let width = u32::from_le_bytes(*width) as usize;
         if width > crate::resources::limits().closure_bytes {
-            return Err("peer program decoded capacity".into());
+            return Err(crate::InputLimit::PeerProgramCapacity.into());
         }
         let mut raw = vec![0; width];
-        if lz4_flex::block::decompress_into(compressed, &mut raw)
-            .map_err(|error| error.to_string())?
-            != width
-        {
-            return Err("peer program decoded extent differs".into());
+        let actual = lz4_flex::block::decompress_into(compressed, &mut raw)
+            .map_err(|error| crate::Error::Compression(error.into()))?;
+        if actual != width {
+            return Err(crate::Error::Compression(
+                crate::CompressionFailure::SizeMismatch {
+                    expected: width,
+                    actual,
+                },
+            ));
         }
         Ok(raw)
     }
@@ -840,6 +844,59 @@ fn graphs(
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
+
+    #[test]
+    fn compressed_inputs_share_numeric_failure_details() {
+        let bytes = vec![1, 0, 0, 0, 0x10];
+        let expected = crate::CompressionFailure::from(
+            lz4_flex::block::decompress_into(&bytes[4..], &mut [0]).unwrap_err(),
+        );
+        let manifest = Manifest {
+            commands: 1,
+            input_bytes: 1,
+            program_hash: [0; 32],
+            stream_root: [0; 32],
+            conclusion: [0; 32],
+            statement: [0; 32],
+        };
+        let packet = Packet {
+            manifest,
+            bytes: bytes.clone(),
+        };
+        assert_eq!(
+            packet.decoded().unwrap_err(),
+            crate::Error::Compression(expected)
+        );
+        assert!(matches!(super::super::super::evidence::decode(&bytes),
+            Err(crate::EvidenceFailure::Compression(actual)) if actual == expected));
+        let evidence = serde_json::to_value(crate::EvidenceFailure::Compression(expected)).unwrap();
+        let program = serde_json::to_value(crate::Error::Compression(expected)).unwrap();
+        assert_eq!(evidence["compression"], program["compression"]);
+        let short = vec![1, 0, 0, 0, 0];
+        let mismatch = crate::CompressionFailure::SizeMismatch {
+            expected: 1,
+            actual: 0,
+        };
+        assert!(matches!(super::super::super::evidence::decode(&short),
+            Err(crate::EvidenceFailure::Compression(actual)) if actual == mismatch));
+        let packet = Packet {
+            manifest: packet.manifest.clone(),
+            bytes: short,
+        };
+        assert_eq!(
+            packet.decoded().unwrap_err(),
+            crate::Error::Compression(mismatch)
+        );
+        let width = serde_json::to_value(crate::CompressionFailure::OutputTooSmall {
+            expected: 5,
+            actual: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            width,
+            serde_json::json!({"reason": 1, "expected": 5, "actual": 2})
+        );
+    }
 
     #[test]
     fn command_frames_preserve_codec_and_truncation_failures() {

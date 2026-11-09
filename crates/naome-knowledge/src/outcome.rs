@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32,
     }
 
     pub enum InputFault in 7 {
@@ -885,6 +885,74 @@ codes! {
         PeerProgramFrameWidth = 350, PeerProgramFrameTruncated = 351, PeerProgramCommandCapacity = 352,
     }
 
+}
+
+/// A bounded LZ4 decoding failure shared by all compressed input paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompressionFailure {
+    OutputTooSmall { expected: usize, actual: usize },
+    SizeMismatch { expected: usize, actual: usize },
+    LiteralOutOfBounds,
+    ExpectedAnotherByte,
+    OffsetZero,
+    OffsetOutOfBounds,
+    Unknown,
+}
+
+impl From<lz4_flex::block::DecompressError> for CompressionFailure {
+    fn from(error: lz4_flex::block::DecompressError) -> Self {
+        use lz4_flex::block::DecompressError;
+        match error {
+            DecompressError::OutputTooSmall { expected, actual } => {
+                Self::OutputTooSmall { expected, actual }
+            }
+            DecompressError::LiteralOutOfBounds => Self::LiteralOutOfBounds,
+            DecompressError::ExpectedAnotherByte => Self::ExpectedAnotherByte,
+            DecompressError::OffsetZero => Self::OffsetZero,
+            DecompressError::OffsetOutOfBounds => Self::OffsetOutOfBounds,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl serde::Serialize for CompressionFailure {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct(
+            "CompressionFailure",
+            if matches!(
+                self,
+                Self::OutputTooSmall { .. } | Self::SizeMismatch { .. }
+            ) {
+                3
+            } else {
+                1
+            },
+        )?;
+        let reason: u8 = match self {
+            Self::OutputTooSmall { .. } => 1,
+            Self::LiteralOutOfBounds => 2,
+            Self::ExpectedAnotherByte => 3,
+            Self::OffsetZero => 4,
+            Self::OffsetOutOfBounds => 5,
+            Self::Unknown => 6,
+            Self::SizeMismatch { .. } => 7,
+        };
+        value.serialize_field("reason", &reason)?;
+        if let Self::OutputTooSmall { expected, actual } | Self::SizeMismatch { expected, actual } =
+            self
+        {
+            value.serialize_field("expected", expected)?;
+            value.serialize_field("actual", actual)?;
+        }
+        value.end()
+    }
+}
+
+impl std::fmt::Display for CompressionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "compression failure {self:?}")
+    }
 }
 
 pub(crate) fn io_fault_kind(error: &std::io::Error) -> crate::outcome::IoFaultKind {
