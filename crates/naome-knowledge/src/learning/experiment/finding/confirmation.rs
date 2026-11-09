@@ -1,5 +1,6 @@
 //! Source-only confirmation preparation. No solver, optimizer or model calls.
 use super::*;
+mod continuation;
 
 pub(super) fn import_model(path: &Path) -> Result<(Checkpoint, MemoryStore), String> {
     use std::io::Read;
