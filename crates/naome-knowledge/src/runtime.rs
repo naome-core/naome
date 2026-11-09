@@ -679,30 +679,27 @@ async fn request(
     Ok(Some(status))
 }
 
-fn directory() -> Result<PathBuf, String> {
+fn directory() -> Result<PathBuf, crate::Error> {
     let path = if let Some(path) = std::env::var_os("NAOME_NODE_DIR") {
         PathBuf::from(path)
     } else if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
         PathBuf::from(path).join("naome")
     } else {
-        PathBuf::from(std::env::var_os("HOME").ok_or("set NAOME_NODE_DIR or HOME")?)
+        PathBuf::from(std::env::var_os("HOME").ok_or(crate::InputFault::NodeDirectoryUnset)?)
             .join(".local/share/naome")
     };
     if path.as_os_str().is_empty() {
-        return Err("empty node directory".into());
+        return Err(crate::InputFault::NodeDirectoryEmpty.into());
     }
     Ok(if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string())?
-            .join(path)
+        std::env::current_dir()?.join(path)
     })
 }
 
-async fn operation_lock(directory: &Path) -> Result<crate::storage::LockFile, String> {
-    let file = crate::storage::LockFile::open(&directory.join("lifecycle.lock"))
-        .map_err(|error| error.to_string())?;
+async fn operation_lock(directory: &Path) -> Result<crate::storage::LockFile, crate::Error> {
+    let file = crate::storage::LockFile::open(&directory.join("lifecycle.lock"))?;
     let deadline = Instant::now() + crate::resources::limits().lifecycle_timeout;
     loop {
         match file.try_lock() {
@@ -710,7 +707,10 @@ async fn operation_lock(directory: &Path) -> Result<crate::storage::LockFile, St
             Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
                 tokio::time::sleep(crate::resources::limits().lifecycle_poll_interval).await
             }
-            Err(error) => return Err(format!("lifecycle operation unavailable: {error}")),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(crate::InputFault::LifecycleLockTimeout.into());
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
     }
 }
@@ -868,17 +868,15 @@ async fn start_with_handoff(
     };
     // Keep startup cancellation alive while the child performs synchronous
     // replay. SIGKILL/parent disappearance instead closes the stdin lifeline.
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| format!("startup termination signal: {e}"))?;
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .map_err(|e| format!("startup interrupt signal: {e}"))?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     if let Some(status) =
         tokio::time::timeout_at(deadline, request(directory, Operation::Status, None))
             .await
-            .map_err(|_| "node startup deadline")??
+            .map_err(|_| crate::InputFault::StartupDeadline)??
     {
         if handoff.is_some() {
-            return Err("startup handoff requires a new owned daemon".into());
+            return Err(crate::InputFault::StartupHandoffExisting.into());
         }
         return Ok(status);
     }
@@ -892,16 +890,16 @@ async fn start_with_handoff(
     let nonce = crate::hex(&Sha256::digest(
         identity::Keypair::generate_ed25519()
             .to_protobuf_encoding()
-            .map_err(|error| error.to_string())?,
+            .map_err(|_| crate::InputFault::IdentityKeyEncode)?,
     ));
     // Compact retained diagnostics before opening the child's inherited handles.
     cap_log(&directory.join("node.log"))?;
     cap_log(&directory.join("node.log.previous"))?;
     let log = open_log(&directory.join("node.log"))?;
     if tokio::time::Instant::now() >= deadline {
-        return Err("node startup deadline before launch".into());
+        return Err(crate::InputFault::StartupDeadline.into());
     }
-    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("start")
         .env("NAOME_NODE_DIR", directory)
@@ -911,9 +909,7 @@ async fn start_with_handoff(
             crate::resources::child_snapshot()?,
         )
         .stdin(Stdio::piped())
-        .stdout(Stdio::from(
-            log.try_clone().map_err(|error| error.to_string())?,
-        ))
+        .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .env_remove(startup::HANDOFF_ACTIVE)
         .env_remove(startup::HANDOFF_CLEANUP)
@@ -925,19 +921,19 @@ async fn start_with_handoff(
     let inherited_session = if handoff.is_some() {
         Some((
             nix::unistd::getpgrp(),
-            nix::unistd::getsid(None).map_err(|e| e.to_string())?,
+            nix::unistd::getsid(None)
+                .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?,
         ))
     } else {
         None
     };
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let mut child = command.spawn()?;
     let launch = async {
         child
             .stdin
             .as_mut()
-            .ok_or("startup parent lifeline missing")?
-            .write_all(&startup::begin(&nonce))
-            .map_err(|e| e.to_string())?;
+            .ok_or(crate::InputFault::StartupLifelineMissing)?
+            .write_all(&startup::begin(&nonce))?;
         let status = if let Some(owner) = &mut handoff {
             // The existing owner lifeline is checked concurrently with RPC,
             // so a slow readiness exchange cannot delay owned EOF cancellation.
@@ -952,7 +948,7 @@ async fn start_with_handoff(
             .await?
         };
         if tokio::time::Instant::now() >= deadline {
-            return Err("node startup deadline before acknowledgement".into());
+            return Err(crate::InputFault::StartupAcknowledgementDeadline.into());
         }
         if let Some(owner) = &mut handoff {
             owner.transfer(child.id(), &nonce).await?;
@@ -960,9 +956,8 @@ async fn start_with_handoff(
         child
             .stdin
             .as_mut()
-            .ok_or("startup parent lifeline missing")?
-            .write_all(&startup::acknowledge(&nonce))
-            .map_err(|e| e.to_string())?;
+            .ok_or(crate::InputFault::StartupLifelineMissing)?
+            .write_all(&startup::acknowledge(&nonce))?;
         drop(child.stdin.take());
         Ok(status)
     };
@@ -1264,12 +1259,16 @@ pub async fn execute() -> Result<(), crate::Error> {
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
     {
-        crate::resources::initialize_for(&directory().map_err(|_| Failure::Directory)?).map_err(
-            |cause| crate::Error::RuntimeContext {
-                code: Failure::Resources,
+        crate::resources::initialize_for(&directory().map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: Failure::Directory,
                 cause: Box::new(cause),
-            },
-        )?;
+            }
+        })?)
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: Failure::Resources,
+            cause: Box::new(cause),
+        })?;
     } else {
         crate::resources::initialize_from_environment().map_err(|cause| {
             crate::Error::RuntimeContext {
@@ -1290,7 +1289,10 @@ pub async fn execute() -> Result<(), crate::Error> {
         startup_handoff,
     } = cli::Arguments::parse(&arguments).map_err(|_| Failure::Arguments)?;
     let _replay_guard = replay_guard::optional(command).map_err(|_| Failure::ReplayGuard)?;
-    let directory = directory().map_err(|_| Failure::Directory)?;
+    let directory = directory().map_err(|cause| crate::Error::RuntimeContext {
+        code: Failure::Directory,
+        cause: Box::new(cause),
+    })?;
     if std::env::var_os(DAEMON_NONCE).is_some() {
         if command != "start" || startup_handoff {
             return Err(Failure::DaemonSetup.into());
@@ -1337,7 +1339,10 @@ pub async fn execute() -> Result<(), crate::Error> {
     let directory = fs::canonicalize(directory).map_err(|_| Failure::Directory)?;
     let _lock = operation_lock(&directory)
         .await
-        .map_err(|_| Failure::Directory)?;
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: Failure::Directory,
+            cause: Box::new(cause),
+        })?;
     let status = match command {
         "start" if startup_handoff => {
             start_with_handoff(

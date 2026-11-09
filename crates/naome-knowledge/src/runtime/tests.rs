@@ -675,3 +675,19 @@ fn runtime_configuration_preserves_parse_and_owner_failures() {
         crate::Error::from(crate::InputFault::RuntimeConfigOwner)
     );
 }
+
+#[tokio::test]
+async fn lifecycle_lock_preserves_the_open_failure_kind() {
+    let directory = Directory::new();
+    let error = operation_lock(&directory.0.join("missing"))
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        crate::Error::Io {
+            kind: crate::IoFaultKind::NotFound,
+            ..
+        }
+    ));
+}

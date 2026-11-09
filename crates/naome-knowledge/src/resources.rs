@@ -439,12 +439,12 @@ pub(crate) fn program_cache(bytes: u64) -> u64 {
 }
 /// Spawned daemons/providers inherit exact resolved values rather than reloading
 /// a file that an operator might have edited while their parent was running.
-pub(crate) fn child_snapshot() -> Result<String, String> {
+pub(crate) fn child_snapshot() -> Result<String, crate::Error> {
     serde_json::to_string(&EffectiveProfile {
         version: PROFILE_VERSION,
         limits: limits().clone(),
     })
-    .map_err(|e| e.to_string())
+    .map_err(|_| crate::InputFault::ResourceSnapshotEncoding.into())
 }
 
 #[cfg(test)]
