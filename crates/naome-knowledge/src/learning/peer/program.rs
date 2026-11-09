@@ -126,41 +126,29 @@ fn evaluate(
     commands: &[Command],
     context: &dyn ContextView,
     work: &mut usize,
-) -> Result<CheckedProgram, String> {
+) -> Result<CheckedProgram, crate::Error> {
     let limits = crate::resources::limits();
-    let conn = rusqlite::Connection::open_in_memory().map_err(|error| error.to_string())?;
-    let mut engine = Engine::open(conn).map_err(|error| error.to_string())?;
+    let conn =
+        rusqlite::Connection::open_in_memory().map_err(naome_checker::program::Error::from)?;
+    let mut engine = Engine::open(conn)?;
     for group in commands.chunks(naome_proof::program::CHUNK_RECORDS) {
-        engine
-            .append_group(group)
-            .map_err(|error| error.to_string())?;
+        engine.append_group(group)?;
     }
     let quantum = crate::resources::adaptive::batch(limits.closure_steps).max(1);
     let cache = crate::resources::program_cache(1024 * 1024);
-    while !engine
-        .status()
-        .map_err(|error| error.to_string())?
-        .fully_checked
-    {
-        let progress = engine
-            .advance(quantum, cache, context)
-            .map_err(|error| error.to_string())?;
+    while !engine.status()?.fully_checked {
+        let progress = engine.advance(quantum, cache, context)?;
         let spent = engine.last_quantum_steps();
         *work = work
             .checked_add(spent)
-            .ok_or("peer program checker work overflow")?;
+            .ok_or(crate::ResearchFailure::PeerProgramWorkOverflow)?;
         if *work > 16 * limits.closure_steps || !progress && spent == 0 {
-            return Err("peer program checker work capacity".into());
+            return Err(crate::ResearchFailure::PeerProgramWorkCapacity.into());
         }
     }
-    while !engine
-        .prepare_export(quantum)
-        .map_err(|error| error.to_string())?
-    {}
-    let checked = engine.checked().map_err(|error| error.to_string())?;
-    checked
-        .check_manifest(manifest)
-        .map_err(|error| error.to_string())?;
+    while !engine.prepare_export(quantum)? {}
+    let checked = engine.checked()?;
+    checked.check_manifest(manifest)?;
     Ok(checked)
 }
 
@@ -185,63 +173,52 @@ impl InputChecker {
         }
     }
 
-    fn register(&mut self, bytes: &[u8]) -> Result<(), String> {
+    fn register(&mut self, bytes: &[u8]) -> Result<(), crate::Error> {
         let limits = crate::resources::limits();
         self.objects += 1;
         if self.objects >= limits.closure_objects {
-            return Err("peer program context capacity".into());
+            return Err(crate::ResearchFailure::PeerProgramContextCapacity.into());
         }
         if let Some(mut inner) = bytes.strip_prefix(MANIFEST_MAGIC) {
             let manifest = Manifest::from_canonical_bytes(take(&mut inner)?)?;
             let commands = read_commands(&manifest, &mut inner)?;
             if !inner.is_empty() {
-                return Err("peer program dependency trailing bytes".into());
+                return Err(crate::ResearchFailure::PeerProgramDependencyTrailing.into());
             }
             self.steps = self
                 .steps
                 .checked_add(commands.len())
-                .ok_or("peer program context step overflow")?;
+                .ok_or(crate::ResearchFailure::PeerProgramStepOverflow)?;
             if self.steps > limits.closure_steps {
-                return Err("peer program context step capacity".into());
+                return Err(crate::ResearchFailure::PeerProgramStepCapacity.into());
             }
             let checked = evaluate(&manifest, &commands, &self.context, &mut self.work)?;
-            let mut registration = self
-                .context
-                .begin_program_registration(&checked)
-                .map_err(|error| error.to_string())?;
+            let mut registration = self.context.begin_program_registration(&checked)?;
             while !registration.complete() {
-                registration
-                    .advance(&checked, 64)
-                    .map_err(|error| error.to_string())?;
+                registration.advance(&checked, 64)?;
             }
-            self.context = registration.finish().map_err(|error| error.to_string())?;
+            self.context = registration.finish()?;
             return Ok(());
         }
         if bytes.len() > limits.proof_bytes {
-            return Err("peer program context object capacity".into());
+            return Err(crate::ResearchFailure::PeerProgramObjectCapacity.into());
         }
-        match ArtifactPayload::from_canonical_bytes(bytes).map_err(|error| error.to_string())? {
+        match crate::object::decode_payload(bytes)? {
             ArtifactPayload::Proof(certificate) => {
                 self.steps = self
                     .steps
                     .checked_add(certificate.steps().len())
-                    .ok_or("peer program context step overflow")?;
+                    .ok_or(crate::ResearchFailure::PeerProgramStepOverflow)?;
                 if self.steps > limits.closure_steps {
-                    return Err("peer program context step capacity".into());
+                    return Err(crate::ResearchFailure::PeerProgramStepCapacity.into());
                 }
-                let checked =
-                    proof::check(certificate, &self.context).map_err(|error| error.to_string())?;
-                self.context
-                    .register_proof_for_replication(checked)
-                    .map_err(|error| error.to_string())?;
+                let checked = proof::check(certificate, &self.context)?;
+                self.context.register_proof_for_replication(checked)?;
             }
             ArtifactPayload::Definition(certificate) => {
                 let checked =
-                    naome_checker::check_definition_with_state(certificate, &self.context)
-                        .map_err(|error| error.to_string())?;
-                self.context
-                    .register_definition(checked)
-                    .map_err(|error| error.to_string())?;
+                    naome_checker::check_definition_with_state(certificate, &self.context)?;
+                self.context.register_definition(checked)?;
             }
         }
         Ok(())
@@ -844,6 +821,26 @@ fn graphs(
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
+
+    #[test]
+    fn input_checker_preserves_artifact_and_proof_diagnostics() {
+        let mut inputs = InputChecker::new(0);
+        let expected = crate::object::decode_payload(&[]).unwrap_err();
+        assert_eq!(inputs.register(&[]).unwrap_err(), expected);
+        let certificate =
+            naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+                proof_id: ProofId::from_bytes([0; 32]),
+            }])
+            .unwrap();
+        let expected = crate::Error::from(
+            proof::check(certificate.clone(), &inputs.context)
+                .err()
+                .unwrap(),
+        );
+        let payload = ArtifactPayload::Proof(certificate).to_canonical_bytes();
+        assert_eq!(inputs.register(&payload).unwrap_err(), expected);
+        assert!(matches!(expected, crate::Error::Proof(_)));
+    }
 
     #[test]
     fn compressed_inputs_share_numeric_failure_details() {

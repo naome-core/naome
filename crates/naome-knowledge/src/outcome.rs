@@ -883,6 +883,8 @@ codes! {
         CandidateStatementWidth = 345, CandidateCertificateWidth = 346,
         CandidateCertificateIdentity = 347, CandidateScopeTarget = 348, CandidateDefinitionIndex = 349,
         PeerProgramFrameWidth = 350, PeerProgramFrameTruncated = 351, PeerProgramCommandCapacity = 352,
+        PeerProgramWorkOverflow = 353, PeerProgramWorkCapacity = 354, PeerProgramContextCapacity = 355,
+        PeerProgramDependencyTrailing = 356, PeerProgramStepOverflow = 357, PeerProgramStepCapacity = 358, PeerProgramObjectCapacity = 359,
     }
 
 }

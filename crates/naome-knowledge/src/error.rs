@@ -1418,6 +1418,27 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::CandidateDefinitionIndex => "definition selection index",
                 crate::ResearchFailure::PeerProgramFrameWidth => "peer program frame width",
                 crate::ResearchFailure::PeerProgramFrameTruncated => "peer program frame truncated",
+                crate::ResearchFailure::PeerProgramWorkOverflow => {
+                    "peer program checker work overflow"
+                }
+                crate::ResearchFailure::PeerProgramWorkCapacity => {
+                    "peer program checker work capacity"
+                }
+                crate::ResearchFailure::PeerProgramContextCapacity => {
+                    "peer program context capacity"
+                }
+                crate::ResearchFailure::PeerProgramDependencyTrailing => {
+                    "peer program dependency trailing bytes"
+                }
+                crate::ResearchFailure::PeerProgramStepOverflow => {
+                    "peer program context step overflow"
+                }
+                crate::ResearchFailure::PeerProgramStepCapacity => {
+                    "peer program context step capacity"
+                }
+                crate::ResearchFailure::PeerProgramObjectCapacity => {
+                    "peer program context object capacity"
+                }
                 crate::ResearchFailure::PeerProgramCommandCapacity => {
                     "peer program replay command capacity"
                 }
