@@ -770,7 +770,7 @@ where
         if tick.period() != period { tick = tokio::time::interval(period); tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
         let work = node.computation.try_enter();
         if let Some(control) = &control
-            && questions.select(control.selection().ok()) {
+            && questions.select(Some(control.selection())) {
             node.intake.invalidate_selection();
             node.inventory_summaries.clear();
         }
@@ -833,7 +833,7 @@ where
             },
             selection = questions.completed(),if work.is_some() && !stopping => {
                 if let Some(control)=&control
-                    && questions.select(control.selection().ok()){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
+                    && questions.select(Some(control.selection())){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
                 questions.finish(&node.graph, selection);
             },
             _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
@@ -859,7 +859,7 @@ where
             continue;
         }
         if let Some(control)=&control
-                && questions.select(control.selection().ok()){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
+                && questions.select(Some(control.selection())){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));

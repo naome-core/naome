@@ -661,7 +661,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         Arc::new(AtomicU64::new(0)),
         0,
         Some(control.clone()),
-        Some(control.selection().unwrap()),
+        Some(control.selection()),
     ));
     let offered = Metadata {
         artifact_id: object.artifact_id.clone(),

@@ -80,7 +80,7 @@ async fn invalid_control_token_cannot_stop_the_node() {
     let directory = Directory::new();
     let graph = Graph::open(&directory.0).unwrap();
     let control = Control::bind_test(&directory.0, graph.ownership()).unwrap();
-    let before = control.selection().unwrap();
+    let before = control.selection();
     let client = async {
         let mut stream = UnixStream::connect(&control.endpoint.socket).await.unwrap();
         write_frame(
@@ -102,6 +102,6 @@ async fn invalid_control_token_cannot_stop_the_node() {
     };
     let (_, error) = tokio::join!(client, server);
     assert_eq!(error, crate::outcome::ControlFailure::InstanceMismatch);
-    assert_eq!(control.selection().unwrap(), before);
+    assert_eq!(control.selection(), before);
     assert!(!control.stopping());
 }

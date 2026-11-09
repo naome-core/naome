@@ -274,7 +274,7 @@ impl crate::publication::LocalAuthority for Control {
         if self.stopping() {
             return Err(crate::Error::StaleAuthority);
         }
-        let selection = self.selection().map_err(|_| crate::Error::StaleAuthority)?;
+        let selection = self.selection();
         if Some(selection) != expected {
             return Err(crate::Error::StaleAuthority);
         }
@@ -441,13 +441,13 @@ impl Control {
             .map_err(crate::Error::from)
     }
 
-    pub(crate) fn selection(&self) -> Result<[u8; 32], String> {
+    pub(crate) fn selection(&self) -> [u8; 32] {
         // The active instance and fixed research policy own publication authority.
         // Knowledge and attempt statistics only order work, never revoke grants.
         let mut hash = Sha256::new();
         hash.update(b"naome:research-selection");
         hash.update(self.endpoint.token.as_bytes());
-        Ok(hash.finalize().into())
+        hash.finalize().into()
     }
 
     #[cfg(test)]
