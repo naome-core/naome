@@ -29,7 +29,7 @@ impl ProgramCheck {
         let directory = graph.store.directory().join(".program-work");
         match std::fs::symlink_metadata(&directory) {
             Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
-                return Err("program work directory must be a real directory".into());
+                return Err(crate::InputFault::ProgramWorkDirectory.into());
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -62,7 +62,10 @@ impl ProgramCheck {
     ) -> Result<Option<CheckedWork>, crate::Error> {
         let mut snapshot = self.budget.refresh(graph.store.directory())?.clone();
         snapshot.budget.cache_bytes = snapshot.budget.cache_bytes.min(self.cache_cap);
-        let work = self.work.as_mut().ok_or("program check already consumed")?;
+        let work = self
+            .work
+            .as_mut()
+            .ok_or(crate::InputFault::ProgramWorkConsumed)?;
         work.record_budget(&snapshot)?;
         if snapshot.budget.paused.is_some() {
             work.advance(&snapshot.budget, context)?;
@@ -72,7 +75,7 @@ impl ProgramCheck {
         if status.commands < self.manifest.commands {
             let progress = graph.store.program_progress(&self.manifest)?;
             if status.commands > progress.commands {
-                return Err("work input exceeds canonical received prefix".into());
+                return Err(crate::InputFault::ProgramPrefixExceeds.into());
             }
             if status.commands < progress.commands {
                 // Restoring authenticated input is a bounded storage copy.
@@ -90,7 +93,7 @@ impl ProgramCheck {
                     CHUNK_BYTES,
                 )?;
                 if status.program_hash != crate::hex(&chunk.previous) {
-                    return Err("work input differs from canonical received prefix".into());
+                    return Err(crate::InputFault::ProgramPrefixMismatch.into());
                 }
                 work.append_group(&chunk.records)?;
             }
@@ -99,7 +102,7 @@ impl ProgramCheck {
         if status.commands != self.manifest.commands
             || status.program_hash != crate::hex(&self.manifest.program_hash)
         {
-            return Err("work input differs from complete manifest".into());
+            return Err(crate::InputFault::ProgramInputMismatch.into());
         }
         let progress = work.advance(&snapshot.budget, context)?;
         if work.status()?.fully_checked {
@@ -111,7 +114,7 @@ impl ProgramCheck {
             return Ok(Some(checked));
         }
         if !progress {
-            return Err("program ended without a completely checked seal".into());
+            return Err(crate::InputFault::ProgramSealMissing.into());
         }
         Ok(None)
     }
@@ -179,7 +182,7 @@ impl PreparedProgram {
         prefix: Option<CheckedBatch>,
     ) -> Result<bool, crate::Error> {
         if prefix.is_some() && !self.pending() {
-            return Err("program registration already owns its prefix".into());
+            return Err(crate::InputFault::ProgramPrefixOwned.into());
         }
         if let Registration::Ready(batch) = &self.registration {
             if graph.batch_current(batch)? {
@@ -299,7 +302,7 @@ impl ProgramAdmission {
     ) -> Result<CheckedBatch, crate::Error> {
         self.current(graph)?;
         if !self.references_complete {
-            return Err("program dependency traversal incomplete".into());
+            return Err(crate::InputFault::ProgramDependencyIncomplete.into());
         }
         let checked = proof.proof()?;
         let growth = if graph.cold(
@@ -469,7 +472,7 @@ impl Graph {
         self.context_bytes = self
             .context_bytes
             .checked_add(program_context_bytes(proof.proof()?)?)
-            .ok_or("checked context byte overflow")?;
+            .ok_or(crate::InputFault::ReplayContextBytesOverflow)?;
         Ok(())
     }
 }
@@ -485,6 +488,6 @@ fn program_context_bytes(
         None => usize::try_from(proof.node_count()?)
             .ok()
             .and_then(|n| n.checked_mul(128))
-            .ok_or_else(|| "program formula graph width".into()),
+            .ok_or_else(|| crate::InputFault::ProgramFormulaGraphWidth.into()),
     }
 }

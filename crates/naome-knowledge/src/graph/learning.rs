@@ -47,7 +47,7 @@ impl Graph {
                     return Ok(true);
                 }
                 if !self.active.insert(id) {
-                    return Err("checked prerequisite cycle".into());
+                    return Err(crate::InputFault::LearningPrerequisiteCycle.into());
                 }
                 if self.active.len() + self.seen.len() >= crate::resources::limits().closure_objects
                 {
@@ -59,7 +59,7 @@ impl Graph {
                 self.bytes = self
                     .bytes
                     .checked_add(object.bytes.len())
-                    .ok_or("prerequisite closure byte overflow")?;
+                    .ok_or(crate::InputFault::LearningPrerequisiteBytes)?;
                 if self.bytes > crate::resources::limits().closure_bytes {
                     return Ok(false);
                 }
@@ -71,7 +71,7 @@ impl Graph {
                     self.bytes = self
                         .bytes
                         .checked_add(packet.retained_bytes())
-                        .ok_or("prerequisite packet width")?;
+                        .ok_or(crate::InputFault::LearningPrerequisitePacketWidth)?;
                     if self.bytes > crate::resources::limits().closure_bytes {
                         return Ok(false);
                     }
@@ -92,7 +92,7 @@ impl Graph {
             }
         }
         if required.len() > crate::learning::knowledge::CAPACITY {
-            return Err("required prerequisite capacity".into());
+            return Err(crate::InputFault::LearningPrerequisiteCapacity.into());
         }
         let mut capture = Capture {
             graph: self,
@@ -164,7 +164,7 @@ impl Graph {
                 .canonical_length()
                 .checked_mul(16)
                 .and_then(|n| n.checked_add(4096))
-                .ok_or("learning formula memory overflow")?,
+                .ok_or(crate::InputFault::LearningFormulaMemory)?,
         )?;
         let formula = self
             .cold(
@@ -172,7 +172,7 @@ impl Graph {
                     .proof_formula(header, header.canonical_length())
                     .map_err(crate::Error::from),
             )?
-            .ok_or("checked learning formula missing")?
+            .ok_or(crate::InputFault::LearningFormulaMissing)?
             .into_owned();
         Ok(naome_checker::question::ResearchQuestion::from_formula(formula).ok())
     }
@@ -189,18 +189,18 @@ impl Graph {
         }
         let object = self
             .binary_object(id)?
-            .ok_or("checked definition payload missing")?;
+            .ok_or(crate::InputFault::LearningDefinitionMissing)?;
         let Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, certificate)) =
             object.bytes.split_first()
         else {
-            return Err("checked definition payload type differs".into());
+            return Err(crate::InputFault::LearningDefinitionType.into());
         };
         if certificate.len() > crate::learning::definitions::BYTES {
             return Ok(None);
         }
         let obligation = if let Some(proof) = object.obligation {
             let Some(proof) = self.binary_object(proof.into())? else {
-                return Err("checked definition obligation missing".into());
+                return Err(crate::InputFault::LearningDefinitionObligation.into());
             };
             if !proof.dependencies.is_empty()
                 || proof.bytes.len() + certificate.len() > crate::learning::definitions::BYTES
@@ -257,9 +257,9 @@ impl Graph {
             while (commands.len() as u64) < manifest.commands {
                 let chunk = self
                     .program_chunk(id, commands.len() as u64, CHUNK_RECORDS, CHUNK_BYTES)?
-                    .ok_or("checked peer program missing")?;
+                    .ok_or(crate::InputFault::LearningPeerProgramMissing)?;
                 if chunk.records.is_empty() {
-                    return Err("checked peer program chunk is empty".into());
+                    return Err(crate::InputFault::LearningPeerProgramChunk.into());
                 }
                 commands.extend(chunk.records);
             }
@@ -286,14 +286,14 @@ impl Graph {
                 continue;
             }
             if !active.insert(id) {
-                return Err("checked peer program context cycle".into());
+                return Err(crate::InputFault::LearningPeerProgramCycle.into());
             }
             if active.len() + seen.len() >= limits.closure_objects {
                 return Ok(None);
             }
             let object = self
                 .binary_object(id)?
-                .ok_or("checked peer program operand missing")?;
+                .ok_or(crate::InputFault::LearningPeerOperandMissing)?;
             let (record, dependencies) = if let Some(dependency) =
                 crate::object::program_manifest(&object.bytes)?
             {
@@ -317,7 +317,7 @@ impl Graph {
             };
             bytes = bytes
                 .checked_add(record.len())
-                .ok_or("peer program context byte overflow")?;
+                .ok_or(crate::InputFault::LearningPeerContextBytes)?;
             if bytes > limits.closure_bytes {
                 return Ok(None);
             }
@@ -347,7 +347,7 @@ impl Graph {
                 id: ArtifactId,
             ) -> Result<Option<crate::learning::proof::Verified>, crate::Error> {
                 if !self.active.insert(id) {
-                    return Err("checked learning closure cycle".into());
+                    return Err(crate::InputFault::LearningClosureCycle.into());
                 }
                 self.seen.insert(id);
                 let limits = crate::resources::limits();
@@ -365,7 +365,7 @@ impl Graph {
                 self.bytes = self
                     .bytes
                     .checked_add(object.bytes.len())
-                    .ok_or("learning closure byte overflow")?;
+                    .ok_or(crate::InputFault::LearningClosureBytes)?;
                 if self.bytes > limits.closure_bytes {
                     return Ok(None);
                 }
@@ -397,7 +397,7 @@ impl Graph {
                     }
                 }
                 let certificate = naome_proof::ProofCertificate::from_canonical_bytes(payload)
-                    .map_err(|error| crate::Error::from(error.to_string()))?;
+                    .map_err(|error| crate::object::certificate_error(payload, error))?;
                 // This theorem is already accepted by the graph. A smaller
                 // learning snapshot can skip it without classifying it as corrupt.
                 if !crate::learning::definitions::fits(&definitions)
@@ -414,7 +414,7 @@ impl Graph {
                 let verified =
                     crate::learning::proof::verify_native(certificate, definitions, lemmas, None)?;
                 if ArtifactId::from(verified.native_id) != id {
-                    return Err("learning certificate identity differs".into());
+                    return Err(crate::InputFault::LearningCertificateIdentity.into());
                 }
                 self.active.remove(&id);
                 Ok(Some(verified))
