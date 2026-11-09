@@ -343,9 +343,12 @@ impl DefinedFormula {
             budget: ExpansionBudget::new(maximum_nodes),
         };
         let root = expansion.node(&self.0, None, 0, 0)?;
-        let formula = Formula::from_graph(root, |position| Ok(expansion.graph[position])).map_err(
-            |error| DefinitionExpansionError::Formula(DefinedFormulaCodecError::Graph(error)),
-        )?;
+        let formula = Formula::from_graph(root, |position| {
+            Ok::<_, std::convert::Infallible>(expansion.graph[position])
+        })
+        .map_err(|error| {
+            DefinitionExpansionError::Formula(DefinedFormulaCodecError::Graph(error))
+        })?;
         Ok((formula, expansion.budget.used))
     }
 
@@ -432,17 +435,61 @@ impl<'a> DefinitionResolution<'a> {
     }
 }
 
+/// A bounded storage failure, independent of platform error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextStorageFailure {
+    Sqlite(Option<i32>),
+    System(Option<i32>),
+    CacheLock,
+    IndexLock,
+    WriteGate,
+    OwnerUnavailable,
+    CopyRoute,
+    StartupGeneration,
+    StartupOwner,
+    IncompleteCopy,
+    ProgramRead,
+    Injected,
+}
+
+impl ContextStorageFailure {
+    /// Stable reason within the checked-context storage domain.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Sqlite(_) => 1,
+            Self::System(_) => 2,
+            Self::CacheLock => 3,
+            Self::IndexLock => 4,
+            Self::WriteGate => 5,
+            Self::OwnerUnavailable => 6,
+            Self::CopyRoute => 7,
+            Self::StartupGeneration => 8,
+            Self::StartupOwner => 9,
+            Self::IncompleteCopy => 10,
+            Self::ProgramRead => 11,
+            Self::Injected => 12,
+        }
+    }
+    /// Original operating-system or SQLite code when the adapter supplied one.
+    pub fn native_code(self) -> Option<i32> {
+        match self {
+            Self::Sqlite(code) | Self::System(code) => code,
+            _ => None,
+        }
+    }
+}
+
 /// Failure to read an already selected definition. This is not absence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefinitionAccessError {
-    Storage(String),
+    Storage(ContextStorageFailure),
     Corrupt,
     Limit,
 }
 impl fmt::Display for DefinitionAccessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Storage(message) => write!(f, "definition storage: {message}"),
+            Self::Storage(reason) => write!(f, "definition storage: {reason:?}"),
             Self::Corrupt => f.write_str("definition integrity failure"),
             Self::Limit => f.write_str("definition access limit"),
         }
@@ -1152,7 +1199,7 @@ pub enum DefinedFormulaCodecError {
     /// Conversion to or from the primitive Foundation codec failed.
     Primitive(FormulaCodecError),
     /// Materialization of a bounded primitive formula graph failed.
-    Graph(String),
+    Graph(naome_foundation::graph::MaterializationError<std::convert::Infallible>),
 }
 
 impl fmt::Display for DefinedFormulaCodecError {
@@ -1202,6 +1249,7 @@ impl Error for DefinedFormulaCodecError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Primitive(source) => Some(source),
+            Self::Graph(source) => Some(source),
             _ => None,
         }
     }

@@ -76,12 +76,19 @@ impl Store {
     }
     pub fn open(directory: &Path) -> Result<Self, crate::Error> {
         crate::storage::private_directory(directory)?;
-        let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+        let directory = fs::canonicalize(directory).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::ResolveParent, error)
+        })?;
         let directory = directory.as_path();
         let lock = crate::storage::LockFile::open(&directory.join("knowledge.lock"))
             .map_err(crate::Error::from)?;
-        lock.try_lock()
-            .map_err(|error| format!("knowledge directory already owned: {error}"))?;
+        lock.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => crate::InputFault::CatalogDirectoryOwned.into(),
+            std::fs::TryLockError::Error(error) => crate::error::storage_io_error(
+                crate::StorageIoOperation::AcquireDirectoryLock,
+                error,
+            ),
+        })?;
         let lock = DirectoryLock(lock);
         let database = directory.join(DATABASE_FILE);
         let receipt = directory.join(FORMAT_FILE);
@@ -90,7 +97,7 @@ impl Store {
         let catalog = if has_receipt {
             let id = read_format(&receipt)?;
             if !has_database {
-                return Err("activated proof catalog missing".into());
+                return Err(crate::InputFault::CatalogActivatedMissing.into());
             }
             Catalog::open(&database, id)?
         } else if has_database {
@@ -99,7 +106,7 @@ impl Store {
             let id = Catalog::inspect_identity(&database)?;
             let catalog = Catalog::open(&database, id)?;
             if catalog.active()? {
-                return Err("active proof catalog format receipt missing".into());
+                return Err(crate::InputFault::CatalogReceiptMissing.into());
             }
             write_format(directory, id)?;
             catalog
@@ -113,13 +120,17 @@ impl Store {
                 }
             };
             if catalog.active()? || catalog.summary()?.count != 0 {
-                return Err("unexpected accepted data in catalog initialization stage".into());
+                return Err(crate::InputFault::CatalogStageAcceptedData.into());
             }
             drop(catalog);
             File::open(&incoming)
                 .and_then(|file| file.sync_all())
-                .map_err(|error| error.to_string())?;
-            fs::rename(&incoming, &database).map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(crate::StorageIoOperation::SyncStage, error)
+                })?;
+            fs::rename(&incoming, &database).map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::Publish, error)
+            })?;
             sync_directory(directory)?;
             write_format(directory, id)?;
             Catalog::open(&database, id)?
@@ -130,7 +141,12 @@ impl Store {
             directory: directory.to_path_buf(),
             _lock: lock,
             database_generation: Mutex::new(crate::storage::FileGeneration::of(
-                &fs::symlink_metadata(&database).map_err(|e| e.to_string())?,
+                &fs::symlink_metadata(&database).map_err(|error| {
+                    crate::error::storage_io_error(
+                        crate::StorageIoOperation::InspectOwnedFile,
+                        error,
+                    )
+                })?,
             )),
             catalog: Mutex::new(catalog),
             #[cfg(test)]
@@ -145,19 +161,23 @@ impl Store {
         let expected = self
             .database_generation
             .lock()
-            .map_err(|_| "proof catalog generation poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogGenerationPoisoned)?;
         if crate::storage::FileGeneration::of(&current) != *expected {
-            return Err(crate::Error::CorruptStorage(
-                "proof catalog file changed outside its owned connection".into(),
-            ));
+            return Err(crate::Error::from(crate::InputFault::CatalogFileChanged).fatal_storage());
         }
         Ok(())
     }
     fn record_generation(&self) -> Result<(), crate::Error> {
-        let metadata = crate::storage::owned_file(&self.directory.join(DATABASE_FILE))
-            .map_err(crate::Error::UncertainDurability)?;
+        let metadata =
+            crate::storage::owned_file(&self.directory.join(DATABASE_FILE)).map_err(|_| {
+                crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+                    crate::DurabilityCode::CatalogGeneration,
+                ))
+            })?;
         *self.database_generation.lock().map_err(|_| {
-            crate::Error::UncertainDurability("proof catalog generation poisoned".into())
+            crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+                crate::DurabilityCode::CatalogGeneration,
+            ))
         })? = crate::storage::FileGeneration::of(&metadata);
         Ok(())
     }
@@ -166,7 +186,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.summary()
     }
@@ -177,7 +197,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.stored_count()
     }
@@ -190,7 +210,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.replay_page(after, limit)
     }
@@ -204,7 +224,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.ids_page(after, limit, expected)
     }
@@ -218,7 +238,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.peer_learning_page(after, limit, expected)
     }
@@ -231,7 +251,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.inventory_page(after, limit, expected)
     }
@@ -244,7 +264,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.get(id, expected)
     }
@@ -263,7 +283,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.contains(id, expected)
     }
@@ -276,7 +296,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         catalog.exchange_question(id, expected)
     }
@@ -311,7 +331,7 @@ impl Store {
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         #[cfg(test)]
         self.fail_replay(ReplayCut::BeforeActivation)?;
@@ -379,14 +399,14 @@ impl Store {
         let mut batch = Vec::new();
         for object in objects {
             if batch.len() >= crate::resources::limits().batch_objects {
-                return Err("catalog batch object count limit".into());
+                return Err(crate::InputFault::CatalogBatchCount.into());
             }
             batch.push(object);
         }
         let catalog = self
             .catalog
             .lock()
-            .map_err(|_| "proof catalog lock poisoned")?;
+            .map_err(|_| crate::InputFault::CatalogLockPoisoned)?;
         self.ensure_database()?;
         #[cfg(test)]
         let cut = *self.cut.lock().map_err(|_| "test cut lock poisoned")?;
@@ -410,9 +430,7 @@ impl Store {
         // rollback or ambiguous COMMIT. This grants no checked membership:
         // Graph remains halted on uncertain durability and replay is mandatory.
         match (result, self.record_generation()) {
-            (Err(primary), Err(generation)) => Err(crate::Error::UncertainDurability(format!(
-                "{primary}; generation observation failed: {generation}"
-            ))),
+            (Err(primary @ crate::Error::UncertainDurability(_)), Err(_)) => Err(primary),
             (_, Err(generation)) => Err(generation),
             (result, Ok(())) => result,
         }
@@ -459,16 +477,21 @@ fn catalog_leaf_exists(path: &Path) -> Result<bool, crate::Error> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("cannot inspect proof corpus leaf: {error}").into()),
+        Err(error) => {
+            return Err(crate::error::storage_io_error(
+                crate::StorageIoOperation::InspectOwnedFile,
+                error,
+            ));
+        }
     };
     if !metadata.is_file() {
-        return Err("proof corpus leaf must be a regular unaliased file".into());
+        return Err(crate::InputFault::CorpusLeafType.into());
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.nlink() != 1 {
-            return Err("proof corpus leaf has linked aliases".into());
+            return Err(crate::InputFault::CorpusLeafLinks.into());
         }
     }
     Ok(true)
@@ -482,7 +505,7 @@ fn new_identity(directory: &Path) -> Result<[u8; 32], crate::Error> {
     hash.update(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|error| error.to_string())?
+            .map_err(|_| crate::InputFault::CatalogClock)?
             .as_nanos()
             .to_be_bytes(),
     );
@@ -493,13 +516,15 @@ fn read_format(path: &Path) -> Result<[u8; 32], crate::Error> {
     receipt_file(path, false)?
         .take(73)
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::ReadInput, error)
+        })?;
     if bytes.len() != 72 || &bytes[..8] != FORMAT_MAGIC || bytes[8..40] != crate::compatibility() {
-        return Err("unsupported or corrupt proof corpus format receipt".into());
+        return Err(crate::InputFault::CorpusReceiptInvalid.into());
     }
     bytes[40..]
         .try_into()
-        .map_err(|_| "proof corpus format identity width".into())
+        .map_err(|_| crate::Error::from(crate::InputFault::CorpusReceiptWidth))
 }
 fn write_format(directory: &Path, id: [u8; 32]) -> Result<(), crate::Error> {
     let mut bytes = FORMAT_MAGIC.to_vec();
@@ -511,27 +536,37 @@ fn write_format(directory: &Path, id: [u8; 32]) -> Result<(), crate::Error> {
         receipt_file(&pending, false)?
             .take(73)
             .read_to_end(&mut previous)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::ReadInput, error)
+            })?;
         if previous.len() < bytes.len() && bytes.starts_with(&previous) {
             // Only a strictly identified inactive catalog reaches recovery.
             // A partial temporary receipt establishes no lineage or validity.
             let mut file = receipt_file(&pending, true)?;
-            file.set_len(0).map_err(|error| error.to_string())?;
+            file.set_len(0).map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::WriteMarker, error)
+            })?;
             file.write_all(&bytes)
                 .and_then(|_| file.sync_all())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(crate::StorageIoOperation::WriteMarker, error)
+                })?;
         } else if previous != bytes {
-            return Err("conflicting proof corpus format recovery receipt".into());
+            return Err(crate::InputFault::CorpusReceiptConflict.into());
         }
     } else {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&pending)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::CreateMarker, error)
+            })?;
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::WriteMarker, error)
+            })?;
     }
     // Previously complete bytes may have survived only in the page cache after
     // a failed sync. Every retry must synchronize them before publication.
@@ -539,16 +574,20 @@ fn write_format(directory: &Path, id: [u8; 32]) -> Result<(), crate::Error> {
     if FORMAT_SYNC_FAILURE.get() {
         return Err("injected format receipt sync failure".into());
     }
-    receipt_file(&pending, false)?
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    fs::rename(&pending, directory.join(FORMAT_FILE)).map_err(|error| error.to_string())?;
+    receipt_file(&pending, false)?.sync_all().map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::SyncMarker, error)
+    })?;
+    fs::rename(&pending, directory.join(FORMAT_FILE)).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::Publish, error)
+    })?;
     sync_directory(directory)
 }
 fn receipt_file(path: &Path, write: bool) -> Result<File, crate::Error> {
-    let before = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    let before = fs::symlink_metadata(path).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+    })?;
     if !before.is_file() {
-        return Err("proof corpus receipt must be a regular unaliased file".into());
+        return Err(crate::InputFault::CorpusReceiptType.into());
     }
     let mut options = OpenOptions::new();
     options.read(true).write(write);
@@ -556,21 +595,25 @@ fn receipt_file(path: &Path, write: bool) -> Result<File, crate::Error> {
     {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         if before.nlink() != 1 {
-            return Err("proof corpus receipt has linked aliases".into());
+            return Err(crate::InputFault::CorpusReceiptLinks.into());
         }
         options.custom_flags(nix::libc::O_NOFOLLOW);
     }
-    let file = options.open(path).map_err(|error| error.to_string())?;
+    let file = options.open(path).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::OpenInput, error)
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let opened = file.metadata().map_err(|error| error.to_string())?;
+        let opened = file.metadata().map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectInput, error)
+        })?;
         if !opened.is_file()
             || opened.nlink() != 1
             || opened.dev() != before.dev()
             || opened.ino() != before.ino()
         {
-            return Err("proof corpus receipt identity changed".into());
+            return Err(crate::InputFault::CorpusReceiptChanged.into());
         }
     }
     Ok(file)
@@ -579,26 +622,63 @@ fn sync_directory(directory: &Path) -> Result<(), crate::Error> {
     #[cfg(unix)]
     File::open(directory)
         .and_then(|file| file.sync_all())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::SyncParent, error)
+        })?;
     Ok(())
 }
 pub(crate) fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, crate::Error> {
-    let file = File::open(path).map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    let file = File::open(path).map_err(|error| {
+        bounded_file_error(
+            crate::RuntimeFailure::BoundedFileOpen,
+            crate::StorageIoOperation::OpenInput,
+            error,
+        )
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        bounded_file_error(
+            crate::RuntimeFailure::BoundedFileMetadata,
+            crate::StorageIoOperation::InspectInput,
+            error,
+        )
+    })?;
     if !metadata.is_file() {
-        return Err("non-regular file".into());
+        return Err(crate::Error::InputFault(
+            crate::InputFault::RegularFileRequired,
+        ));
     }
     if metadata.len() > maximum as u64 {
-        return Err("file byte limit".into());
+        return Err(crate::Error::InputLimit(
+            crate::InputLimit::BoundedFileBytes,
+        ));
     }
     let mut bytes = Vec::new();
     file.take(maximum as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            bounded_file_error(
+                crate::RuntimeFailure::BoundedFileRead,
+                crate::StorageIoOperation::ReadInput,
+                error,
+            )
+        })?;
     if bytes.len() > maximum {
-        return Err("file byte limit".into());
+        return Err(crate::Error::InputLimit(
+            crate::InputLimit::BoundedFileBytes,
+        ));
     }
     Ok(bytes)
+}
+
+fn bounded_file_error(
+    code: crate::RuntimeFailure,
+    operation: crate::StorageIoOperation,
+    error: std::io::Error,
+) -> crate::Error {
+    crate::Error::RuntimeContext {
+        code,
+        cause: Box::new(crate::error::storage_io_error(operation, error)),
+    }
 }
 
 #[cfg(test)]

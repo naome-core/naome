@@ -219,11 +219,9 @@ impl Frontier {
         let definitions = question.dependencies();
         if planned.is_empty() {
             let witness = |operand: &Formula| -> Result<Option<String>, crate::Error> {
-                let bytes = operand
-                    .encode_canonical()
-                    .map_err(|error| error.to_string())?;
+                let bytes = operand.encode_canonical()?;
                 let statement = StatementId::of_canonical_formula(&bytes)
-                    .ok_or("checked Finder operand statement width")?;
+                    .ok_or(crate::InputFault::FinderOperandStatementWidth)?;
                 Ok(graph
                     .checked_context()
                     .statement_header(statement)?
@@ -368,7 +366,7 @@ impl Frontier {
                 && !record.helpers.is_empty()
             {
                 for source in record.helpers {
-                    let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
+                    let helper = ResearchQuestion::from_hex(&source)?;
                     children.insert(*helper.resolution_id());
                 }
                 sources.push(goal.clone());
@@ -443,7 +441,7 @@ impl Frontier {
                     Vec::new()
                 };
                 for source in sources {
-                    let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
+                    let helper = ResearchQuestion::from_hex(&source)?;
                     if helper.formula().view().node_count_and_depth().0
                         >= nodes[index]
                             .question

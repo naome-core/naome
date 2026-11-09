@@ -80,7 +80,7 @@ fn deferred_neural_inference_preserves_scores_draws_and_invalid_input_errors() {
                         seed,
                         explore: true,
                     };
-                    assert_eq!(actual.scores(invalid).unwrap_err(), expected);
+                    assert_eq!(actual.scores(invalid).unwrap_err().to_string(), expected);
                     assert_eq!(actual.seed, expected_seed);
                 }
             }

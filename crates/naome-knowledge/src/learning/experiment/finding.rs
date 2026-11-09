@@ -236,7 +236,11 @@ struct Store {
     operations: u64,
 }
 impl ArtifactIo for Store {
-    fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(
+        &mut self,
+        blob: &Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, crate::Error> {
         let bytes = self.inner.read(blob, range)?;
         self.bytes += bytes.len() as u64;
         self.operations += 1;
@@ -247,7 +251,7 @@ impl ArtifactIo for Store {
         blob: &Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.bytes += bytes.len() as u64;
         self.operations += 1;
         self.inner.write(blob, range, bytes)
@@ -355,7 +359,7 @@ fn prepare(seed: u64, path: &Path) -> (State, MemoryStore, Vec<(String, Solution
         state.observe_result(
             &q.to_hex(),
             result.solution.is_some(),
-            &result.diagnostic,
+            &result.terminal,
             result.cost.generation_micros,
             SEARCH as u32,
         );
@@ -442,12 +446,12 @@ fn train(
     sources: &[Evidence],
 ) -> Value {
     if !state.needs_training() {
-        return json!({"status":"not_ready","selected_model":state.model});
+        return json!({"status":crate::outcome::ExperimentStatus::NotReady,"selected_model":state.model});
     }
     let mut observer = crate::resources::adaptive::Observer::default();
     let observed = observer.refresh(path).unwrap().clone();
     if observed.budget.paused.is_some() {
-        return json!({"status":"paused_by_resource_owner","resources":observed,"selected_model":state.model});
+        return json!({"status":crate::outcome::ExperimentStatus::ResourcePaused,"resources":observed,"selected_model":state.model});
     }
     state.attempted(state.learning_epoch());
     let cpu = meta::cpu_micros().unwrap();
@@ -474,14 +478,14 @@ fn train(
             if let Some(reason) = &observed.budget.paused {
                 complete = false;
                 stopped = Some(unit);
-                stopped_reason = Some(reason.clone());
+                stopped_reason = Some(u32::from(*reason));
                 break;
             }
         }
-        if let Err(error) = native.execute(unit, None, job, engine, io) {
+        if native.execute(unit, None, job, engine, io).is_err() {
             complete = false;
             stopped = Some(unit);
-            stopped_reason = Some(error);
+            stopped_reason = Some(u32::from(crate::outcome::OperationCode::ExecutionFailed));
             break;
         }
         retained(io, native.blobs());
@@ -501,7 +505,7 @@ fn train(
             "completed native trial must retain its actual selected state"
         );
     }
-    let result = json!({"status":if complete {"complete"} else if stopped_reason.is_some(){"interrupted"}else{"budget_exhausted"},"stopped_unit":stopped,"stopped_reason":stopped_reason,"qualified":qualified,"source_model":before,"selected_model":state.model,"cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":wall.elapsed().as_micros(),"model_io_bytes":io.bytes-bytes,"progress":native.progress});
+    let result = json!({"status":if complete {crate::outcome::ExperimentStatus::Complete} else if stopped_reason.is_some(){crate::outcome::ExperimentStatus::Interrupted}else{crate::outcome::ExperimentStatus::BudgetExhausted},"stopped_unit":stopped,"stopped_reason":stopped_reason,"qualified":qualified,"source_model":before,"selected_model":state.model,"cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":wall.elapsed().as_micros(),"model_io_bytes":io.bytes-bytes,"progress":native.progress});
     write(&path.join(format!("learning-{job}.json")), &result);
     retained(io, state.blobs().collect());
     result
@@ -576,7 +580,7 @@ fn arm(
                     &path.join("interrupted.json"),
                     &json!({"round":round,"reason":reason,"resources":observed,"cpu_micros":meta::cpu_micros().unwrap()-cpu,"wall_micros":start.elapsed().as_micros()}),
                 );
-                panic!("finder study paused by installed resource owner: {reason}");
+                panic!("finder study paused by installed resource owner: {reason:?}");
             }
         }
         let mut events = Vec::new();
@@ -671,7 +675,7 @@ fn arm(
             state.observe_result(
                 &q.to_hex(),
                 result.solution.is_some(),
-                &result.diagnostic,
+                &result.terminal,
                 label_micros,
                 SEARCH as u32,
             );
@@ -687,10 +691,12 @@ fn arm(
                 &sources,
             )
         } else {
-            json!({"status":"frozen_solver"})
+            json!({"status":crate::outcome::ExperimentStatus::FrozenSolver})
         };
         assert!(
-            !coupled || training["status"] == "complete" || training["status"] == "not_ready",
+            !coupled
+                || training["status"] == json!(crate::outcome::ExperimentStatus::Complete)
+                || training["status"] == json!(crate::outcome::ExperimentStatus::NotReady),
             "native learning stopped; preserve the partial study without qualification"
         );
         let after = evaluation(&state, &mut engine, &mut io, 910_000 + round as u64 * 100);
@@ -703,7 +709,7 @@ fn arm(
         write(&path.join("rounds.json"), &rows);
         eprintln!(
             "{}",
-            json!({"event":"finder_study_round","seed":seed,"arm":label(treatment),"round":round+1,"completed":completed,"solved":solved})
+            json!({"event":crate::outcome::NodeEvent::FinderStudyRound,"seed":seed,"arm":label(treatment),"round":round+1,"completed":completed,"solved":solved})
         );
     }
     if clock.is_some() {

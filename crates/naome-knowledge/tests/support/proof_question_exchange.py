@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite receiver-first selection evidence through real direct and relay links."""
+from fixture_result import FixtureResult
 import argparse
 from pathlib import Path
 import time
@@ -44,7 +45,7 @@ class QuestionDriver(DiscoveryDriver):
         for node in self.nodes:
             self.start_participant(node)
         for node in [spare, receiver]:
-            node.wait_event(lambda event: event.get("event") == "identified" and event.get("peer") == sender.identity, timeout=40)
+            node.wait_event(lambda event: event.get("event") == 0x0017001f and event.get("peer") == sender.identity, timeout=40)
         first = sender.command("produce", artifact=source(11))
         helper = sender.command("produce", artifact=source(7))
         child_source = cite_and_weaken(citation_id(helper["object"]), bytes.fromhex(question_fixture(7)), member_self())
@@ -53,7 +54,7 @@ class QuestionDriver(DiscoveryDriver):
         self.wait_set(receiver, expected)
         self.wait_set(spare, expected)
         assert len(stored_objects(receiver)) == 3
-        responses = [event for event in receiver.events if event.get("event") == "exchange_response" and event.get("kind") == "object"]
+        responses = [event for event in receiver.events if event.get("event") == 0x00170013 and event.get("kind") == 0x1a0008]
         assert responses
         assert all(event["relayed"] is (self.mode == "relay") for event in responses)
         # Duplicate announcements cannot create another admission or proof fetch.
@@ -63,17 +64,17 @@ class QuestionDriver(DiscoveryDriver):
         sender.command("offer", peer=receiver.identity, id=first["object"]["artifact_id"])
         self.wait_set(receiver, expected)
         time.sleep(1)
-        assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get"
+        assert not any(event.get("event") == 0x00170012 and event.get("kind") == 0x1a0005
                        and event.get("peer") == receiver.identity and event.get("object_id") == first["object"]["artifact_id"]
                        for event in sender.events[offset:])
         self.summary["scenarios"]["automatic_receiver_selection_and_parent_closure"] = {
-            "result": "pass", "selected_ids": sorted(expected), "object_responses": responses,
+            "result": FixtureResult.PASS, "selected_ids": sorted(expected), "object_responses": responses,
             "duplicate_root_fetch_count": 0}
         receiver.stop()
         self.start_participant(receiver)
         self.wait_set(receiver, expected)
         assert len(stored_objects(receiver)) == 3
-        self.summary["scenarios"]["automatic_selection_restart"] = {"result": "pass", "ids": sorted(expected)}
+        self.summary["scenarios"]["automatic_selection_restart"] = {"result": FixtureResult.PASS, "ids": sorted(expected)}
         # An unrelated description must never establish the actual solution.
         # A second supplier remains eligible after the false one is declined.
         receiver.stop()
@@ -89,30 +90,30 @@ class QuestionDriver(DiscoveryDriver):
         bad_offset, good_offset = len(bad.events), len(good.events)
         receiver_offset = len(receiver.events)
         self.start_participant(receiver)
-        receiver.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == actual["artifact_id"], since=receiver_offset)
+        receiver.wait_event(lambda event: event.get("event") == 0x00170047 and event.get("id") == actual["artifact_id"], since=receiver_offset)
         assert set(receiver.ids()) == set(expected)
         self.start_participant(good)
         expected.append(actual["artifact_id"])
         self.wait_set(receiver, expected)
-        good_gets = [event for event in good.events[good_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "get"
+        good_gets = [event for event in good.events[good_offset:] if event.get("event") == 0x00170012 and event.get("kind") == 0x1a0005
                      and event.get("peer") == receiver.identity and event.get("object_id") == actual["artifact_id"]]
         assert good_gets and len(stored_objects(receiver)) == 4
         self.summary["scenarios"]["false_description_preserves_correct_supplier_rotation"] = {
-            "result": "pass", "artifact_id": actual["artifact_id"], "bad_supplier": bad.identity,
+            "result": FixtureResult.PASS, "artifact_id": actual["artifact_id"], "bad_supplier": bad.identity,
             "good_supplier": good.identity, "good_gets": good_gets}
         if self.mode == "direct":
             sender.command("links", peers=[])
             result = sender.command("produce", artifact=quantified_reflexivity(34))
-            assert result["result"]["status"] == "accepted" and result["metadata"] is None, result
+            assert result["result"]["status"] == 0x0016_0001 and result["metadata"] is None, result
             error = result["metadata_error"]
-            assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
-            assert error["message"] == "question limit exceeded: question target depth", error
+            assert error["code"] == 0x0006_000D, error
+            assert error["limit"] == 2, error
             assert error["retryable"] is False and error["fatal"] is False, error
             assert result["object"]["artifact_id"] in sender.ids()
-            self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["artifact_id"], "metadata_error": error}
+            self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": FixtureResult.PASS, "accepted_id": result["object"]["artifact_id"], "metadata_error": error}
         self.assert_caps()
         self.summary["accepted_ids"] = sorted(expected)
-        self.summary["result"] = "pass"
+        self.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -127,13 +128,13 @@ def main():
     try:
         driver.run_questions()
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
         driver.summary["traceback"] = traceback.format_exc()
         print(driver.summary["traceback"], flush=True)
     finally:
         driver.finish()
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

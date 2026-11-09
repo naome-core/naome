@@ -7,7 +7,7 @@ impl Disk {
     pub(in crate::jobs) fn replay_evidence(
         &self,
         state: &crate::learning::State,
-    ) -> Result<Vec<crate::learning::Evidence>, String> {
+    ) -> Result<Vec<crate::learning::Evidence>, crate::Error> {
         let mut result = std::collections::BTreeMap::new();
         for example in state
             .training_sources()
@@ -20,14 +20,14 @@ impl Disk {
                     &example.job.to_string(),
                     crate::checkpoint::MAX_ROW,
                 )?
-                .ok_or("peer replay source job absent")?;
+                .ok_or(crate::ResearchFailure::ReplaySourceJobMissing)?;
             validation::validate_source(&self.checkpoint, example, &source)?;
             let Some(Output::Native {
                 solution: Some(solution),
                 ..
             }) = source.result
             else {
-                return Err("checked replay source solution missing".into());
+                return Err(crate::ResearchFailure::ReplaySourceSolutionMissing.into());
             };
             let trace = solution.tree;
             result.insert(
@@ -45,30 +45,29 @@ impl Disk {
         &mut self,
         journal: &mut Journal,
         admission: PeerAdmission,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if admission.ordinal == 0 {
-            return Err("peer learning ordinal is zero".into());
+            return Err(crate::ResearchFailure::PeerOrdinalZero.into());
         }
         crate::object::id_bytes(&admission.artifact)?;
         admission.binding.validate()?;
         let peer: libp2p::PeerId = admission
             .peer
             .parse()
-            .map_err(|_| "peer learning source syntax")?;
+            .map_err(|_| crate::ResearchFailure::PeerSyntax)?;
         if peer.to_string() != admission.peer {
-            return Err("peer learning source encoding".into());
+            return Err(crate::ResearchFailure::PeerEncoding.into());
         }
         if let Some(evidence) = &admission.evidence {
             evidence.validate_width()?;
         }
         if let Some(question) = &admission.question {
-            naome_checker::question::ResearchQuestion::from_hex(question)
-                .map_err(|e| e.to_string())?;
+            naome_checker::question::ResearchQuestion::from_hex(question)?;
         }
         let learning = journal
             .learning
             .as_mut()
-            .ok_or("peer learning owner is disabled")?;
+            .ok_or(crate::ResearchFailure::PeerOwnerDisabled)?;
         if let Some(packet) = admission
             .evidence
             .as_ref()
@@ -89,7 +88,7 @@ impl Disk {
                 &admission.artifact,
                 packet,
             )? {
-                return Err("theorem observation artifact differs".into());
+                return Err(crate::ResearchFailure::PeerArtifactMismatch.into());
             }
             learning.remember_theorem(entry)?;
         }
@@ -119,9 +118,9 @@ impl Disk {
             )?);
         }
         learning.peer_cursor = learning.peer_cursor.max(admission.ordinal);
-        self.save_with(journal, updates).map_err(String::from)
+        self.save_with(journal, updates)
     }
-    pub(in crate::jobs) fn pending_peer(&self) -> Result<Option<PeerAdmission>, String> {
+    pub(in crate::jobs) fn pending_peer(&self) -> Result<Option<PeerAdmission>, crate::Error> {
         let mut rows = self.checkpoint.page(
             "peer_pending",
             None,
@@ -133,7 +132,7 @@ impl Disk {
         };
         let admission: PeerAdmission = crate::checkpoint::decode(&payload)?;
         if key != format!("{:020}", admission.ordinal) {
-            return Err("peer learning queue ordinal differs".into());
+            return Err(crate::ResearchFailure::PeerQueueOrdinalMismatch.into());
         }
         Ok(Some(admission))
     }
@@ -142,7 +141,7 @@ impl Disk {
         journal: &mut Journal,
         admission: &PeerAdmission,
         status: PeerStatus,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let receipt = PeerReceipt {
             admission: admission.clone(),
             status,
@@ -157,17 +156,16 @@ impl Disk {
                 },
             ],
         )
-        .map_err(String::from)
     }
     pub(in crate::jobs) fn finish_peer(
         &self,
         journal: &mut Journal,
         id: u64,
-    ) -> Result<Vec<crate::checkpoint::Update>, String> {
+    ) -> Result<Vec<crate::checkpoint::Update>, crate::Error> {
         let record = journal
             .records
             .get(&id)
-            .ok_or("peer conversion job missing")?;
+            .ok_or(crate::ResearchFailure::PeerConversionJobMissing)?;
         let Input::Peer {
             question,
             artifact,
@@ -184,7 +182,7 @@ impl Disk {
                 artifact,
                 crate::resources::limits().closure_bytes,
             )?
-            .ok_or("peer conversion admission receipt missing")?;
+            .ok_or(crate::ResearchFailure::PeerConversionReceiptMissing)?;
         if matches!(
             receipt.status,
             PeerStatus::Learned { .. } | PeerStatus::Unsupported { .. }
@@ -195,24 +193,18 @@ impl Disk {
             || receipt.admission.question.as_ref() != Some(question)
             || receipt.admission.evidence.as_ref() != Some(evidence)
         {
-            return Err("peer conversion origin differs".into());
+            return Err(crate::ResearchFailure::PeerConversionOriginMismatch.into());
         }
         let mut sample = None;
         let mut seen = None;
         let mut status = PeerStatus::Unsupported {
             reason: record
                 .failure
-                .clone()
-                .unwrap_or_else(|| "native reconstruction unavailable".into()),
+                .unwrap_or(crate::outcome::WorkerFailure::ReplayUnavailable.into()),
         };
-        if let Some(Output::Native {
-            solution,
-            diagnostic,
-            ..
-        }) = &record.result
-        {
+        if let Some(Output::Native { solution, .. }) = &record.result {
             status = PeerStatus::Unsupported {
-                reason: diagnostic.clone(),
+                reason: crate::outcome::WorkerFailure::NoReplayCandidate.into(),
             };
             if let Some(solution) = solution
                 && !solution.refuted
@@ -233,9 +225,8 @@ impl Disk {
                 let learning = journal
                     .learning
                     .as_mut()
-                    .ok_or("peer learning state missing")?;
-                let q = naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .ok_or(crate::ResearchFailure::PeerLearningStateMissing)?;
+                let q = naome_checker::question::ResearchQuestion::from_hex(question)?;
                 let key = crate::hex(q.resolution_id());
                 let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
                 let unseen = self
@@ -259,13 +250,13 @@ impl Disk {
                     };
                 } else {
                     status = PeerStatus::Unsupported {
-                        reason: "duplicate or no supported ambiguous decisions".into(),
+                        reason: crate::outcome::WorkerFailure::ReplayNotSelected.into(),
                     };
                 }
             }
         }
         crate::network::emit(
-            serde_json::json!({"event":"native_peer_replay","artifact":artifact,"peer":peer,"conversion_job":id,"status":status}),
+            serde_json::json!({"event":crate::outcome::NodeEvent::NativePeerReplay,"artifact":artifact,"peer":peer,"conversion_job":id,"status":status}),
         );
         receipt.status = status;
         let mut updates = vec![
@@ -292,53 +283,57 @@ impl Disk {
         let record = journal
             .records
             .get_mut(&id)
-            .ok_or("native model original job missing")?;
+            .ok_or(crate::ResearchFailure::NativeModelOriginalJobMissing)?;
         if record.state != State::Running
             || unit != record.checkpoint + 1
             || unit > record.reserved_units
             || record.provider != crate::learning::PROVIDER
         {
-            return Err("native model IO lacks original reservation".into());
+            return Err(crate::ResearchFailure::NativeModelIoLacksOriginalReservation.into());
         }
         let previous_native = record.native.clone();
         let native = record
             .native
             .as_mut()
-            .ok_or("native model original snapshot missing")?;
+            .ok_or(crate::ResearchFailure::NativeModelOriginalSnapshotMissing)?;
         let reading = bytes.is_none();
         if !reading && !native.training {
-            return Err("native checkpoint writes require the reserved training role".into());
+            return Err(
+                crate::ResearchFailure::NativeCheckpointWritesRequireTheReservedTrainingRole.into(),
+            );
         }
         if reading && !native.allows_read(blob) {
-            return Err("native model read outside immutable owned snapshots".into());
+            return Err(
+                crate::ResearchFailure::NativeModelReadOutsideImmutableOwnedSnapshots.into(),
+            );
         }
         let count = native
             .io_bytes
             .checked_add(length)
-            .ok_or("native model IO overflow")?;
+            .ok_or(crate::ResearchFailure::NativeModelIoOverflow)?;
         let operations = native
             .io_operations
             .checked_add(range.len())
-            .ok_or("native model IO operations overflow")?;
+            .ok_or(crate::ResearchFailure::NativeModelIoOperationsOverflow)?;
         if count > crate::resources::limits().native_model_io_bytes
             || operations
                 > crate::resources::limits().native_model_io_bytes
                     / crate::resources::limits().native_model_chunk_bytes
                     * 2
         {
-            return Err("native model lifetime IO allowance exhausted".into());
+            return Err(crate::ResearchFailure::NativeModelLifetimeIoAllowanceExhausted.into());
         }
         let mut updates = Vec::new();
         let output = if let Some(bytes) = bytes {
             if bytes.len() != length {
-                return Err("native model chunk length differs".into());
+                return Err(crate::ResearchFailure::NativeModelChunkLengthDiffers.into());
             }
             let new = !native
                 .written
                 .iter()
                 .any(|(owner, known)| *owner == unit && known == blob);
             if new && native.written.len() >= 2 * (crate::learning::TRAINING_UNITS as usize + 2) {
-                return Err("native model artifact count exhausted".into());
+                return Err(crate::ResearchFailure::NativeModelArtifactCountExhausted.into());
             }
             for (index, part) in
                 range.zip(bytes.chunks(crate::resources::limits().native_model_chunk_bytes))
@@ -350,7 +345,7 @@ impl Disk {
                     crate::resources::limits().native_model_chunk_bytes,
                 )? {
                     if previous != part {
-                        return Err("native model immutable chunk differs".into());
+                        return Err(crate::ResearchFailure::NativeModelImmutableChunkDiffers.into());
                     }
                 } else {
                     updates.push(crate::checkpoint::Update::Put {
@@ -374,16 +369,18 @@ impl Disk {
                         &blob.key(index),
                         crate::resources::limits().native_model_chunk_bytes,
                     )?
-                    .ok_or("native model chunk missing")?;
+                    .ok_or(crate::ResearchFailure::NativeModelChunkMissing)?;
                 if part.len() != blob.chunk_len(index)? {
-                    return Err("native model retained chunk length differs".into());
+                    return Err(
+                        crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into(),
+                    );
                 }
                 bytes.extend_from_slice(&part);
             }
             bytes
         };
         if reading && output.len() != length {
-            return Err("native model retained chunk length differs".into());
+            return Err(crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into());
         }
         native.io_bytes = count;
         native.io_operations = operations;
@@ -399,9 +396,12 @@ impl Disk {
         }
         Ok(output)
     }
-    pub(super) fn verify_blob(&mut self, blob: &crate::learning::Blob) -> Result<(), String> {
+    pub(in crate::jobs) fn verify_blob(
+        &mut self,
+        blob: &crate::learning::Blob,
+    ) -> Result<(), crate::Error> {
         blob.validate()?;
-        if self.verified_models.contains(&blob.sha256) {
+        if self.verified_models.contains(blob) {
             return Ok(());
         }
         let mut digest = Sha256::new();
@@ -413,25 +413,37 @@ impl Disk {
                     &blob.key(index),
                     crate::resources::limits().native_model_chunk_bytes,
                 )?
-                .ok_or("native model checkpoint chunk missing")?;
-            if bytes.len() != blob.chunk_len(index)? {
-                return Err("native model checkpoint length differs".into());
+                .ok_or(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::ModelChunkMissing,
+                    index,
+                })?;
+            let expected = blob.chunk_len(index)?;
+            if bytes.len() != expected {
+                return Err(crate::Error::ResearchMismatch {
+                    code: crate::ResearchFailure::ModelChunkLength,
+                    expected: expected as u64,
+                    actual: bytes.len() as u64,
+                });
             }
             digest.update(&bytes);
         }
-        if crate::hex(&digest.finalize()) != blob.sha256 {
-            return Err("native model checkpoint content differs".into());
+        let actual: [u8; 32] = digest.finalize().into();
+        let expected = crate::object::id_bytes(&blob.sha256)?;
+        if actual != expected {
+            return Err(crate::Error::ModelDigestMismatch(Box::new(
+                crate::ModelDigestMismatch { expected, actual },
+            )));
         }
         if self.verified_models.len() >= 64 {
             self.verified_models.pop_first();
         }
-        self.verified_models.insert(blob.sha256.clone());
+        self.verified_models.insert(blob.clone());
         Ok(())
     }
     pub(in crate::jobs) fn verify_models(
         &mut self,
         native: &crate::learning::Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         for blob in native.blobs() {
             let inherited = native.base.blobs().any(|known| known == blob)
                 || native.history.as_ref().is_some_and(|receipt| {
@@ -446,7 +458,7 @@ impl Disk {
                     *unit <= native.progress.as_ref().map_or(0, |p| p.unit) && known == blob
                 })
             {
-                return Err("native model checkpoint lacks an owned artifact receipt".into());
+                return Err(crate::ResearchFailure::ModelReceiptMissing.into());
             }
             self.verify_blob(blob)?;
         }
@@ -476,7 +488,7 @@ impl Disk {
         updates: &mut Vec<crate::checkpoint::Update>,
         owner: &str,
         mut refs: Vec<crate::learning::Blob>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         refs.sort();
         refs.dedup();
         let old = self
@@ -534,7 +546,7 @@ impl Disk {
         let blob: crate::learning::Blob = crate::checkpoint::decode(&payload)?;
         blob.validate()?;
         if blob.sha256 != hash {
-            return Err("native model reclamation identity differs".into());
+            return Err(crate::ResearchFailure::ModelReclamationIdentity.into());
         }
         let uses = self
             .checkpoint
@@ -553,7 +565,7 @@ impl Disk {
                     key: blob.key(index),
                 });
             }
-            self.verified_models.remove(&hash);
+            self.verified_models.retain(|known| known.sha256 != hash);
         }
         self.save_with(journal, updates)
     }
@@ -562,7 +574,7 @@ impl Disk {
         journal: &mut Journal,
         id: u64,
         root: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         crate::object::id_bytes(root)?;
         if let Some(previous) = self
             .checkpoint
@@ -571,7 +583,7 @@ impl Disk {
             return if previous == root {
                 Ok(())
             } else {
-                Err("owned learning receipt differs".into())
+                Err(crate::ResearchFailure::LearningReceiptMismatch.into())
             };
         }
         let mut record = journal
@@ -581,9 +593,9 @@ impl Disk {
             .or(self
                 .checkpoint
                 .get("record", &id.to_string(), crate::checkpoint::MAX_ROW)?)
-            .ok_or("owned learning result missing")?;
+            .ok_or(crate::ResearchFailure::LearningResultMissing)?;
         if record.state != State::Complete {
-            return Err("learning result is not complete".into());
+            return Err(crate::ResearchFailure::LearningResultIncomplete.into());
         }
         let Some(Output::Native {
             solution: Some(solution),
@@ -594,13 +606,12 @@ impl Disk {
             return Ok(());
         };
         let Input::Solve { question } = &record.input else {
-            return Err("learning source role differs".into());
+            return Err(crate::ResearchFailure::LearningSourceRole.into());
         };
-        let target = naome_checker::question::ResearchQuestion::from_hex(question)
-            .map_err(|error| error.to_string())?;
+        let target = naome_checker::question::ResearchQuestion::from_hex(question)?;
         let program = crate::learning::program::Candidate::from_solution(solution, &target)?;
         if crate::hex(program.manifest.artifact_id().as_bytes()) != root {
-            return Err("accepted native program identity differs".into());
+            return Err(crate::ResearchFailure::LearningProgramIdentity.into());
         }
         solution.check_target(&target)?;
         let example = crate::learning::Example {
@@ -614,21 +625,15 @@ impl Disk {
         let mut learning = journal
             .learning
             .clone()
-            .ok_or("native learning owner state absent")?;
-        let key = crate::hex(
-            naome_checker::question::ResearchQuestion::from_hex(question)
-                .map_err(|e| e.to_string())?
-                .resolution_id(),
-        );
+            .ok_or(crate::ResearchFailure::LearningOwnerMissing)?;
+        let key = crate::hex(target.resolution_id());
         let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
         let unseen = self
             .checkpoint
             .get::<u64>("replay_seen", &solution.proof_id, 64)?
             .is_none();
         let sampled = unseen && learning.consider(example, unique)?;
-        let question = naome_checker::question::ResearchQuestion::from_hex(question)
-            .map_err(|e| e.to_string())?;
-        if let Some(theorem) = solution.theorem(&question)? {
+        if let Some(theorem) = solution.theorem(&target)? {
             learning.remember_theorem(theorem)?;
         }
         learning.compact()?;

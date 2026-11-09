@@ -30,42 +30,43 @@ pub(crate) struct IndexStorage {
     path: PathBuf,
     identity: (u64, u64),
     version: i64,
-    error: Mutex<Option<String>>,
+    error: Mutex<Option<ContextError>>,
     _lease: Arc<IndexLease>,
     label: String,
     mirror: Mutex<Option<Arc<Self>>>,
 }
 impl IndexStorage {
-    pub(crate) fn open(directory: &Path, label: &str) -> Result<Arc<Self>, String> {
+    pub(crate) fn open(directory: &Path, label: &str) -> Result<Arc<Self>, crate::Error> {
         let root = crate::storage::research_directory(directory)?;
         let lease_path = root.join(format!(".disposable-{label}.lock"));
-        let lease = crate::storage::LockFile::open(&lease_path).map_err(|e| e.to_string())?;
-        lease
-            .try_lock()
-            .map_err(|_| "local question index is already owned")?;
+        let lease = crate::storage::LockFile::open(&lease_path)?;
+        lease.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => crate::InputFault::DisposableIndexOwned.into(),
+            std::fs::TryLockError::Error(error) => crate::Error::from(error),
+        })?;
         let prefix = format!(".disposable-{label}-");
-        for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
             if entry
                 .file_name()
                 .to_str()
                 .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".sqlite3"))
                 && disposable(&entry.path())?
             {
-                fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+                fs::remove_file(entry.path())?;
             }
         }
         Self::fresh(&root, label, Arc::new(IndexLease(lease)))
     }
-    fn fresh(root: &Path, label: &str, lease: Arc<IndexLease>) -> Result<Arc<Self>, String> {
+    fn fresh(root: &Path, label: &str, lease: Arc<IndexLease>) -> Result<Arc<Self>, crate::Error> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let prefix = format!(".disposable-{label}-");
         let sequence = NEXT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| "disposable index sequence exhausted")?;
+            .map_err(|_| crate::InputFault::DisposableIndexSequence)?;
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| crate::InputFault::DisposableIndexClock)?
             .as_nanos();
         let path = root.join(format!(
             "{prefix}{}-{nonce}-{sequence}.sqlite3",
@@ -76,9 +77,8 @@ impl IndexStorage {
             .write(true)
             .mode(0o600)
             .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-        let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
+            .open(&path)?;
+        let path = fs::canonicalize(path)?;
         let identity = owned(&path)?;
         let connection = Connection::open_with_flags(
             &path,
@@ -86,22 +86,22 @@ impl IndexStorage {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
-        .map_err(|e| e.to_string())?;
-        connection.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32), payload BLOB NOT NULL) STRICT, WITHOUT ROWID;").map_err(|e|e.to_string())?;
+        .map_err(sql)?;
+        connection.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32), payload BLOB NOT NULL) STRICT, WITHOUT ROWID;").map_err(sql)?;
         connection
             .pragma_update(None, "application_id", APPLICATION_ID)
-            .map_err(|e| e.to_string())?;
+            .map_err(sql)?;
         connection
             .pragma_update(None, "user_version", 1)
-            .map_err(|e| e.to_string())?;
+            .map_err(sql)?;
         crate::storage::sqlite_common(
             &connection,
             crate::resources::active_limits().registry_index_cache_bytes,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(sql)?;
         let version = connection
             .pragma_query_value(None, "data_version", |r| r.get(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(sql)?;
         Ok(Arc::new(Self {
             connection: Mutex::new(Some(connection)),
             path,
@@ -116,21 +116,26 @@ impl IndexStorage {
     pub(crate) fn directory(&self) -> &Path {
         self.path.parent().expect("index parent")
     }
-    pub(crate) fn successor(&self) -> Result<Arc<Self>, String> {
+    pub(crate) fn successor(&self) -> Result<Arc<Self>, crate::Error> {
         Self::fresh(
-            self.path.parent().ok_or("index directory missing")?,
+            self.path
+                .parent()
+                .ok_or(crate::InputFault::DisposableIndexParent)?,
             &self.label,
             self._lease.clone(),
         )
     }
-    pub(crate) fn mirror_to(&self, target: Arc<Self>) -> Result<(), String> {
+    pub(crate) fn mirror_to(&self, target: Arc<Self>) -> Result<(), crate::Error> {
         let _connection = self
             .connection
             .lock()
-            .map_err(|_| "index connection poisoned")?;
-        let mut mirror = self.mirror.lock().map_err(|_| "index mirror poisoned")?;
+            .map_err(|_| crate::InputFault::DisposableIndexConnectionPoisoned)?;
+        let mut mirror = self
+            .mirror
+            .lock()
+            .map_err(|_| crate::InputFault::DisposableIndexMirrorPoisoned)?;
         if mirror.is_some() {
-            return Err("index copy already active".into());
+            return Err(crate::InputFault::DisposableIndexMirrorActive.into());
         }
         *mirror = Some(target);
         Ok(())
@@ -144,25 +149,27 @@ impl IndexStorage {
             *mirror = None;
         }
     }
-    pub(crate) fn allocated_bytes(&self) -> Result<usize, String> {
+    pub(crate) fn allocated_bytes(&self) -> Result<usize, crate::Error> {
         let connection = self
             .connection
             .lock()
-            .map_err(|_| "index connection poisoned")?;
-        let connection = connection.as_ref().ok_or("index connection closed")?;
-        self.live(connection).map_err(|e| e.to_string())?;
+            .map_err(|_| crate::InputFault::DisposableIndexConnectionPoisoned)?;
+        let connection = connection
+            .as_ref()
+            .ok_or(crate::InputFault::DisposableIndexClosed)?;
+        self.live(connection)?;
         let pages: i64 = connection
             .pragma_query_value(None, "page_count", |row| row.get(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(sql)?;
         let size: i64 = connection
             .pragma_query_value(None, "page_size", |row| row.get(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(sql)?;
         pages
             .checked_mul(size)
             .and_then(|n| usize::try_from(n).ok())
-            .ok_or("index allocated size overflow".into())
+            .ok_or(crate::InputFault::DisposableIndexSize.into())
     }
-    pub(crate) fn error(&self) -> Option<String> {
+    pub(crate) fn error(&self) -> Option<ContextError> {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn live(&self, connection: &Connection) -> Result<(), ContextError> {
@@ -172,9 +179,12 @@ impl IndexStorage {
         )
         .map_err(sql)?;
         if let Some(error) = self.error() {
-            return Err(ContextError::Storage(error));
+            return Err(error);
         }
-        if owned(&self.path).map_err(ContextError::Storage)? != self.identity {
+        if owned(&self.path).map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })? != self.identity
+        {
             return Err(ContextError::Corrupt);
         }
         let version: i64 = connection
@@ -253,7 +263,7 @@ impl ContextStorage for IndexStorage {
     }
     fn record_failure(&self, error: &ContextError) {
         if !matches!(error, ContextError::Limit) {
-            *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
         }
     }
 }
@@ -270,38 +280,40 @@ impl Drop for IndexStorage {
 }
 // Read only a fixed SQLite header. An unrelated or incomplete file is left
 // untouched and cannot block a fresh uniquely named disposable generation.
-fn disposable(path: &Path) -> Result<bool, String> {
+fn disposable(path: &Path) -> Result<bool, crate::Error> {
     let identity = owned(path)?;
     let mut file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
+        .open(path)?;
+    let metadata = file.metadata()?;
     if (metadata.dev(), metadata.ino()) != identity {
-        return Err("disposable index changed before inspection".into());
+        return Err(crate::InputFault::DisposableIndexChanged.into());
     }
     let mut header = [0; 100];
     match file.read_exact(&mut header) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(error.into()),
     }
     let managed = &header[..16] == b"SQLite format 3\0"
         && header[60..64] == 1u32.to_be_bytes()
         && header[68..72] == APPLICATION_ID.to_be_bytes();
     if owned(path)? != identity {
-        return Err("disposable index changed during inspection".into());
+        return Err(crate::InputFault::DisposableIndexChanged.into());
     }
     Ok(managed)
 }
 
-fn owned(path: &Path) -> Result<(u64, u64), String> {
+fn owned(path: &Path) -> Result<(u64, u64), crate::Error> {
     let metadata = crate::storage::owned_file(path)?;
     Ok((metadata.dev(), metadata.ino()))
 }
 fn sql(error: rusqlite::Error) -> ContextError {
-    ContextError::Storage(error.to_string())
+    ContextError::Storage(naome_proof::ContextStorageFailure::Sqlite(match error {
+        rusqlite::Error::SqliteFailure(failure, _) => Some(failure.extended_code),
+        _ => None,
+    }))
 }
 
 #[cfg(test)]

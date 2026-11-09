@@ -37,7 +37,7 @@ fn switches_on_a_checked_native_prefix_with_the_same_grant() {
     let fixed = perform(Arm::Fixed(FixedOrder::Native), "fixed");
     let prefix = matched_prefix(&learned, &switched, protocol.switch_after).unwrap();
     let native = engine
-        .with(&checkpoint, &mut store, |runtime| {
+        .with_error(&checkpoint, &mut store, |runtime| {
             search::solve(
                 question.proved_target(),
                 &mut Exploring {

@@ -1,6 +1,6 @@
 //! Checker-owned incremental evaluation against an owner-provided connection.
 //! Reopening reconstructs trust by replay; persisted flags grant no validity.
-use super::{self as checker, Error, Value};
+use super::{self as checker, Error, ProgramFault, Value};
 use crate::{ArtifactState, ContextView, context::ProgramSource};
 use naome_foundation::{
     Formula, FreeVariable,
@@ -18,7 +18,7 @@ fn sql<T>(value: rusqlite::Result<T>) -> Result<T, Error> {
     value.map_err(Error::Storage)
 }
 fn number(n: u64) -> Result<i64, Error> {
-    i64::try_from(n).map_err(|_| "physical storage address exhausted".into())
+    i64::try_from(n).map_err(|_| ProgramFault::PhysicalAddress.into())
 }
 fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
@@ -162,7 +162,7 @@ impl CheckedProgram {
             .engine
             .finalization
             .as_ref()
-            .ok_or("program export incomplete")?
+            .ok_or(ProgramFault::IncompleteExport)?
             .reachable)
     }
     /// Ascending replay-authenticated nodes of the conclusion's reachable DAG.
@@ -349,7 +349,7 @@ impl Engine {
                     unsigned(row, 0)
                 }))?;
         if start > commands {
-            return Err("program cursor exceeds input".into());
+            return Err(ProgramFault::CursorOutOfRange.into());
         }
         let previous = if start == 0 {
             [0; 32]
@@ -359,7 +359,9 @@ impl Engine {
                 [number(start - 1)?],
                 |row| row.get(0),
             ))?;
-            bytes.try_into().map_err(|_| "program prefix hash width")?
+            bytes
+                .try_into()
+                .map_err(|_| ProgramFault::PrefixHashWidth)?
         };
         let mut statement=sql(self.connection.prepare_cached("SELECT position,substr(command,1,4097),substr(hash,1,33) FROM input WHERE position>=?1 ORDER BY position LIMIT ?2"))?;
         let mut rows = sql(statement.query(params![number(start)?, records as i64]))?;
@@ -368,7 +370,9 @@ impl Engine {
             let position = sql(unsigned(row, 0))?;
             let encoded: Vec<u8> = sql(row.get(1))?;
             let stored: Vec<u8> = sql(row.get(2))?;
-            let stored = stored.try_into().map_err(|_| "program input hash width")?;
+            let stored = stored
+                .try_into()
+                .map_err(|_| ProgramFault::InputHashWidth)?;
             if !reader.push(position, &encoded, stored)? {
                 break;
             }
@@ -380,9 +384,7 @@ impl Engine {
                 [number(end)?],
                 |row| row.get(0),
             ))?;
-            bytes
-                .try_into()
-                .map_err(|_| "program stream suffix width")?
+            bytes.try_into().map_err(|_| ProgramFault::SuffixWidth)?
         } else {
             [0; 32]
         };
@@ -394,7 +396,7 @@ impl Engine {
     pub fn prepare_export(&mut self, steps: usize) -> Result<bool, Error> {
         self.live()?;
         if !self.status()?.fully_checked {
-            return Err("program has not been completely checked".into());
+            return Err(ProgramFault::UncheckedProgram.into());
         }
         if self.export.is_some_and(|export| export.before == 0) {
             return self.prepare_conclusion(steps);
@@ -421,13 +423,13 @@ impl Engine {
                     |row| row.get(0),
                 ))?;
                 if bytes.len() > RECORD_BYTES {
-                    return Err(Error::from("stored command capacity"));
+                    return Err(ProgramFault::StoredCommandCapacity.into());
                 }
                 cursor.hash = format::stream_hash(&bytes, cursor.hash);
                 cursor.bytes = cursor
                     .bytes
                     .checked_add(bytes.len() as u64)
-                    .ok_or("program byte width")?;
+                    .ok_or(ProgramFault::ProgramByteWidth)?;
                 sql(self.connection.execute(
                     "INSERT OR REPLACE INTO stream VALUES(?1,?2)",
                     params![number(position)?, cursor.hash.as_slice()],
@@ -447,30 +449,28 @@ impl Engine {
     }
     pub fn checked(mut self) -> Result<CheckedProgram, Error> {
         self.live()?;
-        let root = self
-            .accepted
-            .ok_or("program has not been completely checked")?;
+        let root = self.accepted.ok_or(ProgramFault::UncheckedProgram)?;
         let status = self.status()?;
         if !status.fully_checked {
-            return Err("program has not been completely checked".into());
+            return Err(ProgramFault::UncheckedProgram.into());
         }
         let canonical = self
             .finalization
             .as_mut()
             .and_then(|state| state.canonical.take())
-            .ok_or("program conclusion export is incomplete")?;
+            .ok_or(ProgramFault::IncompleteConclusionExport)?;
         let conclusion = self.load(root)?.1;
         let statement = match &canonical {
-            Some(formula) => naome_proof::StatementId::of_canonical_formula(
-                &formula.encode_canonical().map_err(|e| e.to_string())?,
-            )
-            .ok_or("statement address width")?,
+            Some(formula) => {
+                naome_proof::StatementId::of_canonical_formula(&formula.encode_canonical()?)
+                    .ok_or(ProgramFault::StatementAddressWidth)?
+            }
             None => format::graph_statement_id(conclusion),
         };
         let export = self
             .export
             .filter(|export| export.before == 0)
-            .ok_or("program export index is incomplete")?;
+            .ok_or(ProgramFault::IncompleteExportIndex)?;
         let manifest = Manifest {
             commands: status.commands,
             input_bytes: export.bytes,
@@ -494,11 +494,11 @@ impl Engine {
     pub fn checked_fact(&self, position: u64) -> Result<(CheckedFact, FactShape), Error> {
         self.live()?;
         if position >= self.cursor {
-            return Err("fact is outside the checked program prefix".into());
+            return Err(ProgramFault::FactOutsidePrefix.into());
         }
         let value = checker::Context::previous(self, position)?;
         if !value.proved {
-            return Err("program result is not a proved fact".into());
+            return Err(ProgramFault::UnprovedResult.into());
         }
         let shape = match self.load(value.formula)?.0 {
             Node::ForAll(_) => FactShape::Universal,
@@ -520,10 +520,7 @@ impl Engine {
     pub fn result_formula(&self, position: u64) -> Result<Option<Formula>, Error> {
         self.live()?;
         let value = checker::Context::previous(self, position)?;
-        format::bounded_formula(value.formula, |id| {
-            self.load(id).map(|value| value.0).map_err(Into::into)
-        })
-        .map_err(Into::into)
+        format::bounded_formula(value.formula, |id| self.load(id).map(|value| value.0))
     }
 
     /// Select a checked universal fact and a free local term. Append the
@@ -536,10 +533,10 @@ impl Engine {
     ) -> Result<u64, Error> {
         self.live()?;
         if !Arc::ptr_eq(&self.handle_scope, &fact.scope) {
-            return Err("fact handle belongs to a different proof evaluator".into());
+            return Err(ProgramFault::FactOwnerMismatch.into());
         }
         if self.checked_fact(fact.position)?.1 != FactShape::Universal {
-            return Err("instantiation requires a universal fact".into());
+            return Err(ProgramFault::UniversalRequired.into());
         }
         self.append(&Command::Instantiate {
             premise: fact.position,
@@ -586,7 +583,7 @@ impl Engine {
             .connection
             .pragma_query_value(None, "data_version", |r| r.get(0)))?;
         if version != self.data_version {
-            return Err("proof work changed outside its owner".into());
+            return Err(ProgramFault::ForeignMutation.into());
         }
         Ok(())
     }
@@ -617,7 +614,7 @@ impl Engine {
     }
     fn append_record(&mut self, command: &Command) -> Result<u64, Error> {
         if self.active.is_some() {
-            return Err("cannot append during an uncommitted instruction".into());
+            return Err(ProgramFault::UncommittedInstruction.into());
         }
         let (position, sealed, previous): (u64, bool, Vec<u8>) = sql(self.connection.query_row(
             "SELECT commands,sealed,hash FROM state WHERE id=1",
@@ -625,10 +622,12 @@ impl Engine {
             |r| Ok((unsigned(r, 0)?, r.get(1)?, r.get(2)?)),
         ))?;
         if sealed {
-            return Err("proof program is sealed".into());
+            return Err(ProgramFault::Sealed.into());
         }
         let bytes = encode_command(command)?;
-        let previous = previous.try_into().map_err(|_| "program hash corruption")?;
+        let previous = previous
+            .try_into()
+            .map_err(|_| ProgramFault::CorruptProgramHash)?;
         let hash = command_hash(previous, &bytes);
         sql(self.connection.execute(
             "INSERT INTO input VALUES(?1,?2,?3)",
@@ -637,7 +636,11 @@ impl Engine {
         sql(self.connection.execute(
             "UPDATE state SET commands=?1,sealed=?2,hash=?3 WHERE id=1",
             params![
-                number(position.checked_add(1).ok_or("program address exhausted")?)?,
+                number(
+                    position
+                        .checked_add(1)
+                        .ok_or(ProgramFault::ProgramAddress)?
+                )?,
                 matches!(command, Command::Seal { .. }),
                 hash.as_slice()
             ],
@@ -647,7 +650,7 @@ impl Engine {
     pub fn record_budget(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.live()?;
         if bytes.len() > 4096 {
-            return Err("budget snapshot capacity".into());
+            return Err(ProgramFault::BudgetSnapshotCapacity.into());
         }
         sql(self.connection.execute("INSERT INTO budget(snapshot,command,equation) SELECT ?1,?2,coalesce(max(sequence),0) FROM equation",params![bytes,number(self.cursor)?]))?;
         Ok(())
@@ -685,7 +688,7 @@ impl Engine {
         self.quantum_limit = steps;
         self.live()?;
         if cache_bytes < 4096 {
-            return Err("invalid effective cache budget".into());
+            return Err(ProgramFault::CacheBudget.into());
         }
         // Trimming must still run while admission is paused, otherwise a live
         // profile reduction could keep its old cache resident indefinitely.
@@ -693,7 +696,8 @@ impl Engine {
             // Main/temp SQLite caches and the bounded projection cache share
             // one effective byte budget, including live downward adjustments.
             let sqlite_bytes = cache_bytes - materialization::Tree::cache_bytes(cache_bytes);
-            let kib = -i64::try_from((sqlite_bytes / 2048).max(1)).map_err(|e| e.to_string())?;
+            let kib = -i64::try_from((sqlite_bytes / 2048).max(1))
+                .map_err(|_| ProgramFault::CacheBudget)?;
             sql(self.connection.pragma_update(None, "cache_size", kib))?;
             sql(self
                 .connection
@@ -761,11 +765,11 @@ impl Engine {
                 self.last_quantum_steps
                     .set(self.last_quantum_steps.get() + 1);
                 if bytes.len() > RECORD_BYTES {
-                    return Err("stored command capacity".into());
+                    return Err(ProgramFault::StoredCommandCapacity.into());
                 }
                 let source_hash = command_hash(self.checked_hash, &bytes);
                 if stored_hash != source_hash {
-                    return Err("program input hash mismatch".into());
+                    return Err(ProgramFault::InputHashMismatch.into());
                 }
                 let command: Command = decode_command(&bytes)?;
                 let plan = match checker::prepare(&command, self.cursor, self) {
@@ -867,7 +871,7 @@ impl Engine {
                 active.restoring = true;
             }
             if active.position == active.operations.len() {
-                let node = *active.registers.last().ok_or("empty proof recipe")?;
+                let node = *active.registers.last().ok_or(ProgramFault::EmptyRecipe)?;
                 let previous: Option<(u64, bool)> = sql(self
                     .connection
                     .query_row(
@@ -877,7 +881,7 @@ impl Engine {
                     )
                     .optional())?;
                 if previous.is_some_and(|value| value != (node, active.proved)) {
-                    return Err("saved proof result differs from mathematical replay".into());
+                    return Err(ProgramFault::ReplayResultMismatch.into());
                 }
                 sql(self.connection.execute(
                     "INSERT OR IGNORE INTO result VALUES(?1,?2,?3)",
@@ -896,7 +900,7 @@ impl Engine {
                 self.cursor = self
                     .cursor
                     .checked_add(1)
-                    .ok_or("proof address exhausted")?;
+                    .ok_or(ProgramFault::ProofAddress)?;
                 self.checked_hash = active.source_hash;
                 sql(self.connection.execute(
                     "UPDATE state SET committed=max(committed,?1) WHERE id=1",
@@ -910,7 +914,7 @@ impl Engine {
                             |r| Ok((unsigned(r, 0)?, r.get(1)?, r.get(2)?)),
                         ))?;
                     if !sealed || commands != self.cursor || hash != self.checked_hash {
-                        return Err("seal is not the complete program".into());
+                        return Err(ProgramFault::PrematureSeal.into());
                     }
                     self.accepted = Some(node);
                 }
@@ -947,10 +951,10 @@ impl Engine {
                 implication,
             } => {
                 let Node::Implies(antecedent, consequent) = self.load(r[implication])?.0 else {
-                    return Err("composed application requires an implication".into());
+                    return Err(ProgramFault::ImplicationRequired.into());
                 };
                 if antecedent != r[premise] {
-                    return Err("composed modus ponens antecedent mismatch".into());
+                    return Err(ProgramFault::AntecedentMismatch.into());
                 }
                 return Ok(Some(consequent));
             }
@@ -986,7 +990,7 @@ impl Engine {
             }
             Operation::OpenUniversal(universal, replacement) => {
                 let Node::ForAll(body) = self.load(r[universal])?.0 else {
-                    return Err("scoped instantiation requires a universal fact".into());
+                    return Err(ProgramFault::ScopedUniversalRequired.into());
                 };
                 return self.transform(evaluation, body, Transform::Open(replacement));
             }
@@ -1017,7 +1021,7 @@ impl Engine {
         }
         let nested = node
             .nested_depth(depth)
-            .ok_or("physical binder address exhausted")?;
+            .ok_or(ProgramFault::BinderAddress)?;
         let mut children = [None, None];
         for (i, child) in node.children().into_iter().enumerate() {
             if let Some(child) = child {
@@ -1048,10 +1052,10 @@ impl Engine {
             if let Some((sequence, input, depth, result)) = row {
                 let node = self
                     .transformed_node(input, depth, transform)?
-                    .ok_or("saved transformation is not dependency ordered")?;
+                    .ok_or(ProgramFault::TransformOrder)?;
                 let expected = self.intern(node)?;
                 if expected != result {
-                    return Err("saved formula transformation failed replay".into());
+                    return Err(ProgramFault::ReplayTransformMismatch.into());
                 }
                 sql(self.connection.execute(
                     "INSERT INTO verified VALUES(?1,?2,?3)",
@@ -1100,7 +1104,7 @@ impl Engine {
             let (node, _, _) = self.load(input)?;
             let nested = node
                 .nested_depth(depth)
-                .ok_or("physical binder address exhausted")?;
+                .ok_or(ProgramFault::BinderAddress)?;
             for child in node.children().into_iter().flatten() {
                 if self.memo(child, nested)?.is_none() {
                     sql(self.connection.execute(
@@ -1135,16 +1139,16 @@ impl Engine {
             match (kind, value) {
                 (0, 0..) => u32::try_from(value)
                     .map(Variable::Free)
-                    .map_err(|e| Error::from(e.to_string())),
+                    .map_err(|_| ProgramFault::GraphVariable.into()),
                 (1, 0..) => Ok(Variable::Bound(value as u64)),
-                _ => Err("invalid graph variable".into()),
+                _ => Err(ProgramFault::GraphVariable.into()),
             }
         };
         let child = |value: i64| -> Result<u64, Error> {
             if value > 0 && (value as u64) < id {
                 Ok(value as u64)
             } else {
-                Err("formula graph is not acyclic".into())
+                Err(ProgramFault::GraphCycle.into())
             }
         };
         let node = match tag {
@@ -1153,12 +1157,11 @@ impl Engine {
             2 => Node::Not(child(a)?),
             3 => Node::Implies(child(a)?, child(b)?),
             4 => Node::ForAll(child(a)?),
-            _ => return Err("invalid formula graph tag".into()),
+            _ => return Err(ProgramFault::GraphTag.into()),
         };
         Ok((
             node,
-            hash.try_into()
-                .map_err(|_| "formula graph digest corruption")?,
+            hash.try_into().map_err(|_| ProgramFault::GraphDigest)?,
             Properties {
                 has_free_variables: free,
                 required_binders: required,
@@ -1175,7 +1178,7 @@ impl Engine {
                 let authenticated = self
                     .authenticated(child)?
                     .filter(|(expected, properties, _)| *expected == hash && *properties == p)
-                    .ok_or("formula child has not passed current-owner authentication")?;
+                    .ok_or(ProgramFault::UnauthenticatedChild)?;
                 shapes[i] = Some(authenticated.2);
                 hashes[i] = Some(hash);
                 properties[i] = Some(p);
@@ -1183,7 +1186,7 @@ impl Engine {
         }
         let p = node
             .properties(properties)
-            .ok_or("formula graph property overflow")?;
+            .ok_or(ProgramFault::GraphPropertyOverflow)?;
         let shape = Shape::of(node, shapes);
         let mut i = 0;
         let node = node.map(|_| {
@@ -1197,7 +1200,7 @@ impl Engine {
         let (node, hash, p) = self.raw(id)?;
         let (expected, properties, shape) = self.representation(node)?;
         if (expected, properties) != (hash, p) {
-            return Err("formula graph content authentication failed".into());
+            return Err(ProgramFault::GraphAuthentication.into());
         }
         self.remember_authenticated(id, hash, p, shape)?;
         Ok((node, hash, p))
@@ -1224,7 +1227,7 @@ impl Engine {
             |(hash, has_free_variables, required_binders, nodes, bytes, depth)| {
                 Ok((
                     hash.try_into()
-                        .map_err(|_| "authenticated formula digest corruption")?,
+                        .map_err(|_| ProgramFault::AuthenticatedDigest)?,
                     Properties {
                         has_free_variables,
                         required_binders,
@@ -1259,7 +1262,7 @@ impl Engine {
             ],
         ))?;
         if self.authenticated(id)? != Some((hash, properties, shape)) {
-            return Err("authenticated formula changed within its owner".into());
+            return Err(ProgramFault::FormulaMutation.into());
         }
         Ok(())
     }
@@ -1275,7 +1278,7 @@ impl Engine {
             .optional())?;
         if let Some(id) = previous {
             if self.load(id)? != (node, hash, properties) {
-                return Err("formula graph identity collision or corruption".into());
+                return Err(ProgramFault::GraphIdentity.into());
             }
             return Ok(id);
         }
@@ -1317,7 +1320,7 @@ impl Engine {
             ],
         ))?;
         let id = u64::try_from(self.connection.last_insert_rowid())
-            .map_err(|e| Error::from(e.to_string()))?;
+            .map_err(|_| ProgramFault::InsertedRowAddress)?;
         self.remember_authenticated(id, hash, properties, shape)?;
         Ok(id)
     }
@@ -1370,7 +1373,7 @@ impl checker::Context for Engine {
     fn previous(&self, index: u64) -> Result<Value<u64>, Error> {
         let value = self.previous_node(index)?;
         if self.load(value.formula)?.2.required_binders != 0 {
-            return Err("program formula has dangling bound variables".into());
+            return Err(ProgramFault::DanglingBinder.into());
         }
         Ok(value)
     }

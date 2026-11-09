@@ -21,11 +21,11 @@ struct Scope {
 }
 
 impl Scope {
-    fn open(target: &Formula) -> Result<Option<Self>, String> {
+    fn open(target: &Formula) -> Result<Option<Self>, crate::Error> {
         Self::open_with(target, None)
     }
 
-    fn open_with(target: &Formula, lemma: Option<&Formula>) -> Result<Option<Self>, String> {
+    fn open_with(target: &Formula, lemma: Option<&Formula>) -> Result<Option<Self>, crate::Error> {
         let mut goal = target.clone();
         let mut binders = Vec::new();
         loop {
@@ -34,7 +34,7 @@ impl Scope {
             let variable = (0..=u32::MAX)
                 .map(FreeVariable::new)
                 .find(|variable| !used.contains(variable))
-                .ok_or("scope binder capacity")?;
+                .ok_or(crate::ResearchFailure::ScopeBinderCapacity)?;
             let Some(body) = goal.open_outer_universal(variable) else {
                 break;
             };
@@ -310,7 +310,10 @@ impl Scope {
 
 /// Establish applicability from the exact local premises, without a model or
 /// a proof of the target. The checker still validates any generated program.
-pub(in crate::learning) fn lemma_closes(target: &Formula, lemma: &Formula) -> Result<bool, String> {
+pub(in crate::learning) fn lemma_closes(
+    target: &Formula,
+    lemma: &Formula,
+) -> Result<bool, crate::Error> {
     if target == lemma {
         return Ok(true);
     }
@@ -336,17 +339,15 @@ pub(in crate::learning) fn search(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<Tree>, usize), String> {
+) -> Result<(Option<Tree>, usize), crate::Error> {
     let Some(scope) = Scope::open(target)? else {
         return Ok((None, 0));
     };
     let (actions, work) = search_scope(&scope, ranker, maximum, started)?;
     let tree = actions
         .map(|actions| {
-            Ok::<_, String>(Tree::Scoped {
-                target: target
-                    .encode_canonical()
-                    .map_err(|error| error.to_string())?,
+            Ok::<_, crate::Error>(Tree::Scoped {
+                target: target.encode_canonical()?,
                 actions,
             })
         })
@@ -361,9 +362,9 @@ pub(in crate::learning) fn search_with_lemma(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<Vec<Command>>, usize), String> {
+) -> Result<(Option<Vec<Command>>, usize), crate::Error> {
     if !lemma.is_closed() {
-        return Err("scoped lemma is not closed".into());
+        return Err(crate::ResearchFailure::ScopeLemmaNotClosed.into());
     }
     let Some(scope) = Scope::open_with(target, Some(lemma))? else {
         return Ok((None, 0));
@@ -422,7 +423,7 @@ fn search_scope(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<Vec<ScopedAction>>, usize), String> {
+) -> Result<(Option<Vec<ScopedAction>>, usize), crate::Error> {
     let mut facts = scope.assumptions.clone();
     let mut actions = Vec::new();
     let allowance = maximum.min(ACTIONS).min(FACTS - facts.len());
@@ -439,11 +440,11 @@ fn search_scope(
         } else {
             let scores = match ranker.scores(&scope.decision(&facts, &offered, 0, compact)) {
                 Ok(scores) => scores,
-                Err(error) if error == "formula_graph_capacity" => break,
+                Err(crate::Error::LearningGraph(crate::LearningGraphFailure::Capacity)) => break,
                 Err(error) => return Err(error),
             };
             if scores.len() != offered.len() || scores.iter().any(|score| !score.is_finite()) {
-                return Err("scope ranker scores differ from the offered actions".into());
+                return Err(crate::ResearchFailure::ScopeInvalidScores.into());
             }
             (0..offered.len())
                 .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))
@@ -463,14 +464,14 @@ fn search_scope(
 pub(super) fn compile(
     target: &Formula,
     actions: &[ScopedAction],
-) -> Result<(Term, Vec<Graph>), String> {
+) -> Result<(Term, Vec<Graph>), crate::Error> {
     let (scope, graphs) = decision_graphs(
-        Scope::open(target)?.ok_or("scope trace target differs")?,
+        Scope::open(target)?.ok_or(crate::ResearchFailure::ScopeTraceTarget)?,
         target,
         actions,
         false,
     )?
-    .ok_or("scope trace action was not offered")?;
+    .ok_or(crate::ResearchFailure::ScopeReplayOperand)?;
     let result = scope.assumptions.len() + actions.len() - 1;
     let mut term = deduce(&scope.assumptions, actions, result as u32)?;
     for variable in scope.binders.into_iter().rev() {
@@ -484,15 +485,13 @@ fn decision_graphs(
     target: &Formula,
     actions: &[ScopedAction],
     checked_reference: bool,
-) -> Result<Option<(Scope, Vec<Graph>)>, String> {
+) -> Result<Option<(Scope, Vec<Graph>)>, crate::Error> {
     if actions.is_empty() || actions.len() > ACTIONS.min(FACTS - scope.assumptions.len()) {
         return Ok(None);
     }
     let mut facts = scope.assumptions.clone();
     let mut graphs = Vec::new();
-    let target_bytes = target
-        .encode_canonical()
-        .map_err(|error| error.to_string())?;
+    let target_bytes = target.encode_canonical().map_err(crate::Error::from)?;
     for (offset, action) in actions.iter().enumerate() {
         let (mut offered, compact) = scope.offers(&facts);
         let selected = if let Some(index) = offered.iter().position(|(choice, _)| choice == action)
@@ -503,7 +502,7 @@ fn decision_graphs(
             // operands are outside the bounded search menu.
             let result = scope
                 .apply(&facts, action)
-                .ok_or("scope replay operand differs")?;
+                .ok_or(crate::ResearchFailure::ScopeReplayOperand)?;
             offered.truncate(15);
             offered.push((action.clone(), result));
             offered.len() - 1
@@ -516,20 +515,20 @@ fn decision_graphs(
                     graph.binding = super::super::digest(&(&target_bytes, &actions[..offset]));
                     graphs.push(graph);
                 }
-                Err(error)
-                    if checked_reference
-                        && matches!(
-                            error.as_str(),
-                            "formula_graph_capacity" | "action arity capacity"
-                        ) => {}
-                Err(error) if error == "formula_graph_capacity" => return Ok(None),
-                Err(error) => return Err(error),
+                Err(crate::LearningGraphFailure::Capacity) if !checked_reference => {
+                    return Ok(None);
+                }
+                Err(
+                    crate::LearningGraphFailure::Capacity
+                    | crate::LearningGraphFailure::ActionArity,
+                ) => {}
+                Err(error) => return Err(error.into()),
             }
         }
         facts.push(offered[selected].1.clone());
     }
     if facts.last() != Some(&scope.goal) {
-        return Err("scope trace conclusion differs".into());
+        return Err(crate::ResearchFailure::ScopeConclusion.into());
     }
     Ok(Some((scope, graphs)))
 }
@@ -538,7 +537,7 @@ pub(crate) fn program_graphs(
     target: &Formula,
     records: &[Command],
     context: &dyn naome_checker::ContextView,
-) -> Result<Vec<Graph>, String> {
+) -> Result<Vec<Graph>, crate::Error> {
     let Some(actions) = records.iter().find_map(|record| match record {
         Command::Deduce { actions, .. } => Some(actions),
         _ => None,
@@ -561,17 +560,20 @@ pub(crate) fn program_graphs(
     let (Some(reference), None) = (references.next(), references.next()) else {
         return Ok(Vec::new());
     };
-    let Some(header) = context.proof_header(reference).map_err(|e| e.to_string())? else {
-        return Err("scope replay citation missing".into());
+    let Some(header) = context
+        .proof_header(reference)
+        .map_err(crate::Error::from)?
+    else {
+        return Err(crate::ResearchFailure::ScopeCitationMissing.into());
     };
     if header.canonical_length() > naome_checker::question::QUESTION_BYTES {
         return Ok(Vec::new());
     }
     let Some(formula) = context
         .proof_formula(header, header.canonical_length())
-        .map_err(|e| e.to_string())?
+        .map_err(crate::Error::from)?
     else {
-        return Err("scope replay citation formula missing".into());
+        return Err(crate::ResearchFailure::ScopeCitationFormulaMissing.into());
     };
     if let Some(scope) = Scope::open_with(target, Some(formula.as_ref()))?
         && scope.program(actions, &[reference]).as_deref() == Some(records)
@@ -585,17 +587,20 @@ pub(crate) fn program_graphs(
 pub(crate) fn verified(
     target: &[u8],
     actions: &[ScopedAction],
-) -> Result<super::super::proof::Verified, String> {
-    let target = Formula::decode_canonical(target).map_err(|error| error.to_string())?;
+) -> Result<super::super::proof::Verified, crate::Error> {
+    let target = Formula::decode_canonical(target).map_err(crate::Error::from)?;
     let (term, _) = compile(&target, actions)?;
     super::super::proof::verify(&term, &target)
 }
 
-pub(crate) fn commands(target: &Formula, actions: &[ScopedAction]) -> Result<Vec<Command>, String> {
-    let scope = Scope::open(target)?.ok_or("scope program target differs")?;
+pub(crate) fn commands(
+    target: &Formula,
+    actions: &[ScopedAction],
+) -> Result<Vec<Command>, crate::Error> {
+    let scope = Scope::open(target)?.ok_or(crate::ResearchFailure::ScopeProgramTarget)?;
     scope
         .program(actions, &[])
-        .ok_or_else(|| "scope program operands differ".into())
+        .ok_or_else(|| crate::ResearchFailure::ScopeProgramOperands.into())
 }
 
 /// Rebuild the selected local actions as ordinary inference for training.
@@ -603,7 +608,7 @@ pub(crate) fn deduce(
     assumptions: &[Formula],
     actions: &[ScopedAction],
     result: u32,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let mut names = Names::default();
     let locals = assumptions
         .iter()
@@ -619,7 +624,7 @@ pub(crate) fn deduce(
             facts
                 .get(handle as usize)
                 .cloned()
-                .ok_or("scope operand is not an earlier fact".to_owned())
+                .ok_or(crate::ResearchFailure::ScopeOperandOrder)
         };
         let term = match action {
             ScopedAction::Instantiate {
@@ -643,7 +648,7 @@ pub(crate) fn deduce(
     let mut term = facts
         .get(result as usize)
         .cloned()
-        .ok_or("scope result is not an earlier fact")?;
+        .ok_or(crate::ResearchFailure::ScopeResultOrder)?;
     for (id, assumption) in locals.into_iter().rev() {
         term = Term::Lambda(id, assumption.formula(), Box::new(term));
     }

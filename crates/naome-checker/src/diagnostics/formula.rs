@@ -7,12 +7,33 @@ use naome_proof::program::graph_node_hash;
 use serde::Serialize;
 use std::collections::{BTreeSet, VecDeque};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "identifier", rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variable {
     Free(u32),
     Bound(u64),
 }
+impl Serialize for Variable {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("Variable", 2)?;
+        match self {
+            Self::Free(identifier) => {
+                value.serialize_field("code", &0x0034_0001_u32)?;
+                value.serialize_field("identifier", identifier)?;
+            }
+            Self::Bound(identifier) => {
+                value.serialize_field("code", &0x0034_0002_u32)?;
+                value.serialize_field("identifier", identifier)?;
+            }
+        }
+        value.end()
+    }
+}
+/// Assigned variable classes for the machine catalog.
+pub const VARIABLE_CODES: &[(&str, &str, u32)] = &[
+    ("Variable", "Free", 0x0034_0001),
+    ("Variable", "Bound", 0x0034_0002),
+];
 impl From<GraphVariable> for Variable {
     fn from(value: GraphVariable) -> Self {
         match value {
@@ -22,37 +43,26 @@ impl From<GraphVariable> for Variable {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeKind {
-    Equal,
-    Member,
-    Not,
-    Implies,
-    ForAll,
+diagnostic_units! {
+    NodeKind, NODE_KIND_CODES, "NodeKind", 53 {
+        Equal = 1,
+        Member = 2,
+        Not = 3,
+        Implies = 4,
+        ForAll = 5,
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FormulaNode {
-    Equal {
-        left: Variable,
-        right: Variable,
-    },
-    Member {
-        element: Variable,
-        set: Variable,
-    },
-    Not {
-        body: Digest,
-    },
-    Implies {
-        antecedent: Digest,
-        consequent: Digest,
-    },
-    ForAll {
-        body: Digest,
-    },
+diagnostic_codes! {
+    FormulaNode, FORMULA_NODE_CODES, "FormulaNode",
+    structured {
+        Equal = 0x0036_0001 { left: Variable, right: Variable },
+        Member = 0x0036_0002 { element: Variable, set: Variable },
+        Not = 0x0036_0003 { body: Digest },
+        Implies = 0x0036_0004 { antecedent: Digest, consequent: Digest },
+        ForAll = 0x0036_0005 { body: Digest },
+    }
+    units {}
 }
 impl FormulaNode {
     pub fn children(&self) -> [Option<Digest>; 2] {
@@ -110,15 +120,15 @@ impl NodeRecord {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PathSegment {
-    Negated,
-    Antecedent,
-    Consequent,
-    Quantified,
-    LeftVariable,
-    RightVariable,
+diagnostic_units! {
+    PathSegment, PATH_SEGMENT_CODES, "PathSegment", 55 {
+        Negated = 1,
+        Antecedent = 2,
+        Consequent = 3,
+        Quantified = 4,
+        LeftVariable = 5,
+        RightVariable = 6,
+    }
 }
 impl From<naome_foundation::FormulaPathSegment> for PathSegment {
     fn from(value: naome_foundation::FormulaPathSegment) -> Self {
@@ -153,12 +163,12 @@ pub struct FormulaFragment {
     pub free_variables: Vec<u32>,
     pub free_variables_complete: bool,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VariableNamespace {
-    Input,
-    Source,
-    Supplied,
+diagnostic_units! {
+    VariableNamespace, VARIABLE_NAMESPACE_CODES, "VariableNamespace", 56 {
+        Input = 1,
+        Source = 2,
+        Supplied = 3,
+    }
 }
 impl FormulaFragment {
     pub fn node(&self, id: Digest) -> Option<&NodeRecord> {

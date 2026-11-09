@@ -114,7 +114,7 @@ pub struct Settings {
 impl RoleSettings {
     /// Historical allowances are validated against the current value format,
     /// never against defaults for newly admitted obligations.
-    fn validate_history(self) -> Result<(), String> {
+    fn validate_history(self) -> Result<(), crate::Error> {
         if self.limits.horizon_ms == 0
             || self.limits.work_units == 0
             || self.mock.proof_padding_bytes > naome_proof::CERTIFICATE_MAX_BYTES
@@ -131,24 +131,21 @@ impl RoleSettings {
                     .is_none()
             })
         {
-            return Err("research historical role value exceeds its format".into());
+            return Err(crate::ResearchFailure::RoleHistoryFormat.into());
         }
         Ok(())
     }
 }
 
 impl Settings {
-    pub(crate) fn validate(self) -> Result<Self, String> {
+    pub(crate) fn validate(self) -> Result<Self, crate::Error> {
         if self.native_proof_learning {
             crate::resources::limits().native_model_capacity()?;
             if [self.finding, self.solving]
                 .iter()
                 .any(|role| role.mock != MockWork::default())
             {
-                return Err(
-                    "native proof learning and controlled mock workloads are separate providers"
-                        .into(),
-                );
+                return Err(crate::ResearchFailure::ConflictingProviders.into());
             }
         }
         for role in [self.finding, self.solving, self.selection] {
@@ -171,11 +168,11 @@ impl Settings {
                 })
                 || role.mock.proof_padding_bytes > crate::resources::limits().proof_bytes
             {
-                return Err("research role horizon or workload limit".into());
+                return Err(crate::ResearchFailure::InvalidRoleLimits.into());
             }
             #[cfg(not(feature = "developer-tools"))]
             if role.mock != MockWork::default() {
-                return Err("controlled mock workloads require developer-tools".into());
+                return Err(crate::ResearchFailure::DeveloperWorkloadUnavailable.into());
             }
         }
         Ok(self)
@@ -222,7 +219,7 @@ impl Binding {
         self
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), crate::Error> {
         for value in [
             &self.snapshot,
             &self.policy,
@@ -232,29 +229,21 @@ impl Binding {
             crate::object::id_bytes(value)?;
         }
         if self.compatibility != crate::hex(&crate::compatibility()) {
-            return Err("research compatibility differs".into());
+            return Err(crate::InputFault::ResearchCompatibility.into());
         }
         Ok(())
     }
 
-    fn validate_role(&self, input: &Input) -> Result<(), String> {
+    fn validate_role(&self, input: &Input) -> Result<(), crate::Error> {
         self.validate()?;
         if self.cooperative && !matches!(input, Input::Solve { .. }) {
-            return Err("cooperative binding requires a solving job".into());
+            return Err(crate::InputFault::CooperativeRole.into());
         }
         Ok(())
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Purpose {
-    Assessment,
-    Admission,
-    Initial,
-    Final,
-    Publication,
-}
+pub(crate) use crate::outcome::SelectionPurpose as Purpose;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
@@ -303,15 +292,15 @@ impl Input {
             Self::Select { root: Some(_), .. } => Role::PeerSelection,
         }
     }
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), crate::Error> {
         match self {
             Self::Find { question, .. } | Self::Select { question, .. } => {
                 naome_checker::question::ResearchQuestion::source_requires_definitions(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
             }
             Self::Train { epoch } => {
                 if *epoch == 0 {
-                    return Err("empty native learning epoch".into());
+                    return Err(crate::InputFault::EmptyTrainingEpoch.into());
                 }
             }
             Self::Peer {
@@ -322,17 +311,18 @@ impl Input {
             } => {
                 evidence.validate_width()?;
                 naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 crate::object::id_bytes(artifact)?;
-                let parsed: libp2p::PeerId =
-                    peer.parse().map_err(|_| "native peer origin syntax")?;
+                let parsed: libp2p::PeerId = peer
+                    .parse()
+                    .map_err(|_| crate::InputFault::PeerIdentitySyntax)?;
                 if parsed.to_string() != *peer {
-                    return Err("native peer origin encoding".into());
+                    return Err(crate::InputFault::PeerIdentityEncoding.into());
                 }
             }
             Self::Solve { question } => {
                 naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
             }
         }
         if let Self::Select {
@@ -363,7 +353,6 @@ impl Input {
 pub(crate) enum Output {
     Native {
         solution: Option<crate::learning::Solution>,
-        diagnostic: String,
         frontier: Option<crate::learning::SearchFrontier>,
         terminal: Box<crate::learning::experience::TerminalEvidence>,
     },
@@ -380,7 +369,7 @@ pub(crate) enum Output {
 }
 
 impl Output {
-    fn validate(&self, input: &Input) -> Result<(), String> {
+    fn validate(&self, input: &Input) -> Result<(), crate::Error> {
         self.validate_with_limits(
             input,
             crate::resources::limits().proof_bytes,
@@ -388,7 +377,7 @@ impl Output {
             crate::resources::limits().closure_bytes,
         )
     }
-    fn validate_retained(&self, input: &Input) -> Result<(), String> {
+    fn validate_retained(&self, input: &Input) -> Result<(), crate::Error> {
         self.validate_with_limits(
             input,
             naome_proof::CERTIFICATE_MAX_BYTES,
@@ -402,38 +391,34 @@ impl Output {
         artifact_bytes: usize,
         objects: usize,
         bytes: usize,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         match (self, input) {
             (
                 Self::Native {
                     solution,
-                    diagnostic,
                     frontier,
                     terminal,
                 },
                 Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
-            ) if diagnostic.len() <= 4096
-                && solution.as_ref().is_none_or(|s| {
-                    s.source.len() <= 2 * artifact_bytes
-                        && s.helpers.len() < objects
-                        && s.helpers
-                            .iter()
-                            .all(|source| source.len() <= 2 * artifact_bytes)
-                })
-                && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
+            ) if solution.as_ref().is_none_or(|s| {
+                s.source.len() <= 2 * artifact_bytes
+                    && s.helpers.len() < objects
+                    && s.helpers
+                        .iter()
+                        .all(|source| source.len() <= 2 * artifact_bytes)
+            }) && crate::checkpoint::encode(self)?.len() <= bytes =>
             {
                 terminal.validate(solution.as_ref())?;
                 if let Some(report) = frontier {
                     let Input::Solve { question } = input else {
-                        return Err("open branches outside solve".into());
+                        return Err(crate::ResearchFailure::OutputFrontierRole.into());
                     };
                     if solution.is_some() {
-                        return Err("resolved output contains open branches".into());
+                        return Err(crate::ResearchFailure::OutputFrontierResolved.into());
                     }
-                    report.validate(
-                        &naome_checker::question::ResearchQuestion::from_hex(question)
-                            .map_err(|e| e.to_string())?,
-                    )?;
+                    report.validate(&naome_checker::question::ResearchQuestion::from_hex(
+                        question,
+                    )?)?;
                 }
                 Ok(())
             }
@@ -455,23 +440,12 @@ impl Output {
             (Self::Program { units }, Input::Solve { .. }) if *units > 0 => Ok(()),
             (Self::NoCandidate, Input::Solve { .. })
             | (Self::Selected(_), Input::Select { .. }) => Ok(()),
-            _ => Err("provider result type or capacity differs".into()),
+            _ => Err(crate::ResearchFailure::OutputTypeCapacity.into()),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum State {
-    Queued,
-    Running,
-    Suspended,
-    Complete,
-    Failed,
-    Cancelled,
-    Expired,
-    InDoubt,
-}
+pub(crate) use crate::outcome::JobState as State;
 
 impl State {
     fn terminal(self) -> bool {
@@ -502,7 +476,14 @@ pub(crate) struct Record {
     pub state: State,
     pub result: Option<Output>,
     pub acknowledged: bool,
-    pub failure: Option<String>,
+    pub failure: Option<crate::outcome::JobFailureCode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CompletionFailure {
+    Admission(crate::outcome::AdmissionFailure),
+    Worker(crate::outcome::JobFailureCode),
+    NoResult(State),
 }
 
 #[derive(Clone, Debug)]
@@ -515,7 +496,7 @@ pub(crate) struct Completion {
     pub spent_ms: u64,
     pub reserved_units: u32,
     pub state: State,
-    pub result: Result<Output, String>,
+    pub result: Result<Output, CompletionFailure>,
 }
 
 pub(crate) struct Ticket {
@@ -534,10 +515,10 @@ impl Ticket {
         }
         result
     }
-    pub(crate) async fn completed(&mut self) -> Result<Completion, String> {
+    pub(crate) async fn completed(&mut self) -> Result<Completion, crate::Error> {
         let result = (&mut self.receiver)
             .await
-            .map_err(|_| "research service stopped".into());
+            .map_err(|_| crate::Error::from(crate::ResearchFailure::ServiceStopped));
         if result.is_ok() {
             self.received = true;
         }
@@ -589,7 +570,7 @@ enum PeerStatus {
         trace_proof: String,
     },
     Unsupported {
-        reason: String,
+        reason: crate::outcome::JobFailureCode,
     },
 }
 enum Command {
@@ -610,7 +591,7 @@ enum Command {
     Program {
         id: u64,
         unit: u32,
-        reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, String>>,
+        reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, crate::Error>>,
     },
     Submit(
         Input,
@@ -624,7 +605,7 @@ enum Command {
     Recover {
         after: u64,
         before: u64,
-        reply: oneshot::Sender<Result<RecoveryPage, String>>,
+        reply: oneshot::Sender<Result<RecoveryPage, crate::Error>>,
     },
 }
 
@@ -643,6 +624,13 @@ pub(crate) struct Client {
     feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
 }
 
+fn command_send_error<T>(error: mpsc::error::TrySendError<T>) -> crate::Error {
+    match error {
+        mpsc::error::TrySendError::Full(_) => crate::ResearchFailure::CommandQueueFull.into(),
+        mpsc::error::TrySendError::Closed(_) => crate::ResearchFailure::ServiceStopped.into(),
+    }
+}
+
 impl Client {
     pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
         self.feedback
@@ -654,34 +642,34 @@ impl Client {
         &self,
         ordinal: u64,
         theorem: crate::learning::knowledge::Entry,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::TheoremVerified { ordinal, theorem })
-            .map_err(|_| "theorem observation capacity or stopped service".into())
+            .map_err(command_send_error)
     }
     pub(crate) fn definition_verified(
         &self,
         ordinal: u64,
         definition: crate::learning::definitions::Entry,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::DefinitionVerified {
                 ordinal,
                 definition,
             })
-            .map_err(|_| "definition learning command capacity or stopped service".into())
+            .map_err(command_send_error)
     }
-    pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), String> {
+    pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::PeerCursor(ordinal))
-            .map_err(|_| "peer cursor capacity or stopped service".into())
+            .map_err(command_send_error)
     }
-    pub(crate) fn peer_verified(&self, admission: PeerAdmission) -> Result<(), String> {
+    pub(crate) fn peer_verified(&self, admission: PeerAdmission) -> Result<(), crate::Error> {
         self.sender
             .try_send(Command::PeerVerified(admission))
-            .map_err(|_| "peer learning command capacity or stopped service".into())
+            .map_err(command_send_error)
     }
-    pub(crate) fn try_receipt(&self, receipt: &Receipt) -> Result<bool, String> {
+    pub(crate) fn try_receipt(&self, receipt: &Receipt) -> Result<bool, crate::Error> {
         let command = match receipt {
             Receipt::Acknowledge(id) => Command::Acknowledge(*id),
             Receipt::Accepted { id, root } => Command::Accepted {
@@ -694,7 +682,7 @@ impl Client {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                Err("research receipt service stopped".into())
+                Err(crate::ResearchFailure::ServiceStopped.into())
             }
         }
     }
@@ -702,14 +690,17 @@ impl Client {
         &self,
         id: u64,
         unit: u32,
-    ) -> Result<oneshot::Receiver<Result<Vec<naome_proof::program::Command>, String>>, String> {
+    ) -> Result<
+        oneshot::Receiver<Result<Vec<naome_proof::program::Command>, crate::Error>>,
+        crate::Error,
+    > {
         let (reply, receive) = oneshot::channel();
         self.sender
             .try_send(Command::Program { id, unit, reply })
-            .map_err(|_| "research candidate capacity or stopped service")?;
+            .map_err(command_send_error)?;
         Ok(receive)
     }
-    pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
+    pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, crate::Error> {
         self.submit_after(input, binding, Vec::new(), Default::default())
     }
     pub(crate) fn submit_after(
@@ -718,7 +709,7 @@ impl Client {
         binding: Binding,
         required: Vec<String>,
         prerequisites: crate::learning::Prerequisites,
-    ) -> Result<Ticket, String> {
+    ) -> Result<Ticket, crate::Error> {
         input.validate()?;
         binding.validate_role(&input)?;
         if required.len() > crate::learning::knowledge::CAPACITY
@@ -729,14 +720,14 @@ impl Client {
                 != required.len()
             || !required.is_empty() && !matches!(input, Input::Solve { .. })
         {
-            return Err("required theorem role or capacity".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         prerequisites.validate()?;
         if !prerequisites.is_empty()
             && (!matches!(input, Input::Solve { .. })
                 || required.is_empty() && !prerequisites.has_optional_context())
         {
-            return Err("temporary prerequisites lack required roots".into());
+            return Err(crate::InputFault::PrerequisiteRoots.into());
         }
         for id in &required {
             crate::object::id_bytes(id)?;
@@ -750,7 +741,7 @@ impl Client {
                 prerequisites,
                 sender,
             ))
-            .map_err(|_| "research command capacity or stopped service")?;
+            .map_err(command_send_error)?;
         Ok(Ticket {
             receiver,
             client: self.clone(),
@@ -763,7 +754,7 @@ impl Client {
         &self,
         after: u64,
         before: u64,
-    ) -> Result<oneshot::Receiver<Result<RecoveryPage, String>>, String> {
+    ) -> Result<oneshot::Receiver<Result<RecoveryPage, crate::Error>>, crate::Error> {
         let (reply, receive) = oneshot::channel();
         self.sender
             .try_send(Command::Recover {
@@ -771,14 +762,14 @@ impl Client {
                 before,
                 reply,
             })
-            .map_err(|_| "research recovery capacity or stopped service")?;
+            .map_err(command_send_error)?;
         Ok(receive)
     }
-    pub(crate) fn acknowledge(&self, id: u64) -> Result<(), String> {
+    pub(crate) fn acknowledge(&self, id: u64) -> Result<(), crate::Error> {
         if self.try_receipt(&Receipt::Acknowledge(id))? {
             Ok(())
         } else {
-            Err("research acknowledgement capacity".into())
+            Err(crate::ResearchFailure::CommandQueueFull.into())
         }
     }
 }
@@ -815,16 +806,16 @@ fn request_key(input: &Input, binding: &Binding, settings: RoleSettings) -> Stri
     crate::hex(&hash.finalize())
 }
 
-fn wall_ms() -> Result<u64, String> {
+fn wall_ms() -> Result<u64, crate::Error> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "wall clock is before research epoch".to_owned())?
+        .map_err(|_| crate::ResearchFailure::ClockBeforeEpoch)?
         .as_millis()
         .try_into()
-        .map_err(|_| "research clock overflow".into())
+        .map_err(|_| crate::ResearchFailure::ClockOverflow.into())
 }
 
-pub(crate) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), String>> {
+pub(crate) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), crate::Error>> {
     process::internal(arguments)
 }
 

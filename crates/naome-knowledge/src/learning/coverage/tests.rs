@@ -3,7 +3,10 @@ use crate::learning::{Evidence, Origin, State, curriculum, proof, search_questio
 
 struct Symbolic;
 impl crate::learning::model::Ranker for Symbolic {
-    fn scores(&mut self, decision: &crate::learning::model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(
+        &mut self,
+        decision: &crate::learning::model::Decision,
+    ) -> Result<Vec<f32>, crate::Error> {
         Ok(vec![0.; decision.candidates.len()])
     }
 }
@@ -84,15 +87,18 @@ fn stored_coverage_is_rederived_from_the_checked_source_before_training() {
         unreachable!()
     };
     coverage.bits[0] ^= 1;
-    assert!(
+    assert_eq!(
         reference
             .trajectory(std::slice::from_ref(&evidence))
-            .unwrap_err()
-            .contains("coverage binding")
+            .unwrap_err(),
+        crate::ResearchFailure::ReplayCoverageBinding.into()
     );
     let mut state = State::fresh();
     state.replay.push(reference);
-    assert!(state.training_pool(&[evidence]).is_err());
+    assert_eq!(
+        state.training_pool(&[evidence]).err().unwrap(),
+        crate::ResearchFailure::ReplayCoverageBinding.into()
+    );
 }
 #[test]
 fn renaming_keeps_action_structure_but_changing_variable_sharing_does_not() {
@@ -133,7 +139,10 @@ fn native_identity_corruption_cannot_supply_a_coverage_profile() {
     Profile::of(&own).unwrap();
     own.proof_id = "f2".repeat(32);
     let before = proof::checking_work().calls;
-    assert!(Profile::of(&own).is_err());
+    assert_eq!(
+        Profile::of(&own).unwrap_err(),
+        crate::ResearchFailure::CoverageProofIdentity.into()
+    );
     assert!(proof::checking_work().calls > before);
 }
 
@@ -155,4 +164,37 @@ fn coverage_filter_keeps_exact_bits_and_rejects_an_unbounded_decode() {
                 .contains(diagnostic)
         );
     }
+}
+
+#[test]
+fn coverage_graph_failure_keeps_the_missing_index() {
+    let graph = Graph {
+        binding: String::new(),
+        nodes: vec![],
+        goal: 0,
+        context: vec![],
+        candidates: vec![],
+        expert: 0,
+        successes: vec![],
+    };
+    let error = structure(&graph, &[17]).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::CoverageGraphReference,
+            index: 17
+        }
+    );
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::CoverageGraphReference)
+    );
+    assert_eq!(value["index"], 17);
+    let stored = serde_json::to_value(error.fatal_storage()).unwrap();
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(crate::ResearchFailure::CoverageGraphReference)
+    );
+    assert_eq!(stored["index"], 17);
 }

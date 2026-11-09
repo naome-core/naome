@@ -13,7 +13,7 @@ mod engine;
 mod error;
 mod schema;
 pub use engine::{CheckedFact, CheckedProgram, Engine, FactShape, ProgramDependency, Status};
-pub use error::Error;
+pub use error::{Error, ProgramFault};
 pub use schema::{APPLICATION_ID, verify_database};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

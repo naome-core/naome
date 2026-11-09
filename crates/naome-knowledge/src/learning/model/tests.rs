@@ -14,6 +14,23 @@ fn plain_inference_preserves_parameters_and_stable_float32_choices() {
     let fresh = Checkpoint::fresh();
     let runtime = Runtime::load(&fresh, &mut io).unwrap();
     let before = runtime.checkpoint(&fresh, 0, &mut io).unwrap();
+    let device = runtime.device.clone().inner();
+    assert!(matches!(
+        Batch::from_graphs::<Graph>(&[], &device),
+        Err(crate::LearningGraphFailure::EmptyBatch)
+    ));
+    let mut invalid = graph.clone();
+    invalid.goal = invalid.nodes.len();
+    assert!(matches!(
+        Batch::from_graphs(&[invalid], &device),
+        Err(crate::LearningGraphFailure::NodeBinding)
+    ));
+    let mut invalid = graph.clone();
+    invalid.successes.clear();
+    assert!(matches!(
+        Batch::from_graphs(&[invalid], &device),
+        Err(crate::LearningGraphFailure::SuccessfulActionBinding)
+    ));
     let batch = Batch::from_graphs(
         std::slice::from_ref(&graph),
         &runtime.device.clone().inner(),
@@ -289,7 +306,7 @@ fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
     let source = super::super::tests::own_question();
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -392,5 +409,108 @@ fn indexed_context_inference_on_a_checked_scope() {
         "typed_context mode={mode} graphs={b} nodes={n} dense_host_bytes={dense} packed_host_bytes={packed} wall_micros={wall} peak_process_rss_bytes={:?} score_digest={}",
         sample.peak_rss_bytes,
         crate::learning::digest(&actual)
+    );
+}
+
+#[test]
+fn checkpoint_update_overflow_is_reported_before_writing_artifacts() {
+    let mut io = MemoryStore::default();
+    let mut parent = Checkpoint::fresh();
+    let runtime = Runtime::load(&parent, &mut io).unwrap();
+    parent.updates = u64::MAX;
+    let error = runtime.checkpoint(&parent, 1, &mut io).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::ModelUpdatesOverflow)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ModelUpdatesOverflow)
+    );
+    assert!(io.0.is_empty());
+}
+
+#[test]
+fn model_backend_errors_preserve_categories_without_exposing_detail() {
+    let error = canonical_checkpoint(Bytes::from_bytes_vec(Vec::new())).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::ResearchFailure::BackendPackHeader)
+    );
+    let first = record_failure(burn::store::RecordError::Validation(
+        "private tensor path".into(),
+    ));
+    let same = record_failure(burn::store::RecordError::Validation(
+        "private tensor path".into(),
+    ));
+    let different = record_failure(burn::store::RecordError::Validation(
+        "another tensor".into(),
+    ));
+    assert_eq!(first, same);
+    assert_eq!(first, different);
+    let json = serde_json::to_value(first).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::ResearchFailure::BackendRecordValidation)
+    );
+    assert!(!json.as_object().unwrap().contains_key("detail_digest"));
+    assert!(!json.to_string().contains("private tensor path"));
+}
+
+#[test]
+fn training_loss_and_tensor_data_failures_keep_machine_causes() {
+    let device = Device::flex().autodiff();
+    let two = Tensor::<1>::from_data(
+        burn::tensor::TensorData::new(vec![1.0f32, 2.0], [2]),
+        &device,
+    );
+    assert_eq!(
+        loss_value(&two).unwrap_err(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::TrainingLossCount,
+            expected: 1,
+            actual: 2,
+        }
+    );
+    let nan = Tensor::<1>::from_data(burn::tensor::TensorData::new(vec![f32::NAN], [1]), &device);
+    assert_eq!(
+        loss_value(&nan).unwrap_err(),
+        crate::Error::from(crate::ResearchFailure::TrainingLossNonFinite)
+    );
+    let error = tensor_data_failure(burn::tensor::DataError::ElementCountMismatch {
+        expected: 3,
+        actual: 2,
+    });
+    assert_eq!(
+        error,
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::TensorElementCountMismatch,
+            expected: 3,
+            actual: 2
+        }
+    );
+    let error = tensor_data_failure(burn::tensor::DataError::DTypeMismatch {
+        expected: burn::tensor::DType::F32,
+        actual: burn::tensor::DType::I64,
+    });
+    assert_eq!(
+        error.code(),
+        u32::from(crate::ResearchFailure::TensorDtypeMismatch)
+    );
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["expected_type"],
+        u32::from(crate::TensorElementType::F32)
+    );
+    assert_eq!(
+        json["actual_type"],
+        u32::from(crate::TensorElementType::I64)
+    );
+    assert!(
+        !serde_json::to_value(error)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("detail_digest")
     );
 }

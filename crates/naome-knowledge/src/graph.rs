@@ -28,7 +28,7 @@ use storage::CheckedStorage;
 
 #[derive(Debug)]
 pub struct Ingest {
-    pub status: &'static str,
+    pub status: crate::IngestStatus,
     pub id: ArtifactId,
     pub admitted: Vec<ArtifactId>,
     pub rejected: Vec<(ArtifactId, crate::Error)>,
@@ -48,7 +48,7 @@ pub struct Graph {
     bytes: usize,
     context_bytes: usize,
     root: [u8; 32],
-    storage_error: Arc<Mutex<Option<String>>>,
+    storage_error: Arc<Mutex<Option<crate::Error>>>,
     store: Arc<Store>,
     checked_storage: Arc<CheckedStorage>,
     old_generations: Vec<Weak<CheckedStorage>>,
@@ -90,7 +90,7 @@ impl Graph {
     fn backlog(&self) -> Result<std::sync::MutexGuard<'_, pending::PendingStore>, crate::Error> {
         self.backlog
             .lock()
-            .map_err(|_| "proof backlog lock poisoned".into())
+            .map_err(|_| crate::InputFault::BacklogLockPoisoned.into())
     }
     pub(crate) fn ownership(&self) -> Arc<Store> {
         self.store.clone()
@@ -138,26 +138,28 @@ impl Graph {
 
     fn ensure_live(&self) -> Result<(), crate::Error> {
         match self.storage_error() {
-            Some(error) => Err(crate::Error::CorruptStorage(error)),
+            Some(error) => Err(error),
             None => Ok(()),
         }
     }
     pub(crate) fn program_failure(&self, error: &crate::Error) {
         if error.fatal() {
-            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            let mut halt = self
+                .storage_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            halt.get_or_insert_with(|| error.clone());
         }
     }
+
     fn cold<T, E: Into<crate::Error>>(&self, result: Result<T, E>) -> Result<T, crate::Error> {
         result.map_err(|error| {
-            let error = error.into().storage();
-            if error.fatal() {
-                *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                    error
-                        .storage_detail()
-                        .unwrap_or("checked storage failure")
-                        .to_owned(),
-                );
-            }
+            // A storage adapter may already have recorded the typed root cause
+            // before an outer layer reported the failed operation.
+            let error = self
+                .storage_error()
+                .unwrap_or_else(|| error.into().storage());
+            self.program_failure(&error);
             error
         })
     }
@@ -181,7 +183,7 @@ impl Graph {
         };
         let header = context
             .proof_header(proof)?
-            .ok_or("checked proof header missing")?;
+            .ok_or(crate::InputFault::StoredQuestionProofHeaderMissing)?;
         for formula in [question.positive_target(), question.negative_target()] {
             let target = if header.canonical_length() == usize::MAX {
                 use naome_proof::program::{formula_hash, graph_statement_id};
@@ -196,21 +198,26 @@ impl Graph {
         Ok(false)
     }
 
+    fn decode_exchange_question(
+        &self,
+        bytes: &[u8],
+    ) -> Result<naome_checker::question::ResearchQuestion, crate::Error> {
+        self.cold(
+            naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
+                bytes,
+                &self.context,
+            )
+            .map_err(|error| crate::Error::from(error).fatal_storage()),
+        )
+    }
+
     fn exchange_question(&self, id: ArtifactId) -> Result<Option<String>, crate::Error> {
         let Some(bytes) = self.cold(self.store.exchange_question(id, self.fixed_summary()))? else {
             return Ok(None);
         };
-        let question = self.cold(
-            naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
-                &bytes,
-                &self.context,
-            )
-            .map_err(|error| crate::Error::CorruptStorage(error.to_string())),
-        )?;
+        let question = self.decode_exchange_question(&bytes)?;
         if question.dependencies().is_empty() || !self.resolves_question(id, &question)? {
-            return self.cold(Err(crate::Error::CorruptStorage(
-                "stored exchange question does not bind the checked proof".into(),
-            )));
+            return self.cold(Err(crate::InputFault::StoredQuestionBinding));
         }
         Ok(Some(question.to_hex()))
     }
@@ -251,14 +258,14 @@ impl Graph {
                     .proof_formula(header, naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
                     .map_err(crate::Error::from),
             )?
-            .ok_or("checked proof conclusion missing")?;
+            .ok_or(crate::InputFault::CheckedConclusionMissing)?;
         let derived =
             naome_checker::question::ResearchQuestion::from_formula(conclusion.into_owned())
                 .map_err(crate::Error::from)?;
         if derived.formula() != derived.positive_target()
             && derived.formula() != derived.negative_target()
         {
-            return Err("description statement does not match a question target".into());
+            return Err(crate::InputFault::DescriptionStatementMismatch.into());
         }
         let metadata = Metadata {
             artifact_id: crate::hex(id.as_bytes()),
@@ -279,14 +286,14 @@ impl Graph {
     }
     pub(crate) fn open_observed(
         directory: &Path,
-        observe: &mut dyn FnMut() -> Result<(), String>,
+        observe: &mut dyn FnMut() -> Result<(), crate::Error>,
     ) -> Result<Self, crate::Error> {
         Self::open_inner(directory, false, observe)
     }
     fn open_inner(
         directory: &Path,
         cleanup: bool,
-        observe: &mut dyn FnMut() -> Result<(), String>,
+        observe: &mut dyn FnMut() -> Result<(), crate::Error>,
     ) -> Result<Self, crate::Error> {
         let store = Arc::new(Store::open(directory)?);
         let summary = store.summary()?;
@@ -336,8 +343,12 @@ impl Graph {
             for (ordinal, record) in page {
                 observe()?;
                 graph.cold(graph.checked_storage.adapt_cache())?;
-                if ordinal != after.checked_add(1).ok_or("replay ordinal overflow")? {
-                    return Err("durable replay order is incomplete".into());
+                if ordinal
+                    != after
+                        .checked_add(1)
+                        .ok_or(crate::InputFault::ReplayOrdinalOverflow)?
+                {
+                    return Err(crate::InputFault::ReplayOrderIncomplete.into());
                 }
                 if let Some(manifest) = record.program()? {
                     graph
@@ -346,11 +357,11 @@ impl Graph {
                     graph.bytes = graph
                         .bytes
                         .checked_add(record.bytes.len())
-                        .ok_or("replayed payload byte overflow")?;
+                        .ok_or(crate::InputFault::ReplayPayloadBytesOverflow)?;
                     graph.count = graph
                         .count
                         .checked_add(1)
-                        .ok_or("accepted count overflow")?;
+                        .ok_or(crate::InputFault::AcceptedCountOverflow)?;
                     after = ordinal;
                     continue;
                 }
@@ -358,7 +369,7 @@ impl Graph {
                 graph.bytes = graph
                     .bytes
                     .checked_add(candidate.bytes.len())
-                    .ok_or("replayed payload byte overflow")?;
+                    .ok_or(crate::InputFault::ReplayPayloadBytesOverflow)?;
                 let mut ready = true;
                 for dependency in &candidate.dependencies {
                     if !graph.cold(
@@ -372,18 +383,18 @@ impl Graph {
                     }
                 }
                 if !ready {
-                    return Err("durable graph has missing or cyclic dependencies".into());
+                    return Err(crate::InputFault::ReplayDependencyMissing.into());
                 }
                 let (context, growth) = graph.cold(graph.check_candidate(candidate))?;
                 graph.context = context;
                 graph.context_bytes = graph
                     .context_bytes
                     .checked_add(growth)
-                    .ok_or("checked context byte overflow")?;
+                    .ok_or(crate::InputFault::ReplayContextBytesOverflow)?;
                 graph.count = graph
                     .count
                     .checked_add(1)
-                    .ok_or("accepted count overflow")?;
+                    .ok_or(crate::InputFault::AcceptedCountOverflow)?;
                 after = ordinal;
             }
             graph.cold(graph.checked_storage.finish_startup_page(&graph.context))?;
@@ -392,13 +403,14 @@ impl Graph {
             }
         }
         if graph.count != summary.count
-            || after != u64::try_from(summary.count).map_err(|_| "replay count width")?
+            || after
+                != u64::try_from(summary.count).map_err(|_| crate::InputFault::ReplayCountWidth)?
         {
-            return Err("mathematical replay count differs from catalog".into());
+            return Err(crate::InputFault::ReplayCountMismatch.into());
         }
         let root = crate::corpus::root(graph.count, graph.context.artifact_set_fingerprint())?;
         if root != summary.root || graph.bytes != summary.bytes {
-            return Err("mathematically replayed corpus differs from catalog".into());
+            return Err(crate::InputFault::ReplayCorpusMismatch.into());
         }
         graph.store.finish_replay(root)?;
         graph.root = root;
@@ -503,10 +515,10 @@ impl Graph {
             let bytes = self
                 .cold(source.allocated_bytes())?
                 .checked_mul(2)
-                .ok_or("compaction disk overflow")?;
+                .ok_or(crate::InputFault::CompactionDiskOverflow)?;
             let disk = match crate::resources::DiskLease::acquire(
                 self.store.directory(),
-                u64::try_from(bytes).map_err(|_| "compaction disk width")?,
+                u64::try_from(bytes).map_err(|_| crate::InputFault::CompactionDiskWidth)?,
             ) {
                 Ok(disk) => disk,
                 Err(error) if error.retryable() => return Ok(None),
@@ -545,7 +557,7 @@ impl Graph {
         self.ensure_live()?;
         if !Arc::ptr_eq(&source, &self.checked_storage) || !gate.matches(copy.epoch, &copy.target) {
             return self.cold(Err::<_, crate::Error>(
-                "checked copy source epoch or target changed".into(),
+                crate::InputFault::CheckedCopyChanged.into(),
             ));
         }
         // A copy transaction contains only this bounded quantum. Admissions
@@ -586,13 +598,13 @@ impl Graph {
         let halt = self.storage_error.clone();
         let failure = halt.lock().unwrap_or_else(|error| {
             let mut failure = error.into_inner();
-            *failure = Some("checked storage halt lock poisoned".into());
+            failure.get_or_insert_with(|| {
+                crate::Error::from(crate::InputFault::CheckedStorageHaltPoisoned).fatal_storage()
+            });
             failure
         });
         if let Some(error) = &*failure {
-            return Err(crate::Error::CorruptStorage(format!(
-                "storage halted: {error}"
-            )));
+            return Err(error.clone());
         }
         self.old_generations.push(Arc::downgrade(&source));
         self.context = context;
@@ -607,7 +619,7 @@ impl Graph {
     pub fn author(&self, encoded: &str) -> Result<Envelope, crate::Error> {
         self.ensure_live()?;
         if encoded.len() > 2 * crate::resources::limits().proof_bytes {
-            return Err("producer artifact byte limit".into());
+            return Err(crate::InputFault::ProducerArtifactBytes.into());
         }
         let checked = self.check_input(encoded, &self.context)?;
         self.cold(checked.record(&self.context))
@@ -620,24 +632,24 @@ impl Graph {
         crate::resources::require_work_admission()?;
         self.maintain_checked_storage()?;
         if encoded.len() > 2 * crate::resources::limits().proof_bytes {
-            return Err("producer artifact byte limit".into());
+            return Err(crate::InputFault::ProducerArtifactBytes.into());
         }
         let disk = self.reserve_publication(encoded.len() / 2, 1)?;
         let checked = self.check_input(encoded, &self.context)?;
         let record = self.cold(checked.record(&self.context))?;
         if record.bytes.len() > crate::resources::limits().proof_bytes {
-            return Err("proof byte limit".into());
+            return Err(crate::InputFault::ProofBytes.into());
         }
         let id = record.id;
         let envelope = record.envelope();
         if let Some(existing) = self.binary_object(id)? {
             if !existing.same_content(&record) {
-                return Err("proof identity collision".into());
+                return Err(crate::InputFault::ProofIdentityCollision.into());
             }
             return Ok((
                 envelope,
                 Ingest {
-                    status: "duplicate",
+                    status: crate::IngestStatus::Duplicate,
                     id,
                     admitted: Vec::new(),
                     rejected: Vec::new(),
@@ -650,7 +662,7 @@ impl Graph {
         Ok((
             envelope,
             Ingest {
-                status: "accepted",
+                status: crate::IngestStatus::Accepted,
                 id,
                 admitted,
                 rejected,
@@ -665,10 +677,10 @@ impl Graph {
         let id = candidate.id;
         if let Some(existing) = self.binary_object(id)? {
             if !existing.same_content(&candidate.record()) {
-                return Err("proof identity collision".into());
+                return Err(crate::InputFault::ProofIdentityCollision.into());
             }
             return Ok(Ingest {
-                status: "duplicate",
+                status: crate::IngestStatus::Duplicate,
                 id,
                 admitted: Vec::new(),
                 rejected: Vec::new(),
@@ -676,7 +688,7 @@ impl Graph {
         }
         if self.waiting(id) {
             return Ok(Ingest {
-                status: "waiting_duplicate",
+                status: crate::IngestStatus::WaitingDuplicate,
                 id,
                 admitted: Vec::new(),
                 rejected: Vec::new(),
@@ -702,7 +714,7 @@ impl Graph {
                 self.pending.insert(id, (candidate, now));
             }
             return Ok(Ingest {
-                status: "waiting",
+                status: crate::IngestStatus::Waiting,
                 id,
                 admitted: Vec::new(),
                 rejected: Vec::new(),
@@ -710,7 +722,7 @@ impl Graph {
         }
         self.admit(candidate)?;
         let mut result = Ingest {
-            status: "accepted",
+            status: crate::IngestStatus::Accepted,
             id,
             admitted: vec![id],
             rejected: Vec::new(),
@@ -735,7 +747,7 @@ impl Graph {
         let page = match page {
             Err(error) if error.retryable() => {
                 crate::network::emit(
-                    serde_json::json!({"event":"proof_backlog_deferred","error":error}),
+                    serde_json::json!({"event":crate::outcome::NodeEvent::ProofBacklogDeferred,"error":error}),
                 );
                 return Ok((Vec::new(), Vec::new()));
             }
@@ -757,7 +769,7 @@ impl Graph {
                 Ok(candidate) => candidate,
                 Err(error) if error.retryable() || matches!(error, crate::Error::InputLimit(_)) => {
                     crate::network::emit(
-                        serde_json::json!({"event":"proof_backlog_overload","id":crate::hex(id.as_bytes()),"error":error}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ProofBacklogOverload,"id":crate::hex(id.as_bytes()),"error":error}),
                     );
                     continue;
                 }
@@ -771,7 +783,7 @@ impl Graph {
                 Ok(()) => admitted.push(id),
                 Err(error) if error.retryable() => {
                     crate::network::emit(
-                        serde_json::json!({"event":"proof_backlog_deferred","id":crate::hex(id.as_bytes()),"error":error}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ProofBacklogDeferred,"id":crate::hex(id.as_bytes()),"error":error}),
                     );
                     continue;
                 }
@@ -818,15 +830,15 @@ impl Graph {
             }
             Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, payload)) => {
                 let certificate = naome_proof::DefinitionCertificate::from_canonical_bytes(payload)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| crate::object::definition_error(payload, error))?;
                 naome_checker::check_definition_with_state(certificate, context)
                     .map(CheckedArtifact::Definition)
                     .map_err(crate::Error::from)
             }
-            _ => Err("unknown artifact input tag".into()),
+            _ => Err(crate::InputFault::ArtifactInputTag.into()),
         };
         if let Err(error) = &checked {
-            self.record_check_failure(error);
+            self.program_failure(error);
         }
         checked
     }
@@ -842,20 +854,9 @@ impl Graph {
         }
         check_normal_form_with_state(normal, context).map_err(|error| {
             let error = crate::Error::from(error);
-            self.record_check_failure(&error);
+            self.program_failure(&error);
             error
         })
-    }
-
-    fn record_check_failure(&self, error: &crate::Error) {
-        if error.fatal() {
-            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                error
-                    .storage_detail()
-                    .unwrap_or("checked storage failure")
-                    .to_owned(),
-            );
-        }
     }
 
     fn check_artifact(
@@ -878,19 +879,21 @@ impl Graph {
                 if let Some(statement) = definition.obligation_statement_id() {
                     let witness = candidate
                         .obligation
-                        .ok_or("function obligation witness missing")?;
+                        .ok_or(crate::InputFault::FunctionWitnessMissing)?;
                     let header = self
                         .cold(context.proof_header(witness).map_err(crate::Error::from))?
-                        .ok_or("function obligation proof missing")?;
+                        .ok_or(crate::InputFault::FunctionProofMissing)?;
                     if header.statement_id() != statement {
-                        return Err("function obligation proof conclusion differs".into());
+                        return Err(crate::InputFault::FunctionConclusionMismatch.into());
                     }
                 }
                 CheckedArtifact::Definition(definition)
             }
         };
         if checked.id() != candidate.id || checked.statement() != candidate.statement {
-            return Err("checked identity mismatch".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::CheckedIdentityMismatch,
+            ));
         }
         Ok(checked)
     }
@@ -959,13 +962,13 @@ impl Graph {
         let index = objects
             .checked_mul(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
             .and_then(|n| n.checked_mul(16))
-            .ok_or("publication disk estimate overflow")?;
+            .ok_or(crate::InputFault::PublicationDiskOverflow)?;
         let work = bytes
             .checked_mul(4)
             .and_then(|n| n.checked_add(index))
             .and_then(|n| n.checked_add(1024 * 1024))
-            .ok_or("publication disk estimate overflow")?;
-        u64::try_from(work).map_err(|_| "publication disk width".into())
+            .ok_or(crate::InputFault::PublicationDiskOverflow)?;
+        u64::try_from(work).map_err(|_| crate::InputFault::PublicationDiskWidth.into())
     }
 
     fn admit(&mut self, candidate: Candidate) -> Result<(), crate::Error> {
@@ -990,9 +993,10 @@ impl Graph {
         let source = self.checked_storage.clone();
         // The phase guard records every setup failure, including native close
         // errors. Do not overwrite that cleanup evidence through cold().
-        let phase = source
-            .admission_phase()
-            .map_err(|error| format!("storage halted: {error}"))?;
+        let phase = source.admission_phase().map_err(|error| {
+            self.storage_error()
+                .unwrap_or_else(|| error.fatal_storage())
+        })?;
         preparation.register_artifact(self, registration)?;
         let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
@@ -1005,7 +1009,9 @@ impl Graph {
             self.fixed_summary(),
             None,
             crate::corpus::root(
-                self.count.checked_add(1).ok_or("accepted count overflow")?,
+                self.count
+                    .checked_add(1)
+                    .ok_or(crate::InputFault::AcceptedCountOverflow)?,
                 batch.context.artifact_set_fingerprint(),
             )?,
             self.commit_guard.as_ref(),
@@ -1057,7 +1063,7 @@ impl Graph {
     pub fn pending_ids(&self) -> Result<Vec<ArtifactId>, crate::Error> {
         self.pending_ids_after(None, crate::resources::active_limits().id_page)
     }
-    pub fn storage_error(&self) -> Option<String> {
+    pub fn storage_error(&self) -> Option<crate::Error> {
         self.storage_error
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1073,7 +1079,7 @@ impl Graph {
         let stored = self.cold(self.store.contains(id, self.fixed_summary()))?;
         if checked != stored {
             return self.cold(Err::<_, crate::Error>(
-                "checked canonical membership differs".into(),
+                crate::InputFault::CheckedMembershipMismatch.into(),
             ));
         }
         Ok(checked)
@@ -1095,7 +1101,7 @@ impl Graph {
         let object = self.cold(self.store.get_binary(id, self.fixed_summary()))?;
         if checked != object.is_some() {
             return self.cold(Err::<_, crate::Error>(
-                "checked canonical membership differs".into(),
+                crate::InputFault::CheckedMembershipMismatch.into(),
             ));
         }
         Ok(object)
@@ -1112,7 +1118,7 @@ impl Graph {
     ) -> Result<Box<[ArtifactId]>, crate::Error> {
         self.binary_object(id)?
             .map(|object| object.dependencies.iter().copied().collect())
-            .ok_or_else(|| "checked dependency root is missing".into())
+            .ok_or_else(|| crate::InputFault::CheckedDependencyMissing.into())
     }
     pub fn ids_page(
         &self,
@@ -1121,7 +1127,7 @@ impl Graph {
     ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         if limit == 0 || limit > crate::resources::active_limits().id_page {
-            return Err("inventory page limit".into());
+            return Err(crate::InputFault::InventoryPageLimit.into());
         }
         let expected = self.cold(
             self.context
@@ -1133,7 +1139,7 @@ impl Graph {
         let actual = self.cold(self.store.ids_page(after, limit, self.fixed_summary()))?;
         if actual != expected {
             return self.cold(Err::<_, crate::Error>(
-                "canonical inventory differs from checked set".into(),
+                crate::InputFault::CheckedInventorySetMismatch.into(),
             ));
         }
         Ok(expected)
@@ -1151,7 +1157,9 @@ impl Graph {
     ) -> Result<Option<crate::corpus::InventoryPage>, crate::Error> {
         self.ensure_live()?;
         if limit == 0 || limit > crate::resources::limits().inventory_page {
-            return Err(crate::Error::InputLimit("inventory page limit"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::InventoryPageLimit,
+            ));
         }
         let page = self.cold(
             self.store
@@ -1164,9 +1172,7 @@ impl Graph {
                         .contains_artifact(*id)
                         .map_err(crate::Error::from),
                 )? {
-                    return self.cold(Err(crate::Error::CorruptStorage(
-                        "canonical inventory differs from checked set".into(),
-                    )));
+                    return self.cold(Err(crate::InputFault::CheckedInventoryMismatch));
                 }
             }
         }

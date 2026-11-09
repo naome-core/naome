@@ -93,7 +93,13 @@ fn developer_training_command_exports_recheckable_targets_from_a_stopped_node() 
     assert_eq!(graph.accepted_count(), expected);
     drop(graph);
     fs::write(&input, br#"{"operation":"questions","partition":"reserved","after":null,"scan":16,"unexpected":true}"#).unwrap();
-    assert!(!run().status.success());
+    let rejected = run();
+    assert!(!rejected.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(
+        error["error"]["code"],
+        u32::from(naome_knowledge::RuntimeFailure::TrainingRequestParse)
+    );
     let graph = Graph::open(&node).unwrap();
     assert_eq!(graph.content_root(), root);
     drop(graph);

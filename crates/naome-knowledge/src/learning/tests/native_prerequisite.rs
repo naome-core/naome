@@ -225,13 +225,13 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
             assert!(control.solution.is_none());
             let next = solve(&second, &required, &inputs, seed, continuation_budget).unwrap();
             eprintln!(
-                "continuation without={} with={} expansions={}",
+                "continuation without={:?} with={:?} expansions={}",
                 control.diagnostic, next.diagnostic, next.cost.search_expansions
             );
             assert!(next.cost.search_expansions <= continuation_budget);
             let next = next
                 .solution
-                .unwrap_or_else(|| panic!("{}", next.diagnostic));
+                .unwrap_or_else(|| panic!("{:?}", next.diagnostic));
             continuation = Some((second, next, first_id));
             let mut with_unused = first.commands().unwrap();
             let seal = with_unused.pop().unwrap();
@@ -286,7 +286,7 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
         let right = attempt(&question, Some(donor), seed, budget);
         let outcome = |trial: &Result<Generation, String>| match trial {
             Ok(g) => format!(
-                "{}:{}:{}",
+                "{:?}:{}:{}",
                 g.diagnostic,
                 g.cost.search_expansions,
                 g.solution.is_some()
@@ -336,7 +336,7 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
         }
         let solution = right
             .solution
-            .unwrap_or_else(|| panic!("{}", right.diagnostic));
+            .unwrap_or_else(|| panic!("{:?}", right.diagnostic));
         if index != 1 {
             derived.push((question, solution, donor_id));
         } else {
@@ -523,7 +523,6 @@ fn publish(
         result: Ok(jobs::Output::Native {
             terminal: Box::new(generation.terminal),
             solution: Some(solution),
-            diagnostic: generation.diagnostic,
             frontier: generation.frontier,
         }),
     };

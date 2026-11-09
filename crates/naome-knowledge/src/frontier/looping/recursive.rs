@@ -114,7 +114,7 @@ impl Frontier {
             {
                 let sources = record.helpers.clone();
                 for source in sources {
-                    let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
+                    let helper = ResearchQuestion::from_hex(&source)?;
                     if helper.formula().view().node_count_and_depth().0
                         >= nodes[index]
                             .question

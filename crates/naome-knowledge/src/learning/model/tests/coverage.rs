@@ -44,13 +44,18 @@ impl Store {
     }
 }
 impl ArtifactIo for Store {
-    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, crate::Error> {
         let bytes = self.inner.read(blob, range)?;
         self.reads += bytes.len() as u64;
         self.limit();
         Ok(bytes)
     }
-    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.writes += bytes.len() as u64;
         self.limit();
         self.inner.write(blob, range, bytes)

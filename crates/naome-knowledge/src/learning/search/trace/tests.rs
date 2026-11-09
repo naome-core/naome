@@ -6,7 +6,7 @@ fn question() -> naome_checker::question::ResearchQuestion {
 }
 struct Ordered;
 impl Ranker for Ordered {
-    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
         Ok(vec![0.; d.candidates.len()])
     }
 }
@@ -87,7 +87,13 @@ fn altered_state_action_scores_parent_or_work_are_rejected() {
             4 => trace.events[0].end = trace.attempts + 1,
             _ => trace.events[0].ranks = Some(vec![f32::NAN.to_bits()]),
         }
-        assert!(trace.validate().is_err(), "mutation {mutation}");
+        let error = trace.validate().unwrap_err();
+        if mutation == 0 {
+            assert_eq!(
+                serde_json::to_value(&error).unwrap()["code"],
+                u32::from(crate::ResearchFailure::TraceStateBinding)
+            );
+        }
     }
     let other =
         naome_checker::question::ResearchQuestion::from_hex("040101000000000100000000").unwrap();
@@ -183,7 +189,7 @@ struct Distracted {
 }
 
 impl Ranker for Distracted {
-    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
         use naome_foundation::graph::Node;
         fn contains(formula: naome_foundation::FormulaView<'_>, goal: &Formula) -> bool {
             formula == goal.view()
@@ -244,6 +250,24 @@ fn a_budgeted_detour_recovers_a_checked_decision_for_replay() {
         goal,
     ));
     let question = naome_checker::question::ResearchQuestion::from_formula(target.clone()).unwrap();
+    struct Limited;
+    impl Ranker for Limited {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+            Err(crate::Error::MemoryOverload {
+                requested: 3,
+                charged: 4,
+                budget: 5,
+            })
+        }
+    }
+    assert!(matches!(
+        solve(&target, &mut Limited, 48),
+        Err(crate::Error::MemoryOverload {
+            requested: 3,
+            charged: 4,
+            budget: 5
+        })
+    ));
     let found = solve(&target, &mut Distracted { goal_block }, 48).unwrap();
     let tree = found
         .tree

@@ -19,7 +19,7 @@ pub(in crate::graph) struct AdmissionGuards<'a> {
 }
 
 impl CheckedStorage {
-    pub(in crate::graph) fn admission_phase(&self) -> Result<AdmissionPhase<'_>, String> {
+    pub(in crate::graph) fn admission_phase(&self) -> Result<AdmissionPhase<'_>, crate::Error> {
         // Install the abort guard before any fallible phase setup. In
         // particular, a poisoned gate must still close its exact databases.
         let mut phase = AdmissionPhase {
@@ -30,21 +30,31 @@ impl CheckedStorage {
             published: Cell::new(false),
             _thread_bound: PhantomData,
         };
-        let mut source = self.write_gate()?;
-        self.require_live()?;
+        let mut source = self
+            .write_gate()
+            .map_err(|error| self.phase_failure(crate::InputFault::CheckedSourceGate, error))?;
+        self.require_live()
+            .map_err(|error| self.phase_failure(crate::InputFault::CheckedSourceGate, error))?;
         phase.epoch = Some(source.epoch);
         phase.target = source.mirror.clone();
         let mut target = phase
             .target
             .as_ref()
-            .map(|target| target.write_gate())
+            .map(|target| {
+                target.write_gate().map_err(|error| {
+                    self.phase_failure(crate::InputFault::CheckedMirrorGate, error)
+                })
+            })
             .transpose()?;
         if source.phase_owner.is_some()
             || target
                 .as_ref()
                 .is_some_and(|target| target.phase_owner.is_some() || target.mirror.is_some())
         {
-            return Err("checked admission phase already owned".into());
+            return Err(self.phase_failure(
+                crate::InputFault::CheckedSourceGate,
+                crate::InputFault::CheckedAdmissionOwned.into(),
+            ));
         }
         source.phase_owner = Some(phase.owner);
         if let Some(target) = &mut target {
@@ -57,18 +67,34 @@ impl CheckedStorage {
         #[cfg(test)]
         tests::prepare_failure(self, phase.target.as_deref());
         self.begin_write_phase()
-            .map_err(|error| format!("checked admission source BEGIN: {error}"))?;
+            .map_err(|error| self.phase_failure(crate::InputFault::CheckedSourceBegin, error))?;
         if let Some(target) = &phase.target {
-            target
-                .begin_write_phase()
-                .map_err(|error| format!("checked admission mirror BEGIN: {error}"))?;
+            target.begin_write_phase().map_err(|error| {
+                self.phase_failure(crate::InputFault::CheckedMirrorBegin, error)
+            })?;
         }
         Ok(phase)
     }
 
-    pub(super) fn require_live(&self) -> Result<(), String> {
-        match &*self.halt.lock().map_err(|_| "checked halt lock poisoned")? {
-            Some(error) => Err(format!("checked owner halted: {error}")),
+    fn phase_failure(&self, code: crate::InputFault, cause: crate::Error) -> crate::Error {
+        let failure = crate::Error::StorageContext {
+            code,
+            cause: Box::new(cause),
+        };
+        self.halt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(|| failure.clone());
+        failure
+    }
+
+    pub(super) fn require_live(&self) -> Result<(), crate::Error> {
+        match &*self
+            .halt
+            .lock()
+            .map_err(|_| crate::InputFault::CheckedHaltLockPoisoned)?
+        {
+            Some(error) => Err(error.clone()),
             None => Ok(()),
         }
     }
@@ -87,16 +113,23 @@ impl CheckedStorage {
                     // Preserve the actual native close refusal and its handle.
                     // open() refuses the quarantined slot, and cleanup must not
                     // be reported complete merely because close was attempted.
-                    let message = format!("checked admission close unresolved: {error}");
+                    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+                    let failure = crate::Error::CheckedIndexCloseSql {
+                        reason,
+                        sqlite_code,
+                    };
+                    let first_refusal = slot.1.is_none();
                     slot.0 = Some(connection);
-                    slot.1 = Some(message.clone());
-                    let mut halt = self.halt.lock().unwrap_or_else(|error| error.into_inner());
-                    match &mut *halt {
-                        Some(primary) => {
-                            primary.push_str("; ");
-                            primary.push_str(&message);
-                        }
-                        None => *halt = Some(message),
+                    slot.1 = Some(failure.clone());
+                    if first_refusal {
+                        let mut halt = self.halt.lock().unwrap_or_else(|error| error.into_inner());
+                        *halt = Some(match halt.take() {
+                            Some(primary) => crate::Error::StorageCombined {
+                                primary: Box::new(primary),
+                                cleanup: Box::new(failure),
+                            },
+                            None => failure,
+                        });
                     }
                 }
             }
@@ -108,15 +141,32 @@ impl AdmissionPhase<'_> {
     pub(in crate::graph) fn finish(
         &self,
         current: &CheckedStorage,
-    ) -> Result<AdmissionGuards<'_>, String> {
-        let source = self.source.write_gate()?;
+    ) -> Result<AdmissionGuards<'_>, crate::Error> {
+        let source = self.source.write_gate().map_err(|error| {
+            self.source
+                .phase_failure(crate::InputFault::CheckedSourceGate, error)
+        })?;
         let target = self
             .target
             .as_ref()
-            .map(|target| target.write_gate())
+            .map(|target| {
+                target.write_gate().map_err(|error| {
+                    self.source
+                        .phase_failure(crate::InputFault::CheckedMirrorGate, error)
+                })
+            })
             .transpose()?;
-        self.source.require_live()?;
-        let epoch = self.epoch.ok_or("checked admission has no source epoch")?;
+        self.source.require_live().map_err(|error| {
+            self.source
+                .phase_failure(crate::InputFault::CheckedSourceGate, error)
+        })?;
+        let epoch = self
+            .epoch
+            .ok_or(crate::InputFault::CheckedAdmissionEpochMissing)
+            .map_err(|error| {
+                self.source
+                    .phase_failure(crate::InputFault::CheckedSourceGate, error.into())
+            })?;
         let route_matches = match &self.target {
             Some(target) => source.matches(epoch, target),
             None => source.epoch == epoch && source.mirror.is_none(),
@@ -128,17 +178,25 @@ impl AdmissionPhase<'_> {
                 target.phase_owner != Some(self.owner) || target.mirror.is_some()
             })
         {
-            return Err("checked admission generation, epoch or phase owner changed".into());
+            return Err(self.source.phase_failure(
+                crate::InputFault::CheckedSourceGate,
+                crate::InputFault::CheckedAdmissionOwnerChanged.into(),
+            ));
         }
         if let Some(target) = &self.target {
-            target
-                .finish_write_phase()
-                .map_err(|error| format!("checked admission mirror COMMIT: {error}"))?;
+            target.finish_write_phase().map_err(|error| {
+                self.source
+                    .phase_failure(crate::InputFault::CheckedMirrorCommit, error)
+            })?;
         }
-        self.source
-            .finish_write_phase()
-            .map_err(|error| format!("checked admission source COMMIT: {error}"))?;
-        self.source.require_live()?;
+        self.source.finish_write_phase().map_err(|error| {
+            self.source
+                .phase_failure(crate::InputFault::CheckedSourceCommit, error)
+        })?;
+        self.source.require_live().map_err(|error| {
+            self.source
+                .phase_failure(crate::InputFault::CheckedSourceGate, error)
+        })?;
         #[cfg(test)]
         tests::before_canonical(self.source, self.target.as_deref());
         // Keep both gates through the canonical transaction and infallible
@@ -179,7 +237,9 @@ impl Drop for AdmissionPhase<'_> {
                 .halt
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            halt.get_or_insert_with(|| "checked admission aborted before publication".into());
+            halt.get_or_insert_with(|| {
+                crate::Error::from(crate::InputFault::CheckedAdmissionAborted).fatal_storage()
+            });
         }
         // Recover poisoned gates only for fatal disposal, never continued use.
         // Source -> target is also the normal immutable-write lock order.

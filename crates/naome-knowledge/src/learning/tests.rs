@@ -7,7 +7,7 @@ use super::*;
 
 struct UniversalChoice(usize);
 impl model::Ranker for UniversalChoice {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         let offered = d
             .candidates
             .iter()
@@ -149,7 +149,7 @@ pub(crate) fn helper_goal() -> (ResearchQuestion, [ResearchQuestion; 2]) {
 pub(crate) fn own_example() -> Example {
     let question = own_question();
     let (solution, diagnostic) = search_question(&question, &mut Symbolic, 128).unwrap();
-    let solution = solution.unwrap_or_else(|| panic!("own native solution: {diagnostic}"));
+    let solution = solution.unwrap_or_else(|| panic!("own native solution: {diagnostic:?}"));
     Example {
         origin: Origin::Local,
         job: 41,
@@ -348,11 +348,13 @@ fn checkpoint_after_work_before_acknowledgement_is_idempotent() {
         .execute(1, Some(&source), 61, &mut engine, &mut io)
         .unwrap();
     assert_eq!(serde_json::to_vec(&resumed).unwrap(), bytes);
-    assert!(
-        resumed
-            .execute(3, Some(&source), 61, &mut engine, &mut io)
-            .is_err()
-    );
+    assert!(matches!(
+        resumed.execute(3, Some(&source), 61, &mut engine, &mut io),
+        Err(crate::Error::Research(
+            crate::ResearchFailure::LearningUnitSequence
+        ))
+    ));
+    assert_eq!(serde_json::to_vec(&resumed).unwrap(), bytes);
 }
 #[test]
 fn retained_training_plan_and_measured_cost_cannot_change_between_units() {
@@ -374,9 +376,15 @@ fn retained_training_plan_and_measured_cost_cannot_change_between_units() {
     assert_eq!(before, digest(&job));
     let mut altered = progress.clone();
     altered.plan.as_mut().unwrap().plan.phases[0].focused ^= true;
-    assert!(job.retain_progress(51, altered.clone()).is_err());
+    assert_eq!(
+        job.retain_progress(51, altered.clone()).unwrap_err(),
+        crate::ResearchFailure::ProgressRepeatedMismatch.into()
+    );
     altered.unit = 2;
-    assert!(job.retain_progress(51, altered).is_err());
+    assert_eq!(
+        job.retain_progress(51, altered).unwrap_err(),
+        crate::ResearchFailure::ProgressContinuationMismatch.into()
+    );
     progress.unit = 2;
     progress.cpu_micros = 9;
     assert!(job.retain_progress(51, progress.clone()).is_err());
@@ -468,7 +476,11 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
         writes: usize,
     }
     impl ArtifactIo for Interrupted {
-        fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+        fn read(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+        ) -> Result<Vec<u8>, crate::Error> {
             self.store.read(blob, range)
         }
         fn write(
@@ -476,10 +488,10 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
             blob: &Blob,
             range: std::ops::Range<usize>,
             bytes: Vec<u8>,
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::Error> {
             self.writes += 1;
             if self.writes == 2 {
-                return Err("injected partial meta pair write".into());
+                return Err(crate::WorkerFailure::GrantClosed.into());
             }
             self.store.write(blob, range, bytes)
         }
@@ -498,7 +510,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
     prior.wall_micros = 234567;
     prior.meta_cpu_micros = 23;
     prior.meta_wall_micros = 45;
-    prior.diagnostic = "no_ambiguous_training_decisions".into();
+    prior.qualification = Qualification::NoAmbiguousTrainingDecisions;
     job.progress = Some(prior);
     let original = digest(&job);
     let mut control = job.clone();
@@ -516,16 +528,16 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
         store: MemoryStore::default(),
         writes: 0,
     };
-    assert!(
-        job.execute(
+    let error = job
+        .execute(
             job.units(),
             None,
             71,
             &mut Engine::default(),
-            &mut interrupted
+            &mut interrupted,
         )
-        .is_err()
-    );
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantClosed));
     assert_eq!(digest(&job), original);
     assert_eq!(interrupted.store.0.len(), 1);
     // A new Engine models the lost worker. The prior durable cost, plan and
@@ -599,14 +611,14 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
         result: None,
-        diagnostic: "candidate_requires_qualification".into(),
+        qualification: Qualification::Pending,
         ..finished_progress(&job.base)
     });
     job.execute(job.units(), None, 42, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
-        job.progress.as_ref().unwrap().diagnostic,
-        "forgetting_rejected"
+        job.progress.as_ref().unwrap().qualification,
+        Qualification::AnchorRegression
     );
     assert!(state.qualify(&job));
     assert_eq!(state.model, incumbent);
@@ -630,8 +642,8 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     job.execute(job.units(), None, 43, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
-        job.progress.as_ref().unwrap().diagnostic,
-        "development_regression_rejected"
+        job.progress.as_ref().unwrap().qualification,
+        Qualification::DevelopmentRegression
     );
     assert!(alternate.qualify(&job));
     assert_eq!(alternate.model, incumbent);
@@ -657,8 +669,8 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     job.execute(job.units(), None, 44, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
-        job.progress.as_ref().unwrap().diagnostic,
-        "transfer_regression_rejected"
+        job.progress.as_ref().unwrap().qualification,
+        Qualification::TransferRegression
     );
     job.validate().unwrap();
 
@@ -667,7 +679,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     progress.model = candidate_for_transfer_regression;
     progress.promotions += 1;
     progress.rejections -= 1;
-    progress.diagnostic = "candidate_promoted".into();
+    progress.qualification = Qualification::Promoted;
     progress.development_after = crate::training::ability::Profile::new(digest(&progress.model));
     progress.finder = None;
     let mut worker_job = job.clone();
@@ -676,7 +688,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         worker_job
             .retain_progress(44, invalid_promotion.progress.clone().unwrap())
             .unwrap_err(),
-        "learning checkpoint loses an incumbent transfer success"
+        crate::ResearchFailure::ProgressTransferLoss.into()
     );
 
     let restored: Job =
@@ -725,7 +737,8 @@ fn finished_progress(state: &State) -> Progress {
         regressions: [0; crate::training::ability::SKILLS],
         gains: [0; crate::training::ability::SKILLS],
         result: None,
-        diagnostic: String::new(),
+        qualification: Qualification::NoNewAcceptedSolutions,
+        generation: None,
     }
 }
 pub(crate) fn measured_progress() -> Progress {
@@ -742,7 +755,11 @@ pub(crate) fn measured_progress() -> Progress {
 #[derive(Default)]
 pub(crate) struct MemoryStore(pub BTreeMap<(String, usize), Vec<u8>>);
 impl ArtifactIo for MemoryStore {
-    fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(
+        &mut self,
+        blob: &Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, crate::Error> {
         blob.range_len(&range)?;
         let mut bytes = Vec::new();
         for index in range {
@@ -759,7 +776,7 @@ impl ArtifactIo for MemoryStore {
         blob: &Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         assert_eq!(blob.range_len(&range)?, bytes.len());
         for (index, part) in
             range.zip(bytes.chunks(crate::resources::limits().native_model_chunk_bytes))
@@ -771,7 +788,7 @@ impl ArtifactIo for MemoryStore {
 }
 struct Symbolic;
 impl model::Ranker for Symbolic {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         Ok(vec![0.; d.candidates.len()])
     }
 }
@@ -944,7 +961,7 @@ pub(crate) fn completed(job: &mut Job, solution: Solution) {
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
         result: Some(solution),
-        diagnostic: "certified_candidate".into(),
+        qualification: Qualification::NoNewAcceptedSolutions,
         ..finished_progress(&job.base)
     });
 }
@@ -981,7 +998,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
         result: None,
-        diagnostic: "candidate_requires_qualification".into(),
+        qualification: Qualification::Pending,
         plan: Some(plan),
         ..finished_progress(&job.base)
     });
@@ -1191,8 +1208,23 @@ fn a_peer_certificate_cannot_be_reclassified_as_a_local_discovery_trace() {
     completed(&mut job, solution.clone());
     job.validate_generated_trace().unwrap();
     solution.tree = search::Tree::Certificate(evidence::pack(&verified).unwrap());
+    completed(&mut job, solution.clone());
+    assert_eq!(
+        job.validate_generated_trace().unwrap_err(),
+        crate::ResearchFailure::GeneratedTraceMissing.into()
+    );
+    solution.tree = search::Tree::Composed {
+        packet: Vec::new(),
+        inputs: vec!["input".into()],
+        work: 1,
+    };
     completed(&mut job, solution);
-    assert!(job.validate_generated_trace().is_err());
+    assert!(matches!(
+        job.validate_generated_trace(),
+        Err(crate::Error::LearningEvidence(
+            crate::EvidenceFailure::Framing
+        ))
+    ));
 }
 
 #[test]
@@ -1481,7 +1513,7 @@ pub(crate) fn typed_scope_candidate(conjoin: bool) -> (ResearchQuestion, Solutio
         .unwrap();
     let solution = generation
         .solution
-        .unwrap_or_else(|| panic!("typed scope: {}", generation.diagnostic));
+        .unwrap_or_else(|| panic!("typed scope: {:?}", generation.diagnostic));
     let search::Tree::Scoped { target, actions } = &solution.tree else {
         panic!("native scope action trace absent");
     };
@@ -1591,7 +1623,7 @@ pub(crate) fn typed_definition_consumer(
         .unwrap();
     let solution = result
         .solution
-        .unwrap_or_else(|| panic!("typed context: {}", result.diagnostic));
+        .unwrap_or_else(|| panic!("typed context: {:?}", result.diagnostic));
     assert!(
         solution.cost.definition_references > 0,
         "{:?}",
@@ -1978,4 +2010,197 @@ fn discovered_relation_is_authored_from_a_previously_checked_meaning() {
     );
     publish(&mut graph, &later, "downstream.sqlite3");
     assert!(graph.contains(later.packet.manifest.artifact_id()).unwrap());
+}
+
+#[test]
+fn model_blob_range_and_index_failures_keep_distinct_codes() {
+    let blob = Blob::of(b"model");
+    assert_eq!(
+        blob.chunk_len(1).unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ModelChunkIndex)
+    );
+    assert_eq!(
+        blob.range_len(&(0..0)).unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ModelChunkRange)
+    );
+    let empty = Blob::of(b"");
+    assert_eq!(
+        empty.validate().unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ModelBlobCapacity)
+    );
+}
+
+#[test]
+fn history_owner_failure_keeps_its_code_through_learning_execution() {
+    struct FailedHistory;
+    impl ArtifactIo for FailedHistory {
+        fn history(&mut self, _: &history::Request) -> Result<history::Receipt, crate::Error> {
+            Err(crate::WorkerFailure::GrantIdentity.into())
+        }
+        fn read(&mut self, _: &Blob, _: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
+            unreachable!()
+        }
+        fn write(
+            &mut self,
+            _: &Blob,
+            _: std::ops::Range<usize>,
+            _: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            unreachable!()
+        }
+    }
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    job.request_history(1);
+    let before = digest(&job);
+    let error = job
+        .execute(1, None, 1, &mut Engine::default(), &mut FailedHistory)
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantIdentity));
+    assert_eq!(digest(&job), before);
+}
+
+#[test]
+fn model_owner_failure_keeps_its_code_through_model_loading() {
+    struct FailedModel;
+    impl ArtifactIo for FailedModel {
+        fn read(&mut self, _: &Blob, _: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
+            Err(crate::WorkerFailure::GrantDecoding.into())
+        }
+        fn write(
+            &mut self,
+            _: &Blob,
+            _: std::ops::Range<usize>,
+            _: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            unreachable!()
+        }
+    }
+    let mut checkpoint = Checkpoint::fresh();
+    checkpoint.model = Some(Blob::of(b"model"));
+    checkpoint.optimizer = Some(Blob::of(b"optimizer"));
+    let error = Engine::default()
+        .with_error(&checkpoint, &mut FailedModel, |_| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantDecoding));
+}
+
+#[test]
+fn model_write_failure_keeps_its_code_through_training_execution() {
+    struct FailedWrite;
+    impl ArtifactIo for FailedWrite {
+        fn read(&mut self, _: &Blob, _: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
+            unreachable!()
+        }
+        fn write(
+            &mut self,
+            _: &Blob,
+            _: std::ops::Range<usize>,
+            _: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            Err(crate::WorkerFailure::GrantClosed.into())
+        }
+    }
+    let mut state = fixed_state();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    let before = digest(&job);
+    let error = job
+        .execute(1, None, 1, &mut Engine::default(), &mut FailedWrite)
+        .unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::WorkerFailure::GrantClosed));
+    assert_eq!(digest(&job), before);
+}
+
+#[test]
+fn native_artifact_check_preserves_proof_and_format_diagnostics() {
+    let context = naome_checker::ArtifactState::new();
+    let certificate =
+        naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+            proof_id: naome_proof::ProofId::from_bytes([7; 32]),
+        }])
+        .unwrap();
+    let bytes = naome_proof::ArtifactPayload::Proof(certificate).to_canonical_bytes();
+    let error = proof::check_artifact(&crate::hex(&bytes), &context).unwrap_err();
+    assert!(error.diagnostic().is_some());
+    assert!(
+        serde_json::to_value(&error)
+            .unwrap()
+            .get("diagnostic")
+            .is_some()
+    );
+
+    let definition_error = proof::check_artifact("01ff", &context).unwrap_err();
+    assert!(
+        matches!(definition_error, crate::Error::CertificateFormat(ref value)
+        if matches!(value.reason, crate::FormatFailure::UnknownTag {
+            domain: crate::FormatTagClass::DefinitionKind, tag: 255
+        }))
+    );
+
+    let error = proof::check_artifact("ff", &context).unwrap_err();
+    assert!(matches!(error, crate::Error::CertificateFormat(ref value)
+    if matches!(value.reason, crate::FormatFailure::UnknownTag {
+        domain: crate::FormatTagClass::ArtifactPayload, tag: 255
+    })));
+}
+
+#[test]
+fn job_validation_preserves_snapshot_and_missing_theorem_diagnostics() {
+    let mut job = fixed_state().job();
+    job.base_hash = "different".into();
+    assert_eq!(
+        job.validate().unwrap_err(),
+        crate::ResearchFailure::JobParentSnapshot.into()
+    );
+    let mut job = fixed_state().job();
+    let id = [42; 32];
+    job.required = vec![crate::hex(&id)];
+    assert_eq!(
+        job.validate().unwrap_err(),
+        crate::Error::MissingRequiredTheorem(naome_proof::ProofId::from_bytes(id))
+    );
+}
+
+#[test]
+fn state_mutation_preserves_causes_and_rejects_overflow_atomically() {
+    let mut state = State::fresh();
+    let invalid = definitions::Entry {
+        certificate: vec![],
+        obligation: None,
+    };
+    let expected = invalid.certificate().unwrap_err();
+    assert_eq!(state.remember_definition(invalid).unwrap_err(), expected);
+    assert!(state.definitions.is_empty());
+
+    state.local_examples = u64::MAX;
+    let before = digest(&state);
+    assert_eq!(
+        state.consider(own_example(), true).unwrap_err(),
+        crate::ResearchFailure::LearningLocalCountOverflow.into()
+    );
+    assert_eq!(digest(&state), before);
+}
+
+#[test]
+fn invalid_search_question_preserves_decoder_failure() {
+    let source = "invalid";
+    let expected = crate::Error::from(ResearchQuestion::from_hex(source).unwrap_err());
+    let actual =
+        search_question_report(source, &mut UniversalChoice(0), 1, &SolveContext::default())
+            .err()
+            .unwrap();
+    assert_eq!(actual, expected);
+    let mut engine = Engine::default();
+    let mut io = MemoryStore::default();
+    let actual = engine
+        .with_error(&model::Checkpoint::fresh(), &mut io, |runtime| {
+            solve_with_report_typed(source, runtime, 1, 1, SolveContext::default())
+        })
+        .err()
+        .unwrap();
+    assert_eq!(actual, expected);
 }

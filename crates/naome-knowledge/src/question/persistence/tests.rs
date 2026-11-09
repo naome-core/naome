@@ -63,7 +63,12 @@ fn original_source_orientation_and_first_admission_survive_row_updates_and_resta
     );
     drop(persistence);
     std::fs::remove_file(root.join("questions.sqlite3")).unwrap();
-    assert!(Persistence::open(&directory.0, policy).is_err());
+    assert!(matches!(
+        Persistence::open(&directory.0, policy),
+        Err(crate::Error::Runtime(
+            crate::RuntimeFailure::QuestionRegistryMissing
+        ))
+    ));
 }
 
 #[cfg(test)]
@@ -205,4 +210,224 @@ fn stricter_assessment_policy_preserves_current_sources_and_first_policy_identit
         })
         .unwrap();
     assert_eq!(sources, [question.to_hex()]);
+}
+
+#[test]
+fn replay_preserves_a_typed_visitor_failure_without_changing_records() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let mut persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    persistence.retain(&question, Kind::Baseline, None).unwrap();
+    let error = persistence
+        .replay(&naome_checker::ArtifactState::new(), |_, _| {
+            Err(crate::Error::MemoryOverload {
+                requested: 7,
+                charged: 11,
+                budget: 13,
+            })
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::MemoryOverload {
+            requested: 7,
+            charged: 11,
+            budget: 13
+        }
+    ));
+    let latched = persistence.error().unwrap();
+    assert!(latched.fatal());
+    let encoded = serde_json::to_value(latched).unwrap();
+    assert_eq!(
+        encoded["cause_code"],
+        u32::from(crate::outcome::OperationCode::MemoryOverload)
+    );
+    assert_eq!(encoded["requested"], 7);
+
+    drop(persistence);
+    let persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    let mut count = 0;
+    persistence
+        .replay(&naome_checker::ArtifactState::new(), |_, replayed| {
+            assert_eq!(replayed.to_hex(), question.to_hex());
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn backlog_settlement_preserves_uncertain_commit_and_freezes_the_owner() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let mut persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    let updates = persistence.queue_updates(&question).unwrap();
+    persistence
+        .checkpoint
+        .commit(&persistence.header, updates)
+        .unwrap();
+    crate::checkpoint::fail_after_commit();
+    let error = persistence
+        .settle_backlog(question.resolution_id())
+        .unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    assert!(error.fatal());
+    let code = error.code();
+    assert_eq!(error.fatal_storage().code(), code);
+    assert!(
+        persistence
+            .settle_backlog(question.resolution_id())
+            .is_err()
+    );
+}
+
+#[test]
+fn question_retention_preserves_uncertain_commit_until_replay() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let mut persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    crate::checkpoint::fail_after_commit();
+    let error = persistence
+        .retain(&question, Kind::Baseline, None)
+        .unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    assert!(persistence.retain(&question, Kind::Baseline, None).is_err());
+    drop(persistence);
+    let persistence = Persistence::open(&directory.0, PrefilterPolicy::default()).unwrap();
+    let mut count = 0;
+    persistence
+        .replay(&naome_checker::ArtifactState::new(), |_, restored| {
+            assert_eq!(restored.to_hex(), question.to_hex());
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn question_delivery_preserves_uncertain_commit_and_replays_admission() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let question = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
+    let policy = PrefilterPolicy::default();
+    let key = crate::hex(question.record_id());
+    let entry = Entry {
+        encoded: question.to_hex(),
+        kind: Kind::Prepared,
+        first: Some(FirstAdmission {
+            record: key.clone(),
+            input: "01".repeat(32),
+            policy: crate::hex(&policy.identity()),
+            snapshot_before: "02".repeat(32),
+            snapshot_after: "03".repeat(32),
+            registry_before: "04".repeat(32),
+            registry_after: "05".repeat(32),
+        }),
+    };
+    let mut persistence = Persistence::open(&directory.0, policy).unwrap();
+    let update = crate::checkpoint::Update::put("question", key, &entry).unwrap();
+    persistence
+        .checkpoint
+        .commit(&persistence.header, vec![update])
+        .unwrap();
+    crate::checkpoint::fail_after_commit();
+    let error = persistence.delivered(&question, true).unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    drop(persistence);
+    let mut persistence = Persistence::open(&directory.0, policy).unwrap();
+    let context = naome_checker::ArtifactState::new();
+    let (restored, _) = persistence
+        .admitted(question.resolution_id(), &context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.to_hex(), question.to_hex());
+    assert_eq!(
+        persistence
+            .next_backlog(&context)
+            .unwrap()
+            .unwrap()
+            .to_hex(),
+        question.to_hex()
+    );
+}
+
+#[test]
+fn corrupted_registry_marker_is_rejected_without_replacement() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let marker = directory.0.join("question-registry.initialized");
+    std::fs::write(&marker, b"invalid marker").unwrap();
+    let error = Persistence::open(&directory.0, PrefilterPolicy::default())
+        .err()
+        .unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::RuntimeFailure::QuestionMarkerRead)
+    );
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::MarkerCorrupt)
+    );
+    assert_eq!(value["fatal"], true);
+    assert_eq!(std::fs::read(&marker).unwrap(), b"invalid marker");
+    assert!(!directory.0.join("research/questions.sqlite3").exists());
+}
+
+#[test]
+fn registry_startup_preserves_corrupt_checkpoint_header_cause() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let policy = PrefilterPolicy::default();
+    drop(Persistence::open(&directory.0, policy).unwrap());
+    let path = directory.0.join("research/questions.sqlite3");
+    let outside = rusqlite::Connection::open(&path).unwrap();
+    outside
+        .execute("UPDATE checkpoint SET digest = zeroblob(32)", [])
+        .unwrap();
+    drop(outside);
+    let error = Persistence::open(&directory.0, policy).err().unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::RuntimeFailure::QuestionCheckpointOpen)
+    );
+    assert_eq!(value["fatal"], true);
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::CheckpointHeaderDigest)
+    );
+    let outside = rusqlite::Connection::open(&path).unwrap();
+    let digest: Vec<u8> = outside
+        .query_row("SELECT digest FROM checkpoint", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(digest, vec![0; 32]);
+}
+
+#[test]
+fn stored_question_rejects_wrong_identity_and_admission_binding() {
+    let question = ResearchQuestion::from_hex("02040001000000000100000000").unwrap();
+    let key = crate::hex(question.record_id());
+    let mut entry = Entry {
+        encoded: question.to_hex(),
+        kind: Kind::Exchange,
+        first: None,
+    };
+    assert_eq!(
+        validate_entry("wrong", &entry, &question),
+        Err(crate::InputFault::QuestionRecordBinding.into())
+    );
+    entry.kind = Kind::Prepared;
+    entry.first = Some(FirstAdmission {
+        record: "01".repeat(32),
+        input: "02".repeat(32),
+        policy: "03".repeat(32),
+        snapshot_before: "04".repeat(32),
+        snapshot_after: "05".repeat(32),
+        registry_before: "06".repeat(32),
+        registry_after: "07".repeat(32),
+    });
+    assert_eq!(
+        validate_entry(&key, &entry, &question),
+        Err(crate::InputFault::QuestionFirstRecordBinding.into())
+    );
 }

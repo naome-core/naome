@@ -1,6 +1,7 @@
 //! Search-owned working memory. Checkpoints contain weights and Adam; an
 //! interrupted native search restarts at its existing unit boundary.
 use super::*;
+use crate::ResearchFailure;
 use std::cell::OnceCell;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,9 +46,9 @@ impl Plan {
         selected: usize,
         state: String,
         offered: String,
-    ) -> Result<Option<Memory>, String> {
+    ) -> Result<Option<Memory>, crate::Error> {
         if selected >= self.scores.len() {
-            return Err("native memory action index differs".into());
+            return Err(ResearchFailure::MemoryActionIndex.into());
         }
         let Some(successors) = &self.successors else {
             return Ok(None);
@@ -58,11 +59,11 @@ impl Plan {
                 .selected(selected)
                 .into_data()
                 .try_to_vec::<f32>()
-                .map_err(|e| e.to_string())?;
+                .map_err(|_| ResearchFailure::MemoryTensorDecode)?;
             if values.len() != policy::WIDTH
                 || values.iter().any(|v| !v.is_finite() || v.abs() > 1.)
             {
-                return Err("native memory successor differs".into());
+                return Err(ResearchFailure::MemorySuccessor.into());
             }
             let _ = row.set(values);
         }
@@ -73,7 +74,7 @@ impl Plan {
         let model = self
             .model
             .clone()
-            .ok_or("native memory checkpoint missing")?;
+            .ok_or(ResearchFailure::MemoryCheckpointMissing)?;
         let memory = Memory {
             model,
             state,
@@ -86,14 +87,14 @@ impl Plan {
 }
 
 impl Memory {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), crate::Error> {
         for value in [&self.model, &self.state, &self.offered] {
             crate::object::id_bytes(value)?;
         }
         if self.values.len() != policy::WIDTH
             || self.values.iter().any(|v| !v.is_finite() || v.abs() > 1.)
         {
-            return Err("native memory shape or value differs".into());
+            return Err(ResearchFailure::MemoryShapeOrValue.into());
         }
         Ok(())
     }
@@ -105,7 +106,7 @@ impl Runtime {
         graph: &Graph,
         offered: &str,
         memory: Option<&Memory>,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, crate::Error> {
         if let Some(memory) = memory {
             memory.validate()?;
             if self.recurrence != Recurrence::Carry
@@ -113,7 +114,7 @@ impl Runtime {
                 || memory.state != graph.binding
                 || memory.offered != offered
             {
-                return Err("native working memory context or checkpoint differs".into());
+                return Err(ResearchFailure::MemoryContext.into());
             }
         }
         let batch = self.scoring_batch(graph)?;
@@ -134,9 +135,9 @@ impl Runtime {
         let scores = scores
             .into_data()
             .try_to_vec::<f32>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| ResearchFailure::MemoryTensorDecode)?;
         if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
-            return Err("native memory prediction differs".into());
+            return Err(ResearchFailure::MemoryPrediction.into());
         }
         let rows = if successors.is_some() {
             vec![OnceCell::new(); scores.len()]

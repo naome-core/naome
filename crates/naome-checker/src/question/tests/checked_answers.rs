@@ -79,7 +79,10 @@ fn elementary_answers_have_independently_rechecked_certificates_without_stored_p
             "{:?}: {decision:?}",
             target
         );
-        assert_eq!(decision.rule, "Q07_ELEMENTARY_CERTIFICATE");
+        assert_eq!(
+            decision.rule,
+            crate::question::PrefilterRule::Q07ElementaryCertificate
+        );
         assert!(verify(&decision, &target, &state).is_empty());
     }
     assert_eq!(state.snapshot_id(), snapshot);
@@ -146,7 +149,10 @@ fn specialized_universal_lemmas_combine_across_mp_and_preserve_all_original_cita
         Some(RejectionReason::KnownProof),
         "{decision:?}"
     );
-    assert_eq!(decision.rule, "Q07_CHECKED_INSTANTIATED_CLOSURE");
+    assert_eq!(
+        decision.rule,
+        crate::question::PrefilterRule::Q07CheckedInstantiatedClosure
+    );
     let mut expected = vec![first, second];
     expected.sort();
     assert_eq!(verify(&decision, &target, &state), expected);
@@ -182,8 +188,8 @@ fn unanswered_targets_are_not_synthesized_and_limits_are_explicitly_inconclusive
         RejectionReason::InvalidPolicy,
         RejectionReason::InvalidEvidence,
     ] {
-        let decision =
-            assess(&target, &state, &PrefilterPolicy::default()).reject(reason, "INCOMPLETE");
+        let decision = assess(&target, &state, &PrefilterPolicy::default())
+            .reject(reason, crate::question::PrefilterRule::Q08Execution);
         assert_eq!(decision.outcome, PrefilterOutcome::Inconclusive);
         assert!(!decision.passed());
         assert!(decision.novelty().is_none());

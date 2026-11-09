@@ -41,6 +41,64 @@ struct Behaviour {
     relay: relay::Behaviour,
 }
 
+fn relay_status(status: relay::StatusCode) -> crate::outcome::RelayStatus {
+    use crate::outcome::RelayStatus as Code;
+    match status {
+        relay::StatusCode::OK => Code::Ok,
+        relay::StatusCode::ReservationRefused => Code::ReservationRefused,
+        relay::StatusCode::ResourceLimitExceeded => Code::ResourceLimitExceeded,
+        relay::StatusCode::PermissionDenied => Code::PermissionDenied,
+        relay::StatusCode::ConnectionFailed => Code::ConnectionFailed,
+        relay::StatusCode::NoReservation => Code::NoReservation,
+        relay::StatusCode::MalformedMessage => Code::MalformedMessage,
+        relay::StatusCode::UnexpectedMessage => Code::UnexpectedMessage,
+    }
+}
+
+fn relay_event(event: relay::Event) -> serde_json::Value {
+    use crate::outcome::{NodeEvent, RelayEventKind as Kind};
+    match event {
+        relay::Event::ReservationReqAccepted {
+            src_peer_id,
+            renewed,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationAccepted,"source":src_peer_id.to_string(),"renewed":renewed})
+        }
+        relay::Event::ReservationReqDenied {
+            src_peer_id,
+            status,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationDenied,"source":src_peer_id.to_string(),"status":relay_status(status)})
+        }
+        relay::Event::ReservationClosed { src_peer_id } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationClosed,"source":src_peer_id.to_string()})
+        }
+        relay::Event::ReservationTimedOut { src_peer_id } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::ReservationTimedOut,"source":src_peer_id.to_string()})
+        }
+        relay::Event::CircuitReqDenied {
+            src_peer_id,
+            dst_peer_id,
+            status,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::CircuitDenied,"source":src_peer_id.to_string(),"destination":dst_peer_id.to_string(),"status":relay_status(status)})
+        }
+        relay::Event::CircuitReqAccepted {
+            src_peer_id,
+            dst_peer_id,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::CircuitAccepted,"source":src_peer_id.to_string(),"destination":dst_peer_id.to_string()})
+        }
+        relay::Event::CircuitClosed {
+            src_peer_id,
+            dst_peer_id,
+            error,
+        } => {
+            json!({"event":NodeEvent::RelayService,"kind":Kind::CircuitClosed,"source":src_peer_id.to_string(),"destination":dst_peer_id.to_string(),"error":error.map(|error| json!({"kind":crate::outcome::io_fault_kind(&error),"os_code":error.raw_os_error()}))})
+        }
+    }
+}
+
 fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     // The default library limiter retains one bucket per historical identity.
     // Use an explicit count and short finite window for this bounded service.
@@ -64,14 +122,21 @@ fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     })
 }
 
-pub async fn run(path: &Path) -> Result<(), String> {
-    let shutdown = network::shutdown_signal()?;
+pub async fn run(path: &Path) -> Result<(), crate::Error> {
+    use crate::{InputFault, InputLimit, RuntimeFailure};
+    let shutdown = network::shutdown_signal().map_err(|cause| crate::Error::RuntimeContext {
+        code: RuntimeFailure::RelaySignal,
+        cause: Box::new(cause),
+    })?;
     tokio::pin!(shutdown);
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| crate::Error::RuntimeContext {
+        code: crate::RuntimeFailure::RelayConfigParse,
+        cause: Box::new(crate::error::config_decode(error)),
+    })?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()
@@ -83,16 +148,17 @@ pub async fn run(path: &Path) -> Result<(), String> {
         &config.directory.join("identity.key"),
         1024,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| RuntimeFailure::RelayIdentity)?;
     let own = key.public().to_peer_id();
     if config.external_addresses.len() > crate::resources::limits().addresses_per_contact {
-        return Err("relay advertised address capacity".into());
+        return Err(crate::Error::InputLimit(InputLimit::RelayAddressCapacity));
     }
     let listen: Multiaddr = config
         .listen
         .parse()
-        .map_err(|error| format!("relay listen: {error}"))?;
-    network::require_tcp_address(&listen)?;
+        .map_err(|_| crate::Error::InputFault(InputFault::RelayListenAddress))?;
+    network::require_tcp_address(&listen)
+        .map_err(|_| crate::Error::InputFault(InputFault::RelayListenAddress))?;
     let settings = discovery::Config {
         mdns: false,
         dht: true,
@@ -105,7 +171,13 @@ pub async fn run(path: &Path) -> Result<(), String> {
     // Provider records may refer to circuits through this service itself.
     book.relays.insert(own);
     let book = discovery::SharedBook::new(book);
-    let mut discovery = discovery::Behaviour::new(&key, &settings, true, true)?;
+    let mut discovery =
+        discovery::Behaviour::new(&key, &settings, true, true).map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: RuntimeFailure::RelayDiscovery,
+                cause: Box::new(cause),
+            }
+        })?;
     if let Some(kad) = discovery.kad.as_mut() {
         kad.store_mut().set_relays(book.lock().relays.clone());
     }
@@ -136,14 +208,14 @@ pub async fn run(path: &Path) -> Result<(), String> {
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_other_transport(move |key| network::transport::tcp(key, tcp_book))
-        .map_err(|error| error.to_string())?
+        .map_err(|_| RuntimeFailure::RelayTransport)?
         .with_behaviour(|_| Behaviour {
             gate: discovery::Gate(book.clone()),
             limits,
             discovery,
             relay,
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|_| RuntimeFailure::RelayBehaviour)?
         .with_swarm_config(|config| {
             config
                 .with_idle_connection_timeout(crate::resources::limits().idle_connection_timeout)
@@ -151,14 +223,17 @@ pub async fn run(path: &Path) -> Result<(), String> {
         })
         .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
-    swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    swarm
+        .listen_on(listen)
+        .map_err(|_| RuntimeFailure::RelayListener)?;
     let use_listen_addresses = config.external_addresses.is_empty();
     let mut advertised = BTreeSet::new();
     for address in config.external_addresses {
         let address: Multiaddr = address
             .parse()
-            .map_err(|error| format!("relay external address: {error}"))?;
-        let address = discovery::routing_address(&address, own, &BTreeSet::new())?;
+            .map_err(|_| crate::Error::InputFault(InputFault::RelayExternalAddress))?;
+        let address = discovery::routing_address(&address, own, &BTreeSet::new())
+            .map_err(|_| crate::Error::InputFault(InputFault::RelayExternalAddress))?;
         swarm.add_external_address(address.clone());
         advertised.insert(address);
     }
@@ -166,7 +241,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
     let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     network::emit(
-        json!({"event":"relay_starting", "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
+        json!({"event":crate::outcome::NodeEvent::RelayStarting, "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
     );
     loop {
         tokio::select! {
@@ -179,16 +254,16 @@ pub async fn run(path: &Path) -> Result<(), String> {
                         && discovery::routing_address(&address, own, &BTreeSet::new()).is_ok()
                         && advertised.insert(address.clone()) {
                         swarm.add_external_address(address.clone());
-                        network::emit(json!({"event":"relay_advertised", "address":address.to_string(), "source":"local_listener"}));
+                        network::emit(json!({"event":crate::outcome::NodeEvent::RelayAdvertised, "address":address.to_string(), "source":crate::outcome::EventSource::LocalListener}));
                     }
-                    network::emit(json!({"event":"ready", "address":address.to_string()}));
+                    network::emit(json!({"event":crate::outcome::NodeEvent::Ready, "address":address.to_string()}));
                 },
-                SwarmEvent::ListenerError { error, .. } => return Err(format!("relay listener: {error}")),
+                SwarmEvent::ListenerError { .. } => return Err(RuntimeFailure::RelayListener.into()),
                 SwarmEvent::ConnectionEstablished { peer_id, connection_id, .. } => {
                     if let Ok(contact) = book.lock().admit(peer_id, Instant::now()) {
                         contact.connected = true; contact.connected_at.get_or_insert(Instant::now());
                     }
-                    network::emit(json!({"event":"relay_connected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string()}));
+                    network::emit(json!({"event":crate::outcome::NodeEvent::RelayConnected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string()}));
                 }
                 SwarmEvent::ConnectionClosed { peer_id, num_established:0, .. } => {
                     if let Some(contact) = book.lock().contacts.get_mut(&peer_id) {
@@ -214,7 +289,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                         }
                     }
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => network::emit(json!({"event":"relay_service", "detail":format!("{event:?}")})),
+                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => network::emit(relay_event(event)),
                 _ => {}
             },
             _ = tick.tick() => {
@@ -223,17 +298,19 @@ pub async fn run(path: &Path) -> Result<(), String> {
                 for peer in expired {
                     book.lock().retire(peer, Instant::now());
                     if let Some(kad) = swarm.behaviour_mut().discovery.kad.as_mut() { kad.remove_peer(&peer); }
-                    network::emit(json!({"event":"contact_expired", "peer":peer.to_string()}));
+                    network::emit(json!({"event":crate::outcome::NodeEvent::ContactExpired, "peer":peer.to_string()}));
                 }
                 let unidentified: Vec<_> = book.lock().contacts.iter().filter_map(|(peer, contact)| {
                     (contact.connected && !contact.compatible && contact.connected_at.is_some_and(|since| since.elapsed() >= crate::resources::limits().identify_timeout)).then_some(*peer)
                 }).collect();
                 for peer in unidentified { let _ = swarm.disconnect_peer_id(peer); }
             },
-            signal = &mut shutdown => { signal?; break; }
+            signal = &mut shutdown => { signal.map_err(|cause| crate::Error::RuntimeContext { code: RuntimeFailure::RelaySignal, cause: Box::new(cause) })?; break; }
         }
     }
-    network::emit(json!({"event":"stopped", "role":"relay"}));
+    network::emit(
+        json!({"event":crate::outcome::NodeEvent::Stopped, "role":crate::outcome::ServiceRole::Relay}),
+    );
     Ok(())
 }
 

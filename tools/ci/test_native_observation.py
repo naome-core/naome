@@ -34,24 +34,24 @@ class NativeObservationTests(unittest.TestCase):
     def test_log_rotation_keeps_existing_session_offsets_and_no_duplicate_reads(self):
         node = self.log_node()
         path = self.root / "node.log"
-        path.write_text('{"event":"starting"}\n{"event":"stopped"}\n')
+        path.write_text('{"event":1507432}\n{"event":1507434}\n')
         before_restart = len(node.logs())
         path.rename(self.root / "node.log.previous")
-        path.write_text('{"event":"starting"}\n{"event":"accepted"}\n{"event":"stopped"}\n')
+        path.write_text('{"event":1507432}\n{"event":1507329}\n{"event":1507434}\n')
         self.assertEqual([v['event'] for v in node.logs()[before_restart:]],
-                         ['starting', 'accepted', 'stopped'])
+                         [0x170068, 0x170001, 0x17006a])
         self.assertEqual(len(node.logs()), 5)
 
     def test_log_partial_append_is_observed_exactly_once_after_rotation(self):
         node = self.log_node()
         path = self.root / "node.log"
-        path.write_bytes(b'{"event":"starting"}\n{"event":')
-        self.assertEqual(node.logs(), [{'event': 'starting'}])
+        path.write_bytes(b'{"event":1507432}\n{"event":')
+        self.assertEqual(node.logs(), [{'event': 0x00170068}])
         path.rename(self.root / "node.log.previous")
         with (self.root / "node.log.previous").open('ab') as output:
-            output.write(b'"accepted"}\n')
-        path.write_text('{"event":"stopped"}\n')
-        expected = [{'event': 'starting'}, {'event': 'accepted'}, {'event': 'stopped'}]
+            output.write(b'1507329}\n')
+        path.write_text('{"event":1507434}\n')
+        expected = [{'event': 0x00170068}, {'event': 0x00170001}, {'event': 0x0017006a}]
         self.assertEqual(node.logs(), expected)
         self.assertEqual(node.logs(), expected)
 
@@ -69,7 +69,7 @@ class NativeObservationTests(unittest.TestCase):
         record = {'id': 42, 'input': {'role': 'train', 'source': 'owned'},
                   'native': {'base': {'preparation': 'Meta', 'meta': {'model': {'updates': 8}}},
                              'progress': {'meta_update': update, 'plan': {'plan': plan, 'context': [1]},
-                                          'transfer': transfer, 'diagnostic': 'no_transfer_gain_rejected',
+                                          'transfer': transfer, 'qualification': NATIVE.Qualification.NO_TRANSFER_GAIN,
                                           'meta_cpu_micros': 0, 'cpu_micros': 1,
                                           'meta_wall_micros': 0, 'wall_micros': 1}}}
         database = directory / 'research/jobs.sqlite3'

@@ -48,7 +48,6 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
                     terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
                         .into(),
                     solution: Some(solution),
-                    diagnostic: "certified_candidate".into(),
                     frontier: None,
                 }),
             },
@@ -159,7 +158,7 @@ fn technical_and_interrupted_records_preserve_uncertainty_without_fake_proofs() 
     ] {
         let mut record = owner.journal.records[&id].clone();
         record.state = state;
-        record.failure = Some("worker ended without a retained search unit".into());
+        record.failure = Some(WorkerFailure::Execution.into());
         let summary = ExperienceSummary::from_record(&record).unwrap().unwrap();
         summary.validate().unwrap();
         assert_eq!(summary.terminal, terminal);
@@ -180,12 +179,14 @@ fn failed_native_experience_reloads_from_the_existing_job_journal() {
     let (id, mut receiver) = submit_native(&mut owner, input.clone());
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
+    let cause = crate::Error::Research(crate::ResearchFailure::WorkBudgetExhausted);
+    let failure = crate::outcome::JobFailureCode::from_owner(&cause);
     owner
         .complete(
             id,
             process::Outcome {
                 state: State::Failed,
-                result: Err("worker could not finish its reserved unit".into()),
+                result: Err(failure),
             },
         )
         .unwrap();
@@ -199,6 +200,7 @@ fn failed_native_experience_reloads_from_the_existing_job_journal() {
         .unwrap()
         .unwrap();
     assert_eq!(record.id, id);
+    assert_eq!(record.failure, Some(failure));
     assert!(record.result.is_none());
     let restored = crate::learning::experience::ExperienceSummary::from_record(&record)
         .unwrap()
@@ -254,12 +256,15 @@ fn accepted(owner: &mut Owner) -> u64 {
         0,
         "a provider result is not accepted training data"
     );
-    assert!(
-        owner
-            .disk
-            .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
-            .is_err()
+    let error = owner
+        .disk
+        .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::LearningProgramIdentity)
     );
+    assert_eq!(learning(owner)["accepted"], 0);
     let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
     let mut graph = crate::Graph::default();
     let program = crate::learning::program::Candidate::from_solution(&solution, &q).unwrap();
@@ -341,6 +346,15 @@ fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
         .accept_learning(&mut owner.journal, id, &root)
         .unwrap();
     assert_eq!(learning(&owner), before);
+    let error = owner
+        .disk
+        .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::LearningReceiptMismatch)
+    );
+    assert_eq!(learning(&owner), before);
     let settings = owner.settings;
     drop(owner);
     let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
@@ -372,7 +386,7 @@ fn bounded_journal_history_includes_terminal_failures_without_invented_training_
             failed,
             process::Outcome {
                 state: State::Failed,
-                result: Err("observed worker interruption".into()),
+                result: Err(WorkerFailure::Execution.into()),
             },
         )
         .unwrap();
@@ -732,7 +746,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
     accepted(&mut owner);
     let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
     let blob = crate::learning::Blob::of(b"bounded-model");
-    assert!(
+    assert_eq!(
         owner
             .disk
             .model_io(
@@ -743,7 +757,8 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
                 0..1,
                 Some(b"bounded-model".to_vec())
             )
-            .is_err()
+            .unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::NativeModelIoLacksOriginalReservation),
     );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
@@ -850,6 +865,18 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
         .disk
         .verify_models(owner.journal.records[&id].native.as_ref().unwrap())
         .unwrap();
+    let forged_length = crate::learning::Blob {
+        sha256: blob.sha256.clone(),
+        bytes: blob.bytes + 1,
+    };
+    assert_eq!(
+        owner.disk.verify_blob(&forged_length).unwrap_err(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::ModelChunkLength,
+            expected: forged_length.bytes as u64,
+            actual: blob.bytes as u64,
+        }
+    );
     owner.save().unwrap();
     assert_eq!(
         owner
@@ -1123,11 +1150,11 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
     #[derive(Default)]
     struct Checkpoint(Option<crate::learning::Progress>);
     impl Supervisor for Checkpoint {
-        fn reserve(&mut self, unit: u32) -> Result<(), String> {
+        fn reserve(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
             assert_eq!(unit, 1);
             Ok(())
         }
-        fn checkpoint(&mut self, unit: u32) -> Result<(), String> {
+        fn checkpoint(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
             assert_eq!(self.0.as_ref().unwrap().unit, unit);
             Ok(())
         }
@@ -1135,18 +1162,18 @@ fn peer_program_completion_retries_memory_pressure_after_worker_success() {
             &mut self,
             unit: u32,
             progress: crate::learning::Progress,
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::outcome::WorkerFailure> {
             assert_eq!(unit, 1);
             assert!(self.0.replace(progress).is_none());
             Ok(())
         }
-        fn probe(&mut self, _: Probe) -> Result<(), String> {
+        fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
             Ok(())
         }
         fn blocked_nanos(&self) -> u64 {
             0
         }
-        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), String> {
+        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), crate::outcome::WorkerFailure> {
             Ok(())
         }
     }
@@ -1284,14 +1311,12 @@ fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_accoun
             reply,
         )
         .unwrap();
-    assert!(
-        receive
-            .try_recv()
-            .unwrap()
-            .result
-            .unwrap_err()
-            .contains("prerequisites")
-    );
+    assert!(matches!(
+        receive.try_recv().unwrap().result,
+        Err(CompletionFailure::Admission(
+            AdmissionFailure::PrerequisitesNotRetained
+        ))
+    ));
     assert_eq!(owner.journal.next_id, next);
     assert!(!owner.journal.accounts.contains_key(&input.account_key()));
     owner
@@ -1448,14 +1473,12 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
             reply,
         )
         .unwrap();
-    assert!(
-        receive
-            .try_recv()
-            .unwrap()
-            .result
-            .unwrap_err()
-            .contains("snapshot predates")
-    );
+    assert!(matches!(
+        receive.try_recv().unwrap().result,
+        Err(CompletionFailure::Admission(
+            AdmissionFailure::InFlightPrerequisites
+        ))
+    ));
     assert_eq!(owner.journal.next_id, next);
     assert_eq!(
         serde_json::to_vec(owner.journal.records.get(&id).unwrap()).unwrap(),
@@ -1484,11 +1507,14 @@ fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening(
         .history_request
         .clone()
         .unwrap();
-    assert!(
+    assert_eq!(
         owner
             .disk
             .history_page(&mut owner.journal, id, 1, &request)
-            .is_err()
+            .unwrap_err(),
+        crate::Error::Research(
+            crate::ResearchFailure::HistoryReadLacksItsOriginalTrainingReservation
+        ),
     );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
@@ -1627,7 +1653,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             &mut owner.journal,
             &admission,
             PeerStatus::Unsupported {
-                reason: "duplicate or no supported ambiguous decisions".into(),
+                reason: WorkerFailure::ReplayNotSelected.into(),
             },
         )
         .unwrap();
@@ -1674,7 +1700,7 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
             &mut owner.journal,
             &admission,
             PeerStatus::Unsupported {
-                reason: "duplicate or no supported ambiguous decisions".into(),
+                reason: WorkerFailure::ReplayNotSelected.into(),
             },
         )
         .unwrap();
@@ -1872,4 +1898,106 @@ fn solve_handoff_rechecks_a_certificate_that_cites_a_checked_program() {
         })
         .collect();
     assert_eq!(cited, [*mixed_id.as_bytes(), *pairing_id.as_bytes()].into());
+}
+
+#[test]
+fn model_verification_reports_missing_and_corrupted_chunk_without_caching() {
+    let (_directory, mut owner) = native();
+    let blob = crate::learning::Blob::of(b"good");
+    assert_eq!(
+        owner.disk.verify_blob(&blob).unwrap_err(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::ModelChunkMissing,
+            index: 0,
+        }
+    );
+    owner
+        .disk
+        .save_with(
+            &mut owner.journal,
+            vec![crate::checkpoint::Update::Put {
+                kind: "model",
+                key: blob.key(0),
+                payload: b"evil".to_vec(),
+            }],
+        )
+        .unwrap();
+    let error = owner.disk.verify_blob(&blob).unwrap_err();
+    let actual = crate::learning::Blob::of(b"evil");
+    assert_eq!(
+        error,
+        crate::Error::ModelDigestMismatch(Box::new(crate::ModelDigestMismatch {
+            expected: crate::object::id_bytes(&blob.sha256).unwrap(),
+            actual: crate::object::id_bytes(&actual.sha256).unwrap(),
+        }))
+    );
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::ModelDigestMismatch)
+    );
+    assert_eq!(
+        value["expected_digest"],
+        serde_json::json!(crate::object::id_bytes(&blob.sha256).unwrap())
+    );
+    assert_eq!(
+        value["actual_digest"],
+        serde_json::json!(crate::object::id_bytes(&actual.sha256).unwrap())
+    );
+    assert!(
+        owner.disk.verify_blob(&blob).is_err(),
+        "corrupted data must not enter the verification cache"
+    );
+}
+
+#[test]
+fn peer_queue_reports_invalid_ordinal_without_consuming_the_row() {
+    let (_directory, mut owner) = native();
+    let mut admission = PeerAdmission {
+        evidence: None,
+        ordinal: 0,
+        artifact: crate::hex(&[7; 32]),
+        peer: libp2p::PeerId::random().to_string(),
+        question: None,
+        binding: Binding::new([1; 32], [2; 32]),
+    };
+    assert_eq!(
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission.clone())
+            .unwrap_err(),
+        crate::Error::from(crate::ResearchFailure::PeerOrdinalZero),
+    );
+    admission.ordinal = 2;
+    let valid_question = admission.question.replace("invalid".into());
+    let expected = naome_checker::question::ResearchQuestion::from_hex("invalid").unwrap_err();
+    assert_eq!(
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission.clone())
+            .unwrap_err(),
+        crate::Error::from(expected),
+    );
+    admission.question = valid_question;
+    owner
+        .disk
+        .save_with(
+            &mut owner.journal,
+            vec![
+                crate::checkpoint::Update::put("peer_pending", format!("{:020}", 1), &admission)
+                    .unwrap(),
+            ],
+        )
+        .unwrap();
+    for _ in 0..2 {
+        let error = owner.disk.pending_peer().unwrap_err();
+        assert_eq!(
+            error,
+            crate::Error::from(crate::ResearchFailure::PeerQueueOrdinalMismatch)
+        );
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::PeerQueueOrdinalMismatch),
+        );
+    }
 }

@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn probe_outcomes_bind_numeric_codes_to_their_required_fields() {
+    let verified = Outcome::Verified {
+        artifact: "proof".into(),
+    };
+    let value = serde_json::to_value(&verified).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"outcome": 0x003e_0001u32, "artifact": "proof"})
+    );
+    assert!(
+        matches!(serde_json::from_value::<Outcome>(value).unwrap(), Outcome::Verified { artifact } if artifact == "proof")
+    );
+    assert_eq!(
+        serde_json::to_value(Outcome::Exhausted).unwrap(),
+        serde_json::json!({"outcome": 0x003e_0002u32})
+    );
+    assert!(matches!(
+        serde_json::from_value::<Outcome>(serde_json::json!({"outcome": 0x003e_0003u32})).unwrap(),
+        Outcome::Unavailable
+    ));
+    for invalid in [
+        serde_json::json!({"outcome": 0x003e_0001u32}),
+        serde_json::json!({"outcome": 0x003e_0002u32, "artifact": "proof"}),
+        serde_json::json!({"outcome": 0x003e_0003u32, "artifact": null}),
+        serde_json::json!({"outcome": 0x003e_ffffu32}),
+        serde_json::json!({"outcome": 0x003e_0002u32, "extra": true}),
+    ] {
+        assert!(serde_json::from_value::<Outcome>(invalid).is_err());
+    }
+}
+
 fn solver(byte: u8) -> Solver {
     Solver {
         checkpoint: crate::hex(&[byte; 32]),
@@ -431,4 +463,14 @@ fn a_training_theorem_cannot_smuggle_a_reserved_lemma_into_its_context() {
         break;
     }
     assert!(found);
+}
+
+#[test]
+fn zero_search_allowance_has_a_machine_readable_cause() {
+    let mut solver = solver(1);
+    solver.budget.work_units = 0;
+    assert_eq!(
+        solver.validate(),
+        Err(crate::InputFault::TrainingAllowanceZero.into())
+    );
 }

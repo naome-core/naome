@@ -67,7 +67,7 @@ pub(super) struct Arguments<'a> {
 }
 
 impl<'a> Arguments<'a> {
-    pub fn parse(arguments: &'a [OsString]) -> Result<Self, String> {
+    pub fn parse(arguments: &'a [OsString]) -> Result<Self, crate::Error> {
         // Only a leading option selects machine output.
         let (json, arguments) = match arguments.split_first() {
             Some((option, rest)) if option == "--json" => (true, rest),
@@ -81,10 +81,10 @@ impl<'a> Arguments<'a> {
             [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
                 command.to_str().expect("matched UTF-8 command")
             }
-            _ => return Err("usage: naome [--json] start | stop | status\nplace --json before the command for machine output".into()),
+            _ => return Err(crate::InputFault::CliArgumentsInvalid.into()),
         };
         if startup_handoff && command != "start" {
-            return Err("startup handoff is only valid for --json start".into());
+            return Err(crate::InputFault::CliHandoffCommand.into());
         }
         Ok(Self {
             command,
@@ -94,7 +94,7 @@ impl<'a> Arguments<'a> {
     }
 }
 
-pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), String> {
+pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), crate::Error> {
     let stdout = io::stdout();
     let color = stdout.is_terminal()
         && std::env::var_os("NO_COLOR").is_none()
@@ -102,7 +102,7 @@ pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), St
     let output = if json {
         format!(
             "{}\n",
-            serde_json::to_string(status).map_err(|error| error.to_string())?
+            serde_json::to_string(status).map_err(|_| crate::InputFault::StatusEncoding)?
         )
     } else {
         human(command, status, color)
@@ -110,7 +110,7 @@ pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), St
     stdout
         .lock()
         .write_all(output.as_bytes())
-        .map_err(|error| error.to_string())
+        .map_err(crate::Error::from)
 }
 
 fn human(command: &str, status: &Status, color: bool) -> String {
@@ -145,32 +145,39 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted artifacts {} ({verification})\n",
         status.accepted_artifacts,
     );
-    if let Some(reason) = &status.computation_reason {
-        let reason = reason
-            .chars()
-            .flat_map(char::escape_default)
-            .collect::<String>();
-        // The reason originates in the local resource policy; retain terminal
-        // escaping so passive diagnostics cannot acquire display authority.
-        writeln!(output, "    Computation reason: {reason}").expect("String write");
+    use crate::PauseReason;
+    if let Some(reason) = status.computation_reason {
+        let label = match reason {
+            PauseReason::MemoryPressure => "memory pressure",
+            PauseReason::DiskPressure => "disk pressure",
+            PauseReason::SystemMemoryPressure => "operating system memory pressure",
+            PauseReason::ProcessTreeMemoryPressure => "node process tree memory pressure",
+            PauseReason::HardwareObservationUnavailable => "hardware observation unavailable",
+            PauseReason::PowerSaving => "operating system power saving",
+            PauseReason::ThermalPressure => "operating system thermal pressure",
+            PauseReason::ExternalCpuPressure => "sustained external CPU pressure",
+            PauseReason::ResourceStateUnavailable => "resource state unavailable",
+            PauseReason::NoComputationBudget => "no computation budget",
+        };
+        writeln!(output, "    Computation reason: {label}").expect("String write");
     }
     if matches!(
         status.computation,
         crate::resources::ComputationState::Pausing | crate::resources::ComputationState::Paused
     ) {
-        let advice = match status.computation_reason.as_deref() {
-            Some("disk pressure") => Some("Free disk space on the node's filesystem."),
+        let advice = match status.computation_reason {
+            Some(PauseReason::DiskPressure) => Some("Free disk space on the node's filesystem."),
             Some(
-                "memory pressure"
-                | "node process tree memory pressure"
-                | "operating system memory pressure",
+                PauseReason::MemoryPressure
+                | PauseReason::ProcessTreeMemoryPressure
+                | PauseReason::SystemMemoryPressure,
             ) => Some("Reduce memory use on this host if the pause persists."),
-            Some("operating system power saving") => {
+            Some(PauseReason::PowerSaving) => {
                 Some("Check the host's power-saving setting if computation should resume.")
             }
-            Some("operating system thermal pressure") => Some("Let the host cool down."),
-            Some("sustained external CPU pressure") => Some("Let other CPU-intensive work finish."),
-            Some("hardware observation unavailable") => {
+            Some(PauseReason::ThermalPressure) => Some("Let the host cool down."),
+            Some(PauseReason::ExternalCpuPressure) => Some("Let other CPU-intensive work finish."),
+            Some(PauseReason::HardwareObservationUnavailable) => {
                 Some("Hardware observations are retried automatically.")
             }
             _ => None,

@@ -29,7 +29,13 @@ fn node_state_is_private_without_modifying_parent_permissions_and_aliases_keep_o
     );
     let file = parent.join("file");
     fs::write(&file, b"unchanged").unwrap();
-    assert!(private_directory(&file).is_err());
+    assert!(matches!(
+        private_directory(&file),
+        Err(crate::Error::StorageIo {
+            operation: crate::StorageIoOperation::CreateNodeDirectory,
+            ..
+        })
+    ));
     assert_eq!(fs::read(&file).unwrap(), b"unchanged");
     fs::remove_dir_all(parent).unwrap();
 }
@@ -43,7 +49,11 @@ fn owned_reads_preserve_missing_empty_and_exact_byte_bounds() {
     assert_eq!(read_owned(&path, 0).unwrap(), Some(Vec::new()));
     fs::write(&path, b"abc").unwrap();
     assert_eq!(read_owned(&path, 3).unwrap(), Some(b"abc".to_vec()));
-    assert!(read_owned(&path, 2).is_err());
+    let error = read_owned(&path, 2).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::OwnedInputCapacity)
+    );
 }
 
 #[test]
@@ -51,14 +61,17 @@ fn owned_reads_reject_directories_symbolic_links_and_shared_inodes() {
     let directory = Directory::new();
     let path = directory.0.join("input");
     let alias = directory.0.join("alias");
-    assert!(read_owned(&directory.0, 32).is_err());
+    let error = read_owned(&directory.0, 32).unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::InputFault::OwnedFileType));
     fs::write(&path, b"abc").unwrap();
     std::os::unix::fs::symlink(&path, &alias).unwrap();
     assert!(read_owned(&alias, 32).is_err());
     fs::remove_file(&alias).unwrap();
     fs::hard_link(&path, &alias).unwrap();
-    assert!(read_owned(&path, 32).is_err());
-    assert!(read_owned(&alias, 32).is_err());
+    for linked in [&path, &alias] {
+        let error = read_owned(linked, 32).unwrap_err();
+        assert_eq!(error.code(), u32::from(crate::InputFault::OwnedFileLinks));
+    }
 }
 
 #[test]
@@ -92,4 +105,46 @@ fn configuration_snapshot_survives_atomic_replacement_without_relaxing_store_own
     std::os::unix::fs::symlink(&path, &alias).unwrap();
     assert!(read_owned_snapshot(&alias, 3).is_err());
     assert!(read_owned_snapshot(&directory.0, 3).is_err());
+}
+
+#[test]
+fn owned_file_validation_reports_type_links_and_missing_metadata() {
+    let directory = Directory::new();
+    let missing = directory.0.join("missing");
+    let error = owned_file(&missing).unwrap_err();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::outcome::OperationCode::StorageIo)
+    );
+    assert_eq!(
+        value["operation"],
+        u32::from(crate::StorageIoOperation::InspectOwnedFile)
+    );
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
+    assert_eq!(value["os_code"], nix::errno::Errno::ENOENT as i32);
+    let error = owned_file(&directory.0).unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::InputFault::OwnedFileType));
+    assert!(error.storage().fatal());
+    let path = directory.0.join("owned");
+    fs::write(&path, b"kept").unwrap();
+    let alias = directory.0.join("alias");
+    fs::hard_link(&path, &alias).unwrap();
+    let error = owned_file(&path).unwrap_err();
+    assert_eq!(error.code(), u32::from(crate::InputFault::OwnedFileLinks));
+    assert!(error.storage().fatal());
+    assert_eq!(fs::read(&path).unwrap(), b"kept");
+}
+
+#[test]
+fn research_directory_rejects_an_alias_without_touching_its_target() {
+    let directory = Directory::new();
+    let target = directory.0.join("target");
+    fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, directory.0.join("research")).unwrap();
+    assert_eq!(
+        research_directory(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::ResearchDirectoryInvalid)
+    );
+    assert!(target.is_dir());
 }

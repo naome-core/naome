@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite POSIX one-shot shutdown controls during node and relay activity."""
+from fixture_result import FixtureResult
 
 import argparse
 import json
@@ -65,7 +66,7 @@ def trial(driver, role, stop_signal, index):
             driver.nodes = [subject]
             subject.start(test_controls=False)
             produced = subject.command("produce", artifact=source(3))
-            assert produced["result"]["status"] == "accepted"
+            assert produced["result"]["status"] == 0x0016_0001
 
             def commands():
                 try:
@@ -91,7 +92,7 @@ def trial(driver, role, stop_signal, index):
             companion.start(test_controls=False, network_config={"peers": [], "discovery": {
                 "mdns": False, "dht": True, "hole_punch": False,
                 "bootstrap": [{"id": identity, "address": f"/ip4/127.0.0.1/tcp/{subject.port}"}]}})
-            subject.wait_event(lambda event: event.get("event") == "relay_connected")
+            subject.wait_event(lambda event: event.get("event") == 0x00170054)
             # At most sixteen additional pending TCP handshakes, all local and
             # closed in finally. The authenticated connection is recorded too.
             for _ in range(16):
@@ -115,12 +116,12 @@ def trial(driver, role, stop_signal, index):
         for reader in subject.threads:
             reader.join(timeout=2)
             assert not reader.is_alive(), "terminal log reader did not exit"
-        stopped_events = [event for event in subject.events if event.get("event") == "stopped"]
+        stopped_events = [event for event in subject.events if event.get("event") == 0x0017006a]
         assert len(stopped_events) == 1, "one stopped event required after process exit"
         stopped = stopped_events[0]
         assert stopped["observed_monotonic"] >= result["signal_sent_monotonic"]
         result["stopped_event_observed"] = True
-        result["result"] = "pass"
+        result["result"] = FixtureResult.PASS
     finally:
         finished.set()
         for connection in connected:
@@ -173,9 +174,9 @@ def main():
                 (role, stop_signal) for role in ["node", "relay"]
                 for stop_signal in [signal.SIGTERM, signal.SIGINT]]):
             trial(driver, role, stop_signal, index)
-        driver.summary["result"] = "pass"
+        driver.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
     driver.summary["cleanup"] = {
         "all_processes_exited": all(all(code is not None for code in trial.get("process_exit_codes", []))
@@ -191,7 +192,7 @@ def main():
                 if path.is_file() and path.name not in ["identity.key", "knowledge.lock"]:
                     bundle.write(path, str(path.relative_to(driver.output)))
     print(json.dumps({"result": driver.summary["result"], "output": str(driver.output)}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

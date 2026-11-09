@@ -54,22 +54,22 @@ pub(crate) struct Fragment {
     pub packet: Vec<u8>,
 }
 
-fn encode(formula: &Formula) -> Result<String, String> {
+fn encode(formula: &Formula) -> Result<String, crate::Error> {
     formula
         .encode_canonical()
         .map(|bytes| crate::hex(&bytes))
-        .map_err(|e| e.to_string())
+        .map_err(crate::Error::from)
 }
-fn decode(encoded: &str) -> Result<Formula, String> {
+fn decode(encoded: &str) -> Result<Formula, crate::Error> {
     let bytes = crate::object::unhex(encoded)?;
     if crate::hex(&bytes) != encoded {
-        return Err("contextual proof formula encoding differs".into());
+        return Err(crate::ResearchFailure::FragmentFormulaEncoding.into());
     }
-    Formula::decode_canonical(&bytes).map_err(|e| e.to_string())
+    Formula::decode_canonical(&bytes).map_err(crate::Error::from)
 }
 
 impl Fragment {
-    fn within_capacity(&self) -> Result<bool, String> {
+    fn within_capacity(&self) -> Result<bool, crate::Error> {
         // The canonical packet serializer enforces its own byte bound. Check
         // that bound first so an optional oversized derivation is omitted,
         // rather than aborting training from the valid complete source.
@@ -79,7 +79,7 @@ impl Fragment {
 
     /// Verify the closed implication, including its complete native closure.
     /// The premises remain part of that implication, not globally true facts.
-    pub fn verify(&self) -> Result<super::super::proof::Verified, String> {
+    pub fn verify(&self) -> Result<super::super::proof::Verified, crate::Error> {
         for id in [&self.source_target, &self.state, &self.proof_id] {
             crate::object::id_bytes(id)?;
         }
@@ -96,7 +96,7 @@ impl Fragment {
                 ..
             } => {
                 if *job == 0 {
-                    return Err("contextual proof lacks its observed job".into());
+                    return Err(crate::ResearchFailure::FragmentObservedJob.into());
                 }
                 for id in [receipt, execution, tree] {
                     crate::object::id_bytes(id)?;
@@ -108,7 +108,7 @@ impl Fragment {
             || !self.variables.windows(2).all(|w| w[0] < w[1])
             || !self.within_capacity()?
         {
-            return Err("contextual proof capacity or scope differs".into());
+            return Err(crate::ResearchFailure::FragmentCapacity.into());
         }
         let mut target = decode(&self.conclusion)?;
         for assumption in self.assumptions.iter().rev() {
@@ -121,17 +121,17 @@ impl Fragment {
             .collect::<Vec<_>>()
             != self.variables
         {
-            return Err("contextual proof free-variable scope differs".into());
+            return Err(crate::ResearchFailure::FragmentVariableScope.into());
         }
         for variable in self.variables.iter().rev() {
             target = Formula::for_all(FreeVariable::new(*variable), target);
         }
         if decode(&self.closed_target)? != target {
-            return Err("contextual proof closed target differs".into());
+            return Err(crate::ResearchFailure::FragmentClosedTarget.into());
         }
         let proof = super::super::evidence::checked(&self.packet)?;
         if proof.target != target || crate::hex(proof.native_id.as_bytes()) != self.proof_id {
-            return Err("contextual proof conclusion or identity differs".into());
+            return Err(crate::ResearchFailure::FragmentIdentity.into());
         }
         Ok(proof)
     }
@@ -143,29 +143,29 @@ impl Fragment {
         target: &Formula,
         tree: &Tree,
         native_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.verify()?;
         if !matches!(&self.parent, Parent::Admitted { proof, tree: source } if proof == native_id && *source == super::super::digest(tree))
             || self.source_target != super::super::digest(&encode(target)?)
         {
-            return Err("contextual proof source lineage differs".into());
+            return Err(crate::ResearchFailure::FragmentSourceLineage.into());
         }
         let (source, mut node, mut state) = source(target, tree, native_id)?;
         for child in &self.branch {
             let Tree::Step { action, children } = node else {
-                return Err("contextual proof branch leaves its checked source".into());
+                return Err(crate::ResearchFailure::FragmentBranchSource.into());
             };
             node = children
                 .get(*child)
-                .ok_or("contextual proof child differs")?;
+                .ok_or(crate::ResearchFailure::FragmentChild)?;
             state = next(&state, action)?
                 .get(*child)
-                .ok_or("contextual proof transition differs")?
+                .ok_or(crate::ResearchFailure::FragmentTransition)?
                 .clone();
         }
         let expected = contextual(&source, node, &state, &self.branch)?;
         if super::super::digest(self) != super::super::digest(&expected) {
-            return Err("contextual proof assumptions or branch binding differs".into());
+            return Err(crate::ResearchFailure::FragmentBranchBinding.into());
         }
         Ok(())
     }
@@ -175,7 +175,7 @@ impl Fragment {
     pub fn validate_observation(
         &self,
         observation: &super::super::experience::Observation,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.verify()?;
         observation.validate()?;
         let Parent::Observed {
@@ -186,29 +186,29 @@ impl Fragment {
             tree,
         } = &self.parent
         else {
-            return Err("contextual proof does not cite an observed parent".into());
+            return Err(crate::ResearchFailure::FragmentObservedParent.into());
         };
         if *job != observation.summary.job
             || *receipt != observation.summary.receipt
             || !self.branch.is_empty()
         {
-            return Err("contextual proof observed receipt differs".into());
+            return Err(crate::ResearchFailure::FragmentObservedReceipt.into());
         }
         let trace = observation
             .executions
             .iter()
             .find(|trace| super::super::digest(trace) == *execution)
-            .ok_or("contextual proof original execution absent")?;
+            .ok_or(crate::ResearchFailure::FragmentExecutionMissing)?;
         let (_, state, subtree) = trace
             .closed_subtrees()?
             .into_iter()
             .find(|(index, _, _)| index == event)
-            .ok_or("contextual proof closed branch is missing or truncated")?;
+            .ok_or(crate::ResearchFailure::FragmentClosedBranchMissing)?;
         if super::super::digest(&subtree) != *tree || trace.target != self.source_target {
-            return Err("contextual proof observed subtree differs".into());
+            return Err(crate::ResearchFailure::FragmentObservedSubtree.into());
         }
         let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::Error::from)?;
         let target = observed_target(trace, &question)?;
         let knowledge = trace.context(&observation.knowledge)?;
         let source = Source {
@@ -220,7 +220,7 @@ impl Fragment {
         };
         let expected = contextual(&source, &subtree, &state, &[])?;
         if super::super::digest(self) != super::super::digest(&expected) {
-            return Err("contextual proof differs from its recorded scope".into());
+            return Err(crate::ResearchFailure::FragmentRecordedScope.into());
         }
         Ok(())
     }
@@ -236,7 +236,7 @@ pub(crate) struct Derivation {
     pub omitted_steps: usize,
     pub fragment_attempts: usize,
     pub oversized_fragments: usize,
-    pub rejected_fragments: Vec<String>,
+    pub rejected_fragments: Vec<u32>,
     /// Native certificates/constructions can remain valid without a supported
     /// tableau sequence. They keep their existing checked graph conversion.
     pub unsupported_sequence: bool,
@@ -268,11 +268,7 @@ impl Derivation {
                         .len()
                 })
                 .sum::<usize>()
-            + self
-                .rejected_fragments
-                .iter()
-                .map(String::len)
-                .sum::<usize>()
+            + self.rejected_fragments.len() * std::mem::size_of::<u32>()
     }
 }
 
@@ -289,7 +285,7 @@ fn contextual(
     tree: &Tree,
     state: &State,
     branch: &[usize],
-) -> Result<Fragment, String> {
+) -> Result<Fragment, crate::Error> {
     let mut names = Names::default();
     // The designated negated goal is discharged by RAA. Every other actual
     // fact remains an explicit antecedent, including branch assumptions.
@@ -297,7 +293,7 @@ fn contextual(
         .facts
         .iter()
         .rposition(|f| *f == c::not(state.goal.clone()))
-        .ok_or("contextual proof lacks the original negated goal")?;
+        .ok_or(crate::ResearchFailure::FragmentNegatedGoal)?;
     let mut facts = Vec::new();
     let mut wrappers = Vec::new();
     let mut root = None;
@@ -321,7 +317,7 @@ fn contextual(
     )?;
     let mut term = c::raa(
         state.goal.clone(),
-        root.ok_or("contextual proof negation binding")?,
+        root.ok_or(crate::ResearchFailure::FragmentNegationBinding)?,
         positive,
         negative,
         &mut names,
@@ -334,7 +330,7 @@ fn contextual(
         term = Term::Generalize(*variable, Box::new(term));
     }
     if !term.free_assumptions().is_empty() || !term.formula().free_variables().is_empty() {
-        return Err("contextual proof left an open assumption or variable".into());
+        return Err(crate::ResearchFailure::FragmentOpenScope.into());
     }
     let checked = super::super::proof::verify(&term, &term.formula())?;
     let fragment = Fragment {
@@ -362,14 +358,14 @@ fn visit(
     parent: Option<(usize, usize)>,
     branch: &mut Vec<usize>,
     out: &mut Derivation,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     if branch.len() > 40 {
-        return Err("checked sequence depth differs".into());
+        return Err(crate::ResearchFailure::DerivationDepth.into());
     }
     let Tree::Step { action, children } = tree else {
         return match tree {
             Tree::Close(..) => Ok(()),
-            _ => Err("checked sequence contains unsupported nested evidence".into()),
+            _ => Err(crate::ResearchFailure::DerivationNestedEvidence.into()),
         };
     };
     if out.steps.len() == STEPS {
@@ -380,10 +376,10 @@ fn visit(
     let selected = offered
         .iter()
         .position(|offered| offered == action)
-        .ok_or("checked sequence action is not offered")?;
+        .ok_or(crate::ResearchFailure::DerivationAction)?;
     let next = next(state, action)?;
     if next.len() != children.len() {
-        return Err("checked sequence branch arity differs".into());
+        return Err(crate::ResearchFailure::DerivationArity.into());
     }
     let mut graph = Graph::encode(&decision(&state.goal, state, &offered, selected)?)?;
     graph.binding = trace::binding(state)?;
@@ -402,7 +398,7 @@ fn visit(
                 source
                     .citations
                     .get(*i)
-                    .ok_or("checked citation index")?
+                    .ok_or(crate::ResearchFailure::DerivationCitationIndex)?
                     .clone(),
             ),
             _ => None,
@@ -424,9 +420,7 @@ fn visit(
                 out.fragments.push(fragment);
             }
             Ok(_) => out.oversized_fragments += 1,
-            Err(reason) => out
-                .rejected_fragments
-                .push(reason.chars().take(256).collect()),
+            Err(reason) => out.rejected_fragments.push(reason.code()),
         }
     }
     for (child, (tree, state)) in children.iter().zip(next).enumerate() {
@@ -443,7 +437,7 @@ pub(crate) fn checked(
     target: &Formula,
     original: &Tree,
     native_id: &str,
-) -> Result<Derivation, String> {
+) -> Result<Derivation, crate::Error> {
     let (source, tree, state) = source(target, original, native_id)?;
     let mut out = Derivation {
         source_proof: Some(native_id.to_owned()),
@@ -462,23 +456,23 @@ pub(crate) fn checked(
 fn observed_target<'a>(
     trace: &trace::Trace,
     question: &'a naome_checker::question::ResearchQuestion,
-) -> Result<&'a Formula, String> {
-    [question.proved_target(), question.refuted_target()]
-        .into_iter()
-        .find(|target| {
-            encode(target).is_ok_and(|encoded| super::super::digest(&encoded) == trace.target)
-        })
-        .ok_or_else(|| "contextual proof observation target differs".into())
+) -> Result<&'a Formula, crate::Error> {
+    for target in [question.proved_target(), question.refuted_target()] {
+        if super::super::digest(&encode(target)?) == trace.target {
+            return Ok(target);
+        }
+    }
+    Err(crate::InputFault::ObservedTargetMismatch.into())
 }
 
 /// Closed branches may yield checked conditional proofs even when their root
 /// search did not finish. No flag, timeout or missing transition is a label.
 pub(crate) fn observed(
     observation: &super::super::experience::Observation,
-) -> Result<Vec<Derivation>, String> {
+) -> Result<Vec<Derivation>, crate::Error> {
     observation.validate()?;
     let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::Error::from)?;
     let mut result = Vec::new();
     let mut attempts = 0;
     for trace in &observation.executions {
@@ -522,9 +516,7 @@ pub(crate) fn observed(
                     visit(&source, &tree, &state, None, &mut Vec::new(), &mut derived)?;
                 }
                 Ok(_) => derived.oversized_fragments += 1,
-                Err(reason) => derived
-                    .rejected_fragments
-                    .push(reason.chars().take(256).collect()),
+                Err(reason) => derived.rejected_fragments.push(reason.code()),
             }
             result.push(derived);
         }
@@ -536,11 +528,11 @@ fn source<'a>(
     target: &'a Formula,
     original: &'a Tree,
     native_id: &'a str,
-) -> Result<(Source<'a>, &'a Tree, State), String> {
+) -> Result<(Source<'a>, &'a Tree, State), crate::Error> {
     let (term, _) = compile(target, original)?;
     let verified = super::super::proof::verify(&term, target)?;
     if crate::hex(verified.native_id.as_bytes()) != native_id {
-        return Err("checked sequence source identity differs".into());
+        return Err(crate::ResearchFailure::DerivationSourceIdentity.into());
     }
     let mut tree = original;
     while let Tree::Definitions { proof, .. } = tree {

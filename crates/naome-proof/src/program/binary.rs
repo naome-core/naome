@@ -1,7 +1,8 @@
 //! The canonical instruction encoding. Each opcode fixes its operand layout.
 //! Record boundaries can therefore be recovered directly from a byte stream.
 use super::{
-    ACTION_PREMISES, Axiom, Command, RECORD_BYTES, SCOPE_ACTIONS, SCOPE_ASSUMPTIONS, ScopedAction,
+    ACTION_PREMISES, Axiom, CodecFailure, Command, RECORD_BYTES, SCOPE_ACTIONS, SCOPE_ASSUMPTIONS,
+    ScopedAction,
 };
 use naome_foundation::graph::{Node, Variable};
 
@@ -16,66 +17,63 @@ pub(super) fn put_integer(out: &mut Vec<u8>, mut value: u64) {
 pub(super) struct Reader<'a>(pub(super) &'a [u8]);
 
 impl Reader<'_> {
-    pub(super) fn fixed<const N: usize>(&mut self) -> Result<[u8; N], String> {
-        let (bytes, rest) = self
-            .0
-            .split_at_checked(N)
-            .ok_or("truncated program input")?;
+    pub(super) fn fixed<const N: usize>(&mut self) -> Result<[u8; N], CodecFailure> {
+        let (bytes, rest) = self.0.split_at_checked(N).ok_or(CodecFailure::Truncated)?;
         self.0 = rest;
         Ok(bytes.try_into().expect("fixed field width"))
     }
 
-    pub(super) fn integer(&mut self) -> Result<u64, String> {
+    pub(super) fn integer(&mut self) -> Result<u64, CodecFailure> {
         let mut value = 0;
         for shift in (0..64).step_by(7) {
             let [byte] = self.fixed()?;
             let part = u64::from(byte & 0x7f);
             if shift == 63 && byte > 1 {
-                return Err("program integer overflow".into());
+                return Err(CodecFailure::IntegerOverflow);
             }
             value |= part << shift;
             if byte < 128 {
                 if shift != 0 && part == 0 {
-                    return Err("noncanonical program integer".into());
+                    return Err(CodecFailure::NoncanonicalInteger);
                 }
                 return Ok(value);
             }
         }
-        Err("program integer overflow".into())
+        Err(CodecFailure::IntegerOverflow)
     }
 
-    fn term(&mut self) -> Result<u32, String> {
-        u32::try_from(self.integer()?).map_err(|_| "program term width".into())
+    fn term(&mut self) -> Result<u32, CodecFailure> {
+        u32::try_from(self.integer()?).map_err(|_| CodecFailure::TermWidth)
     }
 
-    fn variable(&mut self) -> Result<Variable, String> {
+    fn variable(&mut self) -> Result<Variable, CodecFailure> {
         let encoded = self.integer()?;
         if encoded & 1 == 0 {
             u32::try_from(encoded >> 1)
                 .map(Variable::Free)
-                .map_err(|_| "free term width".into())
+                .map_err(|_| CodecFailure::FreeTermWidth)
         } else {
             Ok(Variable::Bound(encoded >> 1))
         }
     }
 
-    fn arguments(&mut self) -> Result<Vec<u32>, String> {
+    fn arguments(&mut self) -> Result<Vec<u32>, CodecFailure> {
         let count = self.integer()?;
         if count > u64::from(crate::DEFINITION_MAX_GRAPH_ARITY) {
-            return Err("program definition argument capacity".into());
+            return Err(CodecFailure::DefinitionArguments);
         }
         (0..count).map(|_| self.term()).collect()
     }
 
-    fn count(&mut self, limit: usize) -> Result<usize, String> {
+    fn count(&mut self, limit: usize) -> Result<usize, CodecFailure> {
         let count = self.integer()?;
         if count > limit as u64 {
-            return Err("scoped program operand capacity".into());
+            return Err(CodecFailure::ScopedOperands);
         }
         Ok(count as usize)
     }
 
-    fn axiom(&mut self) -> Result<Axiom, String> {
+    fn axiom(&mut self) -> Result<Axiom, CodecFailure> {
         Ok(match self.fixed::<1>()?[0] {
             0 => Axiom::Extensionality,
             1 => Axiom::Pairing,
@@ -84,14 +82,14 @@ impl Reader<'_> {
             4 => Axiom::Infinity,
             5 => Axiom::Foundation,
             6 => Axiom::Choice,
-            _ => return Err("program axiom tag".into()),
+            _ => return Err(CodecFailure::AxiomTag),
         })
     }
 }
 
-fn put_count(out: &mut Vec<u8>, count: usize, limit: usize) -> Result<(), String> {
+fn put_count(out: &mut Vec<u8>, count: usize, limit: usize) -> Result<(), CodecFailure> {
     if count > limit {
-        return Err("scoped program operand capacity".into());
+        return Err(CodecFailure::ScopedOperands);
     }
     put_integer(out, count as u64);
     Ok(())
@@ -102,9 +100,9 @@ fn write_scope(
     assumptions: &[u64],
     actions: &[ScopedAction],
     result: u32,
-) -> Result<(), String> {
+) -> Result<(), CodecFailure> {
     if assumptions.is_empty() {
-        return Err("deduction requires an assumption".into());
+        return Err(CodecFailure::MissingAssumption);
     }
     put_count(out, assumptions.len(), SCOPE_ASSUMPTIONS)?;
     for &assumption in assumptions {
@@ -137,10 +135,10 @@ fn write_scope(
     Ok(())
 }
 
-fn read_scope(input: &mut Reader<'_>) -> Result<Command, String> {
+fn read_scope(input: &mut Reader<'_>) -> Result<Command, CodecFailure> {
     let count = input.count(SCOPE_ASSUMPTIONS)?;
     if count == 0 {
-        return Err("deduction requires an assumption".into());
+        return Err(CodecFailure::MissingAssumption);
     }
     let assumptions = (0..count)
         .map(|_| input.integer())
@@ -164,7 +162,7 @@ fn read_scope(input: &mut Reader<'_>) -> Result<Command, String> {
                 left: input.term()?,
                 right: input.term()?,
             },
-            _ => return Err("unknown scoped program opcode".into()),
+            _ => return Err(CodecFailure::ScopedOpcode),
         });
     }
     Ok(Command::Deduce {
@@ -186,16 +184,16 @@ fn axiom_tag(axiom: Axiom) -> u8 {
     }
 }
 
-fn put_variable(out: &mut Vec<u8>, variable: Variable) -> Result<(), String> {
+fn put_variable(out: &mut Vec<u8>, variable: Variable) -> Result<(), CodecFailure> {
     let encoded = match variable {
         Variable::Free(id) => u64::from(id) * 2,
-        Variable::Bound(index) => index.checked_mul(2).ok_or("program binder width")? | 1,
+        Variable::Bound(index) => index.checked_mul(2).ok_or(CodecFailure::BinderWidth)? | 1,
     };
     put_integer(out, encoded);
     Ok(())
 }
 
-pub(super) fn write_command(command: &Command, out: &mut Vec<u8>) -> Result<(), String> {
+pub(super) fn write_command(command: &Command, out: &mut Vec<u8>) -> Result<(), CodecFailure> {
     match command {
         Command::Graph { node } => match *node {
             Node::Equal(a, b) | Node::Member(a, b) => {
@@ -230,7 +228,7 @@ pub(super) fn write_command(command: &Command, out: &mut Vec<u8>) -> Result<(), 
             out.push(if authored.is_some() { 0x1e } else { 0x05 });
             out.extend_from_slice(definition_id);
             if arguments.len() > crate::DEFINITION_MAX_GRAPH_ARITY as usize {
-                return Err("program definition argument capacity".into());
+                return Err(CodecFailure::DefinitionArguments);
             }
             put_integer(out, arguments.len() as u64);
             for &argument in arguments {
@@ -410,7 +408,7 @@ pub(super) fn write_command(command: &Command, out: &mut Vec<u8>) -> Result<(), 
     Ok(())
 }
 
-pub(super) fn read_command(input: &mut Reader<'_>) -> Result<Command, String> {
+pub(super) fn read_command(input: &mut Reader<'_>) -> Result<Command, CodecFailure> {
     Ok(match input.fixed::<1>()?[0] {
         0 => Command::Graph {
             node: Node::Equal(input.variable()?, input.variable()?),
@@ -533,27 +531,27 @@ pub(super) fn read_command(input: &mut Reader<'_>) -> Result<Command, String> {
             arguments: input.arguments()?,
             body: input.integer()?,
         },
-        _ => return Err("unknown program opcode".into()),
+        _ => return Err(CodecFailure::Opcode),
     })
 }
 
-pub fn encode_command(command: &Command) -> Result<Vec<u8>, String> {
+pub fn encode_command(command: &Command) -> Result<Vec<u8>, CodecFailure> {
     let mut bytes = Vec::new();
     write_command(command, &mut bytes)?;
     if bytes.len() > RECORD_BYTES {
-        return Err("program command byte capacity".into());
+        return Err(CodecFailure::CommandBytes);
     }
     Ok(bytes)
 }
 
-pub fn decode_command(bytes: &[u8]) -> Result<Command, String> {
+pub fn decode_command(bytes: &[u8]) -> Result<Command, CodecFailure> {
     if bytes.len() > RECORD_BYTES {
-        return Err("program command byte capacity".into());
+        return Err(CodecFailure::CommandBytes);
     }
     let mut input = Reader(bytes);
     let command = read_command(&mut input)?;
     if !input.0.is_empty() {
-        return Err("trailing program command bytes".into());
+        return Err(CodecFailure::TrailingCommandBytes);
     }
     Ok(command)
 }

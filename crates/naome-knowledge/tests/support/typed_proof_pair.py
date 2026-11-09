@@ -5,6 +5,7 @@ Usage: typed_proof_pair.py NAOME KNOWLEDGE_UNIT_TEST_BINARY OUTPUT_DIRECTORY
 A transparent loopback forwarder counts delivered encrypted TCP payloads.
 It does not terminate Noise, decode yamux, or count TCP/IP headers.
 """
+from fixture_result import FixtureResult, ResourceProfile
 import argparse
 from collections import Counter
 import json
@@ -121,7 +122,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
             seed(fixture, "warm_membership_dependencies", "NAOME_TYPED_PAIR_WARM", receiver.directory)
         for node in (donor, receiver):
             write_receipt(node.directory / "resource-profile.json", {
-                "profile": "custom", "custom": {
+                "profile": ResourceProfile.CUSTOM, "custom": {
                     "memory_bytes": 128 * 1024 * 1024, "concurrency": 1,
                     "cache_bytes": 1024 * 1024, "batch_steps": 512, "network_requests": 1,
                 },
@@ -143,7 +144,7 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         ready_cpu = {label: process_cpu_sample(node.process)["cpu_seconds"]
                      for label, node in [("donor", donor), ("receiver", receiver)]}
         received = trial.wait(lambda: next((event for event in receiver.launch_events()
-            if event.get("event") == "accepted" and event.get("source") == "fetch"
+            if event.get("event") == 0x00170001 and event.get("source") == 0x180001
             and event.get("id") == root), None), maximum=80)
         report["launch_to_accept_wall_seconds"] = time.monotonic() - start
         report["both_ready_to_accept_wall_seconds"] = time.monotonic() - ready
@@ -161,14 +162,14 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         assert all(not meter.errors for meter in meters), [meter.errors for meter in meters]
         assert set(receiver.ids()) == helpers | {root}
         events = receiver.launch_events()
-        responses = [event for event in events if event.get("event") == "exchange_response"]
+        responses = [event for event in events if event.get("event") == 0x00170013]
         report["response_kinds"] = dict(Counter(event["kind"] for event in responses))
         assert any(event.get("object_id") == root for event in responses)
         fetched_helpers = {event.get("object_id") for event in responses} & helpers
         assert fetched_helpers == (helpers if temperature == "cold" else set()), fetched_helpers
         report["fetched_helper_artifacts"] = sorted(fetched_helpers)
         accepted_before_target = {event.get("id") for event in events[:events.index(received)]
-                                  if event.get("event") == "accepted"}
+                                  if event.get("event") == 0x00170001}
         if temperature == "cold":
             assert helpers <= accepted_before_target
 
@@ -180,10 +181,10 @@ def run(binary, fixture, seeds, metadata, output, arm, temperature):
         start = time.monotonic()
         reopened = receiver.start()
         report["offline_reopen_wall_seconds"] = time.monotonic() - start
-        assert reopened["artifact_verification"] == "checked" and reopened["accepted_artifacts"] == len(helpers) + 1
+        assert reopened["artifact_verification"] == 0x0020_0001 and reopened["accepted_artifacts"] == len(helpers) + 1
         assert set(receiver.ids()) == helpers | {root}
         receiver.stop()
-        report["result"] = "pass"
+        report["result"] = FixtureResult.PASS
     finally:
         for meter in meters:
             meter.close()

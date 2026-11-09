@@ -19,26 +19,26 @@ pub(super) const HANDOFF_ACTIVE: &str = "NAOME_STARTUP_HANDOFF_ACTIVE_NS";
 pub(super) const HANDOFF_CLEANUP: &str = "NAOME_STARTUP_HANDOFF_CLEANUP_NS";
 pub(super) const CUSTODY_ACTIVE: &str = "NAOME_STARTUP_CUSTODY_ACTIVE_NS";
 
-pub(super) fn native_ns() -> Result<u64, String> {
-    let now =
-        nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_err(|e| e.to_string())?;
+fn checked_native_ns() -> Result<u64, crate::Error> {
+    let now = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+        .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
     u64::try_from(now.tv_sec())
         .ok()
         .and_then(|s| s.checked_mul(1_000_000_000))
         .and_then(|s| s.checked_add(u64::try_from(now.tv_nsec()).ok()?))
-        .ok_or_else(|| "invalid native startup clock".into())
+        .ok_or_else(|| crate::InputFault::ObservationClockWidth.into())
 }
 
-fn nonblocking(input: &std::io::Stdin) -> Result<(), String> {
-    let flags =
-        nix::fcntl::fcntl(input, nix::fcntl::FcntlArg::F_GETFL).map_err(|e| e.to_string())?;
+fn nonblocking(input: &std::io::Stdin) -> Result<(), crate::Error> {
+    let flags = nix::fcntl::fcntl(input, nix::fcntl::FcntlArg::F_GETFL)
+        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     nix::fcntl::fcntl(
         input,
         nix::fcntl::FcntlArg::F_SETFL(
             nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
         ),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     Ok(())
 }
 
@@ -49,25 +49,26 @@ pub(super) struct Handoff {
 }
 
 impl Handoff {
-    pub fn open() -> Result<Self, String> {
+    pub fn open() -> Result<Self, crate::Error> {
         let parse = |name| {
             std::env::var(name)
-                .map_err(|_| "missing startup owner endpoint")?
+                .map_err(|_| crate::InputFault::HandoffEndpointMissing)?
                 .parse::<u64>()
-                .map_err(|_| "invalid startup owner endpoint")
+                .map_err(|_| crate::InputFault::HandoffEndpointInvalid)
         };
         let active_ns = parse(HANDOFF_ACTIVE)?;
         let cleanup_ns = parse(HANDOFF_CLEANUP)?;
         if active_ns.checked_add(10_000_000_000) != Some(cleanup_ns) {
-            return Err("startup owner must retain original ten-second cleanup".into());
+            return Err(crate::InputFault::HandoffCleanupWindow.into());
         }
         let input = std::io::stdin();
-        let metadata = nix::sys::stat::fstat(&input).map_err(|e| e.to_string())?;
+        let metadata = nix::sys::stat::fstat(&input)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
         if nix::sys::stat::SFlag::from_bits_truncate(metadata.st_mode)
             & nix::sys::stat::SFlag::S_IFMT
             != nix::sys::stat::SFlag::S_IFIFO
         {
-            return Err("startup owner requires its inherited stdin pipe".into());
+            return Err(crate::InputFault::HandoffPipeRequired.into());
         }
         nonblocking(&input)?;
         let mut owner = Self {
@@ -77,41 +78,41 @@ impl Handoff {
         };
         let left = owner.remaining()?;
         if left > Duration::from_secs(180) {
-            return Err("startup owner active interval exceeds original allowance".into());
+            return Err(crate::InputFault::HandoffActiveWindow.into());
         }
         owner.before_offer()?;
         Ok(owner)
     }
 
-    fn remaining(&self) -> Result<Duration, String> {
+    fn remaining(&self) -> Result<Duration, crate::Error> {
         self.active_ns
-            .checked_sub(native_ns()?)
+            .checked_sub(checked_native_ns()?)
             .filter(|n| *n > 0)
             .map(Duration::from_nanos)
-            .ok_or_else(|| "original startup owner deadline".into())
+            .ok_or_else(|| crate::InputFault::HandoffDeadline.into())
     }
 
-    pub fn deadline(&self) -> Result<tokio::time::Instant, String> {
+    pub fn deadline(&self) -> Result<tokio::time::Instant, crate::Error> {
         Ok(tokio::time::Instant::now() + self.remaining()?)
     }
 
-    pub fn abort_deadline(&self) -> Result<Instant, String> {
+    pub fn abort_deadline(&self) -> Result<Instant, crate::Error> {
         // The original leaf stage, never a fresh cleanup allowance.
         let end = self
             .active_ns
             .checked_add(600_000_000)
-            .ok_or("startup owner endpoint overflow")?;
+            .ok_or(crate::InputFault::HandoffEndpointOverflow)?;
         Ok(Instant::now()
-            + Duration::from_nanos(end.saturating_sub(native_ns()?))
+            + Duration::from_nanos(end.saturating_sub(checked_native_ns()?))
                 .min(Duration::from_millis(500)))
     }
 
-    pub fn before_offer(&mut self) -> Result<(), String> {
+    pub fn before_offer(&mut self) -> Result<(), crate::Error> {
         self.remaining()?;
         let mut byte = [0u8; 1];
         match self.input.read(&mut byte) {
-            Ok(0) => Err("startup owner lifeline closed before handoff".into()),
-            Ok(_) => Err("startup owner acknowledged before original Child offer".into()),
+            Ok(0) => Err(crate::InputFault::HandoffLifelineClosed.into()),
+            Ok(_) => Err(crate::InputFault::HandoffPrematureAck.into()),
             Err(e)
                 if matches!(
                     e.kind(),
@@ -120,11 +121,11 @@ impl Handoff {
             {
                 Ok(())
             }
-            Err(e) => Err(format!("startup owner lifeline: {e}")),
+            Err(e) => Err(e.into()),
         }
     }
 
-    pub async fn wait_for_loss(&mut self) -> Result<(), String> {
+    pub async fn wait_for_loss(&mut self) -> Result<(), crate::Error> {
         loop {
             self.before_offer()?;
             tokio::time::sleep(crate::resources::limits().custody_poll_interval).await;
@@ -135,49 +136,48 @@ impl Handoff {
         &self,
         pid: u32,
         token: &str,
-        report: &serde_json::Value,
-    ) -> Result<(), String> {
-        let observed_ns = native_ns()?;
+        report: &super::AbortReport,
+    ) -> Result<(), crate::Error> {
+        let observed_ns = checked_native_ns()?;
         let timely = self
             .active_ns
             .checked_add(700_000_000)
             .is_some_and(|end| observed_ns <= end);
-        let value = serde_json::json!({"kind":"STARTUP_ABORT_COMPLETION_V1","pid":pid,
+        let value = serde_json::json!({"kind":crate::outcome::CustodyFrame::AbortCompletion,"pid":pid,
             "token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns,
             "observed_ns":observed_ns,"timely":timely,"report":report});
         let mut output = std::io::stdout().lock();
-        writeln!(output, "{value}").map_err(|e| e.to_string())?;
-        output.flush().map_err(|e| e.to_string())
+        write_abort_report(&mut output, &value)
     }
 
-    pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), String> {
-        self.before_offer()?;
-        let offer = serde_json::json!({"kind":"STARTUP_CHILD_CUSTODY_V1",
+    pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), crate::Error> {
+        use crate::StartupFailure;
+        self.before_offer().map_err(handoff_launch)?;
+        let offer = serde_json::json!({"kind":crate::outcome::CustodyFrame::ChildCustody,
             "pid":pid,"token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns});
         // This first frame precedes the daemon ACK. The actual Child has not
         // been polled/reaped in this mode and its PID cannot be reused here.
-        writeln!(std::io::stdout().lock(), "{offer}").map_err(|e| e.to_string())?;
+        writeln!(std::io::stdout().lock(), "{offer}")
+            .map_err(|error| handoff_launch(error.into()))?;
         let expected = format!("owned {token}\n").into_bytes();
         let mut frame = Vec::with_capacity(MAX_FRAME);
         loop {
-            let left = self.remaining()?;
+            let left = self.remaining().map_err(handoff_launch)?;
             let mut byte = [0u8; 1];
             match self.input.read(&mut byte) {
                 Ok(0) => {
-                    return Err(
-                        "startup owner lifeline closed before custody acknowledgement".into(),
-                    );
+                    return Err(StartupFailure::LifelineClosed.into());
                 }
                 Ok(_) => {
                     frame.push(byte[0]);
                     if frame.len() > MAX_FRAME {
-                        return Err("startup owner frame limit".into());
+                        return Err(StartupFailure::FrameLimit.into());
                     }
                     if byte[0] == b'\n' {
                         if frame != expected {
-                            return Err("startup owner instance mismatch".into());
+                            return Err(StartupFailure::InstanceMismatch.into());
                         }
-                        self.remaining()?;
+                        self.remaining().map_err(handoff_launch)?;
                         return Ok(());
                     }
                 }
@@ -186,10 +186,27 @@ impl Handoff {
                         .await
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(format!("startup owner read: {e}")),
+                Err(error) => return Err(handoff_launch(error.into())),
             }
         }
     }
+}
+
+fn handoff_launch(cause: crate::Error) -> crate::Error {
+    crate::Error::Startup {
+        code: crate::StartupFailure::Launch,
+        reaped: false,
+        cause: Some(Box::new(cause)),
+    }
+}
+
+fn write_abort_report(
+    output: &mut impl Write,
+    value: &serde_json::Value,
+) -> Result<(), crate::Error> {
+    writeln!(output, "{value}")?;
+    output.flush()?;
+    Ok(())
 }
 
 /// This flag is raised only by the checked daemon's actual listener readiness.
@@ -200,37 +217,43 @@ pub(crate) struct Startup {
 }
 
 impl Startup {
-    pub(super) fn arm(token: &str) -> Result<Self, String> {
+    pub(super) fn arm(token: &str) -> Result<Self, crate::Error> {
         let pid = nix::unistd::getpid();
         if nix::unistd::getpgrp() != pid
-            || nix::unistd::getsid(None).map_err(|e| e.to_string())? != pid
+            || nix::unistd::getsid(None).map_err(|e| std::io::Error::from_raw_os_error(e as i32))?
+                != pid
         {
-            return Err("startup lifeline requires its own detached session".into());
+            return Err(crate::InputFault::StartupSession.into());
         }
-        if token.len() != 64 || crate::unhex(token)?.len() != 32 {
-            return Err("invalid startup instance nonce".into());
+        if token.len() != 64
+            || crate::unhex(token)
+                .map_err(|_| crate::InputFault::StartupNonce)?
+                .len()
+                != 32
+        {
+            return Err(crate::InputFault::StartupNonce.into());
         }
         let input = std::io::stdin();
-        let flags =
-            nix::fcntl::fcntl(&input, nix::fcntl::FcntlArg::F_GETFL).map_err(|e| e.to_string())?;
+        let flags = nix::fcntl::fcntl(&input, nix::fcntl::FcntlArg::F_GETFL)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
         nix::fcntl::fcntl(
             &input,
             nix::fcntl::FcntlArg::F_SETFL(
                 nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
             ),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
         let custody_active = match std::env::var(CUSTODY_ACTIVE) {
             Ok(value) => Some(
                 value
                     .parse::<u64>()
-                    .map_err(|_| "invalid daemon custody endpoint")?,
+                    .map_err(|_| crate::InputFault::StartupCustodyEndpoint)?,
             ),
             Err(std::env::VarError::NotPresent) => None,
-            Err(_) => return Err("invalid daemon custody endpoint encoding".into()),
+            Err(_) => return Err(crate::InputFault::StartupCustodyEncoding.into()),
         };
-        if custody_active.is_some_and(|end| native_ns().map_or(true, |now| now >= end)) {
-            return Err("original daemon custody endpoint expired before arming".into());
+        if custody_active.is_some_and(|end| checked_native_ns().map_or(true, |now| now >= end)) {
+            return Err(crate::InputFault::StartupCustodyExpired.into());
         }
         let deadline = Instant::now() + crate::resources::limits().startup_timeout;
         let ready = Arc::new(AtomicBool::new(false));
@@ -251,11 +274,10 @@ impl Startup {
                     );
                     std::process::exit(125);
                 }
-            })
-            .map_err(|e| format!("startup lifeline thread: {e}"))?;
+            })?;
         begin
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| "startup begin frame unavailable")?;
+            .map_err(|_| crate::InputFault::StartupBeginUnavailable)?;
         Ok(Self {
             ready,
             instance_sha256,
@@ -266,11 +288,11 @@ impl Startup {
         self.ready.store(true, Ordering::Release);
     }
 
-    pub(crate) fn phase(&self, phase: &str) {
+    pub(crate) fn phase(&self, phase: crate::outcome::StartupPhase) {
         // This bounded diagnostic binds an observed replay phase to this
         // launch. It is neither a readiness receipt nor a proof certificate.
         crate::network::emit(serde_json::json!({
-            "event": "startup_replay", "phase": phase,
+            "event": crate::outcome::NodeEvent::StartupReplay, "phase": phase,
             "pid": std::process::id(), "instance_sha256": self.instance_sha256,
         }));
     }
@@ -288,29 +310,30 @@ pub(super) async fn wait(
     directory: &Path,
     token: &str,
     deadline: tokio::time::Instant,
-    mut exited: impl FnMut() -> Result<Option<ExitStatus>, String>,
-) -> Result<super::Status, String> {
+    mut exited: impl FnMut() -> Result<Option<ExitStatus>, crate::Error>,
+) -> Result<super::Status, crate::Error> {
     loop {
         if let Some(exit) = exited()? {
-            return Err(format!(
-                "node failed to start ({exit}); inspect {}",
-                directory.join("node.log").display()
-            ));
+            use std::os::unix::process::ExitStatusExt;
+            return Err(crate::Error::StartupChildExit {
+                exit_code: exit.code(),
+                signal: exit.signal(),
+            });
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err("node startup deadline".into());
+            return Err(crate::InputFault::StartupDeadline.into());
         }
         let response = tokio::time::timeout_at(
             deadline,
             super::request(directory, super::Operation::Status, Some(token)),
         )
         .await
-        .map_err(|_| "node startup deadline")??;
+        .map_err(|_| crate::InputFault::StartupDeadline)??;
         if let Some(status) = response
             && status.running
         {
             if tokio::time::Instant::now() >= deadline {
-                return Err("node startup deadline before acknowledgement".into());
+                return Err(crate::InputFault::StartupAcknowledgementDeadline.into());
             }
             return Ok(status);
         }
@@ -330,28 +353,30 @@ fn observe(
     deadline: Instant,
     custody_active: Option<u64>,
     started: mpsc::SyncSender<()>,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let mut begun = false;
     let mut frame = Vec::with_capacity(MAX_FRAME);
     loop {
         if Instant::now() >= deadline
-            || custody_active.is_some_and(|end| native_ns().map_or(true, |now| now >= end))
+            || custody_active.is_some_and(|end| checked_native_ns().map_or(true, |now| now >= end))
         {
-            return Err("startup lifeline deadline".into());
+            return Err(crate::InputFault::StartupLifelineDeadline.into());
         }
         let mut byte = [0u8; 1];
         match input.read(&mut byte) {
-            Ok(0) => return Err("startup parent lifeline closed".into()),
+            Ok(0) => return Err(crate::InputFault::StartupParentClosed.into()),
             Ok(_) => {
                 frame.push(byte[0]);
                 if frame.len() > MAX_FRAME {
-                    return Err("startup lifeline frame limit".into());
+                    return Err(crate::InputFault::StartupFrameLimit.into());
                 }
                 if byte[0] != b'\n' {
                     continue;
                 }
                 if !begun && frame == begin(token) {
-                    started.send(()).map_err(|_| "startup owner unavailable")?;
+                    started
+                        .send(())
+                        .map_err(|_| crate::InputFault::StartupOwnerUnavailable)?;
                     begun = true;
                     frame.clear();
                 } else if begun && frame == acknowledge(token) && ready.load(Ordering::Acquire) {
@@ -360,7 +385,7 @@ fn observe(
                     // may ordinary detached operation outlive the launcher.
                     return Ok(());
                 } else {
-                    return Err("startup lifeline instance or readiness mismatch".into());
+                    return Err(crate::InputFault::StartupFrameMismatch.into());
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -371,7 +396,7 @@ fn observe(
                 );
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return Err("startup parent lifeline unreadable".into()),
+            Err(error) => return Err(error.into()),
         }
     }
 }

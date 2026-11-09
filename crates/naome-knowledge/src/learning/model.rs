@@ -94,16 +94,16 @@ pub struct Decision {
     pub expert: usize,
 }
 pub trait Ranker {
-    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String>;
+    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error>;
     fn plan(
         &mut self,
         d: &Decision,
         _graph: &Graph,
         _offered: &str,
         memory: Option<&Memory>,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, crate::Error> {
         if memory.is_some() {
-            return Err("stateless ranker received working memory".into());
+            return Err(crate::ResearchFailure::StatelessRankerMemory.into());
         }
         Ok(Plan::scores(if d.candidates.len() == 1 {
             vec![0.]
@@ -216,7 +216,21 @@ fn checkpoint_specification_binds_effective_corpus_data() {
     let mut mismatched = checkpoint.clone();
     mismatched.specification = specification_for(&corpus);
     assert_ne!(mismatched.specification, checkpoint.specification);
-    assert!(mismatched.validate().is_err());
+    assert_eq!(
+        mismatched.validate().unwrap_err(),
+        crate::ResearchFailure::ModelCheckpointBinding.into()
+    );
+    let mut invalid_blob = checkpoint.clone();
+    let blob = Blob {
+        sha256: "00".repeat(32),
+        bytes: 0,
+    };
+    invalid_blob.model = Some(blob.clone());
+    invalid_blob.optimizer = Some(blob);
+    assert_eq!(
+        invalid_blob.validate().unwrap_err(),
+        crate::ResearchFailure::ModelBlobCapacity.into()
+    );
     checkpoint.validate().unwrap();
 }
 
@@ -230,12 +244,12 @@ impl Checkpoint {
             optimizer: None,
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.specification != specification()
             || self.model.is_some() != self.optimizer.is_some()
             || self.model.is_none() && self.updates != 0
         {
-            return Err("native model specification or paired optimizer differs".into());
+            return Err(crate::ResearchFailure::ModelCheckpointBinding.into());
         }
         for blob in self.blobs() {
             blob.validate()?;
@@ -272,11 +286,99 @@ pub struct Runtime {
     #[cfg(test)]
     contextual_preservation: bool,
 }
-fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
-    let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
+// Backend text may contain paths or other sensitive values. Expose only the
+// registered category and structured fields explicitly selected below.
+fn backend_failure(code: crate::ResearchFailure) -> crate::Error {
+    crate::Error::External(Box::new(crate::ExternalFailure {
+        code,
+        expected_type: None,
+        actual_type: None,
+    }))
+}
+fn pack_failure(error: burn_pack::Error) -> crate::Error {
+    use crate::ResearchFailure as F;
+    use burn_pack::Error as E;
+    let code = match error {
+        E::InvalidHeader => F::BackendPackHeader,
+        E::InvalidMagicNumber => F::BackendPackMagic,
+        E::InvalidVersion => F::BackendPackVersion,
+        E::MetadataSerializationError(_) => F::BackendPackMetadataWrite,
+        E::MetadataDeserializationError(_) => F::BackendPackMetadataRead,
+        E::IoError(_) => F::BackendPackIo,
+        E::TensorNotFound(_) => F::BackendPackTensorMissing,
+        E::TensorBytesSizeMismatch(_) => F::BackendPackTensorSize,
+        E::ValidationError(_) => F::BackendPackValidation,
+        E::AlreadyExists(_) => F::BackendPackExists,
+    };
+    backend_failure(code)
+}
+fn record_failure(error: burn::store::RecordError) -> crate::Error {
+    use burn::store::RecordError as E;
+    let code = match error {
+        E::Io(_) => crate::ResearchFailure::BackendRecordIo,
+        E::Validation(_) => crate::ResearchFailure::BackendRecordValidation,
+    };
+    backend_failure(code)
+}
+
+fn tensor_element_type(value: burn::tensor::DType) -> crate::TensorElementType {
+    use crate::TensorElementType as T;
+    use burn::tensor::{BoolStore, DType};
+    match value {
+        DType::F64 => T::F64,
+        DType::F32 => T::F32,
+        DType::Flex32 => T::Flex32,
+        DType::F16 => T::F16,
+        DType::BF16 => T::Bf16,
+        DType::I64 => T::I64,
+        DType::I32 => T::I32,
+        DType::I16 => T::I16,
+        DType::I8 => T::I8,
+        DType::U64 => T::U64,
+        DType::U32 => T::U32,
+        DType::U16 => T::U16,
+        DType::U8 => T::U8,
+        DType::Bool(BoolStore::Native) => T::BoolNative,
+        DType::Bool(BoolStore::U8) => T::BoolU8,
+        DType::Bool(BoolStore::U32) => T::BoolU32,
+        DType::QFloat(_) => T::Quantized,
+    }
+}
+fn tensor_data_failure(error: burn::tensor::DataError) -> crate::Error {
+    use crate::ResearchFailure as F;
+    use burn::tensor::DataError as E;
+    if let E::ElementCountMismatch { expected, actual } = error {
+        return crate::Error::ResearchMismatch {
+            code: F::TensorElementCountMismatch,
+            expected: expected as u64,
+            actual: actual as u64,
+        };
+    }
+    let types = match &error {
+        E::DTypeMismatch { expected, actual } => Some((*expected, *actual)),
+        E::UnsupportedConversion { from, to } => Some((*from, *to)),
+        _ => None,
+    };
+    let code = match &error {
+        E::StorageAccess(_) => F::TensorStorageAccess,
+        E::InvalidRepresentation(_) => F::TensorInvalidRepresentation,
+        E::DTypeMismatch { .. } => F::TensorDtypeMismatch,
+        E::UnsupportedConversion { .. } => F::TensorUnsupportedConversion,
+        E::InvalidByteLength { .. } => F::TensorByteLengthInvalid,
+        E::ElementCountMismatch { .. } => unreachable!(),
+    };
+    let mut failure = backend_failure(code);
+    if let (Some((expected, actual)), crate::Error::External(details)) = (types, &mut failure) {
+        details.expected_type = Some(tensor_element_type(expected));
+        details.actual_type = Some(tensor_element_type(actual));
+    }
+    failure
+}
+fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, crate::Error> {
+    let reader = burn_pack::Reader::from_bytes(bytes).map_err(pack_failure)?;
     let metadata = reader.metadata().clone();
     let scalars = reader.scalars().clone();
-    let mut tensors = reader.into_tensors().map_err(|e| e.to_string())?;
+    let mut tensors = reader.into_tensors().map_err(pack_failure)?;
     tensors.sort_by(|a, b| a.name.cmp(&b.name));
     let mut writer = burn_pack::Writer::new(tensors);
     for (key, value) in metadata {
@@ -285,7 +387,7 @@ fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     for (key, value) in scalars {
         writer = writer.with_scalar(&key, value);
     }
-    writer.into_bytes().map_err(|e| e.to_string())
+    writer.into_bytes().map_err(pack_failure)
 }
 impl Runtime {
     fn observe_batches(&self) -> bool {
@@ -301,18 +403,24 @@ impl Runtime {
     pub(super) fn recurrent(&self) -> bool {
         self.recurrence != Recurrence::Disabled
     }
-    pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, String> {
+    pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, crate::Error> {
         Ok(self.plan_graph(graph, "", None)?.scores)
     }
-    fn scoring_batch(&self, graph: &Graph) -> Result<Batch, String> {
-        Batch::from_graphs(std::slice::from_ref(graph), &self.device.clone().inner())
+    fn scoring_batch(&self, graph: &Graph) -> Result<Batch, crate::Error> {
+        Ok(Batch::from_graphs(
+            std::slice::from_ref(graph),
+            &self.device.clone().inner(),
+        )?)
     }
     /// Uniform exploration has the same graph/tensor input gates as inference.
     /// Only the unused neural forward pass is omitted.
-    pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), String> {
+    pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), crate::Error> {
         self.scoring_batch(graph).map(drop)
     }
-    fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
+    fn load<I: ArtifactIo + ?Sized>(
+        checkpoint: &Checkpoint,
+        io: &mut I,
+    ) -> Result<Self, crate::Error> {
         checkpoint.validate()?;
         let device = Device::flex().autodiff();
         let mut policy = {
@@ -322,7 +430,7 @@ impl Runtime {
             static INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _guard = INITIALIZATION
                 .lock()
-                .map_err(|_| "native model initialization poisoned")?;
+                .map_err(|_| crate::ResearchFailure::ModelInitializationPoisoned)?;
             device.seed(checkpoint.seed);
             struct StableParameters(u64);
             impl ModuleMapper for StableParameters {
@@ -339,8 +447,13 @@ impl Runtime {
             drop(policy.clone().into_record());
             policy
         };
-        if policy.num_params() != PARAMETERS {
-            return Err("native graph policy parameter count differs".into());
+        let actual = policy.num_params();
+        if actual != PARAMETERS {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::ModelParameterCountMismatch,
+                expected: PARAMETERS as u64,
+                actual: actual as u64,
+            });
         }
         let mut optimizer = AdamConfig::new().init();
         let mut preservation = preservation::Preservation::fresh(&policy);
@@ -349,18 +462,17 @@ impl Runtime {
             policy = policy
                 .try_load_record(
                     ModuleRecord::from_bytes(Bytes::from_bytes_vec(bytes))
-                        .map_err(|e| e.to_string())?,
+                        .map_err(record_failure)?,
                 )
-                .map_err(|e| e.to_string())?
+                .map_err(record_failure)?
                 .train();
             let bytes = artifact::load(io, adam)?;
             let adam =
                 preservation.decode(Bytes::from_bytes_vec(bytes.clone()), checkpoint.updates)?;
-            optimizer = optimizer.from_bytes(adam).map_err(|e| e.to_string())?;
-            let restored =
-                preservation.encode(optimizer.into_bytes().map_err(|e| e.to_string())?)?;
+            optimizer = optimizer.from_bytes(adam).map_err(record_failure)?;
+            let restored = preservation.encode(optimizer.into_bytes().map_err(record_failure)?)?;
             if Blob::of(&restored[..]) != Blob::of(&bytes) {
-                return Err("native optimizer did not restore exactly".into());
+                return Err(crate::ResearchFailure::ModelOptimizerRestorationMismatch.into());
             }
         }
         Ok(Self {
@@ -387,38 +499,39 @@ impl Runtime {
         parent: &Checkpoint,
         updates: u64,
         io: &mut I,
-    ) -> Result<Checkpoint, String> {
+    ) -> Result<Checkpoint, crate::Error> {
+        let total_updates = parent
+            .updates
+            .checked_add(updates)
+            .ok_or(crate::ResearchFailure::ModelUpdatesOverflow)?;
         let model = canonical_checkpoint(
             self.policy
                 .clone()
                 .into_record()
                 .into_bytes()
-                .map_err(|e| e.to_string())?,
+                .map_err(record_failure)?,
         )?;
         let optimizer = self
             .preservation
-            .encode(self.optimizer.into_bytes().map_err(|e| e.to_string())?)?;
+            .encode(self.optimizer.into_bytes().map_err(record_failure)?)?;
         Ok(Checkpoint {
             specification: parent.specification.clone(),
             seed: parent.seed,
-            updates: parent
-                .updates
-                .checked_add(updates)
-                .ok_or("native model updates overflow")?,
+            updates: total_updates,
             model: Some(artifact::save(io, &model[..])?),
             optimizer: Some(artifact::save(io, &optimizer[..])?),
         })
     }
     #[cfg(test)]
     fn train(&mut self, graphs: &Pool, rng: &mut u64, updates: u64) -> Result<(f32, f32), String> {
-        self.train_using(
+        Ok(self.train_using(
             graphs,
             rng,
             updates,
             super::meta::Plan::balanced().phase(0),
             None,
             preservation::Mode::default(),
-        )
+        )?)
     }
     fn train_using(
         &mut self,
@@ -428,9 +541,9 @@ impl Runtime {
         phase: super::meta::Phase,
         preservation_pool: Option<(&Pool, u64)>,
         preservation_mode: preservation::Mode,
-    ) -> Result<(f32, f32), String> {
+    ) -> Result<(f32, f32), crate::Error> {
         if graphs.is_empty() {
-            return Err("training requires own accepted proof decisions".into());
+            return Err(crate::ResearchFailure::TrainingPoolEmpty.into());
         }
         self.formulas.get_mut().clear();
         if self.readout_only {
@@ -514,19 +627,25 @@ fn checked_marginal(logits: Tensor<2>, batch: &Batch) -> Tensor<1> {
         .log()
         .mean()
 }
-fn loss_value(loss: &Tensor<1>) -> Result<f32, String> {
-    let value = loss
-        .clone()
-        .into_data()
-        .try_to_vec::<f32>()
-        .map_err(|e| e.to_string())?[0];
+fn loss_value(loss: &Tensor<1>) -> Result<f32, crate::Error> {
+    let data = loss.clone().into_data();
+    let values = data.as_slice::<f32>().map_err(tensor_data_failure)?;
+    if values.len() != 1 {
+        return Err(crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::TrainingLossCount,
+            expected: 1,
+            actual: values.len() as u64,
+        });
+    }
+    let value = values[0];
     if !value.is_finite() {
-        return Err("non-finite native training loss".into());
+        return Err(crate::ResearchFailure::TrainingLossNonFinite.into());
     }
     Ok(value)
 }
+
 impl Ranker for Runtime {
-    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
         self.scores_graph(&Graph::encode(d)?)
     }
     fn plan(
@@ -535,7 +654,7 @@ impl Ranker for Runtime {
         graph: &Graph,
         offered: &str,
         memory: Option<&Memory>,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, crate::Error> {
         self.plan_graph(graph, offered, memory)
     }
     fn identity(&self) -> Option<String> {
@@ -551,7 +670,7 @@ pub(super) fn test_update<I: ArtifactIo + ?Sized>(
 ) -> Result<Checkpoint, String> {
     let mut runtime = Runtime::load(checkpoint, io)?;
     runtime.train(&Pool::from_graphs(graphs), rng, 1)?;
-    runtime.checkpoint(checkpoint, 1, io)
+    Ok(runtime.checkpoint(checkpoint, 1, io)?)
 }
 /// Only two concrete model lifetimes coexist: incumbent and current candidate.
 /// Their binary identities stay outside controller state and accepted mathematics.
@@ -677,7 +796,7 @@ impl Engine {
         &mut self,
         c: &Checkpoint,
         io: &mut I,
-    ) -> Result<Runtime, String> {
+    ) -> Result<Runtime, crate::Error> {
         let mut runtime = if let Some(index) = self.cache.iter().position(|(key, _)| key == c) {
             self.cache.remove(index).1
         } else {
@@ -699,12 +818,24 @@ impl Engine {
         }
         self.cache.push((c, r));
     }
+    #[cfg(test)]
     pub fn with<I: ArtifactIo + ?Sized, T>(
         &mut self,
         c: &Checkpoint,
         io: &mut I,
         operation: impl FnOnce(&mut Runtime) -> Result<T, String>,
     ) -> Result<T, String> {
+        let mut runtime = self.take(c, io)?;
+        let result = operation(&mut runtime);
+        self.retain(c.clone(), runtime);
+        result
+    }
+    pub fn with_error<I: ArtifactIo + ?Sized, T>(
+        &mut self,
+        c: &Checkpoint,
+        io: &mut I,
+        operation: impl FnOnce(&mut Runtime) -> Result<T, crate::Error>,
+    ) -> Result<T, crate::Error> {
         let mut runtime = self.take(c, io)?;
         let result = operation(&mut runtime);
         self.retain(c.clone(), runtime);
@@ -718,7 +849,7 @@ impl Engine {
         cursor: &mut u64,
         phase: super::meta::Phase,
         io: &mut I,
-    ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
+    ) -> Result<Option<(Checkpoint, f32, f32)>, crate::Error> {
         self.cost = TrainingCost::default();
         let (evidence, observations) = material;
         let rich_targets = self.rich_targets();
@@ -745,7 +876,7 @@ impl Engine {
                 #[cfg(test)]
                 if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
-                    self.with(&state.model, io, |runtime| {
+                    self.with_error(&state.model, io, |runtime| {
                         pool.reference_focus(&state.feedback, |g| runtime.scores_graph(g))
                     })?;
                     self.cost.preparation_micros = micros(preparation);
@@ -771,7 +902,7 @@ impl Engine {
         };
         if current_focus && !pool.is_empty() {
             let preparation = std::time::Instant::now();
-            self.with(c, io, |runtime| {
+            self.with_error(c, io, |runtime| {
                 pool.focus(&state.feedback, |g| runtime.scores_graph(g))
             })?;
             self.cost.preparation_micros = micros(preparation);
@@ -807,14 +938,14 @@ impl Engine {
         rng: &mut u64,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
-        self.train_using(
+        Ok(self.train_using(
             c,
             graphs,
             rng,
             super::meta::Plan::balanced().phase(0),
             None,
             io,
-        )
+        )?)
     }
     fn train_using<I: ArtifactIo + ?Sized>(
         &mut self,
@@ -824,7 +955,7 @@ impl Engine {
         phase: super::meta::Phase,
         preservation_pool: Option<&Pool>,
         io: &mut I,
-    ) -> Result<(Checkpoint, f32, f32), String> {
+    ) -> Result<(Checkpoint, f32, f32), crate::Error> {
         let started = std::time::Instant::now();
         let mut runtime = self.take(c, io)?;
         self.cost.load_micros = micros(started);

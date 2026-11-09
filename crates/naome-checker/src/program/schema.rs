@@ -1,5 +1,5 @@
 //! One current proof-work schema, shared by evaluation and cache retirement.
-use super::Error;
+use super::{Error, ProgramFault};
 use rusqlite::{Connection, TransactionBehavior};
 
 pub const APPLICATION_ID: i64 = 0x4e415057;
@@ -50,7 +50,7 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), Error> {
         let objects: i64 =
             transaction.query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))?;
         if objects != 0 {
-            return Err("unknown proof work database".into());
+            return Err(ProgramFault::UnknownDatabase.into());
         }
         for (_, _, sql) in OBJECTS {
             transaction.execute_batch(sql)?;
@@ -68,7 +68,7 @@ pub fn verify_database(connection: &Connection) -> Result<(), Error> {
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if application != APPLICATION_ID {
-        return Err("proof work format mismatch".into());
+        return Err(ProgramFault::WorkFormat.into());
     }
     let mut statement = connection.prepare(
         "SELECT substr(type,1,17), substr(name,1,65), substr(sql,1,4097)
@@ -85,14 +85,14 @@ pub fn verify_database(connection: &Connection) -> Result<(), Error> {
             .find(|(expected_kind, expected_name, _)| {
                 *expected_kind == kind && *expected_name == name
             })
-            .ok_or("unexpected proof work schema object")?;
+            .ok_or(ProgramFault::UnexpectedSchemaObject)?;
         if sql.len() > 4096 || normalize_sql(&sql) != normalize_sql(expected.2) {
-            return Err("proof work schema differs from the current contract".into());
+            return Err(ProgramFault::WorkSchema.into());
         }
         found += 1;
     }
     if found != OBJECTS.len() {
-        return Err("incomplete proof work schema".into());
+        return Err(ProgramFault::IncompleteSchema.into());
     }
     Ok(())
 }

@@ -23,12 +23,12 @@ class ContinualObservation(unittest.TestCase):
         parent = {"updates": 0, "model": "parent", "optimizer": "parent-adam"}
         candidate = {"updates": 250, "model": "candidate", "optimizer": "candidate-adam"}
         progress = {"unit": 150, "candidate": None, "model": candidate,
-                    "diagnostic": "candidate_promoted", "incumbent_score": 2,
+                    "qualification": MODULE.Qualification.PROMOTED, "incumbent_score": 2,
                     "candidate_score": 3, "anchor_regression": False,
                     "development_regression": False, "cpu_micros": 1,
                     "wall_micros": 1,
                     "transfer": {"observed": (1 << 24)-1, "before": 1, "after": 3}}
-        return {"id": 1, "input": {"role": "train"}, "state": "complete",
+        return {"id": 1, "input": {"role": "train"}, "state": 0x001d_0004,
                 "checkpoint": 150, "reserved_units": 150,
                 "native": {"base": {"model": parent}, "progress": progress}}, candidate
 
@@ -50,7 +50,7 @@ class ContinualObservation(unittest.TestCase):
     def test_rejection_requires_exact_model_and_optimizer_rollback(self):
         record, candidate = self.record()
         p = record["native"]["progress"]
-        p["diagnostic"] = "no_transfer_gain_rejected"
+        p["qualification"] = MODULE.Qualification.NO_TRANSFER_GAIN
         p["model"] = copy.deepcopy(record["native"]["base"]["model"])
         self.assertFalse(MODULE.audit_completed(record, candidate, record["native"]["progress"]["model"])["accepted"])
         p["model"]["optimizer"] = "rejected-candidate-momentum"
@@ -85,7 +85,7 @@ class ContinualObservation(unittest.TestCase):
 
     def test_unfinished_or_substituted_candidates_cannot_count(self):
         record, candidate = self.record()
-        for field, value in [("state", "suspended"), ("checkpoint", 25), ("reserved_units", 25)]:
+        for field, value in [("state", 0x001d_0003), ("checkpoint", 25), ("reserved_units", 25)]:
             wrong = copy.deepcopy(record)
             wrong[field] = value
             with self.assertRaises(AssertionError):

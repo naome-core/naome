@@ -23,7 +23,7 @@ impl CheckedProgram {
     ) -> Result<Vec<naome_proof::DefinitionId>, Error> {
         self.engine.live()?;
         if limit == 0 || limit > 4096 {
-            return Err("program dependency page capacity".into());
+            return Err(ProgramFault::DependencyPageCapacity.into());
         }
         let mut query = sql(self
             .engine
@@ -60,7 +60,7 @@ impl CheckedProgram {
     ) -> Result<Vec<ProgramDependency>, Error> {
         self.engine.live()?;
         if limit == 0 || limit > 4096 {
-            return Err("program dependency page capacity".into());
+            return Err(ProgramFault::DependencyPageCapacity.into());
         }
         let mut query = sql(self.engine.connection.prepare_cached(
             "SELECT proof,statement,derivation FROM checked_reference WHERE proof>?1 ORDER BY proof LIMIT ?2",
@@ -75,7 +75,7 @@ impl CheckedProgram {
                 let bytes: Vec<u8> = sql(row.get(index))?;
                 bytes
                     .try_into()
-                    .map_err(|_| "checked dependency width".into())
+                    .map_err(|_| ProgramFault::DependencyWidth.into())
             };
             result.push(ProgramDependency {
                 proof: ProofId::from_bytes(key(0)?),
@@ -230,7 +230,9 @@ impl Engine {
             [number(*depth)?],
             |row| row.get(0),
         ))?;
-        let address: [u8; 32] = bytes.try_into().map_err(|_| "reference node width")?;
+        let address: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| ProgramFault::ReferenceNodeWidth)?;
         if self.imported(address)?.is_some() {
             *depth -= 1;
             return Ok(None);
@@ -242,7 +244,7 @@ impl Engine {
                 let Some(id) = self.imported(child)? else {
                     let next = depth
                         .checked_add(1)
-                        .ok_or("reference stack address exhausted")?;
+                        .ok_or(ProgramFault::ReferenceStackAddress)?;
                     push(&self.connection, next, child)?;
                     *depth = next;
                     return Ok(None);

@@ -40,10 +40,10 @@ impl Policy {
         batch: &Batch,
         roots: &[usize],
         cache: &mut FormulaCache,
-    ) -> Result<Encoded, String> {
+    ) -> Result<Encoded, crate::Error> {
         let device = batch.kinds.device();
         if batch.nodes.len() > ROWS {
-            return Err("formula activation cache batch capacity".into());
+            return Err(crate::ResearchFailure::FormulaCacheBatchCapacity.into());
         }
         let (indices, missing) = loop {
             if cache.rows.is_empty() {
@@ -91,7 +91,7 @@ impl Policy {
         device: &Device,
         cache: &mut FormulaCache,
         missing: &[Key],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let start = cache.rows.len();
         let n = missing.len();
         let input = |column| {
@@ -108,7 +108,7 @@ impl Policy {
                 .clone()
                 .into_data()
                 .try_to_vec::<f32>()
-                .map_err(|e| e.to_string())?;
+                .map_err(|_| crate::ResearchFailure::FormulaCacheTensorDecode)?;
             for (i, row) in values.chunks_exact(WIDTH).enumerate() {
                 cache.rows[start + i][stage].copy_from_slice(row);
             }

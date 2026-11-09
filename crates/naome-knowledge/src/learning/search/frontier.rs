@@ -25,15 +25,15 @@ pub(crate) struct Context {
 fn encode(formula: &Formula) -> String {
     crate::hex(&formula.encode_canonical().expect("bounded native formula"))
 }
-fn decode(source: &str) -> Result<Formula, String> {
+fn decode(source: &str) -> Result<Formula, crate::Error> {
     if source.len() > 2 * BYTES {
-        return Err("open branch formula capacity".into());
+        return Err(crate::ResearchFailure::FrontierFormulaCapacity.into());
     }
     let bytes = crate::object::unhex(source)?;
     if crate::hex(&bytes) != source {
-        return Err("open branch formula encoding".into());
+        return Err(crate::ResearchFailure::FrontierFormulaEncoding.into());
     }
-    Formula::decode_canonical(&bytes).map_err(|e| e.to_string())
+    Formula::decode_canonical(&bytes).map_err(crate::Error::from)
 }
 impl Frontier {
     pub(super) fn new(target: &Formula) -> Option<Self> {
@@ -73,21 +73,24 @@ impl Frontier {
     pub(crate) fn validate(
         &self,
         question: &naome_checker::question::ResearchQuestion,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if self.states.is_empty()
             || self.states.len() > STATES
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > BYTES
+            || serde_json::to_vec(self)
+                .map_err(|_| crate::ResearchFailure::FrontierSerialization)?
+                .len()
+                > BYTES
         {
-            return Err("open branch observation capacity".into());
+            return Err(crate::ResearchFailure::FrontierObservationCapacity.into());
         }
         let target = decode(&self.target)?;
         if target != *question.proved_target() && target != *question.refuted_target() {
-            return Err("open branch target binding differs".into());
+            return Err(crate::ResearchFailure::FrontierTargetBinding.into());
         }
         let prepared = prepare(&target)?;
         for open in &self.states {
             if open.facts.len() > 32 || open.variables.len() > 32 || open.depth > 32 {
-                return Err("open branch state capacity".into());
+                return Err(crate::ResearchFailure::FrontierStateCapacity.into());
             }
             let facts = open
                 .facts
@@ -102,12 +105,12 @@ impl Frontier {
                     .any(|v| !variables.contains(&v.identifier()))
                 || prepared.state.facts.iter().any(|f| !facts.contains(f))
             {
-                return Err("open branch assumptions or variable binding differs".into());
+                return Err(crate::ResearchFailure::FrontierAssumptionBinding.into());
             }
         }
         Ok(())
     }
-    pub(crate) fn contexts(&self) -> Result<Vec<Context>, String> {
+    pub(crate) fn contexts(&self) -> Result<Vec<Context>, crate::Error> {
         let prepared = prepare(&decode(&self.target)?)?;
         let assumptions = prepared
             .wrap
@@ -139,7 +142,7 @@ mod tests {
     use super::*;
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -163,13 +166,21 @@ mod tests {
         );
         let mut altered = report.clone();
         altered.states[0].variables.clear();
-        assert!(altered.validate(&q).is_err());
+        let error = altered.validate(&q).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::FrontierAssumptionBinding)
+        );
         let mut altered = report.clone();
         altered.states[0].facts.remove(0);
         assert!(altered.validate(&q).is_err());
         let other = naome_checker::question::ResearchQuestion::from_hex("040101000000000100000000")
             .unwrap();
-        assert!(report.validate(&other).is_err());
+        let error = report.validate(&other).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::FrontierTargetBinding)
+        );
         let restored: Frontier =
             serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
         assert_eq!(report, restored);

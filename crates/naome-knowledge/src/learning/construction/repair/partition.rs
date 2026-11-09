@@ -34,7 +34,7 @@ fn reachable(
     live
 }
 
-fn replay_cut(cut: &Cut, output: &mut Vec<ProofStep>) -> Result<(), String> {
+fn replay_cut(cut: &Cut, output: &mut Vec<ProofStep>) -> Result<(), crate::Error> {
     output.push(ProofStep::ProofReference {
         proof_id: cut.proof,
     });
@@ -44,10 +44,10 @@ fn replay_cut(cut: &Cut, output: &mut Vec<ProofStep>) -> Result<(), String> {
         let variable = (0..=u32::MAX)
             .map(FreeVariable::new)
             .find(|v| *v != replacement && !used.contains(v))
-            .ok_or("fresh instantiation name")?;
+            .ok_or(crate::ResearchFailure::PartitionFreshVariable)?;
         let body = target
             .open_outer_universal(variable)
-            .ok_or("closed cut binder missing")?;
+            .ok_or(crate::ResearchFailure::PartitionBinderMissing)?;
         let premise = (output.len() - 1) as u32;
         let implication = output.len() as u32;
         output.push(ProofStep::UniversalInstantiation {
@@ -68,7 +68,7 @@ fn slice(
     steps: &[ProofStep],
     root: usize,
     cuts: &BTreeMap<usize, Cut>,
-) -> Result<Vec<ProofStep>, String> {
+) -> Result<Vec<ProofStep>, crate::Error> {
     let live = reachable(steps, root, cuts, None);
     let mut mapped = vec![None; root + 1];
     let mut result = Vec::new();
@@ -76,8 +76,9 @@ fn slice(
         if let Some(cut) = cuts.get(&i) {
             replay_cut(cut, &mut result)?;
         } else {
-            let get =
-                |id: u32| mapped[id as usize].ok_or("cut changed a native local step reference");
+            let get = |id: u32| {
+                mapped[id as usize].ok_or(crate::ResearchFailure::PartitionReferenceMismatch)
+            };
             let step = match step {
                 ProofStep::ModusPonens {
                     premise,
@@ -99,8 +100,9 @@ fn slice(
     Ok(result)
 }
 
-fn certificate(steps: Vec<ProofStep>) -> Result<ProofCertificate, String> {
-    ProofCertificate::new(steps).map_err(|e| e.to_string())
+fn certificate(steps: Vec<ProofStep>) -> Result<ProofCertificate, crate::Error> {
+    ProofCertificate::new(steps)
+        .map_err(|error| crate::Error::CertificateConstruction(crate::FormatFailure::from(&error)))
 }
 
 fn close(mut steps: Vec<ProofStep>, free: &[FreeVariable]) -> Vec<ProofStep> {
@@ -117,7 +119,7 @@ fn original_conclusion(
     steps: &[ProofStep],
     index: usize,
     state: &ArtifactState,
-) -> Result<(Formula, Vec<FreeVariable>), String> {
+) -> Result<(Formula, Vec<FreeVariable>), crate::Error> {
     let sliced = slice(steps, index, &BTreeMap::new())?;
     let (normal_form, origins) = certificate(sliced)?.into_unchecked_normal_form_with_variables();
     let checked_steps = normal_form.certificate().steps().len() as u64;
@@ -130,17 +132,17 @@ fn original_conclusion(
         || d.checked_before != checked_steps
         || d.input.commands != checked_steps
     {
-        return Err(error.to_string());
+        return Err(error.into());
     }
     let variables = d
         .operand(OperandRole::Conclusion)
         .and_then(|v| v.formula.as_ref())
-        .ok_or("missing checked open conclusion")?;
+        .ok_or(crate::ResearchFailure::PartitionConclusionMissing)?;
     if !variables.free_variables_complete
         || variables.free_variables.is_empty()
         || variables.free_variables.len() > 12
     {
-        return Err("bounded complete native free-variable inventory required".into());
+        return Err(crate::ResearchFailure::PartitionVariableInventory.into());
     }
     let source_variables = origins
         .into_iter()
@@ -153,7 +155,7 @@ fn original_conclusion(
             source_variables
                 .get(normal)
                 .copied()
-                .ok_or("normalized free variable has no source origin")
+                .ok_or(crate::ResearchFailure::PartitionOriginMissing)
         })
         .collect::<Result<BTreeSet<_>, _>>()?
         .into_iter()
@@ -162,8 +164,7 @@ fn original_conclusion(
     let closed = proof::check(
         certificate(close(slice(steps, index, &BTreeMap::new())?, &free))?,
         state,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok((closed.conclusion().clone(), free))
 }
 
@@ -172,14 +173,14 @@ fn portable(
     expected: &Formula,
     _definitions: &[definitions::Entry],
     state: &ArtifactState,
-) -> Result<CheckedProof, String> {
+) -> Result<CheckedProof, crate::Error> {
     let limit = crate::resources::limits().proof_bytes;
     if checked.conclusion() != expected || checked.normal_form().canonical_bytes().len() > limit {
-        return Err("partition target or native size differs".into());
+        return Err(crate::ResearchFailure::PartitionTargetMismatch.into());
     }
     let source = proof::artifact(checked.normal_form().certificate());
     if source.len() > 2 * limit {
-        return Err("partition artifact exceeds capacity".into());
+        return Err(crate::ResearchFailure::PartitionArtifactCapacity.into());
     }
     let compiled = proof::check_artifact(&source, state)?;
     if compiled.proof_id() != checked.proof_id()
@@ -187,7 +188,7 @@ fn portable(
         || compiled.direct_artifact_dependencies() != checked.direct_artifact_dependencies()
         || compiled.normal_form().canonical_bytes() != checked.normal_form().canonical_bytes()
     {
-        return Err("partition source replay differs".into());
+        return Err(crate::ResearchFailure::PartitionReplayMismatch.into());
     }
     Ok(compiled)
 }
@@ -196,10 +197,10 @@ pub(super) fn append(
     checked: CheckedProof,
     state: &mut ArtifactState,
     pool: &mut Vec<ProofCertificate>,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     if !state.contains_proof(checked.proof_id()) {
         let certificate = checked.normal_form().certificate().clone();
-        state.register_proof(checked).map_err(|e| e.to_string())?;
+        state.register_proof(checked)?;
         pool.push(certificate);
     }
     Ok(())
@@ -211,7 +212,7 @@ pub(super) fn fit(
     state: &mut ArtifactState,
     pool: &mut Vec<ProofCertificate>,
     budget: &mut Budget,
-) -> Result<CheckedProof, String> {
+) -> Result<CheckedProof, crate::Error> {
     let limits = crate::resources::limits();
     if original.normal_form().canonical_bytes().len() < limits.proof_bytes {
         return Ok(original);
@@ -225,7 +226,9 @@ pub(super) fn fit(
         .iter()
         .map(ProofStep::encoded_length)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| {
+            crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+        })?;
     let weight = |set: Vec<bool>| {
         set.into_iter()
             .zip(&weights)
@@ -235,8 +238,7 @@ pub(super) fn fit(
     let mut cuts = BTreeMap::new();
     loop {
         budget.charge(2)?;
-        let rebuilt = proof::check(certificate(slice(steps, root, &cuts)?)?, state)
-            .map_err(|e| e.to_string())?;
+        let rebuilt = proof::check(certificate(slice(steps, root, &cuts)?)?, state)?;
         if let Ok(piece) = portable(rebuilt, original.conclusion(), definitions, state) {
             return Ok(piece);
         }
@@ -268,11 +270,11 @@ pub(super) fn fit(
             let attempt = (|| {
                 let (target, free) = original_conclusion(steps, index, &original_state)?;
                 let sliced = certificate(close(slice(steps, index, &cuts)?, &free))?;
-                let checked = proof::check(sliced, state).map_err(|e| e.to_string())?;
+                let checked = proof::check(sliced, state)?;
                 let piece = portable(checked, &target, definitions, state)?;
                 let proof = piece.proof_id();
                 append(piece, state, pool)?;
-                Ok::<_, String>((
+                Ok::<_, crate::Error>((
                     index,
                     Cut {
                         proof,
@@ -286,7 +288,7 @@ pub(super) fn fit(
                 break;
             }
         }
-        let (index, cut) = cut.ok_or("no portable construction partition cut")?;
+        let (index, cut) = cut.ok_or(crate::ResearchFailure::PartitionCutMissing)?;
         cuts.insert(index, cut);
     }
 }

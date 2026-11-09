@@ -8,7 +8,7 @@ impl Provider for OtherProvider {
     }
     fn execute(&mut self, _: u32, _: &mut dyn Supervisor) -> Result<(), Failure> {
         if self.uncertain {
-            Err(Failure::Uncertain("effect requires reconciliation".into()))
+            Err(Failure::Uncertain)
         } else {
             Ok(())
         }
@@ -23,19 +23,23 @@ impl Supervisor for Grants {
     fn blocked_nanos(&self) -> u64 {
         0
     }
-    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String> {
+    fn observe(
+        &mut self,
+        phase: Phase,
+        sample: Sample,
+    ) -> Result<(), crate::outcome::WorkerFailure> {
         self.1.push((phase, sample));
         Ok(())
     }
-    fn reserve(&mut self, unit: u32) -> Result<(), String> {
+    fn reserve(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
         self.0.push((false, unit));
         Ok(())
     }
-    fn checkpoint(&mut self, unit: u32) -> Result<(), String> {
+    fn checkpoint(&mut self, unit: u32) -> Result<(), crate::outcome::WorkerFailure> {
         self.0.push((true, unit));
         Ok(())
     }
-    fn probe(&mut self, _: Probe) -> Result<(), String> {
+    fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
         Ok(())
     }
 }
@@ -54,17 +58,47 @@ fn structural_finding_finalizes_the_exact_selected_source_under_one_owned_quantu
     .unwrap();
     assert!(matches!(result, Output::Question(source) if source == question));
     assert_eq!(grants.0, [(false, 1), (true, 1)]);
-    assert!(
-        drive(
-            &mut Finding {
-                question: "invalid".into()
-            },
-            &mut Grants::default(),
-            0
-        )
-        .is_err()
+    let invalid = "invalid";
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::source_requires_definitions(invalid)
+            .unwrap_err(),
     );
+    let failure = drive(
+        &mut Finding {
+            question: invalid.into(),
+        },
+        &mut Grants::default(),
+        0,
+    )
+    .unwrap_err();
+    assert!(matches!(failure, Failure::Coded(code) if u32::from(code) == expected.code()));
 }
+#[test]
+fn mock_question_failures_preserve_their_code_for_each_role() {
+    let invalid = "invalid";
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::source_requires_definitions(invalid)
+            .unwrap_err(),
+    );
+    for input in [
+        Input::Solve {
+            question: invalid.into(),
+        },
+        Input::Select {
+            question: invalid.into(),
+            purpose: Purpose::Initial,
+            root: None,
+        },
+    ] {
+        let mut provider = Mock {
+            input,
+            work: MockWork::default(),
+        };
+        let failure = provider.result(&mut Grants::default()).unwrap_err();
+        assert!(matches!(failure, Failure::Coded(code) if u32::from(code) == expected.code()));
+    }
+}
+
 #[test]
 fn structural_finding_preserves_a_definition_aware_source() {
     use naome_foundation::{Formula, FreeVariable};
@@ -117,7 +151,7 @@ fn another_provider_resumes_through_the_same_reservations_and_preserves_uncertai
     grants.1.clear();
     assert!(matches!(
         drive(&mut OtherProvider { uncertain: true }, &mut grants, 0),
-        Err(Failure::Uncertain(_))
+        Err(Failure::Uncertain)
     ));
     assert_eq!(grants.0, [(false, 1)]);
     assert_eq!(
@@ -127,5 +161,43 @@ fn another_provider_resumes_through_the_same_reservations_and_preserves_uncertai
             .map(|(phase, sample)| (*phase, sample.succeeded))
             .collect::<Vec<_>>(),
         [(Phase::Setup, true), (Phase::Unit { unit: 1 }, false)]
+    );
+}
+
+#[test]
+fn supervisor_failure_survives_provider_drive() {
+    struct FailedGrant;
+    impl Supervisor for FailedGrant {
+        fn reserve(&mut self, _: u32) -> Result<(), crate::outcome::WorkerFailure> {
+            Err(crate::outcome::WorkerFailure::GrantIdentity)
+        }
+        fn checkpoint(&mut self, _: u32) -> Result<(), crate::outcome::WorkerFailure> {
+            unreachable!()
+        }
+        fn probe(&mut self, _: Probe) -> Result<(), crate::outcome::WorkerFailure> {
+            unreachable!()
+        }
+        fn blocked_nanos(&self) -> u64 {
+            0
+        }
+        fn observe(&mut self, _: Phase, _: Sample) -> Result<(), crate::outcome::WorkerFailure> {
+            Ok(())
+        }
+    }
+    let result = drive(&mut OtherProvider { uncertain: false }, &mut FailedGrant, 0);
+    assert!(
+        matches!(result, Err(Failure::Coded(code)) if u32::from(code) == u32::from(crate::outcome::WorkerFailure::GrantIdentity))
+    );
+}
+
+#[test]
+fn mock_provider_rejects_native_jobs_with_a_registered_code() {
+    let mut provider = Mock {
+        input: Input::Train { epoch: 1 },
+        work: MockWork::default(),
+    };
+    let failure = provider.result(&mut Grants::default()).unwrap_err();
+    assert!(
+        matches!(failure, Failure::Coded(code) if u32::from(code) == u32::from(crate::WorkerFailure::NativeProviderRequired))
     );
 }

@@ -44,7 +44,7 @@ impl Programs {
         graph: &Graph,
     ) -> Result<(), crate::Error> {
         if !self.authorizes(peer, root, metadata.manifest.artifact_id()) {
-            return Err("unrequested program dependency description".into());
+            return Err(crate::InputFault::IntakeDependencyDescriptionUnrequested.into());
         }
         self.active
             .as_mut()
@@ -61,7 +61,7 @@ impl Programs {
         graph: &Graph,
     ) -> Result<(), crate::Error> {
         if !self.authorizes(peer, root, id) {
-            return Err("unrequested program dependency chunk".into());
+            return Err(crate::InputFault::IntakeDependencyChunkUnrequested.into());
         }
         self.active
             .as_mut()
@@ -79,7 +79,7 @@ impl Programs {
         graph: &Graph,
     ) -> Result<crate::object::Candidate, crate::Error> {
         if !self.authorizes(peer, root, id) {
-            return Err("unrequested program dependency certificate".into());
+            return Err(crate::InputFault::IntakeDependencyCertificateUnrequested.into());
         }
         let active = self.active.as_mut().expect("selected program parent");
         let candidate =
@@ -114,7 +114,7 @@ impl Intake {
         let id = metadata.manifest.artifact_id();
         if self.definition_authorizes(peer, root, id) {
             if root == id {
-                return Err("requested definition payload differs".into());
+                return Err(crate::InputFault::IntakeDefinitionMismatch.into());
             }
             return self
                 .definition
@@ -127,7 +127,7 @@ impl Intake {
             return self.programs.insert_helper(peer, root, metadata, graph);
         }
         if !self.authorizes(peer, root, id) {
-            return Err("unrequested cited program description".into());
+            return Err(crate::InputFault::IntakeCitedDescriptionUnrequested.into());
         }
         self.programs.remove(id);
         self.active
@@ -143,7 +143,8 @@ impl Intake {
     ) -> Result<(), crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let Some(root) = &mut self.active else {
             return Ok(());
@@ -158,7 +159,7 @@ impl Intake {
         root.closure.advance(graph)?;
         if root.closure.member_count() > crate::resources::limits().closure_objects {
             return Err(crate::Error::InputLimit(
-                "cited closure dependency capacity",
+                crate::InputLimit::CitedClosureDependencyCapacity,
             ));
         }
         Ok(())

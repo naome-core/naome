@@ -36,7 +36,7 @@ impl Frontier {
         let mut pending = Vec::new();
         let mut required = Vec::new();
         for source in record.helpers {
-            let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
+            let helper = ResearchQuestion::from_hex(&source)?;
             let outcome = self.evidence.get(&helper)?;
             if let Some(verified) = outcome.as_ref().and_then(|r| r.verified.as_ref()) {
                 let root = ArtifactId::from_bytes(crate::object::id_bytes(verified)?);

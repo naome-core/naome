@@ -449,7 +449,12 @@ fn copy_read_mirror_and_real_sql_commit_failures_halt_without_handoff() {
         }
         let error = graph.test_compaction_step(1).unwrap_err();
         if failure == 2 {
-            assert!(error.contains("FOREIGN KEY"), "{error}");
+            assert!(matches!(
+                error,
+                crate::Error::CheckedIndexSql { reason: crate::SqlFault::Engine, sqlite_code: Some(code) }
+                    if code.get() == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
+            ));
+            assert_eq!(graph.storage_error(), Some(error));
         }
         assert!(graph.compaction.is_none());
         assert!(graph.storage_error().is_some());
@@ -566,7 +571,7 @@ fn startup_prune_graph() -> (Graph, crate::Envelope, naome_proof::ArtifactId) {
             .ingest(envelope.clone(), std::time::Instant::now())
             .unwrap()
             .status,
-        "accepted"
+        crate::IngestStatus::Accepted
     );
     (graph, envelope, id)
 }
@@ -821,11 +826,11 @@ fn startup_prune_requires_a_finished_page_and_leaves_runtime_successors_unchange
             .unwrap(),
         0
     );
-    assert!(
+    assert_eq!(
         successor
             .prune_startup(&DiskArtifactState::new(successor.clone()))
-            .unwrap_err()
-            .contains("incremental vacuum")
+            .unwrap_err(),
+        crate::Error::from(crate::InputFault::CheckedPruneVacuumMode)
     );
     assert!(
         successor
@@ -842,13 +847,30 @@ fn startup_prune_requires_a_finished_page_and_leaves_runtime_successors_unchange
 
     let (graph, _, _) = startup_prune_graph();
     graph.checked_storage.begin_write_phase().unwrap();
-    assert!(
-        graph
-            .checked_storage
-            .prune_startup(&graph.context)
-            .unwrap_err()
-            .contains("finished replay page")
+    let error = graph
+        .checked_storage
+        .prune_startup(&graph.context)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::CheckedPruneUnfinishedPage)
     );
-    assert!(graph.storage_error().is_some());
+    assert_eq!(graph.storage_error(), Some(error.fatal_storage()));
     // The failed owner is discarded; journal_mode=OFF is never rolled back for reuse.
+}
+
+#[test]
+fn poisoned_cache_resize_halts_owner_with_typed_cause() {
+    let graph = Graph::default();
+    let storage = &graph.checked_storage;
+    let budget = crate::resources::adaptive::cache(usize::MAX);
+    storage.live_cache_budget.store(!budget, Ordering::Release);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = storage.cache.lock().unwrap();
+        panic!("injected cache lock poison");
+    }));
+    let error = graph.cold(storage.adapt_cache()).unwrap_err();
+    let expected = crate::Error::from(crate::InputFault::CheckedCacheLockPoisoned).fatal_storage();
+    assert_eq!(error, expected);
+    assert_eq!(graph.storage_error(), Some(expected));
 }

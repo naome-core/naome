@@ -38,7 +38,7 @@ impl Graph {
         question: &ResearchQuestion,
     ) -> Result<(ArtifactId, CheckedBatch), crate::Error> {
         let (preparation, root) = self.stage_generated(helpers, Some((source, question)))?;
-        let root = root.ok_or("missing generated root")?;
+        let root = root.ok_or(crate::InputFault::GeneratedRootMissing)?;
         Ok((root, preparation.finish(self, root)?))
     }
 
@@ -68,7 +68,7 @@ impl Graph {
                 .any(|source| source.len() > 2 * limits.proof_bytes)
             || bytes > 2 * limits.closure_bytes
         {
-            return Err("generated closure input capacity".into());
+            return Err(crate::InputFault::GeneratedInputCapacity.into());
         }
         // Capture before helpers can stage immutable nodes. The shared batch
         // path must never refresh this token after a copy starts.
@@ -87,14 +87,14 @@ impl Graph {
                     }
                     CheckedArtifact::Definition(_) => 1,
                 })
-                .ok_or("generated checker work overflow")?;
+                .ok_or(crate::InputFault::GeneratedWorkOverflow)?;
             bytes = bytes
                 .checked_add(record.bytes.len())
-                .ok_or("generated closure byte overflow")?;
+                .ok_or(crate::InputFault::GeneratedBytesOverflow)?;
             if steps > crate::resources::limits().closure_steps
                 || bytes > crate::resources::limits().closure_bytes
             {
-                return Err("generated closure checker work capacity".into());
+                return Err(crate::InputFault::GeneratedWorkCapacity.into());
             }
             if position == helpers.len() {
                 let (_, question) = root.expect("only the final source is the root");
@@ -107,7 +107,7 @@ impl Graph {
                 && let Some(existing) = self.binary_object(id)?
             {
                 if !existing.same_content(&record) {
-                    return Err("generated helper identity collision".into());
+                    return Err(crate::InputFault::GeneratedHelperCollision.into());
                 }
             } else {
                 preparation.append_artifact(self, checked, record)?;
@@ -144,14 +144,14 @@ impl Graph {
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
         if candidates.is_empty() || candidates.len() > crate::resources::limits().closure_objects {
-            return Err("checked batch operation capacity".into());
+            return Err(crate::InputFault::CheckedBatchOperationCapacity.into());
         }
         if !candidates.contains_key(&root) {
-            return Err("missing staged root".into());
+            return Err(crate::InputFault::StagedRootMissing.into());
         }
         let prefix_count = prefix.as_ref().map_or(0, |prefix| prefix.entries.len());
         if candidates.len() + prefix_count > crate::resources::limits().closure_objects {
-            return Err("checked closure operation capacity".into());
+            return Err(crate::InputLimit::CheckedClosureOperationCapacity.into());
         }
         preparation::require_closure(
             self,
@@ -190,7 +190,7 @@ impl Graph {
                             .contains_artifact(*dependency)
                             .map_err(crate::Error::from),
                     )? {
-                        return Err("missing or cyclic committed dependency closure".into());
+                        return Err(crate::InputFault::CommittedClosureIncomplete.into());
                     }
                     schedule.finish(*dependency);
                 }
@@ -210,7 +210,7 @@ impl Graph {
             schedule.finish(id);
         }
         if !schedule.complete() || !candidates.is_empty() {
-            return Err("missing or cyclic committed dependency closure".into());
+            return Err(crate::InputFault::CommittedClosureIncomplete.into());
         }
         preparation.finish(self, root)
     }
@@ -309,7 +309,7 @@ impl Graph {
                     question,
                 ))?)
         {
-            return Err("exchange question does not bind the checked root".into());
+            return Err(crate::InputFault::ExchangeQuestionRootMismatch.into());
         }
         if let Some(question) = question {
             batch
@@ -331,7 +331,7 @@ impl Graph {
             crate::corpus::root(
                 self.count
                     .checked_add(batch.entries.len())
-                    .ok_or("accepted count overflow")?,
+                    .ok_or(crate::InputFault::AcceptedCountOverflow)?,
                 batch.context.artifact_set_fingerprint(),
             )?,
             guard.as_ref(),

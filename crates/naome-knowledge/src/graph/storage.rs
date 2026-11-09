@@ -78,20 +78,20 @@ pub(super) struct CheckedStorage {
     cache: Arc<Mutex<Cache>>,
     path: PathBuf,
     owner: Arc<Owner>,
-    halt: Arc<Mutex<Option<String>>>,
+    halt: Arc<Mutex<Option<crate::Error>>>,
 }
 
 // A fatal disposable-index phase can close its connection while snapshots
 // retain the generation. Every production SQL access checks this slot.
-struct IndexConnection(Option<Connection>, Option<String>);
+struct IndexConnection(Option<Connection>, Option<crate::Error>);
 impl IndexConnection {
-    fn open(&self) -> Result<&Connection, String> {
+    fn open(&self) -> Result<&Connection, crate::Error> {
         if let Some(error) = &self.1 {
-            return Err(format!("checked index close unresolved: {error}"));
+            return Err(error.clone());
         }
         self.0
             .as_ref()
-            .ok_or_else(|| "checked index connection closed".into())
+            .ok_or(crate::InputFault::CheckedIndexClosed.into())
     }
 }
 /// The one source-generation write boundary. Every successful immutable write
@@ -112,17 +112,17 @@ impl WriteRoute {
         &mut self,
         source: &CheckedStorage,
         target: Arc<CheckedStorage>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, crate::Error> {
         if self.mirror.is_some() || std::ptr::eq(source, target.as_ref()) {
-            return Err("checked copy mirror already attached or cyclic".into());
+            return Err(crate::InputFault::CheckedCopyMirrorAttached.into());
         }
         if target.write_gate()?.mirror.is_some() {
-            return Err("checked copy target already mirrors another generation".into());
+            return Err(crate::InputFault::CheckedCopyTargetMirrors.into());
         }
         let epoch = self
             .epoch
             .checked_add(1)
-            .ok_or("checked copy epoch overflow")?;
+            .ok_or(crate::InputFault::CheckedCopyEpochOverflow)?;
         self.epoch = epoch;
         self.mirror = Some(target);
         Ok(epoch)
@@ -140,9 +140,9 @@ impl WriteRoute {
         &mut self,
         epoch: u64,
         target: &Arc<CheckedStorage>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if !self.matches(epoch, target) {
-            return Err("checked copy source epoch or target changed".into());
+            return Err(crate::InputFault::CheckedCopyRouteChanged.into());
         }
         self.mirror = None;
         Ok(())
@@ -150,7 +150,7 @@ impl WriteRoute {
 }
 
 impl CheckedStorage {
-    pub(super) fn adapt_cache(&self) -> Result<(), String> {
+    pub(super) fn adapt_cache(&self) -> Result<(), crate::Error> {
         let budget = crate::resources::adaptive::cache(usize::MAX);
         if self.live_cache_budget.load(Ordering::Acquire) == budget {
             return Ok(());
@@ -159,21 +159,21 @@ impl CheckedStorage {
             let mut cache = self
                 .cache
                 .lock()
-                .map_err(|_| "checked cache lock poisoned")?;
+                .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?;
             let limit = crate::resources::adaptive::cache(
                 crate::resources::active_limits().checked_cache_bytes,
             );
             cache.trim(limit);
             if cache.charged > limit {
                 self.flush_buffered(&mut cache, false)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 cache.trim(limit);
             }
         }
         let connection = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         connection
             .open()?
             .pragma_update(
@@ -185,9 +185,15 @@ impl CheckedStorage {
                     ) / 1024)
                         .max(1),
                 )
-                .map_err(|e| e.to_string())?,
+                .map_err(|_| crate::InputFault::CheckedCacheSizeWidth)?,
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+                crate::Error::CheckedIndexSql {
+                    reason,
+                    sqlite_code,
+                }
+            })?;
         self.live_cache_budget.store(budget, Ordering::Release);
         Ok(())
     }
@@ -199,23 +205,23 @@ impl CheckedStorage {
         WRITE_TEST_DELAY.with(|slot| *slot.borrow_mut() = Some((started, release)));
     }
 
-    pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, String> {
+    pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, crate::Error> {
         let mut route = self
             .write_gate
             .lock()
-            .map_err(|_| "checked write gate poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedWriteGatePoisoned)?;
         let owner = std::thread::current().id();
         while route.phase_owner.is_some_and(|active| active != owner) {
             self.require_live()?;
             route = self
                 .write_ready
                 .wait(route)
-                .map_err(|_| "checked write gate poisoned")?;
+                .map_err(|_| crate::InputFault::CheckedWriteGatePoisoned)?;
         }
         Ok(route)
     }
 
-    pub(super) fn copy_epoch(&self) -> Result<u64, String> {
+    pub(super) fn copy_epoch(&self) -> Result<u64, crate::Error> {
         Ok(self.write_gate()?.epoch())
     }
 
@@ -223,52 +229,64 @@ impl CheckedStorage {
     /// remove our exact route; the shared failure still halts the live owner.
     pub(super) fn abort_copy(&self, epoch: u64, target: &Arc<CheckedStorage>) {
         let mut route = self.write_gate.lock().unwrap_or_else(|error| {
-            self.record_failure(&ContextError::Storage("checked write gate poisoned".into()));
+            self.record_failure(&ContextError::Storage(
+                naome_proof::ContextStorageFailure::WriteGate,
+            ));
             error.into_inner()
         });
         if route.matches(epoch, target) {
             route.mirror = None;
         } else if route.mirror.is_some() {
             self.record_failure(&ContextError::Storage(
-                "checked copy abort found another route".into(),
+                naome_proof::ContextStorageFailure::CopyRoute,
             ));
         }
     }
 
     /// Batch only disposable index writes. Canonical admission has its own
     /// transaction; unfinished checked generations never become live roots.
-    pub(super) fn begin_write_phase(&self) -> Result<(), String> {
+    pub(super) fn begin_write_phase(&self) -> Result<(), crate::Error> {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         let connection = connection_guard.open()?;
         if !connection.is_autocommit() {
-            return Err("checked index write phase already active".into());
+            return Err(crate::InputFault::CheckedWritePhaseActive.into());
         }
-        connection.execute_batch("BEGIN").map_err(|e| e.to_string())
+        connection.execute_batch("BEGIN").map_err(|error| {
+            let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+            crate::Error::CheckedIndexSql {
+                reason,
+                sqlite_code,
+            }
+        })
     }
-    pub(super) fn finish_write_phase(&self) -> Result<(), String> {
+    pub(super) fn finish_write_phase(&self) -> Result<(), crate::Error> {
         if self
             .cache
             .lock()
-            .map_err(|_| "checked cache lock poisoned")?
+            .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?
             .buffering
             .is_some()
         {
-            return Err("startup buffer must finish before COMMIT".into());
+            return Err(crate::InputFault::CheckedWriteBufferActive.into());
         }
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         let connection = connection_guard.open()?;
         if connection.is_autocommit() {
-            return Err("checked index write phase missing".into());
+            return Err(crate::InputFault::CheckedWritePhaseMissing.into());
         }
-        connection
-            .execute_batch("COMMIT")
-            .map_err(|e| e.to_string())
+        connection.execute_batch("COMMIT").map_err(|error| {
+            let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+            crate::Error::CheckedIndexSql {
+                reason,
+                sqlite_code,
+            }
+        })
     }
     #[cfg(test)]
     pub(super) fn evict_cache(&self) {
@@ -288,11 +306,15 @@ impl CheckedStorage {
     pub(super) fn open(
         lease: Arc<Store>,
         cleanup_directory: bool,
-        halt: Arc<Mutex<Option<String>>>,
-    ) -> Result<Arc<Self>, String> {
+        halt: Arc<Mutex<Option<crate::Error>>>,
+    ) -> Result<Arc<Self>, crate::Error> {
         // The exclusive canonical lease excludes all prior live generations.
-        for entry in fs::read_dir(lease.directory()).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+        for entry in fs::read_dir(lease.directory()).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+        })? {
+            let entry = entry.map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+            })?;
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
@@ -303,7 +325,12 @@ impl CheckedStorage {
                 .is_some_and(|number| number.parse::<u64>().is_ok());
             if owned || name == ".checked-context.sqlite3" {
                 require_regular(&entry.path())?;
-                fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+                fs::remove_file(entry.path()).map_err(|error| {
+                    crate::error::storage_io_error(
+                        crate::StorageIoOperation::RemoveOwnedFile,
+                        error,
+                    )
+                })?;
             }
         }
         Self::fresh(
@@ -316,15 +343,15 @@ impl CheckedStorage {
             true,
         )
     }
-    pub(super) fn successor(&self) -> Result<Arc<Self>, String> {
+    pub(super) fn successor(&self) -> Result<Arc<Self>, crate::Error> {
         if self
             .cache
             .lock()
-            .map_err(|_| "checked cache lock poisoned")?
+            .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?
             .buffering
             .is_some()
         {
-            return Err("startup buffer has no published successor".into());
+            return Err(crate::InputFault::CheckedSuccessorBuffered.into());
         }
         Self::fresh(
             self.owner.clone(),
@@ -336,42 +363,46 @@ impl CheckedStorage {
     fn fresh(
         owner: Arc<Owner>,
         cache: Arc<Mutex<Cache>>,
-        halt: Arc<Mutex<Option<String>>>,
+        halt: Arc<Mutex<Option<crate::Error>>>,
         startup: bool,
-    ) -> Result<Arc<Self>, String> {
+    ) -> Result<Arc<Self>, crate::Error> {
         let number = NEXT_FILE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| "checked generation number overflow")?;
-        let directory = fs::canonicalize(owner.lease.directory()).map_err(|e| e.to_string())?;
+            .map_err(|_| crate::InputFault::CheckedGenerationOverflow)?;
+        let directory = fs::canonicalize(owner.lease.directory()).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::ResolveParent, error)
+        })?;
         let path = directory.join(format!("{PREFIX}{number}{SUFFIX}"));
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::CreateStage, error)
+            })?;
         let connection = Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(checked_index_sql)?;
         crate::storage::sqlite_common(
             &connection,
             crate::resources::active_limits().checked_index_cache_bytes,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(checked_index_sql)?;
         if startup {
             // Only the fresh, exclusive startup generation is pruned in place.
             // SQLite requires the pointer map before any table is created.
             connection
                 .execute_batch("PRAGMA auto_vacuum=INCREMENTAL")
-                .map_err(|e| e.to_string())?;
+                .map_err(checked_index_sql)?;
             let mode: i64 = connection
                 .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
-                .map_err(|e| e.to_string())?;
+                .map_err(checked_index_sql)?;
             if mode != 2 {
-                return Err("startup checked storage requires incremental vacuum".into());
+                return Err(crate::InputFault::CheckedStartupVacuumMode.into());
             }
         }
         // Corruption fails the owner. These bytes and all roots are discarded
@@ -382,7 +413,7 @@ impl CheckedStorage {
             CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32),
                 payload BLOB NOT NULL) STRICT, WITHOUT ROWID;",
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(checked_index_sql)?;
         Ok(Arc::new(Self {
             live_cache_budget: AtomicUsize::new(usize::MAX),
             connection: Mutex::new(IndexConnection(Some(connection), None)),
@@ -395,22 +426,23 @@ impl CheckedStorage {
             halt,
         }))
     }
-    pub(super) fn allocated_bytes(&self) -> Result<usize, String> {
+    pub(super) fn allocated_bytes(&self) -> Result<usize, crate::Error> {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         let connection = connection_guard.open()?;
         let pages: i64 = connection
             .pragma_query_value(None, "page_count", |r| r.get(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(checked_index_sql)?;
         let size: i64 = connection
             .pragma_query_value(None, "page_size", |r| r.get(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(checked_index_sql)?;
         let bytes = pages
             .checked_mul(size)
-            .ok_or("checked index size overflow")?;
-        usize::try_from(bytes).map_err(|_| "checked index size width".into())
+            .ok_or(crate::InputFault::CheckedIndexSizeOverflow)?;
+        usize::try_from(bytes)
+            .map_err(|_| crate::Error::from(crate::InputFault::CheckedIndexSizeWidth))
     }
 
     /// Called only between startup replay pages, before any view is published.
@@ -418,22 +450,22 @@ impl CheckedStorage {
     pub(super) fn prune_startup(
         self: &Arc<Self>,
         context: &DiskArtifactState,
-    ) -> Result<usize, String> {
-        let result = (|| {
+    ) -> Result<usize, crate::Error> {
+        let result: Result<usize, crate::Error> = (|| {
             {
                 let connection_guard = self
                     .connection
                     .lock()
-                    .map_err(|_| "checked index lock poisoned")?;
+                    .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
                 let connection = connection_guard.open()?;
                 if !connection.is_autocommit() {
-                    return Err("startup prune requires a finished replay page".into());
+                    return Err(crate::InputFault::CheckedPruneUnfinishedPage.into());
                 }
                 let mode: i64 = connection
                     .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
-                    .map_err(|e| e.to_string())?;
+                    .map_err(checked_index_sql)?;
                 if mode != 2 {
-                    return Err("startup prune requires incremental vacuum".into());
+                    return Err(crate::InputFault::CheckedPruneVacuumMode.into());
                 }
                 // Keep only addresses on disk; small replays never create this table.
                 connection
@@ -443,22 +475,18 @@ impl CheckedStorage {
                         ) STRICT, WITHOUT ROWID;
                         BEGIN; DELETE FROM startup_keep;",
                     )
-                    .map_err(|e| e.to_string())?;
+                    .map_err(checked_index_sql)?;
             }
             // Never hold the SQL mutex across the checker's recursive storage calls.
             // The returned view is a traversal vehicle, not a new checked root.
-            drop(
-                context
-                    .copy_to(Arc::new(StartupMarker {
-                        storage: self.clone(),
-                    }))
-                    .map_err(|e| e.to_string())?,
-            );
+            drop(context.copy_to(Arc::new(StartupMarker {
+                storage: self.clone(),
+            }))?);
             {
                 let connection_guard = self
                     .connection
                     .lock()
-                    .map_err(|_| "checked index lock poisoned")?;
+                    .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
                 let connection = connection_guard.open()?;
                 connection
                     .execute(
@@ -466,44 +494,44 @@ impl CheckedStorage {
                             SELECT 1 FROM startup_keep WHERE startup_keep.address=nodes.address)",
                         [],
                     )
-                    .map_err(|e| e.to_string())?;
+                    .map_err(checked_index_sql)?;
                 #[cfg(test)]
                 startup_prune_test_fault(StartupPruneStage::Sweep)?;
                 connection
                     .execute("DELETE FROM startup_keep", [])
-                    .map_err(|e| e.to_string())?;
+                    .map_err(checked_index_sql)?;
             }
             // A removed address may be written again in this same generation.
             // No persisted-generation tag may survive the sweep.
             *self
                 .cache
                 .lock()
-                .map_err(|_| "checked cache lock poisoned")? = Cache::default();
+                .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)? = Cache::default();
             {
                 let connection_guard = self
                     .connection
                     .lock()
-                    .map_err(|_| "checked index lock poisoned")?;
+                    .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
                 let connection = connection_guard.open()?;
                 connection
                     .execute_batch("COMMIT")
-                    .map_err(|e| e.to_string())?;
+                    .map_err(checked_index_sql)?;
                 #[cfg(test)]
                 startup_prune_test_fault(StartupPruneStage::Reclaim)?;
                 // This PRAGMA returns a row per step. execute_batch would stop
                 // after its first row; the cursor must reach SQLITE_DONE.
                 let mut vacuum = connection
                     .prepare("PRAGMA incremental_vacuum")
-                    .map_err(|e| e.to_string())?;
-                let mut rows = vacuum.query([]).map_err(|e| e.to_string())?;
-                while rows.next().map_err(|e| e.to_string())?.is_some() {}
+                    .map_err(checked_index_sql)?;
+                let mut rows = vacuum.query([]).map_err(checked_index_sql)?;
+                while rows.next().map_err(checked_index_sql)?.is_some() {}
                 drop(rows);
                 drop(vacuum);
                 let remaining: i64 = connection
                     .pragma_query_value(None, "freelist_count", |row| row.get(0))
-                    .map_err(|e| e.to_string())?;
+                    .map_err(checked_index_sql)?;
                 if remaining != 0 {
-                    return Err("startup checked storage reclaim is incomplete".into());
+                    return Err(crate::InputFault::CheckedPruneReclaimIncomplete.into());
                 }
             }
             self.allocated_bytes()
@@ -511,16 +539,18 @@ impl CheckedStorage {
         if let Err(error) = &result {
             // journal_mode=OFF cannot safely recover a partial sweep by rollback.
             // Graph::open propagates this error and discards the whole generation.
-            *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+            self.halt
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_or_insert_with(|| error.clone().fatal_storage());
         }
         result
     }
     fn read_inner(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
         {
-            let mut cache = self
-                .cache
-                .lock()
-                .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?;
+            let mut cache = self.cache.lock().map_err(|_| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
+            })?;
             if let Some(entry) = cache.entries.get(&address) {
                 if entry.bytes.len() > maximum {
                     return Err(ContextError::Limit);
@@ -535,7 +565,7 @@ impl CheckedStorage {
         let bytes = self.read_uncached(address, maximum)?;
         self.cache
             .lock()
-            .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock))?
             .insert(address, bytes.clone(), self.generation);
         Ok(bytes)
     }
@@ -543,8 +573,10 @@ impl CheckedStorage {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
-        let connection = connection_guard.open().map_err(ContextError::Storage)?;
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?;
+        let connection = connection_guard.open().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         // Read only a fixed header before fetching or allocating decoded bytes.
         let encoded_bound = codec::maximum_encoded(maximum)?;
         let record: Option<(i64, Option<Vec<u8>>)> = connection
@@ -582,10 +614,9 @@ impl CheckedStorage {
     }
     fn write_inner(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
         {
-            let mut cache = self
-                .cache
-                .lock()
-                .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?;
+            let mut cache = self.cache.lock().map_err(|_| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
+            })?;
             if self.buffer_write(&mut cache, address, bytes)? {
                 return Ok(());
             }
@@ -603,19 +634,24 @@ impl CheckedStorage {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
-        let connection = connection_guard.open().map_err(ContextError::Storage)?;
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?;
+        let connection = connection_guard.open().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         persist_record(connection, self.generation, address, bytes)?;
         drop(connection_guard);
         self.cache
             .lock()
-            .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?
+            .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock))?
             .insert(address, bytes.to_vec(), self.generation);
         Ok(())
     }
     fn record_error<T>(&self, result: Result<T, ContextError>) -> Result<T, ContextError> {
         if let Err(error) = &result {
-            *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            self.halt
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_or_insert_with(|| crate::Error::CheckedContext(error.clone()));
         }
         result
     }
@@ -736,9 +772,11 @@ impl ContextStorage for StartupMarker {
             self.storage
                 .connection
                 .lock()
-                .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?
+                .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::IndexLock))?
                 .open()
-                .map_err(ContextError::Storage)?
+                .map_err(|_| {
+                    ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+                })?
                 .prepare_cached(
                     "INSERT INTO startup_keep(address) VALUES(?1) ON CONFLICT(address) DO NOTHING",
                 )
@@ -746,7 +784,8 @@ impl ContextStorage for StartupMarker {
                 .execute([address.as_slice()])
                 .map_err(context_error)?;
             #[cfg(test)]
-            startup_prune_test_fault(StartupPruneStage::Mark).map_err(ContextError::Storage)?;
+            startup_prune_test_fault(StartupPruneStage::Mark)
+                .map_err(|_| ContextError::Storage(naome_proof::ContextStorageFailure::Injected))?;
             Ok(())
         })())
     }
@@ -852,19 +891,32 @@ impl Cache {
 }
 impl ContextStorage for CheckedStorage {
     fn record_failure(&self, error: &ContextError) {
-        *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        self.halt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(|| crate::Error::CheckedContext(error.clone()));
     }
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
-        self.require_live().map_err(ContextError::Storage)?;
+        self.require_live().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         self.record_error(self.read_inner(address, maximum))
     }
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
-        self.require_live().map_err(ContextError::Storage)?;
+        self.require_live().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         let route = match self.write_gate() {
             Ok(route) => route,
-            Err(error) => return self.record_error(Err(ContextError::Storage(error))),
+            Err(_) => {
+                return self.record_error(Err(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::WriteGate,
+                )));
+            }
         };
-        self.require_live().map_err(ContextError::Storage)?;
+        self.require_live().map_err(|_| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::OwnerUnavailable)
+        })?;
         #[cfg(test)]
         WRITE_TEST_PAUSE.with(|slot| {
             let pause = slot.borrow_mut().take();
@@ -908,22 +960,35 @@ impl Drop for Owner {
         }
     }
 }
-fn require_regular(path: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+fn require_regular(path: &Path) -> Result<(), crate::Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+    })?;
     if !metadata.is_file() {
-        return Err("checked index is not a regular file".into());
+        return Err(crate::InputFault::CheckedIndexFileType.into());
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if metadata.nlink() != 1 {
-            return Err("checked index has linked aliases".into());
+            return Err(crate::InputFault::CheckedIndexFileLinks.into());
         }
     }
     Ok(())
 }
+fn checked_index_sql(error: rusqlite::Error) -> crate::Error {
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+    crate::Error::CheckedIndexSql {
+        reason,
+        sqlite_code,
+    }
+}
+
 fn context_error(error: rusqlite::Error) -> ContextError {
-    ContextError::Storage(error.to_string())
+    ContextError::Storage(naome_proof::ContextStorageFailure::Sqlite(match error {
+        rusqlite::Error::SqliteFailure(failure, _) => Some(failure.extended_code),
+        _ => None,
+    }))
 }
 
 #[cfg(test)]

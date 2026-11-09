@@ -5,6 +5,7 @@ Two ordinary nodes use separate OS sessions, identities, directories and ports.
 Only lifecycle/status operations drive them. The deterministic provider uses
 the same supervised candidate stream and mathematical checker as other providers.
 """
+from fixture_result import FixtureResult, ResourceProfile
 import argparse
 from contextlib import closing
 from hashlib import sha256
@@ -14,6 +15,7 @@ from pathlib import Path
 import signal
 import sqlite3
 import time
+from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, process_group, process_identity, retain_evidence, write_receipt
 from proof_network import program_manifest, stored_objects
 from resource_observation import latest
@@ -26,12 +28,12 @@ class AutonomousNode(Node):
         events = self.logs()
         for index in range(len(events) - 1, -1, -1):
             event = events[index]
-            if (event.get("event") == "startup_replay" and event.get("phase") == "checked"
+            if (event.get("event") == 0x00170069 and event.get("phase") == 0x190002
                     and event.get("pid") == self.process["pid"]
                     and event.get("instance_sha256") == self.launch_hash):
                 following = events[index + 1:]
                 for end, later in enumerate(following):
-                    if later.get("event") == "startup_replay" and later.get("phase") == "begin":
+                    if later.get("event") == 0x00170069 and later.get("phase") == 0x190001:
                         return following[:end]
                 return following
         return []
@@ -44,7 +46,7 @@ class AutonomousNode(Node):
         assert endpoint["pid"] == self.process["pid"]
         self.launch_hash = sha256(endpoint["token"].encode()).hexdigest()
         event=self.trial.wait(lambda:next((event for event in self.launch_events()
-            if event.get('event')=='starting'),None))
+            if event.get('event')==0x00170068),None))
         if self.peer is not None:assert self.peer==event['peer_id']
         self.peer=event['peer_id']
         return result
@@ -53,7 +55,7 @@ class AutonomousNode(Node):
         status=self.trial.call(self,'stop',cleanup=cleanup)
         assert not status['running'] and not process_group(self.process)
         if self.process is not None:
-            assert sum(event.get('event')=='stopped' for event in self.launch_events())==1
+            assert sum(event.get('event')==0x0017006a for event in self.launch_events())==1
         if not getattr(self, 'large_screen', False):
             assert self.trial.call(self, 'stop', cleanup=cleanup) == status
             assert self.trial.call(self, 'status', cleanup=cleanup) == status
@@ -71,7 +73,7 @@ def program_rows(node):
                 'published':bool(published)} for identity,manifest,received,published in connection.execute(
                 'SELECT id,manifest,received,EXISTS(SELECT 1 FROM artifacts WHERE artifacts.id=programs.id) FROM programs ORDER BY id')]
     except sqlite3.OperationalError as error:
-        if str(error) not in ('database is locked', 'database table is locked'):
+        if not sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             raise
         # The node owns recovery and publication. Observe again through the
         # caller's existing bounded wait instead of extending its deadline.
@@ -90,9 +92,9 @@ def run(trial,units,memory_mib=None):
         trial.command_timeout=300;trial.cleanup_timeout=300
         profiles = [(donor, memory_mib), (receiver, memory_mib)]
         for node, _ in profiles:
-            node.large_screen=True;node.expected_profile='custom'
+            node.large_screen=True;node.expected_profile=ResourceProfile.CUSTOM
     for node, limit_mib in profiles:
-        write_receipt(node.directory/'resource-profile.json',{'profile':'custom','custom':{
+        write_receipt(node.directory/'resource-profile.json',{'profile':ResourceProfile.CUSTOM,'custom':{
             'memory_bytes':limit_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
     donor.config['runtime']['jobs']={'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
         'mock':{'program_units':units}}}
@@ -106,8 +108,8 @@ def run(trial,units,memory_mib=None):
     published=trial.wait(lambda:next((row for row in program_rows(donor) if row['published']),None),maximum=trial.remaining(600))
     identity=published['id'];manifest=published['manifest']
     assert manifest['commands']==units*128 and manifest['input_bytes']>65536
-    trial.wait(lambda:any(event.get('event')=='accepted' and event.get('id')==identity
-        and event.get('source')=='mock_producer' for event in donor.logs()))
+    trial.wait(lambda:any(event.get('event')==0x00170001 and event.get('id')==identity
+        and event.get('source')==0x180005 for event in donor.logs()))
     receiver.start()
     prefix=trial.wait(lambda:next((row for row in program_rows(receiver)
         if row['id']==identity and 0<row['received']<manifest['commands']),None),maximum=trial.remaining(60))
@@ -123,16 +125,16 @@ def run(trial,units,memory_mib=None):
     write_receipt(trial.output/'interrupted-prefix.json',{'before_kill':prefix,'after_kill':after})
     receiver.start()
     trial.wait(lambda:next((row for row in program_rows(receiver) if row['id']==identity and row['published']),None),maximum=trial.remaining(600))
-    trial.wait(lambda:any(event.get('event')=='accepted' and event.get('id')==identity
-        and event.get('source')=='fetch' for event in receiver.launch_events()))
+    trial.wait(lambda:any(event.get('event')==0x00170001 and event.get('id')==identity
+        and event.get('source')==0x180001 for event in receiver.launch_events()))
     resumed=[event for event in receiver.launch_events()
-        if event.get('event')=='exchange_response' and event.get('kind')=='program_data' and event.get('object_id')==identity]
+        if event.get('event')==0x00170013 and event.get('kind')==0x1a0010 and event.get('object_id')==identity]
     assert resumed and resumed[0]['position']==after['received'],resumed[:1]
     source_objects=stored_objects(donor);received_objects=stored_objects(receiver)
     assert next(value for value in source_objects if value['artifact_id']==identity)==next(value for value in received_objects if value['artifact_id']==identity)
     observation=trial.wait(lambda:latest(receiver))
     snapshot=observation['snapshot']
-    assert snapshot['selection']['profile']==getattr(receiver,'expected_profile','dynamic')
+    assert snapshot['selection']['profile']==getattr(receiver,'expected_profile',ResourceProfile.DYNAMIC)
     assert 0<snapshot['budget']['memory_bytes']<=observation['capacity_bytes']
     receiver.stop();before=set(receiver.ids())
     work=(receiver.directory/'.program-work'/f'{identity}.sqlite3').resolve()
@@ -145,7 +147,7 @@ def run(trial,units,memory_mib=None):
     receiver.start()
     assert receiver.ids()==before and identity in before
     assert trial.call(receiver,'status')['accepted_artifacts']==len(before)
-    trial.summary.update(result='pass',fixture='autonomous_program_replication',program=published,
+    trial.summary.update(result=FixtureResult.PASS,fixture='autonomous_program_replication',program=published,
         receiver_prefix_at_restart=after['received'],receiver_first_resumed_position=resumed[0]['position'],
         receiver_work_database_bytes=work.stat().st_size,receiver_resource_observation=observation,
         source='autonomous supervised deterministic provider',
@@ -169,13 +171,13 @@ def main():
     try:
         run(trial,args.units,args.memory_mib)
     except BaseException as error:
-        trial.summary.update(result='fail',error=f'{type(error).__name__}: {error}')
+        trial.summary.update(result=FixtureResult.FAIL,error=f'{type(error).__name__}: {error}')
         raise
     finally:
         trial.close()
         write_receipt(trial.output/'result.json',trial.summary)
         retain_evidence(trial.output,trial.summary,'program-replication',args.profile)
-    assert trial.summary['result']=='pass',trial.summary
+    assert trial.summary['result']==FixtureResult.PASS,trial.summary
 
 
 if __name__=='__main__':main()

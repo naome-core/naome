@@ -262,67 +262,111 @@ impl<'a> KnowledgeSnapshot<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RejectionReason {
-    InvalidPolicy,
-    FoundationMismatch,
-    InvalidTarget,
-    MissingDependency,
-    DuplicateDependency,
-    InvalidRegistry,
-    InvalidEvidence,
-    InputLimit,
-    DependencyLimit,
-    ExecutionLimit,
-    ExactDuplicate,
-    KnownProof,
-    KnownRefutation,
-    ProvenEquivalent,
-    KnownLemmaInstance,
-    StaleContext,
-    ReceivingLimit,
+// One table defines the typed outcomes, numeric values and exported catalog.
+macro_rules! question_outcomes {
+    ($( $name:ident { $( $(#[$attr:meta])* $variant:ident = $code:literal ),+ $(,)? } )+) => {
+        $(
+            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+            pub enum $name { $( $(#[$attr])* $variant ),+ }
+            impl $name {
+                /// Stable machine code for this outcome.
+                pub const fn code(self) -> u32 {
+                    match self { $( Self::$variant => $code, )+ }
+                }
+            }
+        )+
+        /// Assigned question prefilter outcomes for machine catalog consumers.
+        pub const PREFILTER_CODES: &[(&str, &str, u32)] = &[
+            $( $( (stringify!($name), stringify!($variant), $code), )+ )+
+        ];
+    };
 }
 
-impl RejectionReason {
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::InvalidPolicy => "INVALID_POLICY",
-            Self::FoundationMismatch => "FOUNDATION_MISMATCH",
-            Self::InvalidTarget => "INVALID_TARGET",
-            Self::MissingDependency => "MISSING_DEPENDENCY",
-            Self::DuplicateDependency => "DUPLICATE_DEPENDENCY",
-            Self::InvalidRegistry => "INVALID_REGISTRY",
-            Self::InvalidEvidence => "INVALID_EVIDENCE",
-            Self::InputLimit => "INPUT_LIMIT",
-            Self::DependencyLimit => "DEPENDENCY_LIMIT",
-            Self::ExecutionLimit => "EXECUTION_LIMIT",
-            Self::ExactDuplicate => "EXACT_DUPLICATE",
-            Self::KnownProof => "KNOWN_PROOF",
-            Self::KnownRefutation => "KNOWN_REFUTATION",
-            Self::ProvenEquivalent => "PROVEN_EQUIVALENT",
-            Self::KnownLemmaInstance => "KNOWN_LEMMA_INSTANCE",
-            Self::StaleContext => "STALE_CONTEXT",
-            Self::ReceivingLimit => "RECEIVING_LIMIT",
-        }
+question_outcomes! {
+    RejectionReason {
+        InvalidPolicy = 0x0021_0001,
+        FoundationMismatch = 0x0021_0002,
+        InvalidTarget = 0x0021_0003,
+        MissingDependency = 0x0021_0004,
+        DuplicateDependency = 0x0021_0005,
+        InvalidRegistry = 0x0021_0006,
+        InvalidEvidence = 0x0021_0007,
+        InputLimit = 0x0021_0008,
+        DependencyLimit = 0x0021_0009,
+        ExecutionLimit = 0x0021_000a,
+        ExactDuplicate = 0x0021_000b,
+        KnownProof = 0x0021_000c,
+        KnownRefutation = 0x0021_000d,
+        ProvenEquivalent = 0x0021_000e,
+        KnownLemmaInstance = 0x0021_000f,
+        StaleContext = 0x0021_0010,
+        ReceivingLimit = 0x0021_0011,
+    }
+    PrefilterOutcome {
+        Pass = 0x0022_0001,
+        Reject = 0x0022_0002,
+        /// The assessment did not complete; no mathematical rejection is implied.
+        Inconclusive = 0x0022_0003,
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrefilterOutcome {
-    Pass,
-    Reject,
-    /// The assessment could not complete; this is no mathematical rejection.
-    Inconclusive,
+// One table owns rule tags, decoding and the exported machine catalog.
+macro_rules! prefilter_rules {
+    ($( $name:ident = $code:literal ),+ $(,)?) => {
+        /// Checked question prefilter rule with an explicitly assigned code.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[repr(u32)]
+        #[serde(try_from = "u32", into = "u32")]
+        pub enum PrefilterRule { $( $name = $code ),+ }
+
+        impl From<PrefilterRule> for u32 {
+            fn from(rule: PrefilterRule) -> Self { rule as u32 }
+        }
+        impl std::fmt::Display for PrefilterRule {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", u32::from(*self))
+            }
+        }
+        impl TryFrom<u32> for PrefilterRule {
+            type Error = &'static str;
+            fn try_from(code: u32) -> Result<Self, Self::Error> {
+                match code {
+                    $( $code => Ok(Self::$name), )+
+                    _ => Err("unknown question prefilter rule"),
+                }
+            }
+        }
+        /// Assigned question prefilter rules for machine catalog consumers.
+        pub const PREFILTER_RULE_CODES: &[(&str, &str, u32)] = &[
+            $( ("PrefilterRule", stringify!($name), $code), )+
+        ];
+    };
 }
 
-impl PrefilterOutcome {
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Pass => "PASS",
-            Self::Reject => "REJECT",
-            Self::Inconclusive => "INCONCLUSIVE",
-        }
-    }
+prefilter_rules! {
+    Q00SupportedPrefilter = 0x0023_0001,
+    Q01FormalTarget = 0x0023_0002,
+    Q02CheckedContext = 0x0023_0003,
+    Q02DependencyList = 0x0023_0004,
+    Q02EquivalenceIndex = 0x0023_0005,
+    Q02RegistryInsertion = 0x0023_0006,
+    Q02SelfRecord = 0x0023_0007,
+    Q03CanonicalDuplicate = 0x0023_0008,
+    Q04CheckedMpClosure = 0x0023_0009,
+    Q04ExactAnswer = 0x0023_000a,
+    Q05CheckedMutualImplications = 0x0023_000b,
+    Q05ElementaryEquivalence = 0x0023_000c,
+    Q06CheckedUniversalInstance = 0x0023_000d,
+    Q07CheckedInstantiatedClosure = 0x0023_000e,
+    Q07ElementaryCertificate = 0x0023_000f,
+    Q08Dependencies = 0x0023_0010,
+    Q08Execution = 0x0023_0011,
+    Q08Input = 0x0023_0012,
+    Q08ReceivingLimit = 0x0023_0013,
+    Q08RegistryCapacity = 0x0023_0014,
+    Q09Context = 0x0023_0015,
+    Q09Policy = 0x0023_0016,
+    Q09StaleContext = 0x0023_0017,
 }
 
 /// Completed first-discovery checks within one exact local world and finite rule set.
@@ -391,7 +435,7 @@ impl NodeLocalNovelty {
 pub struct PrefilterDecision {
     pub outcome: PrefilterOutcome,
     pub reason: Option<RejectionReason>,
-    pub rule: &'static str,
+    pub rule: PrefilterRule,
     pub question: Option<StatementId>,
     pub input: Identity,
     pub snapshot: Identity,
@@ -455,7 +499,7 @@ impl PrefilterDecision {
         let novelty = self.novelty.as_ref()?;
         (self.passed()
             && self.reason.is_none()
-            && self.rule == "Q00_SUPPORTED_PREFILTER"
+            && self.rule == crate::question::PrefilterRule::Q00SupportedPrefilter
             && self.question == Some(novelty.question)
             && self.input == novelty.input
             && self.snapshot == novelty.snapshot
@@ -481,7 +525,7 @@ impl PrefilterDecision {
             && self.policy == policy.identity()
     }
 
-    pub fn reject(mut self, reason: RejectionReason, rule: &'static str) -> Self {
+    pub fn reject(mut self, reason: RejectionReason, rule: PrefilterRule) -> Self {
         self.outcome = if matches!(
             reason,
             RejectionReason::ExecutionLimit
@@ -533,20 +577,22 @@ impl Work {
 const INDEX_WORK_BYTES: usize = 256 * 64;
 
 impl Work {
-    fn index(&mut self) -> Result<(), (RejectionReason, &'static str)> {
+    fn index(&mut self) -> Result<(), (RejectionReason, PrefilterRule)> {
         self.charge(INDEX_WORK_BYTES)
-            .map_err(|e| (e, "Q08_EXECUTION"))
+            .map_err(|e| (e, crate::question::PrefilterRule::Q08Execution))
     }
 
     fn formula(
         &mut self,
         bytes: usize,
         multiplier: usize,
-    ) -> Result<(), (RejectionReason, &'static str)> {
-        let reserved = bytes
-            .checked_mul(multiplier)
-            .ok_or((RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
-        self.charge(reserved).map_err(|e| (e, "Q08_EXECUTION"))
+    ) -> Result<(), (RejectionReason, PrefilterRule)> {
+        let reserved = bytes.checked_mul(multiplier).ok_or((
+            RejectionReason::ExecutionLimit,
+            crate::question::PrefilterRule::Q08Execution,
+        ))?;
+        self.charge(reserved)
+            .map_err(|e| (e, crate::question::PrefilterRule::Q08Execution))
     }
 }
 
@@ -576,7 +622,10 @@ pub fn assess_question(
     let snapshot = &cached_snapshot;
     let mut decision = bound_decision(question, snapshot, policy);
     if !policy.valid() {
-        return decision.reject(RejectionReason::InvalidPolicy, "Q09_POLICY");
+        return decision.reject(
+            RejectionReason::InvalidPolicy,
+            crate::question::PrefilterRule::Q09Policy,
+        );
     }
     let mut work = Work {
         operations: policy.limits.operations,
@@ -608,7 +657,7 @@ fn bound_decision(
     PrefilterDecision {
         outcome: PrefilterOutcome::Pass,
         reason: None,
-        rule: "Q00_SUPPORTED_PREFILTER",
+        rule: crate::question::PrefilterRule::Q00SupportedPrefilter,
         question: Some(question.question),
         input: question.input,
         snapshot: snapshot.identity,
@@ -629,8 +678,10 @@ pub fn defer_question(
     snapshot: &KnowledgeSnapshot<'_>,
     policy: &PrefilterPolicy,
 ) -> PrefilterDecision {
-    bound_decision(question, snapshot, policy)
-        .reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT")
+    bound_decision(question, snapshot, policy).reject(
+        RejectionReason::ReceivingLimit,
+        crate::question::PrefilterRule::Q08ReceivingLimit,
+    )
 }
 
 fn evaluate(
@@ -639,34 +690,54 @@ fn evaluate(
     policy: &PrefilterPolicy,
     work: &mut Work,
     decision: &mut PrefilterDecision,
-) -> Result<(), (RejectionReason, &'static str)> {
+) -> Result<(), (RejectionReason, PrefilterRule)> {
     if question.foundation != FOUNDATION_ID {
-        return Err((RejectionReason::FoundationMismatch, "Q01_FORMAL_TARGET"));
+        return Err((
+            RejectionReason::FoundationMismatch,
+            crate::question::PrefilterRule::Q01FormalTarget,
+        ));
     }
     let encoded = question
         .formula
         .encode_canonical_with_node_limit(policy.limits.formula_nodes)
-        .map_err(|_| (RejectionReason::InputLimit, "Q08_INPUT"))?
+        .map_err(|_| {
+            (
+                RejectionReason::InputLimit,
+                crate::question::PrefilterRule::Q08Input,
+            )
+        })?
         .0;
     work.formula(encoded.len(), 2)?;
     if !question.formula.is_closed() {
-        return Err((RejectionReason::InvalidTarget, "Q01_FORMAL_TARGET"));
+        return Err((
+            RejectionReason::InvalidTarget,
+            crate::question::PrefilterRule::Q01FormalTarget,
+        ));
     }
     if question.dependencies.len() > policy.limits.dependencies {
-        return Err((RejectionReason::DependencyLimit, "Q08_DEPENDENCIES"));
+        return Err((
+            RejectionReason::DependencyLimit,
+            crate::question::PrefilterRule::Q08Dependencies,
+        ));
     }
     let mut references = BTreeSet::new();
     for id in question.dependencies {
         work.index()?;
         if !references.insert(*id) {
-            return Err((RejectionReason::DuplicateDependency, "Q02_DEPENDENCY_LIST"));
+            return Err((
+                RejectionReason::DuplicateDependency,
+                crate::question::PrefilterRule::Q02DependencyList,
+            ));
         }
         if !snapshot
             .artifacts
             .contains_artifact(*id)
             .map_err(context_failure)?
         {
-            return Err((RejectionReason::MissingDependency, "Q02_CHECKED_CONTEXT"));
+            return Err((
+                RejectionReason::MissingDependency,
+                crate::question::PrefilterRule::Q02CheckedContext,
+            ));
         }
     }
     if let Some(record) = question.registered_record {
@@ -679,7 +750,10 @@ fn evaluate(
             .as_deref()
             != Some(question.formula)
         {
-            return Err((RejectionReason::InvalidRegistry, "Q02_SELF_RECORD"));
+            return Err((
+                RejectionReason::InvalidRegistry,
+                crate::question::PrefilterRule::Q02SelfRecord,
+            ));
         }
     }
     work.index()?;
@@ -700,14 +774,20 @@ fn evaluate(
                 == Some(question.formula)
         {
             decision.related_record = Some(record);
-            return Err((RejectionReason::ExactDuplicate, "Q03_CANONICAL_DUPLICATE"));
+            return Err((
+                RejectionReason::ExactDuplicate,
+                crate::question::PrefilterRule::Q03CanonicalDuplicate,
+            ));
         }
     }
     work.formula(encoded.len(), 2)?;
     let negative = Formula::negate(question.formula.clone());
-    let negative_bytes = negative
-        .encode_canonical()
-        .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
+    let negative_bytes = negative.encode_canonical().map_err(|_| {
+        (
+            RejectionReason::ExecutionLimit,
+            crate::question::PrefilterRule::Q08Execution,
+        )
+    })?;
     let targets = [
         (
             question.question,
@@ -723,7 +803,7 @@ fn evaluate(
     for (target_id, target, reason) in targets {
         if let Some((proof, _)) = lookup_id(snapshot.artifacts, target_id, target, work)? {
             decision.witness = Some(proof);
-            return Err((reason, "Q04_EXACT_ANSWER"));
+            return Err((reason, crate::question::PrefilterRule::Q04ExactAnswer));
         }
     }
     // Registry/dependency validation and exact-answer authentication still run
@@ -732,7 +812,10 @@ fn evaluate(
     for (_, target, reason) in targets {
         if let Some(plan) = elementary::plan(target, work)? {
             decision.deduction = Some(plan.finish(target, snapshot.artifacts, work)?);
-            return Err((reason, "Q07_ELEMENTARY_CERTIFICATE"));
+            return Err((
+                reason,
+                crate::question::PrefilterRule::Q07ElementaryCertificate,
+            ));
         }
     }
     let incomplete_equivalence = match equivalence::assess(question, snapshot, work) {
@@ -741,7 +824,7 @@ fn evaluate(
             decision.equivalence = Some(evidence.certificates);
             return Err((
                 RejectionReason::ProvenEquivalent,
-                "Q05_ELEMENTARY_EQUIVALENCE",
+                crate::question::PrefilterRule::Q05ElementaryEquivalence,
             ));
         }
         Ok(None) => None,
@@ -757,7 +840,10 @@ fn evaluate(
         decision.witness = witness.original_proofs().first().copied();
         decision.supporting_witness = witness.original_proofs().get(1).copied();
         decision.deduction = Some(witness);
-        return Err((targets[orientation].2, "Q04_CHECKED_MP_CLOSURE"));
+        return Err((
+            targets[orientation].2,
+            crate::question::PrefilterRule::Q04CheckedMpClosure,
+        ));
     }
     for (target_id, target, _) in targets {
         work.index()?;
@@ -781,7 +867,7 @@ fn evaluate(
                     decision.witness = Some(proof);
                     return Err((
                         RejectionReason::KnownLemmaInstance,
-                        "Q06_CHECKED_UNIVERSAL_INSTANCE",
+                        crate::question::PrefilterRule::Q06CheckedUniversalInstance,
                     ));
                 }
             }
@@ -805,9 +891,12 @@ fn evaluate(
         if antecedent != *question.formula {
             continue;
         }
-        let bytes = related
-            .encode_canonical()
-            .map_err(|_| (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))?;
+        let bytes = related.encode_canonical().map_err(|_| {
+            (
+                RejectionReason::InvalidEvidence,
+                crate::question::PrefilterRule::Q02CheckedContext,
+            )
+        })?;
         work.index()?;
         for record in snapshot
             .questions
@@ -849,7 +938,7 @@ fn evaluate(
                 decision.related_record = Some(record);
                 return Err((
                     RejectionReason::ProvenEquivalent,
-                    "Q05_CHECKED_MUTUAL_IMPLICATIONS",
+                    crate::question::PrefilterRule::Q05CheckedMutualImplications,
                 ));
             }
         }
@@ -863,7 +952,10 @@ fn evaluate(
         decision.witness = witness.original_proofs().first().copied();
         decision.supporting_witness = witness.original_proofs().get(1).copied();
         decision.deduction = Some(witness);
-        return Err((targets[orientation].2, "Q07_CHECKED_INSTANTIATED_CLOSURE"));
+        return Err((
+            targets[orientation].2,
+            crate::question::PrefilterRule::Q07CheckedInstantiatedClosure,
+        ));
     }
     // A complete checked answer is decisive even when a different candidate
     // could not finish. Incomplete mandatory checks still prohibit PASS.
@@ -873,10 +965,16 @@ fn evaluate(
     Ok(())
 }
 
-fn context_failure(error: ContextError) -> (RejectionReason, &'static str) {
+fn context_failure(error: ContextError) -> (RejectionReason, PrefilterRule) {
     match error {
-        ContextError::Limit => (RejectionReason::ExecutionLimit, "Q08_EXECUTION"),
-        _ => (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"),
+        ContextError::Limit => (
+            RejectionReason::ExecutionLimit,
+            crate::question::PrefilterRule::Q08Execution,
+        ),
+        _ => (
+            RejectionReason::InvalidEvidence,
+            crate::question::PrefilterRule::Q02CheckedContext,
+        ),
     }
 }
 
@@ -884,13 +982,16 @@ fn known(
     artifacts: &dyn ContextView,
     statement: StatementId,
     work: &mut Work,
-) -> Result<StatementHeader, (RejectionReason, &'static str)> {
+) -> Result<StatementHeader, (RejectionReason, PrefilterRule)> {
     work.index()?;
     work.index()?;
     artifacts
         .statement_header(statement)
         .map_err(context_failure)?
-        .ok_or((RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))
+        .ok_or((
+            RejectionReason::InvalidEvidence,
+            crate::question::PrefilterRule::Q02CheckedContext,
+        ))
 }
 
 // Callers reserve header.length before materializing a cold formula.
@@ -898,15 +999,18 @@ fn load_formula(
     artifacts: &dyn ContextView,
     statement: StatementId,
     length: usize,
-) -> Result<Cow<'_, Formula>, (RejectionReason, &'static str)> {
+) -> Result<Cow<'_, Formula>, (RejectionReason, PrefilterRule)> {
     artifacts
         .statement_formula(statement, length)
         .map_err(context_failure)?
-        .ok_or((RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))
+        .ok_or((
+            RejectionReason::InvalidEvidence,
+            crate::question::PrefilterRule::Q02CheckedContext,
+        ))
 }
 
 type FormulaLookup<'a> =
-    Result<Option<(ProofId, Cow<'a, Formula>)>, (RejectionReason, &'static str)>;
+    Result<Option<(ProofId, Cow<'a, Formula>)>, (RejectionReason, PrefilterRule)>;
 
 fn lookup_id<'a>(
     artifacts: &'a dyn ContextView,
@@ -932,9 +1036,12 @@ fn lookup<'a>(
     formula: &Formula,
     work: &mut Work,
 ) -> FormulaLookup<'a> {
-    let bytes = formula
-        .encode_canonical()
-        .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
+    let bytes = formula.encode_canonical().map_err(|_| {
+        (
+            RejectionReason::ExecutionLimit,
+            crate::question::PrefilterRule::Q08Execution,
+        )
+    })?;
     work.formula(bytes.len(), 2)?;
     lookup_id(artifacts, statement_id(&bytes), formula, work)
 }
@@ -944,7 +1051,7 @@ fn recheck(
     target: &Formula,
     artifacts: &dyn ContextView,
     work: &mut Work,
-) -> Result<DeductionWitness, (RejectionReason, &'static str)> {
+) -> Result<DeductionWitness, (RejectionReason, PrefilterRule)> {
     deduction::check_steps(steps, target, artifacts, work)
 }
 

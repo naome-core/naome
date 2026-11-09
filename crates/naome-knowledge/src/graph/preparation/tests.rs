@@ -41,7 +41,10 @@ fn a_valid_certificate_with_forged_claimed_identity_is_rejected_before_the_write
     );
     let before = graph.content_root();
     let error = graph.ingest(forged, Instant::now()).unwrap_err();
-    assert!(matches!(error, crate::Error::InvalidInput(_)));
+    assert_eq!(
+        error,
+        crate::Error::InputFault(crate::InputFault::CheckedIdentityMismatch)
+    );
     assert_eq!(graph.content_root(), before);
     assert_eq!(graph.accepted_count(), 0);
     assert!(
@@ -138,4 +141,20 @@ fn a_checked_program_rebinds_registration_after_graph_and_copy_changes_before_pu
     assert_eq!(graph.accepted_count(), 2);
     assert!(graph.contains(root).unwrap());
     assert!(graph.storage_error().is_none());
+}
+
+#[test]
+fn staged_closure_reports_missing_and_duplicate_roots() {
+    let graph = Graph::default();
+    let root = naome_proof::ArtifactId::from_bytes([1; 32]);
+    let dependencies = BTreeSet::new();
+    assert_eq!(
+        require_closure(&graph, root, std::iter::empty()),
+        Err(crate::InputFault::StagedRootMissing.into())
+    );
+    assert_eq!(
+        require_closure(&graph, root, [(root, &dependencies), (root, &dependencies)]),
+        Err(crate::InputFault::StagedObjectDuplicate.into())
+    );
+    assert_eq!(graph.accepted_count(), 0);
 }

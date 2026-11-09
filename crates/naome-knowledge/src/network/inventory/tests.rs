@@ -3,7 +3,7 @@ use super::*;
 fn add(graph: &mut Graph, depth: usize) -> ArtifactId {
     let artifact = crate::test_inputs::proof(crate::test_inputs::reflexivity((0..depth).rev()));
     let (_, result) = graph.produce(&artifact).unwrap();
-    assert_eq!(result.status, "accepted");
+    assert_eq!(result.status, crate::IngestStatus::Accepted);
     result.id
 }
 

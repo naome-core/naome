@@ -64,7 +64,7 @@ fn progress_state(intake: &Intake) -> String {
     });
     format!("program={program:?}, certificate={certificate:?}")
 }
-fn accepting(_: ResearchQuestion) -> Ready<Result<bool, String>> {
+fn accepting(_: ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>> {
     ready(Ok(true))
 }
 fn budget() -> Budget {

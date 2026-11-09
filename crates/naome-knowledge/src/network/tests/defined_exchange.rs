@@ -128,7 +128,7 @@ fn init_peer(path: &Path, definition: Option<&DefinitionCertificate>) -> PeerId 
         let (_, receipt) = graph
             .produce(&crate::test_inputs::definition(definition))
             .unwrap();
-        assert_eq!(receipt.status, "accepted");
+        assert_eq!(receipt.status, crate::IngestStatus::Accepted);
     }
     key.public().to_peer_id()
 }

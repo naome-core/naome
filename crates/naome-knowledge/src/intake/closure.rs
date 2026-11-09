@@ -190,10 +190,10 @@ impl Closure {
     }
     fn require(&mut self, id: ArtifactId, graph: &Graph) -> Result<(), crate::Error> {
         if self.question_proof == Some(id) && !graph.contains(id)? {
-            return Err("definition depends on the unselected question proof".into());
+            return Err(crate::InputFault::IntakeUnselectedProofDependency.into());
         }
         if id == self.root {
-            return Err("cited closure has cyclic dependencies".into());
+            return Err(crate::InputFault::IntakeClosureCycle.into());
         }
         if self.schedule.is_complete(id) || self.contains(id) || self.needed.contains(&id) {
             return Ok(());
@@ -203,7 +203,9 @@ impl Closure {
             return Ok(());
         }
         if self.member_count() >= crate::resources::limits().closure_objects {
-            return Err(crate::Error::InputLimit("cited closure operation capacity"));
+            return Err(crate::Error::InputLimit(
+                crate::InputLimit::CitedClosureOperationCapacity,
+            ));
         }
         self.needed.insert(id);
         self.schedule.declare(id);
@@ -322,12 +324,12 @@ impl Closure {
         let id = metadata.manifest.artifact_id();
         if let Some(helper) = self.items.get(&id) {
             if helper.manifest != metadata.manifest {
-                return Err("cited program manifest changed".into());
+                return Err(crate::InputFault::IntakeCitedManifestChanged.into());
             }
             return Ok(());
         }
         if self.certificates.contains_key(&id) {
-            return Err("closure member representation differs".into());
+            return Err(crate::InputFault::IntakeRepresentationMismatch.into());
         }
         self.require(id, graph)?;
         let progress = graph.ownership().start_program(&metadata.manifest)?;
@@ -364,7 +366,7 @@ impl Closure {
         transfer.check(Instant::now())?;
         self.synchronize(graph)?;
         if !self.needed.contains(&id) || id_bytes(&object.artifact_id)? != *id.as_bytes() {
-            return Err("unrequested or mismatched proof payload".into());
+            return Err(crate::InputFault::IntakeProofMismatch.into());
         }
         // The same cumulative charge covers root certificates and every helper,
         // before decoding allocates their trees. Rejected payloads change nothing.
@@ -377,13 +379,13 @@ impl Closure {
                     crate::object::CandidatePayload::Definition(_)
                 )
             {
-                return Err("requested definition payload differs".into());
+                return Err(crate::InputFault::IntakeDefinitionMismatch.into());
             }
             if let Some(question_proof) = self.question_proof
                 && candidate.dependencies.contains(&question_proof)
                 && !graph.contains(question_proof)?
             {
-                return Err("definition depends on the unselected question proof".into());
+                return Err(crate::InputFault::IntakeUnselectedProofDependency.into());
             }
         }
         transfer.check(Instant::now())?;
@@ -392,7 +394,7 @@ impl Closure {
                 .statement
                 .is_some_and(|statement| Some(statement) != candidate.statement)
         {
-            return Err("root statement differs from approved metadata".into());
+            return Err(crate::InputFault::IntakeRootStatementMismatch.into());
         }
         let mut missing = Vec::new();
         for dependency in &candidate.dependencies {
@@ -401,7 +403,7 @@ impl Closure {
                 && !graph.contains(*dependency)?
             {
                 if *dependency == self.root {
-                    return Err("cited closure has cyclic dependencies".into());
+                    return Err(crate::InputFault::IntakeClosureCycle.into());
                 }
                 missing.push(*dependency);
             }
@@ -412,7 +414,7 @@ impl Closure {
             .is_none_or(|count| count > crate::resources::limits().closure_objects)
         {
             return Err(crate::Error::InputLimit(
-                "staged closure dependency capacity",
+                crate::InputLimit::StagedClosureDependencyCapacity,
             ));
         }
         self.needed.remove(&id);
@@ -432,12 +434,12 @@ impl Closure {
         let candidate = self
             .certificates
             .get(&self.root)
-            .ok_or("missing staged definition")?;
+            .ok_or(crate::InputFault::IntakeStagedDefinitionMissing)?;
         if !matches!(
             candidate.payload,
             crate::object::CandidatePayload::Definition(_)
         ) {
-            return Err("requested definition payload differs".into());
+            return Err(crate::InputFault::IntakeDefinitionMismatch.into());
         }
         let candidate = candidate.for_admission()?;
         let result = graph.prepare_helper_after(candidate, self.prefix.take());
@@ -529,7 +531,7 @@ impl Closure {
         let helper = self
             .items
             .get_mut(&id)
-            .ok_or("unrequested cited program payload")?;
+            .ok_or(crate::InputFault::IntakeCitedProgramUnrequested)?;
         let progress = graph.ownership().append_program(&helper.manifest, &chunk)?;
         helper.available = progress.commands;
         if helper.scanned < helper.available {
@@ -581,7 +583,7 @@ impl Closure {
             let proof = self.items[id]
                 .checked
                 .as_ref()
-                .ok_or("cited checked program missing")?;
+                .ok_or(crate::InputFault::IntakeCitedCheckedProgramMissing)?;
             match admission.advance(graph, proof, snapshot.budget.batch_steps.max(1)) {
                 Ok(false) => return Ok(Vec::new()),
                 Ok(true) => {
@@ -630,7 +632,7 @@ impl Closure {
             let helper = self
                 .items
                 .get_mut(&id)
-                .ok_or("ready program member missing")?;
+                .ok_or(crate::InputFault::IntakeReadyMemberMissing)?;
             self.active = Some(id);
             if helper.checked.is_none() {
                 if helper.checking.is_none() {
@@ -661,7 +663,7 @@ impl Closure {
             && !self.ready()
             && self.schedule.defined()
         {
-            return Err("cited program closure has cyclic dependencies".into());
+            return Err(crate::InputFault::IntakeProgramClosureCycle.into());
         }
         Ok(Vec::new())
     }

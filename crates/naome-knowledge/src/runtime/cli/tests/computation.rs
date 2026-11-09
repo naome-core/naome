@@ -12,7 +12,7 @@ fn current_lifecycle_surface_and_automatic_pause_reason_are_explicit() {
     let status = Status {
         running: true,
         computation: crate::resources::ComputationState::Paused,
-        computation_reason: Some("operating system power saving".into()),
+        computation_reason: Some(crate::PauseReason::PowerSaving),
         accepted_artifacts: 3,
         artifact_verification: crate::runtime::ArtifactVerification::Checked,
     };
@@ -23,7 +23,7 @@ fn current_lifecycle_surface_and_automatic_pause_reason_are_explicit() {
 }
 
 #[test]
-fn pause_guidance_uses_only_reported_conditions_and_preserves_terminal_safety() {
+fn pause_guidance_uses_only_reported_conditions() {
     let mut status = Status {
         running: true,
         computation: crate::resources::ComputationState::Paused,
@@ -32,27 +32,35 @@ fn pause_guidance_uses_only_reported_conditions_and_preserves_terminal_safety() 
         artifact_verification: crate::runtime::ArtifactVerification::Checked,
     };
     for (reason, guidance) in [
-        ("disk pressure", "Free disk space"),
-        ("memory pressure", "Reduce memory use"),
-        ("node process tree memory pressure", "Reduce memory use"),
-        ("operating system memory pressure", "Reduce memory use"),
-        ("operating system power saving", "power-saving setting"),
-        ("operating system thermal pressure", "cool down"),
-        ("sustained external CPU pressure", "CPU-intensive work"),
-        ("hardware observation unavailable", "retried automatically"),
+        (crate::PauseReason::DiskPressure, "Free disk space"),
+        (crate::PauseReason::MemoryPressure, "Reduce memory use"),
+        (
+            crate::PauseReason::ProcessTreeMemoryPressure,
+            "Reduce memory use",
+        ),
+        (
+            crate::PauseReason::SystemMemoryPressure,
+            "Reduce memory use",
+        ),
+        (crate::PauseReason::PowerSaving, "power-saving setting"),
+        (crate::PauseReason::ThermalPressure, "cool down"),
+        (
+            crate::PauseReason::ExternalCpuPressure,
+            "CPU-intensive work",
+        ),
+        (
+            crate::PauseReason::HardwareObservationUnavailable,
+            "retried automatically",
+        ),
     ] {
-        status.computation_reason = Some(reason.into());
+        status.computation_reason = Some(reason);
         let output = human("status", &status, false);
-        assert!(
-            output.contains(reason) && output.contains(guidance),
-            "{output}"
-        );
+        assert!(output.contains(guidance), "{output}");
         assert!(output.contains("resumes automatically after stable recovery"));
     }
-    status.computation_reason = Some("unknown\x1b[31mcondition".into());
-    let output = human("status", &status, false);
-    assert!(output.contains("unknown\\u{1b}[31mcondition"));
-    assert!(!output.contains("Free disk space") && !output.contains("Reduce memory use"));
+    assert!(
+        serde_json::from_value::<crate::PauseReason>(serde_json::json!(0x0004_ffffu32)).is_err()
+    );
     status.computation = crate::resources::ComputationState::Running;
     status.computation_reason = None;
     assert!(!human("status", &status, false).contains("resumes automatically"));

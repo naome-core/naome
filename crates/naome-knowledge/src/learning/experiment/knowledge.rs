@@ -9,13 +9,18 @@ pub(super) struct Store {
     pub(super) writes: u64,
 }
 impl ArtifactIo for Store {
-    fn read(&mut self, b: &Blob, r: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, b: &Blob, r: std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error> {
         let bytes = self.inner.read(b, r)?;
         self.read_bytes += bytes.len() as u64;
         self.reads += 1;
         Ok(bytes)
     }
-    fn write(&mut self, b: &Blob, r: std::ops::Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        b: &Blob,
+        r: std::ops::Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.written_bytes += bytes.len() as u64;
         self.writes += 1;
         self.inner.write(b, r, bytes)
@@ -84,7 +89,7 @@ pub(super) fn acquire(
     let (all, observe) = history;
     eprintln!(
         "{}",
-        serde_json::json!({"event":"own_search_started","job":job,"question":source})
+        serde_json::json!({"event":crate::outcome::NodeEvent::OwnSearchStarted,"job":job,"question":source})
     );
     let started = Instant::now();
     let q = ResearchQuestion::from_hex(source).unwrap();
@@ -133,7 +138,7 @@ pub(super) fn acquire(
     let mut newly_admitted = false;
     if let Some(solution) = &solution {
         newly_admitted = admit_discovery(graph, &q, solution).unwrap_or_else(|error| {
-            eprintln!("{}", serde_json::json!({"event":"own_admission_failed","job":job,"solution":solution,"error":error.to_string()}));
+            eprintln!("{}", serde_json::json!({"event":crate::outcome::NodeEvent::OwnAdmissionFailed,"job":job,"solution":solution,"error":error}));
             panic!("own search failed ordinary graph admission: {error}")
         });
         let root = crate::object::proof_address(&solution.proof_id).unwrap();
@@ -166,7 +171,7 @@ pub(super) fn acquire(
     let event = serde_json::json!({"job":job,"question":source,"solution":solution,"diagnostic":diagnostic,"cost":cost,"terminal":terminal,"frontier":frontier,"experience":completion.experience,"newly_admitted":newly_admitted,"accepted_replay":retained,"accepted_lemma":lemma,"elapsed_micros":started.elapsed().as_micros()});
     eprintln!(
         "{}",
-        serde_json::json!({"event":"own_search_completed","acquisition":event})
+        serde_json::json!({"event":crate::outcome::NodeEvent::OwnSearchCompleted,"acquisition":event})
     );
     event
 }
@@ -332,7 +337,7 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
                 "retain the original per-job model IO bound"
             );
             let p = job.progress.as_ref().unwrap();
-            gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"original_scores":p.original_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"first_loss":p.first_loss,"last_loss":p.last_loss,"training_cost":p.training_cost});
+            gate = serde_json::json!({"qualification":p.qualification,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"original_scores":p.original_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"first_loss":p.first_loss,"last_loss":p.last_loss,"training_cost":p.training_cost});
             assert!(state.qualify(&job));
             state.validate().unwrap();
             assert_eq!(digest(&dictionary), digest(&state.knowledge));
@@ -450,9 +455,9 @@ fn evaluate_arm(
         let elapsed = started.elapsed().as_micros();
         let (solution, diagnostic, cost) = match result {
             Ok(r) => r,
-            Err(e) => (
+            Err(_) => (
                 None,
-                format!("provider_error: {e}"),
+                GenerationOutcome::ProviderFailed,
                 GenerationCost::default(),
             ),
         };

@@ -25,7 +25,11 @@ fn program_group_backpressure_retains_the_original_reservation_after_a_known_unw
         receipt.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
-    assert!(owner.disk.program_group(1, 1).is_err());
+    let error = owner.disk.program_group(1, 1).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ProgramGroupMissing)
+    );
     owner.persist_programs().unwrap();
     assert!(receipt.try_recv().unwrap().is_ok());
     assert!(owner.programs.is_empty());

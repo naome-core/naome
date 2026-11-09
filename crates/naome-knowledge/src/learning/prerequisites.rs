@@ -38,7 +38,7 @@ impl<'de> Deserialize<'de> for Prerequisites {
 }
 impl Prerequisites {
     #[cfg(test)]
-    pub fn new(artifacts: Vec<Envelope>) -> Result<Self, String> {
+    pub fn new(artifacts: Vec<Envelope>) -> Result<Self, crate::Error> {
         Self::from_inputs(artifacts, Vec::new(), None)
     }
 
@@ -46,11 +46,11 @@ impl Prerequisites {
         artifacts: Vec<Envelope>,
         programs: Vec<Packet>,
         offered: Option<[u8; 32]>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         Self::from_parts(artifacts, programs, offered, None)
     }
 
-    pub(crate) fn internal_cut(certificate: Vec<u8>) -> Result<Self, String> {
+    pub(crate) fn internal_cut(certificate: Vec<u8>) -> Result<Self, crate::Error> {
         Self::from_parts(Vec::new(), Vec::new(), None, Some(certificate))
     }
 
@@ -63,7 +63,7 @@ impl Prerequisites {
         programs: Vec<Packet>,
         offered: Option<[u8; 32]>,
         internal_cut: Option<Vec<u8>>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let mut value = Self(Arc::new(Data {
             artifacts,
             programs,
@@ -88,7 +88,7 @@ impl Prerequisites {
                 .sum::<usize>();
         if bytes > 0 {
             Arc::get_mut(&mut value.0).expect("new inputs")._memory =
-                Some(crate::resources::MemoryLease::acquire(bytes).map_err(|e| e.to_string())?);
+                Some(crate::resources::MemoryLease::acquire(bytes)?);
         }
         Ok(value)
     }
@@ -130,7 +130,7 @@ impl Prerequisites {
         &self,
         base: &[definitions::Entry],
         required: &[String],
-    ) -> Result<Vec<definitions::Entry>, String> {
+    ) -> Result<Vec<definitions::Entry>, crate::Error> {
         if !self.has_definitions() {
             return Ok(base.to_vec());
         }
@@ -150,14 +150,14 @@ impl Prerequisites {
         }
         Ok(selected)
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if let Some(certificate) = self.cut_certificate()
             && (certificate.is_empty()
                 || certificate.len() > knowledge::BYTES
                 || !self.0.artifacts.is_empty()
                 || !self.0.programs.is_empty())
         {
-            return Err("temporary internal cut capacity or mixed context".into());
+            return Err(crate::InputFault::InternalCutContext.into());
         }
         let limits = crate::resources::limits();
         let mut ids = BTreeSet::new();
@@ -169,21 +169,30 @@ impl Prerequisites {
             .sum::<usize>();
         if self.0.artifacts.len() + self.0.programs.len() >= limits.closure_objects
             || self.0.programs.len() > knowledge::CAPACITY
-            || self.0.programs.iter().any(|entry| {
-                entry.validate_width().is_err()
-                    || !ids.insert(*entry.manifest.artifact_id().as_bytes())
-            })
         {
-            return Err("temporary prerequisite object capacity".into());
+            return Err(crate::InputLimit::PrerequisiteObjectCapacity.into());
+        }
+        for entry in &self.0.programs {
+            if entry.validate_width().is_err() {
+                return Err(crate::InputFault::PrerequisiteProgramInvalid.into());
+            }
+            if !ids.insert(*entry.manifest.artifact_id().as_bytes()) {
+                return Err(crate::InputFault::PrerequisiteDuplicate.into());
+            }
         }
         for artifact in &self.0.artifacts {
             let id = crate::object::id_bytes(&artifact.artifact_id)?;
-            if !ids.insert(id)
-                || artifact.compatibility != crate::hex(&crate::object::compatibility())
-                || artifact.payload.len() > 2 * limits.proof_bytes
-                || artifact.payload.len() % 2 != 0
-            {
-                return Err("temporary prerequisite identity or capacity".into());
+            if !ids.insert(id) {
+                return Err(crate::InputFault::PrerequisiteDuplicate.into());
+            }
+            if artifact.compatibility != crate::hex(&crate::object::compatibility()) {
+                return Err(crate::InputFault::ArtifactCompatibilityMismatch.into());
+            }
+            if artifact.payload.len() > 2 * limits.proof_bytes {
+                return Err(crate::InputLimit::PrerequisiteArtifactBytes.into());
+            }
+            if artifact.payload.len() % 2 != 0 {
+                return Err(crate::InputFault::HexWidth.into());
             }
             if let Some(statement) = &artifact.statement_id {
                 crate::object::id_bytes(statement)?;
@@ -193,7 +202,7 @@ impl Prerequisites {
             }
             bytes = bytes
                 .checked_add(artifact.payload.len() / 2)
-                .ok_or("temporary prerequisite byte overflow")?;
+                .ok_or(crate::InputLimit::PrerequisiteBytesOverflow)?;
         }
         if let Some(id) = self.0.offered {
             let artifact = crate::hex(
@@ -211,11 +220,11 @@ impl Prerequisites {
                     .iter()
                     .any(|a| a.artifact_id == artifact && a.statement_id.is_some())
             {
-                return Err("offered theorem absent from captured inputs".into());
+                return Err(crate::InputFault::PrerequisiteOfferedProofMissing.into());
             }
         }
         if bytes > limits.closure_bytes {
-            return Err("temporary prerequisite byte capacity".into());
+            return Err(crate::InputLimit::PrerequisiteByteCapacity.into());
         }
         Ok(())
     }
@@ -240,33 +249,33 @@ impl Prerequisites {
         ranker: &mut dyn super::model::Ranker,
         maximum: usize,
         started: std::time::Instant,
-    ) -> Result<(Option<Packet>, usize), String> {
+    ) -> Result<(Option<Packet>, usize), crate::Error> {
         use naome_checker::ContextView;
         use naome_proof::{ProofId, program::Command};
 
         let _work =
-            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)
-                .map_err(|error| error.to_string())?;
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
         let artifacts = self
             .0
             .artifacts
             .iter()
             .map(|a| a.clone().prepare())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
+            .collect::<Result<Vec<_>, _>>()?;
         let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
-        let id = ProofId::from_bytes(self.0.offered.ok_or("offered theorem missing")?);
+        let id = ProofId::from_bytes(
+            self.0
+                .offered
+                .ok_or(crate::ResearchFailure::OfferedProofMissing)?,
+        );
         let header = context
-            .proof_header(id)
-            .map_err(|e| e.to_string())?
-            .ok_or("offered theorem failed context binding")?;
+            .proof_header(id)?
+            .ok_or(crate::ResearchFailure::OfferedProofBinding)?;
         if header.canonical_length() > naome_checker::question::QUESTION_BYTES {
             return Ok((None, 0));
         }
         let formula = context
-            .proof_formula(header, header.canonical_length())
-            .map_err(|e| e.to_string())?
-            .ok_or("offered theorem formula missing")?;
+            .proof_formula(header, header.canonical_length())?
+            .ok_or(crate::ResearchFailure::OfferedProofFormulaMissing)?;
         let (commands, used) = if formula.as_ref() == target {
             (
                 Some(vec![
@@ -301,7 +310,7 @@ impl Prerequisites {
         required: &[String],
         maximum: usize,
         started: std::time::Instant,
-    ) -> Result<(Option<super::construction::ProgramCandidate>, usize), String> {
+    ) -> Result<(Option<super::construction::ProgramCandidate>, usize), crate::Error> {
         use naome_checker::ContextView;
         use naome_proof::{
             ProofId, ProofStep,
@@ -309,35 +318,23 @@ impl Prerequisites {
         };
 
         let _work =
-            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)
-                .map_err(|error| error.to_string())?;
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
         let artifacts = self
             .0
             .artifacts
             .iter()
-            .map(|envelope| {
-                envelope
-                    .clone()
-                    .prepare()
-                    .map_err(|error| error.to_string())
-            })
+            .map(|envelope| envelope.clone().prepare())
             .collect::<Result<Vec<_>, _>>()?;
         let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
         let mut sources = Vec::new();
         for id in required {
-            let id = ProofId::from_bytes(
-                crate::object::id_bytes(id).map_err(|error| error.to_string())?,
-            );
-            if let Some(header) = context
-                .proof_header(id)
-                .map_err(|error| error.to_string())?
-            {
+            let id = ProofId::from_bytes(crate::object::id_bytes(id)?);
+            if let Some(header) = context.proof_header(id)? {
                 let formula = context
-                    .proof_formula(header, header.canonical_length())
-                    .map_err(|error| error.to_string())?
-                    .ok_or("checked temporary prerequisite formula is missing")?;
+                    .proof_formula(header, header.canonical_length())?
+                    .ok_or(crate::ResearchFailure::PeerPrerequisiteFormulaMissing)?;
                 if !formula.is_closed() {
-                    return Err("temporary prerequisite is not closed".into());
+                    return Err(crate::InputFault::PrerequisiteNotClosed.into());
                 }
                 sources.push((id, formula.into_owned()));
             }
@@ -433,23 +430,19 @@ impl Prerequisites {
         Ok((Some(candidate), work))
     }
 
-    pub fn require(&self, base: &State, required: &[String]) -> Result<(), String> {
+    pub fn require(&self, base: &State, required: &[String]) -> Result<(), crate::Error> {
         self.validate()?;
         if self.cut_certificate().is_some() && !required.is_empty() {
-            return Err("internal cut cannot stand in for checked graph prerequisites".into());
+            return Err(crate::InputFault::InternalCutContext.into());
         }
         if required.len() > knowledge::CAPACITY
             || required.iter().collect::<BTreeSet<_>>().len() != required.len()
         {
-            return Err("required theorem capacity or duplicate".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         let mut missing = Vec::new();
         for id in required {
-            let address = crate::hex(
-                crate::object::proof_address(id)
-                    .map_err(|e| e.to_string())?
-                    .as_bytes(),
-            );
+            let address = crate::hex(crate::object::proof_address(id)?.as_bytes());
             if !self.0.artifacts.iter().any(|a| a.artifact_id == address)
                 && !self.supplies_program(id)
             {
@@ -460,14 +453,14 @@ impl Prerequisites {
     }
     /// Reconstruct the current ordinary checker context in dependency order.
     /// No envelope's claimed statement or address is accepted as a theorem.
-    pub fn terms(&self, required: &[String]) -> Result<Vec<proof::Term>, String> {
+    pub fn terms(&self, required: &[String]) -> Result<Vec<proof::Term>, crate::Error> {
         self.resolve(required).map(|(terms, _)| terms)
     }
 
     fn resolve(
         &self,
         required: &[String],
-    ) -> Result<(Vec<proof::Term>, Vec<definitions::Entry>), String> {
+    ) -> Result<(Vec<proof::Term>, Vec<definitions::Entry>), crate::Error> {
         self.validate()?;
         let mut context = naome_checker::ArtifactState::new();
         let mut definitions = Vec::new();
@@ -481,7 +474,7 @@ impl Prerequisites {
             .map(|program| program.manifest.artifact_id())
             .collect::<BTreeSet<_>>();
         for envelope in &self.0.artifacts {
-            let candidate = envelope.clone().prepare().map_err(|e| e.to_string())?;
+            let candidate = envelope.clone().prepare()?;
             // These inputs are checked by the mixed program context. They
             // cannot be used as standalone Hilbert certificate terms.
             if candidate
@@ -498,21 +491,20 @@ impl Prerequisites {
                 CandidatePayload::Proof(normal) => {
                     steps = steps
                         .checked_add(normal.certificate().steps().len())
-                        .ok_or("temporary prerequisite step overflow")?;
+                        .ok_or(crate::InputLimit::PrerequisiteStepsOverflow)?;
                     if steps > crate::resources::limits().closure_steps {
-                        return Err("temporary prerequisite checker capacity".into());
+                        return Err(crate::InputLimit::PrerequisiteCheckerCapacity.into());
                     }
-                    let checked = proof::check(normal.certificate().clone(), &context)
-                        .map_err(|e| e.to_string())?;
+                    let checked = proof::check(normal.certificate().clone(), &context)?;
                     if candidate.id != checked.proof_id().into()
                         || candidate.statement != Some(checked.statement_id())
                     {
-                        return Err("temporary prerequisite checked binding differs".into());
+                        return Err(crate::InputFault::CheckedIdentityMismatch.into());
                     }
                     let id = crate::hex(checked.proof_id().as_bytes());
                     if required.contains(&id) {
                         if !checked.conclusion().free_variables().is_empty() {
-                            return Err("temporary prerequisite is not closed".into());
+                            return Err(crate::InputFault::PrerequisiteNotClosed.into());
                         }
                         terms.push(proof::Term::Native {
                             certificate: checked.normal_form().certificate().clone(),
@@ -522,7 +514,7 @@ impl Prerequisites {
                         });
                     }
                     lemmas.push(checked.normal_form().certificate().clone());
-                    context.register_proof(checked).map_err(|e| e.to_string())?;
+                    context.register_proof(checked)?;
                 }
                 CandidatePayload::Definition(certificate) => {
                     let obligation = candidate
@@ -536,7 +528,7 @@ impl Prerequisites {
                                         .filter(|p| p.proof_id() == id)
                                         .map(|_| c.to_canonical_bytes())
                                 })
-                                .ok_or("temporary definition obligation missing")
+                                .ok_or(crate::InputFault::PrerequisiteObligationMissing)
                         })
                         .transpose()?;
                     let entry = definitions::Entry {
@@ -552,7 +544,7 @@ impl Prerequisites {
                             .sum::<usize>()
                             > definitions::BYTES
                     {
-                        return Err("temporary definition reference capacity".into());
+                        return Err(crate::InputLimit::PrerequisiteDefinitionCapacity.into());
                     }
                     definitions::register(&mut context, &entry)?;
                 }

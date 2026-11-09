@@ -15,9 +15,9 @@ impl CommitDigest {
         count: usize,
         peer: Option<&str>,
     ) -> Result<Self, crate::Error> {
-        let width = u32::try_from(count).map_err(|_| "catalog commit count width")?;
+        let width = u32::try_from(count).map_err(|_| crate::InputFault::CatalogDigestCountWidth)?;
         if count == 0 {
-            return Err("invalid catalog commit membership".into());
+            return Err(crate::InputFault::CatalogDigestMembership.into());
         }
         let mut hash = Sha256::new();
         hash.update(b"naome:knowledge:catalog-commit:v1\0");
@@ -25,9 +25,11 @@ impl CommitDigest {
         hash.update(width.to_be_bytes());
         hash.update([u8::from(peer.is_some())]);
         if let Some(peer) = peer {
-            let parsed: libp2p::PeerId = peer.parse().map_err(|_| "catalog peer origin syntax")?;
+            let parsed: libp2p::PeerId = peer
+                .parse()
+                .map_err(|_| crate::InputFault::CatalogDigestPeerSyntax)?;
             if peer.len() > 128 || parsed.to_string() != peer {
-                return Err("catalog peer origin encoding".into());
+                return Err(crate::InputFault::CatalogDigestPeerEncoding.into());
             }
             hash.update((peer.len() as u32).to_be_bytes());
             hash.update(peer.as_bytes());
@@ -47,20 +49,20 @@ impl CommitDigest {
         question: Option<&[u8]>,
     ) -> Result<(), crate::Error> {
         if self.remaining == 0 || self.previous.is_some_and(|id| id >= member.id) {
-            return Err("catalog commit members are not uniquely sorted".into());
+            return Err(crate::InputFault::CatalogDigestOrder.into());
         }
         if member.length == 0
             || member.length > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES
             || member.dependencies.len() > naome_proof::CERTIFICATE_MAX_STEPS
         {
-            return Err("catalog commit member width differs".into());
+            return Err(crate::InputFault::CatalogDigestMemberWidth.into());
         }
-        self.hash.update(member.id);
         if question.is_some_and(|bytes| {
             bytes.is_empty() || bytes.len() > naome_checker::question::QUESTION_BYTES
         }) {
-            return Err("catalog exchange question width differs".into());
+            return Err(crate::InputFault::CatalogDigestQuestionWidth.into());
         }
+        self.hash.update(member.id);
         let source = question.unwrap_or_default();
         self.hash.update((source.len() as u32).to_be_bytes());
         self.hash.update(source);
@@ -73,13 +75,13 @@ impl CommitDigest {
         self.hash.update(member.compatibility);
         self.hash.update(
             u32::try_from(member.length)
-                .map_err(|_| "catalog payload width")?
+                .map_err(|_| crate::InputFault::CatalogDigestPayloadWidth)?
                 .to_be_bytes(),
         );
         self.hash.update(member.digest);
         self.hash.update(
             u32::try_from(member.dependencies.len())
-                .map_err(|_| "catalog dependency width")?
+                .map_err(|_| crate::InputFault::CatalogDigestDependencyWidth)?
                 .to_be_bytes(),
         );
         for dependency in &member.dependencies {
@@ -93,8 +95,36 @@ impl CommitDigest {
 
     pub(super) fn finish(self) -> Result<[u8; 32], crate::Error> {
         if self.remaining != 0 || !self.found_root {
-            return Err("catalog commit root or member count differs".into());
+            return Err(crate::InputFault::CatalogDigestRootCount.into());
         }
         Ok(self.hash.finalize().into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_question_does_not_change_the_commitment() {
+        let id = [1; 32];
+        let member = Member {
+            id,
+            statement: None,
+            obligation: None,
+            compatibility: [2; 32],
+            length: 1,
+            digest: [3; 32],
+            dependencies: Vec::new(),
+        };
+        let mut retried = CommitDigest::new(id, 1, None).unwrap();
+        assert_eq!(
+            retried.push(&member, Some(&[])),
+            Err(crate::InputFault::CatalogDigestQuestionWidth.into())
+        );
+        retried.push(&member, Some(&[4])).unwrap();
+        let mut fresh = CommitDigest::new(id, 1, None).unwrap();
+        fresh.push(&member, Some(&[4])).unwrap();
+        assert_eq!(retried.finish().unwrap(), fresh.finish().unwrap());
     }
 }

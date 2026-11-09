@@ -32,6 +32,11 @@ mod persistence;
 use context::SelectionContext;
 pub(crate) use context::{FormalContext, Revision};
 
+/// The selection provider could not make a decision. The failure is reported as
+/// `SelectionResult::ProviderFailed`; arbitrary provider text is not published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionProviderError;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionAssessment {
     NotRun,
@@ -39,6 +44,20 @@ pub enum SelectionAssessment {
     ProviderFailed,
     TimedOut,
     Stale,
+}
+
+impl SelectionAssessment {
+    pub(crate) fn code(self) -> crate::outcome::SelectionResult {
+        use crate::outcome::SelectionResult;
+        match self {
+            Self::NotRun => SelectionResult::NotRun,
+            Self::Assessed(true) => SelectionResult::Accepted,
+            Self::Assessed(false) => SelectionResult::Rejected,
+            Self::ProviderFailed => SelectionResult::ProviderFailed,
+            Self::TimedOut => SelectionResult::TimedOut,
+            Self::Stale => SelectionResult::Stale,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -241,7 +260,7 @@ impl QuestionHandle {
     {
         if bytes.len() > naome_checker::question::QUESTION_BYTES {
             return Ok(Err(naome_checker::question::QuestionError::Limit(
-                "encoded question bytes",
+                naome_proof::QuestionLimit::EncodedBytes,
             )));
         }
         let (sender, reply) = oneshot::channel();
@@ -390,7 +409,7 @@ pub(crate) struct LocalQuestions<F> {
     compaction: Option<RegistryCompaction>,
     next_compaction: usize,
     old_indexes: Vec<std::sync::Weak<crate::index_storage::IndexStorage>>,
-    storage_error: Option<String>,
+    storage_error: Option<crate::Error>,
     selection_horizon: Duration,
     selection: Option<Identity>,
     /// Bounded complete read-only decisions, never admission or selection receipts.
@@ -405,7 +424,7 @@ pub(crate) struct LocalQuestions<F> {
 impl<F, Fut> LocalQuestions<F>
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     pub(crate) fn new(provider: Option<F>) -> Self {
         Self {
@@ -440,7 +459,7 @@ where
         directory: &std::path::Path,
         horizon: Duration,
         graph: &Graph,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let mut local = Self::new(None);
         local.attach_persistence(directory, graph)?;
         local.managed = Some(client);
@@ -452,27 +471,36 @@ where
         &mut self,
         directory: &std::path::Path,
         graph: &Graph,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if self.persistence.is_some() {
             return Ok(());
         }
         if !self.registry.is_empty() {
-            return Err("cannot replace a populated local registry".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::QuestionRegistryPopulated,
+            ));
         }
-        let persistence = persistence::Persistence::open(directory, self.policy)?;
-        let storage = crate::index_storage::IndexStorage::open(directory, "questions")?;
+        let persistence = persistence::Persistence::open(directory, self.policy)
+            .map_err(crate::Error::fatal_storage)?;
+        let storage =
+            crate::index_storage::IndexStorage::open(directory, "questions").map_err(|cause| {
+                crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionStorage,
+                    cause: Box::new(cause),
+                }
+            })?;
         self.registry = QuestionRegistry::with_storage(storage.clone());
         persistence.replay(graph.checked_context(), |entry, question| {
             let registered = RegisteredQuestion::from_research_question(&question)
-                .map_err(|error| format!("recovered question: {error:?}"))?;
+                .map_err(crate::Error::from)?;
             self.registry
                 .insert(registered)
-                .map_err(|error| format!("recovered registry: {error:?}"))?;
+                .map_err(crate::Error::from)?;
             if entry.kind == persistence::Kind::Prepared {
                 crate::network::emit(serde_json::json!({
-                    "event": "question_recovery_hold",
+                    "event": crate::outcome::NodeEvent::QuestionRecoveryHold,
                     "source_id": crate::hex(question.record_id()),
-                    "reason": "original admission delivery is uncertain",
+                    "reason": crate::outcome::EventReason::AdmissionDeliveryUncertain,
                 }));
             }
             self.remember(question, entry.kind == persistence::Kind::Admitted);
@@ -502,10 +530,10 @@ where
             let bytes = storage
                 .allocated_bytes()?
                 .checked_mul(2)
-                .ok_or("registry compaction disk overflow")?;
+                .ok_or(crate::InputFault::RegistryCompactionSize)?;
             let disk = match crate::resources::DiskLease::acquire(
                 storage.directory(),
-                u64::try_from(bytes).map_err(|_| "registry disk width")?,
+                u64::try_from(bytes).map_err(|_| crate::InputFault::RegistryCompactionWidth)?,
             ) {
                 Ok(disk) => disk,
                 Err(error) if error.retryable() => return Ok(()),
@@ -519,11 +547,7 @@ where
                 cursor: None,
                 _disk: disk,
             };
-            copy.cursor = Some(
-                self.registry
-                    .begin_copy(copy.target.clone())
-                    .map_err(|e| e.to_string())?,
-            );
+            copy.cursor = Some(self.registry.begin_copy(copy.target.clone())?);
             self.compaction = Some(copy);
         }
         if let Some(mut copy) = self.compaction.take() {
@@ -551,8 +575,7 @@ where
                     .cursor
                     .take()
                     .expect("complete registry copy")
-                    .finish(&self.registry)
-                    .map_err(|e| e.to_string())?;
+                    .finish(&self.registry)?;
                 let live = copy.target.allocated_bytes()?;
                 self.next_compaction =
                     live.saturating_mul(2).max(live.saturating_add(
@@ -628,7 +651,7 @@ where
         match persistence.next_backlog(graph.checked_context()) {
             Ok(question) => question,
             Err(error) => {
-                self.storage_error = Some(error);
+                self.storage_error = Some(error.fatal_storage());
                 None
             }
         }
@@ -637,7 +660,7 @@ where
         if let Some(persistence) = &mut self.persistence
             && let Err(error) = persistence.settle_backlog(resolution)
         {
-            self.storage_error = Some(error);
+            self.storage_error = Some(error.fatal_storage());
         }
     }
 
@@ -654,7 +677,7 @@ where
             .collect()
     }
 
-    pub(crate) fn storage_error(&self) -> Option<String> {
+    pub(crate) fn storage_error(&self) -> Option<crate::Error> {
         self.storage_error
             .clone()
             .or_else(|| {
@@ -665,7 +688,7 @@ where
             .or_else(|| {
                 self.index_storage
                     .as_ref()
-                    .and_then(|storage| storage.error())
+                    .and_then(|storage| storage.error().map(crate::Error::from))
             })
     }
     pub(crate) fn uses_jobs(&self) -> bool {
@@ -685,9 +708,9 @@ where
         self.cache.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {
             if let (Some(client), Some(job)) = (&self.managed, pending.job)
-                && let Err(error) = client.acknowledge(job)
+                && let Err(_) = client.acknowledge(job)
             {
-                self.storage_error = Some(error);
+                self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
             }
             pending.reply.send(
                 QuestionAssessment {
@@ -949,7 +972,7 @@ where
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
         if !self.exchange_eligible(graph, question, assessment) {
-            return Err("stale or declined question selection".into());
+            return Err(crate::InputFault::QuestionSelectionStale.into());
         }
         let fresh = self.evaluate_record(
             graph,
@@ -961,7 +984,7 @@ where
             return Err(crate::Error::ExecutionLimit);
         }
         if !fresh.passed() {
-            return Err("question no longer passes fresh formal checks".into());
+            return Err(crate::InputFault::QuestionFreshCheckFailed.into());
         }
         Ok(QuestionAssessment {
             prefilter: fresh,
@@ -986,13 +1009,11 @@ where
                 return Err(crate::Error::ExecutionLimit);
             }
             if fresh.novelty().is_none() {
-                return Err("missing fresh node-local novelty".into());
+                return Err(crate::InputFault::QuestionNoveltyMissing.into());
             }
-            let entry = RegisteredQuestion::from_research_question(question)
-                .map_err(|reason| format!("question registration: {reason:?}"))?;
-            registry
-                .insert(entry)
-                .map_err(|reason| format!("question registration: {reason:?}"))?;
+            let entry =
+                RegisteredQuestion::from_research_question(question).map_err(crate::Error::from)?;
+            registry.insert(entry).map_err(crate::Error::from)?;
         }
         Ok(QuestionDelta {
             registry,
@@ -1017,7 +1038,7 @@ where
             && let Err(error) = persistence.stage_publication(root, &delta.question)
         {
             if error.fatal() {
-                self.storage_error = Some(error.to_string());
+                self.storage_error = Some(error.clone());
             }
             return Err(error);
         }
@@ -1036,8 +1057,13 @@ where
                 return Err(error);
             }
         };
-        self.apply_exchange(delta)
-            .map_err(crate::Error::UncertainDurability)?;
+        if self.apply_exchange(delta).is_err() {
+            let error = crate::Error::UncertainDurability(crate::DurabilityFailure::new(
+                crate::DurabilityCode::QuestionPublication,
+            ));
+            self.storage_error = Some(error.clone());
+            return Err(error);
+        }
         self.finish_publication(root)?;
         Ok(admitted)
     }
@@ -1046,19 +1072,19 @@ where
         if let Some(persistence) = &mut self.persistence
             && let Err(error) = persistence.finish_publication(root)
         {
-            self.storage_error = Some(error.to_string());
+            self.storage_error = Some(error.clone());
             return Err(error);
         }
         Ok(())
     }
 
-    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) -> Result<(), String> {
+    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) -> Result<(), crate::Error> {
         if delta.insert
             && let Some(persistence) = &mut self.persistence
             && let Err(error) =
                 persistence.retain(&delta.question, persistence::Kind::Exchange, None)
         {
-            self.storage_error = Some(error.clone());
+            self.storage_error = Some(error.clone().fatal_storage());
             return Err(error);
         }
         self.registry = delta.registry;
@@ -1069,7 +1095,7 @@ where
         Ok(())
     }
 
-    pub(crate) fn recover_publications(&mut self, graph: &Graph) -> Result<(), String> {
+    pub(crate) fn recover_publications(&mut self, graph: &Graph) -> Result<(), crate::Error> {
         loop {
             let entries = match &self.persistence {
                 Some(p) => p.publications(graph.checked_context())?,
@@ -1081,19 +1107,19 @@ where
             for (root, question) in entries {
                 if graph.contains(root)? {
                     if !graph.resolves_question(root, &question)? {
-                        return Err("publication recovery target differs from checked graph".into());
+                        return Err(crate::RuntimeFailure::PublicationRecoveryTarget.into());
                     }
                     let mut registry = self.registry.clone();
                     if !registry
                         .contains_record(question.record_id())
-                        .map_err(|e| e.to_string())?
+                        .map_err(crate::Error::from)?
                     {
                         registry
                             .insert(
                                 RegisteredQuestion::from_research_question(&question)
-                                    .map_err(|e| format!("publication recovery: {e:?}"))?,
+                                    .map_err(crate::Error::from)?,
                             )
-                            .map_err(|e| format!("publication recovery: {e:?}"))?;
+                            .map_err(crate::Error::from)?;
                     }
                     self.apply_exchange(QuestionDelta {
                         registry,
@@ -1131,10 +1157,16 @@ where
             self.pending.is_empty()
         };
         if prefilter.passed() && !available {
-            prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT");
+            prefilter = prefilter.reject(
+                RejectionReason::ReceivingLimit,
+                naome_checker::question::PrefilterRule::Q08ReceivingLimit,
+            );
         }
         if prefilter.passed() && reply.admission() && !self.registry_capacity(&question) {
-            prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_REGISTRY_CAPACITY");
+            prefilter = prefilter.reject(
+                RejectionReason::ReceivingLimit,
+                naome_checker::question::PrefilterRule::Q08RegistryCapacity,
+            );
         }
         let remaining = match &reply {
             Reply::Exchange { deadline, .. } => deadline
@@ -1241,7 +1273,7 @@ where
         };
         let id = self.next_pending;
         let Some(next) = id.checked_add(1) else {
-            self.storage_error = Some("question selection identity exhausted".into());
+            self.storage_error = Some(crate::RuntimeFailure::QuestionSelection.into());
             return;
         };
         self.next_pending = next;
@@ -1307,7 +1339,7 @@ where
                             && let Err(error) =
                                 persistence.retain(&question, persistence::Kind::Baseline, None)
                         {
-                            self.storage_error = Some(error);
+                            self.storage_error = Some(error.fatal_storage());
                         }
                         self.remember(question, false);
                     }
@@ -1371,9 +1403,9 @@ where
         };
         if pending.reply.is_closed() {
             if let (Some(client), Some(job)) = (&self.managed, pending.job)
-                && let Err(error) = client.acknowledge(job)
+                && let Err(_) = client.acknowledge(job)
             {
-                self.storage_error = Some(error);
+                self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
             }
             return;
         }
@@ -1393,7 +1425,10 @@ where
             || pending.selection_context != self.selection_context(&pending.question)
         {
             if pending.prefilter.policy != prefilter.policy {
-                prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
+                prefilter = prefilter.reject(
+                    RejectionReason::StaleContext,
+                    naome_checker::question::PrefilterRule::Q09StaleContext,
+                );
             }
             SelectionAssessment::Stale
         } else {
@@ -1434,7 +1469,7 @@ where
                             Some(&receipt),
                         ) {
                             self.registry = previous;
-                            self.storage_error = Some(error);
+                            self.storage_error = Some(error.fatal_storage());
                             return;
                         }
                         prepared = true;
@@ -1448,7 +1483,10 @@ where
                     self.cache.clear();
                 }
                 Err(reason) => {
-                    prefilter = prefilter.reject(reason, "Q02_REGISTRY_INSERTION");
+                    prefilter = prefilter.reject(
+                        reason,
+                        naome_checker::question::PrefilterRule::Q02RegistryInsertion,
+                    );
                 }
             }
         }
@@ -1471,16 +1509,16 @@ where
             && let Some(persistence) = &mut self.persistence
             && let Err(error) = persistence.delivered(&pending.question, delivered)
         {
-            self.storage_error = Some(error);
+            self.storage_error = Some(error.fatal_storage());
             return;
         }
         if delivered && let Some(provenance) = provenance {
             self.remember(provenance.question, true);
         }
         if let (Some(client), Some(job)) = (&self.managed, pending.job)
-            && let Err(error) = client.acknowledge(job)
+            && let Err(_) = client.acknowledge(job)
         {
-            self.storage_error = Some(error);
+            self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
         }
     }
 

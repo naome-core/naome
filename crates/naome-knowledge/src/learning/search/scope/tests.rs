@@ -4,7 +4,7 @@ use naome_checker::question::ResearchQuestion;
 
 struct Ordered;
 impl Ranker for Ordered {
-    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
         Ok(vec![0.; decision.candidates.len()])
     }
 }
@@ -47,7 +47,7 @@ fn solve(question: &ResearchQuestion, budget: usize) -> Option<Solution> {
     let mut engine = Engine::default();
     let mut io = crate::learning::tests::MemoryStore::default();
     let result = engine
-        .with(&Checkpoint::fresh(), &mut io, |runtime| {
+        .with_error(&Checkpoint::fresh(), &mut io, |runtime| {
             search_question_report(&question.to_hex(), runtime, budget, &context)
         })
         .unwrap();
@@ -394,7 +394,7 @@ fn a_long_transport_requires_both_checked_segments_under_the_local_allowance() {
 fn scoped_program_applies_two_premises_in_one_checked_action() {
     struct NoModel;
     impl Ranker for NoModel {
-        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
             Err("the applicable action closes without ranking".into())
         }
     }
@@ -491,7 +491,7 @@ fn a_checked_witness_cut_discharges_a_wide_existential_goal() {
         .unwrap();
     let found = generated.solution.unwrap_or_else(|| {
         panic!(
-            "the normal Solver must prove the smaller question: {} ({:?}) for {}",
+            "the normal Solver must prove the smaller question: {:?} ({:?}) for {}",
             generated.diagnostic,
             generated.terminal,
             helper.to_hex()
@@ -543,4 +543,43 @@ fn a_checked_witness_cut_discharges_a_wide_existential_goal() {
         })
         .collect::<Vec<_>>();
     assert_eq!(references, [*id.as_bytes()]);
+}
+
+#[test]
+fn scoped_search_preserves_ranker_resource_failure() {
+    struct Limited;
+    impl Ranker for Limited {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+            Err(crate::Error::MemoryOverload {
+                requested: 3,
+                charged: 4,
+                budget: 5,
+            })
+        }
+    }
+    let [x, y] = [0, 1].map(FreeVariable::new);
+    let scope = Scope {
+        binders: Vec::new(),
+        assumptions: vec![Formula::for_all(x, Formula::member(x, y))],
+        goal: Formula::equal(x, y),
+    };
+    let (offers, _) = scope.offers(&scope.assumptions);
+    assert!(offers.len() > 1 && offers[0].1 != scope.goal);
+    assert!(matches!(
+        search_scope(&scope, &mut Limited, 2, Instant::now()),
+        Err(crate::Error::MemoryOverload {
+            requested: 3,
+            charged: 4,
+            budget: 5
+        })
+    ));
+}
+
+#[test]
+fn invalid_scoped_result_has_registered_failure() {
+    let error = deduce(&[], &[], 0).err().unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ScopeResultOrder)
+    );
 }

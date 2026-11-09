@@ -15,23 +15,23 @@ pub(super) fn run(
     arguments: &[&str],
     maximum: usize,
     deadline: Instant,
-) -> Result<String, String> {
+) -> Result<String, crate::Error> {
     let mut owned = OWNED
         .lock()
-        .map_err(|_| "hardware probe custody unavailable")?;
+        .map_err(|_| crate::InputFault::ProbeCustodyPoisoned)?;
     if let Some(child) = owned.as_mut() {
         match child
             .try_wait()
-            .map_err(|_| "hardware probe custody unconfirmed")?
+            .map_err(|_| crate::InputFault::ProbeCustodyUnconfirmed)?
         {
             Some(_) => {
                 owned.take();
             }
-            None => return Err("previous hardware probe cleanup pending".into()),
+            None => return Err(crate::InputFault::ProbeCleanupPending.into()),
         }
     }
     if Instant::now() >= deadline {
-        return Err("hardware observation deadline".into());
+        return Err(crate::InputFault::ProbeDeadline.into());
     }
     *owned = Some(
         Command::new(path)
@@ -40,16 +40,15 @@ pub(super) fn run(
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| error.to_string())?,
+            .spawn()?,
     );
     let child = owned.as_mut().expect("owned hardware probe");
     let mut output = child
         .stdout
         .take()
-        .ok_or("hardware observation output absent")?;
+        .ok_or(crate::InputFault::ProbeOutputMissing)?;
     let flags = nix::fcntl::fcntl(&output, nix::fcntl::FcntlArg::F_GETFL)
-        .map_err(|error| error.to_string());
+        .map_err(|error| crate::Error::from(std::io::Error::from_raw_os_error(error as i32)));
     let result = flags.and_then(|flags| {
         nix::fcntl::fcntl(
             &output,
@@ -57,33 +56,34 @@ pub(super) fn run(
                 nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
             ),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
         let mut bytes = Vec::new();
         let mut buffer = [0; 4096];
         let mut eof = false;
         loop {
             if Instant::now() >= deadline {
-                return Err("hardware observation deadline".into());
+                return Err(crate::InputFault::ProbeDeadline.into());
             }
             match output.read(&mut buffer) {
                 Ok(0) => eof = true,
                 Ok(count) => {
                     if bytes.len().saturating_add(count) > maximum {
-                        return Err("hardware observation capacity".into());
+                        return Err(crate::InputFault::ProbeCapacity.into());
                     }
                     bytes.extend_from_slice(&buffer[..count]);
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {}
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.into()),
             }
-            if let Some(status) = child.try_wait().map_err(|error| error.to_string())?
+            if let Some(status) = child.try_wait()?
                 && eof
             {
                 if !status.success() {
-                    return Err("hardware observation failed".into());
+                    return Err(crate::InputFault::ProbeExitFailure.into());
                 }
-                return String::from_utf8(bytes).map_err(|error| error.to_string());
+                return String::from_utf8(bytes)
+                    .map_err(|_| crate::InputFault::ProbeOutputEncoding.into());
             }
             if !eof {
                 // Drain a ready pipe before waiting; output remains capped.
@@ -91,14 +91,14 @@ pub(super) fn run(
                     Ok(0) => eof = true,
                     Ok(count) => {
                         if bytes.len().saturating_add(count) > maximum {
-                            return Err("hardware observation capacity".into());
+                            return Err(crate::InputFault::ProbeCapacity.into());
                         }
                         bytes.extend_from_slice(&buffer[..count]);
                         continue;
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {}
                     Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error.to_string()),
+                    Err(error) => return Err(error.into()),
                 }
             }
             std::thread::sleep(

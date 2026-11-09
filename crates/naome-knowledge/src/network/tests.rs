@@ -169,7 +169,104 @@ fn oversized_configuration_still_rejects_before_decoding() {
         vec![b' '; crate::resources::limits().network_config_bytes + 1],
     )
     .unwrap();
-    assert_eq!(read_config(&file.path()).err().unwrap(), "file byte limit");
+    assert!(matches!(
+        read_config(&file.path()),
+        Err(crate::Error::InputLimit(
+            crate::InputLimit::BoundedFileBytes
+        ))
+    ));
+}
+
+#[test]
+fn node_config_rejects_each_bound_with_a_distinct_code() {
+    let mut config = Config {
+        directory: PathBuf::new(),
+        listen: String::new(),
+        peers: vec![],
+        discovery: None,
+        producer_artifacts: vec![],
+        formal_goal: None,
+    };
+    assert!(validate_config(&config, false).is_ok());
+    config.formal_goal = Some(crate::mocks::create_question(0));
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputFault(
+            crate::InputFault::FormalGoalRequiresNative
+        ))
+    ));
+    assert!(validate_config(&config, true).is_ok());
+    config.formal_goal = None;
+    config.peers = vec![
+        Peer {
+            id: String::new(),
+            address: String::new()
+        };
+        crate::resources::limits().configured_peers + 1
+    ];
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputLimit(crate::InputLimit::ConfiguredPeers))
+    ));
+    config.peers.clear();
+    config.producer_artifacts =
+        vec![String::new(); crate::resources::limits().producer_artifacts + 1];
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue))
+    ));
+    config.producer_artifacts = vec!["a".repeat(2 * crate::resources::limits().producer_bytes + 1)];
+    assert!(matches!(
+        validate_config(&config, false),
+        Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue))
+    ));
+}
+
+#[test]
+fn formal_goal_keeps_the_question_checker_failure() {
+    let graph = Graph::default();
+    let valid = crate::mocks::create_question(0);
+    assert_eq!(checked_formal_goal(&valid, &graph).unwrap().to_hex(), valid);
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::from_hex_with_context(
+            "04",
+            graph.checked_context(),
+        )
+        .unwrap_err(),
+    );
+    let actual = checked_formal_goal("04", &graph).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}
+
+#[test]
+fn configuration_failures_preserve_read_and_parse_codes() {
+    let file = ConfigFile::new();
+    std::fs::write(file.path(), b"{").unwrap();
+    let error = read_config(&file.path()).err().unwrap();
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::RuntimeFailure::NetworkConfigParse)
+    );
+    assert_eq!(json["cause"]["reason"], u32::from(crate::JsonFault::Eof));
+    assert_eq!(json["cause"]["line"], 1);
+    assert!(
+        matches!(error, crate::Error::RuntimeContext { code: crate::RuntimeFailure::NetworkConfigParse, cause } if matches!(*cause, crate::Error::ConfigDecode { reason: crate::JsonFault::Eof, .. }))
+    );
+    assert!(matches!(
+        read_config(&file.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::RegularFileRequired
+        ))
+    ));
+    std::fs::remove_file(file.path()).unwrap();
+    assert!(matches!(
+        read_config(&file.path()),
+        Err(crate::Error::RuntimeContext { code: crate::RuntimeFailure::BoundedFileOpen, cause }) if matches!(*cause, crate::Error::StorageIo { operation: crate::StorageIoOperation::OpenInput, kind: crate::IoFaultKind::NotFound, .. })
+    ));
 }
 
 #[tokio::test]
@@ -564,7 +661,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         Arc::new(AtomicU64::new(0)),
         0,
         Some(control.clone()),
-        Some(control.selection().unwrap()),
+        Some(control.selection()),
     ));
     let offered = Metadata {
         artifact_id: object.artifact_id.clone(),
@@ -621,14 +718,32 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
             limit: 1,
         }),
     );
-    tokio::time::timeout(Duration::from_secs(2),async{
-        loop{
-            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message{message:request_response::Message::Response{request_id,response},..}))=client.select_next_some().await{
-                assert_eq!(request_id,id);
-                assert!(matches!(response.message.body,Body::Error{reason} if reason=="node state owner busy"));break;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                request_response::Event::Message {
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
+                    ..
+                },
+            )) = client.select_next_some().await
+            {
+                assert_eq!(request_id, id);
+                assert!(matches!(
+                    response.message.body,
+                    Body::Error {
+                        code: PeerFailure::OwnerBusy
+                    }
+                ));
+                break;
             }
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let network_seconds = measure.elapsed().as_secs_f64();
     // Metadata is retained in the bounded handoff while expensive checking is
     // stalled. A state-dependent inventory probe above still gets a prompt error.
@@ -647,7 +762,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
                         message: request_response::Message::Request { request, channel, .. }, ..
                     })) = event.unwrap().event {
                         assert!(matches!(request.message.body, Body::Offer { metadata } if metadata == offered));
-                        shared.behaviour_mut().exchange.send_response(channel, Frame::new(Body::Receipt { status: "queued".into() })).unwrap();
+                        shared.behaviour_mut().exchange.send_response(channel, Frame::new(Body::Receipt { status: OfferStatus::Queued })).unwrap();
                         break;
                     }
                 }
@@ -724,11 +839,11 @@ async fn transport_queue_failure_permanently_revokes_publication() {
     })
     .await
     .unwrap();
-    assert!(
+    assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), transport.shutdown())
             .await
-            .unwrap()
-            .is_err()
+            .unwrap(),
+        Err(crate::InputFault::TransportOwnerUnavailable.into()),
     );
     assert_eq!(guard.check().unwrap_err(), crate::publication::STALE_COMMIT);
     let terminal = shared.epoch.load(Ordering::Acquire);
@@ -947,4 +1062,187 @@ async fn control_remains_responsive_with_incomplete_clients() {
     assert_eq!(result["report"]["status"]["running"], true);
     drop(slow);
     controls.shutdown().await.unwrap();
+}
+
+#[test]
+fn transport_events_keep_endpoint_close_and_relay_client_context_structured() {
+    use crate::outcome::{
+        ConnectionClose, ConnectionEndpoint, ConnectionPort, IoFaultKind, NodeEvent,
+        RelayClientEvent,
+    };
+    use libp2p::core::{ConnectedPoint, Endpoint, transport::PortUse};
+    let address = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+    let dialer = connection_endpoint(&ConnectedPoint::Dialer {
+        address,
+        role_override: Endpoint::Listener,
+        port_use: PortUse::Reuse,
+    });
+    assert_eq!(dialer["kind"], u32::from(ConnectionEndpoint::Dialer));
+    assert_eq!(dialer["role"], u32::from(ConnectionEndpoint::Listener));
+    assert_eq!(dialer["port"], u32::from(ConnectionPort::Reused));
+    let listener = connection_endpoint(&ConnectedPoint::Listener {
+        local_addr: "/ip4/127.0.0.1/tcp/12".parse().unwrap(),
+        send_back_addr: "/ip4/127.0.0.1/tcp/13".parse().unwrap(),
+    });
+    assert_eq!(listener["kind"], u32::from(ConnectionEndpoint::Listener));
+    assert_eq!(listener["remote"], "/ip4/127.0.0.1/tcp/13");
+    assert!(connection_close(None).is_none());
+    let cause = libp2p::swarm::ConnectionError::IO(std::io::Error::from(
+        std::io::ErrorKind::ConnectionReset,
+    ));
+    let value = connection_close(Some(&cause)).unwrap();
+    assert_eq!(value["kind"], u32::from(ConnectionClose::Io));
+    assert_eq!(value["io_kind"], u32::from(IoFaultKind::ConnectionReset));
+    assert_eq!(
+        connection_close(Some(&libp2p::swarm::ConnectionError::KeepAliveTimeout)).unwrap()["kind"],
+        u32::from(ConnectionClose::KeepAliveTimeout)
+    );
+    let peer = identity::Keypair::generate_ed25519().public().to_peer_id();
+    for (event, code) in [
+        (
+            relay::client::Event::ReservationReqAccepted {
+                relay_peer_id: peer,
+                renewal: true,
+                limit: None,
+            },
+            RelayClientEvent::ReservationAccepted,
+        ),
+        (
+            relay::client::Event::OutboundCircuitEstablished {
+                relay_peer_id: peer,
+                limit: None,
+            },
+            RelayClientEvent::OutboundCircuit,
+        ),
+        (
+            relay::client::Event::InboundCircuitEstablished {
+                src_peer_id: peer,
+                limit: None,
+            },
+            RelayClientEvent::InboundCircuit,
+        ),
+    ] {
+        let event = relay_client_event(event);
+        assert_eq!(event["event"], u32::from(NodeEvent::RelayClient));
+        assert_eq!(event["kind"], u32::from(code));
+        assert_eq!(event["peer"], peer.to_string());
+        assert!(event["limit"].is_null());
+        assert!(event.get("detail").is_none());
+    }
+}
+
+#[test]
+fn checked_replay_preserves_failure_and_retry_classification() {
+    let cause = crate::Error::from(crate::InputFault::CatalogSchemaMismatch);
+    let error = checked_replay_error(cause.clone());
+    assert!(error.fatal());
+    assert!(
+        matches!(error, crate::Error::RuntimeContext { code: crate::RuntimeFailure::CheckedStorageReplay, cause: actual } if *actual == cause)
+    );
+    assert_eq!(
+        checked_replay_error(crate::Error::ExecutionLimit),
+        crate::Error::ExecutionLimit
+    );
+}
+
+#[test]
+fn denied_dial_retains_bounded_gate_cause() {
+    let cause = crate::Error::from(crate::InputFault::RouteEndpointInvalid);
+    let denied = libp2p::swarm::ConnectionDenied::new(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        cause.clone(),
+    ));
+    assert_eq!(admission_cause(&denied), Some(&cause));
+    let error = libp2p::swarm::DialError::Denied { cause: denied };
+    assert_eq!(
+        dial_failure(&error),
+        crate::outcome::WireFailure::AdmissionDenied
+    );
+    assert_eq!(dial_cause(&error), Some(&cause));
+    let value = serde_json::json!({"cause": dial_cause(&error)});
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::RouteEndpointInvalid)
+    );
+}
+
+#[test]
+fn listener_contract_returns_a_numeric_address_failure() {
+    let valid: Multiaddr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
+    assert!(require_tcp_address(&valid).is_ok());
+    let invalid: Multiaddr = "/ip4/127.0.0.1/udp/1234".parse().unwrap();
+    let error = require_tcp_address(&invalid).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::NetworkListenAddress)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputFault::NetworkListenAddress)
+    );
+}
+
+#[test]
+fn shutdown_preserves_all_independent_failures() {
+    let research = crate::Error::from(crate::ResearchFailure::PeerOrdinalZero);
+    let control = crate::Error::from(crate::InputFault::ControlTaskFailed);
+    let transport = crate::Error::from(crate::InputFault::TransportTaskCancelled);
+    let result = combine_shutdown(
+        Err(research.clone()),
+        Err(control.clone()),
+        Err(transport.clone()),
+    )
+    .unwrap_err();
+    assert_eq!(
+        result,
+        crate::Error::RuntimeCombined {
+            primary: Box::new(crate::Error::RuntimeCombined {
+                primary: Box::new(research),
+                cleanup: Box::new(control),
+            }),
+            cleanup: Box::new(transport),
+        }
+    );
+    let value = serde_json::to_value(result).unwrap();
+    assert!(value["primary"]["primary"]["code"].is_number());
+    assert!(value["primary"]["cleanup"]["code"].is_number());
+    assert!(value["cleanup"]["code"].is_number());
+}
+
+#[test]
+fn dial_transport_failures_preserve_bounded_structured_causes() {
+    use libp2p::core::transport::TransportError;
+    let address: Multiaddr = "/dns4/example.org/tcp/1234".parse().unwrap();
+    let error = libp2p::swarm::DialError::Transport(vec![
+        (
+            address.clone(),
+            TransportError::Other(std::io::Error::other(WireFailure::DnsCapacity)),
+        ),
+        (
+            address,
+            TransportError::Other(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                WireFailure::DnsNoAddress,
+            )),
+        ),
+    ]);
+    let value = serde_json::to_value(transport_failures(&error).unwrap()).unwrap();
+    assert_eq!(value["total"], 2);
+    assert_eq!(
+        value["codes"],
+        json!([WireFailure::DnsCapacity, WireFailure::DnsNoAddress])
+    );
+    let limit = crate::resources::limits().addresses_per_contact;
+    let address: Multiaddr = "/dns4/example.org/tcp/1234".parse().unwrap();
+    let nested = || {
+        TransportError::Other(std::io::Error::other(std::io::Error::other(
+            WireFailure::DnsCapacity,
+        )))
+    };
+    let errors = (0..limit + 2)
+        .map(|_| (address.clone(), nested()))
+        .collect();
+    let failures = transport_failures(&libp2p::swarm::DialError::Transport(errors)).unwrap();
+    assert_eq!(failures.total, limit + 2);
+    assert_eq!(failures.codes, vec![WireFailure::DnsCapacity; limit]);
 }

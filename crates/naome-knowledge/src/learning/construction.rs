@@ -98,7 +98,10 @@ fn fragments(
 }
 
 #[cfg(test)]
-pub fn solve(target: &Formula, maximum: usize) -> Result<(Option<proof::Verified>, usize), String> {
+pub fn solve(
+    target: &Formula,
+    maximum: usize,
+) -> Result<(Option<proof::Verified>, usize), crate::Error> {
     construct(target, maximum, std::time::Instant::now())
 }
 #[cfg(test)]
@@ -106,10 +109,10 @@ pub fn construct(
     target: &Formula,
     maximum: usize,
     started: std::time::Instant,
-) -> Result<(Option<proof::Verified>, usize), String> {
+) -> Result<(Option<proof::Verified>, usize), crate::Error> {
     struct Ordered;
     impl super::model::Ranker for Ordered {
-        fn scores(&mut self, d: &super::model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &super::model::Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -123,7 +126,7 @@ pub fn construct_with(
     ranker: &mut dyn super::model::Ranker,
     known: &[super::knowledge::Entry],
     definitions: &[super::definitions::Entry],
-) -> Result<(Option<proof::Verified>, usize, Option<selection::Selection>), String> {
+) -> Result<(Option<proof::Verified>, usize, Option<selection::Selection>), crate::Error> {
     let choices = super::definitions::construction_choices(target, definitions)?;
     let protected = super::knowledge::proof_ids(known)?;
     construct_candidate(
@@ -161,7 +164,7 @@ pub(super) fn construct_program(
     ranker: &mut dyn super::model::Ranker,
     known: &[super::knowledge::Entry],
     definitions: &[super::definitions::Entry],
-) -> Result<(Option<ProgramCandidate>, usize), String> {
+) -> Result<(Option<ProgramCandidate>, usize), crate::Error> {
     let choices = super::definitions::construction_choices(target, definitions)?;
     let (candidate, work, _) = construct_candidate(
         target,
@@ -192,7 +195,7 @@ pub(super) fn construct_program(
 pub(super) fn program_from_recipe(
     target: &Formula,
     recipe: proof::Recipe,
-) -> Result<ProgramCandidate, String> {
+) -> Result<ProgramCandidate, crate::Error> {
     program_from_recipe_with_inputs(target, recipe, &[], [], None)
 }
 
@@ -200,7 +203,7 @@ pub(super) fn program_from_authored_recipe(
     target: &Formula,
     recipe: proof::Recipe,
     earlier: &[super::definitions::Entry],
-) -> Result<ProgramCandidate, String> {
+) -> Result<ProgramCandidate, crate::Error> {
     assemble_program(target, recipe, &[], [], None, earlier)
 }
 
@@ -210,7 +213,7 @@ pub(super) fn program_from_recipe_with_inputs(
     programs: &[super::peer::Packet],
     inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
     inline: Option<naome_proof::ProofId>,
-) -> Result<ProgramCandidate, String> {
+) -> Result<ProgramCandidate, crate::Error> {
     assemble_program(target, recipe, programs, inputs, inline, &[])
 }
 
@@ -221,15 +224,11 @@ fn assemble_program(
     inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
     inline: Option<naome_proof::ProofId>,
     earlier: &[super::definitions::Entry],
-) -> Result<ProgramCandidate, String> {
+) -> Result<ProgramCandidate, crate::Error> {
     let (commands, helpers) = program_recipe(recipe, inline, earlier)?;
     let artifacts = helpers
         .iter()
-        .map(|source| {
-            crate::unhex(source)
-                .map(std::sync::Arc::from)
-                .map_err(|error| error.to_string())
-        })
+        .map(|source| crate::unhex(source).map(std::sync::Arc::from))
         .collect::<Result<Vec<_>, _>>()?;
     let packet = super::peer::Packet::compose(
         target,
@@ -246,20 +245,23 @@ fn program_recipe(
     recipe: proof::Recipe,
     inline: Option<naome_proof::ProofId>,
     earlier: &[super::definitions::Entry],
-) -> Result<(Vec<naome_proof::program::Command>, Vec<String>), String> {
+) -> Result<(Vec<naome_proof::program::Command>, Vec<String>), crate::Error> {
     use std::collections::{BTreeMap, BTreeSet};
     fn append(
         output: &mut Vec<ProofStep>,
         input: &[ProofStep],
         aliases: &BTreeMap<naome_proof::ProofId, u32>,
-    ) -> Result<u32, String> {
+    ) -> Result<u32, crate::Error> {
         let mut positions = Vec::with_capacity(input.len());
         for step in input {
             let at = |index: u32| {
                 positions
                     .get(index as usize)
                     .copied()
-                    .ok_or("native helper forward operand")
+                    .ok_or(crate::Error::ResearchIndex {
+                        code: crate::ResearchFailure::ConstructionHelperForward,
+                        index: index as usize,
+                    })
             };
             let step = match step {
                 ProofStep::ProofReference { proof_id } if aliases.contains_key(proof_id) => {
@@ -279,20 +281,23 @@ fn program_recipe(
                 },
                 other => other.clone(),
             };
-            positions.push(u32::try_from(output.len()).map_err(|_| "native helper operand width")?);
+            positions.push(
+                u32::try_from(output.len())
+                    .map_err(|_| crate::ResearchFailure::ConstructionHelperWidth)?,
+            );
             output.push(step);
         }
         positions
             .last()
             .copied()
-            .ok_or("empty native helper recipe".into())
+            .ok_or(crate::ResearchFailure::ConstructionRecipeEmpty.into())
     }
     let mut context = super::definitions::context(&recipe.definitions)?;
     let mut output = Vec::new();
     let mut aliases = BTreeMap::new();
     let mut kept = Vec::new();
     for certificate in recipe.lemmas {
-        let checked = proof::check(certificate, &context).map_err(|error| error.to_string())?;
+        let checked = proof::check(certificate, &context)?;
         let id = checked.proof_id();
         if context.contains_proof(id) {
             continue;
@@ -312,14 +317,12 @@ fn program_recipe(
         } else {
             kept.push(certificate.clone());
         }
-        context
-            .register_proof_for_replication(checked)
-            .map_err(|error| error.to_string())?;
+        context.register_proof_for_replication(checked)?;
     }
     let root = proof::define_steps(&recipe.steps, &recipe.definitions)?;
     let conclusion = append(&mut output, &root, &aliases)?;
     if conclusion as usize + 1 != output.len() {
-        return Err("native helper root differs".into());
+        return Err(crate::ResearchFailure::ConstructionRecipeRootMismatch.into());
     }
     let references = output
         .iter()
@@ -335,7 +338,7 @@ fn program_recipe(
             .definitions
             .iter()
             .map(|entry| Ok((entry.address()?, entry)))
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, crate::Error>>()?;
         let earlier = entries
             .iter()
             .filter(|(id, _)| earlier_ids.contains(id))
@@ -394,8 +397,8 @@ fn construct_candidate<T>(
     started: std::time::Instant,
     ranker: &mut dyn super::model::Ranker,
     context: ConstructionContext<'_>,
-    mut finish: impl FnMut(&proof::Term, &selection::Offer, bool) -> Result<Option<T>, String>,
-) -> Result<(Option<T>, usize, Option<selection::Selection>), String> {
+    mut finish: impl FnMut(&proof::Term, &selection::Offer, bool) -> Result<Option<T>, crate::Error>,
+) -> Result<(Option<T>, usize, Option<selection::Selection>), crate::Error> {
     if maximum == 0 {
         return Ok((None, 0, None));
     }
@@ -457,7 +460,7 @@ pub(super) fn pack_candidate(
     selection: Option<&selection::Selection>,
     started: std::time::Instant,
     remaining: &mut usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, crate::Error> {
     let error = match evidence::pack(verified) {
         Ok(packet) => return Ok(packet),
         Err(error) => error,
@@ -469,7 +472,7 @@ pub(super) fn pack_candidate(
             .iter()
             .all(|lemma| lemma.to_canonical_bytes().len() <= limit)
     {
-        return Err(error);
+        return Err(error.into());
     }
     let mut budget = repair::Budget::new(started, *remaining);
     let result = repair::portable_packet(verified, selection, &mut budget);
@@ -479,6 +482,34 @@ pub(super) fn pack_candidate(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn helper_recipe_reports_missing_and_forward_operands() {
+        let empty = super::proof::Recipe {
+            steps: vec![],
+            lemmas: vec![],
+            definitions: vec![],
+        };
+        assert_eq!(
+            super::program_recipe(empty, None, &[]).unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::ConstructionRecipeEmpty)
+        );
+        let forward = super::proof::Recipe {
+            steps: vec![naome_proof::ProofStep::Generalization {
+                premise: 0,
+                variable: naome_foundation::FreeVariable::new(0),
+            }],
+            lemmas: vec![],
+            definitions: vec![],
+        };
+        assert_eq!(
+            super::program_recipe(forward, None, &[]).unwrap_err(),
+            crate::Error::ResearchIndex {
+                code: crate::ResearchFailure::ConstructionHelperForward,
+                index: 0,
+            }
+        );
+    }
+
     use super::*;
     #[test]
     fn separation_is_instantiated_from_the_goal_instead_of_a_named_theorem() {
@@ -493,7 +524,7 @@ mod tests {
             proof.certificate.steps().len(),
             proof.payload_bytes
         );
-        let source = proof::source(&proof).unwrap();
+        let source = proof::source(&proof);
         let compiled =
             crate::learning::proof::check_artifact(&source, &naome_checker::ArtifactState::new())
                 .unwrap();
@@ -552,7 +583,7 @@ mod tests {
             proof.native_id
         );
         let helpers = evidence::helpers(&packet).unwrap();
-        let source = proof::source(&proof).unwrap();
+        let source = proof::source(&proof);
         let size = (source.len() + helpers.iter().map(String::len).sum::<usize>()) / 2;
         eprintln!(
             "Nat closure objects={} source_bytes={size} packet_bytes={}",

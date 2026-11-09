@@ -173,10 +173,13 @@ fn contextual_fragments_recheck_all_premises_scope_and_original_branch() {
             }
             _ => changed.state = "ff".repeat(32),
         }
-        assert!(
-            changed.validate_source(target, &tree, &id).is_err(),
-            "mutation {mutation}"
-        );
+        let error = changed.validate_source(target, &tree, &id).unwrap_err();
+        if mutation == 3 {
+            assert_eq!(
+                serde_json::to_value(error).unwrap()["code"],
+                u32::from(crate::ResearchFailure::FragmentSourceLineage)
+            );
+        }
     }
     let invalid = Tree::Step {
         action: Action::Mp(0, 2),
@@ -272,7 +275,7 @@ fn symbolic_preferences_require_two_checked_completions_of_the_same_state() {
 fn witness_branch_sequences_keep_the_actual_fresh_variable_scope() {
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -316,7 +319,7 @@ fn witness_branch_sequences_keep_the_actual_fresh_variable_scope() {
 fn hindsight_does_not_invent_observation_of_a_rebased_checked_path() {
     struct Detour;
     impl Ranker for Detour {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| match c.rule {
@@ -366,7 +369,7 @@ fn unresolved_observation() -> super::super::super::experience::Observation {
     use crate::learning::{GenerationCost, Origin, digest, experience};
     struct BranchFirst;
     impl Ranker for BranchFirst {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| {
@@ -507,4 +510,17 @@ fn matched_observed_inputs_report_active_and_masked_auxiliary_labels() {
     assert_eq!(actions.preference_targets, 0);
     assert_eq!(rich.masked_auxiliary_slots, 0);
     assert!(rich.active_auxiliary_slots > 0 && rich.cost_targets > 0);
+}
+
+#[test]
+fn observed_target_requires_an_exact_question_binding() {
+    let question = ResearchQuestion::from_hex("02040001000000000100000000").unwrap();
+    let trace: trace::Trace = serde_json::from_value(serde_json::json!({
+        "target": "wrong", "root": null, "events": [], "attempts": 0, "omitted": 0
+    }))
+    .unwrap();
+    assert_eq!(
+        observed_target(&trace, &question),
+        Err(crate::InputFault::ObservedTargetMismatch.into())
+    );
 }

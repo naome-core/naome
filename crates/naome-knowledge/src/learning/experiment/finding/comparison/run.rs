@@ -12,7 +12,7 @@ pub(super) fn available(
         let observed = observer.refresh(path).map_err(|e| e.to_string())?;
         if let Some(reason) = &observed.budget.paused {
             return Err(format!(
-                "experiment interrupted by resource owner: {reason}"
+                "experiment interrupted by resource owner: {reason:?}"
             ));
         }
     }
@@ -86,7 +86,7 @@ pub(super) fn train(
 ) -> Result<Value, String> {
     if !state.needs_training() {
         return Ok(
-            json!({"status":"not_ready","selected_model":state.model,"learning_epoch":state.learning_epoch()}),
+            json!({"status":crate::outcome::ExperimentStatus::NotReady,"selected_model":state.model,"learning_epoch":state.learning_epoch()}),
         );
     }
     available(meter, io, observer, path)?;
@@ -209,7 +209,7 @@ pub(super) fn train(
         *state = selected;
         Ok(())
     })();
-    let result = json!({"status":if outcome.is_ok(){"complete"}else{"interrupted"},"error":outcome.as_ref().err(),"last_unit":stopped_unit,"source_model":before,"selected_model":state.model,"retained_update":before!=state.model,"cpu_micros":meta::cpu_micros()?.saturating_sub(cpu),"wall_micros":wall.elapsed().as_micros(),"model_and_history_io_bytes":io.store.bytes+io.source_bytes-bytes,"history_request":native.history_request,"history_receipt":native.history,"qualification":qualification,"progress":native.progress});
+    let result = json!({"status":if outcome.is_ok(){crate::outcome::ExperimentStatus::Complete}else{crate::outcome::ExperimentStatus::Interrupted},"error":outcome.as_ref().err(),"last_unit":stopped_unit,"source_model":before,"selected_model":state.model,"retained_update":before!=state.model,"cpu_micros":meta::cpu_micros()?.saturating_sub(cpu),"wall_micros":wall.elapsed().as_micros(),"model_and_history_io_bytes":io.store.bytes+io.source_bytes-bytes,"history_request":native.history_request,"history_receipt":native.history,"qualification":qualification,"progress":native.progress});
     meter.write(&path.join("trial.json"), &result)?;
     outcome?;
     retained(&mut io.store, state.blobs().collect());

@@ -17,23 +17,33 @@ fn program_reply_keeps_the_original_record_admission_and_scope() {
     };
     let root = *read.root.as_bytes();
     let id = *read.id.as_bytes();
-    assert!(read.matches_reply(root, id, &chunk));
+    assert_eq!(read.check_reply(root, id, &chunk), Ok(()));
     let reduced = ProgramRead { limit: 1, ..read };
     assert!(
-        !reduced.matches_reply(root, id, &chunk),
+        reduced.check_reply(root, id, &chunk) == Err(crate::InputFault::ProgramReplyLimit),
         "a format-valid reply cannot exceed its requested portion"
     );
     assert!(
-        read.matches_reply(root, id, &chunk),
+        read.check_reply(root, id, &chunk).is_ok(),
         "a later reduction cannot revoke the earlier admitted portion"
     );
-    assert!(!read.matches_reply(id, root, &chunk));
+    assert_eq!(
+        read.check_reply(id, root, &chunk),
+        Err(crate::InputFault::ProgramReplyRoot)
+    );
+    assert_eq!(
+        read.check_reply(root, root, &chunk),
+        Err(crate::InputFault::ProgramReplyId)
+    );
     chunk.start += 1;
-    assert!(!read.matches_reply(root, id, &chunk));
+    assert_eq!(
+        read.check_reply(root, id, &chunk),
+        Err(crate::InputFault::ProgramReplyStart)
+    );
     chunk.start -= 1;
     chunk.records.clear();
     assert!(
-        !read.matches_reply(root, id, &chunk),
+        read.check_reply(root, id, &chunk) == Err(crate::InputFault::ProgramReplyEmpty),
         "an empty reply cannot advance a program read"
     );
 }

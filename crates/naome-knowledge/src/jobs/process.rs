@@ -1,5 +1,6 @@
 //! The production parent lifeline is independent of synchronous provider work.
 use super::*;
+use crate::outcome::{JobFailureCode, WorkerFailure};
 use std::{
     io::{BufRead, Write},
     os::fd::AsRawFd,
@@ -27,84 +28,78 @@ struct Start {
     slot_fd: i32,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
-enum Frame {
-    History {
-        id: u64,
-        unit: u32,
-        request: crate::learning::history::Request,
-    },
-    Model {
-        id: u64,
-        unit: u32,
-        blob: crate::learning::Blob,
-        range: std::ops::Range<usize>,
-        #[serde(with = "model_bytes")]
-        bytes: Option<Vec<u8>>,
-    },
-    Learning {
-        id: u64,
-        unit: u32,
-        progress: Box<crate::learning::Progress>,
-    },
-    Feedback {
-        id: u64,
-        phase: Phase,
-        sample: Sample,
-    },
-    Ready {
-        id: u64,
-        binding: String,
-        pid: u32,
-    },
-    Descendant {
-        id: u64,
-        pid: u32,
-    },
-    CpuActive {
-        id: u64,
-        next: u32,
-    },
-    CpuDone {
-        id: u64,
-        next: u32,
-    },
-    ResultReady {
-        id: u64,
-    },
-    Reserve {
-        id: u64,
-        next: u32,
-    },
-    Program {
-        id: u64,
-        unit: u32,
-        records: String,
-    },
-    Progress {
-        id: u64,
-        checkpoint: u32,
-    },
-    Result {
-        id: u64,
-        output: Output,
-    },
-    Failed {
-        id: u64,
-        error: String,
-    },
-    Uncertain {
-        id: u64,
-        error: String,
-    },
-    CleanupComplete {
-        id: u64,
-    },
-    CleanupFailed {
-        id: u64,
-        error: String,
-    },
+// Define the frame and both streaming codecs together so each numeric tag has
+// one payload schema and decoding rejects unknown tags and fields.
+macro_rules! worker_frames {
+    ($( $variant:ident { $( $(#[$attr:meta])* $field:ident : $owned:ty => $borrowed:ty = $value:expr ),+ $(,)? } ),+ $(,)?) => {
+        enum Frame { $( $variant { $( $field: $owned ),+ } ),+ }
+
+        impl serde::Serialize for Frame {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeTuple;
+                let mut tuple = serializer.serialize_tuple(2)?;
+                match self {
+                    $( Self::$variant { $( $field ),+ } => {
+                        #[derive(serde::Serialize)]
+                        struct Payload<'a> { $( $(#[$attr])* $field: &'a $borrowed ),+ }
+                        tuple.serialize_element(&crate::outcome::WorkerFrame::$variant)?;
+                        tuple.serialize_element(&Payload { $( $field: $value ),+ })?;
+                    } ),+
+                }
+                tuple.end()
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for Frame {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                struct FrameVisitor;
+                impl<'de> serde::de::Visitor<'de> for FrameVisitor {
+                    type Value = Frame;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a tagged worker frame")
+                    }
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Frame, A::Error> {
+                        use serde::de::Error as _;
+                        let tag: crate::outcome::WorkerFrame = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                        let result = match tag {
+                            $( crate::outcome::WorkerFrame::$variant => {
+                                #[derive(serde::Deserialize)]
+                                #[serde(deny_unknown_fields)]
+                                struct Payload { $( $(#[$attr])* $field: $owned ),+ }
+                                let payload: Payload = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                                Frame::$variant { $( $field: payload.$field ),+ }
+                            } ),+
+                        };
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(A::Error::invalid_length(3, &self));
+                        }
+                        Ok(result)
+                    }
+                }
+                deserializer.deserialize_tuple(2, FrameVisitor)
+            }
+        }
+    };
+}
+
+worker_frames! {
+    History { id: u64 => u64 = id, unit: u32 => u32 = unit, request: crate::learning::history::Request => crate::learning::history::Request = request },
+    Model { id: u64 => u64 = id, unit: u32 => u32 = unit, blob: crate::learning::Blob => crate::learning::Blob = blob, range: std::ops::Range<usize> => std::ops::Range<usize> = range, #[serde(with = "model_bytes")] bytes: Option<Vec<u8>> => Option<Vec<u8>> = bytes },
+    Learning { id: u64 => u64 = id, unit: u32 => u32 = unit, progress: Box<crate::learning::Progress> => crate::learning::Progress = progress.as_ref() },
+    Feedback { id: u64 => u64 = id, phase: Phase => Phase = phase, sample: Sample => Sample = sample },
+    Ready { id: u64 => u64 = id, binding: String => String = binding, pid: u32 => u32 = pid },
+    Descendant { id: u64 => u64 = id, pid: u32 => u32 = pid },
+    CpuActive { id: u64 => u64 = id, next: u32 => u32 = next },
+    CpuDone { id: u64 => u64 = id, next: u32 => u32 = next },
+    ResultReady { id: u64 => u64 = id },
+    Reserve { id: u64 => u64 = id, next: u32 => u32 = next },
+    Program { id: u64 => u64 = id, unit: u32 => u32 = unit, records: String => String = records },
+    Progress { id: u64 => u64 = id, checkpoint: u32 => u32 = checkpoint },
+    Result { id: u64 => u64 = id, output: Output => Output = output },
+    Failed { id: u64 => u64 = id, code: crate::outcome::JobFailureCode => crate::outcome::JobFailureCode = code },
+    Uncertain { id: u64 => u64 = id },
+    CleanupComplete { id: u64 => u64 = id },
+    CleanupFailed { id: u64 => u64 = id, cause: JobFailureCode => JobFailureCode = cause },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -121,7 +116,7 @@ pub(super) enum Event {
         id: u64,
         unit: u32,
         request: crate::learning::history::Request,
-        reply: oneshot::Sender<Result<crate::learning::history::Receipt, String>>,
+        reply: oneshot::Sender<Result<crate::learning::history::Receipt, crate::Error>>,
     },
     Model {
         id: u64,
@@ -129,40 +124,41 @@ pub(super) enum Event {
         blob: crate::learning::Blob,
         range: std::ops::Range<usize>,
         bytes: Option<Vec<u8>>,
-        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+        reply: oneshot::Sender<Result<Vec<u8>, crate::Error>>,
     },
     Learning {
         id: u64,
         unit: u32,
         progress: Box<crate::learning::Progress>,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
     Program {
         id: u64,
         unit: u32,
         records: Vec<naome_proof::program::Command>,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
     Reserve {
         id: u64,
         next: u32,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
     Progress {
         id: u64,
         checkpoint: u32,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), crate::Error>>,
     },
 }
 
 pub(super) struct Outcome {
     pub state: State,
-    pub result: Result<Output, String>,
+    pub result: Result<Output, JobFailureCode>,
 }
 
 struct OwnedAttempt {
     disposition: std::sync::Mutex<Option<State>>,
     feedback: feedback::Attempt,
+    failure: Option<WorkerFailure>,
 }
 
 pub(super) async fn run(
@@ -176,6 +172,7 @@ pub(super) async fn run(
     let mut attempt = OwnedAttempt {
         disposition: std::sync::Mutex::new(None),
         feedback: feedback::Attempt::new(record.input.feedback_role()),
+        failure: None,
     };
     let result = run_owned(
         record,
@@ -197,6 +194,7 @@ pub(super) async fn run(
             State::Failed
         });
     attempt.feedback.finish(state);
+    let result = result.map_err(|error| attempt.failure.map(JobFailureCode::from).unwrap_or(error));
     Outcome { state, result }
 }
 
@@ -208,27 +206,33 @@ async fn run_owned(
     slot: std::fs::File,
     permit: crate::resources::ComputationPermit,
     attempt: &mut OwnedAttempt,
-) -> Result<Output, String> {
+) -> Result<Output, JobFailureCode> {
     let disposition = &attempt.disposition;
     let feedback = &mut attempt.feedback;
-    let remaining_ms = remaining_ms.min(record.expires_ms.saturating_sub(wall_ms()?));
+    let failure = &mut attempt.failure;
+    let remaining_ms = remaining_ms.min(
+        record
+            .expires_ms
+            .saturating_sub(wall_ms().map_err(|_| WorkerFailure::Clock)?),
+    );
     if remaining_ms == 0 {
         *disposition.lock().expect("provider disposition owner") = Some(State::Expired);
-        return Err("research deadline expired before launch".into());
+        return Err(WorkerFailure::Deadline.into());
     }
     let deadline = tokio::time::Instant::now() + Duration::from_millis(remaining_ms);
     // This is the only deliberately inherited descriptor besides stdio. It is
     // a resource lease, never accepted-store or identity custody. Keeping it in
     // every descendant prevents a restarted node from reusing a live slot.
-    let mut command =
-        tokio::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    let mut command = tokio::process::Command::new(
+        std::env::current_exe().map_err(|_| WorkerFailure::SupervisorExecutable)?,
+    );
     command
         .arg(SUPERVISOR)
         .env_clear()
         .env(INTERNAL, "supervisor-v1")
         .env(
             "NAOME_EFFECTIVE_RESOURCES",
-            crate::resources::child_snapshot()?,
+            crate::resources::child_snapshot().map_err(|_| WorkerFailure::ResourceSnapshot)?,
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -240,15 +244,15 @@ async fn run_owned(
         remaining_ms,
         slot_fd: slot.as_raw_fd(),
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|_| WorkerFailure::StartEncoding)?;
     start.push(b'\n');
     let (spawned, restored) = {
-        let _spawn = SPAWN.lock().map_err(|_| "provider spawn owner poisoned")?;
+        let _spawn = SPAWN.lock().map_err(|_| WorkerFailure::SpawnLock)?;
         nix::fcntl::fcntl(
             &slot,
             nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| WorkerFailure::SlotInheritance)?;
         let spawned = command.spawn();
         let restored = nix::fcntl::fcntl(
             &slot,
@@ -256,9 +260,9 @@ async fn run_owned(
         );
         (spawned, restored)
     };
-    let mut child = spawned.map_err(|e| format!("provider supervisor spawn: {e}"))?;
+    let mut child = spawned.map_err(|_| WorkerFailure::SupervisorSpawn)?;
     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-    if let Err(error) = restored {
+    if restored.is_err() {
         // Start has not been written: close the lifeline, retain this Child
         // through termination, and preserve uncertain ownership on any error.
         drop(child.stdin.take());
@@ -271,74 +275,78 @@ async fn run_owned(
         {
             child
                 .start_kill()
-                .map_err(|e| format!("slot inheritance restoration: {error}; {e}"))?;
+                .map_err(|_| WorkerFailure::SlotInheritance)?;
             child
                 .wait()
                 .await
-                .map_err(|e| format!("slot inheritance restoration: {error}; {e}"))?;
+                .map_err(|_| WorkerFailure::SlotInheritance)?;
         }
-        return Err(format!("slot inheritance restoration: {error}"));
+        return Err(WorkerFailure::SlotInheritance.into());
     }
-    let pid = child
-        .id()
-        .ok_or("provider supervisor has no process identity")?;
+    let pid = child.id().ok_or(WorkerFailure::SupervisorIdentity)?;
     crate::network::emit(
-        serde_json::json!({"event":"research_started","job":record.id,
+        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchStarted,"job":record.id,
         "provider":record.provider,"pid":pid,"lane":record.input.lane(),"remaining_ms":remaining_ms}),
     );
-    let mut input = child.stdin.take().ok_or("provider lifeline absent")?;
-    let output = child.stdout.take().ok_or("provider output absent")?;
+    let mut input = child
+        .stdin
+        .take()
+        .ok_or(WorkerFailure::LifelineUnavailable)?;
+    let output = child
+        .stdout
+        .take()
+        .ok_or(WorkerFailure::OutputUnavailable)?;
     let mut reader = FrameReader::new(output);
     let mut cleaned = false;
     let mut start_delivered = false;
     let computation = permit.owner();
     let mut working = Some(permit);
     let execution = async {
-        input.write_all(&start).await.map_err(|e| e.to_string())?;
+        input
+            .write_all(&start)
+            .await
+            .map_err(|_| WorkerFailure::PipeIo)?;
         start_delivered = true;
         let mut ready = false;
         let mut checkpoint = record.checkpoint;
         let mut outstanding = None;
         loop {
-            let bytes = reader
-                .next()
-                .await?
-                .ok_or("provider ended before a complete result")?;
+            let bytes = reader.next().await?.ok_or(WorkerFailure::FrameTruncated)?;
             let frame: Frame =
-                serde_json::from_slice(&bytes).map_err(|_| "provider frame corruption")?;
+                serde_json::from_slice(&bytes).map_err(|_| WorkerFailure::FrameEncoding)?;
             match frame {
                 Frame::Ready { id, binding, pid }
                     if !ready && id == record.id && binding == identity(&record) =>
                 {
                     ready = true;
                     crate::network::emit(
-                        serde_json::json!({"event":"research_worker","job":id,"pid":pid}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorker,"job":id,"pid":pid}),
                     );
                 }
                 Frame::Descendant { id, pid }
                     if ready && id == record.id && record.settings.mock.descendant =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_descendant","job":id,"pid":pid}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchDescendant,"job":id,"pid":pid}),
                     );
                 }
                 Frame::CpuActive { id, next }
                     if ready && id == record.id && outstanding == Some(next) =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_working","job":id,"phase":"cpu_active","next":next}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":crate::outcome::WorkerFrame::CpuActive,"next":next}),
                     );
                 }
                 Frame::CpuDone { id, next }
                     if ready && id == record.id && outstanding == Some(next) =>
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_working","job":id,"phase":"cpu_done","next":next}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":crate::outcome::WorkerFrame::CpuDone,"next":next}),
                     );
                 }
                 Frame::ResultReady { id } if ready && id == record.id && outstanding.is_none() => {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_working","job":id,"phase":"result_ready"}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchWorking,"job":id,"phase":crate::outcome::WorkerFrame::ResultReady}),
                     );
                 }
                 Frame::Feedback { id, phase, sample } if ready && id == record.id => {
@@ -357,7 +365,7 @@ async fn run_owned(
                         && next
                             == checkpoint
                                 .checked_add(1)
-                                .ok_or("provider checkpoint overflow")? =>
+                                .ok_or(WorkerFailure::CheckpointOverflow)? =>
                 {
                     drop(working.take());
                     feedback.wait();
@@ -367,18 +375,22 @@ async fn run_owned(
                     events
                         .send(Event::Reserve { id, next, reply })
                         .await
-                        .map_err(|_| "research owner stopped")?;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?;
                     receipt
                         .await
-                        .map_err(|_| "research reservation owner stopped")??;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next,
                         data: None,
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| WorkerFailure::GrantEncoding)?;
                     bytes.push(b'\n');
-                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                    input
+                        .write_all(&bytes)
+                        .await
+                        .map_err(|_| WorkerFailure::PipeIo)?;
                     outstanding = Some(next);
                 }
                 Frame::History { id, unit, request }
@@ -397,19 +409,25 @@ async fn run_owned(
                             reply,
                         })
                         .await
-                        .map_err(|_| "historical source owner stopped")?;
-                    let receipt = receipt.await.map_err(|_| "history checkpoint stopped")??;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?;
+                    let receipt = receipt
+                        .await
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut response = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
-                        data: Some(serde_json::to_vec(&receipt).map_err(|e| e.to_string())?),
+                        data: Some(
+                            serde_json::to_vec(&receipt)
+                                .map_err(|_| WorkerFailure::GrantEncoding)?,
+                        ),
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| WorkerFailure::GrantEncoding)?;
                     response.push(b'\n');
                     input
                         .write_all(&response)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|_| WorkerFailure::PipeIo)?;
                 }
                 Frame::Model {
                     id,
@@ -422,11 +440,13 @@ async fn run_owned(
                     && outstanding == Some(unit)
                     && record.provider == crate::learning::PROVIDER =>
                 {
-                    let length = blob.range_len(&range)?;
+                    let length = blob
+                        .range_len(&range)
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     if let Some(bytes) = &bytes
                         && bytes.len() != length
                     {
-                        return Err("native model chunk length differs".into());
+                        return Err(WorkerFailure::ModelLength.into());
                     }
                     let (reply, receipt) = oneshot::channel();
                     events
@@ -439,21 +459,22 @@ async fn run_owned(
                             reply,
                         })
                         .await
-                        .map_err(|_| "native artifact owner stopped")?;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?;
                     let data = receipt
                         .await
-                        .map_err(|_| "native artifact checkpoint stopped")??;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut response = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
                         data: Some(data),
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| WorkerFailure::GrantEncoding)?;
                     response.push(b'\n');
                     input
                         .write_all(&response)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|_| WorkerFailure::PipeIo)?;
                 }
                 Frame::Learning { id, unit, progress }
                     if ready
@@ -470,18 +491,22 @@ async fn run_owned(
                             reply,
                         })
                         .await
-                        .map_err(|_| "learning owner stopped")?;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?;
                     receipt
                         .await
-                        .map_err(|_| "learning checkpoint owner stopped")??;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
                         data: None,
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| WorkerFailure::GrantEncoding)?;
                     bytes.push(b'\n');
-                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                    input
+                        .write_all(&bytes)
+                        .await
+                        .map_err(|_| WorkerFailure::PipeIo)?;
                 }
                 Frame::Program { id, unit, records }
                     if ready
@@ -490,13 +515,15 @@ async fn run_owned(
                         && matches!(record.input, Input::Solve { .. }) =>
                 {
                     if records.len() > naome_proof::program::CHUNK_BYTES * 2 {
-                        return Err("provider program group byte capacity".into());
+                        return Err(WorkerFailure::ProgramCapacity.into());
                     }
-                    let bytes = crate::unhex(&records)?;
+                    let bytes =
+                        crate::unhex(&records).map_err(|_| WorkerFailure::ProgramEncoding)?;
                     if crate::hex(&bytes) != records {
-                        return Err("noncanonical provider program encoding".into());
+                        return Err(WorkerFailure::ProgramEncoding.into());
                     }
-                    let records = naome_proof::program::decode_records(&bytes)?;
+                    let records = naome_proof::program::decode_records(&bytes)
+                        .map_err(|_| WorkerFailure::ProgramEncoding)?;
                     let (reply, receipt) = oneshot::channel();
                     events
                         .send(Event::Program {
@@ -506,18 +533,22 @@ async fn run_owned(
                             reply,
                         })
                         .await
-                        .map_err(|_| "research owner stopped")?;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?;
                     receipt
                         .await
-                        .map_err(|_| "research candidate owner stopped")??;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: unit,
                         data: None,
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| WorkerFailure::GrantEncoding)?;
                     bytes.push(b'\n');
-                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                    input
+                        .write_all(&bytes)
+                        .await
+                        .map_err(|_| WorkerFailure::PipeIo)?;
                 }
                 Frame::Progress {
                     id,
@@ -537,10 +568,11 @@ async fn run_owned(
                             reply,
                         })
                         .await
-                        .map_err(|_| "research owner stopped")?;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?;
                     receipt
                         .await
-                        .map_err(|_| "research checkpoint owner stopped")??;
+                        .map_err(|_| WorkerFailure::OwnerUnavailable)?
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     feedback.checkpoint(next)?;
                     drop(working.take());
                     feedback.wait();
@@ -551,9 +583,12 @@ async fn run_owned(
                         next: checkpoint,
                         data: None,
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| WorkerFailure::GrantEncoding)?;
                     bytes.push(b'\n');
-                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                    input
+                        .write_all(&bytes)
+                        .await
+                        .map_err(|_| WorkerFailure::PipeIo)?;
                     outstanding = None;
                 }
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
@@ -565,37 +600,40 @@ async fn run_owned(
                         && id == record.id
                         && super::provider::complete(&record, checkpoint) =>
                 {
-                    output.validate(&record.input)?;
+                    output
+                        .validate(&record.input)
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     if let Output::Program { units } = &output
                         && *units != checkpoint
                     {
-                        return Err(
-                            "provider program length differs from its durable checkpoints".into(),
-                        );
+                        return Err(WorkerFailure::ResultInvalid.into());
                     }
-                    return Ok(output);
+                    return Ok::<Output, JobFailureCode>(output);
                 }
-                Frame::Uncertain { id, error } if ready && id == record.id => {
+                Frame::Uncertain { id } if ready && id == record.id => {
+                    *failure = Some(WorkerFailure::ProviderUncertain);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-                    return Err(error);
+                    return Err(WorkerFailure::ProviderUncertain.into());
                 }
-                Frame::Failed { id, error } if ready && id == record.id => {
-                    return Err(error);
+                Frame::Failed { id, code } if ready && id == record.id => {
+                    return Err(code);
                 }
-                Frame::CleanupFailed { id, error } if id == record.id => {
+                Frame::CleanupFailed { id, cause } if id == record.id => {
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchCleanupFailed,"job":id,"cause":cause}),
+                    );
+                    *failure = Some(WorkerFailure::CleanupUnconfirmed);
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-                    return Err(format!(
-                        "provider group termination is unconfirmed: {error}"
-                    ));
+                    return Err(WorkerFailure::CleanupUnconfirmed.into());
                 }
-                _ => return Err("provider frame identity or lifecycle differs".into()),
+                _ => return Err(WorkerFailure::FrameIdentity.into()),
             }
         }
     };
     let result = tokio::select! {
         value=execution=>value,
-        _=&mut cancel=>{*disposition.lock().expect("provider disposition owner")=Some(State::Cancelled);Err("research cancelled".into())},
-        _=tokio::time::sleep_until(deadline)=>{*disposition.lock().expect("provider disposition owner")=Some(State::Expired);Err("research deadline expired".into())},
+        _=&mut cancel=>{*disposition.lock().expect("provider disposition owner")=Some(State::Cancelled);Err(WorkerFailure::Cancelled.into())},
+        _=tokio::time::sleep_until(deadline)=>{*disposition.lock().expect("provider disposition owner")=Some(State::Expired);Err(WorkerFailure::Deadline.into())},
     };
     // Cancellation or expiry can drop the admission wait before it receives a
     // permit. Close that measurement before custody drain and child reaping.
@@ -614,17 +652,18 @@ async fn run_owned(
     let drain = async {
         loop {
             let Some(frame) = reader.next().await? else {
-                return Ok::<(), String>(());
+                return Ok::<(), JobFailureCode>(());
             };
             match serde_json::from_slice::<Frame>(&frame)
-                .map_err(|_| "provider cleanup frame corruption")?
+                .map_err(|_| WorkerFailure::FrameEncoding)?
             {
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
-                Frame::CleanupFailed { id, error } if id == record.id => {
+                Frame::CleanupFailed { id, cause } if id == record.id => {
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchCleanupFailed,"job":id,"cause":cause}),
+                    );
                     cleaned = false;
-                    return Err(format!(
-                        "provider group termination is unconfirmed: {error}"
-                    ));
+                    return Err(WorkerFailure::CleanupUnconfirmed.into());
                 }
                 Frame::Ready { id, .. }
                 | Frame::Feedback { id, .. }
@@ -641,7 +680,7 @@ async fn run_owned(
                 | Frame::Failed { id, .. }
                 | Frame::Uncertain { id, .. }
                     if id == record.id => {}
-                _ => return Err("provider cleanup identity differs".to_owned()),
+                _ => return Err(WorkerFailure::FrameIdentity.into()),
             }
         }
     };
@@ -653,7 +692,7 @@ async fn run_owned(
     {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error),
-        Err(_) => Some("provider output drain deadline".to_owned()),
+        Err(_) => Some(WorkerFailure::OutputDrainDeadline.into()),
     };
     let status = match tokio::time::timeout(
         crate::resources::limits().provider_drain_timeout,
@@ -661,16 +700,16 @@ async fn run_owned(
     )
     .await
     {
-        Ok(status) => status.map_err(|e| e.to_string())?,
+        Ok(status) => status.map_err(|_| WorkerFailure::PipeIo)?,
         Err(_) => {
-            child.start_kill().map_err(|e| e.to_string())?;
-            child.wait().await.map_err(|e| e.to_string())?;
+            child.start_kill().map_err(|_| WorkerFailure::PipeIo)?;
+            child.wait().await.map_err(|_| WorkerFailure::PipeIo)?;
             *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-            return Err("provider supervisor cleanup deadline; recovery is uncertain".into());
+            return Err(WorkerFailure::CleanupUnconfirmed.into());
         }
     };
     crate::network::emit(
-        serde_json::json!({"event":"research_reaped","job":record.id,"pid":pid,"exit":status.code()}),
+        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchReaped,"job":record.id,"pid":pid,"exit":status.code()}),
     );
     // An incomplete Start cannot create a worker. When cancellation closed its
     // lifeline before any complete Start or output frame, reaped supervisor
@@ -679,19 +718,23 @@ async fn run_owned(
         cleaned = true;
     }
     if !cleaned {
+        *failure = Some(WorkerFailure::CleanupUnconfirmed);
         *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
-        return Err("provider cleanup receipt is absent; recovery is uncertain".into());
+        return Err(WorkerFailure::CleanupUnconfirmed.into());
     }
+    // A cleanup receipt confirms process custody. It cannot confirm effects
+    // reported as uncertain by the worker.
     *disposition.lock().expect("provider disposition owner") =
-        completion_state.filter(|state| *state != State::InDoubt);
+        if *failure == Some(WorkerFailure::ProviderUncertain) {
+            Some(State::InDoubt)
+        } else {
+            completion_state.filter(|state| *state != State::InDoubt)
+        };
     if let Some(error) = drain_error {
-        return Err(match result {
-            Err(primary) => format!("{primary}; {error}"),
-            Ok(_) => error,
-        });
+        return Err(result.err().unwrap_or(error));
     }
     if result.is_ok() && !status.success() {
-        return Err("provider exited without clean completion".into());
+        return Err(WorkerFailure::SupervisorExit.into());
     }
     result
 }
@@ -711,14 +754,18 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
         }
     }
 
-    async fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
+    async fn next(&mut self) -> Result<Option<Vec<u8>>, WorkerFailure> {
         loop {
-            let buffer = self.reader.fill_buf().await.map_err(|e| e.to_string())?;
+            let buffer = self
+                .reader
+                .fill_buf()
+                .await
+                .map_err(|_| WorkerFailure::PipeIo)?;
             if buffer.is_empty() {
                 return if self.partial.is_empty() {
                     Ok(None)
                 } else {
-                    Err("provider ended inside a frame".into())
+                    Err(WorkerFailure::FrameTruncated)
                 };
             }
             let end = buffer
@@ -727,7 +774,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
                 .map(|n| n + 1)
                 .unwrap_or(buffer.len());
             if self.partial.len() + end > max_frame_bytes() {
-                return Err("provider frame capacity".into());
+                return Err(WorkerFailure::FrameCapacity);
             }
             let complete = buffer[end - 1] == b'\n';
             self.partial.extend_from_slice(&buffer[..end]);
@@ -740,9 +787,9 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
                 self.total = self
                     .total
                     .checked_add(if program { 0 } else { self.partial.len() })
-                    .ok_or("provider stream overflow")?;
+                    .ok_or(WorkerFailure::StreamCapacity)?;
                 if self.total > crate::resources::limits().provider_stream_bytes {
-                    return Err("provider stream capacity".into());
+                    return Err(WorkerFailure::StreamCapacity);
                 }
                 return Ok(Some(std::mem::take(&mut self.partial)));
             }
@@ -750,7 +797,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
     }
 }
 
-pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), String>> {
+pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), crate::Error>> {
     let [argument] = arguments else {
         return None;
     };
@@ -759,39 +806,43 @@ pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), St
             if std::env::var(INTERNAL).as_deref() == Ok("supervisor-v1") {
                 supervise()
             } else {
-                Err("internal provider invocation required".into())
+                Err(crate::ResearchFailure::ProviderInvocationRequired.into())
             },
         ),
         WORKER => Some(if std::env::var(INTERNAL).as_deref() == Ok("worker-v1") {
             work()
         } else {
-            Err("internal provider invocation required".into())
+            Err(crate::ResearchFailure::ProviderInvocationRequired.into())
         }),
         DESCENDANT => Some(
             if std::env::var(INTERNAL).as_deref() == Ok("descendant-v1") {
                 descendant()
             } else {
-                Err("internal provider invocation required".into())
+                Err(crate::ResearchFailure::ProviderInvocationRequired.into())
             },
         ),
         _ => None,
     }
 }
 
-fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
+fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, crate::Error> {
     let mut bytes = Vec::new();
     loop {
-        let buffer = reader.fill_buf().map_err(|e| e.to_string())?;
+        let buffer = reader.fill_buf()?;
         if buffer.is_empty() {
-            return Err("provider lifeline closed".into());
+            return Err(WorkerFailure::FrameTruncated.into());
         }
         let end = buffer
             .iter()
             .position(|b| *b == b'\n')
             .map(|n| n + 1)
             .unwrap_or(buffer.len());
-        if bytes.len() + end > limit {
-            return Err("provider pipe capacity".into());
+        if bytes.len().checked_add(end).is_none_or(|size| size > limit) {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::ProviderPipeCapacity,
+                expected: limit as u64,
+                actual: bytes.len().saturating_add(end) as u64,
+            });
         }
         let complete = buffer[end - 1] == b'\n';
         bytes.extend_from_slice(&buffer[..end]);
@@ -802,16 +853,20 @@ fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
     }
 }
 
-fn emit(frame: &Frame) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(frame).map_err(|e| e.to_string())?;
+fn emit(frame: &Frame) -> Result<(), crate::Error> {
+    emit_coded(frame).map_err(Into::into)
+}
+
+fn emit_coded(frame: &Frame) -> Result<(), WorkerFailure> {
+    let mut bytes = serde_json::to_vec(frame).map_err(|_| WorkerFailure::FrameEncoding)?;
     bytes.push(b'\n');
     if bytes.len() > max_frame_bytes() {
-        return Err("provider output capacity".into());
+        return Err(WorkerFailure::FrameCapacity);
     }
     std::io::stdout()
         .write_all(&bytes)
         .and_then(|_| std::io::stdout().flush())
-        .map_err(|e| e.to_string())
+        .map_err(|_| WorkerFailure::PipeIo)
 }
 
 enum Message {
@@ -826,7 +881,7 @@ struct Worker {
     teardown_started: bool,
 }
 impl Worker {
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<(), crate::Error> {
         self.teardown_started = true;
         stop_worker(&mut self.child)
     }
@@ -847,31 +902,31 @@ impl Drop for Worker {
     }
 }
 
-fn supervise() -> Result<(), String> {
+fn supervise() -> Result<(), crate::Error> {
     // The supervisor is the session/group leader. It stays alive during normal
     // cancellation so the group cannot be confused with a recycled PID.
-    nix::unistd::setsid().map_err(|e| e.to_string())?;
+    nix::unistd::setsid().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     let mut reader = std::io::BufReader::new(std::io::stdin());
     let bytes = line(&mut reader, max_frame_bytes())?;
-    let start: Start = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let start: Start = serde_json::from_slice(&bytes)
+        .map_err(|_| crate::ResearchFailure::ProviderStartDecoding)?;
     if start.version != 1
         || (start.remaining_ms == 0
             || Instant::now()
                 .checked_add(Duration::from_millis(start.remaining_ms))
                 .is_none())
     {
-        return Err("provider start version or horizon differs".into());
+        return Err(crate::ResearchFailure::ProviderStartInvalid.into());
     }
     start.record.input.validate()?;
     start.record.binding.validate()?;
-    let child = ProcessCommand::new(std::env::current_exe().map_err(|e| e.to_string())?)
+    let child = ProcessCommand::new(std::env::current_exe()?)
         .arg(WORKER)
         .env(INTERNAL, "worker-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .spawn()?;
     let mut child = Worker {
         child,
         teardown_started: false,
@@ -880,13 +935,13 @@ fn supervise() -> Result<(), String> {
         .child
         .stdin
         .take()
-        .ok_or("provider worker lifeline absent")?;
-    input.write_all(&bytes).map_err(|e| e.to_string())?;
+        .ok_or(crate::ResearchFailure::ProviderWorkerInputMissing)?;
+    input.write_all(&bytes)?;
     let output = child
         .child
         .stdout
         .take()
-        .ok_or("provider worker output absent")?;
+        .ok_or(crate::ResearchFailure::ProviderWorkerOutputMissing)?;
     let (sender, receiver) =
         sync_channel::sync_channel(crate::resources::active_limits().supervisor_commands);
     let parent = sender.clone();
@@ -960,10 +1015,7 @@ fn supervise() -> Result<(), String> {
     if let Err(error) = child.finish() {
         let _ = emit(&Frame::CleanupFailed {
             id: start.record.id,
-            error: error
-                .chars()
-                .take(crate::resources::limits().failure_detail_bytes)
-                .collect(),
+            cause: JobFailureCode::from_owner(&error),
         });
         return Err(error);
     }
@@ -975,24 +1027,49 @@ fn supervise() -> Result<(), String> {
         std::io::stdout()
             .write_all(&result)
             .and_then(|_| std::io::stdout().flush())
-            .map_err(|e| e.to_string())
+            .map_err(Into::into)
     } else {
-        Err("provider stopped or failed".into())
+        Err(crate::ResearchFailure::ProviderStopped.into())
     }
 }
 
-fn stop_worker(child: &mut Child) -> Result<(), String> {
+fn process_error(code: crate::ResearchFailure, error: std::io::Error) -> crate::Error {
+    let cause = crate::Error::Io {
+        kind: crate::outcome::io_fault_kind(&error),
+        os_code: error.raw_os_error().and_then(std::num::NonZeroI32::new),
+    };
+    crate::Error::ResearchContext {
+        code,
+        cause: Box::new(cause),
+    }
+}
+
+fn combine_cleanup(primary: crate::Error, errors: &[crate::Error]) -> crate::Error {
+    errors
+        .iter()
+        .cloned()
+        .fold(primary, |primary, cleanup| crate::Error::ResearchCombined {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        })
+}
+
+fn stop_worker(child: &mut Child) -> Result<(), crate::Error> {
     // Hold the live unreaped Child while signalling its separate provider group.
     // A pre-start cancellation may precede setsid; direct Child.kill covers it.
-    let group =
-        nix::unistd::Pid::from_raw(i32::try_from(child.id()).map_err(|_| "provider PID overflow")?);
+    let group = nix::unistd::Pid::from_raw(
+        i32::try_from(child.id()).map_err(|_| crate::ResearchFailure::ProviderPidOverflow)?,
+    );
     let mut signal_errors = Vec::new();
     match nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGTERM) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
         // Darwin skips zombies when signalling a group and can return EPERM
         // for a zombie-only group. Retain the denial until actual absence is
         // observed after reaping; a denial alone never confirms cleanup.
-        Err(error) => signal_errors.push(format!("provider TERM group: {error}")),
+        Err(error) => signal_errors.push(process_error(
+            crate::ResearchFailure::ProviderTermSignal,
+            std::io::Error::from_raw_os_error(error as i32),
+        )),
     }
     // Rust's portable Child API reaps on try_wait. Keep the leader unreaped
     // through both signals instead, including when it exits during this grace.
@@ -1000,28 +1077,39 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
     // Stop the original leader before the last group signal. This also covers
     // early cancellation while the worker is still creating its own group.
     if let Err(error) = child.kill() {
-        signal_errors.push(format!("provider direct Child kill: {error}"));
+        signal_errors.push(process_error(
+            crate::ResearchFailure::ProviderChildKill,
+            error,
+        ));
     }
     // Retain the unreaped leader through the final group signal. Its PID
     // cannot be recycled while we own this Child, even after its exit.
     match nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        Err(error) => signal_errors.push(format!("provider KILL group: {error}")),
+        Err(error) => signal_errors.push(process_error(
+            crate::ResearchFailure::ProviderKillSignal,
+            std::io::Error::from_raw_os_error(error as i32),
+        )),
     }
     // All signals are finished before any reaping can release the leader PID.
     let until = Instant::now() + Duration::from_secs(1);
     loop {
         if child
             .try_wait()
-            .map_err(|e| format!("provider wait: {e}"))?
+            .map_err(|e| {
+                combine_cleanup(
+                    process_error(crate::ResearchFailure::ProviderWaitFailed, e),
+                    &signal_errors,
+                )
+            })?
             .is_some()
         {
             break;
         }
         if Instant::now() >= until {
-            return Err(format!(
-                "provider Child reaping deadline; {}",
-                signal_errors.join("; ")
+            return Err(combine_cleanup(
+                crate::ResearchFailure::ProviderReapDeadline.into(),
+                &signal_errors,
             ));
         }
         std::thread::sleep(crate::resources::limits().cleanup_poll_interval);
@@ -1033,25 +1121,27 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
             Ok(()) | Err(nix::errno::Errno::EPERM) if Instant::now() < until => {
                 std::thread::sleep(crate::resources::limits().cleanup_poll_interval)
             }
-            _ => {
-                return Err(format!(
-                    "provider group termination is unconfirmed{}",
-                    if signal_errors.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", signal_errors.join("; "))
-                    }
+            result => {
+                if let Err(error) = result {
+                    signal_errors.push(process_error(
+                        crate::ResearchFailure::ProviderGroupProbe,
+                        std::io::Error::from_raw_os_error(error as i32),
+                    ));
+                }
+                return Err(combine_cleanup(
+                    crate::ResearchFailure::ProviderGroupUnconfirmed.into(),
+                    &signal_errors,
                 ));
             }
         }
     }
 }
 
-fn work() -> Result<(), String> {
-    nix::unistd::setsid().map_err(|e| e.to_string())?;
+fn work() -> Result<(), crate::Error> {
+    nix::unistd::setsid().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     let mut reader = std::io::BufReader::new(std::io::stdin());
     let start: Start = serde_json::from_slice(&line(&mut reader, max_frame_bytes())?)
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| crate::ResearchFailure::ProviderStartDecoding)?;
     let record = start.record;
     record.input.validate()?;
     record.binding.validate()?;
@@ -1097,14 +1187,15 @@ fn work() -> Result<(), String> {
             id: record.id,
             output,
         }),
-        Err(super::provider::Failure::Failed(error)) => emit(&Frame::Failed {
+        Err(super::provider::Failure::Failed) => emit(&Frame::Failed {
             id: record.id,
-            error,
+            code: WorkerFailure::ProviderRejected.into(),
         }),
-        Err(super::provider::Failure::Uncertain(error)) => emit(&Frame::Uncertain {
+        Err(super::provider::Failure::Coded(code)) => emit(&Frame::Failed {
             id: record.id,
-            error,
+            code,
         }),
+        Err(super::provider::Failure::Uncertain) => emit(&Frame::Uncertain { id: record.id }),
     }
 }
 
@@ -1116,21 +1207,20 @@ struct WorkerControl {
     blocked_nanos: u64,
 }
 impl WorkerControl {
-    fn grant_data(&mut self, next: u32) -> Result<Option<Vec<u8>>, String> {
+    fn grant_data(&mut self, next: u32) -> Result<Option<Vec<u8>>, WorkerFailure> {
         let waiting = Instant::now();
         let bytes = self.receiver.recv();
         self.blocked_nanos = self
             .blocked_nanos
             .saturating_add(waiting.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
-        let grant: Grant =
-            serde_json::from_slice(&bytes.map_err(|_| "provider durable grant closed")?)
-                .map_err(|e| e.to_string())?;
+        let grant: Grant = serde_json::from_slice(&bytes.map_err(|_| WorkerFailure::GrantClosed)?)
+            .map_err(|_| WorkerFailure::GrantDecoding)?;
         if grant.id != self.id || grant.next != next {
-            return Err("provider durable grant identity differs".into());
+            return Err(WorkerFailure::GrantIdentity);
         }
         Ok(grant.data)
     }
-    fn grant(&mut self, next: u32) -> Result<(), String> {
+    fn grant(&mut self, next: u32) -> Result<(), WorkerFailure> {
         self.grant_data(next).map(|_| ())
     }
 }
@@ -1142,8 +1232,8 @@ impl super::provider::Supervisor for WorkerControl {
     fn history(
         &mut self,
         request: &crate::learning::history::Request,
-    ) -> Result<crate::learning::history::Receipt, String> {
-        emit(&Frame::History {
+    ) -> Result<crate::learning::history::Receipt, crate::Error> {
+        emit_coded(&Frame::History {
             id: self.id,
             unit: self.current_unit,
             request: request.clone(),
@@ -1151,42 +1241,47 @@ impl super::provider::Supervisor for WorkerControl {
         serde_json::from_slice(
             &self
                 .grant_data(self.current_unit)?
-                .ok_or("history receipt missing")?,
+                .ok_or(WorkerFailure::HistoryReceiptMissing)?,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|_| WorkerFailure::HistoryReceiptDecoding.into())
     }
     fn read_model(
         &mut self,
         blob: crate::learning::Blob,
         range: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, String> {
-        emit(&Frame::Model {
+    ) -> Result<Vec<u8>, crate::Error> {
+        emit_coded(&Frame::Model {
             id: self.id,
             unit: self.current_unit,
             blob,
             range,
             bytes: None,
         })?;
-        self.grant_data(self.current_unit)?
-            .ok_or("native model read response missing".into())
+        Ok(self
+            .grant_data(self.current_unit)?
+            .ok_or(WorkerFailure::ModelResponseMissing)?)
     }
     fn write_model(
         &mut self,
         blob: crate::learning::Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
-        emit(&Frame::Model {
+    ) -> Result<(), crate::Error> {
+        emit_coded(&Frame::Model {
             id: self.id,
             unit: self.current_unit,
             blob,
             range,
             bytes: Some(bytes),
         })?;
-        self.grant(self.current_unit)
+        Ok(self.grant(self.current_unit)?)
     }
-    fn learning(&mut self, unit: u32, progress: crate::learning::Progress) -> Result<(), String> {
-        emit(&Frame::Learning {
+    fn learning(
+        &mut self,
+        unit: u32,
+        progress: crate::learning::Progress,
+    ) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Learning {
             id: self.id,
             unit,
             progress: Box::new(progress),
@@ -1196,8 +1291,8 @@ impl super::provider::Supervisor for WorkerControl {
     fn blocked_nanos(&self) -> u64 {
         self.blocked_nanos
     }
-    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String> {
-        emit(&Frame::Feedback {
+    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Feedback {
             id: self.id,
             phase,
             sample,
@@ -1207,51 +1302,57 @@ impl super::provider::Supervisor for WorkerControl {
         &mut self,
         unit: u32,
         records: Vec<naome_proof::program::Command>,
-    ) -> Result<(), String> {
-        let records = crate::hex(&naome_proof::program::encode_records(&records)?);
-        emit(&Frame::Program {
+    ) -> Result<(), WorkerFailure> {
+        let records = crate::hex(
+            &naome_proof::program::encode_records(&records)
+                .map_err(|_| WorkerFailure::ProgramEncoding)?,
+        );
+        emit_coded(&Frame::Program {
             id: self.id,
             unit,
             records,
         })?;
         self.grant(unit)
     }
-    fn reserve(&mut self, next: u32) -> Result<(), String> {
-        emit(&Frame::Reserve { id: self.id, next })?;
+    fn reserve(&mut self, next: u32) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Reserve { id: self.id, next })?;
         self.grant(next)?;
         self.current_unit = next;
         Ok(())
     }
-    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String> {
-        emit(&Frame::Progress {
+    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), WorkerFailure> {
+        emit_coded(&Frame::Progress {
             id: self.id,
             checkpoint,
         })?;
         self.grant(checkpoint)
     }
-    fn probe(&mut self, probe: super::provider::Probe) -> Result<(), String> {
+    fn probe(&mut self, probe: super::provider::Probe) -> Result<(), WorkerFailure> {
         use super::provider::Probe;
         match probe {
-            Probe::CpuActive(next) => emit(&Frame::CpuActive { id: self.id, next }),
-            Probe::CpuDone(next) => emit(&Frame::CpuDone { id: self.id, next }),
-            Probe::ResultReady => emit(&Frame::ResultReady { id: self.id }),
+            Probe::CpuActive(next) => emit_coded(&Frame::CpuActive { id: self.id, next }),
+            Probe::CpuDone(next) => emit_coded(&Frame::CpuDone { id: self.id, next }),
+            Probe::ResultReady => emit_coded(&Frame::ResultReady { id: self.id }),
             Probe::Descendant => {
-                let mut child =
-                    ProcessCommand::new(std::env::current_exe().map_err(|e| e.to_string())?)
-                        .arg(DESCENDANT)
-                        .env(INTERNAL, "descendant-v1")
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(|e| e.to_string())?;
-                let output = child.stdout.take().ok_or("descendant readiness absent")?;
+                let mut child = ProcessCommand::new(
+                    std::env::current_exe().map_err(|_| WorkerFailure::DescendantExecutable)?,
+                )
+                .arg(DESCENDANT)
+                .env(INTERNAL, "descendant-v1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| WorkerFailure::DescendantSpawn)?;
+                let output = child.stdout.take().ok_or(WorkerFailure::DescendantOutput)?;
                 let child = Descendant(child);
-                if line(&mut std::io::BufReader::new(output), 64)? != b"naome descendant ready v1\n"
+                if line(&mut std::io::BufReader::new(output), 64)
+                    .map_err(|_| WorkerFailure::DescendantRead)?
+                    != b"naome descendant ready v1\n"
                 {
-                    return Err("descendant readiness differs".into());
+                    return Err(WorkerFailure::DescendantIdentity);
                 }
-                emit(&Frame::Descendant {
+                emit_coded(&Frame::Descendant {
                     id: self.id,
                     pid: child.0.id(),
                 })?;
@@ -1262,29 +1363,26 @@ impl super::provider::Supervisor for WorkerControl {
     }
 }
 
-fn descendant() -> Result<(), String> {
+fn descendant() -> Result<(), crate::Error> {
     // Stay in the worker's owned group and retain the inherited kernel slot.
     // A safe Tokio signal registration makes TERM non-cooperative; KILL must
     // still terminate this finite developer stand-in with its whole group.
-    std::thread::spawn(|| {
+    std::thread::spawn(|| -> Result<(), crate::Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
+            .build()?;
         runtime.block_on(async {
             let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .map_err(|e| e.to_string())?;
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
             std::io::stdout()
                 .write_all(b"naome descendant ready v1\n")
-                .and_then(|_| std::io::stdout().flush())
-                .map_err(|e| e.to_string())?;
+                .and_then(|_| std::io::stdout().flush())?;
             while terminate.recv().await.is_some() {}
-            Err("descendant signal stream ended".into())
+            Err(crate::ResearchFailure::DescendantSignalEnded.into())
         })
     })
     .join()
-    .map_err(|_| "descendant signal owner panicked")?
+    .map_err(|_| crate::ResearchFailure::DescendantOwnerPanic)?
 }
 
 #[cfg(test)]

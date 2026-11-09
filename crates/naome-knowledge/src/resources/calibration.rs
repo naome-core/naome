@@ -3,7 +3,7 @@
 use super::adaptive::Observed;
 use super::{CHECKER_RESERVE, DEFAULT, MIB, ResourceProfile, Tuning};
 
-pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, String> {
+pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, crate::Error> {
     capacity_with_descriptors(observed, descriptor_budget()?)
 }
 
@@ -13,15 +13,22 @@ pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, String> {
 const DESCRIPTOR_RESERVE: usize = 64;
 const DESCRIPTORS_PER_WORKER: usize = 8;
 
-fn descriptor_budget() -> Result<usize, String> {
+fn descriptor_budget() -> Result<usize, crate::Error> {
     use nix::sys::resource::{Resource, getrlimit};
-    let (limit, _) = getrlimit(Resource::RLIMIT_NOFILE).map_err(|error| error.to_string())?;
+    let (limit, _) = getrlimit(Resource::RLIMIT_NOFILE).map_err(|error| {
+        crate::error::storage_io_error(
+            crate::StorageIoOperation::InspectDescriptorLimit,
+            std::io::Error::from_raw_os_error(error as i32),
+        )
+    })?;
     #[cfg(target_os = "linux")]
     let directory = "/proc/self/fd";
     #[cfg(not(target_os = "linux"))]
     let directory = "/dev/fd";
     let occupied = std::fs::read_dir(directory)
-        .map_err(|error| format!("descriptor observation: {error}"))?
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::InspectDescriptors, error)
+        })?
         .count();
     Ok(usize::try_from(limit)
         .unwrap_or(usize::MAX)
@@ -32,12 +39,9 @@ fn descriptor_budget() -> Result<usize, String> {
 fn capacity_with_descriptors(
     observed: &Observed,
     descriptors: usize,
-) -> Result<ResourceProfile, String> {
+) -> Result<ResourceProfile, crate::Error> {
     if descriptors < DESCRIPTOR_RESERVE * 2 {
-        return Err(
-            "available descriptors cannot preserve provider, transport and recovery reserves"
-                .into(),
-        );
+        return Err(crate::InputFault::CalibrationDescriptorReserve.into());
     }
     let reserve = (observed
         .memory_limit
@@ -57,12 +61,12 @@ fn capacity_with_descriptors(
     // The checker reconstruction allowance and external replay reserves remain
     // hard requirements. Insufficient hardware is explicit, never overcommitted.
     if memory < DEFAULT.replay_guard_bytes + 128 * MIB {
-        return Err("available hardware cannot preserve checker and replay reserves".into());
+        return Err(crate::InputFault::CalibrationMemoryReserve.into());
     }
     let working = memory - CHECKER_RESERVE;
     let unit = (working / 128).max(4096);
     let available_cores = usize::try_from(observed.cpu_millis.div_ceil(1000))
-        .map_err(|_| "CPU capacity width")?
+        .map_err(|_| crate::InputFault::CalibrationCpuWidth)?
         .max(1);
     let worker_bytes = DEFAULT.provider_stream_bytes * 4;
     let slots = available_cores
@@ -160,7 +164,7 @@ fn capacity_with_descriptors(
                 profile.workers = [profile.workers[0].div_ceil(2); 4];
                 profile.tuning.cli_commands = Some(profile.workers[0]);
             }
-            Err(error) => return Err(format!("hardware resource allocation: {error}")),
+            Err(error) => return Err(error),
         }
     }
 }

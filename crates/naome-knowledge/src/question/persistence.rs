@@ -56,7 +56,7 @@ struct Header {
 pub(super) struct Persistence {
     checkpoint: crate::checkpoint::Checkpoint,
     header: Header,
-    fault: std::sync::Mutex<Option<String>>,
+    fault: std::sync::Mutex<Option<crate::Error>>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,19 +65,26 @@ struct Backlog {
     resolution: String,
 }
 impl Persistence {
-    pub(super) fn open(directory: &Path, policy: PrefilterPolicy) -> Result<Self, String> {
+    pub(super) fn open(directory: &Path, policy: PrefilterPolicy) -> Result<Self, crate::Error> {
         let root = crate::storage::research_directory(directory)?;
         let path = root.join("questions.sqlite3");
         let marker = directory.join("question-registry.initialized");
-        let established = crate::storage::marker_valid(&marker, MARKER)?;
+        let established = crate::storage::marker_valid(&marker, MARKER).map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::QuestionMarkerRead,
+                cause: Box::new(cause),
+            }
+        })?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN).map_err(
+                |cause| crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionCheckpointOpen,
+                    cause: Box::new(cause),
+                },
+            )?
         } else {
             if established {
-                return Err(
-                    "question registry checkpoint is missing; refusing to replace provenance"
-                        .into(),
-                );
+                return Err(crate::RuntimeFailure::QuestionRegistryMissing.into());
             }
             let header = Header {
                 compatibility: crate::hex(&crate::compatibility()),
@@ -85,14 +92,28 @@ impl Persistence {
                 backlog_sequence: 0,
                 backlog_cursor: None,
             };
-            crate::checkpoint::Checkpoint::create(&path, CHECKPOINT_DOMAIN, &header, vec![])?
+            crate::checkpoint::Checkpoint::create(&path, CHECKPOINT_DOMAIN, &header, vec![])
+                .map_err(|cause| crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionCheckpointOpen,
+                    cause: Box::new(cause),
+                })?
         };
-        checkpoint.require_kinds(&["question", "admitted", "backlog", "queued", "publication"])?;
-        let header: Header = checkpoint.header()?;
+        checkpoint
+            .require_kinds(&["question", "admitted", "backlog", "queued", "publication"])
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::QuestionCheckpointHeader,
+                cause: Box::new(cause),
+            })?;
+        let header: Header = checkpoint
+            .header()
+            .map_err(|cause| crate::Error::RuntimeContext {
+                code: crate::RuntimeFailure::QuestionCheckpointHeader,
+                cause: Box::new(cause),
+            })?;
         if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.policy).is_err()
         {
-            return Err("question registry compatibility or policy identity differs".into());
+            return Err(crate::RuntimeFailure::QuestionRegistryCompatibility.into());
         }
         let persistence = Self {
             checkpoint,
@@ -100,17 +121,23 @@ impl Persistence {
             fault: std::sync::Mutex::new(None),
         };
         if !established {
-            crate::storage::write_marker(&marker, MARKER)?;
+            crate::storage::write_marker(&marker, MARKER).map_err(|cause| {
+                crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionMarkerWrite,
+                    cause: Box::new(cause),
+                }
+            })?;
         }
         Ok(persistence)
     }
-    fn report<T>(&self, result: Result<T, String>) -> Result<T, String> {
+    fn report<T>(&self, result: Result<T, crate::Error>) -> Result<T, crate::Error> {
         if let Err(error) = &result {
-            *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+            *self.fault.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(error.clone().fatal_storage());
         }
         result
     }
-    pub(super) fn error(&self) -> Option<String> {
+    pub(super) fn error(&self) -> Option<crate::Error> {
         self.fault.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     /// Decode each canonical question once, validate all durable relationships,
@@ -118,9 +145,9 @@ impl Persistence {
     pub(super) fn replay(
         &self,
         context: &dyn naome_checker::ContextView,
-        mut visit: impl FnMut(Entry, ResearchQuestion) -> Result<(), String>,
-    ) -> Result<(), String> {
-        self.report((|| {
+        mut visit: impl FnMut(Entry, ResearchQuestion) -> Result<(), crate::Error>,
+    ) -> Result<(), crate::Error> {
+        let result: Result<(), crate::Error> = (|| {
             let mut admitted = 0usize;
             let mut queued = 0usize;
             self.checkpoint
@@ -130,7 +157,7 @@ impl Persistence {
                     if entry.kind == Kind::Admitted {
                         admitted = admitted
                             .checked_add(1)
-                            .ok_or("question admission count overflow")?;
+                            .ok_or(crate::InputFault::QuestionAdmissionCount)?;
                         let resolution = crate::hex(question.resolution_id());
                         if self
                             .checkpoint
@@ -138,30 +165,30 @@ impl Persistence {
                             .as_deref()
                             != Some(key)
                         {
-                            return Err("question admission record index differs".into());
+                            return Err(crate::InputFault::QuestionAdmissionIndex.into());
                         }
                         if let Some(sequence) =
                             self.checkpoint.get::<String>("queued", &resolution, 128)?
                         {
                             let number = sequence
                                 .parse::<u64>()
-                                .map_err(|_| "question FIFO sequence differs")?;
+                                .map_err(|_| crate::InputFault::QuestionFifoSequence)?;
                             if number == 0
                                 || number > self.header.backlog_sequence
                                 || sequence != format!("{number:020}")
                             {
-                                return Err("question FIFO sequence differs".into());
+                                return Err(crate::InputFault::QuestionFifoSequence.into());
                             }
                             let backlog = self
                                 .checkpoint
                                 .get::<Backlog>("backlog", &sequence, 512)?
-                                .ok_or("question FIFO entry missing")?;
+                                .ok_or(crate::InputFault::QuestionFifoMissing)?;
                             if backlog.record != key || backlog.resolution != resolution {
-                                return Err("question FIFO record or resolution differs".into());
+                                return Err(crate::InputFault::QuestionFifoBinding.into());
                             }
                             queued = queued
                                 .checked_add(1)
-                                .ok_or("question FIFO count overflow")?;
+                                .ok_or(crate::InputFault::QuestionFifoCount)?;
                         }
                     }
                     visit(entry, question)
@@ -170,17 +197,18 @@ impl Persistence {
                 || self.checkpoint.count("backlog")? != queued
                 || self.checkpoint.count("queued")? != queued
             {
-                return Err("question durable index cardinality differs".into());
+                return Err(crate::InputFault::QuestionIndexCardinality.into());
             }
             Ok(())
-        })())
+        })();
+        self.report(result)
     }
     #[cfg(test)]
     pub(super) fn entries_page(
         &self,
         after: Option<&str>,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Vec<(String, Entry)>, String> {
+    ) -> Result<Vec<(String, Entry)>, crate::Error> {
         self.report((|| {
             self.checkpoint
                 .page(
@@ -204,7 +232,7 @@ impl Persistence {
         &self,
         resolution: &Identity,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Option<(ResearchQuestion, Identity)>, String> {
+    ) -> Result<Option<(ResearchQuestion, Identity)>, crate::Error> {
         self.report((|| {
             let Some(key) =
                 self.checkpoint
@@ -215,10 +243,10 @@ impl Persistence {
             let entry = self
                 .checkpoint
                 .get::<Entry>("question", &key, QUESTION_ENTRY_MAX_BYTES)?
-                .ok_or("admitted canonical question is missing")?;
+                .ok_or(crate::InputFault::QuestionAdmittedMissing)?;
             let question = decode_entry(&key, &entry, context)?;
             if entry.kind != Kind::Admitted || question.resolution_id() != resolution {
-                return Err("admission record index differs".into());
+                return Err(crate::InputFault::QuestionAdmittedIndex.into());
             }
             let record = *question.record_id();
             Ok(Some((question, record)))
@@ -227,7 +255,7 @@ impl Persistence {
     fn queue_updates(
         &mut self,
         question: &ResearchQuestion,
-    ) -> Result<Vec<crate::checkpoint::Update>, String> {
+    ) -> Result<Vec<crate::checkpoint::Update>, crate::Error> {
         use crate::checkpoint::Update;
         let record = crate::hex(question.record_id());
         let resolution = crate::hex(question.resolution_id());
@@ -241,7 +269,7 @@ impl Persistence {
                 .header
                 .backlog_sequence
                 .checked_add(1)
-                .ok_or("question FIFO sequence exhausted")?;
+                .ok_or(crate::InputFault::QuestionFifoExhausted)?;
             let sequence = format!("{:020}", self.header.backlog_sequence);
             updates.push(Update::put("queued", &resolution, &sequence)?);
             updates.push(Update::put(
@@ -257,7 +285,7 @@ impl Persistence {
     pub(super) fn next_backlog(
         &mut self,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Option<ResearchQuestion>, String> {
+    ) -> Result<Option<ResearchQuestion>, crate::Error> {
         let read = |after: Option<&str>| {
             self.checkpoint.page(
                 "backlog",
@@ -277,7 +305,7 @@ impl Persistence {
         let entry = self
             .checkpoint
             .get::<Entry>("question", &backlog.record, QUESTION_ENTRY_MAX_BYTES)?
-            .ok_or("backlog canonical question missing")?;
+            .ok_or(crate::InputFault::QuestionBacklogMissing)?;
         let question = decode_entry(&backlog.record, &entry, context)?;
         if entry.kind != Kind::Admitted
             || crate::hex(question.resolution_id()) != backlog.resolution
@@ -287,7 +315,7 @@ impl Persistence {
                 .as_deref()
                 != Some(sequence.as_str())
         {
-            return Err("question backlog identity differs".into());
+            return Err(crate::InputFault::QuestionBacklogBinding.into());
         }
         self.header.backlog_cursor = Some(sequence);
         self.checkpoint
@@ -295,7 +323,7 @@ impl Persistence {
             .map_err(crate::Error::from)?;
         Ok(Some(question))
     }
-    pub(super) fn settle_backlog(&mut self, resolution: &Identity) -> Result<(), String> {
+    pub(super) fn settle_backlog(&mut self, resolution: &Identity) -> Result<(), crate::Error> {
         use crate::checkpoint::Update;
         let key = crate::hex(resolution);
         let Some(sequence) = self.checkpoint.get::<String>("queued", &key, 128)? else {
@@ -315,7 +343,7 @@ impl Persistence {
                     },
                 ],
             )
-            .map_err(|error| crate::Error::from(error).to_string())
+            .map_err(crate::Error::from)
     }
     /// An outbox entry precedes the proof commit. Recovery decides its outcome
     /// from the rechecked graph, never from a persisted success flag.
@@ -356,7 +384,7 @@ impl Persistence {
     pub(super) fn publications(
         &self,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Vec<(naome_proof::ArtifactId, ResearchQuestion)>, String> {
+    ) -> Result<Vec<(naome_proof::ArtifactId, ResearchQuestion)>, crate::Error> {
         self.checkpoint
             .page(
                 "publication",
@@ -367,9 +395,14 @@ impl Persistence {
             .into_iter()
             .map(|(key, bytes)| {
                 let root = naome_proof::ArtifactId::from_bytes(crate::object::id_bytes(&key)?);
-                let encoded: String = crate::checkpoint::decode(&bytes)?;
+                let encoded: String = crate::checkpoint::decode(&bytes).map_err(|cause| {
+                    crate::Error::RuntimeContext {
+                        code: crate::RuntimeFailure::QuestionStorage,
+                        cause: Box::new(cause),
+                    }
+                })?;
                 let question = ResearchQuestion::from_hex_with_context(&encoded, context)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 Ok((root, question))
             })
             .collect()
@@ -380,7 +413,7 @@ impl Persistence {
         question: &ResearchQuestion,
         kind: Kind,
         receipt: Option<&AdmissionReceipt>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         #[cfg(test)]
         if kind == Kind::Exchange && FAIL_EXCHANGE.with(|value| value.replace(false)) {
             return Err("injected question persistence failure".into());
@@ -407,14 +440,14 @@ impl Persistence {
         let entry = match original {
             Some(mut original) if original.first.is_some() => {
                 if original.encoded != question.to_hex() {
-                    return Err("canonical question bytes differ".into());
+                    return Err(crate::InputFault::QuestionCanonicalMismatch.into());
                 }
                 if let Some(first) = first {
                     if crate::checkpoint::encode(
                         original.first.as_ref().expect("original provenance"),
                     )? != crate::checkpoint::encode(&first)?
                     {
-                        return Err("first admission provenance cannot be replaced".into());
+                        return Err(crate::InputFault::QuestionFirstAdmissionImmutable.into());
                     }
                     original.kind = kind;
                 }
@@ -447,20 +480,20 @@ impl Persistence {
         }
         self.checkpoint
             .commit(&self.header, updates)
-            .map_err(|error| crate::Error::from(error).to_string())
+            .map_err(crate::Error::from)
     }
     pub(super) fn delivered(
         &mut self,
         question: &ResearchQuestion,
         delivered: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let key = crate::hex(question.record_id());
         let mut entry = self
             .checkpoint
             .get::<Entry>("question", &key, QUESTION_ENTRY_MAX_BYTES)?
-            .ok_or("prepared question record absent")?;
+            .ok_or(crate::InputFault::QuestionPreparedMissing)?;
         if entry.kind != Kind::Prepared {
-            return Err("question delivery lifecycle differs".into());
+            return Err(crate::InputFault::QuestionDeliveryState.into());
         }
         let mut updates = if delivered {
             entry.kind = Kind::Admitted;
@@ -475,25 +508,29 @@ impl Persistence {
         };
         self.checkpoint
             .commit(&self.header, std::mem::take(&mut updates))
-            .map_err(|error| crate::Error::from(error).to_string())
+            .map_err(crate::Error::from)
     }
 }
 fn decode_entry(
     key: &str,
     entry: &Entry,
     context: &dyn naome_checker::ContextView,
-) -> Result<ResearchQuestion, String> {
+) -> Result<ResearchQuestion, crate::Error> {
     let question = ResearchQuestion::from_hex_with_context(&entry.encoded, context)
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::Error::from)?;
     validate_entry(key, entry, &question)?;
     Ok(question)
 }
 
-fn validate_entry(key: &str, entry: &Entry, question: &ResearchQuestion) -> Result<(), String> {
+fn validate_entry(
+    key: &str,
+    entry: &Entry,
+    question: &ResearchQuestion,
+) -> Result<(), crate::Error> {
     if key != crate::hex(question.record_id())
         || matches!(entry.kind, Kind::Prepared | Kind::Admitted) != entry.first.is_some()
     {
-        return Err("question record identity or admission provenance differs".into());
+        return Err(crate::InputFault::QuestionRecordBinding.into());
     }
     if let Some(first) = &entry.first {
         for value in [
@@ -508,7 +545,7 @@ fn validate_entry(key: &str, entry: &Entry, question: &ResearchQuestion) -> Resu
             crate::object::id_bytes(value)?;
         }
         if first.record != key {
-            return Err("question admission original record differs".into());
+            return Err(crate::InputFault::QuestionFirstRecordBinding.into());
         }
     }
     Ok(())

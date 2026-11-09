@@ -15,10 +15,10 @@ impl Blob {
             bytes: bytes.len(),
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         crate::object::id_bytes(&self.sha256)?;
         if self.bytes == 0 || self.bytes > crate::resources::limits().native_model_blob_bytes {
-            return Err("native model blob capacity".into());
+            return Err(crate::ResearchFailure::ModelBlobCapacity.into());
         }
         Ok(())
     }
@@ -26,10 +26,10 @@ impl Blob {
         self.bytes
             .div_ceil(crate::resources::limits().native_model_chunk_bytes)
     }
-    pub fn chunk_len(&self, index: usize) -> Result<usize, String> {
+    pub fn chunk_len(&self, index: usize) -> Result<usize, crate::Error> {
         self.validate()?;
         if index >= self.chunks() {
-            return Err("native model chunk index".into());
+            return Err(crate::ResearchFailure::ModelChunkIndex.into());
         }
         Ok(
             (self.bytes - index * crate::resources::limits().native_model_chunk_bytes)
@@ -46,10 +46,10 @@ impl Blob {
             .step_by(2)
             .map(|start| start..(start + 2).min(self.chunks()))
     }
-    pub fn range_len(&self, range: &Range<usize>) -> Result<usize, String> {
+    pub fn range_len(&self, range: &Range<usize>) -> Result<usize, crate::Error> {
         self.validate()?;
         if range.start >= range.end || range.end - range.start > 2 || range.end > self.chunks() {
-            return Err("native model chunk range".into());
+            return Err(crate::ResearchFailure::ModelChunkRange.into());
         }
         range.clone().map(|index| self.chunk_len(index)).sum()
     }
@@ -63,29 +63,37 @@ pub(crate) trait ArtifactIo {
     fn history(
         &mut self,
         _request: &super::history::Request,
-    ) -> Result<super::history::Receipt, String> {
-        Err("artifact owner cannot provide admitted history".into())
+    ) -> Result<super::history::Receipt, crate::Error> {
+        Err(crate::WorkerFailure::HistoryUnsupported.into())
     }
-    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String>;
-    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String>;
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, crate::Error>;
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error>;
 }
-pub(crate) fn load<I: ArtifactIo + ?Sized>(io: &mut I, blob: &Blob) -> Result<Vec<u8>, String> {
+pub(crate) fn load<I: ArtifactIo + ?Sized>(
+    io: &mut I,
+    blob: &Blob,
+) -> Result<Vec<u8>, crate::Error> {
     blob.validate()?;
     let mut bytes = Vec::with_capacity(blob.bytes);
     for range in blob.ranges() {
         let length = blob.range_len(&range)?;
         let chunk = io.read(blob, range)?;
         if chunk.len() != length {
-            return Err("native model chunk length differs".into());
+            return Err(crate::ResearchFailure::NativeModelChunkLengthDiffers.into());
         }
         bytes.extend_from_slice(&chunk);
     }
     if Blob::of(&bytes) != *blob {
-        return Err("native model checkpoint hash differs".into());
+        return Err(crate::ResearchFailure::NativeModelHashMismatch.into());
     }
     Ok(bytes)
 }
-pub(crate) fn save<I: ArtifactIo + ?Sized>(io: &mut I, bytes: &[u8]) -> Result<Blob, String> {
+pub(crate) fn save<I: ArtifactIo + ?Sized>(io: &mut I, bytes: &[u8]) -> Result<Blob, crate::Error> {
     let blob = Blob::of(bytes);
     blob.validate()?;
     let chunk = crate::resources::limits().native_model_chunk_bytes;

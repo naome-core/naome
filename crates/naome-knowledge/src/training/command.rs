@@ -45,7 +45,7 @@ pub fn questions(
 ) -> Result<QuestionPage, Error> {
     crate::resources::require_work_admission()?;
     if scan == 0 || scan > crate::resources::active_limits().id_page.min(16) {
-        return Err(Error::InputLimit("training suite page limit"));
+        return Err(Error::InputLimit(crate::InputLimit::TrainingSuitePageLimit));
     }
     let memory = crate::resources::MemoryLease::acquire(
         crate::resources::active_limits().question_cache_bytes,
@@ -114,21 +114,31 @@ pub fn execute(graph: &Graph, command: &Command) -> Result<Response, Error> {
 /// Reads one owned regular bounded JSON request and streams one JSON response.
 /// The external learner owns training, resource metering and immutable model
 /// identities. This command never enables training in the ordinary node.
-pub fn run(directory: &Path, input: &Path) -> Result<(), String> {
+pub fn run(directory: &Path, input: &Path) -> Result<(), Error> {
+    use crate::RuntimeFailure;
     let limits = crate::resources::limits();
     let budget = limits
         .command_parse_budget()
-        .ok_or("training command parse budget")?;
-    let _memory = crate::resources::MemoryLease::acquire(budget).map_err(|e| e.to_string())?;
-    let bytes = crate::storage::read_owned(input, limits.command_bytes)?
-        .ok_or("training request file missing")?;
-    crate::resources::json::allocation_bound(&bytes, budget).map_err(|e| e.to_string())?;
-    let command: Command = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let graph = Graph::open(directory).map_err(|e| e.to_string())?;
-    let response = execute(&graph, &command).map_err(|e| e.to_string())?;
+        .ok_or(crate::InputLimit::CliJsonAllocationBudgetOverflow)?;
+    let _memory = crate::resources::MemoryLease::acquire(budget)?;
+    let bytes = crate::storage::read_owned(input, limits.command_bytes)
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: RuntimeFailure::TrainingRequestRead,
+            cause: Box::new(cause),
+        })?
+        .ok_or(RuntimeFailure::TrainingRequestMissing)?;
+    crate::resources::json::allocation_bound(&bytes, budget)?;
+    let command: Command =
+        serde_json::from_slice(&bytes).map_err(|_| RuntimeFailure::TrainingRequestParse)?;
+    let graph = Graph::open(directory)?;
+    let response = execute(&graph, &command)?;
     let mut output = std::io::stdout().lock();
-    serde_json::to_writer(&mut output, &response).map_err(|e| e.to_string())?;
-    output.write_all(b"\n").map_err(|e| e.to_string())
+    serde_json::to_writer(&mut output, &response)
+        .map_err(|_| RuntimeFailure::TrainingResponseWrite)?;
+    output
+        .write_all(b"\n")
+        .map_err(|_| RuntimeFailure::TrainingResponseWrite)?;
+    Ok(())
 }
 
 pub const HELP: &str = "usage: naome-knowledge-dev training <node-directory> <request.json>\n\
@@ -143,7 +153,7 @@ Request fields: solver:{checkpoint:SHA256,budget:{work_units,horizon_ms}}, train
   development:null|{solver,knowledge,probes}, previous_development:null|{solver,knowledge,probes},\n\
   after:null|ArtifactId, scan:1..16 (select) or 1..32 (plan), take:1..scan, seed:u64, random_only:bool.\n\
 Use next_after for the next scan page. Coverage roots are a bounded representative replay sample.\n\
-Probe: {question,spent_ms,work_units, result:{outcome:verified,artifact:ArtifactId}|{outcome:exhausted}|{outcome:unavailable}}.\n\
+Probe: {question,spent_ms,work_units, result:{outcome:4063233,artifact:ArtifactId}|{outcome:4063234}|{outcome:4063235}}.\n\
 Only development probes can adapt selection; successes must finish inside the original allowance; verified results must bind to exact checked roots.\n\
 Evaluation fields: initial_checkpoint,solver,knowledge,total_budget_micros,compute,probes.\n\
 Compute fields: selection_micros,generation_and_checking_micros,training_micros,evaluation_micros.\n\

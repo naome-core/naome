@@ -82,11 +82,12 @@ fn streamed_candidate_groups_keep_original_reservations_and_survive_restart() {
     owner.journal.records.get_mut(&1).unwrap().state = State::Running;
     owner.reserve(1, 1).unwrap();
     let group = vec![Command::Reflexivity { variable: 0 }];
-    assert!(
+    assert_eq!(
         owner
             .disk
             .save_program_group(&owner.journal, 1, 2, group.clone())
-            .is_err()
+            .unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::ProviderProgramOriginalReservationMissing),
     );
     owner
         .disk
@@ -266,6 +267,7 @@ async fn reservation_events_keep_exhaustion_local_but_stop_on_persistence_failur
             .unwrap()
             .unwrap_err();
         if corrupt_storage {
+            assert!(rejection.fatal());
             assert!(
                 tokio::time::timeout(Duration::from_secs(2), task)
                     .await
@@ -275,9 +277,11 @@ async fn reservation_events_keep_exhaustion_local_but_stop_on_persistence_failur
             );
             assert!(commands.is_closed());
         } else {
-            // This diagnostic deliberately differs from the former control
-            // prefix. The normal outcome still leaves the real driver running.
-            assert_eq!(rejection, "research work budget exhausted");
+            assert_eq!(
+                rejection,
+                crate::Error::Research(crate::ResearchFailure::WorkBudgetExhausted)
+            );
+            assert!(!rejection.fatal());
             let (reply, page) = oneshot::channel();
             commands
                 .send(Command::Recover {
@@ -351,7 +355,7 @@ fn cleanup_uncertainty_overrides_cancelled_and_expired_states() {
                 1,
                 process::Outcome {
                     state: State::InDoubt,
-                    result: Err("unconfirmed cleanup".into()),
+                    result: Err(WorkerFailure::CleanupUnconfirmed.into()),
                 },
             )
             .unwrap_err();
@@ -434,7 +438,7 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
                 1,
                 process::Outcome {
                     state: State::Cancelled,
-                    result: Err("cancelled provider drained".into()),
+                    result: Err(WorkerFailure::Cancelled.into()),
                 },
             )
             .unwrap();
@@ -496,7 +500,7 @@ async fn failed_clock_accounting_still_drains_all_owned_tasks() {
             1,
             process::Outcome {
                 state: State::InDoubt,
-                result: Err("uncertain".into()),
+                result: Err(WorkerFailure::CleanupUnconfirmed.into()),
             },
         )
     }));
@@ -506,8 +510,29 @@ async fn failed_clock_accounting_still_drains_all_owned_tasks() {
     assert!(owner.tasks.is_empty() && owner.running.is_empty());
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
     let saved = owner.disk.saved().unwrap();
-    assert_eq!(saved["payload"]["records"]["1"]["state"], "in_doubt");
+    assert_eq!(
+        saved["payload"]["records"]["1"]["state"],
+        u32::from(State::InDoubt)
+    );
     assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], false);
+}
+
+#[test]
+fn accounting_clock_rollback_is_a_typed_fatal_cause() {
+    let (_directory, mut owner) = fixture(4);
+    let _receipt = submit(&mut owner, 1);
+    owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
+    let failure = owner.charge(1).unwrap_err();
+    assert_eq!(
+        failure,
+        crate::Error::Research(crate::ResearchFailure::ClockRollback)
+    );
+    assert!(failure.fatal());
+    let encoded = serde_json::to_value(failure).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
 }
 
 #[test]
@@ -521,14 +546,30 @@ fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
             1,
             process::Outcome {
                 state: State::InDoubt,
-                result: Err("unconfirmed provider group".into()),
+                result: Err(WorkerFailure::CleanupUnconfirmed.into()),
             },
         )
         .unwrap_err();
     assert!(error.contains("reconciliation") && error.contains("clock rollback"));
+    let encoded = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::ResearchFailure::MultipleFailures)
+    );
+    assert_eq!(
+        encoded["primary"]["code"],
+        u32::from(crate::ResearchFailure::EffectsUnconfirmed)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
     let saved = owner.disk.saved().unwrap();
-    assert_eq!(saved["payload"]["records"]["1"]["state"], "in_doubt");
+    assert_eq!(
+        saved["payload"]["records"]["1"]["state"],
+        u32::from(State::InDoubt)
+    );
     assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], false);
 }
 
@@ -548,10 +589,24 @@ fn established_state_and_kernel_slot_identity_cannot_be_silently_replaced() {
         } else {
             fs::remove_file(path).unwrap();
         }
-        assert!(
-            Disk::open(&directory.0, settings, 0).is_err(),
-            "missing {missing} granted fresh state"
-        );
+        let error = Disk::open(&directory.0, settings, 0)
+            .err()
+            .expect("missing state must be rejected");
+        if missing == "slot-0.lock" {
+            assert!(
+                matches!(&error, crate::Error::ResearchSlot { index: 0, cause } if matches!(cause.as_ref(), crate::Error::Io { kind: crate::IoFaultKind::NotFound, .. }))
+            );
+            let encoded = serde_json::to_value(error).unwrap();
+            assert_eq!(
+                encoded["code"],
+                u32::from(crate::RuntimeFailure::ResearchSlot)
+            );
+            assert_eq!(encoded["index"], 0);
+            assert_eq!(
+                encoded["cause"]["kind"],
+                u32::from(crate::IoFaultKind::NotFound)
+            );
+        }
     }
     let (directory, owner) = fixture(4);
     let settings = owner.settings;
@@ -560,11 +615,12 @@ fn established_state_and_kernel_slot_identity_cannot_be_silently_replaced() {
     let replacement = directory.0.join("replacement");
     fs::write(&replacement, []).unwrap();
     fs::rename(replacement, path).unwrap();
-    assert!(
-        Disk::open(&directory.0, settings, 0)
-            .err()
-            .unwrap()
-            .contains("slot identity")
+    assert_eq!(
+        Disk::open(&directory.0, settings, 0).err().unwrap(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::SlotIdentityMismatch,
+            index: 0,
+        }
     );
 }
 
@@ -662,8 +718,9 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
     assert!(receipts.iter_mut().any(|reply| {
         reply.try_recv().is_ok_and(|c| {
             c.id == 0
-                && c.result
-                    .is_err_and(|error| error.contains("result byte reservation"))
+                && c.result.is_err_and(|error| {
+                    error == CompletionFailure::Admission(AdmissionFailure::ResultReservation)
+                })
         })
     }));
     let (reply, _receipt) = oneshot::channel();
@@ -681,13 +738,48 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
 }
 
 #[test]
+fn dropping_panicked_owner_preserves_the_earlier_failure() {
+    let error = Arc::new(Mutex::new(Some(
+        crate::ResearchFailure::ClockRollback.into(),
+    )));
+    let service = Service {
+        thread: Some(std::thread::spawn(|| panic!("injected owner panic"))),
+        error: error.clone(),
+        halt: None,
+        stopped: None,
+    };
+    drop(service);
+    let encoded = serde_json::to_value(error.lock().unwrap().as_ref().unwrap()).unwrap();
+    assert_eq!(
+        encoded["primary"]["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::OwnerThreadPanic)
+    );
+}
+
+#[test]
 fn cleanup_error_is_preserved_alongside_an_earlier_driver_failure() {
     let error = combine_outcomes(
-        Err("driver clock failed".into()),
-        Err("provider termination unconfirmed".into()),
+        Err(crate::ResearchFailure::ClockRollback.into()),
+        Err(crate::ResearchFailure::EffectsUnconfirmed.into()),
     )
     .unwrap_err();
-    assert!(error.contains("driver clock failed") && error.contains("termination unconfirmed"));
+    let encoded = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::ResearchFailure::MultipleFailures)
+    );
+    assert_eq!(
+        encoded["primary"]["code"],
+        u32::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::ResearchFailure::EffectsUnconfirmed)
+    );
 }
 
 // Isolated processes make the RSS comparison independent of parallel unit tests.
@@ -991,4 +1083,120 @@ fn narrower_new_job_defaults_preserve_original_budget_accounts_and_retry_allowan
     assert_eq!(retry.expires_ms, original.expires_ms);
     assert_eq!(retry.reserved_units, 1);
     assert_eq!(owner.journal.total_reserved_units, 1);
+}
+
+#[test]
+fn reservation_size_overflow_refuses_admission_without_panicking() {
+    let (_directory, mut owner) = fixture(4);
+    let encoded = owner.journal.encoded_active_len().unwrap();
+    assert!(!owner.compact_bytes(usize::MAX - encoded).unwrap());
+    assert!(owner.journal.records.is_empty());
+}
+
+#[test]
+fn reconciliation_clock_rollback_retains_its_fatal_code() {
+    let (_directory, mut owner) = fixture(4);
+    owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
+    let error = owner.reconcile().unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert!(error.fatal());
+}
+
+#[test]
+fn request_index_rejects_missing_and_mismatched_jobs_with_identity() {
+    let (_directory, mut owner) = fixture(4);
+    let _first = submit(&mut owner, 1);
+    let _second = submit(&mut owner, 2);
+    let first = owner.journal.records.get(&1).unwrap().clone();
+    let key = super::super::request_key(&first.input, &first.binding, first.settings);
+    for (indexed, code) in [
+        (999, crate::ResearchFailure::IndexedRequestMissing),
+        (2, crate::ResearchFailure::IndexedRequestMismatch),
+    ] {
+        owner
+            .disk
+            .save_with(
+                &mut owner.journal,
+                vec![crate::checkpoint::Update::put("request", &key, &indexed).unwrap()],
+            )
+            .unwrap();
+        let error = owner
+            .disk
+            .request(&first.input, &first.binding, first.settings)
+            .unwrap_err();
+        assert_eq!(error, crate::Error::ResearchJob { code, job: indexed });
+        let encoded = serde_json::to_value(error).unwrap();
+        assert_eq!(encoded["code"], u32::from(code));
+        assert_eq!(encoded["job"], indexed);
+    }
+}
+
+#[test]
+fn recovery_preserves_clock_and_program_row_causes() {
+    let (directory, mut owner) = fixture(4);
+    let settings = owner.settings;
+    owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
+    owner.disk.save(&mut owner.journal).unwrap();
+    drop(owner);
+    let error = Disk::open(&directory.0, settings, 0).err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert!(error.fatal());
+
+    let (directory, mut owner) = fixture(4);
+    let settings = owner.settings;
+    owner
+        .disk
+        .save_with(
+            &mut owner.journal,
+            vec![crate::checkpoint::Update::Put {
+                kind: "program",
+                key: "123:1".into(),
+                payload: vec![0],
+            }],
+        )
+        .unwrap();
+    drop(owner);
+    let error = Disk::open(&directory.0, settings, 0).err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::RecoveryProgramJobMissing)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::RecoveryProgramJobMissing)
+    );
+}
+
+#[tokio::test]
+async fn owner_rejects_zero_theorem_ordinal_with_machine_code() {
+    let (_directory, mut owner) = fixture(4);
+    let (commands, receive_commands) = mpsc::channel(2);
+    let (_halt, receive_halt) = oneshot::channel();
+    let (events, _receive_events) = mpsc::channel(2);
+    let (_progress, receive_progress) = mpsc::channel(2);
+    commands
+        .send(Command::TheoremVerified {
+            ordinal: 0,
+            theorem: crate::learning::knowledge::Entry { packet: Vec::new() },
+        })
+        .await
+        .unwrap();
+    let error = owner
+        .drive(receive_commands, receive_halt, events, receive_progress)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::TheoremOrdinalZero)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::TheoremOrdinalZero)
+    );
 }

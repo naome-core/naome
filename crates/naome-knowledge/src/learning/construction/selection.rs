@@ -21,7 +21,7 @@ pub struct Offer {
     group: usize,
     priority: usize,
 }
-pub fn offers(target: &Formula, known: &[knowledge::Entry]) -> Result<Vec<Offer>, String> {
+pub fn offers(target: &Formula, known: &[knowledge::Entry]) -> Result<Vec<Offer>, crate::Error> {
     knowledge::validate(known)?;
     let mut proposals = Vec::new();
     predicates(target, &mut proposals, &mut 0);
@@ -171,14 +171,24 @@ pub fn order(
     target: &Formula,
     offers: &[Offer],
     ranker: &mut dyn Ranker,
-) -> Result<Vec<usize>, String> {
+) -> Result<Vec<usize>, crate::Error> {
     let mut order: Vec<_> = (0..offers.len()).collect();
     if offers.len() > 1 {
         let decision = features(target, offers, 0);
         if Graph::encode(&decision).is_ok() {
             let scores = ranker.scores(&decision)?;
-            if scores.len() != offers.len() || scores.iter().any(|s| !s.is_finite()) {
-                return Err("construction plan scores differ".into());
+            if scores.len() != offers.len() {
+                return Err(crate::Error::ResearchMismatch {
+                    code: crate::ResearchFailure::ConstructionScoreCount,
+                    expected: offers.len() as u64,
+                    actual: scores.len() as u64,
+                });
+            }
+            if let Some(index) = scores.iter().position(|score| !score.is_finite()) {
+                return Err(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::ConstructionScoreNonFinite,
+                    index,
+                });
             }
             order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));
         }
@@ -195,7 +205,7 @@ fn key(f: &Formula) -> Vec<u8> {
         .encode_canonical()
         .expect("bounded checked formula")
 }
-pub fn used(selected: &Offer, verified: &proof::Verified) -> Result<bool, String> {
+pub fn used(selected: &Offer, verified: &proof::Verified) -> Result<bool, crate::Error> {
     let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
     for term in &selected.context {
         let used = match term {
@@ -216,7 +226,7 @@ pub fn used(selected: &Offer, verified: &proof::Verified) -> Result<bool, String
                 verified.native_id == id || verified.lemmas.iter().chain(std::iter::once(&verified.certificate)).flat_map(|c| c.steps()).any(|step|
                     matches!(step, ProofStep::ProofReference { proof_id } if *proof_id == id))
             }
-            _ => return Err("construction plan source is not closed".into()),
+            _ => return Err(crate::ResearchFailure::ConstructionSourceNotClosed.into()),
         };
         if !used {
             return Ok(false);
@@ -225,7 +235,7 @@ pub fn used(selected: &Offer, verified: &proof::Verified) -> Result<bool, String
     Ok(true)
 }
 
-pub(super) fn used_recipe(selected: &Offer, recipe: &proof::Recipe) -> Result<bool, String> {
+pub(super) fn used_recipe(selected: &Offer, recipe: &proof::Recipe) -> Result<bool, crate::Error> {
     let context = proof::lemma_context(&recipe.definitions, &recipe.lemmas)?;
     let steps = || {
         recipe
@@ -246,7 +256,7 @@ pub(super) fn used_recipe(selected: &Offer, recipe: &proof::Recipe) -> Result<bo
                 let id = proof::verify(term, target)?.native_id;
                 steps().any(|step| matches!(step, ProofStep::ProofReference { proof_id } if *proof_id == id))
             }
-            _ => return Err("construction plan source is not closed".into()),
+            _ => return Err(crate::ResearchFailure::ConstructionSourceNotClosed.into()),
         };
         if !used {
             return Ok(false);
@@ -259,12 +269,15 @@ pub fn graph(
     target: &Formula,
     selection: &Selection,
     verified: &proof::Verified,
-) -> Result<Option<Graph>, String> {
+) -> Result<Option<Graph>, crate::Error> {
     let _ = definitions::context(&selection.definitions)?;
     let offers = offers(target, &selection.known)?;
     let selected = offers
         .get(selection.selected)
-        .ok_or("construction plan index")?;
+        .ok_or(crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::ConstructionSelectionIndex,
+            index: selection.selected,
+        })?;
     if !used(selected, verified)? {
         return Ok(None);
     }
@@ -276,7 +289,7 @@ pub fn graph(
         return Ok(None);
     };
     graph.binding = super::super::digest(&(
-        target.encode_canonical().map_err(|e| e.to_string())?,
+        target.encode_canonical()?,
         &selection.known,
         &selection.definitions,
     ));

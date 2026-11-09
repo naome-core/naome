@@ -4,7 +4,7 @@ use crate::learning::{self as native, search};
 fn observed() -> (search::derivation::Derivation, search::trace::Trace) {
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(d.candidates
                 .iter()
                 .map(|c| if c.rule == Rule::ModusPonens { 1. } else { 0. })
@@ -88,11 +88,13 @@ fn native_memory_binds_real_symbolic_successors_and_exact_checkpoint() {
             3 => wrong.values.pop().map(drop).unwrap(),
             _ => wrong.values[0] = f32::NAN,
         }
-        assert!(
-            runtime
-                .plan_graph(&child.graph, &child.offered, Some(&wrong))
-                .is_err()
-        );
+        let failure = runtime.plan_graph(&child.graph, &child.offered, Some(&wrong));
+        let expected = if change < 3 {
+            crate::ResearchFailure::MemoryContext
+        } else {
+            crate::ResearchFailure::MemoryShapeOrValue
+        };
+        assert!(matches!(failure, Err(crate::Error::Research(actual)) if actual == expected));
     }
     let mut reset_runtime = Runtime::load(&saved, &mut io).unwrap();
     reset_runtime.recurrence = Recurrence::Reset;
@@ -161,6 +163,44 @@ fn only_observed_predecessors_carry_training_state_and_gradient() {
     let mut reset = Runtime::load(&fresh, &mut io).unwrap();
     reset.recurrence = Recurrence::Reset;
     let batch = Batch::from_graphs(&graphs, &carry.device).unwrap();
+    assert_eq!(
+        carry.sequence_scores(&batch, &[]).err().unwrap(),
+        crate::Error::from(crate::ResearchFailure::SequenceEmpty)
+    );
+    assert_eq!(
+        carry.sequence_scores(&batch, &sample[..1]).err().unwrap(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::SequenceShape,
+            expected: sample.len() as u64,
+            actual: 1,
+        }
+    );
+    let mut invalid: Vec<_> = sample
+        .iter()
+        .map(|s| native::pool::Sample {
+            graph: s.graph,
+            selected: s.selected,
+            parent: s.parent,
+            auxiliary: s.auxiliary,
+        })
+        .collect();
+    invalid[0].parent = Some(0);
+    assert_eq!(
+        carry.sequence_scores(&batch, &invalid).err().unwrap(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::SequencePredecessor,
+            index: 0,
+        }
+    );
+    invalid[0].parent = None;
+    invalid[0].selected = invalid[0].graph.candidates.len();
+    assert_eq!(
+        carry.sequence_scores(&batch, &invalid).err().unwrap(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::SequenceSelectedAction,
+            index: 0,
+        }
+    );
     let carried = carry.sequence_scores(&batch, &sample).unwrap();
     let independent = reset.sequence_scores(&batch, &sample).unwrap();
     let actual = carried.clone().into_data().try_to_vec::<f32>().unwrap();

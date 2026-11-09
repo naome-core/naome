@@ -94,13 +94,15 @@ fn main() -> Result<(), String> {
         serde_json::to_vec(&objects).map_err(|e| e.to_string())?,
     ));
     let prepare_seconds = prepare.elapsed().as_secs_f64();
-    let mut graph = Graph::open(directory)?;
+    let mut graph = Graph::open(directory).map_err(|error| error.to_string())?;
     let commit = Instant::now();
     let mut windows = Vec::new();
     let mut window = Instant::now();
     for (index, object) in objects.into_iter().enumerate() {
-        let result = graph.ingest(object, Instant::now())?;
-        assert_eq!(result.status, "accepted");
+        let result = graph
+            .ingest(object, Instant::now())
+            .map_err(|error| error.to_string())?;
+        assert_eq!(result.status, naome_knowledge::IngestStatus::Accepted);
         assert_eq!(graph.accepted_count(), index + 1);
         if (index + 1).is_multiple_of(WINDOW) {
             windows.push(window.elapsed().as_secs_f64());
@@ -111,7 +113,7 @@ fn main() -> Result<(), String> {
     let root = graph.content_root();
     drop(graph);
     let replay = Instant::now();
-    let graph = Graph::open(directory)?;
+    let graph = Graph::open(directory).map_err(|error| error.to_string())?;
     assert_eq!(graph.accepted_count(), OBJECTS);
     assert_eq!(graph.content_root(), root);
     let replay_seconds = replay.elapsed().as_secs_f64();

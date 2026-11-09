@@ -41,7 +41,10 @@ fn definition_memory_overload_preserves_the_graph_and_allows_retry() {
     assert_eq!(graph.accepted_count(), 0);
     assert_eq!(graph.content_root(), root);
     assert!(graph.storage_error().is_none());
-    assert_eq!(graph.produce(RELATION).unwrap().1.status, "accepted");
+    assert_eq!(
+        graph.produce(RELATION).unwrap().1.status,
+        crate::IngestStatus::Accepted
+    );
 }
 
 #[test]
@@ -71,7 +74,10 @@ fn definitions_are_durable_cited_dependencies_and_restart_rechecks_them() {
         Some(definition.clone())
     );
     assert_eq!(graph.object(admission.id).unwrap(), Some(proof));
-    assert_eq!(graph.produce(&source).unwrap().1.status, "duplicate");
+    assert_eq!(
+        graph.produce(&source).unwrap().1.status,
+        crate::IngestStatus::Duplicate
+    );
     drop(graph);
     crate::store::corrupt_payload(&directory.0, &definition.artifact_id);
     assert!(
@@ -91,7 +97,7 @@ fn proof_waits_for_its_definition_without_publishing_unchecked_state() {
             .ingest(proof.clone(), Instant::now())
             .unwrap()
             .status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     assert_eq!(receiver.accepted_count(), 0);
     assert_eq!(
@@ -132,7 +138,7 @@ fn function_definitions_require_the_exact_obligation_proof_and_replay_it() {
             .ingest(definition.clone(), Instant::now())
             .unwrap()
             .status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     assert_eq!(receiver.accepted_count(), 0);
     assert_eq!(

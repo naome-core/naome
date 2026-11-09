@@ -29,7 +29,7 @@ impl PendingStore {
             Checkpoint::open_for_replay(&path, "naome:proof-backlog:v1")?
         } else {
             if established {
-                return Err("proof backlog is missing; refusing to discard retained work".into());
+                return Err(crate::InputFault::BacklogMissing.into());
             }
             Checkpoint::create(
                 &path,
@@ -45,7 +45,7 @@ impl PendingStore {
         checkpoint.require_kinds(&["pending", "proof", "edge"])?;
         let header: Header = checkpoint.header()?;
         if header.version != 1 || header.next == 0 {
-            return Err("proof backlog version or sequence differs".into());
+            return Err(crate::InputFault::BacklogHeader.into());
         }
         let mut after = None;
         let mut count = 0usize;
@@ -67,14 +67,14 @@ impl PendingStore {
                         .parse::<u64>()
                         .map_or(true, |n| n == 0 || n >= header.next)
                 {
-                    return Err("proof backlog FIFO sequence differs".into());
+                    return Err(crate::InputFault::BacklogSequence.into());
                 }
                 let proof = decode(&bytes)?;
                 let id = crate::hex(proof.id.as_bytes());
                 if checkpoint.get::<String>("proof", &id, 128)?.as_deref()
                     != Some(sequence.as_str())
                 {
-                    return Err("proof backlog identity index differs".into());
+                    return Err(crate::InputFault::BacklogIdentityIndex.into());
                 }
                 for dependency in &proof.dependencies {
                     if checkpoint.get::<bool>(
@@ -83,17 +83,19 @@ impl PendingStore {
                         8,
                     )? != Some(true)
                     {
-                        return Err("proof backlog dependency index differs".into());
+                        return Err(crate::InputFault::BacklogDependencyIndex.into());
                     }
                 }
-                count = count.checked_add(1).ok_or("proof backlog count overflow")?;
+                count = count
+                    .checked_add(1)
+                    .ok_or(crate::InputFault::BacklogCountOverflow)?;
                 edges = edges
                     .checked_add(proof.dependencies.len())
-                    .ok_or("proof backlog edge overflow")?;
+                    .ok_or(crate::InputFault::BacklogEdgeOverflow)?;
             }
         }
         if checkpoint.count("proof")? != count || checkpoint.count("edge")? != edges {
-            return Err("proof backlog index cardinality differs".into());
+            return Err(crate::InputFault::BacklogCardinality.into());
         }
         if !established {
             crate::storage::write_marker(&marker, b"naome:proof-backlog:v1\n")?;
@@ -105,15 +107,15 @@ impl PendingStore {
         })
     }
     fn has_path(
-        &self,
+        &mut self,
         starts: &[String],
         target: &str,
         timeout: std::time::Duration,
     ) -> Result<bool, crate::Error> {
-        self.checkpoint.query(|connection| {
+        self.checkpoint.query_mut(|connection| {
         let deadline = std::time::Instant::now()
             .checked_add(timeout)
-            .ok_or("cycle traversal deadline overflow")?;
+            .ok_or(crate::InputFault::BacklogCycleDeadline)?;
         connection
             .progress_handler(1000, Some(move || std::time::Instant::now() >= deadline))
             .map_err(sql)?;
@@ -159,7 +161,7 @@ impl PendingStore {
             .is_some())
     }
     pub(super) fn len(&self) -> Result<usize, crate::Error> {
-        Ok(self.checkpoint.count("pending")?)
+        self.checkpoint.count("pending")
     }
     pub(super) fn insert(
         &mut self,
@@ -177,14 +179,14 @@ impl PendingStore {
             .map(|id| crate::hex(id.as_bytes()))
             .collect::<Vec<_>>();
         if self.has_path(&starts, &id, crate::resources::limits().request_timeout)? {
-            return Err("dependency cycle".into());
+            return Err(crate::InputFault::BacklogCycle.into());
         }
         let sequence = format!("{:020}", self.header.next);
         let mut header = self.header.clone();
         header.next = header
             .next
             .checked_add(1)
-            .ok_or("proof backlog FIFO exhausted")?;
+            .ok_or(crate::InputFault::BacklogSequenceExhausted)?;
         let mut updates = vec![
             Update::put("proof", &id, &sequence)?,
             Update::Put {
@@ -215,7 +217,7 @@ impl PendingStore {
                 &sequence,
                 crate::resources::limits().active_job_bytes,
             )?
-            .ok_or("proof backlog payload is missing")?;
+            .ok_or(crate::InputFault::BacklogPayloadMissing)?;
         let proof = decode(&bytes)?;
         let mut updates = vec![
             Update::Remove {
@@ -329,12 +331,12 @@ impl PendingStore {
     }
     pub(super) fn next_page(&mut self) -> Result<Vec<Candidate>, crate::Error> {
         if !self.scheduled {
-            return Err("proof backlog readiness not initialized".into());
+            return Err(crate::InputFault::BacklogReadyUninitialized.into());
         }
         let read = |after: Option<&str>| {
             self.checkpoint.query(|connection| {
             let mut statement = connection.prepare("SELECT sequence FROM temp.proof_ready WHERE sequence > ?1 ORDER BY sequence LIMIT ?2").map_err(sql)?;
-            statement.query_map(rusqlite::params![after.unwrap_or(""), i64::try_from(crate::resources::active_limits().pending_page).map_err(|_| "pending page width")?], |r| r.get::<_, String>(0)).map_err(sql)?.collect::<Result<Vec<_>, _>>().map_err(sql)
+            statement.query_map(rusqlite::params![after.unwrap_or(""), i64::try_from(crate::resources::active_limits().pending_page).map_err(|_| crate::InputFault::BacklogPageWidth)?], |r| r.get::<_, String>(0)).map_err(sql)?.collect::<Result<Vec<_>, _>>().map_err(sql)
         })
         };
         let mut keys = read(self.header.cursor.as_deref())?;
@@ -347,7 +349,7 @@ impl PendingStore {
             let bytes = self
                 .checkpoint
                 .get_bytes("pending", &sequence, crate::checkpoint::MAX_ROW)?
-                .ok_or("ready backlog record missing")?;
+                .ok_or(crate::InputFault::BacklogReadyMissing)?;
             if !result.is_empty()
                 && bytes.len()
                     > crate::resources::limits()
@@ -381,17 +383,107 @@ impl PendingStore {
     }
 }
 fn encode(artifact: &BinaryArtifact) -> Result<Vec<u8>, crate::Error> {
-    serde_json::to_vec(&artifact.envelope()).map_err(|error| error.to_string().into())
+    serde_json::to_vec(&artifact.envelope()).map_err(|_| crate::InputFault::BacklogEncode.into())
 }
 fn decode(bytes: &[u8]) -> Result<Candidate, crate::Error> {
     if bytes.len() > 2 * naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES + 1024 {
-        return Err("artifact backlog row limit".into());
+        return Err(crate::InputFault::BacklogRowCapacity.into());
     }
     let envelope: crate::Envelope =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        serde_json::from_slice(bytes).map_err(crate::error::record_decode)?;
     envelope.prepare_retained()
 }
 
 fn sql(error: rusqlite::Error) -> crate::Error {
-    crate::Error::CorruptStorage(format!("proof backlog index: {error}"))
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+    crate::Error::BacklogSql {
+        reason,
+        sqlite_code,
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn backlog_rejects_damaged_and_oversized_rows_with_codes() {
+        assert!(matches!(
+            decode(b"{"),
+            Err(crate::Error::RecordDecode {
+                reason: crate::JsonFault::Eof,
+                ..
+            })
+        ));
+        let bytes = vec![0; 2 * naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES + 1025];
+        assert!(matches!(
+            decode(&bytes),
+            Err(crate::Error::InputFault(
+                crate::InputFault::BacklogRowCapacity
+            ))
+        ));
+    }
+
+    #[test]
+    fn backlog_sql_error_keeps_numeric_cause_and_is_fatal() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+            .unwrap();
+        let source = db.execute("INSERT INTO t VALUES (1)", []).unwrap_err();
+        let (reason, sqlite_code) = crate::error::sqlite_fault(&source);
+        let failure = sql(source);
+        assert!(failure.fatal());
+        assert!(!failure.retryable());
+        assert_eq!(
+            failure,
+            crate::Error::BacklogSql {
+                reason,
+                sqlite_code
+            }
+        );
+        let value = serde_json::to_value(failure).unwrap();
+        assert_eq!(
+            value["code"],
+            u32::from(crate::outcome::OperationCode::BacklogSql)
+        );
+        assert_eq!(value["sqlite_code"], sqlite_code.unwrap().get());
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    #[test]
+    fn cycle_query_clears_deadline_hook_after_expiry() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let mut pending = PendingStore::open(&directory.0).unwrap();
+        let from = "a".repeat(64);
+        let to = "b".repeat(64);
+        pending
+            .checkpoint
+            .commit(
+                &pending.header,
+                vec![Update::put("edge", format!("{from}{to}"), &true).unwrap()],
+            )
+            .unwrap();
+        assert!(
+            pending
+                .has_path(
+                    std::slice::from_ref(&from),
+                    &to,
+                    std::time::Duration::from_secs(1)
+                )
+                .unwrap()
+        );
+        assert!(matches!(
+            pending.has_path(std::slice::from_ref(&from), &to, std::time::Duration::ZERO),
+            Err(crate::Error::ExecutionLimit)
+        ));
+        let value: i64 = pending
+            .checkpoint
+            .query(|db| db.query_row("SELECT 1", [], |row| row.get(0)).map_err(sql))
+            .unwrap();
+        assert_eq!(value, 1);
+    }
 }

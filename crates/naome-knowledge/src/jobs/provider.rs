@@ -13,17 +13,28 @@ pub(super) enum Probe {
 }
 #[derive(Debug)]
 pub(super) enum Failure {
-    Failed(String),
-    Uncertain(String),
+    Failed,
+    Coded(crate::outcome::JobFailureCode),
+    Uncertain,
+}
+impl From<crate::Error> for Failure {
+    fn from(error: crate::Error) -> Self {
+        Self::Coded(crate::outcome::JobFailureCode::from_owner(&error))
+    }
+}
+impl From<crate::outcome::WorkerFailure> for Failure {
+    fn from(error: crate::outcome::WorkerFailure) -> Self {
+        Self::Coded(error.into())
+    }
 }
 impl From<String> for Failure {
-    fn from(error: String) -> Self {
-        Self::Failed(error)
+    fn from(_: String) -> Self {
+        Self::Failed
     }
 }
 impl From<&str> for Failure {
-    fn from(error: &str) -> Self {
-        Self::Failed(error.to_owned())
+    fn from(_: &str) -> Self {
+        Self::Failed
     }
 }
 pub(super) trait Supervisor {
@@ -34,39 +45,47 @@ pub(super) trait Supervisor {
     fn history(
         &mut self,
         _request: &crate::learning::history::Request,
-    ) -> Result<crate::learning::history::Receipt, String> {
-        Err("provider cannot read admitted history".into())
+    ) -> Result<crate::learning::history::Receipt, crate::Error> {
+        Err(crate::WorkerFailure::HistoryUnsupported.into())
     }
     fn program(
         &mut self,
         _unit: u32,
         _records: Vec<naome_proof::program::Command>,
-    ) -> Result<(), String> {
-        Err("provider does not support streamed candidates".into())
+    ) -> Result<(), crate::outcome::WorkerFailure> {
+        Err(crate::outcome::WorkerFailure::ProgramUnsupported)
     }
     fn read_model(
         &mut self,
         _blob: crate::learning::Blob,
         _range: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, String> {
-        Err("provider cannot read local model artifacts".into())
+    ) -> Result<Vec<u8>, crate::Error> {
+        Err(crate::WorkerFailure::ModelReadUnsupported.into())
     }
     fn write_model(
         &mut self,
         _blob: crate::learning::Blob,
         _range: std::ops::Range<usize>,
         _bytes: Vec<u8>,
-    ) -> Result<(), String> {
-        Err("provider cannot write local model artifacts".into())
+    ) -> Result<(), crate::Error> {
+        Err(crate::WorkerFailure::ModelWriteUnsupported.into())
     }
-    fn learning(&mut self, _unit: u32, _progress: crate::learning::Progress) -> Result<(), String> {
-        Err("provider does not support local learning checkpoints".into())
+    fn learning(
+        &mut self,
+        _unit: u32,
+        _progress: crate::learning::Progress,
+    ) -> Result<(), crate::outcome::WorkerFailure> {
+        Err(crate::outcome::WorkerFailure::LearningUnsupported)
     }
-    fn reserve(&mut self, next: u32) -> Result<(), String>;
-    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String>;
-    fn probe(&mut self, probe: Probe) -> Result<(), String>;
+    fn reserve(&mut self, next: u32) -> Result<(), crate::outcome::WorkerFailure>;
+    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), crate::outcome::WorkerFailure>;
+    fn probe(&mut self, probe: Probe) -> Result<(), crate::outcome::WorkerFailure>;
     fn blocked_nanos(&self) -> u64;
-    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String>;
+    fn observe(
+        &mut self,
+        phase: Phase,
+        sample: Sample,
+    ) -> Result<(), crate::outcome::WorkerFailure>;
 }
 pub(super) trait Provider {
     fn start(&mut self, _supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
@@ -84,9 +103,7 @@ pub(super) fn drive(
     measured(supervisor, Phase::Setup, |owner| provider.start(owner))?;
     while let Some(next) = provider.next(checkpoint)? {
         if checkpoint.checked_add(1) != Some(next) {
-            return Err(Failure::Uncertain(
-                "provider work-unit sequence differs".into(),
-            ));
+            return Err(Failure::Uncertain);
         }
         supervisor.reserve(next)?;
         measured(supervisor, Phase::Unit { unit: next }, |owner| {
@@ -153,13 +170,13 @@ pub(super) fn resumable(record: &Record) -> bool {
     contract(record).is_some_and(|c| c.resumable)
         && (cfg!(feature = "developer-tools") || record.settings.mock == MockWork::default())
 }
-pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
+pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, crate::Error> {
     match record.provider.as_str() {
         crate::frontier::PROVIDER => match &record.input {
             Input::Find { question, .. } => Ok(Box::new(Finding {
                 question: question.clone(),
             })),
-            _ => Err("structural finder role differs".into()),
+            _ => Err(crate::ResearchFailure::ProviderRoleMismatch.into()),
         },
         crate::learning::PROVIDER => Ok(Box::new(Native {
             record: record.clone(),
@@ -169,7 +186,7 @@ pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
             input: record.input.clone(),
             work: record.settings.mock,
         })),
-        _ => Err("unknown research provider".into()),
+        _ => Err(crate::ResearchFailure::ProviderUnknown.into()),
     }
 }
 /// Generation and its learned state belong to Frontier. This worker finalizes
@@ -183,7 +200,7 @@ impl Provider for Finding {
     }
     fn execute(&mut self, _unit: u32, _owner: &mut dyn Supervisor) -> Result<(), Failure> {
         naome_checker::question::ResearchQuestion::source_requires_definitions(&self.question)
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::Error::from)?;
         Ok(())
     }
     fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
@@ -197,7 +214,7 @@ struct Native {
 impl Provider for Native {
     fn next(&self, checkpoint: u32) -> Result<Option<u32>, Failure> {
         let units = contract(&self.record)
-            .ok_or("native provider contract")?
+            .ok_or(crate::WorkerFailure::NativeContractMissing)?
             .units;
         Ok((checkpoint < units).then_some(checkpoint + 1))
     }
@@ -211,7 +228,7 @@ impl Provider for Native {
             .record
             .native
             .as_mut()
-            .ok_or("native model snapshot missing")?;
+            .ok_or(crate::WorkerFailure::NativeSnapshotMissing)?;
         job.execute(
             unit,
             if matches!(self.record.input, Input::Peer { .. }) {
@@ -233,25 +250,28 @@ impl Provider for Native {
             let p = job
                 .progress
                 .as_mut()
-                .ok_or("peer extraction progress missing")?;
+                .ok_or(crate::WorkerFailure::PeerProgressMissing)?;
             match crate::learning::peer::extract_source(question, artifact, evidence) {
                 Ok(solution) => {
                     p.cost = Some((*solution.cost).clone());
                     p.terminal =
                         crate::learning::experience::TerminalEvidence::certified(&solution);
                     p.result = Some(solution);
-                    p.diagnostic = "native_peer_dag_extracted".into();
                 }
-                Err(reason) => {
+                Err(_) => {
                     p.result = None;
                     p.terminal = crate::learning::experience::TerminalEvidence::Unsupported(
                         crate::learning::experience::Capacity::PeerConversion,
                     );
-                    p.diagnostic = reason;
                 }
             }
         }
-        owner.learning(unit, job.progress.clone().ok_or("native progress missing")?)?;
+        owner.learning(
+            unit,
+            job.progress
+                .clone()
+                .ok_or(crate::WorkerFailure::NativeProgressMissing)?,
+        )?;
         Ok(())
     }
     fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
@@ -259,18 +279,20 @@ impl Provider for Native {
             .record
             .native
             .as_ref()
-            .ok_or("native model snapshot missing")?;
+            .ok_or(crate::WorkerFailure::NativeSnapshotMissing)?;
         Ok(match &self.record.input {
             Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
-                let p = job.progress.as_ref().ok_or("native final state missing")?;
+                let p = job
+                    .progress
+                    .as_ref()
+                    .ok_or(crate::WorkerFailure::NativeFinalMissing)?;
                 Output::Native {
                     solution: p.result.clone(),
-                    diagnostic: p.diagnostic.clone(),
                     frontier: p.frontier.clone(),
                     terminal: p.terminal.clone().into(),
                 }
             }
-            _ => return Err("native provider role differs".into()),
+            _ => return Err(crate::WorkerFailure::NativeRoleMismatch.into()),
         })
     }
 }
@@ -303,10 +325,7 @@ impl Provider for Mock {
         if units != 0 && checkpoint >= units {
             return Ok(None);
         }
-        checkpoint
-            .checked_add(1)
-            .map(Some)
-            .ok_or_else(|| Failure::Failed("provider checkpoint overflow".into()))
+        checkpoint.checked_add(1).map(Some).ok_or(Failure::Failed)
     }
     fn execute(&mut self, next: u32, supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
         if self.streams() {
@@ -338,7 +357,7 @@ impl Provider for Mock {
     }
     fn result(&mut self, supervisor: &mut dyn Supervisor) -> Result<Output, Failure> {
         if self.work.outcome == MockOutcome::Failed {
-            return Err(Failure::Failed("deterministic provider failed".into()));
+            return Err(Failure::Failed);
         }
         if self.work.result_delay_ms > 0 {
             supervisor.probe(Probe::ResultReady)?;
@@ -359,12 +378,12 @@ impl Provider for Mock {
             }
             Input::Solve { question } => {
                 if naome_checker::question::ResearchQuestion::source_requires_definitions(question)
-                    .map_err(|e| e.to_string())?
+                    .map_err(crate::Error::from)?
                 {
                     return Ok(Output::NoCandidate);
                 }
                 let compiled = naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 let proof = if self.work.outcome == MockOutcome::Malformed {
                     Some("00ff".into())
                 } else {
@@ -375,7 +394,7 @@ impl Provider for Mock {
                                 naome_checker::question::ResearchQuestion::from_hex(&bytes).ok()
                             })
                             .find(|other| other.resolution_id() != compiled.resolution_id())
-                            .ok_or("mock alternate target absent")?
+                            .ok_or(crate::WorkerFailure::MockTargetMissing)?
                     } else {
                         compiled
                     };
@@ -389,11 +408,11 @@ impl Provider for Mock {
                     .unwrap_or(Output::NoCandidate)
             }
             Input::Peer { .. } | Input::Train { .. } => {
-                return Err("native learning jobs require the native provider".into());
+                return Err(crate::WorkerFailure::NativeProviderRequired.into());
             }
             Input::Select { question, .. } => {
                 naome_checker::question::ResearchQuestion::source_requires_definitions(question)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 // Formal validation (including definition resolution) belongs to the receiver.
                 Output::Selected(self.work.outcome != MockOutcome::Malformed)
             }
@@ -413,14 +432,14 @@ impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
     fn history(
         &mut self,
         request: &crate::learning::history::Request,
-    ) -> Result<crate::learning::history::Receipt, String> {
+    ) -> Result<crate::learning::history::Receipt, crate::Error> {
         Supervisor::history(self, request)
     }
     fn read(
         &mut self,
         blob: &crate::learning::Blob,
         range: std::ops::Range<usize>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, crate::Error> {
         self.read_model(blob.clone(), range)
     }
     fn write(
@@ -428,7 +447,7 @@ impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
         blob: &crate::learning::Blob,
         range: std::ops::Range<usize>,
         bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.write_model(blob.clone(), range, bytes)
     }
 }

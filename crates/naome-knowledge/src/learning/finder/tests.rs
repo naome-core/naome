@@ -22,10 +22,16 @@ fn diagnostics_use_checked_local_training_sources_and_neutralize_seed_copies() {
         artifact: "55".repeat(32),
         peer: "fixture".into(),
     };
-    assert!(example(&peer, &[]).is_err());
+    assert_eq!(
+        example(&peer, &[]).unwrap_err(),
+        crate::ResearchFailure::FinderExampleEligibility.into()
+    );
     let mut corrupt = own_example();
     corrupt.proof_id = "55".repeat(32);
-    assert!(example(&corrupt, &[]).is_err());
+    assert_eq!(
+        example(&corrupt, &[]).unwrap_err(),
+        crate::ResearchFailure::FinderProofIdentity.into()
+    );
 }
 
 #[test]

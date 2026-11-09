@@ -58,10 +58,11 @@ impl Selection {
     ) -> Result<bool, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if self.pending.is_some() {
-            return Err("selection decision already pending".into());
+            return Err(crate::InputFault::SelectionPending.into());
         }
         if !questions.available_peer() {
             return Ok(false);
@@ -78,7 +79,7 @@ impl Selection {
             deadline,
         );
         if stage == SelectionStage::Final && question != self.question {
-            return Err("original question provenance changed".into());
+            return Err(crate::InputFault::SelectionProvenanceChanged.into());
         }
         self.question = question;
         self.pending = Some(Pending {
@@ -96,19 +97,20 @@ impl Selection {
     ) -> Result<Option<SelectionStage>, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let Some(pending) = &mut self.pending else {
             return Ok(None);
         };
         if Instant::now() >= pending.deadline {
-            return Err("selection decision horizon expired".into());
+            return Err(crate::InputFault::SelectionDeadline.into());
         }
         if pending.received.is_none() {
             match pending.reply.try_recv() {
                 Ok(assessment) => pending.received = Some(assessment),
                 Err(oneshot::error::TryRecvError::Empty) => return Ok(None),
-                Err(_) => return Err("selection assessment cancelled".into()),
+                Err(_) => return Err(crate::InputFault::SelectionCancelled.into()),
             }
         }
         if pending.stage == SelectionStage::Final
@@ -117,7 +119,7 @@ impl Selection {
                 .as_ref()
                 .is_none_or(|initial| !questions.exchange_eligible(graph, &self.question, initial))
         {
-            return Err("initial selection declined or stale".into());
+            return Err(crate::InputFault::SelectionInitialDeclined.into());
         }
         // Keep the received value until fresh formal work succeeds. Receiving a
         // oneshot is irreversible; retrying its receiver would lose the decision.
@@ -145,18 +147,19 @@ impl Selection {
     ) -> Result<crate::question::QuestionDelta, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if self
             .initial
             .as_ref()
             .is_none_or(|initial| !questions.exchange_eligible(graph, &self.question, initial))
         {
-            return Err("initial selection declined or stale".into());
+            return Err(crate::InputFault::SelectionInitialDeclined.into());
         }
         let selected = self
             .selected()
-            .ok_or("proof grant has no selected question")?;
+            .ok_or(crate::InputFault::SelectionQuestionMissing)?;
         questions.prepare_exchange(graph, &self.question, selected)
     }
     /// Every intake format crosses the same current selection and short
@@ -170,13 +173,14 @@ impl Selection {
     ) -> Result<Vec<ArtifactId>, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if transfer.root() != self.root {
-            return Err("publication root differs from selection".into());
+            return Err(crate::InputFault::SelectionRootMismatch.into());
         }
         if !self.ready(SelectionStage::Final) {
-            return Err("final selection selection missing".into());
+            return Err(crate::InputFault::SelectionFinalMissing.into());
         }
         let delta = self.prepare(graph, questions)?;
         transfer.check(Instant::now())?;
@@ -199,7 +203,8 @@ impl Selection {
     ) -> Result<bool, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let valid = self.selected().is_some_and(|assessment| {
             questions.exchange_eligible(graph, &self.question, assessment)

@@ -1,24 +1,24 @@
 //! Current native rows and their derived indexes are checked before recovery.
 use super::*;
-fn record(c: &crate::checkpoint::Checkpoint, id: u64) -> Result<Record, String> {
+fn record(c: &crate::checkpoint::Checkpoint, id: u64) -> Result<Record, crate::Error> {
     c.get("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
-        .ok_or("native source job missing".into())
+        .ok_or(crate::ResearchFailure::JournalNativeSourceJobMissing.into())
 }
 fn refs(
     c: &crate::checkpoint::Checkpoint,
     owner: &str,
     state: Option<&crate::learning::State>,
-) -> Result<Vec<crate::learning::Blob>, String> {
+) -> Result<Vec<crate::learning::Blob>, crate::Error> {
     let mut refs = if owner == "global" {
         state.into_iter().flat_map(|s| s.blobs().cloned()).collect()
     } else {
         let id = owner
             .strip_prefix("job")
-            .ok_or("native model owner syntax")?
+            .ok_or(crate::ResearchFailure::JournalNativeModelOwnerSyntax)?
             .parse::<u64>()
-            .map_err(|_| "native model owner identity")?;
+            .map_err(|_| crate::ResearchFailure::JournalNativeModelOwnerIdentity)?;
         if id == 0 || owner != format!("job{id}") {
-            return Err("native model owner encoding".into());
+            return Err(crate::ResearchFailure::JournalNativeModelOwnerEncoding.into());
         }
         Disk::record_model_refs(&record(c, id)?)
     };
@@ -29,7 +29,7 @@ fn refs(
 fn owner(
     c: &crate::checkpoint::Checkpoint,
     key: &str,
-) -> Result<Vec<crate::learning::Blob>, String> {
+) -> Result<Vec<crate::learning::Blob>, crate::Error> {
     Ok(
         c.get("model_owner", key, crate::resources::limits().closure_bytes)?
             .unwrap_or_default(),
@@ -39,21 +39,20 @@ pub(super) fn validate_source(
     c: &crate::checkpoint::Checkpoint,
     example: &crate::learning::Example,
     source: &Record,
-) -> Result<(), String> {
-    let q = naome_checker::question::ResearchQuestion::from_hex(&example.question)
-        .map_err(|e| e.to_string())?;
+) -> Result<(), crate::Error> {
+    let q = naome_checker::question::ResearchQuestion::from_hex(&example.question)?;
     if c.get::<u64>("sample", &crate::hex(q.resolution_id()), 64)?
         .is_none()
         || c.get::<u64>("replay_seen", &example.proof_id, 64)? != Some(example.job)
     {
-        return Err("native replay sample source differs".into());
+        return Err(crate::ResearchFailure::ReplaySampleMismatch.into());
     }
     let Some(Output::Native {
         solution: Some(solution),
         ..
     }) = &source.result
     else {
-        return Err("native replay source result absent".into());
+        return Err(crate::ResearchFailure::ReplayResultMissing.into());
     };
     if source.id != example.job
         || source.state != State::Complete
@@ -61,7 +60,7 @@ pub(super) fn validate_source(
         || solution.refuted != example.refuted
         || !example.matches_solution(solution)
     {
-        return Err("native replay source identity differs".into());
+        return Err(crate::ResearchFailure::ReplayIdentityMismatch.into());
     }
     match (&example.origin, &source.input) {
         (crate::learning::Origin::Local, Input::Solve { question })
@@ -72,7 +71,7 @@ pub(super) fn validate_source(
                 .as_deref()
                 != Some(&crate::hex(root.as_bytes()))
             {
-                return Err("native replay lacks admitted own receipt".into());
+                return Err(crate::ResearchFailure::ReplayOwnReceiptMissing.into());
             }
         }
         (
@@ -91,20 +90,20 @@ pub(super) fn validate_source(
                     artifact,
                     crate::resources::limits().closure_bytes,
                 )?
-                .ok_or("native peer replay receipt absent")?;
+                .ok_or(crate::ResearchFailure::ReplayPeerReceiptMissing)?;
             if !matches!(receipt.status,PeerStatus::Learned{conversion_job,ref trace_proof} if conversion_job==example.job && trace_proof==&example.proof_id)
             {
-                return Err("native peer replay receipt differs".into());
+                return Err(crate::ResearchFailure::ReplayPeerReceiptMismatch.into());
             }
         }
-        _ => return Err("native replay source provenance differs".into()),
+        _ => return Err(crate::ResearchFailure::ReplayProvenanceMismatch.into()),
     }
     Ok(())
 }
 fn validate_sources(
     c: &crate::checkpoint::Checkpoint,
     state: &crate::learning::State,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     for example in state.examples() {
         validate_source(c, example, &record(c, example.job)?)?;
     }
@@ -115,12 +114,15 @@ fn validate_sources(
             .as_ref()
             .and_then(|n| n.progress.as_ref())
             .and_then(|p| p.meta_update.as_ref())
-            .ok_or("meta trial source update absent")?;
+            .ok_or(crate::ResearchFailure::JournalMetaTrialSourceUpdateAbsent)?;
         if !matches!(source.input, Input::Train { .. })
             || source.state != State::Complete
             || crate::learning::digest(&update.experience) != crate::learning::digest(experience)
         {
-            return Err("meta trial experience differs from its original owned job".into());
+            return Err(
+                crate::ResearchFailure::JournalMetaTrialExperienceDiffersFromItsOriginalOwnedJob
+                    .into(),
+            );
         }
     }
     Ok(())
@@ -128,9 +130,9 @@ fn validate_sources(
 pub(in crate::jobs::journal) fn validate_rows(
     c: &crate::checkpoint::Checkpoint,
     state: Option<&crate::learning::State>,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     if c.count("learning")? != 1 {
-        return Err("native learning singleton differs".into());
+        return Err(crate::ResearchFailure::JournalNativeLearningSingletonDiffers.into());
     }
     if let Some(state) = state {
         validate_sources(c, state)?;
@@ -145,14 +147,14 @@ pub(in crate::jobs::journal) fn validate_rows(
                     ..
                 }) = &origin.result
                 else {
-                    return Err("native replay snapshot result missing".into());
+                    return Err(crate::ResearchFailure::JournalNativeReplaySnapshotResultMissing.into());
                 };
                 if origin.state != State::Complete
                     || solution.proof_id != evidence.proof_id
                     || crate::learning::digest(&solution.tree)
                         != crate::learning::digest(&evidence.trace)
                 {
-                    return Err("native replay snapshot source differs".into());
+                    return Err(crate::ResearchFailure::JournalNativeReplaySnapshotSourceDiffers.into());
                 }
                 match &origin.input {
                     Input::Peer {
@@ -172,16 +174,16 @@ pub(in crate::jobs::journal) fn validate_rows(
                             .as_deref()
                             != Some(expected.as_str())
                         {
-                            return Err("native snapshot lacks admitted local receipt".into());
+                            return Err(crate::ResearchFailure::JournalNativeSnapshotLacksAdmittedLocalReceipt.into());
                         }
                     }
-                    _ => return Err("native replay snapshot origin role differs".into()),
+                    _ => return Err(crate::ResearchFailure::JournalNativeReplaySnapshotOriginRoleDiffers.into()),
                 }
             }
         }
         let expected = Disk::record_model_refs(&source);
         if owner(c, &format!("job{key}"))? != expected {
-            return Err("native record model owner index differs".into());
+            return Err(crate::ResearchFailure::JournalNativeRecordModelOwnerIndexDiffers.into());
         }
         if !source.acknowledged
             && let Some(native) = &source.native
@@ -191,7 +193,7 @@ pub(in crate::jobs::journal) fn validate_rows(
         Ok(())
     })?;
     if owner(c, "global")? != refs(c, "global", state)? {
-        return Err("native global model owner index differs".into());
+        return Err(crate::ResearchFailure::JournalNativeGlobalModelOwnerIndexDiffers.into());
     }
     c.scan(
         "model_owner",
@@ -199,7 +201,7 @@ pub(in crate::jobs::journal) fn validate_rows(
         |key, bytes| {
             let actual: Vec<crate::learning::Blob> = crate::checkpoint::decode(bytes)?;
             if actual.is_empty() || actual != refs(c, key, state)? {
-                return Err("native model owner index differs".into());
+                return Err(crate::ResearchFailure::JournalNativeModelOwnerIndexDiffers.into());
             }
             for blob in actual {
                 blob.validate()?;
@@ -211,7 +213,7 @@ pub(in crate::jobs::journal) fn validate_rows(
                 .as_ref()
                     != Some(&blob)
                 {
-                    return Err("native model use index missing".into());
+                    return Err(crate::ResearchFailure::JournalNativeModelUseIndexMissing.into());
                 }
             }
             Ok(())
@@ -220,9 +222,11 @@ pub(in crate::jobs::journal) fn validate_rows(
     c.scan("model_use", 4096, |key, bytes| {
         let blob: crate::learning::Blob = crate::checkpoint::decode(bytes)?;
         blob.validate()?;
-        let (hash, name) = key.split_once(':').ok_or("native model use key")?;
+        let (hash, name) = key
+            .split_once(':')
+            .ok_or(crate::ResearchFailure::JournalNativeModelUseKey)?;
         if hash != blob.sha256 || !owner(c, name)?.contains(&blob) {
-            return Err("native model use owner differs".into());
+            return Err(crate::ResearchFailure::JournalNativeModelUseOwnerDiffers.into());
         }
         Ok(())
     })?;
@@ -230,7 +234,7 @@ pub(in crate::jobs::journal) fn validate_rows(
         let blob: crate::learning::Blob = crate::checkpoint::decode(bytes)?;
         blob.validate()?;
         if key != blob.sha256 {
-            return Err("native model reclamation key differs".into());
+            return Err(crate::ResearchFailure::JournalNativeModelReclamationKeyDiffers.into());
         }
         Ok(())
     })?;
@@ -238,10 +242,12 @@ pub(in crate::jobs::journal) fn validate_rows(
         "model",
         crate::resources::limits().native_model_chunk_bytes,
         |key, bytes| {
-            let (hash, index) = key.split_once(':').ok_or("native model chunk key")?;
+            let (hash, index) = key
+                .split_once(':')
+                .ok_or(crate::ResearchFailure::JournalNativeModelChunkKey)?;
             let index = index
                 .parse::<usize>()
-                .map_err(|_| "native model chunk index")?;
+                .map_err(|_| crate::ResearchFailure::JournalNativeModelChunkIndex)?;
             let uses = c.page("model_use", Some(&format!("{hash}:")), 1, 4096)?;
             let blob = if let Some((name, payload)) = uses
                 .first()
@@ -251,10 +257,14 @@ pub(in crate::jobs::journal) fn validate_rows(
                 crate::checkpoint::decode(payload)?
             } else {
                 c.get::<crate::learning::Blob>("model_gc", hash, 4096)?
-                    .ok_or("native model chunk has no owner or reclamation receipt")?
+                    .ok_or(
+                    crate::ResearchFailure::JournalNativeModelChunkHasNoOwnerOrReclamationReceipt,
+                )?
             };
             if key != blob.key(index) || bytes.len() != blob.chunk_len(index)? {
-                return Err("native model chunk identity or length differs".into());
+                return Err(
+                    crate::ResearchFailure::JournalNativeModelChunkIdentityOrLengthDiffers.into(),
+                );
             }
             Ok(())
         },
@@ -265,7 +275,7 @@ pub(in crate::jobs::journal) fn validate_rows(
         let source = record(c, id)?;
         if source.state != State::Complete || !source.acknowledged
             || !matches!(&source.result, Some(Output::Native { solution: Some(s), .. }) if s.proof_id == key) {
-            return Err("seen proof source differs".into());
+            return Err(crate::ResearchFailure::JournalSeenProofSourceDiffers.into());
         }
         Ok(())
     })?;
@@ -286,10 +296,10 @@ pub(in crate::jobs::journal) fn validate_rows(
     })?;
     if let Some(s) = state {
         if s.sample_counts() != (local, peer) {
-            return Err("native sample provenance counters differ".into());
+            return Err(crate::ResearchFailure::JournalNativeSampleProvenanceCountersDiffer.into());
         }
     } else if local + peer > 0 {
-        return Err("native samples lack learning state".into());
+        return Err(crate::ResearchFailure::JournalNativeSamplesLackLearningState.into());
     }
     c.scan(
         "peer_pending",
@@ -302,12 +312,12 @@ pub(in crate::jobs::journal) fn validate_rows(
                     &a.artifact,
                     crate::resources::limits().closure_bytes,
                 )?
-                .ok_or("peer pending receipt missing")?;
+                .ok_or(crate::ResearchFailure::JournalPeerPendingReceiptMissing)?;
             if key != format!("{:020}", a.ordinal)
                 || receipt.admission != a
                 || !matches!(receipt.status, PeerStatus::Queued)
             {
-                return Err("peer pending source differs".into());
+                return Err(crate::ResearchFailure::JournalPeerPendingSourceDiffers.into());
             }
             Ok(())
         },
@@ -319,10 +329,10 @@ fn validate_learned(
     c: &crate::checkpoint::Checkpoint,
     key: &str,
     bytes: &[u8],
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let id = key
         .parse::<u64>()
-        .map_err(|_| "own learning receipt identity")?;
+        .map_err(|_| crate::ResearchFailure::JournalOwnLearningReceiptIdentity)?;
     let root: String = crate::checkpoint::decode(bytes)?;
     crate::object::id_bytes(&root)?;
     let source = record(c, id)?;
@@ -346,7 +356,7 @@ fn validate_learned(
         || !matches!(source.input, Input::Solve { .. })
         || !matching
     {
-        return Err("own learning admission receipt differs".into());
+        return Err(crate::ResearchFailure::JournalOwnLearningAdmissionReceiptDiffers.into());
     }
     Ok(())
 }
@@ -355,24 +365,27 @@ fn validate_peer(
     state: Option<&crate::learning::State>,
     key: &str,
     bytes: &[u8],
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let receipt: PeerReceipt = crate::checkpoint::decode(bytes)?;
     let a = &receipt.admission;
     crate::object::id_bytes(key)?;
     a.binding.validate()?;
-    let peer: libp2p::PeerId = a.peer.parse().map_err(|_| "peer admission syntax")?;
+    let peer: libp2p::PeerId = a
+        .peer
+        .parse()
+        .map_err(|_| crate::ResearchFailure::JournalPeerAdmissionSyntax)?;
     if key != a.artifact
         || a.ordinal == 0
         || state.is_none_or(|s| a.ordinal > s.peer_cursor)
         || peer.to_string() != a.peer
     {
-        return Err("peer admission source differs".into());
+        return Err(crate::ResearchFailure::JournalPeerAdmissionSourceDiffers.into());
     }
     if let Some(evidence) = &a.evidence {
         evidence.validate_width()?;
     }
     if let Some(question) = &a.question {
-        naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
+        naome_checker::question::ResearchQuestion::from_hex(question)?;
     }
     let pending = c.get::<PeerAdmission>(
         "peer_pending",
@@ -381,10 +394,10 @@ fn validate_peer(
     )?;
     if matches!(receipt.status, PeerStatus::Queued) {
         if pending.as_ref() != Some(a) {
-            return Err("peer admission pending index differs".into());
+            return Err(crate::ResearchFailure::JournalPeerAdmissionPendingIndexDiffers.into());
         }
     } else if pending.is_some() {
-        return Err("finished peer admission remains queued".into());
+        return Err(crate::ResearchFailure::JournalFinishedPeerAdmissionRemainsQueued.into());
     }
     let job = match &receipt.status {
         PeerStatus::Running { job } => Some((*job, None)),
@@ -392,24 +405,20 @@ fn validate_peer(
             conversion_job,
             trace_proof,
         } => Some((*conversion_job, Some(trace_proof))),
-        PeerStatus::Unsupported { reason } => {
-            if reason.len() > crate::resources::limits().closure_bytes {
-                return Err("peer disposition capacity".into());
-            }
-            None
-        }
         _ => None,
     };
     if let Some((id, proof)) = job {
         let source = record(c, id)?;
         let matching = matches!(&source.input,Input::Peer{question,artifact,peer,evidence} if Some(question)==a.question.as_ref() && artifact==&a.artifact && peer==&a.peer && Some(evidence)==a.evidence.as_ref());
         if !matching {
-            return Err("peer conversion job source differs".into());
+            return Err(crate::ResearchFailure::JournalPeerConversionJobSourceDiffers.into());
         }
         if let Some(proof) = proof {
             let matching = matches!(&source.result,Some(Output::Native{solution:Some(solution),..}) if !solution.refuted && &solution.proof_id==proof);
             if !source.acknowledged || source.state != State::Complete || !matching {
-                return Err("peer conversion proof receipt differs".into());
+                return Err(
+                    crate::ResearchFailure::JournalPeerConversionProofReceiptDiffers.into(),
+                );
             }
         }
     }
@@ -419,16 +428,15 @@ fn validate_sample(
     c: &crate::checkpoint::Checkpoint,
     key: &str,
     bytes: &[u8],
-) -> Result<bool, String> {
+) -> Result<bool, crate::Error> {
     let id: u64 = crate::checkpoint::decode(bytes)?;
     let source = record(c, id)?;
     let (peer, question) = match &source.input {
         Input::Solve { question } => (false, question),
         Input::Peer { question, .. } => (true, question),
-        _ => return Err("native sample source role differs".into()),
+        _ => return Err(crate::ResearchFailure::JournalNativeSampleSourceRoleDiffers.into()),
     };
-    let q =
-        naome_checker::question::ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
+    let q = naome_checker::question::ResearchQuestion::from_hex(question)?;
     if key != crate::hex(q.resolution_id())
         || !crate::learning::State::eligible(question)
         || source.state != State::Complete
@@ -441,12 +449,12 @@ fn validate_sample(
             })
         )
     {
-        return Err("native sample source identity differs".into());
+        return Err(crate::ResearchFailure::JournalNativeSampleSourceIdentityDiffers.into());
     }
     match &source.input {
         Input::Solve { .. } => {
             if c.get::<String>("learned", &id.to_string(), 256)?.is_none() {
-                return Err("native sample own admission absent".into());
+                return Err(crate::ResearchFailure::JournalNativeSampleOwnAdmissionAbsent.into());
             }
         }
         Input::Peer { artifact, .. } => {
@@ -456,10 +464,12 @@ fn validate_sample(
                     artifact,
                     crate::resources::limits().closure_bytes,
                 )?
-                .ok_or("native sample peer admission absent")?;
+                .ok_or(crate::ResearchFailure::JournalNativeSamplePeerAdmissionAbsent)?;
             if !matches!(receipt.status,PeerStatus::Learned{conversion_job,..} if conversion_job==id)
             {
-                return Err("native sample peer conversion differs".into());
+                return Err(
+                    crate::ResearchFailure::JournalNativeSamplePeerConversionDiffers.into(),
+                );
             }
         }
         _ => unreachable!(),
@@ -511,7 +521,16 @@ mod tests {
         let error = Disk::open(&path, settings, 0)
             .err()
             .expect("current model index corruption must stop reopening");
-        assert!(error.contains("model"), "{error}");
+        let expected = if chunk {
+            crate::ResearchFailure::JournalNativeModelChunkHasNoOwnerOrReclamationReceipt
+        } else {
+            crate::ResearchFailure::JournalNativeGlobalModelOwnerIndexDiffers
+        };
+        assert_eq!(error, crate::Error::from(expected));
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(expected)
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 }

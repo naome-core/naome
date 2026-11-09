@@ -29,17 +29,17 @@ impl Budget {
         self.spent
     }
 
-    fn check_time(&self) -> Result<(), String> {
+    fn check_time(&self) -> Result<(), crate::Error> {
         if self.started.elapsed() >= Duration::from_millis(2500) {
-            return Err("construction repair deadline".into());
+            return Err(crate::ResearchFailure::RepairDeadline.into());
         }
         Ok(())
     }
 
-    fn charge(&mut self, work: usize) -> Result<(), String> {
+    fn charge(&mut self, work: usize) -> Result<(), crate::Error> {
         self.check_time()?;
         if work > self.limit - self.spent {
-            return Err("construction repair work allowance".into());
+            return Err(crate::ResearchFailure::RepairWorkAllowance.into());
         }
         self.spent += work;
         Ok(())
@@ -50,7 +50,7 @@ pub(super) fn portable_packet(
     original: &proof::Verified,
     selection: Option<&Selection>,
     budget: &mut Budget,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, crate::Error> {
     let limits = crate::resources::limits();
     // Rechecking the closure is part of the original construction allowance.
     budget.charge(1)?;
@@ -59,7 +59,7 @@ pub(super) fn portable_packet(
         .transpose()?
         .unwrap_or_default();
     if protected.contains(&original.native_id) {
-        return Err("construction repair would replace a supplied proof".into());
+        return Err(crate::ResearchFailure::RepairProtectedProof.into());
     }
     let mut original_context = definitions::context(&original.definitions)?;
     let mut repaired_context = original_context.clone();
@@ -67,16 +67,14 @@ pub(super) fn portable_packet(
     let mut lemmas = Vec::new();
     for lemma in &original.lemmas {
         budget.charge(1)?;
-        let checked = proof::check(lemma.clone(), &original_context).map_err(|e| e.to_string())?;
+        let checked = proof::check(lemma.clone(), &original_context)?;
         let id = checked.proof_id();
         let target = checked.conclusion().clone();
-        original_context
-            .register_proof(checked)
-            .map_err(|e| e.to_string())?;
+        original_context.register_proof(checked)?;
 
         let repaired = rewrite(lemma, &replacements, &repaired_context)?;
         if repaired.conclusion() != &target {
-            return Err("construction repair changed a helper conclusion".into());
+            return Err(crate::ResearchFailure::RepairHelperConclusion.into());
         }
         let repaired = partition::fit(
             repaired,
@@ -86,7 +84,7 @@ pub(super) fn portable_packet(
             budget,
         )?;
         if repaired.proof_id() != id && protected.contains(&id) {
-            return Err("construction repair would replace a supplied helper".into());
+            return Err(crate::ResearchFailure::RepairProtectedHelper.into());
         }
         replacements.insert(id, repaired.proof_id());
         partition::append(repaired, &mut repaired_context, &mut lemmas)?;
@@ -95,7 +93,7 @@ pub(super) fn portable_packet(
     budget.charge(1)?;
     let root = rewrite(&original.certificate, &replacements, &repaired_context)?;
     if root.conclusion() != &original.target {
-        return Err("construction repair changed the root conclusion".into());
+        return Err(crate::ResearchFailure::RepairRootConclusion.into());
     }
     let root = partition::fit(
         root,
@@ -112,16 +110,21 @@ pub(super) fn portable_packet(
         Some(&original.target),
     )?;
     let packet = evidence::pack(&verified)?;
-    let source = proof::source(&verified)?;
+    let source = proof::source(&verified);
     let helpers = evidence::helpers(&packet)?;
     if source.len() > 2 * limits.proof_bytes
         || helpers.len() >= limits.closure_objects
         || helpers
             .iter()
             .any(|helper| helper.len() > 2 * limits.proof_bytes)
-        || source.len() + helpers.iter().map(String::len).sum::<usize>() > 2 * limits.closure_bytes
+        || helpers
+            .iter()
+            .try_fold(source.len(), |total, helper| {
+                total.checked_add(helper.len())
+            })
+            .is_none_or(|total| total > 2 * limits.closure_bytes)
     {
-        return Err("repaired construction source closure exceeds capacity".into());
+        return Err(crate::ResearchFailure::RepairClosureCapacity.into());
     }
     budget.check_time()?;
     Ok(packet)
@@ -131,17 +134,19 @@ fn rewrite(
     certificate: &ProofCertificate,
     replacements: &BTreeMap<ProofId, ProofId>,
     context: &ArtifactState,
-) -> Result<CheckedProof, String> {
+) -> Result<CheckedProof, crate::Error> {
     let mut steps = certificate.steps().to_vec();
     for step in &mut steps {
         if let ProofStep::ProofReference { proof_id } = step {
             *proof_id = *replacements
                 .get(proof_id)
-                .ok_or("construction repair dependency order")?;
+                .ok_or(crate::Error::MissingRequiredTheorem(*proof_id))?;
         }
     }
-    let certificate = ProofCertificate::new(steps).map_err(|e| e.to_string())?;
-    proof::check(certificate, context).map_err(|e| e.to_string())
+    let certificate = ProofCertificate::new(steps).map_err(|error| {
+        crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+    })?;
+    proof::check(certificate, context).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -149,6 +154,27 @@ mod tests {
     use super::*;
     use crate::learning::{Solution, construction::pack_candidate, search::Tree};
     use naome_foundation::{Formula, FreeVariable};
+
+    #[test]
+    fn repair_budget_and_missing_dependency_preserve_causes() {
+        let mut budget = Budget::new(Instant::now(), 2);
+        budget.charge(2).unwrap();
+        assert_eq!(
+            budget.charge(1).unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::RepairWorkAllowance)
+        );
+        assert_eq!(budget.spent(), 2);
+        let expired = Budget::new(Instant::now() - Duration::from_secs(3), 2);
+        assert_eq!(
+            expired.check_time().unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::RepairDeadline)
+        );
+        let id = ProofId::from_bytes([9; 32]);
+        let certificate =
+            ProofCertificate::new(vec![ProofStep::ProofReference { proof_id: id }]).unwrap();
+        let error = rewrite(&certificate, &BTreeMap::new(), &ArtifactState::new()).unwrap_err();
+        assert_eq!(error, crate::Error::MissingRequiredTheorem(id));
+    }
 
     fn oversized_derivation() -> proof::Verified {
         let free = FreeVariable::new(7);
@@ -204,7 +230,7 @@ mod tests {
         assert_eq!(remaining, after_repair);
 
         let solution = Solution {
-            source: proof::source(&verified).unwrap(),
+            source: proof::source(&verified),
             helpers: evidence::helpers(&packet).unwrap(),
             proof_id: crate::hex(verified.native_id.as_bytes()),
             cost: Box::default(),

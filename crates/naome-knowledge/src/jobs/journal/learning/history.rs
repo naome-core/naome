@@ -13,11 +13,11 @@ impl Disk {
         let record = journal
             .records
             .get(&id)
-            .ok_or("history original job missing")?;
+            .ok_or(crate::ResearchFailure::HistoryOriginalJobMissing)?;
         let native = record
             .native
             .as_ref()
-            .ok_or("history native owner missing")?;
+            .ok_or(crate::ResearchFailure::HistoryNativeOwnerMissing)?;
         if record.state != State::Running
             || unit != 1
             || record.checkpoint != 0
@@ -28,7 +28,9 @@ impl Disk {
             || request.horizon != id
             || native.history_request.as_ref() != Some(request)
         {
-            return Err("history read lacks its original training reservation".into());
+            return Err(
+                crate::ResearchFailure::HistoryReadLacksItsOriginalTrainingReservation.into(),
+            );
         }
         request.validate()?;
         if let Some(receipt) = &native.history {
@@ -63,7 +65,7 @@ impl Disk {
             crate::object::id_bytes(&key)?;
             let source_id: u64 = crate::checkpoint::decode(&payload)?;
             if source_id == 0 {
-                return Err("history source has no job".into());
+                return Err(crate::ResearchFailure::HistorySourceHasNoJob.into());
             }
             if source_id < id {
                 let bytes = self
@@ -75,10 +77,10 @@ impl Disk {
                             .native_model_blob_bytes
                             .saturating_sub(read_bytes),
                     )?
-                    .ok_or("historical admitted source record missing")?;
+                    .ok_or(crate::ResearchFailure::HistoricalAdmittedSourceRecordMissing)?;
                 read_bytes = read_bytes
                     .checked_add(bytes.len())
-                    .ok_or("history IO overflow")?;
+                    .ok_or(crate::ResearchFailure::HistoryIoOverflow)?;
                 read_operations += 1;
                 let source: Record = crate::checkpoint::decode(&bytes)?;
                 let Some(Output::Native {
@@ -86,14 +88,14 @@ impl Disk {
                     ..
                 }) = &source.result
                 else {
-                    return Err("historical source solution missing".into());
+                    return Err(crate::ResearchFailure::HistoricalSourceSolutionMissing.into());
                 };
                 if source.id != source_id
                     || source.state != State::Complete
                     || !source.acknowledged
                     || solution.proof_id != key
                 {
-                    return Err("historical source identity differs".into());
+                    return Err(crate::ResearchFailure::HistoricalSourceIdentityDiffers.into());
                 }
                 let (question, origin, peer_evidence) = match &source.input {
                     Input::Solve { question } => {
@@ -108,14 +110,17 @@ impl Disk {
                                         .saturating_sub(read_bytes),
                                 ),
                             )?
-                            .ok_or("historical own admission receipt missing")?;
+                            .ok_or(crate::ResearchFailure::HistoricalOwnAdmissionReceiptMissing)?;
                         read_bytes += bytes.len();
                         read_operations += 1;
                         let root: String = crate::checkpoint::decode(&bytes)?;
                         let expected =
                             crate::learning::program::Candidate::artifact(solution, question)?;
                         if root != crate::hex(expected.as_bytes()) {
-                            return Err("historical own admission identity differs".into());
+                            return Err(
+                                crate::ResearchFailure::HistoricalOwnAdmissionIdentityDiffers
+                                    .into(),
+                            );
                         }
                         (question.clone(), crate::learning::Origin::Local, None)
                     }
@@ -136,7 +141,7 @@ impl Disk {
                                         .saturating_sub(read_bytes),
                                 ),
                             )?
-                            .ok_or("historical peer receipt missing")?;
+                            .ok_or(crate::ResearchFailure::HistoricalPeerReceiptMissing)?;
                         read_bytes += bytes.len();
                         read_operations += 1;
                         let receipt: PeerReceipt = crate::checkpoint::decode(&bytes)?;
@@ -158,7 +163,9 @@ impl Disk {
                             || receipt.admission.evidence.as_ref() != Some(evidence)
                             || !terminal
                         {
-                            return Err("historical peer provenance differs".into());
+                            return Err(
+                                crate::ResearchFailure::HistoricalPeerProvenanceDiffers.into()
+                            );
                         }
                         (
                             question.clone(),
@@ -169,7 +176,7 @@ impl Disk {
                             Some(evidence.clone()),
                         )
                     }
-                    _ => return Err("historical source role differs".into()),
+                    _ => return Err(crate::ResearchFailure::HistoricalSourceRoleDiffers.into()),
                 };
                 page.sources.push(Source {
                     job: source_id,
@@ -188,7 +195,9 @@ impl Disk {
                 }
                 page.next = page.examined.last().map(|(key, _)| key.clone());
                 if page.examined.is_empty() {
-                    return Err("historical source exceeds working page capacity".into());
+                    return Err(
+                        crate::ResearchFailure::HistoricalSourceExceedsWorkingPageCapacity.into(),
+                    );
                 }
                 return self.retain_history(
                     journal,
@@ -242,10 +251,10 @@ impl Disk {
             read_bytes = read_bytes
                 .checked_add(key.len())
                 .and_then(|n| n.checked_add(bytes.len()))
-                .ok_or("experience page IO overflow")?;
+                .ok_or(crate::ResearchFailure::ExperiencePageIoOverflow)?;
             let record: crate::jobs::Record = crate::checkpoint::decode(&bytes)?;
             if record.id == 0 || record.id.to_string() != key {
-                return Err("experience journal record identity differs".into());
+                return Err(crate::ResearchFailure::ExperienceJournalRecordIdentityDiffers.into());
             }
             let observation = if record.id < id {
                 crate::learning::experience::Observation::from_record(&record)?
@@ -261,7 +270,10 @@ impl Disk {
                 page.records.pop();
                 page.examined.pop();
                 if page.examined.is_empty() {
-                    return Err("experience record exceeds the working page capacity".into());
+                    return Err(
+                        crate::ResearchFailure::ExperienceRecordExceedsTheWorkingPageCapacity
+                            .into(),
+                    );
                 }
                 break;
             }
@@ -301,7 +313,7 @@ impl Disk {
                 crate::resources::limits().native_model_chunk_bytes,
             )? {
                 if previous != part {
-                    return Err("historical page immutable chunk differs".into());
+                    return Err(crate::ResearchFailure::HistoricalPageImmutableChunkDiffers.into());
                 }
             } else {
                 updates.push(crate::checkpoint::Update::Put {
@@ -311,27 +323,29 @@ impl Disk {
                 });
             }
         }
-        let record = journal.records.get_mut(&id).ok_or("history job missing")?;
+        let record = journal
+            .records
+            .get_mut(&id)
+            .ok_or(crate::ResearchFailure::HistoryJobMissing)?;
         let previous = record.native.clone();
         let native = record
             .native
             .as_mut()
-            .ok_or("history native owner missing")?;
+            .ok_or(crate::ResearchFailure::HistoryNativeOwnerMissing)?;
         native.io_bytes = native
             .io_bytes
             .checked_add(read_bytes)
             .and_then(|n| n.checked_add(bytes.len()))
-            .ok_or("history lifetime IO overflow")?;
+            .ok_or(crate::ResearchFailure::HistoryLifetimeIoOverflow)?;
         native.io_operations = native
             .io_operations
             .checked_add(read_operations)
             .and_then(|n| n.checked_add(blob.chunks()))
-            .ok_or("history IO operation overflow")?;
+            .ok_or(crate::ResearchFailure::HistoryIoOperationOverflow)?;
         native.written.push((1, blob));
         native.history = Some(receipt.clone());
         if let Err(error) = native
             .validate()
-            .map_err(crate::Error::from)
             .and_then(|()| self.save_with(journal, updates))
         {
             journal

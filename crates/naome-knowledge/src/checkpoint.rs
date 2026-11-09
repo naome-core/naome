@@ -51,7 +51,7 @@ impl Update {
         kind: &'static str,
         key: impl ToString,
         value: &impl Serialize,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         Ok(Self::Put {
             kind,
             key: key.to_string(),
@@ -66,13 +66,13 @@ pub(crate) struct Checkpoint {
     connection: Connection,
     domain: &'static str,
     data_version: i64,
-    uncertain: Option<String>,
+    uncertain: Option<naome_storage::UncertainCommit>,
     #[cfg(test)]
     pub(crate) last_write: (usize, usize),
 }
 
 impl Checkpoint {
-    pub(crate) fn open(path: &Path, domain: &'static str) -> Result<Self, String> {
+    pub(crate) fn open(path: &Path, domain: &'static str) -> Result<Self, crate::Error> {
         let checkpoint = Self::open_for_replay(path, domain)?;
         checkpoint.scan_all(|_, _, _| Ok(()))?;
         Ok(checkpoint)
@@ -80,38 +80,38 @@ impl Checkpoint {
 
     /// Domain replay must consume every primary row and validate its indexed
     /// relationships/cardinality. Avoid a preceding duplicate payload scan.
-    pub(crate) fn open_for_replay(path: &Path, domain: &'static str) -> Result<Self, String> {
+    pub(crate) fn open_for_replay(path: &Path, domain: &'static str) -> Result<Self, crate::Error> {
         let identity = owned(path)?;
         let connection = connect(path)?;
         let application: i64 = connection
             .pragma_query_value(None, "application_id", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if application != APPLICATION_ID || version != 1 {
-            return Err("unsupported transactional checkpoint".into());
+            return Err(crate::InputFault::CheckpointIdentity.into());
         }
         let definitions = connection
             .prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name")
-            .map_err(sql)?
+            .map_err(sql_error)?
             .query_map([], |r| r.get::<_, String>(0))
-            .map_err(sql)?
+            .map_err(sql_error)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if definitions.len() != SCHEMA.len()
             || definitions
                 .iter()
                 .zip(SCHEMA)
                 .any(|(actual, expected)| normalize(actual) != normalize(expected))
         {
-            return Err("transactional checkpoint schema differs".into());
+            return Err(crate::InputFault::CheckpointSchema.into());
         }
         let integrity: String = connection
             .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if integrity != "ok" {
-            return Err("transactional checkpoint integrity failure".into());
+            return Err(crate::InputFault::CheckpointIntegrity.into());
         }
         let data_version = version_of(&connection)?;
         let checkpoint = Self {
@@ -128,9 +128,9 @@ impl Checkpoint {
         let observed: i64 = checkpoint
             .connection
             .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if u64::try_from(observed).ok() != Some(expected) {
-            return Err("transactional checkpoint row count differs".into());
+            return Err(crate::InputFault::CheckpointRowCount.into());
         }
         Ok(checkpoint)
     }
@@ -143,7 +143,7 @@ impl Checkpoint {
         domain: &'static str,
         header: &impl Serialize,
         updates: Vec<Update>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let stage = path.with_extension("initializing");
         if !stage.exists() {
             OpenOptions::new()
@@ -152,39 +152,41 @@ impl Checkpoint {
                 .mode(0o600)
                 .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
                 .open(&stage)
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(crate::StorageIoOperation::CreateStage, error)
+                })?;
         }
         let _ = owned(&stage)?;
         let mut connection = connect(&stage)?;
         let application: i64 = connection
             .pragma_query_value(None, "application_id", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let stage_version: i64 = connection
             .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let objects: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL",
                 [],
                 |r| r.get(0),
             )
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         if application == 0 && stage_version == 0 && objects == 0 {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             for definition in SCHEMA {
-                transaction.execute_batch(definition).map_err(sql)?;
+                transaction.execute_batch(definition).map_err(sql_error)?;
             }
             transaction
                 .pragma_update(None, "application_id", APPLICATION_ID)
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             transaction
                 .pragma_update(None, "user_version", 1)
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             let payload = encode(header)?;
             if payload.len() > MAX_HEADER {
-                return Err("checkpoint header capacity".into());
+                return Err(crate::InputFault::CheckpointHeaderCapacity.into());
             }
             transaction
                 .execute(
@@ -195,20 +197,24 @@ impl Checkpoint {
                         digest(domain, "header", "1", &payload).as_slice()
                     ],
                 )
-                .map_err(sql)?;
+                .map_err(sql_error)?;
             apply(&transaction, domain, &updates)?;
-            transaction.commit().map_err(sql)?;
+            transaction.commit().map_err(sql_error)?;
         }
         drop(connection);
         // A fully committed stage is reusable after a crash before rename.
         drop(Self::open(&stage, domain)?);
         File::open(&stage)
             .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                crate::error::storage_io_error(crate::StorageIoOperation::SyncStage, error)
+            })?;
         if path.exists() {
-            return Err("checkpoint publication target already exists".into());
+            return Err(crate::InputFault::CheckpointTargetExists.into());
         }
-        fs::rename(&stage, path).map_err(|e| e.to_string())?;
+        fs::rename(&stage, path).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::Publish, error)
+        })?;
         sync_parent(path)?;
         Self::open(path, domain)
     }
@@ -216,48 +222,51 @@ impl Checkpoint {
     pub(crate) fn directory(&self) -> &Path {
         self.path.parent().expect("canonical checkpoint parent")
     }
-    fn ensure_generation(&self) -> Result<(), String> {
-        if let Some(error) = &self.uncertain {
-            return Err(format!(
-                "checkpoint requires replay after an uncertain write: {error}"
-            ));
+    fn ensure_generation(&self) -> Result<(), crate::Error> {
+        if let Some(error) = self.uncertain {
+            return Err(crate::Error::UncertainDurability(error.into()));
         }
         crate::storage::sqlite_adapt(
             &self.connection,
             crate::resources::active_limits().checkpoint_cache_bytes,
         )
-        .map_err(sql)?;
+        .map_err(sql_error)?;
         let current = owned(&self.path)?;
         if current.dev() != self.identity.dev() || current.ino() != self.identity.ino() {
-            return Err("transactional checkpoint file was replaced".into());
+            return Err(crate::InputFault::CheckpointFileReplaced.into());
         }
         if version_of(&self.connection)? != self.data_version {
-            return Err("transactional checkpoint changed outside its owner".into());
+            return Err(crate::InputFault::CheckpointOutsideOwner.into());
         }
         Ok(())
     }
-    fn raw_header(&self) -> Result<(Vec<u8>, u64), String> {
+    fn raw_header(&self) -> Result<(Vec<u8>, u64), crate::Error> {
         self.ensure_generation()?;
         let (domain, payload, stored, count): (String, Vec<u8>, Vec<u8>, i64) = self.connection.query_row(
             "SELECT substr(domain,1,129), substr(header,1,1048577), substr(digest,1,33), entry_count FROM checkpoint WHERE singleton = 1", [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(sql)?;
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().map_err(sql_error)?.ok_or(crate::InputFault::CheckpointHeaderCardinality)?;
         let rows: i64 = self
             .connection
             .query_row("SELECT count(*) FROM checkpoint", [], |r| r.get(0))
-            .map_err(sql)?;
-        if rows != 1
-            || domain != self.domain
-            || payload.len() > MAX_HEADER
-            || stored.as_slice() != digest(self.domain, "header", "1", &payload)
-        {
-            return Err("transactional checkpoint header differs".into());
+            .map_err(sql_error)?;
+        if rows != 1 {
+            return Err(crate::InputFault::CheckpointHeaderCardinality.into());
+        }
+        if domain != self.domain {
+            return Err(crate::InputFault::CheckpointHeaderDomain.into());
+        }
+        if payload.len() > MAX_HEADER {
+            return Err(crate::InputFault::CheckpointHeaderCapacity.into());
+        }
+        if stored.as_slice() != digest(self.domain, "header", "1", &payload) {
+            return Err(crate::InputFault::CheckpointHeaderDigest.into());
         }
         Ok((
             payload,
-            u64::try_from(count).map_err(|_| "checkpoint count width")?,
+            u64::try_from(count).map_err(|_| crate::InputFault::CheckpointHeaderCount)?,
         ))
     }
-    pub(crate) fn header<T: DeserializeOwned + Serialize>(&self) -> Result<T, String> {
+    pub(crate) fn header<T: DeserializeOwned + Serialize>(&self) -> Result<T, crate::Error> {
         decode(&self.raw_header()?.0)
     }
 
@@ -266,12 +275,12 @@ impl Checkpoint {
         kind: &str,
         key: &str,
         maximum: usize,
-    ) -> Result<Option<T>, String> {
+    ) -> Result<Option<T>, crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
         let row: Option<(Vec<u8>, Vec<u8>)> = self.connection.query_row(
             "SELECT substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind = ?1 AND key = ?2",
-            params![kind, key, (maximum + 1) as i64], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(sql)?;
+            params![kind, key, (maximum + 1) as i64], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(sql_error)?;
         row.map(|(payload, stored)| {
             check_row(self.domain, kind, key, &payload, &stored, maximum)?;
             decode(&payload)
@@ -283,18 +292,18 @@ impl Checkpoint {
         &self,
         kind: &str,
         maximum: usize,
-        mut visit: impl FnMut(&str, &[u8]) -> Result<(), String>,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&str, &[u8]) -> Result<(), crate::Error>,
+    ) -> Result<(), crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
-        let mut statement = self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?2), substr(digest,1,33) FROM entries WHERE kind = ?1 ORDER BY key").map_err(sql)?;
+        let mut statement = self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?2), substr(digest,1,33) FROM entries WHERE kind = ?1 ORDER BY key").map_err(sql_error)?;
         let mut rows = statement
             .query(params![kind, (maximum + 1) as i64])
-            .map_err(sql)?;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let key: String = row.get(0).map_err(sql)?;
-            let payload: Vec<u8> = row.get(1).map_err(sql)?;
-            let stored: Vec<u8> = row.get(2).map_err(sql)?;
+            .map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let key: String = row.get(0).map_err(sql_error)?;
+            let payload: Vec<u8> = row.get(1).map_err(sql_error)?;
+            let stored: Vec<u8> = row.get(2).map_err(sql_error)?;
             check_row(self.domain, kind, &key, &payload, &stored, maximum)?;
             visit(&key, &payload)?;
         }
@@ -311,23 +320,24 @@ impl Checkpoint {
     ) -> Result<Vec<(String, Vec<u8>)>, crate::Error> {
         self.ensure_generation()?;
         if records == 0 || bytes == 0 {
-            return Err("checkpoint page budget must be positive".into());
+            return Err(crate::InputFault::CheckpointPageBudget.into());
         }
-        let mut statement=self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind=?1 AND key>?2 ORDER BY key LIMIT ?4").map_err(sql)?;
+        let mut statement=self.connection.prepare("SELECT substr(key,1,129), substr(payload,1,?3), substr(digest,1,33) FROM entries WHERE kind=?1 AND key>?2 ORDER BY key LIMIT ?4").map_err(sql_error)?;
         let mut rows = statement
             .query(params![
                 kind,
                 after.unwrap_or(""),
-                i64::try_from(bytes.min(MAX_ROW) + 1).map_err(|_| "checkpoint byte width")?,
-                i64::try_from(records).map_err(|_| "checkpoint page width")?
+                i64::try_from(bytes.min(MAX_ROW) + 1)
+                    .map_err(|_| crate::InputFault::CheckpointPageByteWidth)?,
+                i64::try_from(records).map_err(|_| crate::InputFault::CheckpointPageRecordWidth)?
             ])
-            .map_err(sql)?;
+            .map_err(sql_error)?;
         let mut page = Vec::new();
         let mut retained = 0usize;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let key: String = row.get(0).map_err(sql)?;
-            let payload: Vec<u8> = row.get(1).map_err(sql)?;
-            let stored: Vec<u8> = row.get(2).map_err(sql)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let key: String = row.get(0).map_err(sql_error)?;
+            let payload: Vec<u8> = row.get(1).map_err(sql_error)?;
+            let stored: Vec<u8> = row.get(2).map_err(sql_error)?;
             check_row(
                 self.domain,
                 kind,
@@ -340,10 +350,10 @@ impl Checkpoint {
                 .len()
                 .checked_add(payload.len())
                 .and_then(|n| n.checked_add(128))
-                .ok_or("checkpoint page memory overflow")?;
+                .ok_or(crate::InputFault::CheckpointPageMemoryOverflow)?;
             if needed > bytes.saturating_sub(retained) {
                 if page.is_empty() {
-                    return Err("checkpoint record exceeds page memory budget".into());
+                    return Err(crate::InputFault::CheckpointPageMemoryLimit.into());
                 }
                 break;
             }
@@ -354,25 +364,25 @@ impl Checkpoint {
         Ok(page)
     }
 
-    pub(crate) fn count(&self, kind: &str) -> Result<usize, String> {
+    pub(crate) fn count(&self, kind: &str) -> Result<usize, crate::Error> {
         self.ensure_generation()?;
         let count: i64 = self
             .connection
             .query_row("SELECT count(*) FROM entries WHERE kind=?1", [kind], |r| {
                 r.get(0)
             })
-            .map_err(sql)?;
-        usize::try_from(count).map_err(|_| "checkpoint count width".into())
+            .map_err(sql_error)?;
+        usize::try_from(count).map_err(|_| crate::InputFault::CheckpointCountWidth.into())
     }
     pub(crate) fn get_bytes(
         &self,
         kind: &str,
         key: &str,
         maximum: usize,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Vec<u8>>, crate::Error> {
         self.ensure_generation()?;
         let maximum = maximum.min(MAX_ROW);
-        let row:Option<(Vec<u8>,Vec<u8>)>=self.connection.query_row("SELECT substr(payload,1,?3),substr(digest,1,33) FROM entries WHERE kind=?1 AND key=?2",params![kind,key,i64::try_from(maximum+1).map_err(|_|"checkpoint width")?],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+        let row:Option<(Vec<u8>,Vec<u8>)>=self.connection.query_row("SELECT substr(payload,1,?3),substr(digest,1,33) FROM entries WHERE kind=?1 AND key=?2",params![kind,key,i64::try_from(maximum+1).map_err(|_|crate::InputFault::CheckpointReadWidth)?],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql_error)?;
         row.map(|(payload, stored)| {
             check_row(self.domain, kind, key, &payload, &stored, maximum)?;
             Ok(payload)
@@ -386,41 +396,54 @@ impl Checkpoint {
         read: impl FnOnce(&Connection) -> Result<T, crate::Error>,
     ) -> Result<T, crate::Error> {
         self.ensure_generation()
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         let result = read(&self.connection)?;
         self.ensure_generation()
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
+        Ok(result)
+    }
+
+    /// Runs a bounded operation that must temporarily change connection hooks.
+    pub(crate) fn query_mut<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, crate::Error>,
+    ) -> Result<T, crate::Error> {
+        self.ensure_generation()
+            .map_err(crate::Error::fatal_storage)?;
+        let result = operation(&mut self.connection)?;
+        self.ensure_generation()
+            .map_err(crate::Error::fatal_storage)?;
         Ok(result)
     }
 
     fn scan_all(
         &self,
-        mut visit: impl FnMut(&str, &str, &[u8]) -> Result<(), String>,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&str, &str, &[u8]) -> Result<(), crate::Error>,
+    ) -> Result<(), crate::Error> {
         self.ensure_generation()?;
-        let mut statement = self.connection.prepare("SELECT substr(kind,1,17), substr(key,1,129), substr(payload,1,67108865), substr(digest,1,33) FROM entries ORDER BY kind,key").map_err(sql)?;
-        let mut rows = statement.query([]).map_err(sql)?;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let kind: String = row.get(0).map_err(sql)?;
-            let key: String = row.get(1).map_err(sql)?;
-            let payload: Vec<u8> = row.get(2).map_err(sql)?;
-            let stored: Vec<u8> = row.get(3).map_err(sql)?;
+        let mut statement = self.connection.prepare("SELECT substr(kind,1,17), substr(key,1,129), substr(payload,1,67108865), substr(digest,1,33) FROM entries ORDER BY kind,key").map_err(sql_error)?;
+        let mut rows = statement.query([]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let kind: String = row.get(0).map_err(sql_error)?;
+            let key: String = row.get(1).map_err(sql_error)?;
+            let payload: Vec<u8> = row.get(2).map_err(sql_error)?;
+            let stored: Vec<u8> = row.get(3).map_err(sql_error)?;
             check_row(self.domain, &kind, &key, &payload, &stored, MAX_ROW)?;
             visit(&kind, &key, &payload)?;
         }
         Ok(())
     }
-    pub(crate) fn require_kinds(&self, kinds: &[&str]) -> Result<(), String> {
+    pub(crate) fn require_kinds(&self, kinds: &[&str]) -> Result<(), crate::Error> {
         self.ensure_generation()?;
         let mut statement = self
             .connection
             .prepare("SELECT DISTINCT kind FROM entries")
-            .map_err(sql)?;
-        let mut rows = statement.query([]).map_err(sql)?;
-        while let Some(row) = rows.next().map_err(sql)? {
-            let kind: String = row.get(0).map_err(sql)?;
+            .map_err(sql_error)?;
+        let mut rows = statement.query([]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let kind: String = row.get(0).map_err(sql_error)?;
             if !kinds.contains(&kind.as_str()) {
-                return Err("unexpected checkpoint record kind".into());
+                return Err(crate::InputFault::CheckpointUnexpectedKind.into());
             }
         }
         Ok(())
@@ -437,7 +460,9 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                     || key.len() > 128
                     || payload.len() > MAX_ROW
                 {
-                    return Err(crate::Error::InputLimit("checkpoint record capacity"));
+                    return Err(crate::Error::InputLimit(
+                        crate::InputLimit::CheckpointRecordCapacity,
+                    ));
                 }
                 let existing: bool = connection
                     .query_row(
@@ -462,7 +487,10 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                 connection
                     .execute(
                         "UPDATE checkpoint SET entry_count = entry_count - ?1 WHERE singleton = 1",
-                        params![i64::try_from(removed).map_err(|_| "checkpoint removal width")?],
+                        params![
+                            i64::try_from(removed)
+                                .map_err(|_| crate::InputFault::CheckpointRemovalWidth)?
+                        ],
                     )
                     .map_err(commit::write_error)?;
             }
@@ -471,17 +499,24 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
     Ok(())
 }
 
-pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(value).map_err(|e| e.to_string())
+pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, crate::Error> {
+    serde_json::to_vec(value).map_err(|_| crate::InputFault::CheckpointEncoding.into())
 }
-pub(crate) fn decode<T: DeserializeOwned + Serialize>(payload: &[u8]) -> Result<T, String> {
-    let value: T = serde_json::from_slice(payload)
-        .map_err(|e| format!("checkpoint record corruption: {e}"))?;
+pub(crate) fn decode<T: DeserializeOwned + Serialize>(payload: &[u8]) -> Result<T, crate::Error> {
+    let value: T = serde_json::from_slice(payload).map_err(|error| {
+        let reason = crate::error::json_fault(&error);
+        crate::Error::CheckpointDecode {
+            reason,
+            line: error.line(),
+            column: error.column(),
+        }
+    })?;
     if encode(&value)? != payload {
-        return Err("noncanonical checkpoint record".into());
+        return Err(crate::InputFault::CheckpointNoncanonical.into());
     }
     Ok(value)
 }
+
 fn check_row(
     domain: &str,
     kind: &str,
@@ -489,18 +524,19 @@ fn check_row(
     payload: &[u8],
     stored: &[u8],
     maximum: usize,
-) -> Result<(), String> {
-    if kind.is_empty()
-        || kind.len() > 16
-        || key.is_empty()
-        || key.len() > 128
-        || payload.len() > maximum
-        || stored != digest(domain, kind, key, payload)
-    {
-        return Err("checkpoint record digest or capacity differs".into());
+) -> Result<(), crate::Error> {
+    if kind.is_empty() || kind.len() > 16 || key.is_empty() || key.len() > 128 {
+        return Err(crate::InputFault::CheckpointRecordKey.into());
+    }
+    if payload.len() > maximum {
+        return Err(crate::InputFault::CheckpointRecordReadLimit.into());
+    }
+    if stored != digest(domain, kind, key, payload) {
+        return Err(crate::InputFault::CheckpointRecordDigest.into());
     }
     Ok(())
 }
+
 fn digest(domain: &str, kind: &str, key: &str, payload: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"naome:checkpoint:row:v1\0");
@@ -510,49 +546,64 @@ fn digest(domain: &str, kind: &str, key: &str, payload: &[u8]) -> [u8; 32] {
     }
     hash.finalize().into()
 }
-fn connect(path: &Path) -> Result<Connection, String> {
-    let parent = fs::canonicalize(path.parent().ok_or("checkpoint parent missing")?)
-        .map_err(|e| e.to_string())?;
-    let path = parent.join(path.file_name().ok_or("checkpoint filename missing")?);
+fn connect(path: &Path) -> Result<Connection, crate::Error> {
+    let parent = fs::canonicalize(
+        path.parent()
+            .ok_or(crate::InputFault::CheckpointParentMissing)?,
+    )
+    .map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::ResolveParent, error)
+    })?;
+    let path = parent.join(
+        path.file_name()
+            .ok_or(crate::InputFault::CheckpointFilenameMissing)?,
+    );
     let connection = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
-    .map_err(sql)?;
+    .map_err(sql_error)?;
     crate::storage::sqlite_common(
         &connection,
         crate::resources::active_limits().checkpoint_cache_bytes,
     )
-    .map_err(sql)?;
+    .map_err(sql_error)?;
     connection
         .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA;")
-        .map_err(sql)?;
+        .map_err(sql_error)?;
     #[cfg(target_os = "macos")]
     connection
         .pragma_update(None, "fullfsync", true)
-        .map_err(sql)?;
+        .map_err(sql_error)?;
     Ok(connection)
 }
-fn owned(path: &Path) -> Result<fs::Metadata, String> {
+fn owned(path: &Path) -> Result<fs::Metadata, crate::Error> {
     crate::storage::owned_file(path)
 }
-fn version_of(connection: &Connection) -> Result<i64, String> {
+fn version_of(connection: &Connection) -> Result<i64, crate::Error> {
     connection
         .pragma_query_value(None, "data_version", |r| r.get(0))
-        .map_err(sql)
+        .map_err(sql_error)
 }
 fn normalize(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-fn sync_parent(path: &Path) -> Result<(), String> {
-    File::open(path.parent().ok_or("checkpoint parent missing")?)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
+fn sync_parent(path: &Path) -> Result<(), crate::Error> {
+    File::open(
+        path.parent()
+            .ok_or(crate::InputFault::CheckpointParentMissing)?,
+    )
+    .and_then(|f| f.sync_all())
+    .map_err(|error| crate::error::storage_io_error(crate::StorageIoOperation::SyncParent, error))
 }
-fn sql(error: rusqlite::Error) -> String {
-    format!("transactional checkpoint: {error}")
+fn sql_error(error: rusqlite::Error) -> crate::Error {
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+    crate::Error::CheckpointSql {
+        reason,
+        sqlite_code,
+    }
 }
 
 #[cfg(test)]

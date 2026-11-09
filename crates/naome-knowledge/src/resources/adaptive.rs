@@ -25,15 +25,7 @@ pub(crate) use governor::Governor;
 pub(crate) use observation::sample_node;
 pub(crate) use observer::Observer;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    #[default]
-    Dynamic,
-    Heavy,
-    Light,
-    Custom,
-}
+pub use crate::outcome::AdaptiveProfile as Profile;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,17 +43,25 @@ pub struct Selection {
     pub custom: Option<Custom>,
 }
 impl Selection {
-    pub fn validate(&self) -> Result<(), String> {
-        match (&self.profile,&self.custom) {
-            (Profile::Custom,Some(c)) if c.memory_bytes>=8*MIB
-                && c.memory_bytes<=isize::MAX as u64 && c.concurrency>0
-                && c.concurrency<=c.memory_bytes as usize/65536
-                && c.cache_bytes>=4096 && c.cache_bytes<=c.memory_bytes/4
-                && c.batch_steps>0 && c.batch_steps<=c.memory_bytes as usize/8192
-                && c.network_requests>0 && c.network_requests<=c.memory_bytes as usize/65536=>Ok(()),
-            (Profile::Custom,_)=>Err("custom requires positive, internally consistent memory, concurrency, cache, batch and network limits".into()),
-            (_,None)=>Ok(()),
-            _=>Err("custom settings require the custom profile".into()),
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        match (&self.profile, &self.custom) {
+            (Profile::Custom, Some(c))
+                if c.memory_bytes >= 8 * MIB
+                    && c.memory_bytes <= isize::MAX as u64
+                    && c.concurrency > 0
+                    && c.concurrency <= c.memory_bytes as usize / 65536
+                    && c.cache_bytes >= 4096
+                    && c.cache_bytes <= c.memory_bytes / 4
+                    && c.batch_steps > 0
+                    && c.batch_steps <= c.memory_bytes as usize / 8192
+                    && c.network_requests > 0
+                    && c.network_requests <= c.memory_bytes as usize / 65536 =>
+            {
+                Ok(())
+            }
+            (Profile::Custom, _) => Err(crate::InputFault::ResourceCustomInvalid.into()),
+            (_, None) => Ok(()),
+            _ => Err(crate::InputFault::ResourceCustomProfileMismatch.into()),
         }
     }
 }
@@ -97,7 +97,7 @@ pub struct Budget {
     pub batch_steps: usize,
     pub network_requests: usize,
     pub yield_ms: u64,
-    pub paused: Option<String>,
+    pub paused: Option<crate::PauseReason>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,7 +109,11 @@ pub struct Snapshot {
     pub pid: u32,
 }
 impl Snapshot {
-    pub fn derive(selection: Selection, observed: Observed, capacity: u64) -> Result<Self, String> {
+    pub fn derive(
+        selection: Selection,
+        observed: Observed,
+        capacity: u64,
+    ) -> Result<Self, crate::Error> {
         Self::derive_with_demand(selection, observed, capacity, 0)
     }
 
@@ -118,10 +122,10 @@ impl Snapshot {
         observed: Observed,
         capacity: u64,
         native_memory_demand: u64,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         selection.validate()?;
         if observed.memory_total == 0 || observed.memory_limit == 0 || observed.cpu_millis == 0 {
-            return Err("hardware observation is incomplete".into());
+            return Err(crate::InputFault::ObservationIncomplete.into());
         }
         let heavy = selection.profile == Profile::Heavy;
         let light = selection.profile == Profile::Light;
@@ -205,11 +209,11 @@ impl Snapshot {
             })
             .min(super::limits().flights);
         let paused = if memory < 8 * MIB || observed.process_rss > memory {
-            Some("memory pressure".into())
+            Some(crate::PauseReason::MemoryPressure)
         } else if observed.disk_available
             < super::limits().disk_reserve_bytes.saturating_add(2 * MIB)
         {
-            Some("disk pressure".into())
+            Some(crate::PauseReason::DiskPressure)
         } else {
             None
         };
@@ -243,14 +247,14 @@ impl Snapshot {
         })
     }
 }
-fn now_ms() -> Result<u64, String> {
+fn now_ms() -> Result<u64, crate::Error> {
     u64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| crate::InputFault::ObservationClock)?
             .as_millis(),
     )
-    .map_err(|e| e.to_string())
+    .map_err(|_| crate::InputFault::ObservationClockWidth.into())
 }
 struct Live {
     snapshot: Snapshot,
@@ -301,12 +305,12 @@ pub(crate) fn work_available() -> bool {
     inspect_work(|available, _| available)
 }
 
-pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<&str>) -> R) -> R {
+pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<crate::PauseReason>) -> R) -> R {
     let Some(live) = LIVE.get() else {
         return inspect(true, None);
     };
     let Ok(live) = live.read() else {
-        return inspect(false, Some("resource state unavailable"));
+        return inspect(false, Some(crate::PauseReason::ResourceStateUnavailable));
     };
     let Some(live) = live.as_ref() else {
         return inspect(true, None);
@@ -317,8 +321,7 @@ pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<&str>) -> R) -> 
         available,
         budget
             .paused
-            .as_deref()
-            .or((!available).then_some("no computation budget")),
+            .or((!available).then_some(crate::PauseReason::NoComputationBudget)),
     )
 }
 
@@ -378,16 +381,21 @@ fn live_limit(capacity: usize, limit: impl FnOnce(&Budget) -> usize) -> usize {
         .map_or(capacity, |s| limit(&s.snapshot.budget).min(capacity))
 }
 
-pub fn load(directory: &Path) -> Result<Selection, String> {
+pub fn load(directory: &Path) -> Result<Selection, crate::Error> {
     let path = directory.join("resource-profile.json");
     let Some(bytes) = crate::storage::read_owned_snapshot(&path, 4096)? else {
         return Ok(Selection::default());
     };
-    let selection: Selection = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let selection: Selection =
+        serde_json::from_slice(&bytes).map_err(|error| crate::Error::ResourceProfileDecode {
+            reason: crate::error::json_fault(&error),
+            line: error.line(),
+            column: error.column(),
+        })?;
     selection.validate()?;
     Ok(selection)
 }
-pub fn sample(directory: &Path) -> Result<Observed, String> {
+pub fn sample(directory: &Path) -> Result<Observed, crate::Error> {
     observation::sample(directory)
 }
 

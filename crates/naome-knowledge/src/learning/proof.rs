@@ -52,11 +52,6 @@ fn record_checking_work(steps: usize) {
     });
 }
 
-pub const NATIVE_RESOURCE_LIMIT: &str =
-    "native certificate or reconstructed formula resource limit";
-pub const FORMULA_WORK_LIMIT: &str = "solver certificate formula-node limit";
-pub const STEP_WORK_LIMIT: &str = "solver certificate work limit";
-
 #[derive(Clone, Debug)]
 pub enum Term {
     Lemma {
@@ -122,13 +117,13 @@ impl Term {
         }
     }
 
-    pub fn apply(function: Self, argument: Self) -> Result<Self, String> {
+    pub fn apply(function: Self, argument: Self) -> Result<Self, crate::Error> {
         let formula = function.formula();
         let Some((expected, result)) = formula.view().implication_parts() else {
-            return Err("application requires an implication".into());
+            return Err(crate::ResearchFailure::ProofApplicationShape.into());
         };
         if expected != argument.formula() {
-            return Err("application antecedent differs".into());
+            return Err(crate::ResearchFailure::ProofApplicationAntecedent.into());
         }
         Ok(Self::Apply(
             Box::new(function),
@@ -138,13 +133,16 @@ impl Term {
     }
 }
 
-fn apply(function: Arc<Combinator>, argument: Arc<Combinator>) -> Result<Arc<Combinator>, String> {
+fn apply(
+    function: Arc<Combinator>,
+    argument: Arc<Combinator>,
+) -> Result<Arc<Combinator>, crate::Error> {
     let formula = function.formula();
     let Some((expected, result)) = formula.view().implication_parts() else {
-        return Err("combinator application requires an implication".into());
+        return Err(crate::ResearchFailure::ProofCombinatorShape.into());
     };
     if expected != argument.formula() {
-        return Err("combinator application antecedent differs".into());
+        return Err(crate::ResearchFailure::ProofCombinatorAntecedent.into());
     }
     Ok(Combinator::new(Kind::Apply(
         function,
@@ -157,7 +155,7 @@ fn abstract_variable(
     id: usize,
     argument: &Formula,
     body: Arc<Combinator>,
-) -> Result<Arc<Combinator>, String> {
+) -> Result<Arc<Combinator>, crate::Error> {
     if !body.contains(id) {
         return apply(
             Combinator::new(Kind::K(body.formula(), argument.clone())),
@@ -167,7 +165,7 @@ fn abstract_variable(
     match body.kind() {
         Kind::Generalize(variable, inner) => {
             if argument.free_variables().contains(variable) {
-                return Err("generalization eigenvariable occurs in an assumption".into());
+                return Err(crate::ResearchFailure::ProofGeneralizationCapture.into());
             }
             let inner_formula = inner.formula();
             let abstracted = abstract_variable(id, argument, inner.clone())?;
@@ -208,11 +206,11 @@ fn abstract_variable(
             let value = abstract_variable(id, argument, value.clone())?;
             apply(apply(s, function)?, value)
         }
-        _ => Err("unbound variable during bracket abstraction".into()),
+        _ => Err(crate::ResearchFailure::ProofUnboundVariable.into()),
     }
 }
 
-fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
+fn lower(term: &Term) -> Result<Arc<Combinator>, crate::Error> {
     match term {
         Term::Lemma {
             certificate,
@@ -221,9 +219,9 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
         } => {
             let context = lemma_context(&[], dependencies)?;
             let checked = crate::learning::proof::check(certificate.clone(), &context)
-                .map_err(|e| e.to_string())?;
+                .map_err(crate::Error::from)?;
             if checked.conclusion() != target {
-                return Err("construction lemma target differs".into());
+                return Err(crate::ResearchFailure::ProofLemmaTarget.into());
             }
             Ok(Combinator::new(Kind::Lemma(
                 dependencies
@@ -256,7 +254,7 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
         Term::Sealed(body, target) => {
             let body = lower(body)?;
             if body.formula() != *target {
-                return Err("sealed native recipe conclusion differs".into());
+                return Err(crate::ResearchFailure::ProofSealedTarget.into());
             }
             Ok(body)
         }
@@ -291,11 +289,11 @@ pub(crate) fn verify_native(
     definitions: Vec<super::definitions::Entry>,
     lemmas: Vec<ProofCertificate>,
     expected: Option<&Formula>,
-) -> Result<Verified, String> {
+) -> Result<Verified, crate::Error> {
     let context = lemma_context(&definitions, &lemmas)?;
-    let checked = check(certificate, &context).map_err(|e| e.to_string())?;
+    let checked = check(certificate, &context).map_err(crate::Error::from)?;
     if expected.is_some_and(|target| checked.conclusion() != target) {
-        return Err("native DAG conclusion differs".into());
+        return Err(crate::ResearchFailure::NativeDagTargetMismatch.into());
     }
     let retained = lemmas::retain(&checked, &definitions, &lemmas)?;
     Ok(Verified {
@@ -309,9 +307,9 @@ pub(crate) fn verify_native(
 }
 
 /// No typed term is accepted as evidence until the existing checker accepts it.
-pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
+pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, crate::Error> {
     if term.formula() != *expected {
-        return Err("search term differs from the requested target".into());
+        return Err(crate::ResearchFailure::NativeTermTargetMismatch.into());
     }
     if let Term::Native {
         certificate,
@@ -332,35 +330,15 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         lemmas,
         definitions,
     } = lower_recipe(term, expected, true)?;
-    let certificate = ProofCertificate::new(steps).map_err(|error| match error {
-        naome_proof::ProofCertificateError::TooManySteps { .. }
-        | naome_proof::ProofCertificateError::InputTooLong { .. }
-        | naome_proof::ProofCertificateError::FormulaNodeLimitExceeded { .. } => {
-            NATIVE_RESOURCE_LIMIT.into()
-        }
-        naome_proof::ProofCertificateError::Formula(
-            naome_foundation::FormulaCodecError::NodeLimitExceeded { .. }
-            | naome_foundation::FormulaCodecError::DepthLimitExceeded { .. },
-        ) => NATIVE_RESOURCE_LIMIT.into(),
-        error => error.to_string(),
+    let certificate = ProofCertificate::new(steps).map_err(|error| {
+        crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
     })?;
     let checked =
         crate::learning::proof::check(certificate.clone(), &lemma_context(&definitions, &lemmas)?)
-            .map_err(|error| match error.kind() {
-                naome_checker::CheckErrorKind::DerivedFormula {
-                    source:
-                        naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
-                        | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
-                    ..
-                }
-                | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
-                    NATIVE_RESOURCE_LIMIT.to_owned()
-                }
-                _ => error.to_string(),
-            })?;
+            .map_err(crate::Error::from)?;
     let target = close(expected.clone());
     if checked.conclusion() != &target {
-        return Err("checked certificate proves a different target".into());
+        return Err(crate::ResearchFailure::NativeCheckedTargetMismatch.into());
     }
     // Internal closed lemmas are Foundation theorems, not new user questions.
     // Exact conclusion equality above and the independent checker establish
@@ -384,7 +362,7 @@ pub(super) struct Recipe {
 
 /// Lower the actual search term into bounded inference operands. A program
 /// consumer accounts for canonical commands after sharing identical formulas.
-pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> {
+pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, crate::Error> {
     lower_recipe(term, expected, false)
 }
 
@@ -392,9 +370,13 @@ pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, String> 
     clippy::mutable_key_type,
     reason = "OnceLock memoizes immutable structure; hash and equality never change."
 )]
-fn lower_recipe(term: &Term, expected: &Formula, certificate: bool) -> Result<Recipe, String> {
+fn lower_recipe(
+    term: &Term,
+    expected: &Formula,
+    certificate: bool,
+) -> Result<Recipe, crate::Error> {
     if term.formula() != *expected {
-        return Err("search term differs from the requested target".into());
+        return Err(crate::ResearchFailure::NativeTermTargetMismatch.into());
     }
     if let Term::Native {
         certificate,
@@ -422,7 +404,7 @@ fn lower_recipe(term: &Term, expected: &Formula, certificate: bool) -> Result<Re
         formula_nodes: &mut Option<usize>,
         lemmas: &mut Vec<ProofCertificate>,
         definitions: &mut Vec<super::definitions::Entry>,
-    ) -> Result<u32, String> {
+    ) -> Result<u32, crate::Error> {
         if let Some(index) = cache.get(term) {
             return Ok(*index);
         }
@@ -437,14 +419,16 @@ fn lower_recipe(term: &Term, expected: &Formula, certificate: bool) -> Result<Re
                     if !lemmas.iter().any(|c| c.to_canonical_bytes() == *bytes) {
                         lemmas.push(
                             ProofCertificate::from_canonical_bytes(bytes)
-                                .map_err(|e| e.to_string())?,
+                                .map_err(|e| crate::object::certificate_error(bytes, e))?,
                         );
                     }
                 }
                 ProofStep::ProofReference { proof_id: *id }
             }
             Kind::CheckedInput(id, _) => ProofStep::ProofReference { proof_id: *id },
-            Kind::Variable(_, _) => return Err("certificate still has an assumption".into()),
+            Kind::Variable(_, _) => {
+                return Err(crate::ResearchFailure::ProofUndischargedAssumption.into());
+            }
             Kind::Kernel(k) => k.step(),
             Kind::Generalize(variable, body) => ProofStep::Generalization {
                 premise: emit(body, steps, cache, formula_nodes, lemmas, definitions)?,
@@ -519,13 +503,26 @@ fn lower_recipe(term: &Term, expected: &Formula, certificate: bool) -> Result<Re
                 _ => 0,
             };
             if *formula_nodes > naome_proof::CERTIFICATE_MAX_FORMULA_NODES {
-                return Err(FORMULA_WORK_LIMIT.into());
+                return Err(crate::Error::CertificateConstruction(
+                    crate::FormatFailure::Limit {
+                        resource: crate::outcome::FormatResource::Nodes,
+                        actual: Some(*formula_nodes as u64),
+                        maximum: naome_proof::CERTIFICATE_MAX_FORMULA_NODES as u64,
+                    },
+                ));
             }
         }
-        let index = u32::try_from(steps.len()).map_err(|_| "proof index width")?;
+        let index =
+            u32::try_from(steps.len()).map_err(|_| crate::ResearchFailure::ProofIndexWidth)?;
         steps.push(step);
         if steps.len() > crate::resources::limits().closure_steps.min(16_384) {
-            return Err(STEP_WORK_LIMIT.into());
+            return Err(crate::Error::CertificateConstruction(
+                crate::FormatFailure::Limit {
+                    resource: crate::outcome::FormatResource::Steps,
+                    actual: Some(steps.len() as u64),
+                    maximum: crate::resources::limits().closure_steps.min(16_384) as u64,
+                },
+            ));
         }
         cache.insert(term.clone(), index);
         Ok(index)
@@ -552,8 +549,8 @@ fn lower_recipe(term: &Term, expected: &Formula, certificate: bool) -> Result<Re
     })
 }
 
-pub fn source(proof: &Verified) -> Result<String, String> {
-    Ok(artifact(&proof.certificate))
+pub fn source(proof: &Verified) -> String {
+    artifact(&proof.certificate)
 }
 
 pub(super) fn artifact(certificate: &ProofCertificate) -> String {
@@ -563,29 +560,26 @@ pub(super) fn artifact(certificate: &ProofCertificate) -> String {
 pub(crate) fn check_artifact(
     encoded: &str,
     context: &dyn naome_checker::ContextView,
-) -> Result<naome_checker::CheckedProof, String> {
-    let bytes = crate::unhex(encoded).map_err(|error| error.to_string())?;
-    let naome_proof::ArtifactPayload::Proof(certificate) =
-        naome_proof::ArtifactPayload::from_canonical_bytes(&bytes)
-            .map_err(|error| error.to_string())?
-    else {
-        return Err("expected a canonical proof artifact".into());
+) -> Result<naome_checker::CheckedProof, crate::Error> {
+    let bytes = crate::unhex(encoded)?;
+    let payload = crate::object::decode_payload(&bytes)?;
+    let naome_proof::ArtifactPayload::Proof(certificate) = payload else {
+        return Err(crate::ResearchFailure::ExpectedProofArtifact.into());
     };
-    check_normal_form(certificate.into_unchecked_normal_form(), context)
-        .map_err(|error| error.to_string())
+    check_normal_form(certificate.into_unchecked_normal_form(), context).map_err(crate::Error::from)
 }
 
 pub(super) fn define_steps(
     steps: &[ProofStep],
     definitions: &[super::definitions::Entry],
-) -> Result<Vec<ProofStep>, String> {
+) -> Result<Vec<ProofStep>, crate::Error> {
     let rewrite = |value: &naome_proof::ProofFormula| {
         if value.as_defined().is_some() {
             return Ok(value.clone());
         }
         let primitive = value
             .expand_with(&ArtifactState::new())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::Error::from)?;
         super::definitions::represent(primitive.as_ref(), definitions)
     };
     steps
@@ -658,26 +652,85 @@ pub(super) fn define_steps(
                 _ => step.clone(),
             })
         })
-        .collect::<Result<Vec<_>, String>>()
+        .collect::<Result<Vec<_>, crate::Error>>()
 }
 
 pub fn source_with_definitions(
     proof: &Verified,
     definitions: &[super::definitions::Entry],
-) -> Result<String, String> {
+) -> Result<String, crate::Error> {
     if proof
         .definitions
         .iter()
         .any(|entry| !definitions.contains(entry))
     {
-        return Err("exact native references cannot be replaced during proof encoding".into());
+        return Err(crate::ResearchFailure::ProofReferenceReplacement.into());
     }
     let steps = define_steps(proof.certificate.steps(), definitions)?;
-    let certificate = ProofCertificate::new(steps).map_err(|error| error.to_string())?;
+    let certificate = ProofCertificate::new(steps).map_err(|error| {
+        crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+    })?;
     let context = lemma_context(definitions, &proof.lemmas)?;
-    let checked = check(certificate, &context).map_err(|error| error.to_string())?;
+    let checked = check(certificate, &context).map_err(crate::Error::from)?;
     if checked.conclusion() != &proof.target {
-        return Err("typed representation changed the checked conclusion".into());
+        return Err(crate::ResearchFailure::ProofRepresentationMismatch.into());
     }
     Ok(artifact(checked.normal_form().certificate()))
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn non_implication_application_has_registered_failure() {
+        let formula = Formula::equal(FreeVariable::new(0), FreeVariable::new(0));
+        let error = Term::apply(
+            Term::Variable(0, formula.clone()),
+            Term::Variable(1, formula),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::ProofApplicationShape)
+        );
+    }
+
+    #[test]
+    fn native_proof_rejection_keeps_checker_diagnostic() {
+        let certificate = ProofCertificate::new(vec![ProofStep::ProofReference {
+            proof_id: naome_proof::ProofId::from_bytes([7; 32]),
+        }])
+        .unwrap();
+        let error = verify_native(certificate, vec![], vec![], None)
+            .err()
+            .unwrap();
+        assert!(error.diagnostic().is_some());
+        assert!(
+            serde_json::to_value(error)
+                .unwrap()
+                .get("diagnostic")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn proof_target_mismatch_and_construction_reason_are_structured() {
+        let variable = FreeVariable::new(0);
+        let target = Formula::equal(variable, variable);
+        let different = Formula::member(variable, variable);
+        let error = verify(&Term::Variable(0, different), &target)
+            .err()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::NativeTermTargetMismatch)
+        );
+        let raw = ProofCertificate::new(Vec::new()).unwrap_err();
+        let error = crate::Error::CertificateConstruction(crate::FormatFailure::from(&raw));
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], 0x0006_001b_u32);
+        assert!(value["format_reason"]["code"].as_u64().is_some());
+    }
 }

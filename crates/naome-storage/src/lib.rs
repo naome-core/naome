@@ -6,4 +6,4 @@
 #[cfg(unix)]
 mod transaction;
 #[cfg(unix)]
-pub use transaction::{CommitError, write};
+pub use transaction::{CommitError, UncertainCommit, sqlite_code, write};

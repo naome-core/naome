@@ -50,9 +50,7 @@ impl TransferGrant {
         now: Instant,
     ) -> Result<(), crate::Error> {
         if self.peer != peer || self.root != root {
-            return Err(crate::Error::InvalidInput(
-                "transfer peer or root differs".into(),
-            ));
+            return Err(crate::InputFault::TransferGrantBinding.into());
         }
         self.check(now)
     }

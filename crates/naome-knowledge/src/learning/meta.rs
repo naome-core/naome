@@ -16,12 +16,13 @@ pub const MEMORY: usize = 4;
 pub const STATE_BYTES: usize = 5 * 512;
 pub const UPDATES: u64 = 8;
 pub const PARAMETERS: usize = model::PARAMETERS;
-pub fn cpu_micros() -> Result<u64, String> {
+pub fn cpu_micros() -> Result<u64, crate::Error> {
     use nix::sys::{
         resource::{UsageWho, getrusage},
         time::TimeValLike,
     };
-    let r = getrusage(UsageWho::RUSAGE_SELF).map_err(|e| e.to_string())?;
+    let r = getrusage(UsageWho::RUSAGE_SELF)
+        .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
     Ok((r.user_time().num_microseconds() + r.system_time().num_microseconds()) as u64)
 }
 fn specification() -> String {
@@ -55,12 +56,12 @@ impl Checkpoint {
     pub fn blobs(&self) -> impl Iterator<Item = &Blob> {
         self.weights.iter().chain(&self.optimizer)
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.specification != specification()
             || self.weights.is_some() != self.optimizer.is_some()
             || self.weights.is_none() && self.updates != 0
         {
-            return Err("meta paired input/optimizer binding differs".into());
+            return Err(crate::ResearchFailure::MetaCheckpointBinding.into());
         }
         for b in self.blobs() {
             b.validate()?;
@@ -74,7 +75,7 @@ impl Checkpoint {
                 .as_ref()
                 .is_some_and(|b| b.bytes != 8 + PARAMETERS * 8)
         {
-            return Err("meta checkpoint shape differs".into());
+            return Err(crate::ResearchFailure::MetaCheckpointShape.into());
         }
         Ok(())
     }
@@ -101,11 +102,11 @@ pub struct Experience {
     pub lower_wall_micros: u64,
 }
 impl Experience {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         self.plan.validate()?;
         self.transfer.validate()?;
         if self.candidate_model.is_some() != self.transfer.complete() {
-            return Err("meta transfer outcome is not a complete owned trial".into());
+            return Err(crate::ResearchFailure::MetaTransferIncomplete.into());
         }
         if self.selected_model != self.source_model
             && (self.candidate_model.as_ref() != Some(&self.selected_model)
@@ -114,7 +115,7 @@ impl Experience {
                 || self.anchor_loss
                 || !self.transfer.supports_recorded_promotion())
         {
-            return Err("meta retained model lacks protected family transfer gain".into());
+            return Err(crate::ResearchFailure::MetaPromotionBinding.into());
         }
         crate::object::id_bytes(&self.source_model)?;
         crate::object::id_bytes(&self.selected_model)?;
@@ -126,7 +127,7 @@ impl Experience {
             || self.before as usize > super::curriculum::DEVELOPMENT
             || self.after as usize > super::curriculum::DEVELOPMENT
         {
-            return Err("meta trial dimensions differ".into());
+            return Err(crate::ResearchFailure::MetaTrialDimensions.into());
         }
         Ok(())
     }
@@ -182,14 +183,14 @@ impl State {
             draw: 991_027,
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         self.model.validate()?;
         if self.memory.len() > MEMORY
             || self.memory.len() as u64 > self.trials
             || self.trials.checked_mul(UPDATES) != Some(self.model.updates)
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > STATE_BYTES
+            || crate::checkpoint::encode(self)?.len() > STATE_BYTES
         {
-            return Err("meta experience memory capacity".into());
+            return Err(crate::ResearchFailure::MetaMemoryCapacity.into());
         }
         if self
             .memory
@@ -199,7 +200,7 @@ impl State {
             .len()
             != self.memory.len()
         {
-            return Err("duplicate meta source trial".into());
+            return Err(crate::ResearchFailure::MetaTrialDuplicate.into());
         }
         for e in &self.memory {
             e.validate()?;
@@ -217,11 +218,11 @@ pub struct Selection {
     pub draw: u64,
 }
 impl Selection {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         self.plan.validate()?;
         if self.context.iter().any(|x| *x > 1000) || self.prediction.iter().any(|x| !x.is_finite())
         {
-            Err("meta selection values differ".into())
+            Err(crate::ResearchFailure::MetaSelectionValues.into())
         } else {
             Ok(())
         }
@@ -245,7 +246,7 @@ impl Engine {
         &mut self,
         c: &Checkpoint,
         io: &mut I,
-    ) -> Result<model::Network, String> {
+    ) -> Result<model::Network, crate::Error> {
         c.validate()?;
         if let Some((key, network)) = self.cache.take()
             && key == *c
@@ -253,9 +254,11 @@ impl Engine {
             return Ok(network);
         }
         match (&c.weights, &c.optimizer) {
-            (Some(w), Some(o)) => {
-                model::Network::decode(&artifact::load(io, w)?, &artifact::load(io, o)?, c.updates)
-            }
+            (Some(w), Some(o)) => Ok(model::Network::decode(
+                &artifact::load(io, w)?,
+                &artifact::load(io, o)?,
+                c.updates,
+            )?),
             _ => Ok(model::Network::fresh(c.seed)),
         }
     }
@@ -263,7 +266,7 @@ impl Engine {
         &mut self,
         state: &super::State,
         io: &mut I,
-    ) -> Result<Selection, String> {
+    ) -> Result<Selection, crate::Error> {
         let context = context(state);
         let mut draw = state.meta.draw;
         let fixed = match state.preparation {
@@ -331,7 +334,7 @@ impl Engine {
         selection: &Selection,
         experience: Experience,
         io: &mut I,
-    ) -> Result<Update, String> {
+    ) -> Result<Update, crate::Error> {
         selection.validate()?;
         experience.validate()?;
         if experience.source_model != super::digest(&state.model)
@@ -339,10 +342,7 @@ impl Engine {
             || experience.context != selection.context
             || experience.plan != selection.plan
         {
-            return Err(
-                "meta optimization experience differs from its original model or selected plan"
-                    .into(),
-            );
+            return Err(crate::ResearchFailure::MetaExperienceBinding.into());
         }
         // The job owner binds this immutable selection to the prepared history.
         // Recomputing context from the base would discard that actual input.

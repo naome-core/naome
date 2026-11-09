@@ -72,18 +72,48 @@ impl Model {
             supports: 0,
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
-        if self.weights.len() != PARAMETERS
-            || self.weights.iter().any(|w| !w.is_finite() || w.abs() > 4.)
-            || self.utility.len() != INPUTS + BINDINGS + 1
-            || self.utility.iter().any(|w| !w.is_finite() || w.abs() > 4.)
-            || self
-                .resolved
-                .checked_add(self.unresolved)
-                .and_then(|n| n.checked_add(self.supports))
-                != Some(self.updates)
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if self.weights.len() != PARAMETERS {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::FinderPredictorWidth,
+                expected: PARAMETERS as u64,
+                actual: self.weights.len() as u64,
+            });
+        }
+        if let Some(index) = self
+            .weights
+            .iter()
+            .position(|w| !w.is_finite() || w.abs() > 4.)
         {
-            return Err("finder predictor shape, weights or observation counts differ".into());
+            return Err(crate::Error::ResearchIndex {
+                code: crate::ResearchFailure::FinderPredictorWeight,
+                index,
+            });
+        }
+        if self.utility.len() != INPUTS + BINDINGS + 1 {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::FinderUtilityWidth,
+                expected: (INPUTS + BINDINGS + 1) as u64,
+                actual: self.utility.len() as u64,
+            });
+        }
+        if let Some(index) = self
+            .utility
+            .iter()
+            .position(|w| !w.is_finite() || w.abs() > 4.)
+        {
+            return Err(crate::Error::ResearchIndex {
+                code: crate::ResearchFailure::FinderUtilityWeight,
+                index,
+            });
+        }
+        if self
+            .resolved
+            .checked_add(self.unresolved)
+            .and_then(|n| n.checked_add(self.supports))
+            != Some(self.updates)
+        {
+            return Err(crate::ResearchFailure::FinderObservationCounts.into());
         }
         Ok(())
     }
@@ -201,20 +231,25 @@ impl Model {
             *weight = (*weight - 0.05 * error * value).clamp(-4., 4.);
         }
     }
-    pub fn observe_utility(&mut self, descriptor: &Descriptor, target: f32) -> Result<(), String> {
+    pub fn observe_utility(
+        &mut self,
+        descriptor: &Descriptor,
+        target: f32,
+    ) -> Result<(), crate::Error> {
         if !target.is_finite() || !(0.0..=1.0).contains(&target) {
-            return Err("finder utility label differs".into());
+            return Err(crate::ResearchFailure::FinderUtilityLabel.into());
         }
         descriptor.validate()?;
         #[cfg(test)]
         if self.frozen {
             return Ok(());
         }
-        self.train_utility(descriptor, target);
-        self.utility_observations = self
+        let next = self
             .utility_observations
             .checked_add(1)
-            .ok_or("finder utility count overflow")?;
+            .ok_or(crate::ResearchFailure::FinderUtilityOverflow)?;
+        self.train_utility(descriptor, target);
+        self.utility_observations = next;
         self.validate()
     }
     pub fn rehearse(
@@ -224,16 +259,20 @@ impl Model {
         millis: Option<u64>,
         support: Option<bool>,
         utility: Option<f32>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         descriptor.validate()?;
         // Reject the entire observation before any parameter can change.
         if utility.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
-            return Err("finder replay utility differs".into());
+            return Err(crate::ResearchFailure::FinderReplayUtility.into());
         }
         #[cfg(test)]
         if self.frozen {
             return Ok(());
         }
+        let next = self
+            .rehearsals
+            .checked_add(1)
+            .ok_or(crate::ResearchFailure::FinderRehearsalOverflow)?;
         self.train_descriptor(
             descriptor,
             [
@@ -245,10 +284,7 @@ impl Model {
         if let Some(target) = utility {
             self.train_utility(descriptor, target);
         }
-        self.rehearsals = self
-            .rehearsals
-            .checked_add(1)
-            .ok_or("finder rehearsal count overflow")?;
+        self.rehearsals = next;
         self.validate()
     }
     /// A newly proved statement has not yet had an observed opportunity to help
@@ -258,7 +294,7 @@ impl Model {
         question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.observe_labels(question, resolved, millis, None)
     }
     #[cfg(test)]
@@ -267,7 +303,7 @@ impl Model {
         question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.observe_labels(question, resolved, millis, resolved.then_some(0.))
     }
     fn observe_labels(
@@ -276,11 +312,24 @@ impl Model {
         resolved: bool,
         millis: u64,
         support: Option<f32>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         #[cfg(test)]
         if self.frozen {
             return Ok(());
         }
+        let updates = self
+            .updates
+            .checked_add(1)
+            .ok_or(crate::ResearchFailure::FinderUpdateOverflow)?;
+        let count = if resolved {
+            self.resolved
+                .checked_add(1)
+                .ok_or(crate::ResearchFailure::FinderSuccessOverflow)?
+        } else {
+            self.unresolved
+                .checked_add(1)
+                .ok_or(crate::ResearchFailure::FinderAttemptOverflow)?
+        };
         self.train(
             question,
             [
@@ -289,37 +338,70 @@ impl Model {
                 support,
             ],
         );
-        self.updates = self
-            .updates
-            .checked_add(1)
-            .ok_or("finder update overflow")?;
+        self.updates = updates;
         if resolved {
-            self.resolved = self
-                .resolved
-                .checked_add(1)
-                .ok_or("finder success overflow")?;
+            self.resolved = count;
         } else {
-            self.unresolved = self
-                .unresolved
-                .checked_add(1)
-                .ok_or("finder attempt overflow")?;
+            self.unresolved = count;
         }
         self.validate()
     }
-    pub fn support(&mut self, question: &ResearchQuestion) -> Result<(), String> {
+    pub fn support(&mut self, question: &ResearchQuestion) -> Result<(), crate::Error> {
         #[cfg(test)]
         if self.frozen {
             return Ok(());
         }
-        self.train(question, [None, None, Some(1.)]);
-        self.updates = self
+        let updates = self
             .updates
             .checked_add(1)
-            .ok_or("finder update overflow")?;
-        self.supports = self
+            .ok_or(crate::ResearchFailure::FinderUpdateOverflow)?;
+        let supports = self
             .supports
             .checked_add(1)
-            .ok_or("finder support overflow")?;
+            .ok_or(crate::ResearchFailure::FinderSupportOverflow)?;
+        self.train(question, [None, None, Some(1.)]);
+        self.updates = updates;
+        self.supports = supports;
         self.validate()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn overflowing_observation_counters_leave_model_unchanged() {
+        let q = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
+        let descriptor = Descriptor::of(&q);
+        let mut model = Model::fresh();
+        model.utility_observations = u64::MAX;
+        let before = model.clone();
+        assert_eq!(
+            model.observe_utility(&descriptor, 0.5).unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::FinderUtilityOverflow)
+        );
+        assert_eq!(model, before);
+        model.rehearsals = u64::MAX;
+        let before = model.clone();
+        assert_eq!(
+            model
+                .rehearse(&descriptor, Some(true), Some(1), Some(true), Some(0.5))
+                .unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::FinderRehearsalOverflow)
+        );
+        assert_eq!(model, before);
+        model.updates = u64::MAX;
+        model.resolved = u64::MAX;
+        let before = model.clone();
+        assert_eq!(
+            model.observe(&q, true, 1).unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::FinderUpdateOverflow)
+        );
+        assert_eq!(model, before);
+        assert_eq!(
+            model.support(&q).unwrap_err(),
+            crate::Error::from(crate::ResearchFailure::FinderUpdateOverflow)
+        );
+        assert_eq!(model, before);
     }
 }

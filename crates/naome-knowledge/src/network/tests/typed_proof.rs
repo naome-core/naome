@@ -56,7 +56,7 @@ fn helpers(graph: &mut Graph) -> Vec<crate::Envelope> {
         .iter()
         .map(|source| {
             let (object, receipt) = graph.produce(&format!("00{}", hex(source))).unwrap();
-            assert_eq!(receipt.status, "accepted");
+            assert_eq!(receipt.status, crate::IngestStatus::Accepted);
             object
         })
         .collect()
@@ -374,7 +374,7 @@ async fn membership_certificate_and_typed_actions_replay_the_same_derivation() {
                 .ingest(envelope.clone(), Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
     });
 

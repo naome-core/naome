@@ -13,22 +13,21 @@ impl Usage {
     pub(in crate::intake) fn add(self, object: &Envelope) -> Result<Self, Error> {
         let (bytes, steps) = resources(object)?;
         let next = Self {
-            count: self
-                .count
-                .checked_add(1)
-                .ok_or(Error::InputLimit("staged closure object overflow"))?,
-            bytes: self
-                .bytes
-                .checked_add(bytes)
-                .ok_or(Error::InputLimit("staged closure byte overflow"))?,
-            steps: self
-                .steps
-                .checked_add(steps)
-                .ok_or(Error::InputLimit("staged closure step overflow"))?,
+            count: self.count.checked_add(1).ok_or(Error::InputLimit(
+                crate::InputLimit::StagedClosureObjectOverflow,
+            ))?,
+            bytes: self.bytes.checked_add(bytes).ok_or(Error::InputLimit(
+                crate::InputLimit::StagedClosureByteOverflow,
+            ))?,
+            steps: self.steps.checked_add(steps).ok_or(Error::InputLimit(
+                crate::InputLimit::StagedClosureStepOverflow,
+            ))?,
         };
         let limits = crate::resources::limits();
         if next.steps > limits.closure_steps {
-            return Err(Error::InputLimit("staged closure step work limit"));
+            return Err(Error::InputLimit(
+                crate::InputLimit::StagedClosureStepWorkLimit,
+            ));
         }
         if next.count > limits.closure_objects
             || next.bytes > limits.closure_bytes
@@ -37,7 +36,9 @@ impl Usage {
                 .checked_mul(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
                 .is_none_or(|bytes| bytes > limits.closure_work_bytes)
         {
-            return Err(Error::InputLimit("staged closure resource capacity"));
+            return Err(Error::InputLimit(
+                crate::InputLimit::StagedClosureResourceCapacity,
+            ));
         }
         Ok(next)
     }
@@ -51,26 +52,34 @@ pub(in crate::intake) fn resources(object: &Envelope) -> Result<(usize, usize), 
     if object.payload.len() > 2 * crate::resources::limits().proof_bytes
         || !object.payload.len().is_multiple_of(2)
     {
-        return Err(Error::InputLimit("staged certificate byte capacity"));
+        return Err(Error::InputLimit(
+            crate::InputLimit::StagedCertificateByteCapacity,
+        ));
     }
-    let tag = object.payload.get(..2).ok_or("truncated artifact header")?;
+    let tag = object
+        .payload
+        .get(..2)
+        .ok_or(crate::InputFault::IntakeArtifactHeader)?;
     let steps = match tag {
         "00" => {
             let header = crate::unhex(
                 object
                     .payload
                     .get(2..10)
-                    .ok_or("truncated certificate header")?,
+                    .ok_or(crate::InputFault::IntakeCertificateHeader)?,
             )?;
-            let steps =
-                u32::from_be_bytes(header.try_into().map_err(|_| "certificate header")?) as usize;
+            let steps = u32::from_be_bytes(
+                header
+                    .try_into()
+                    .map_err(|_| crate::InputFault::IntakeCertificateHeaderWidth)?,
+            ) as usize;
             if steps == 0 {
-                return Err(Error::InputLimit("empty certificate"));
+                return Err(Error::InputLimit(crate::InputLimit::EmptyCertificate));
             }
             steps
         }
         "01" => 1,
-        _ => return Err("unknown artifact payload".into()),
+        _ => return Err(crate::InputFault::IntakePayloadTag.into()),
     };
     Ok((object.payload.len() / 2, steps))
 }

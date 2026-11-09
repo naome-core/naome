@@ -75,7 +75,7 @@ fn prepare_meta_source(seed: u64, context: usize, cuts: [usize; 2], dir: &Path) 
         common.state.observe_result(
             &q.source,
             !row["solution"].is_null(),
-            row["diagnostic"].as_str().unwrap(),
+            &serde_json::from_value(row["experience"]["terminal"].clone()).unwrap(),
             row["elapsed_micros"].as_u64().unwrap(),
             128,
         );
@@ -367,7 +367,7 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
                     write(&path.join("trials.json"), &summaries);
                     eprintln!(
                         "{}",
-                        serde_json::json!({"event":"outer_meta_trial_completed","context":context,
+                        serde_json::json!({"event":crate::outcome::NodeEvent::OuterMetaTrialCompleted,"context":context,
                         "mode":name,"stage":stage,"fork":fork,"meta_updates":controller.state.model.updates,"elapsed":clock.elapsed()})
                     );
                 }

@@ -195,11 +195,14 @@ pub(super) fn assess(
             .questions
             .get(&record)
             .map_err(context_failure)?
-            .ok_or((RejectionReason::InvalidRegistry, "Q02_EQUIVALENCE_INDEX"))?;
+            .ok_or((
+                RejectionReason::InvalidRegistry,
+                crate::question::PrefilterRule::Q02EquivalenceIndex,
+            ))?;
         if let Some(forward) = prove(question.formula, &related, snapshot.artifacts, work)? {
             let backward = prove(&related, question.formula, snapshot.artifacts, work)?.ok_or((
                 RejectionReason::InvalidEvidence,
-                "Q05_ELEMENTARY_EQUIVALENCE",
+                crate::question::PrefilterRule::Q05ElementaryEquivalence,
             ))?;
             return Ok(Some(ProvenEquivalence {
                 record,

@@ -111,7 +111,7 @@ pub(super) fn record(
     state.observe_result(
         &q.to_hex(),
         episode.solution.is_some(),
-        &generation.diagnostic,
+        &generation.terminal,
         generation.cost.generation_micros,
         SEARCH as u32,
     );

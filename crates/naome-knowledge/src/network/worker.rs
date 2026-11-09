@@ -17,12 +17,12 @@ pub(super) struct OwnerThread {
     pub(super) stop: Option<oneshot::Sender<()>>,
 }
 impl OwnerThread {
-    pub(super) fn join(&mut self) -> Result<(), String> {
+    pub(super) fn join(&mut self) -> Result<(), crate::Error> {
         self.stop.take();
         self.thread.take().map_or(Ok(()), |thread| {
             thread
                 .join()
-                .map_err(|_| "node state owner panicked".into())
+                .map_err(|_| crate::InputFault::StateOwnerPanicked.into())
         })
     }
 }
@@ -223,7 +223,7 @@ pub(super) struct TransportEvent {
 
 pub(super) struct Transport {
     stop: Option<oneshot::Sender<()>>,
-    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    task: Option<tokio::task::JoinHandle<Result<(), crate::Error>>>,
 }
 impl Transport {
     pub(super) fn spawn(
@@ -249,7 +249,7 @@ impl Transport {
                     _ = driver.changed.notified() => continue,
                     event = std::future::poll_fn(|cx| {
                         std::pin::Pin::new(&mut *driver.swarm.lock().expect("transport lock")).poll_next(cx)
-                    }) => event.ok_or("proof transport ended")?,
+                    }) => event.ok_or(crate::InputFault::TransportStreamEnded)?,
                 };
                 let revokes = matches!(&event, SwarmEvent::ListenerClosed { listener_id, .. } if *listener_id == primary_listener);
                 {
@@ -318,7 +318,7 @@ impl Transport {
                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                             epoch.checked_add(1).filter(|next| *next != u64::MAX)
                         })
-                        .map_err(|_| "transport epoch exhausted")?;
+                        .map_err(|_| crate::InputFault::TransportEpochExhausted)?;
                 }
                 // Do not let slow checking retain unlimited inbound channels.
                 // Busy is a retryable protocol error; transport keeps progressing.
@@ -340,7 +340,7 @@ impl Transport {
                     let _ = driver.behaviour_mut().exchange.send_response(
                         channel,
                         Frame::new(Body::Error {
-                            reason: OWNER_BUSY.into(),
+                            code: PeerFailure::OwnerBusy,
                         }),
                     );
                     continue;
@@ -386,7 +386,7 @@ impl Transport {
                 match send.try_send(handoff) {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        return Err("transport state owner unavailable".into());
+                        return Err(crate::InputFault::TransportOwnerUnavailable.into());
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(handoff)) => {
                         match handoff {
@@ -404,7 +404,7 @@ impl Transport {
                                 let _ = driver.behaviour_mut().exchange.send_response(
                                     channel,
                                     Frame::new(Body::Error {
-                                        reason: OWNER_BUSY.into(),
+                                        code: PeerFailure::OwnerBusy,
                                     }),
                                 );
                             }
@@ -412,7 +412,7 @@ impl Transport {
                             // preserves response/disconnect ordering and grants;
                             // remote event pressure must not terminate the node.
                             handoff => tokio::select! {
-                                result = send.send(handoff) => result.map_err(|_| "transport state owner unavailable")?,
+                                result = send.send(handoff) => result.map_err(|_| crate::InputFault::TransportOwnerUnavailable)?,
                                 _ = &mut halted => return Ok(()),
                             },
                         }
@@ -429,14 +429,18 @@ impl Transport {
             },
         )
     }
-    pub(super) async fn shutdown(&mut self) -> Result<(), String> {
+    pub(super) async fn shutdown(&mut self) -> Result<(), crate::Error> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
         match self.task.take() {
-            Some(task) => task
-                .await
-                .map_err(|e| format!("transport task failed: {e}"))?,
+            Some(task) => task.await.map_err(|error| {
+                if error.is_cancelled() {
+                    crate::InputFault::TransportTaskCancelled
+                } else {
+                    crate::InputFault::TransportTaskFailed
+                }
+            })?,
             None => Ok(()),
         }
     }
@@ -492,7 +496,7 @@ pub(super) struct PublishedStatus {
 
 pub(super) struct Controls {
     stop: Option<oneshot::Sender<()>>,
-    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    task: Option<tokio::task::JoinHandle<Result<(), crate::Error>>>,
 }
 impl Controls {
     pub(super) fn spawn(
@@ -504,8 +508,12 @@ impl Controls {
             let Some(control) = control else {
                 return Ok(());
             };
-            type Response =
-                std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>>;
+            type Response = std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<bool, crate::outcome::ControlFailure>>
+                        + Send,
+                >,
+            >;
             let mut pending: Vec<(Arc<AtomicBool>, Response)> = Vec::new();
             let mut stopping = false;
             let mut stop_watch = Some(control.stop_watch());
@@ -528,7 +536,7 @@ impl Controls {
                     }, if stopping => return Ok(()),
                     (response, index, _) = async { libp2p::futures::future::select_all(pending.iter_mut().map(|(_, future)| future)).await }, if !pending.is_empty() => {
                         drop(pending.remove(index));
-                        if let Err(error) = response { emit(json!({"event":"control_rejected", "error":error})); }
+                        if let Err(error) = response { emit(json!({"event":crate::outcome::NodeEvent::ControlRejected, "error":error})); }
                     },
                     stream = control.accept(), if !stopping => {
                         let stream = stream?;
@@ -558,14 +566,18 @@ impl Controls {
             task: Some(task),
         }
     }
-    pub(super) async fn shutdown(&mut self) -> Result<(), String> {
+    pub(super) async fn shutdown(&mut self) -> Result<(), crate::Error> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
         match self.task.take() {
-            Some(task) => task
-                .await
-                .map_err(|e| format!("control task failed: {e}"))?,
+            Some(task) => task.await.map_err(|error| {
+                if error.is_cancelled() {
+                    crate::InputFault::ControlTaskCancelled
+                } else {
+                    crate::InputFault::ControlTaskFailed
+                }
+            })?,
             None => Ok(()),
         }
     }

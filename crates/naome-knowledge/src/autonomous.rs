@@ -41,7 +41,7 @@ impl Intervals {
             self.proof_interval_ms
         }
     }
-    pub(crate) fn validate(self) -> Result<Self, String> {
+    pub(crate) fn validate(self) -> Result<Self, crate::Error> {
         if [self.question_interval_ms, self.proof_interval_ms]
             .iter()
             .any(|ms| {
@@ -50,7 +50,7 @@ impl Intervals {
                     .is_none()
             })
         {
-            return Err("runtime intervals must be representable".into());
+            return Err(crate::InputFault::RuntimeIntervalsWidth.into());
         }
         self.jobs.validate()?;
         Ok(self)
@@ -141,12 +141,12 @@ pub(crate) struct Autonomous {
     recovery_retry: Option<RecoveryRetry>,
     archive_after: Option<u64>,
     archive_end: u64,
-    recovery_reply: Option<oneshot::Receiver<Result<jobs::RecoveryPage, String>>>,
+    recovery_reply: Option<oneshot::Receiver<Result<jobs::RecoveryPage, crate::Error>>>,
     finding: Option<Finding>,
     admissions: VecDeque<Admission>,
     solving: BTreeMap<Identity, Solving>,
     publications: VecDeque<Publication>,
-    error: Option<String>,
+    error: Option<crate::Error>,
     pending_receipt: Option<jobs::Receipt>,
     frontier: Option<crate::frontier::Frontier>,
     evidence_publications: VecDeque<EvidencePublication>,
@@ -203,7 +203,7 @@ impl Autonomous {
         directory: &std::path::Path,
         graph: &Graph,
         seed: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.frontier = Some(crate::frontier::Frontier::open(
             directory,
             graph,
@@ -221,8 +221,8 @@ impl Autonomous {
                 && Instant::now() >= publication.retry
         })
     }
-    pub(crate) fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+    pub(crate) fn error(&self) -> Option<&crate::Error> {
+        self.error.as_ref()
     }
     /// A canonical question fixed by the stopped node's start configuration.
     pub(crate) fn formal_goal(&mut self, source: Option<ResearchQuestion>) {
@@ -243,7 +243,8 @@ impl Autonomous {
     ) -> bool
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let primary = self
             .formal_goal
@@ -262,8 +263,8 @@ impl Autonomous {
                 self.pending_receipt = Some(receipt);
                 false
             }
-            Err(error) => {
-                self.error = Some(error);
+            Err(_) => {
+                self.error = Some(crate::RuntimeFailure::AutonomousReceipt.into());
                 false
             }
         }
@@ -288,13 +289,12 @@ impl Autonomous {
             let jobs::Input::Solve { question } = &record.input else {
                 return true;
             };
-            let candidate = crate::learning::program::Candidate::artifact(solution, question)
-                .map_err(crate::Error::from);
+            let candidate = crate::learning::program::Candidate::artifact(solution, question);
             match candidate.and_then(|root| graph.contains(root).map(|yes| (root, yes))) {
                 Ok((root, true)) => return self.accepted_learning(record.id, root),
                 Ok(_) => {}
                 Err(error) => {
-                    self.error = Some(error.to_string());
+                    self.error = Some(error);
                     return false;
                 }
             }
@@ -304,7 +304,7 @@ impl Autonomous {
     fn retire(&mut self, record: jobs::Record) -> bool {
         if record.state == jobs::State::InDoubt {
             emit(
-                json!({"event":"research_recovery_hold","job":record.id,"reason":"provider effects or cleanup are uncertain"}),
+                json!({"event":crate::outcome::NodeEvent::ResearchRecoveryHold,"job":record.id,"reason":crate::outcome::EventReason::ProviderEffectsOrCleanupUncertain}),
             );
             return true;
         }
@@ -328,7 +328,8 @@ impl Autonomous {
         graph: &Graph,
     ) where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         // Rotate durable unresolved work before retrying a completed attempt.
         // Its original admission remains in the backlog even when the parsed
@@ -356,7 +357,8 @@ impl Autonomous {
     ) -> Vec<ArtifactId>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         let mut accepted = Vec::new();
         // One owner-held receipt is the only extra working item. Until the
@@ -385,7 +387,7 @@ impl Autonomous {
             self.cooperation
                 .notice(selected.peer, selected.goal, id, true);
             emit(
-                json!({"event":"workgroup_joined", "peer":selected.peer.to_string(), "resolution_id":crate::hex(&id)}),
+                json!({"event":crate::outcome::NodeEvent::WorkgroupJoined, "peer":selected.peer.to_string(), "resolution_id":crate::hex(&id)}),
             );
         }
         if let Some((_, wanted)) = self.cooperation.wanted()
@@ -422,7 +424,7 @@ impl Autonomous {
                     return vec![];
                 }
                 Err(error) => {
-                    self.error = Some(error.to_string());
+                    self.error = Some(error);
                     return vec![];
                 }
             }
@@ -454,16 +456,29 @@ impl Autonomous {
                             }
                         }
                     }
-                    Ok(Err(error)) => self.error = Some(error),
+                    Ok(Err(error)) => {
+                        self.error = Some(crate::Error::RuntimeContext {
+                            code: crate::RuntimeFailure::AutonomousArchive,
+                            cause: Box::new(error),
+                        })
+                    }
                     Err(oneshot::error::TryRecvError::Empty) => self.recovery_reply = Some(reply),
                     Err(oneshot::error::TryRecvError::Closed) => {
-                        self.error = Some("research archive recovery stopped".into())
+                        self.error = Some(crate::RuntimeFailure::AutonomousArchive.into())
                     }
                 }
             } else if let Some(after) = self.archive_after {
                 // A full command channel defers the page; it never loses history.
-                if let Ok(reply) = self.client.recover(after, self.archive_end) {
-                    self.recovery_reply = Some(reply);
+                match self.client.recover(after, self.archive_end) {
+                    Ok(reply) => self.recovery_reply = Some(reply),
+                    Err(crate::Error::Research(crate::ResearchFailure::CommandQueueFull)) => {}
+                    Err(error) => {
+                        self.error = Some(crate::Error::RuntimeContext {
+                            code: crate::RuntimeFailure::AutonomousArchive,
+                            cause: Box::new(error),
+                        });
+                        return accepted;
+                    }
                 }
             }
         }
@@ -582,13 +597,13 @@ impl Autonomous {
                     let admitted =
                         matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
                     emit(
-                        json!({"event":"question_assessed","resolution_id":crate::hex(pending.question.resolution_id()),
+                        json!({"event":crate::outcome::NodeEvent::QuestionAssessed,"resolution_id":crate::hex(pending.question.resolution_id()),
                         "admitted":admitted,
                         "formal_pass":result.assessment.prefilter.passed(),
                         "formal_outcome":result.assessment.prefilter.outcome.code(),
                         "formal_reason":result.assessment.prefilter.reason.map(|reason| reason.code()),
                         "formal_rule":result.assessment.prefilter.rule,
-                        "selection":format!("{:?}",result.assessment.selection_result)}),
+                        "selection":result.assessment.selection_result.code()}),
                     );
                     crate::resources::feedback::finding_result(admitted);
                     if admitted {
@@ -617,7 +632,7 @@ impl Autonomous {
                         ) {
                             Ok(question) => {
                                 emit(
-                                    json!({"event":"question_generated","resolution_id":crate::hex(question.resolution_id()),"job":completion.id}),
+                                    json!({"event":crate::outcome::NodeEvent::QuestionGenerated,"resolution_id":crate::hex(question.resolution_id()),"job":completion.id}),
                                 );
                                 let (reply, receiver) = oneshot::channel();
                                 questions.process(
@@ -632,7 +647,7 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 emit(
-                                    json!({"event":"question_candidate_rejected","error":error.to_string()}),
+                                    json!({"event":crate::outcome::NodeEvent::QuestionCandidateRejected,"error":crate::Error::from(error)}),
                                 );
                                 if !self.acknowledge(completion.id) {
                                     return accepted;
@@ -644,11 +659,13 @@ impl Autonomous {
                         if !self.acknowledge(completion.id) {
                             return accepted;
                         }
-                        emit(json!({"event":"question_provider_failed","job":completion.id}));
+                        emit(
+                            json!({"event":crate::outcome::NodeEvent::QuestionProviderFailed,"job":completion.id}),
+                        );
                     }
                 },
                 Err(oneshot::error::TryRecvError::Empty) => self.finding = Some(finding),
-                Err(_) => self.error = Some("finding job owner stopped".into()),
+                Err(_) => self.error = Some(crate::RuntimeFailure::AutonomousFinding.into()),
             }
         }
 
@@ -664,7 +681,7 @@ impl Autonomous {
                         self.cooperation.notice(peer, goal, id, false);
                     }
                     emit(
-                        json!({"event":"solve_cancelled_by_answer","resolution_id":crate::hex(&id)}),
+                        json!({"event":crate::outcome::NodeEvent::SolveCancelledByAnswer,"resolution_id":crate::hex(&id)}),
                     );
                     continue;
                 }
@@ -702,7 +719,7 @@ impl Autonomous {
                 if let Err(error) = frontier.attempted(&solving.question, graph, observed, outcome)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         solving.completion = completion.ok();
                         self.solving.insert(id, solving);
@@ -712,19 +729,24 @@ impl Autonomous {
             }
             if let Ok(completion) = &completion
                 && completion.id == 0
-                && completion
-                    .result
-                    .as_ref()
-                    .err()
-                    .is_some_and(|e| e.contains("required") && e.contains("prerequisites"))
+                && completion.result.as_ref().err().is_some_and(|error| {
+                    matches!(
+                        error,
+                        jobs::CompletionFailure::Admission(
+                            crate::outcome::AdmissionFailure::PrerequisitesNotRetained
+                                | crate::outcome::AdmissionFailure::InFlightPrerequisites
+                                | crate::outcome::AdmissionFailure::ArchivedPrerequisites
+                        )
+                    )
+                })
                 && let Some(frontier) = &mut self.frontier
             {
                 if let Err(error) = frontier.exhaust_helpers(&solving.question) {
-                    self.error = Some(error.to_string());
+                    self.error = Some(error);
                     return accepted;
                 }
                 emit(
-                    json!({"event":"lemma_loop_unavailable","resolution_id":crate::hex(&id),"reason":"checked prerequisite not retained by owner"}),
+                    json!({"event":crate::outcome::NodeEvent::LemmaLoopUnavailable,"resolution_id":crate::hex(&id),"reason":crate::outcome::EventReason::CheckedPrerequisiteNotRetained}),
                 );
             }
             match completion {
@@ -738,8 +760,8 @@ impl Autonomous {
                         questions.settle_backlog(&id);
                     }
                     emit(
-                        json!({"event":"solve_obligation_held_or_expired","resolution_id":crate::hex(&id),
-                        "state":format!("{:?}",completion.state)}),
+                        json!({"event":crate::outcome::NodeEvent::SolveObligationHeldOrExpired,"resolution_id":crate::hex(&id),
+                        "state":completion.state}),
                     );
                     if !self.acknowledge(completion.id) {
                         return accepted;
@@ -777,7 +799,7 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 emit(
-                                    json!({"event":"proof_candidate_rejected","job":completion.id,"error":error.to_string()}),
+                                    json!({"event":crate::outcome::NodeEvent::ProofCandidateRejected,"job":completion.id,"error":error}),
                                 );
                                 if !solving.cooperative {
                                     self.cooperation.request(id, solving.question.clone());
@@ -813,13 +835,15 @@ impl Autonomous {
                                 });
                             }
                             Err(error) => {
-                                emit(json!({"event":"proof_candidate_rejected","error":error}));
+                                emit(
+                                    json!({"event":crate::outcome::NodeEvent::ProofCandidateRejected,"error":error}),
+                                );
                                 if let Some(frontier) = &mut self.frontier
                                     && let Err(error) =
                                         frontier.rejected(&solving.question, completion.id)
                                 {
                                     if error.fatal() {
-                                        self.error = Some(error.to_string());
+                                        self.error = Some(error);
                                     } else {
                                         solving.completion = Some(completion);
                                         self.solving.insert(id, solving);
@@ -891,14 +915,16 @@ impl Autonomous {
                         if let Some((peer, goal)) = solving.member {
                             self.cooperation.notice(peer, goal, id, false);
                         }
-                        emit(json!({"event":"workgroup_yielded", "resolution_id":crate::hex(&id)}));
+                        emit(
+                            json!({"event":crate::outcome::NodeEvent::WorkgroupYielded, "resolution_id":crate::hex(&id)}),
+                        );
                         // Dropping the ticket requests cancellation; the job owner
                         // retains spent allowance and supervises worker cleanup.
                     } else {
                         self.solving.insert(id, solving);
                     }
                 }
-                Err(_) => self.error = Some("solving job owner stopped".into()),
+                Err(_) => self.error = Some(crate::RuntimeFailure::AutonomousSolving.into()),
             }
         }
 
@@ -962,7 +988,7 @@ impl Autonomous {
                     }
                     Err(error) => {
                         emit(
-                            json!({"event":"proof_candidate_rejected","job":pending.job,"error":error}),
+                            json!({"event":crate::outcome::NodeEvent::ProofCandidateRejected,"job":pending.job,"error":error}),
                         );
                         if !pending.cooperative {
                             self.retain(pending.question);
@@ -981,26 +1007,26 @@ impl Autonomous {
                     && let Err(error) = frontier.prepared(&pending.question, pending.job, *root)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         self.publications.push_back(pending);
                     }
                     return accepted;
                 }
                 emit(
-                    json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(pending.question.resolution_id()),"job":pending.job}),
+                    json!({"event":crate::outcome::NodeEvent::ProofGenerated,"id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(pending.question.resolution_id()),"job":pending.job}),
                 );
                 pending.announced = true;
             }
             if now >= pending.expires {
                 emit(
-                    json!({"event":"publication_expired","resolution_id":crate::hex(pending.question.resolution_id())}),
+                    json!({"event":crate::outcome::NodeEvent::PublicationExpired,"resolution_id":crate::hex(pending.question.resolution_id())}),
                 );
                 if let Some(frontier) = &mut self.frontier
                     && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         self.publications.push_back(pending);
                     }
@@ -1103,7 +1129,7 @@ impl Autonomous {
                                     )
                                 {
                                     if error.fatal() {
-                                        self.error = Some(error.to_string());
+                                        self.error = Some(error);
                                         return accepted;
                                     }
                                     self.evidence_publications.push_back(EvidencePublication {
@@ -1129,7 +1155,9 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 pending.batch = None;
-                                emit(json!({"event":"proof_candidate_deferred","error":error}));
+                                emit(
+                                    json!({"event":crate::outcome::NodeEvent::ProofCandidateDeferred,"error":error}),
+                                );
                                 if let Some(error) =
                                     questions.storage_error().or_else(|| graph.storage_error())
                                 {
@@ -1148,7 +1176,7 @@ impl Autonomous {
                         pending.retry = now;
                     }
                     Err(error) => {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                         return accepted;
                     }
                 }
@@ -1156,13 +1184,13 @@ impl Autonomous {
             }
             if pending.attempts >= crate::resources::limits().publication_retries {
                 emit(
-                    json!({"event":"publication_retry_limit","resolution_id":crate::hex(pending.question.resolution_id())}),
+                    json!({"event":crate::outcome::NodeEvent::PublicationRetryLimit,"resolution_id":crate::hex(pending.question.resolution_id())}),
                 );
                 if let Some(frontier) = &mut self.frontier
                     && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
                 {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     } else {
                         self.publications.push_back(pending);
                     }
@@ -1228,7 +1256,7 @@ impl Autonomous {
                 Ok(work) => work,
                 Err(error) => {
                     if error.fatal() {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error);
                     }
                     return accepted;
                 }
@@ -1348,7 +1376,7 @@ impl Autonomous {
                                         true,
                                     );
                                     emit(
-                                        json!({"event":"workgroup_joined", "peer":selected.peer.to_string(), "resolution_id":crate::hex(question.resolution_id())}),
+                                        json!({"event":crate::outcome::NodeEvent::WorkgroupJoined, "peer":selected.peer.to_string(), "resolution_id":crate::hex(question.resolution_id())}),
                                     );
                                     self.solving.insert(
                                         *question.resolution_id(),
@@ -1371,7 +1399,7 @@ impl Autonomous {
                             }
                         }
                     }
-                    Err(error) if error.fatal() => self.error = Some(error.to_string()),
+                    Err(error) if error.fatal() => self.error = Some(error),
                     _ => {}
                 }
             }
@@ -1390,7 +1418,7 @@ impl Autonomous {
                     Ok(index) => index,
                     Err(error) => {
                         if error.fatal() {
-                            self.error = Some(error.to_string());
+                            self.error = Some(error);
                         }
                         return accepted;
                     }
@@ -1445,7 +1473,7 @@ impl Autonomous {
                         Ok(selected) => selected,
                         Err(error) => {
                             if error.fatal() {
-                                self.error = Some(error.to_string());
+                                self.error = Some(error);
                             }
                             self.retain(question);
                             return accepted;
@@ -1453,7 +1481,7 @@ impl Autonomous {
                     };
                     if !required.is_empty() || !question.dependencies().is_empty() {
                         emit(json!({
-                            "event": "finder_checked_inputs",
+                            "event": crate::outcome::NodeEvent::FinderCheckedInputs,
                             "resolution_id": crate::hex(question.resolution_id()),
                             "proofs": required,
                             "definitions": question.dependencies().iter().map(|id| crate::hex(id.as_bytes())).collect::<Vec<_>>(),
@@ -1489,7 +1517,7 @@ impl Autonomous {
                                 self.cooperation.take().and_then(|selected| {
                                     if questions.refresh_exchange(graph, &selected.question, &selected.assessment).is_ok() {
                                         self.cooperation.notice(selected.peer, selected.goal, *question.resolution_id(), true);
-                                        emit(json!({"event":"workgroup_joined", "peer":selected.peer.to_string(), "resolution_id":crate::hex(question.resolution_id())}));
+                                        emit(json!({"event":crate::outcome::NodeEvent::WorkgroupJoined, "peer":selected.peer.to_string(), "resolution_id":crate::hex(question.resolution_id())}));
                                         Some((selected.peer, selected.goal))
                                     } else { None }
                                 })
@@ -1533,7 +1561,7 @@ impl Autonomous {
             } else {
                 let cursor = self.cursor;
                 let Some(next) = cursor.checked_add(1) else {
-                    self.error = Some("finding cursor exhausted".into());
+                    self.error = Some(crate::RuntimeFailure::AutonomousCursor.into());
                     return accepted;
                 };
                 self.cursor = next;
@@ -1558,7 +1586,7 @@ impl Autonomous {
                         Ok(()) => {}
                         Err(error) if !error.fatal() => return accepted,
                         Err(error) => {
-                            self.error = Some(error.to_string());
+                            self.error = Some(error);
                             return accepted;
                         }
                     }
@@ -1569,7 +1597,7 @@ impl Autonomous {
                             Ok(false) => vec![goal.clone()],
                             Ok(true) => frontier.goal_candidates(cursor, goal),
                             Err(error) => {
-                                self.error = Some(error.to_string());
+                                self.error = Some(error);
                                 return accepted;
                             }
                         }
@@ -1595,7 +1623,7 @@ impl Autonomous {
                         Ok(None) => return accepted,
                         Err(error) => {
                             if error.fatal() {
-                                self.error = Some(error.to_string());
+                                self.error = Some(error);
                             }
                             return accepted;
                         }

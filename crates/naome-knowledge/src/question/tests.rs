@@ -16,7 +16,11 @@ const PROOF: &str = "0000000001110000000b000000000000000000000000000000000000010
 const QUESTION: &str = "040101000000000100000000";
 const SOLVED: &str = "04020402040203030101000000000100000001020301010000000001000000020200010000000001000000000203020301010000000001000000020200010000000001000000000101000000000100000001";
 
-type Managed = LocalQuestions<fn(ResearchQuestion) -> std::future::Ready<Result<bool, String>>>;
+type Managed = LocalQuestions<
+    fn(
+        ResearchQuestion,
+    ) -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
+>;
 
 #[tokio::test]
 async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
@@ -258,7 +262,10 @@ async fn context(handle: &QuestionHandle) -> LocalQuestionContext {
         .unwrap()
         .unwrap()
 }
-async fn stop(handle: QuestionAdminHandle, task: tokio::task::JoinHandle<Result<(), String>>) {
+async fn stop<E: std::fmt::Debug>(
+    handle: QuestionAdminHandle,
+    task: tokio::task::JoinHandle<Result<(), E>>,
+) {
     handle.stop().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), task)
         .await
@@ -395,7 +402,7 @@ async fn running_node_prefilter_reaches_separate_selection_without_storing_quest
             let ordinal = observed.fetch_add(1, Ordering::SeqCst);
             async move {
                 if ordinal == 2 {
-                    Err("bounded provider fixture failure".into())
+                    Err(SelectionProviderError)
                 } else {
                     Ok(false)
                 }
@@ -751,7 +758,7 @@ fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_reco
     for computation in 1..=2 {
         let decision = local.assess(&graph, &input);
         assert!(decision.inconclusive());
-        assert_eq!(decision.outcome.code(), "INCONCLUSIVE");
+        assert_eq!(decision.outcome.code(), 0x0022_0003);
         assert_eq!(decision.reason, Some(RejectionReason::ExecutionLimit));
         assert!(decision.novelty().is_none());
         assert_eq!(
@@ -778,7 +785,7 @@ fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_reco
     local.policy = PrefilterPolicy::default();
     let reassessed = local.evaluate_record(&graph, &input, true, Some(record));
     assert!(reassessed.passed());
-    assert_eq!(reassessed.outcome.code(), "PASS");
+    assert_eq!(reassessed.outcome.code(), 0x0022_0001);
 }
 
 #[cfg(feature = "system-tests")]
@@ -1065,7 +1072,7 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
                 let _owned = owned;
                 match ordinal {
                     0 => Ok(false),
-                    1 => Err("fixture selection failure".into()),
+                    1 => Err(SelectionProviderError),
                     _ => std::future::pending().await,
                 }
             }
@@ -1147,7 +1154,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
         result.assessment.prefilter.reason,
         Some(RejectionReason::KnownProof)
     );
-    assert_eq!(result.assessment.prefilter.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.assessment.prefilter.rule,
+        naome_checker::question::PrefilterRule::Q04CheckedMpClosure
+    );
     assert_eq!(
         result.assessment.selection_result,
         SelectionAssessment::NotRun
@@ -1203,6 +1213,45 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     assert_eq!(checked.conclusion(), &r);
     assert_eq!(checked.proof_id(), witness.proof_id());
     assert_eq!(reopened.content_root(), root);
+}
+
+#[test]
+fn publication_recovery_rejects_a_mismatched_checked_root_without_losing_the_outbox() {
+    let directory = Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let envelope = graph.author(PROOF).unwrap();
+    let root = graph.ingest(envelope, Instant::now()).unwrap().id;
+    let target = (0..3)
+        .map(|i| question(&crate::mocks::create_question(i)))
+        .find(|candidate| !graph.resolves_question(root, candidate).unwrap())
+        .unwrap();
+    let mut local = Managed::new(None);
+    local.attach_persistence(&directory.0, &graph).unwrap();
+    local
+        .persistence
+        .as_mut()
+        .unwrap()
+        .stage_publication(root, &target)
+        .unwrap();
+    let before = graph.content_root();
+    let error = local.recover_publications(&graph).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::Runtime(crate::RuntimeFailure::PublicationRecoveryTarget)
+    ));
+    assert!(error.fatal());
+    assert_eq!(local.registry.len(), 0);
+    assert_eq!(graph.content_root(), before);
+    assert_eq!(
+        local
+            .persistence
+            .as_ref()
+            .unwrap()
+            .publications(graph.checked_context())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -1374,7 +1423,15 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
             .is_err()
     );
     assert!(graph.contains(root).unwrap());
-    assert!(local.storage_error().is_some());
+    assert!(matches!(
+        local.storage_error(),
+        Some(crate::Error::UncertainDurability(
+            crate::DurabilityFailure {
+                code: crate::DurabilityCode::QuestionPublication,
+                ..
+            }
+        ))
+    ));
     assert_eq!(local.registry.len(), 0);
     assert_eq!(
         local
@@ -1403,3 +1460,43 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
 
 mod equivalence;
 mod selection_binding;
+
+#[test]
+fn selection_result_codes_distinguish_decisions_from_unavailable_results() {
+    use crate::outcome::SelectionResult;
+    for (assessment, code) in [
+        (SelectionAssessment::NotRun, SelectionResult::NotRun),
+        (
+            SelectionAssessment::Assessed(true),
+            SelectionResult::Accepted,
+        ),
+        (
+            SelectionAssessment::Assessed(false),
+            SelectionResult::Rejected,
+        ),
+        (
+            SelectionAssessment::ProviderFailed,
+            SelectionResult::ProviderFailed,
+        ),
+        (SelectionAssessment::TimedOut, SelectionResult::TimedOut),
+        (SelectionAssessment::Stale, SelectionResult::Stale),
+    ] {
+        assert_eq!(assessment.code(), code);
+    }
+}
+
+#[test]
+fn question_index_ownership_failure_preserves_fatal_cause() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let _owner = crate::index_storage::IndexStorage::open(&directory.0, "questions").unwrap();
+    let mut local = Managed::new(None);
+    let error = local.attach_persistence(&directory.0, &graph).unwrap_err();
+    assert!(error.fatal());
+    assert!(matches!(error, crate::Error::RuntimeContext {
+        code: crate::RuntimeFailure::QuestionStorage,
+        cause,
+    } if *cause == crate::Error::from(crate::InputFault::DisposableIndexOwned)));
+    assert!(local.persistence.is_none());
+    assert!(local.index_storage.is_none());
+}

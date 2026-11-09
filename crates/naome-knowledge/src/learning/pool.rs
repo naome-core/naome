@@ -59,9 +59,9 @@ impl Pool {
         &mut self,
         observations: &[super::experience::Observation],
         rich_targets: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if observations.len() > super::history::SOURCES {
-            return Err("native hindsight source capacity".into());
+            return Err(crate::ResearchFailure::PoolHindsightSourceCapacity.into());
         }
         self.hindsight.clear();
         for graph in &self.graphs {
@@ -71,11 +71,11 @@ impl Pool {
                 self.work_bytes = self
                     .work_bytes
                     .checked_add(256 + 8 * graph.successes.len())
-                    .ok_or("native target mask work overflow")?;
+                    .ok_or(crate::ResearchFailure::PoolMaskWorkOverflow)?;
             }
         }
         if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
-            return Err("native target mask work capacity".into());
+            return Err(crate::ResearchFailure::PoolMaskWorkCapacity.into());
         }
         for observation in observations {
             observation.validate()?;
@@ -100,9 +100,11 @@ impl Pool {
                                 self.work_bytes = self
                                     .work_bytes
                                     .checked_add(512)
-                                    .ok_or("native hindsight work overflow")?;
+                                    .ok_or(crate::ResearchFailure::PoolHindsightWorkOverflow)?;
                                 if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
-                                    return Err("native hindsight work capacity".into());
+                                    return Err(
+                                        crate::ResearchFailure::PoolHindsightWorkCapacity.into()
+                                    );
                                 }
                             }
                         }
@@ -110,7 +112,7 @@ impl Pool {
                 }
             }
             let case = super::curriculum::owned::case(&observation.question)
-                .ok_or("observed training lineage differs")?;
+                .ok_or(crate::ResearchFailure::PoolObservationLineage)?;
             for derivation in super::search::derivation::observed(observation)? {
                 if let Some(fragment) = derivation.fragments.first() {
                     let graphs: Vec<_> = derivation
@@ -126,7 +128,7 @@ impl Pool {
                             self.work_bytes = self
                                 .work_bytes
                                 .checked_add(256)
-                                .ok_or("native target mask work overflow")?;
+                                .ok_or(crate::ResearchFailure::PoolMaskWorkOverflow)?;
                         }
                     }
                     self.add(
@@ -156,9 +158,9 @@ impl Pool {
                     self.work_bytes = self
                         .work_bytes
                         .checked_add(256 + 32 * window.len())
-                        .ok_or("native sequence work overflow")?;
+                        .ok_or(crate::ResearchFailure::PoolSequenceWorkOverflow)?;
                     if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
-                        return Err("native sequence work capacity".into());
+                        return Err(crate::ResearchFailure::PoolSequenceWorkCapacity.into());
                     }
                     self.sequences.entry(key).or_default().push(window);
                 }
@@ -175,7 +177,7 @@ impl Pool {
     fn reconcile_repair(
         &mut self,
         observation: &super::experience::Observation,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let super::experience::TerminalEvidence::CertifiedCandidate { proof_id, refuted } =
             &observation.summary.terminal
         else {
@@ -189,15 +191,14 @@ impl Pool {
         {
             return Ok(());
         }
-        let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)
-            .map_err(|error| error.to_string())?;
+        let question = naome_checker::question::ResearchQuestion::from_hex(&observation.question)?;
         let target = if *refuted {
             question.refuted_target()
         } else {
             question.proved_target()
         };
         let case = super::curriculum::owned::case(&observation.question)
-            .ok_or("observed training lineage differs")?;
+            .ok_or(crate::ResearchFailure::PoolObservationLineage)?;
         for execution in &observation.executions {
             // A supplemental replay must fit the same proof checking capacity
             // as other training material. An unusable replay contributes no label.
@@ -212,7 +213,7 @@ impl Pool {
         &mut self,
         derivation: super::search::derivation::Derivation,
         active: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         for step in &derivation.steps {
             // Single-choice transitions carry sequence state, not a missing
             // competing-action label. Ambiguous states must be the same ones
@@ -221,7 +222,7 @@ impl Pool {
                 && step.graph.candidates.len() > 1
                 && !self.keys.contains_key(&step.graph.key())
             {
-                return Err("checked sequence differs from its admitted replay".into());
+                return Err(crate::ResearchFailure::PoolSequenceBinding.into());
             }
             let key = step.graph.key();
             let candidates = self.witnesses.entry(key).or_default();
@@ -241,7 +242,7 @@ impl Pool {
                     self.work_bytes = self
                         .work_bytes
                         .checked_add(1024 + std::mem::size_of::<Witness>())
-                        .ok_or("native witness pool work overflow")?;
+                        .ok_or(crate::ResearchFailure::PoolWitnessWorkOverflow)?;
                     candidates.insert(next.action, next);
                 }
                 _ => {}
@@ -250,9 +251,9 @@ impl Pool {
         self.work_bytes = self
             .work_bytes
             .checked_add(derivation.work_bytes())
-            .ok_or("native derived pool work overflow")?;
+            .ok_or(crate::ResearchFailure::PoolDerivedWorkOverflow)?;
         if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
-            return Err("native derived pool work capacity".into());
+            return Err(crate::ResearchFailure::PoolDerivedWorkCapacity.into());
         }
         self.derivations.push(derivation);
         Ok(())
@@ -294,7 +295,7 @@ impl Pool {
         case: &super::curriculum::Case,
         proof: &str,
         graph: Graph,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let key = graph.key();
         let needed = self
             .keys
@@ -321,7 +322,7 @@ impl Pool {
         family: &str,
         proof: &str,
         graphs: Vec<Graph>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         for mut graph in graphs {
             graph.successes.sort_unstable();
             graph.successes.dedup();
@@ -337,9 +338,9 @@ impl Pool {
                 self.work_bytes = self
                     .work_bytes
                     .checked_add(graph.work_bytes())
-                    .ok_or("native pool work overflow")?;
+                    .ok_or(crate::ResearchFailure::PoolGraphWorkOverflow)?;
                 if self.work_bytes > self.work_capacity.unwrap_or(WORK_BYTES) {
-                    return Err("native pool work capacity".into());
+                    return Err(crate::ResearchFailure::PoolGraphWorkCapacity.into());
                 }
                 let index = self.graphs.len();
                 self.graphs.push(graph);
@@ -414,8 +415,8 @@ impl Pool {
     pub fn focus(
         &mut self,
         feedback: &crate::training::ability::Feedback,
-        mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, String>,
-    ) -> Result<(), String> {
+        mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, crate::Error>,
+    ) -> Result<(), crate::Error> {
         #[cfg(test)]
         {
             self.reference = false;
@@ -424,7 +425,7 @@ impl Pool {
         for graph in &self.graphs {
             let scores = scores(graph)?;
             if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
-                return Err("preparation prediction shape or value differs".into());
+                return Err(crate::ResearchFailure::PoolPredictionInvalid.into());
             }
             let maximum = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let exp = scores
@@ -451,8 +452,8 @@ impl Pool {
     pub fn reference_focus(
         &mut self,
         feedback: &crate::training::ability::Feedback,
-        scores: impl FnMut(&Graph) -> Result<Vec<f32>, String>,
-    ) -> Result<(), String> {
+        scores: impl FnMut(&Graph) -> Result<Vec<f32>, crate::Error>,
+    ) -> Result<(), crate::Error> {
         reference::focus(self, feedback, scores)
     }
     /// Origins, families, proofs and successful rule types keep the same cyclic

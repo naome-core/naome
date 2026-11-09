@@ -16,19 +16,19 @@ impl Summary {
     pub fn prefix(count: usize) -> u32 {
         (1u32 << count.min(CASES)) - 1
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.observed & !ALL != 0
             || self.observed & self.observed.wrapping_add(1) != 0
             || (self.before | self.after) & !self.observed != 0
         {
-            return Err("noncanonical transfer outcome coverage".into());
+            return Err(crate::ResearchFailure::TransferCoverageInvalid.into());
         }
         Ok(())
     }
-    pub fn record(&mut self, index: usize, before: bool, after: bool) -> Result<(), String> {
+    pub fn record(&mut self, index: usize, before: bool, after: bool) -> Result<(), crate::Error> {
         self.validate()?;
         if index >= CASES || self.observed != Self::prefix(index) {
-            return Err("transfer evaluation sequence differs".into());
+            return Err(crate::ResearchFailure::TransferSequence.into());
         }
         self.before |= u32::from(before) << index;
         self.after |= u32::from(after) << index;
@@ -73,7 +73,9 @@ impl Summary {
 }
 pub(super) struct Outcome {
     pub solved: bool,
-    pub diagnostic: String,
+    pub terminal: super::experience::TerminalEvidence,
+    #[cfg(all(test, feature = "developer-tools"))]
+    pub diagnostic: crate::outcome::GenerationOutcome,
     pub micros: u64,
     #[cfg(all(test, feature = "developer-tools"))]
     pub proof_id: Option<String>,
@@ -89,24 +91,29 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
     engine: &mut super::Engine,
     io: &mut I,
     job: u64,
-) -> Result<Evaluation, String> {
+) -> Result<Evaluation, crate::Error> {
     let mut solve = |checkpoint: &super::Checkpoint| {
         let start = std::time::Instant::now();
-        let (solution, diagnostic, _) = engine.with(checkpoint, io, |runtime| {
-            super::solve_with_definitions(
+        let generation = engine.with_error(checkpoint, io, |runtime| {
+            super::solve_with_report_typed(
                 source,
                 runtime,
                 32,
                 job,
-                &base.definitions,
-                &base.knowledge,
+                super::SolveContext {
+                    definitions: &base.definitions,
+                    theorems: &base.knowledge,
+                    ..Default::default()
+                },
             )
         })?;
-        Ok::<_, String>(Outcome {
-            solved: solution.is_some(),
+        Ok::<_, crate::Error>(Outcome {
+            solved: generation.solution.is_some(),
+            terminal: generation.terminal,
             #[cfg(all(test, feature = "developer-tools"))]
-            proof_id: solution.map(|s| s.proof_id),
-            diagnostic,
+            proof_id: generation.solution.map(|s| s.proof_id),
+            #[cfg(all(test, feature = "developer-tools"))]
+            diagnostic: generation.diagnostic,
             micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         })
     };

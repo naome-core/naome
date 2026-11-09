@@ -54,7 +54,7 @@ fn zero_overflow_codec_and_inconsistent_allocations_are_rejected() {
         serde_json::json!({"tuning":{"assessment_operations":usize::MAX}}),
         serde_json::json!({"tuning":{"network_config_bytes":usize::MAX}}),
         serde_json::json!({"tuning":{"command_bytes":64*MIB,"cli_commands":8}}),
-        serde_json::json!({"tuning":{"failure_detail_bytes":usize::MAX}}),
+        serde_json::json!({"tuning":{"diagnostic_bytes":usize::MAX}}),
         serde_json::json!({"tuning":{"identify_protocols":DEFAULT.identify_protocols+1}}),
         serde_json::json!({"tuning":{"identify_addresses":DEFAULT.identify_addresses+1}}),
         serde_json::json!({"tuning":{"replay_guard_bytes":385*MIB}}),
@@ -198,7 +198,7 @@ pub(crate) fn snapshot(paused: bool) -> Snapshot {
     )
     .unwrap();
     if paused {
-        snapshot.budget.paused = Some("sustained external CPU pressure".into());
+        snapshot.budget.paused = Some(crate::PauseReason::ExternalCpuPressure);
         snapshot.budget.concurrency = 0;
         snapshot.budget.batch_steps = 0;
         snapshot.budget.network_requests = 1;
@@ -208,4 +208,80 @@ pub(crate) fn snapshot(paused: bool) -> Snapshot {
 
 pub(crate) fn budget(paused: bool) {
     adaptive::publish(snapshot(paused));
+}
+
+#[test]
+fn resource_validation_reports_registered_field_and_preserves_custody() {
+    let mut profile = ResourceProfile::default();
+    profile.tuning.question_page = Some(0);
+    let error = profile.resolve().unwrap_err();
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], 0x0006_001a_u32);
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::ResourceValidationReason::FieldBudget)
+    );
+    assert_eq!(value["field"], u32::from(ResourceField::QuestionPage));
+    assert_eq!(value["actual"], 0);
+    assert_eq!(value["maximum"], profile.memory_bytes as u64);
+    assert_eq!(
+        serde_json::from_value::<ResourceField>(value["field"].clone()).unwrap(),
+        ResourceField::QuestionPage
+    );
+    assert!(serde_json::from_value::<ResourceField>(0x004d_ffff_u32.into()).is_err());
+    profile.tuning.question_page = None;
+    profile.tuning.replay_guard_bytes = Some(385 * MIB);
+    let error = profile.resolve().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::ResourceValidation {
+            reason: crate::ResourceValidationReason::Custody,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn native_model_capacity_reports_structured_reasons() {
+    let mut limits = DEFAULT.clone();
+    limits.native_model_chunk_bytes = 512 * 1024 + 1;
+    let error = limits.native_model_capacity().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::ResourceValidation {
+            reason: crate::ResourceValidationReason::NativeModelLimits,
+            ..
+        }
+    ));
+    let mut limits = DEFAULT.clone();
+    limits.native_model_chunk_bytes = 1;
+    limits.native_model_blob_bytes = 9 * MIB;
+    limits.native_model_io_bytes = 512 * MIB;
+    limits.native_model_work_bytes = limits
+        .allocation_budget()
+        .max(crate::learning::MODEL_REQUIREMENTS.work_bytes);
+    let error = limits.native_model_capacity().unwrap_err();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::ResourceValidationReason::NativeModelAllocation)
+    );
+    assert_eq!(value["actual"], limits.allocation_budget() as u64);
+    assert_eq!(
+        value["minimum"],
+        limits.native_model_work_bytes.saturating_add(32 * MIB) as u64
+    );
+}
+
+#[test]
+fn disk_reservation_reports_structured_filesystem_failure() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let missing = directory.0.join("missing");
+    let error = DiskLease::acquire(&missing, 1).unwrap_err();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["operation"],
+        u32::from(crate::StorageIoOperation::InspectDiskVolume)
+    );
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
 }

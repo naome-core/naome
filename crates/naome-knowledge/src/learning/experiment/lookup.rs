@@ -109,12 +109,15 @@ pub fn evaluate(
                 let started = Instant::now();
                 let prediction = match &graph {
                     Ok(graph) => engine
-                        .with(model, io, |runtime| runtime.scores_graph(graph))
+                        .with(model, io, |runtime| {
+                            runtime.scores_graph(graph).map_err(Into::into)
+                        })
                         .map(|scores| {
                             (0..scores.len())
                                 .max_by(|a, b| scores[*a].total_cmp(&scores[*b]).then(b.cmp(a)))
                                 .unwrap()
-                        }),
+                        })
+                        .map_err(crate::Error::from),
                     Err(error) => Err(error.clone()),
                 };
                 let selected = prediction.as_ref().ok().copied();

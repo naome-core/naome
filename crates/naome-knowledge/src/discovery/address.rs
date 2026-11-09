@@ -72,7 +72,11 @@ impl Book {
             })
     }
 
-    pub(crate) fn route(&self, address: &Multiaddr, target: PeerId) -> Result<Multiaddr, String> {
+    pub(crate) fn route(
+        &self,
+        address: &Multiaddr,
+        target: PeerId,
+    ) -> Result<Multiaddr, crate::Error> {
         // Public circuits are untrusted paths, not authorities. Noise still
         // authenticates the end peer. Only one hop to a public endpoint is used.
         let extra = self.internet
@@ -96,7 +100,7 @@ impl Book {
         peer: PeerId,
         address: &Multiaddr,
         now: Instant,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::Error> {
         let address = self.route(address, peer)?;
         if !self.allow_private_addresses
             && !ip(&address).is_some_and(|ip| match ip {
@@ -104,13 +108,13 @@ impl Book {
                 IpAddr::V6(ip) => ip.is_unique_local() || public_ip(ip.into()),
             })
         {
-            return Err("LAN discovery requires a safe literal endpoint".into());
+            return Err(crate::InputFault::ContactLocalAddress.into());
         }
         let contact = self.admit(peer, now)?;
         if contact.addresses.len() >= crate::resources::limits().addresses_per_contact
             && !contact.addresses.contains(&address)
         {
-            return Err("contact address capacity".into());
+            return Err(crate::InputFault::ContactAddressCapacity.into());
         }
         if let Some(endpoint) = endpoint(&address) {
             contact.local_addresses.insert(endpoint);

@@ -1,4 +1,5 @@
 //! Receiver-owned, transient approval and complete proof-closure staging.
+use crate::outcome::OfferStatus;
 use crate::{
     Envelope, Graph,
     graph::CheckedBatch,
@@ -125,7 +126,7 @@ impl Intake {
         peer: PeerId,
         metadata: Metadata,
         graph: &Graph,
-    ) -> Result<&'static str, crate::Error> {
+    ) -> Result<OfferStatus, crate::Error> {
         self.enqueue_with_grant(peer, metadata, graph, None)
     }
     pub(crate) fn enqueue_with_grant(
@@ -134,20 +135,20 @@ impl Intake {
         metadata: Metadata,
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<&'static str, crate::Error> {
+    ) -> Result<OfferStatus, crate::Error> {
         let (id, statement, question) = metadata.compile(graph.checked_context())?;
         if graph.contains(id)? {
-            return Ok("duplicate");
+            return Ok(OfferStatus::Duplicate);
         }
         if let Some(root) = &mut self.active
             && root.description.transfer.root() == id
             && root.closure.has_programs()
         {
             if root.description.statement != statement || root.description.question != question {
-                return Err("refreshed parent metadata differs".into());
+                return Err(crate::InputFault::IntakeParentMetadataMismatch.into());
             }
             root.description.transfer = TransferGrant::new(peer, id, grant);
-            return Ok("metadata_refreshed");
+            return Ok(OfferStatus::MetadataRefreshed);
         }
         if let Some(waiting) = self
             .waiting
@@ -157,14 +158,14 @@ impl Intake {
             if waiting.description.statement != statement
                 || waiting.description.question != question
             {
-                return Err("refreshed metadata differs from the original obligation".into());
+                return Err(crate::InputFault::IntakeMetadataMismatch.into());
             }
             if let managed::Phase::Refresh { ready, .. } = &mut waiting.phase {
                 *ready = true;
                 waiting.description.transfer = TransferGrant::new(peer, id, grant);
-                return Ok("metadata_refreshed");
+                return Ok(OfferStatus::MetadataRefreshed);
             }
-            return Ok("queued_duplicate");
+            return Ok(OfferStatus::QueuedDuplicate);
         }
         let same = |description: &Description| {
             description.transfer.peer() == peer
@@ -178,23 +179,23 @@ impl Intake {
                 .as_ref()
                 .is_some_and(|root| same(&root.description))
         {
-            return Ok("queued_duplicate");
+            return Ok(OfferStatus::QueuedDuplicate);
         }
         if self
             .declined
             .contains_key(&(peer, id, statement, *question.record_id()))
         {
-            return Ok("declined");
+            return Ok(OfferStatus::Declined);
         }
         if self.queue.len() >= crate::resources::active_limits().queued_metadata {
-            return Err("description queue capacity".into());
+            return Err(crate::InputLimit::IntakeDescriptionCapacity.into());
         }
         self.queue.push_back(Description {
             transfer: TransferGrant::new(peer, id, grant),
             statement,
             question,
         });
-        Ok("queued")
+        Ok(OfferStatus::Queued)
     }
 
     pub(crate) fn needed(&self) -> Vec<(PeerId, ArtifactId, ArtifactId)> {
@@ -293,12 +294,15 @@ impl Intake {
                     && root.description.transfer.root() == root_id
                     && !root.description.transfer.live(Instant::now())
             }) {
-                return Err("expired proof fetch grant".into());
+                return Err(crate::InputFault::IntakeProofGrantExpired.into());
             }
             if !self.authorizes(peer, root_id, expected) {
-                return Err("unrequested proof payload".into());
+                return Err(crate::InputFault::IntakeProofUnrequested.into());
             }
-            let root = self.active.as_mut().ok_or("unrequested proof payload")?;
+            let root = self
+                .active
+                .as_mut()
+                .ok_or(crate::InputFault::IntakeProofUnrequested)?;
             let candidate = root.closure.certificate_payload(
                 expected,
                 object,
@@ -458,7 +462,8 @@ impl Intake {
     ) -> Progress
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         match self.advance_definition(graph) {
             Progress::Waiting => {}
@@ -470,7 +475,7 @@ impl Intake {
             let root = self.active.take().expect("overloaded closure");
             return Progress::Skipped(
                 root.description.transfer.root(),
-                "staged closure dependency capacity".into(),
+                crate::InputFault::IntakeStagedCapacity.into(),
             );
         }
         if let Err(error) = self.advance_program_helpers(graph, questions)
@@ -507,7 +512,7 @@ impl Intake {
             if !description.transfer.live(Instant::now()) {
                 return Progress::Skipped(
                     description.transfer.root(),
-                    "queued root intake deadline".into(),
+                    crate::InputFault::IntakeQueuedRootDeadline.into(),
                 );
             }
             let mut selection =
@@ -535,7 +540,7 @@ impl Intake {
         let operation = (|| -> Result<Option<Vec<ArtifactId>>, crate::Error> {
             if !root.description.transfer.live(now) {
                 if !root.closure.has_programs() {
-                    return Err("root intake deadline".into());
+                    return Err(crate::InputFault::IntakeRootDeadline.into());
                 } else {
                     return Ok(None);
                 }

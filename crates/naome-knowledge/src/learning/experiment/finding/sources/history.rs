@@ -173,7 +173,7 @@ impl<'a> Io<'a> {
     }
 }
 impl ArtifactIo for Io<'_> {
-    fn history(&mut self, request: &Request) -> Result<Receipt, String> {
+    fn history(&mut self, request: &Request) -> Result<Receipt, crate::Error> {
         request.validate()?;
         if self.available == 0 {
             return Err("scientific history has no opened source epoch".into());
@@ -282,10 +282,15 @@ impl ArtifactIo for Io<'_> {
         self.pages.push(json!({"receipt":receipt,"available_episodes":self.available,"examined":page.examined,"checked_sources":page.sources.len(),"observations":page.records.iter().filter(|r|r.observation.is_some()).count()}));
         Ok(receipt)
     }
-    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, crate::Error> {
         self.store.read(blob, range)
     }
-    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.store.write(blob, range, bytes)
     }
 }

@@ -12,8 +12,30 @@ mod checkpoint;
 mod corpus;
 mod discovery;
 mod error;
+mod outcome;
+pub use learning::evidence::{EvidenceLimit, Failure as EvidenceFailure};
+/// All node and checker outcomes for offline machine consumers.
+#[cfg(feature = "developer-tools")]
+pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)> {
+    outcome::OUTCOME_CODES
+        .iter()
+        .chain(resources::RESOURCE_FIELD_CODES.iter())
+        .chain(naome_checker::question::PREFILTER_CODES.iter())
+        .chain(naome_checker::question::PREFILTER_RULE_CODES.iter())
+        .copied()
+        .chain(naome_checker::diagnostics::outcome_codes())
+}
+pub use outcome::{
+    CompressionFailure, DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault,
+    InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ProofCommandFault,
+    ResearchFailure, ResourceValidationReason, RuntimeFailure, SchemaFailure, SqlFault,
+    StartupFailure, StorageIoOperation, TensorElementType, WorkerFailure,
+};
 mod frontier;
-pub use error::{CertificateFormatError, Error};
+pub use error::{
+    CertificateFormatError, DurabilityFailure, Error, ExternalFailure, FormatFailure,
+    ModelDigestMismatch,
+};
 mod graph;
 mod index_storage;
 mod intake;

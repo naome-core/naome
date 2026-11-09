@@ -49,11 +49,21 @@ fn directory_ownership_ends_with_its_last_owner_despite_inherited_descriptors() 
     let inherited = owner._lock.0.file().try_clone().unwrap();
     let retained = owner.clone();
     drop(owner);
-    assert!(Store::open(&directory.0).is_err());
+    assert!(matches!(
+        Store::open(&directory.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CatalogDirectoryOwned
+        ))
+    ));
     drop(retained);
     let reopened = Store::open(&directory.0).unwrap();
     drop(inherited);
-    assert!(Store::open(&directory.0).is_err());
+    assert!(matches!(
+        Store::open(&directory.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CatalogDirectoryOwned
+        ))
+    ));
     drop(reopened);
     drop(Store::open(&directory.0).unwrap());
 }
@@ -135,11 +145,12 @@ fn unknown_normal_schema_objects_are_refused_without_changing_data() {
         database.execute_batch(sql).unwrap();
         drop(database);
         let before = fs::read(&path).unwrap();
-        assert!(
-            Graph::open(&directory.0)
-                .unwrap_err_string()
-                .contains("unexpected catalog schema object")
-        );
+        assert!(matches!(
+            Graph::open(&directory.0),
+            Err(crate::Error::InputFault(
+                crate::InputFault::CatalogSchemaObject
+            ))
+        ));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
@@ -149,11 +160,14 @@ fn namespace_metadata_errors_are_not_treated_as_absence() {
     let directory = Directory::new();
     let blocked = directory.0.join("not-a-directory");
     fs::write(&blocked, b"unrelated bytes").unwrap();
-    assert!(
-        catalog_leaf_exists(&blocked.join(DATABASE_FILE))
-            .unwrap_err()
-            .contains("cannot inspect")
-    );
+    assert!(matches!(
+        catalog_leaf_exists(&blocked.join(DATABASE_FILE)),
+        Err(crate::Error::StorageIo {
+            operation: crate::StorageIoOperation::InspectOwnedFile,
+            kind: crate::IoFaultKind::NotADirectory,
+            ..
+        })
+    ));
     assert!(!catalog_leaf_exists(&directory.0.join(DATABASE_FILE)).unwrap());
     assert_eq!(fs::read(&blocked).unwrap(), b"unrelated bytes");
 }
@@ -555,12 +569,12 @@ fn genuine_sqlite_full_preserves_live_state_and_halts_admission() {
     graph.test_database_full();
     let object = large_fixture();
     let before = graph.content_root();
-    let error = graph.ingest(object, Instant::now()).unwrap_err();
-    assert!(
-        error.contains("full"),
-        "actual SQLite failure required: {error}"
-    );
-    assert!(graph.storage_error().is_some());
+    graph.ingest(object, Instant::now()).unwrap_err();
+    assert!(matches!(
+        graph.storage_error(),
+        Some(crate::Error::CatalogSql { reason: crate::SqlFault::Engine, sqlite_code: Some(code) })
+            if code.get() == rusqlite::ffi::SQLITE_FULL
+    ));
     assert_eq!(graph.content_root(), before);
     drop(graph);
     assert!(Graph::open(&directory.0).unwrap().ids().is_empty());
@@ -983,7 +997,7 @@ fn inventory_pages_seek_past_the_cursor_without_rescanning_prior_ids() {
         };
         assert_eq!(
             graph.ingest(object, Instant::now()).unwrap().status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         expected.push(id);
     }

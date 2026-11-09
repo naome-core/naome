@@ -1,5 +1,5 @@
 //! Artifact frames transport bounded canonical payloads as binary blocks.
-use super::{Body, Message};
+use super::{Body, Message, WireFailure};
 use crate::{
     Envelope,
     object::{ProgramMetadata, id_bytes},
@@ -21,14 +21,18 @@ pub(super) fn binary(body: &Body) -> bool {
     )
 }
 
-pub(super) fn encode(message: &Message) -> Result<Vec<u8>, String> {
+pub(super) fn encode(message: &Message) -> Result<Vec<u8>, WireFailure> {
     let mut bytes = message.compatibility.to_vec();
     match &message.body {
         Body::ProgramData { root, id, chunk } => {
             bytes.push(0);
             bytes.extend_from_slice(root);
             bytes.extend_from_slice(id);
-            bytes.extend(chunk.canonical_bytes()?);
+            bytes.extend(
+                chunk
+                    .canonical_bytes()
+                    .map_err(|_| WireFailure::ProgramEncoding)?,
+            );
         }
         Body::ProgramDescription { root, metadata } => {
             bytes.push(1);
@@ -51,7 +55,7 @@ pub(super) fn encode(message: &Message) -> Result<Vec<u8>, String> {
             bytes.extend_from_slice(root);
             write_object(object, question.as_deref(), &mut bytes)?;
         }
-        _ => return Err("expected a binary artifact frame".into()),
+        _ => return Err(WireFailure::ArtifactKind),
     }
     Ok(bytes)
 }
@@ -60,8 +64,8 @@ fn write_object(
     object: &Envelope,
     question: Option<&str>,
     bytes: &mut Vec<u8>,
-) -> Result<(), String> {
-    let id = |value| id_bytes(value).map_err(|error| error.to_string());
+) -> Result<(), WireFailure> {
+    let id = |value| id_bytes(value).map_err(|_| WireFailure::ArtifactAddress);
     bytes.extend_from_slice(&id(&object.compatibility)?);
     bytes.extend_from_slice(&id(&object.artifact_id)?);
     for value in [
@@ -84,10 +88,10 @@ fn write_object(
 fn read_object(
     mut bytes: &[u8],
     leases: &mut Leases,
-) -> Result<(Envelope, Option<String>), String> {
+) -> Result<(Envelope, Option<String>), WireFailure> {
     let compatibility = crate::hex(&take::<32>(&mut bytes)?);
     let artifact_id = crate::hex(&take::<32>(&mut bytes)?);
-    let mut optional_id = || -> Result<Option<String>, String> {
+    let mut optional_id = || -> Result<Option<String>, WireFailure> {
         if flag(&mut bytes)? {
             Ok(Some(crate::hex(&take::<32>(&mut bytes)?)))
         } else {
@@ -110,15 +114,15 @@ fn read_object(
     ))
 }
 
-fn write_blob(source: &str, maximum: usize, bytes: &mut Vec<u8>) -> Result<(), String> {
+fn write_blob(source: &str, maximum: usize, bytes: &mut Vec<u8>) -> Result<(), WireFailure> {
     if source.is_empty() || source.len() > 2 * maximum {
-        return Err("artifact frame payload capacity".into());
+        return Err(WireFailure::ArtifactPayloadLimit);
     }
     let length = source.len() / 2;
     let _work =
         crate::resources::MemoryLease::acquire(length + block::get_maximum_output_size(length))
-            .map_err(|error| error.to_string())?;
-    let raw = crate::unhex(source).map_err(|error| error.to_string())?;
+            .map_err(|_| WireFailure::FrameMemory)?;
+    let raw = crate::unhex(source).map_err(|_| WireFailure::ArtifactPayloadEncoding)?;
     let packed = block::compress(&raw);
     if packed.len() + 4 < raw.len() {
         bytes.extend_from_slice(&(packed.len() as u32 | PACKED).to_be_bytes());
@@ -131,7 +135,11 @@ fn write_blob(source: &str, maximum: usize, bytes: &mut Vec<u8>) -> Result<(), S
     Ok(())
 }
 
-fn read_blob(bytes: &mut &[u8], maximum: usize, leases: &mut Leases) -> Result<String, String> {
+fn read_blob(
+    bytes: &mut &[u8],
+    maximum: usize,
+    leases: &mut Leases,
+) -> Result<String, WireFailure> {
     let header = u32::from_be_bytes(take(bytes)?);
     let encoded = (header & !PACKED) as usize;
     let packed = header & PACKED != 0;
@@ -141,27 +149,28 @@ fn read_blob(bytes: &mut &[u8], maximum: usize, leases: &mut Leases) -> Result<S
         encoded
     };
     if encoded == 0 || length > maximum || (packed && encoded + 4 >= length) {
-        return Err("artifact frame payload capacity".into());
+        return Err(WireFailure::ArtifactPayloadLimit);
     }
     let (data, remainder) = bytes
         .split_at_checked(encoded)
-        .ok_or("truncated artifact frame payload")?;
+        .ok_or(WireFailure::TruncatedArtifact)?;
     *bytes = remainder;
     if !packed {
         return Ok(crate::hex(data));
     }
     let lease =
-        crate::resources::MemoryLease::acquire(3 * length).map_err(|error| error.to_string())?;
+        crate::resources::MemoryLease::acquire(3 * length).map_err(|_| WireFailure::FrameMemory)?;
     let mut raw = vec![0; length];
-    let written = block::decompress_into(data, &mut raw).map_err(|error| error.to_string())?;
+    let written =
+        block::decompress_into(data, &mut raw).map_err(|_| WireFailure::ArtifactCompression)?;
     if written != length {
-        return Err("artifact frame expanded length differs".into());
+        return Err(WireFailure::ArtifactCompression);
     }
     leases.push(lease);
     Ok(crate::hex(&raw))
 }
 
-fn write_question(question: Option<&str>, bytes: &mut Vec<u8>) -> Result<(), String> {
+fn write_question(question: Option<&str>, bytes: &mut Vec<u8>) -> Result<(), WireFailure> {
     bytes.push(u8::from(question.is_some()));
     if let Some(question) = question {
         write_blob(question, naome_checker::question::QUESTION_BYTES, bytes)?;
@@ -169,7 +178,7 @@ fn write_question(question: Option<&str>, bytes: &mut Vec<u8>) -> Result<(), Str
     Ok(())
 }
 
-fn read_question(mut bytes: &[u8], leases: &mut Leases) -> Result<Option<String>, String> {
+fn read_question(mut bytes: &[u8], leases: &mut Leases) -> Result<Option<String>, WireFailure> {
     let question = if flag(&mut bytes)? {
         Some(read_blob(
             &mut bytes,
@@ -180,26 +189,29 @@ fn read_question(mut bytes: &[u8], leases: &mut Leases) -> Result<Option<String>
         None
     };
     if !bytes.is_empty() {
-        return Err("trailing artifact frame bytes".into());
+        return Err(WireFailure::TrailingFrameBytes);
     }
     Ok(question)
 }
 
-fn write_metadata(metadata: &ProgramMetadata, bytes: &mut Vec<u8>) -> Result<(), String> {
-    let manifest = metadata.manifest.canonical_bytes()?;
+fn write_metadata(metadata: &ProgramMetadata, bytes: &mut Vec<u8>) -> Result<(), WireFailure> {
+    let manifest = metadata
+        .manifest
+        .canonical_bytes()
+        .map_err(|_| WireFailure::ProgramEncoding)?;
     bytes.push(manifest.len() as u8);
     bytes.extend(manifest);
     write_question(metadata.question.as_deref(), bytes)
 }
 
-pub(super) fn decode(mut bytes: &[u8]) -> Result<(Message, Leases), String> {
+pub(super) fn decode(mut bytes: &[u8]) -> Result<(Message, Leases), WireFailure> {
     let mut leases = Leases::new();
     let compatibility = take::<32>(&mut bytes)?;
     let body = match take::<1>(&mut bytes)?[0] {
         0 => Body::ProgramData {
             root: take::<32>(&mut bytes)?,
             id: take::<32>(&mut bytes)?,
-            chunk: Chunk::from_canonical_bytes(bytes)?,
+            chunk: Chunk::from_canonical_bytes(bytes).map_err(|_| WireFailure::ProgramEncoding)?,
         },
         1 => {
             let root = if flag(&mut bytes)? {
@@ -224,7 +236,7 @@ pub(super) fn decode(mut bytes: &[u8]) -> Result<(Message, Leases), String> {
                 question,
             }
         }
-        _ => return Err("unknown binary artifact frame kind".into()),
+        _ => return Err(WireFailure::ArtifactKind),
     };
     Ok((
         Message {
@@ -235,26 +247,29 @@ pub(super) fn decode(mut bytes: &[u8]) -> Result<(Message, Leases), String> {
     ))
 }
 
-fn read_metadata(mut bytes: &[u8], leases: &mut Leases) -> Result<ProgramMetadata, String> {
+fn read_metadata(mut bytes: &[u8], leases: &mut Leases) -> Result<ProgramMetadata, WireFailure> {
     let [size] = take(&mut bytes)?;
     let (manifest, remainder) = bytes
         .split_at_checked(usize::from(size))
-        .ok_or("truncated program manifest")?;
-    let manifest = Manifest::from_canonical_bytes(manifest)?;
+        .ok_or(WireFailure::TruncatedArtifact)?;
+    let manifest =
+        Manifest::from_canonical_bytes(manifest).map_err(|_| WireFailure::ProgramEncoding)?;
     let question = read_question(remainder, leases)?;
     Ok(ProgramMetadata { manifest, question })
 }
 
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], String> {
-    let (field, rest) = bytes.split_at_checked(N).ok_or("truncated program frame")?;
+fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], WireFailure> {
+    let (field, rest) = bytes
+        .split_at_checked(N)
+        .ok_or(WireFailure::TruncatedArtifact)?;
     *bytes = rest;
     Ok(field.try_into().expect("fixed program field width"))
 }
 
-fn flag(bytes: &mut &[u8]) -> Result<bool, String> {
+fn flag(bytes: &mut &[u8]) -> Result<bool, WireFailure> {
     match take::<1>(bytes)?[0] {
         0 => Ok(false),
         1 => Ok(true),
-        _ => Err("invalid program frame flag".into()),
+        _ => Err(WireFailure::InvalidArtifactFlag),
     }
 }

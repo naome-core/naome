@@ -15,13 +15,15 @@ impl ContextStorage for MemoryStorage {
         self.failures.lock().unwrap().push(error.clone());
     }
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
-        let value = self
-            .bytes
-            .lock()
-            .unwrap()
-            .get(&address)
-            .cloned()
-            .ok_or_else(|| ContextError::Storage("missing node".into()))?;
+        let value =
+            self.bytes
+                .lock()
+                .unwrap()
+                .get(&address)
+                .cloned()
+                .ok_or(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::Injected,
+                ))?;
         if value.len() > maximum {
             return Err(ContextError::Limit);
         }
@@ -32,7 +34,9 @@ impl ContextStorage for MemoryStorage {
         let mut budget = self.writes_until_failure.lock().unwrap();
         if let Some(remaining) = budget.as_mut() {
             if *remaining == 0 {
-                return Err(ContextError::Storage("injected write failure".into()));
+                return Err(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::Injected,
+                ));
             }
             *remaining -= 1;
         }
@@ -402,7 +406,10 @@ fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {
             Err(error) => break error,
         }
     };
-    assert_eq!(error, ContextError::Storage("missing node".into()));
+    assert_eq!(
+        error,
+        ContextError::Storage(naome_proof::ContextStorageFailure::Injected)
+    );
     assert!(!walk.complete());
     assert_eq!(copied.get(&first).unwrap(), Some(b"first".to_vec()));
 }

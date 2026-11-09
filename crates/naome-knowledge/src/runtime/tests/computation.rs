@@ -51,7 +51,7 @@ async fn automatic_status_and_selection_preserve_identity_and_do_not_override_re
         512 << 20,
     )
     .unwrap();
-    snapshot.budget.paused = Some("operating system power saving".into());
+    snapshot.budget.paused = Some(crate::PauseReason::PowerSaving);
     snapshot.budget.concurrency = 0;
     snapshot.budget.batch_steps = 0;
     adaptive::publish(snapshot);
@@ -59,8 +59,8 @@ async fn automatic_status_and_selection_preserve_identity_and_do_not_override_re
     assert!(status.running);
     assert_eq!(status.computation, ComputationState::Pausing);
     assert_eq!(
-        status.computation_reason.as_deref(),
-        Some("operating system power saving")
+        status.computation_reason,
+        Some(crate::PauseReason::PowerSaving)
     );
     assert_eq!(status.accepted_artifacts, 3);
     drop(active);
@@ -80,7 +80,7 @@ async fn invalid_control_token_cannot_stop_the_node() {
     let directory = Directory::new();
     let graph = Graph::open(&directory.0).unwrap();
     let control = Control::bind_test(&directory.0, graph.ownership()).unwrap();
-    let before = control.selection().unwrap();
+    let before = control.selection();
     let client = async {
         let mut stream = UnixStream::connect(&control.endpoint.socket).await.unwrap();
         write_frame(
@@ -101,7 +101,7 @@ async fn invalid_control_token_cannot_stop_the_node() {
             .unwrap_err()
     };
     let (_, error) = tokio::join!(client, server);
-    assert_eq!(error, "local control instance mismatch");
-    assert_eq!(control.selection().unwrap(), before);
+    assert_eq!(error, crate::outcome::ControlFailure::InstanceMismatch);
+    assert_eq!(control.selection(), before);
     assert!(!control.stopping());
 }

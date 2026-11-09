@@ -3,6 +3,9 @@ import json
 import pathlib
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "crates/naome-knowledge/tests/support"))
+from fixture_result import FixtureResult
+
 
 def verify(root, expected_revision=None):
     reports = [json.loads(path.read_text()) for path in pathlib.Path(root).glob("*/summary.json")]
@@ -17,7 +20,7 @@ def verify(root, expected_revision=None):
         assert reports[0]["revision"] == expected_revision, "receipts must match the dispatched commit"
     for index, report in enumerate(reports):
         other = reports[1 - index]
-        assert report["result"] == "pass" and not report["dirty"]
+        assert type(report["result"]) is int and report["result"] == FixtureResult.PASS and not report["dirty"]
         assert report["cleanup"]["all_processes_exited"] and not report["cleanup"]["errors"]
         assert report["participant_roster_injected"] is False and report["node_count"] == 1
         assert len(report["peer_ids"]) == 1
@@ -29,11 +32,11 @@ def verify(root, expected_revision=None):
             config = process["network_config"]
             assert config["peers"] == []
             assert config["discovery"] == {"mdns": False, "dht": True, "internet": True}
-        assert any(event.get("event") == "exchange_response" and event.get("kind") == "object"
+        assert any(event.get("event") == 0x00170013 and event.get("kind") == 0x1a0008
                    and event.get("peer") == other["peer_ids"][0]
                    and event.get("object_id") == other["own_proof_id"]
                    for event in report["public_connections"][0]), "counterpart payload receipt required"
-    return {"result": "pass", "physical_host_count": 2, "revision": reports[0]["revision"],
+    return {"result": FixtureResult.PASS, "physical_host_count": 2, "revision": reports[0]["revision"],
             "peer_ids": [report["peer_ids"][0] for report in reports]}
 
 

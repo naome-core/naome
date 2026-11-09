@@ -17,7 +17,7 @@ enum FixedOrder {
 }
 
 impl Ranker for FixedOrder {
-    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
         let mut scores = match self {
             Self::Native => vec![0.; decision.candidates.len()],
             Self::RulePriority => decision
@@ -62,7 +62,7 @@ struct Continuation<'a> {
 }
 
 impl Ranker for Continuation<'_> {
-    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
         self.learned.scores(decision)
     }
 
@@ -81,7 +81,7 @@ impl Ranker for Continuation<'_> {
         graph: &graph::Graph,
         offered: &str,
         memory: Option<&Memory>,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, crate::Error> {
         let started = meta::cpu_micros()?;
         let mut plan = self.learned.plan(decision, graph, offered, memory)?;
         self.plan_cpu_micros += meta::cpu_micros()?.saturating_sub(started);

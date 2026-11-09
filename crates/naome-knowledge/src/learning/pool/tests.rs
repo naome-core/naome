@@ -175,10 +175,11 @@ fn preservation_pool_cannot_allocate_beyond_the_training_pools_remaining_allowan
         .unwrap();
     assert_eq!(training.work_bytes, bytes);
     let mut preservation = training.remaining();
-    assert!(
+    assert_eq!(
         preservation
             .add(false, "own", "family", "proof", vec![graph])
-            .is_err()
+            .unwrap_err(),
+        crate::ResearchFailure::PoolGraphWorkCapacity.into()
     );
     assert!(
         preservation.graphs().is_empty(),
@@ -188,5 +189,16 @@ fn preservation_pool_cannot_allocate_beyond_the_training_pools_remaining_allowan
         training.graphs().len(),
         1,
         "the original training pool stays intact"
+    );
+}
+
+#[test]
+fn focused_pool_rejects_nonfinite_model_scores_with_code() {
+    let mut pool = Pool::from_graphs(&[case(0)]);
+    let feedback = crate::training::ability::Feedback::fresh("model".into());
+    assert_eq!(
+        pool.focus(&feedback, |_| Ok(vec![f32::NAN, 0.0]))
+            .unwrap_err(),
+        crate::ResearchFailure::PoolPredictionInvalid.into()
     );
 }

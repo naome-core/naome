@@ -3,7 +3,7 @@ use super::*;
 // This process-local cache contains only exact inputs already checked by the
 // unchanged native kernel. It is never serialized; reopening rechecks all data.
 std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::VecDeque<String>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) }; }
-pub(super) fn validate_example(e: &Example) -> Result<(), String> {
+pub(super) fn validate_example(e: &Example) -> Result<(), crate::Error> {
     let key = digest(e);
     if VERIFIED.with(|known| {
         let mut known = known.borrow_mut();
@@ -17,18 +17,20 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
         return Ok(());
     }
     if e.job == 0 {
-        return Err("learning example lacks an owned job".into());
+        return Err(crate::ResearchFailure::LearningExampleOwner.into());
     }
-    let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
+    let q = ResearchQuestion::from_hex(&e.question)?;
     if curriculum::owned::case(&e.question).is_none() {
-        return Err("learning example outside eligible dependency split".into());
+        return Err(crate::ResearchFailure::LearningExampleEligibility.into());
     }
     crate::object::id_bytes(&e.proof_id)?;
     if let Origin::Peer { artifact, peer } = &e.origin {
         crate::object::id_bytes(artifact)?;
-        let parsed: libp2p::PeerId = peer.parse().map_err(|_| "peer replay origin syntax")?;
+        let parsed: libp2p::PeerId = peer
+            .parse()
+            .map_err(|_| crate::InputFault::PeerIdentitySyntax)?;
         if parsed.to_string() != *peer {
-            return Err("peer replay origin encoding".into());
+            return Err(crate::InputFault::PeerIdentityEncoding.into());
         }
     }
     if let search::Tree::Stored {
@@ -46,7 +48,7 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
         {
             Ok(())
         } else {
-            Err("peer replay pointer differs".into())
+            Err(crate::ResearchFailure::LearningReplayPointer.into())
         };
     }
     let target = if e.refuted {
@@ -60,13 +62,13 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
             || e.proof_id != crate::hex(packet.manifest.proof_id().as_bytes())
             || packet.target()? != target
         {
-            return Err("learning program provenance differs".into());
+            return Err(crate::ResearchFailure::LearningProgramProvenance.into());
         }
     } else {
         let (term, _) = search::compile(&target, &e.tree)?;
         let verified = proof::verify(&term, &target)?;
         if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
-            return Err("learning proof provenance differs".into());
+            return Err(crate::ResearchFailure::LearningProofProvenance.into());
         }
     }
     VERIFIED.with(|known| {
@@ -84,13 +86,13 @@ mod verification_tests;
 pub(super) fn proof_steps(
     target: &naome_foundation::Formula,
     tree: &search::Tree,
-) -> Result<usize, String> {
+) -> Result<usize, crate::Error> {
     if let search::Tree::Stored { steps, .. } = tree {
         return Ok(*steps);
     }
     if let search::Tree::Program(packet) = tree {
         if &packet.target()? != target {
-            return Err("checked program target differs".into());
+            return Err(crate::ResearchFailure::LearningProgramTarget.into());
         }
         return Ok(packet.manifest.commands as usize);
     }
@@ -164,7 +166,7 @@ impl State {
             meta: meta::State::fresh(),
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         self.model.validate()?;
         self.meta.validate()?;
         self.history_cursor.validate()?;
@@ -176,7 +178,7 @@ impl State {
                 .iter()
                 .any(|e| e.address().is_ok_and(|a| crate::hex(a.as_bytes()) == *id))
         }) {
-            return Err("definition utility lacks a checked meaning".into());
+            return Err(crate::ResearchFailure::LearningDefinitionUtility.into());
         }
         if self.anchors.len() > 4
             || self.replay.len() > REPLAY
@@ -185,32 +187,32 @@ impl State {
             || self.attempted > self.epoch
             || self.local_examples.checked_add(self.peer_examples) != Some(self.accepted)
             || self.training_trace_bytes() > REPLAY * 8 * 1024
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
+            || crate::checkpoint::encode(self)?.len()
                 > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
         {
-            return Err("local learning state capacity or sequence".into());
+            return Err(crate::ResearchFailure::LearningStateCapacity.into());
         }
         let mut strategies = BTreeMap::new();
         for e in self.replay.iter().chain(&self.anchors) {
             validate_example(e)?;
         }
         for e in &self.replay {
-            let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
+            let q = ResearchQuestion::from_hex(&e.question)?;
             let count = strategies
                 .entry(crate::hex(q.resolution_id()))
                 .or_insert(0usize);
             *count += 1;
             if *count > 2 {
-                return Err("question replay strategy capacity".into());
+                return Err(crate::ResearchFailure::LearningReplayStrategyCapacity.into());
             }
         }
         self.feedback.validate()?;
         if self.feedback.checkpoint != digest(&self.model) {
-            return Err("learning feedback model differs".into());
+            return Err(crate::ResearchFailure::LearningFeedbackModel.into());
         }
         Ok(())
     }
-    pub fn remember_definition(&mut self, entry: definitions::Entry) -> Result<bool, String> {
+    pub fn remember_definition(&mut self, entry: definitions::Entry) -> Result<bool, crate::Error> {
         let _ = definitions::context(std::slice::from_ref(&entry))?;
         if self.definitions.contains(&entry) {
             return Ok(false);
@@ -245,7 +247,7 @@ impl State {
         next.definition_uses
             .insert(crate::hex(entry.address()?.as_bytes()), 0);
         next.definitions.push(entry);
-        while serde_json::to_vec(&next).map_err(|e| e.to_string())?.len()
+        while crate::checkpoint::encode(&next)?.len()
             > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
         {
             if next.replay.is_empty() {
@@ -257,14 +259,14 @@ impl State {
         *self = next;
         Ok(true)
     }
-    pub fn remember_theorem(&mut self, entry: knowledge::Entry) -> Result<bool, String> {
+    pub fn remember_theorem(&mut self, entry: knowledge::Entry) -> Result<bool, crate::Error> {
         let verified = entry.verified()?;
         let q = match ResearchQuestion::from_formula(verified.target) {
             Ok(question) => question,
             // Stored mathematics can exceed the bounded neural question view.
             // Declining a derived hint must not halt the accepted-store owner.
             Err(naome_checker::question::QuestionError::Limit(_)) => return Ok(false),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(error.into()),
         };
         if !Self::eligible(&q.to_hex()) || self.knowledge.contains(&entry) {
             return Ok(false);
@@ -297,7 +299,7 @@ impl State {
         *self = next;
         Ok(true)
     }
-    pub fn require_theorems(&self, required: &[String]) -> Result<(), String> {
+    pub fn require_theorems(&self, required: &[String]) -> Result<(), crate::Error> {
         if required.len() > knowledge::CAPACITY
             || required
                 .iter()
@@ -305,15 +307,16 @@ impl State {
                 .len()
                 != required.len()
         {
-            return Err("required theorem capacity".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         for id in required {
-            crate::object::id_bytes(id)?;
-            if !self.knowledge.iter().any(|e| {
-                e.verified()
-                    .is_ok_and(|p| crate::hex(p.native_id.as_bytes()) == *id)
-            }) {
-                return Err("required checked theorem not retained".into());
+            let id = naome_proof::ProofId::from_bytes(crate::object::id_bytes(id)?);
+            if !self
+                .knowledge
+                .iter()
+                .any(|e| e.verified().is_ok_and(|p| p.native_id == id))
+            {
+                return Err(crate::Error::MissingRequiredTheorem(id));
             }
         }
         Ok(())
@@ -388,13 +391,13 @@ impl State {
         &mut self,
         question: &str,
         solved: bool,
-        diagnostic: &str,
+        terminal: &experience::TerminalEvidence,
         micros: u64,
         budget: u32,
     ) {
         self.observe_attempt(
             question,
-            crate::training::ability::completion(solved, diagnostic),
+            crate::training::ability::completion(solved, terminal),
             micros,
             budget,
         );
@@ -479,13 +482,13 @@ impl State {
     /// metadata grows. Earlier anchors, checked meanings, knowledge, lifetime
     /// counts and the selected model/Adam pair remain intact. Durable source
     /// records, rather than the replay working set, own proof history.
-    pub(crate) fn compact(&mut self) -> Result<(), String> {
+    pub(crate) fn compact(&mut self) -> Result<(), crate::Error> {
         let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
         while crate::checkpoint::encode(self)?.len() > capacity
             || self.training_trace_bytes() > REPLAY * 8 * 1024
         {
             if self.replay.is_empty() {
-                return Err("fixed learning snapshot exceeds working byte capacity".into());
+                return Err(crate::ResearchFailure::LearningFixedSnapshotCapacity.into());
             }
             self.remove_replay()?;
         }
@@ -494,21 +497,21 @@ impl State {
     /// A matched research context reserves the same upper-state headroom in
     /// every arm before any lower update. The ordinary State cap still applies.
     #[cfg(test)]
-    pub(super) fn compact_with_meta_headroom(&mut self, bytes: usize) -> Result<(), String> {
+    pub(super) fn compact_with_meta_headroom(&mut self, bytes: usize) -> Result<(), crate::Error> {
         let capacity = crate::resources::limits().closure_bytes.min(128 * 1024) / 4;
         let current = crate::checkpoint::encode(&self.meta)?.len();
         if current > bytes {
-            return Err("meta context exceeds the frozen matched headroom".into());
+            return Err(crate::ResearchFailure::LearningMetaHeadroom.into());
         }
         while crate::checkpoint::encode(self)?.len() + bytes - current > capacity {
             if self.replay.is_empty() {
-                return Err("matched meta context cannot retain a learning batch".into());
+                return Err(crate::ResearchFailure::LearningMetaBatchCapacity.into());
             }
             self.remove_replay()?;
         }
         self.validate()
     }
-    pub(super) fn remove_replay(&mut self) -> Result<(), String> {
+    pub(super) fn remove_replay(&mut self) -> Result<(), crate::Error> {
         let losses = coverage::losses(&self.replay, &self.anchors)?;
         let mut counts = BTreeMap::new();
         for e in &self.replay {
@@ -543,7 +546,7 @@ impl State {
         Ok(())
     }
     #[cfg(test)]
-    pub(super) fn training_pool(&self, evidence: &[Evidence]) -> Result<pool::Pool, String> {
+    pub(super) fn training_pool(&self, evidence: &[Evidence]) -> Result<pool::Pool, crate::Error> {
         self.training_pool_for(
             evidence,
             !matches!(self.preparation, Preparation::Balanced) && {
@@ -562,7 +565,7 @@ impl State {
         &self,
         evidence: &[Evidence],
         rehearsal: bool,
-    ) -> Result<pool::Pool, String> {
+    ) -> Result<pool::Pool, crate::Error> {
         self.checked_pool(
             self.training_sources()
                 .filter(|e| rehearsal || self.replay.iter().any(|r| r.job == e.job)),
@@ -576,7 +579,7 @@ impl State {
         &self,
         evidence: &[Evidence],
         training: &pool::Pool,
-    ) -> Result<pool::Pool, String> {
+    ) -> Result<pool::Pool, crate::Error> {
         self.checked_pool(
             self.anchors
                 .iter()
@@ -590,10 +593,11 @@ impl State {
         sources: impl Iterator<Item = &'a Example>,
         evidence: &[Evidence],
         mut pool: pool::Pool,
-    ) -> Result<pool::Pool, String> {
+    ) -> Result<pool::Pool, crate::Error> {
         for e in sources {
-            let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
-            let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
+            let q = ResearchQuestion::from_hex(&e.question)?;
+            let case = curriculum::owned::case(&e.question)
+                .ok_or(crate::ResearchFailure::ReplayTrainingSplit)?;
             let target = if e.refuted {
                 q.refuted_target()
             } else {
@@ -617,16 +621,16 @@ impl State {
         Ok(pool)
     }
     #[cfg(test)]
-    pub(crate) fn has_training_graphs(&self, evidence: &[Evidence]) -> Result<bool, String> {
+    pub(crate) fn has_training_graphs(&self, evidence: &[Evidence]) -> Result<bool, crate::Error> {
         Ok(!self.training_pool(evidence)?.graphs().is_empty())
     }
     #[cfg(test)]
-    pub(super) fn training_graphs(&self) -> Result<Vec<graph::Graph>, String> {
+    pub(super) fn training_graphs(&self) -> Result<Vec<graph::Graph>, crate::Error> {
         Ok(self.training_pool(&[])?.graphs().to_vec())
     }
     #[cfg(test)]
-    pub fn accept(&mut self, example: Example) -> Result<bool, String> {
-        let id = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
+    pub fn accept(&mut self, example: Example) -> Result<bool, crate::Error> {
+        let id = ResearchQuestion::from_hex(&example.question)?;
         let unique = !self.examples().any(|e| {
             ResearchQuestion::from_hex(&e.question)
                 .is_ok_and(|q| q.resolution_id() == id.resolution_id())
@@ -635,11 +639,11 @@ impl State {
     }
     /// The journal supplies lifetime question/proof history. Replay selection
     /// never creates a fresh unique-sample count or resource allowance.
-    pub fn consider(&mut self, example: Example, unique: bool) -> Result<bool, String> {
+    pub fn consider(&mut self, example: Example, unique: bool) -> Result<bool, crate::Error> {
         self.consider_source(example, unique, true)
     }
     /// Reloading an admitted source changes only the bounded working selection.
-    pub(super) fn reload(&mut self, example: Example) -> Result<bool, String> {
+    pub(super) fn reload(&mut self, example: Example) -> Result<bool, crate::Error> {
         self.consider_source(example, false, false)
     }
     fn consider_source(
@@ -647,11 +651,11 @@ impl State {
         mut example: Example,
         unique: bool,
         discovered: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::Error> {
         if self.examples().any(|e| e.proof_id == example.proof_id) {
             return Ok(false);
         }
-        let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&example.question)?;
         if curriculum::owned::case(&example.question).is_none() {
             return Ok(false);
         }
@@ -814,29 +818,27 @@ impl State {
                     next.local_examples = next
                         .local_examples
                         .checked_add(1)
-                        .ok_or("local learning count overflow")?
+                        .ok_or(crate::ResearchFailure::LearningLocalCountOverflow)?
                 }
                 Origin::Peer { .. } => {
                     next.peer_examples = next
                         .peer_examples
                         .checked_add(1)
-                        .ok_or("peer learning count overflow")?
+                        .ok_or(crate::ResearchFailure::LearningPeerCountOverflow)?
                 }
             }
             next.accepted = next
                 .accepted
                 .checked_add(1)
-                .ok_or("learning sequence overflow")?;
+                .ok_or(crate::ResearchFailure::LearningSequenceOverflow)?;
         }
         if discovered {
             next.epoch = next
                 .epoch
                 .checked_add(1)
-                .ok_or("learning revision overflow")?;
+                .ok_or(crate::ResearchFailure::LearningRevisionOverflow)?;
         }
-        let trace_bytes = serde_json::to_vec(&example.tree)
-            .map_err(|e| e.to_string())?
-            .len();
+        let trace_bytes = crate::checkpoint::encode(&example.tree)?.len();
         if trace_bytes > REPLAY * 8 * 1024 {
             return Ok(false);
         }

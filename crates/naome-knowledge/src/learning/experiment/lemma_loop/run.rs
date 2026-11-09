@@ -169,7 +169,7 @@ pub(super) fn arm(
             let mut available = |helper: &ResearchQuestion| {
                 let gate = questions.assess(&graph, helper);
                 if !gate.passed() && declined.insert(*helper.resolution_id()) {
-                    events.push(json!({"role":"helper_intake_unavailable","question":helper.to_hex(),"rule":gate.rule,"reason":format!("{:?}",gate.reason),"has_answer":gate.has_answer()}));
+                    events.push(json!({"role":"helper_intake_unavailable","question":helper.to_hex(),"rule":gate.rule,"reason":gate.reason.map(|reason| reason.code()),"has_answer":gate.has_answer()}));
                 }
                 gate.passed()
             };

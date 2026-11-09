@@ -40,7 +40,7 @@ async fn managed_short_proof_is_fetched_and_checked_once_across_final_selection(
     ));
     assert_eq!(
         intake.enqueue(peer, metadata, &graph).unwrap(),
-        "metadata_refreshed"
+        OfferStatus::MetadataRefreshed
     );
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -112,7 +112,7 @@ async fn expired_staging_releases_payload_but_keeps_the_final_selection_result()
     intake.advance(&mut graph, &mut questions);
     assert_eq!(
         intake.enqueue(peer, metadata, &graph).unwrap(),
-        "metadata_refreshed"
+        OfferStatus::MetadataRefreshed
     );
     intake.advance(&mut graph, &mut questions);
     intake.payload(peer, id, id, object, &graph).unwrap();

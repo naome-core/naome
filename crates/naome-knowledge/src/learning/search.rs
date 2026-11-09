@@ -13,6 +13,7 @@ use super::{
     model::{Binding, Candidate, Decision, Plan, Ranker, Rule},
     proof::Term,
 };
+use crate::outcome::GenerationOutcome;
 use naome_foundation::{Formula, FreeVariable};
 use naome_proof::ProofStep;
 use serde::{Deserialize, Serialize};
@@ -104,15 +105,15 @@ struct Prepared {
     double: usize,
 }
 
-fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, String> {
+fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, crate::Error> {
     let used: BTreeSet<_> = formulas.flat_map(|f| f.free_variables()).collect();
     (0..=u32::MAX)
         .map(FreeVariable::new)
         .find(|v| !used.contains(v))
-        .ok_or("fresh variable space".into())
+        .ok_or_else(|| crate::ResearchFailure::SearchFreshVariableExhausted.into())
 }
 
-fn prepare(target: &Formula) -> Result<Prepared, String> {
+fn prepare(target: &Formula) -> Result<Prepared, crate::Error> {
     let mut body = target.clone();
     let mut double = 0;
     while let Some(inner) = body.view().negated().and_then(|f| f.negated()) {
@@ -425,7 +426,7 @@ fn decision(
     state: &State,
     actions: &[Action],
     expert: usize,
-) -> Result<Decision, String> {
+) -> Result<Decision, crate::Error> {
     let index = state
         .facts
         .iter()
@@ -441,7 +442,7 @@ fn decision(
                 delta: transition(state, action, &index)?,
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, crate::Error>>()?;
     decision_for(goal, state, &offers, expert)
 }
 
@@ -450,7 +451,7 @@ fn decision_for(
     state: &State,
     offers: &[Offer],
     expert: usize,
-) -> Result<Decision, String> {
+) -> Result<Decision, crate::Error> {
     let mut context: Vec<_> = state
         .facts
         .iter()
@@ -470,7 +471,10 @@ fn decision_for(
             Action::Witness(i, _) => (Rule::ExistentialWitness, vec![i]),
             Action::Substitute(i, j) => (Rule::EqualitySubstitution, vec![i, j]),
             Action::Cite(i) => {
-                let formula = state.knowledge.get(i).ok_or("theorem candidate index")?;
+                let formula = state
+                    .knowledge
+                    .get(i)
+                    .ok_or(crate::ResearchFailure::SearchTheoremIndex)?;
                 let index = context
                     .iter()
                     .position(|b| b.formula == *formula)
@@ -511,7 +515,7 @@ fn decision_for(
     })
 }
 
-fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
+fn next(state: &State, action: &Action) -> Result<Vec<State>, crate::Error> {
     let index = state
         .facts
         .iter()
@@ -525,7 +529,7 @@ fn transition(
     state: &State,
     action: &Action,
     index: &HashMap<naome_foundation::FormulaView<'_>, usize>,
-) -> Result<Delta, String> {
+) -> Result<Delta, crate::Error> {
     let mut delta = Delta {
         additions: Default::default(),
         count: 1,
@@ -542,7 +546,7 @@ fn transition(
             let formula = state
                 .knowledge
                 .get(i)
-                .ok_or("theorem candidate index")?
+                .ok_or(crate::ResearchFailure::SearchTheoremIndex)?
                 .clone();
             add(0, formula);
         }
@@ -551,7 +555,7 @@ fn transition(
                 .view()
                 .negated()
                 .and_then(|g| g.negated())
-                .ok_or("double action mismatch")?
+                .ok_or(crate::ResearchFailure::SearchDoubleAction)?
                 .to_owned();
             add(0, f);
         }
@@ -560,7 +564,7 @@ fn transition(
                 .view()
                 .negated()
                 .and_then(|g| g.implication_parts())
-                .ok_or("not implication action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchNegatedImplication)?;
             let a = a.to_owned();
             let b = c::not(b.to_owned());
             add(0, a);
@@ -570,9 +574,9 @@ fn transition(
             let (a, b) = state.facts[i]
                 .view()
                 .implication_parts()
-                .ok_or("MP action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchModusPonens)?;
             if a != state.facts[j].view() {
-                return Err("MP premise mismatch".into());
+                return Err(crate::ResearchFailure::SearchPremise.into());
             }
             let b = b.to_owned();
             add(0, b);
@@ -581,7 +585,7 @@ fn transition(
             let (a, b) = state.facts[i]
                 .view()
                 .implication_parts()
-                .ok_or("beta action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchBranchAction)?;
             let a = c::not(a.to_owned());
             let b = b.to_owned();
             add(0, a);
@@ -596,20 +600,20 @@ fn transition(
             } else {
                 let x = fresh(std::iter::once(f.clone()))?;
                 f.open_outer_universal(x)
-                    .ok_or("universal action mismatch")?
+                    .ok_or(crate::ResearchFailure::SearchUniversalAction)?
                     .substitute_free(x, variable)
             };
             let result = if let Action::InstantiateApply(_, _, premise) = *action {
                 let (antecedent, consequent) = f
                     .view()
                     .implication_parts()
-                    .ok_or("instantiated implication expected")?;
+                    .ok_or(crate::ResearchFailure::SearchInstantiationShape)?;
                 if state
                     .facts
                     .get(premise)
                     .is_none_or(|fact| fact.view() != antecedent)
                 {
-                    return Err("instantiated premise differs".into());
+                    return Err(crate::ResearchFailure::SearchInstantiationPremise.into());
                 }
                 consequent.to_owned()
             } else {
@@ -624,16 +628,16 @@ fn transition(
                 .iter()
                 .any(|f| f.free_variables().contains(&variable))
             {
-                return Err("witness variable is not fresh".into());
+                return Err(crate::ResearchFailure::SearchWitnessFreshness.into());
             }
             let universal = state.facts[i]
                 .view()
                 .negated()
-                .ok_or("witness negation")?
+                .ok_or(crate::ResearchFailure::SearchWitnessNegation)?
                 .to_owned();
             let opened = universal
                 .open_outer_universal(variable)
-                .ok_or("witness universal")?;
+                .ok_or(crate::ResearchFailure::SearchWitnessUniversal)?;
             add(0, c::not(opened));
             add(0, Formula::equal(variable, variable));
             delta.witness = Some(variable);
@@ -642,7 +646,7 @@ fn transition(
             let (a, b) = state.facts[i]
                 .view()
                 .equality_variables()
-                .ok_or("equality action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchEqualityAction)?;
             let f = state.facts[j].clone().substitute_free(a, b);
             add(0, f);
         }
@@ -653,7 +657,7 @@ fn transition(
 pub struct ResultTree {
     pub tree: Option<Tree>,
     pub expansions: usize,
-    pub failure: Option<String>,
+    pub failure: Option<GenerationOutcome>,
     pub frontier: Option<frontier::Frontier>,
     pub terminal: TerminalEvidence,
     pub execution: Option<trace::Trace>,
@@ -668,21 +672,21 @@ struct Search<'a> {
     considered_repair: bool,
     deferred: bool,
     repair: Option<(usize, usize)>,
-    failure: Option<String>,
+    failure: Option<GenerationOutcome>,
     exhausted: BTreeSet<String>,
     frontier: Option<frontier::Frontier>,
     terminal: TerminalEvidence,
     recorder: Option<trace::Recorder>,
 }
 impl Search<'_> {
-    fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
+    fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, crate::Error> {
         self.branch(state, depth, None, None)
     }
     fn expansion_limit(&mut self) {
         if self.limit < self.maximum {
             self.deferred = true;
         } else {
-            self.failure = Some("search_budget".into());
+            self.failure = Some(GenerationOutcome::SearchBudget);
             self.terminal
                 .include(TerminalEvidence::Budget(Budget::Expansions));
         }
@@ -694,12 +698,12 @@ impl Search<'_> {
         depth: usize,
         parent: Option<trace::Branch>,
         incoming: Option<(&super::model::Plan, usize)>,
-    ) -> Result<Option<Tree>, String> {
+    ) -> Result<Option<Tree>, crate::Error> {
         if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
-            self.failure = Some("search_budget".into());
+            self.failure = Some(GenerationOutcome::SearchBudget);
             self.terminal
                 .include(TerminalEvidence::Budget(if depth > 32 {
                     Budget::Depth
@@ -721,7 +725,7 @@ impl Search<'_> {
             return Ok(None);
         }
         if state.facts.len() > 32 {
-            self.failure = Some("fact_resource".into());
+            self.failure = Some(GenerationOutcome::FactLimit);
             self.terminal
                 .include(TerminalEvidence::Unsupported(Capacity::Facts));
             return Ok(None);
@@ -765,11 +769,11 @@ impl Search<'_> {
             let d = decision_for(&self.goal, state, &offers, 0)?;
             let mut graph = match Graph::encode(&d) {
                 Ok(graph) => graph,
-                Err(e) => {
+                Err(_) => {
                     if let Some(report) = &mut self.frontier {
                         report.observe(state, depth);
                     }
-                    self.failure = Some(e);
+                    self.failure = Some(GenerationOutcome::GraphLimit);
                     self.terminal
                         .include(TerminalEvidence::Unsupported(Capacity::Graph));
                     return Ok(None);
@@ -783,7 +787,7 @@ impl Search<'_> {
         };
         let scores = &plan.scores;
         if scores.len() != actions.len() || scores.iter().any(|s| !s.is_finite()) {
-            return Err("invalid native action scores".into());
+            return Err(crate::ResearchFailure::InvalidActionScores.into());
         }
         let mut order: Vec<_> = (0..actions.len()).collect();
         order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));
@@ -896,7 +900,7 @@ pub fn solve(
     target: &Formula,
     ranker: &mut dyn Ranker,
     maximum: usize,
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     solve_started(target, ranker, maximum, Instant::now())
 }
 #[cfg(test)]
@@ -905,7 +909,7 @@ pub fn solve_started(
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     solve_with_knowledge(target, ranker, maximum, started, &[])
 }
 pub fn solve_with_knowledge(
@@ -914,7 +918,7 @@ pub fn solve_with_knowledge(
     maximum: usize,
     started: Instant,
     knowledge: &[super::knowledge::Entry],
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     solve_recording(target, ranker, maximum, started, knowledge, true)
 }
 fn solve_recording(
@@ -924,13 +928,13 @@ fn solve_recording(
     started: Instant,
     knowledge: &[super::knowledge::Entry],
     capture: bool,
-) -> Result<ResultTree, String> {
+) -> Result<ResultTree, crate::Error> {
     if maximum == 0 {
         return Ok(ResultTree {
             execution: None,
             tree: None,
             expansions: 0,
-            failure: Some("search_budget".into()),
+            failure: Some(GenerationOutcome::SearchBudget),
             frontier: None,
             terminal: TerminalEvidence::Budget(Budget::Expansions),
         });
@@ -977,7 +981,7 @@ fn solve_recording(
             recorder.retain_repair(failed, selected, proof)?;
         }
     } else if s.deferred && s.failure.is_none() {
-        s.failure = Some("search_budget".into());
+        s.failure = Some(GenerationOutcome::SearchBudget);
         s.terminal
             .include(TerminalEvidence::Budget(Budget::BranchExpansions));
     } else if s.failure.is_none() && s.expansions > 0 {
@@ -1018,30 +1022,34 @@ fn replay(
     graphs: &mut Vec<Graph>,
     knowledge: &[Term],
     depth: usize,
-) -> Result<(Term, Term), String> {
+) -> Result<(Term, Term), crate::Error> {
     let goal = &state.goal;
     if depth > 40 {
-        return Err("native replay depth".into());
+        return Err(crate::ResearchFailure::ReplayDepth.into());
     }
     if facts.iter().map(Term::formula).collect::<Vec<_>>() != state.facts {
-        return Err("replay formula state mismatch".into());
+        return Err(crate::ResearchFailure::ReplayState.into());
     }
     if let Tree::Close(a, b) = tree {
-        let p = facts.get(*a).ok_or("closing positive index")?;
-        let n = facts.get(*b).ok_or("closing negative index")?;
+        let p = facts
+            .get(*a)
+            .ok_or(crate::ResearchFailure::ReplayPositiveIndex)?;
+        let n = facts
+            .get(*b)
+            .ok_or(crate::ResearchFailure::ReplayNegativeIndex)?;
         if n.formula() != c::not(p.formula()) {
-            return Err("forged tableau closure".into());
+            return Err(crate::ResearchFailure::ReplayClosure.into());
         }
         return Ok((p.clone(), n.clone()));
     }
     let Tree::Step { action, children } = tree else {
-        return Err("unsupported nested axiom trace".into());
+        return Err(crate::ResearchFailure::ReplayNestedAxiom.into());
     };
     let offered = actions(state);
     let expert = offered
         .iter()
         .position(|a| a == action)
-        .ok_or("replay action not offered")?;
+        .ok_or(crate::ResearchFailure::ReplayAction)?;
     if offered.len() > 1 {
         let mut graph = Graph::encode(&decision(goal, state, &offered, expert)?)?;
         graph.binding = trace::binding(state)?;
@@ -1049,13 +1057,16 @@ fn replay(
     }
     let states = next(state, action)?;
     if states.len() != children.len() {
-        return Err("replay branch arity mismatch".into());
+        return Err(crate::ResearchFailure::ReplayArity.into());
     }
     let mut updated = facts.to_vec();
     match *action {
         Action::Cite(i) => add_term(
             &mut updated,
-            knowledge.get(i).ok_or("replay theorem index")?.clone(),
+            knowledge
+                .get(i)
+                .ok_or(crate::ResearchFailure::ReplayTheoremIndex)?
+                .clone(),
         ),
         Action::Double(i) => add_term(&mut updated, c::double_elim(facts[i].clone(), names)?),
         Action::NotImp(i) => {
@@ -1081,11 +1092,11 @@ fn replay(
                 .formula()
                 .view()
                 .negated()
-                .ok_or("replay witness")?
+                .ok_or(crate::ResearchFailure::ReplayWitness)?
                 .to_owned();
             let opened = universal
                 .open_outer_universal(variable)
-                .ok_or("replay witness body")?;
+                .ok_or(crate::ResearchFailure::ReplayWitnessBody)?;
             let (id, witness) = names.assumption(c::not(opened.clone()));
             add_term(&mut updated, witness);
             add_term(
@@ -1104,13 +1115,16 @@ fn replay(
             let body = c::raa(opened, id, positive, negative, names)?;
             let all = Term::Generalize(variable, Box::new(body));
             if all.formula() != universal {
-                return Err("witness discharge changed the universal".into());
+                return Err(crate::ResearchFailure::ReplayWitnessDischarge.into());
             }
             return Ok((all, facts[i].clone()));
         }
         Action::Substitute(i, j) => {
             let f = facts[i].formula();
-            let (a, b) = f.view().equality_variables().ok_or("replay equality")?;
+            let (a, b) = f
+                .view()
+                .equality_variables()
+                .ok_or(crate::ResearchFailure::ReplayEquality)?;
             add_term(
                 &mut updated,
                 c::substitute(facts[i].clone(), facts[j].clone(), a, b)?,
@@ -1118,7 +1132,10 @@ fn replay(
         }
         Action::Beta(i) => {
             let f = facts[i].formula();
-            let (a, b) = f.view().implication_parts().ok_or("replay beta")?;
+            let (a, b) = f
+                .view()
+                .implication_parts()
+                .ok_or(crate::ResearchFailure::ReplayBranch)?;
             let a = a.to_owned();
             let b = b.to_owned();
             let (id, na) = names.assumption(c::not(a.clone()));
@@ -1161,14 +1178,14 @@ fn replay(
     )
 }
 
-pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), String> {
+pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), crate::Error> {
     if let Tree::Scoped {
         target: encoded,
         actions,
     } = tree
     {
-        if target.encode_canonical().map_err(|e| e.to_string())? != *encoded {
-            return Err("scope trace target binding differs".into());
+        if target.encode_canonical().map_err(crate::Error::from)? != *encoded {
+            return Err(crate::ResearchFailure::ReplayScopedTarget.into());
         }
         return scope::compile(target, actions);
     }
@@ -1178,8 +1195,8 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         proof,
     } = tree
     {
-        if target.encode_canonical().map_err(|e| e.to_string())? != *encoded {
-            return Err("theorem trace target binding differs".into());
+        if target.encode_canonical().map_err(crate::Error::from)? != *encoded {
+            return Err(crate::ResearchFailure::ReplayTheoremTarget.into());
         }
         super::knowledge::validate(entries)?;
         return compile_tableau(target, proof, entries);
@@ -1192,9 +1209,11 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
     } = tree
     {
         if *available > entries.len() {
-            return Err("definition availability differs".into());
+            return Err(crate::ResearchFailure::ReplayDefinitionAvailability.into());
         }
-        let entry = entries.get(*selected).ok_or("definition selection index")?;
+        let entry = entries
+            .get(*selected)
+            .ok_or(crate::ResearchFailure::ReplayDefinitionIndex)?;
         let _ = super::definitions::context(entries)?;
         let (term, mut graphs) = compile(target, proof)?;
         if super::construction::composition::scoped_operands(target, proof, entry)?.is_some() {
@@ -1210,13 +1229,12 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
         let source = super::proof::source_with_definitions(&verified, &definitions)?;
         let context = super::proof::lemma_context(&definitions, &verified.lemmas)?;
-        let checked =
-            crate::learning::proof::check_artifact(&source, &context).map_err(|e| e.to_string())?;
+        let checked = crate::learning::proof::check_artifact(&source, &context)?;
         if !checked
             .direct_artifact_dependencies()
             .contains(&entry.address()?)
         {
-            return Err("selected definition is not used by the checked proof".into());
+            return Err(crate::ResearchFailure::ReplayDefinitionUnused.into());
         }
         if entries.len() > 1 {
             graphs.push(super::definitions::decision(target, entries, *selected)?);
@@ -1232,7 +1250,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         ));
     }
     if matches!(tree, Tree::Stored { .. }) {
-        return Err("peer replay requires its owned journal snapshot".into());
+        return Err(crate::ResearchFailure::ReplayOwnedSnapshot.into());
     }
     if let Tree::Composed {
         packet,
@@ -1261,9 +1279,11 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         return super::peer::compile(target, bytes);
     }
     if let Tree::Axiom(index) = tree {
-        let axiom = *AXIOMS.get(*index as usize).ok_or("unknown native axiom")?;
+        let axiom = *AXIOMS
+            .get(*index as usize)
+            .ok_or(crate::ResearchFailure::ReplayAxiomIndex)?;
         if axiom.formula() != *target {
-            return Err("axiom target differs".into());
+            return Err(crate::ResearchFailure::ReplayAxiomTarget.into());
         }
         return Ok((c::axiom(ProofStep::ZfcAxiom(axiom))?, Vec::new()));
     }
@@ -1273,7 +1293,7 @@ fn compile_tableau(
     target: &Formula,
     tree: &Tree,
     entries: &[super::knowledge::Entry],
-) -> Result<(Term, Vec<Graph>), String> {
+) -> Result<(Term, Vec<Graph>), crate::Error> {
     let knowledge = entries
         .iter()
         .map(super::knowledge::Entry::term)
@@ -1321,14 +1341,18 @@ fn compile_tableau(
         term = if let Some(v) = v {
             Term::Generalize(v, Box::new(term))
         } else {
-            Term::Lambda(id, f.ok_or("assumption wrapper")?, Box::new(term))
+            Term::Lambda(
+                id,
+                f.ok_or(crate::ResearchFailure::ReplayAssumptionWrapper)?,
+                Box::new(term),
+            )
         };
     }
     for _ in 0..p.double {
         term = c::double_intro(term, &mut names)?;
     }
     if term.formula() != *target {
-        return Err("compiled native target mismatch".into());
+        return Err(crate::ResearchFailure::ReplayCompiledTarget.into());
     }
     Ok((term, graphs))
 }
@@ -1346,9 +1370,19 @@ pub(super) const AXIOMS: [naome_foundation::ZfcAxiom; 7] = [
 #[cfg(test)]
 mod witness_tests {
     use super::*;
+    #[test]
+    fn invalid_native_axiom_index_has_registered_failure() {
+        let target = Formula::equal(FreeVariable::new(0), FreeVariable::new(0));
+        let error = compile(&target, &Tree::Axiom(u8::MAX)).err().unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::ReplayAxiomIndex)
+        );
+    }
+
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -1356,7 +1390,7 @@ mod witness_tests {
     fn the_last_allowed_transition_can_close_without_spending_another_expansion() {
         struct UnexpectedInference;
         impl Ranker for UnexpectedInference {
-            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, String> {
+            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
                 Err("a directly closing action must not invoke inference".into())
             }
         }
@@ -1409,7 +1443,7 @@ mod witness_tests {
         let found = solve(q.proved_target(), &mut Ordered, 128).unwrap();
         let tree = found.tree.expect("existential witness transport");
         let (_, _, checked) = core::checked(q.proved_target(), &tree).unwrap();
-        let source = super::super::proof::source(&checked).unwrap();
+        let source = super::super::proof::source(&checked);
         assert_eq!(
             crate::learning::proof::check_artifact(&source, &naome_checker::ArtifactState::new())
                 .unwrap()
@@ -1442,7 +1476,11 @@ mod witness_tests {
             domain: vec![y],
         };
         assert!(!actions(&state).contains(&Action::Instantiate(0, 1)));
-        assert!(next(&state, &Action::Witness(2, 0)).is_err());
+        let error = next(&state, &Action::Witness(2, 0)).err().unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::SearchWitnessFreshness)
+        );
         let action = actions(&state)
             .into_iter()
             .find(|a| matches!(a, Action::Witness(..)))
@@ -1496,7 +1534,7 @@ mod transposition_tests {
     fn depth_limited_failure_does_not_poison_a_later_shallower_subgoal() {
         struct Ordered;
         impl Ranker for Ordered {
-            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
                 Ok(vec![0.; d.candidates.len()])
             }
         }

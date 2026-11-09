@@ -1,4 +1,5 @@
 use super::*;
+use crate::outcome::{AdmissionFailure, WorkerFailure};
 use journal::{Account, Disk, Journal};
 use libp2p::futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::{
@@ -31,9 +32,9 @@ pub(crate) struct Recovery {
 
 pub(crate) struct Service {
     thread: Option<JoinHandle<()>>,
-    error: Arc<Mutex<Option<String>>>,
+    error: Arc<Mutex<Option<crate::Error>>>,
     halt: Option<oneshot::Sender<()>>,
-    stopped: Option<oneshot::Receiver<Result<(), String>>>,
+    stopped: Option<oneshot::Receiver<Result<(), crate::Error>>>,
 }
 
 impl Service {
@@ -42,7 +43,7 @@ impl Service {
         settings: Settings,
         cursor: u64,
         computation: Arc<crate::resources::Computation>,
-    ) -> Result<(Self, Client, Recovery), String> {
+    ) -> Result<(Self, Client, Recovery), crate::Error> {
         settings.validate()?;
         let (disk, journal) = Disk::open(directory, settings, cursor)?;
         let recovery = Recovery {
@@ -81,7 +82,7 @@ impl Service {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|_| crate::Error::from(crate::ResearchFailure::OwnerRuntimeUnavailable))?;
                     let (events, progress) =
                         mpsc::channel(crate::resources::active_limits().provider_events);
                     let mut owner = Owner::new(disk, journal, settings, computation);
@@ -90,13 +91,12 @@ impl Service {
                 })();
                 if let Err(failure) = &result {
                     crate::network::emit(
-                        serde_json::json!({"event":"research_service_failed","error":failure}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::ResearchServiceFailed,"error":failure}),
                     );
                     *report.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure.clone());
                 }
                 let _ = receipt.send(result);
-            })
-            .map_err(|e| e.to_string())?;
+            })?;
         Ok((
             Self {
                 thread: Some(thread),
@@ -109,28 +109,28 @@ impl Service {
         ))
     }
 
-    pub(crate) fn error(&self) -> Option<String> {
+    pub(crate) fn error(&self) -> Option<crate::Error> {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    pub(crate) async fn shutdown(&mut self) -> Result<(), String> {
+    pub(crate) async fn shutdown(&mut self) -> Result<(), crate::Error> {
         self.begin_shutdown()?;
         let result = match self.stopped.take() {
             Some(receiver) => receiver
                 .await
-                .unwrap_or_else(|_| Err("research stop receipt unavailable".into())),
+                .unwrap_or_else(|_| Err(crate::ResearchFailure::StopReceiptUnavailable.into())),
             None => self.error().map_or(Ok(()), Err),
         };
         let mut joined = Ok(());
         if let Some(thread) = self.thread.take() {
             joined = thread
                 .join()
-                .map_err(|_| "research owner thread panicked".to_owned());
+                .map_err(|_| crate::Error::from(crate::ResearchFailure::OwnerThreadPanic));
         }
-        result.and(joined)
+        combine_outcomes(result, joined)
     }
 
-    pub(crate) fn begin_shutdown(&mut self) -> Result<(), String> {
+    pub(crate) fn begin_shutdown(&mut self) -> Result<(), crate::Error> {
         if let Some(halt) = self.halt.take() {
             let _ = halt.send(());
         }
@@ -144,8 +144,11 @@ impl Drop for Service {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            *self.error.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some("research owner thread panicked".into());
+            let mut error = self.error.lock().unwrap_or_else(|e| e.into_inner());
+            *error = Some(append_failure(
+                error.take(),
+                crate::ResearchFailure::OwnerThreadPanic.into(),
+            ));
         }
     }
 }
@@ -158,24 +161,24 @@ struct Running {
 struct PendingProgram {
     unit: u32,
     records: Vec<naome_proof::program::Command>,
-    reply: oneshot::Sender<Result<(), String>>,
+    reply: oneshot::Sender<Result<(), crate::Error>>,
 }
 struct PendingHistory {
     unit: u32,
     request: crate::learning::history::Request,
-    reply: oneshot::Sender<Result<crate::learning::history::Receipt, String>>,
+    reply: oneshot::Sender<Result<crate::learning::history::Receipt, crate::Error>>,
 }
 struct PendingModel {
     unit: u32,
     blob: crate::learning::Blob,
     range: std::ops::Range<usize>,
     bytes: Option<Vec<u8>>,
-    reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    reply: oneshot::Sender<Result<Vec<u8>, crate::Error>>,
 }
 struct PendingLearning {
     unit: u32,
     progress: Box<crate::learning::Progress>,
-    reply: oneshot::Sender<Result<(), String>>,
+    reply: oneshot::Sender<Result<(), crate::Error>>,
 }
 struct Owner {
     feedback: Arc<Mutex<Option<crate::training::ability::Feedback>>>,
@@ -257,13 +260,11 @@ impl Owner {
         halt: oneshot::Receiver<()>,
         events: mpsc::Sender<process::Event>,
         progress: mpsc::Receiver<process::Event>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let result = std::panic::AssertUnwindSafe(self.drive(commands, halt, events, progress))
             .catch_unwind()
             .await
-            .unwrap_or_else(|_| {
-                Err("research driver panicked; pending effects require reconciliation".into())
-            });
+            .unwrap_or_else(|_| Err(crate::ResearchFailure::DriverPanic.into()));
         let cleanup = self.stop_all().await;
         crate::resources::feedback::jobs([0; 4], [0; 4], 0);
 
@@ -276,7 +277,7 @@ impl Owner {
         mut halt: oneshot::Receiver<()>,
         events: mpsc::Sender<process::Event>,
         mut progress: mpsc::Receiver<process::Event>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.recover_internal()?;
         let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -290,34 +291,36 @@ impl Owner {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
                     Some(Command::TheoremVerified{ordinal,theorem})=>{
-                        if ordinal==0 {return Err("theorem learning ordinal is zero".into());}
+                        if ordinal==0 {return Err(crate::ResearchFailure::TheoremOrdinalZero.into());}
                         if let Some(learning)=self.journal.learning.as_mut(){
                             let remembered=learning.remember_theorem(theorem)?;
                             learning.peer_cursor=learning.peer_cursor.max(ordinal);
                             self.save()?;
-                            crate::network::emit(serde_json::json!({"event":"native_theorem_observed","remembered":remembered}));
+                            crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeTheoremObserved,"remembered":remembered}));
                         }
                     },
                     Some(Command::DefinitionVerified{ordinal,definition})=>{
-                        if ordinal==0 {return Err("definition learning ordinal is zero".into());}
+                        if ordinal==0 {return Err(crate::ResearchFailure::DefinitionOrdinalZero.into());}
                         if let Some(learning)=self.journal.learning.as_mut(){
                             let address=definition.address()?;
                             let remembered=learning.remember_definition(definition)?;
                             learning.peer_cursor=learning.peer_cursor.max(ordinal);
                             self.save()?;
-                            crate::network::emit(serde_json::json!({"event":"native_definition_observed","artifact":crate::hex(address.as_bytes()),"remembered":remembered}));
+                            crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeDefinitionObserved,"artifact":crate::hex(address.as_bytes()),"remembered":remembered}));
                         }
                     },
                     Some(Command::PeerCursor(ordinal))=>{if let Some(learning)=self.journal.learning.as_mut(){learning.peer_cursor=learning.peer_cursor.max(ordinal);self.save()?;}},
                     Some(Command::PeerVerified(admission))=>{if self.settings.native_proof_learning {self.disk.enqueue_peer(&mut self.journal,admission)?;}},
                     Some(Command::Accepted{id,root})=>{
-                        if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err("pending owned learning receipt differs".into());}
+                        if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::PendingLearningReceiptMismatch, job:id });}
                     },
                     Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
                     Some(Command::Submit(input,binding,required,prerequisites,reply))=>self.submit_after(input,binding,required,prerequisites,reply)?,
                     Some(Command::Recover{after,before,reply})=>{
-                        let page=self.disk.recovery_page(after,before,&self.recovery_skip)?;
-                        let _=reply.send(Ok(page));
+                        match self.disk.recovery_page(after,before,&self.recovery_skip) {
+                            Ok(page) => { let _=reply.send(Ok(page)); },
+                            Err(error) => { let _=reply.send(Err(error.clone())); return Err(error); },
+                        }
                     },
                     Some(Command::Acknowledge(id))=>{
                         if id==0 || self.learning_receipts.contains_key(&id){continue;}
@@ -325,9 +328,9 @@ impl Owner {
                         if id!=0 {
                             let Some(record)=self.journal.records.get_mut(&id) else {
                                 if id<self.journal.next_id {continue;}
-                                return Err("unknown research acknowledgement".into());
+                                return Err(crate::ResearchFailure::AcknowledgementUnknown.into());
                             };
-                            if !record.state.terminal() { return Err("acknowledged research job is still running".into()); }
+                            if !record.state.terminal() { return Err(crate::ResearchFailure::AcknowledgementNotTerminal.into()); }
                             record.acknowledged=true;
                             self.compact();
                             self.save()?;
@@ -358,45 +361,45 @@ impl Owner {
                         process::Event::Program{id,unit,records,reply}=>{
                             if let std::collections::btree_map::Entry::Vacant(entry)=self.programs.entry(id) {
                                 entry.insert(PendingProgram{unit,records,reply});
-                            } else {let _=reply.send(Err("duplicate outstanding program group".into()));}
+                            } else {let _=reply.send(Err(crate::ResearchFailure::DuplicateProgram.into()));}
                         },
                         process::Event::Reserve{id,next,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
-                                let _=reply.send(Err("research job cancelled or expired".into()));continue;
+                                let _=reply.send(Err(crate::ResearchFailure::OwnerCancelled.into()));continue;
                             }
                             match self.reserve(id,next) {
                                 Ok(Reservation::Granted)=>{let _=reply.send(Ok(()));},
-                                Ok(Reservation::Exhausted)=>{let _=reply.send(Err("research work budget exhausted".into()));},
+                                Ok(Reservation::Exhausted)=>{let _=reply.send(Err(crate::ResearchFailure::WorkBudgetExhausted.into()));},
                                 Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
                             }
                         },
-                        process::Event::History{id,unit,request,reply}=>{if self.history_io.insert(id,PendingHistory{unit,request,reply}).is_some(){return Err("duplicate pending history read".into());}},
-                        process::Event::Model{id,unit,blob,range,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,range,bytes,reply}).is_some() {return Err("duplicate pending native model IO".into());}},
+                        process::Event::History{id,unit,request,reply}=>{if self.history_io.insert(id,PendingHistory{unit,request,reply}).is_some(){return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::DuplicateHistoryRead, job:id });}},
+                        process::Event::Model{id,unit,blob,range,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,range,bytes,reply}).is_some() {return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::DuplicateModelIo, job:id });}},
                         process::Event::Learning{id,unit,progress,reply}=>{
-                            if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err("duplicate pending local checkpoint".into());}
+                            if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::DuplicateLearningCheckpoint, job:id });}
                         },
                         process::Event::Progress{id,checkpoint,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
-                                let _=reply.send(Err("research job cancelled or expired".into()));continue;
+                                let _=reply.send(Err(crate::ResearchFailure::OwnerCancelled.into()));continue;
                             }
                             let result=(||{
                                 self.charge(id)?;
-                                let record=self.journal.records.get_mut(&id).ok_or("unknown provider progress")?;
-                                if record.state!=State::Running{return Err("research checkpoint cancelled".into());}
+                                let record=self.journal.records.get_mut(&id).ok_or(crate::ResearchFailure::ProgressMissing)?;
+                                if record.state!=State::Running{return Err(crate::ResearchFailure::ProgressNotRunning.into());}
                                 if checkpoint!=record.checkpoint+1 || checkpoint>record.reserved_units {
-                                    return Err("provider checkpoint differs from its durable reservation".into());
+                                    return Err(crate::ResearchFailure::ProgressSequence.into());
                                 }
                                 let native=record.native.is_some();record.checkpoint=checkpoint;
                                 self.save()?;
                                 if checkpoint==1 && let Some(n)=self.journal.records[&id].native.as_ref()
                                     && let Some(selection)=n.progress.as_ref().and_then(|p|p.plan.as_ref()) {
-                                    crate::network::emit(serde_json::json!({"event":"native_meta_plan","job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection}));
+                                    crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaPlan,"job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection}));
                                 }
                                 if native {self.disk.collect_models(&mut self.journal)}else{Ok(())}
                             })();
                             let failure=result.as_ref().err().cloned();
-                            let _=reply.send(result.map_err(String::from));
-                            if let Some(error)=failure{return Err(String::from(error));}
+                            let _=reply.send(result);
+                            if let Some(error)=failure{return Err(error);}
                         },
                     }
                 },
@@ -426,7 +429,7 @@ impl Owner {
         Ok(())
     }
 
-    fn recover_internal(&mut self) -> Result<(), String> {
+    fn recover_internal(&mut self) -> Result<(), crate::Error> {
         let ids = self
             .journal
             .records
@@ -446,7 +449,7 @@ impl Owner {
                     match check_peer_completion(record, record.result.as_ref()) {
                         Ok(()) => {}
                         Err(error) if error.retryable() => continue,
-                        Err(error) => return Err(error.into()),
+                        Err(error) => return Err(error),
                     }
                 }
                 self.finish_peer_completion(id)?;
@@ -473,7 +476,11 @@ impl Owner {
         }
         Ok(())
     }
-    fn submit_internal(&mut self, input: Input, binding: Binding) -> Result<Option<u64>, String> {
+    fn submit_internal(
+        &mut self,
+        input: Input,
+        binding: Binding,
+    ) -> Result<Option<u64>, crate::Error> {
         let (reply, mut receive) = oneshot::channel();
         self.submit(input.clone(), binding.clone(), reply)?;
         if let Ok(completion) = receive.try_recv()
@@ -490,7 +497,7 @@ impl Owner {
         self.internal_receivers.insert(record.id, receive);
         Ok(Some(record.id))
     }
-    fn fill_internal(&mut self) -> Result<(), String> {
+    fn fill_internal(&mut self) -> Result<(), crate::Error> {
         if !self.settings.native_proof_learning {
             return Ok(());
         }
@@ -504,7 +511,7 @@ impl Owner {
                     &mut self.journal,
                     &admission,
                     PeerStatus::Unsupported {
-                        reason: "reserved question or unsupported replay capacity".into(),
+                        reason: WorkerFailure::ReplayAdmissionLimit.into(),
                     },
                 )?;
             } else {
@@ -548,7 +555,7 @@ impl Owner {
         Ok(())
     }
 
-    fn persist_learning(&mut self) -> Result<(), String> {
+    fn persist_learning(&mut self) -> Result<(), crate::Error> {
         for id in self.history_io.keys().copied().collect::<Vec<_>>() {
             let pending = self.history_io.remove(&id).expect("owned history request");
             if pending.reply.is_closed() {
@@ -562,7 +569,7 @@ impl Owner {
             {
                 let _ = pending
                     .reply
-                    .send(Err("history job cancelled or expired".into()));
+                    .send(Err(crate::ResearchFailure::OwnerCancelled.into()));
                 continue;
             }
             let _disk = match crate::resources::DiskLease::acquire(
@@ -574,7 +581,7 @@ impl Owner {
                     self.history_io.insert(id, pending);
                     continue;
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             self.charge(id)?;
             let result =
@@ -586,9 +593,8 @@ impl Owner {
                     self.history_io.insert(id, pending);
                 }
                 Err(error) => {
-                    let message = error.to_string();
-                    let _ = pending.reply.send(Err(message.clone()));
-                    return Err(message);
+                    let _ = pending.reply.send(Err(error.clone()));
+                    return Err(error);
                 }
                 Ok(receipt) => {
                     let _ = pending.reply.send(Ok(receipt));
@@ -608,7 +614,7 @@ impl Owner {
             {
                 let _ = pending
                     .reply
-                    .send(Err("native model job cancelled or expired".into()));
+                    .send(Err(crate::ResearchFailure::OwnerCancelled.into()));
                 continue;
             }
             let _disk = match crate::resources::DiskLease::acquire(
@@ -620,7 +626,7 @@ impl Owner {
                     self.model_io.insert(id, pending);
                     continue;
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             self.charge(id)?;
             let result = self.disk.model_io(
@@ -636,9 +642,8 @@ impl Owner {
                     self.model_io.insert(id, pending);
                 }
                 Err(error) => {
-                    let message = error.to_string();
-                    let _ = pending.reply.send(Err(message.clone()));
-                    return Err(message);
+                    let _ = pending.reply.send(Err(error.clone()));
+                    return Err(error);
                 }
                 Ok(bytes) => {
                     let _ = pending.reply.send(Ok(bytes));
@@ -661,7 +666,7 @@ impl Owner {
             {
                 let _ = pending
                     .reply
-                    .send(Err("learning job cancelled or expired".into()));
+                    .send(Err(crate::ResearchFailure::OwnerCancelled.into()));
                 continue;
             }
             let lease = crate::resources::DiskLease::acquire(
@@ -675,9 +680,8 @@ impl Owner {
                     continue;
                 }
                 Err(error) => {
-                    let reason = error.to_string();
-                    let _ = pending.reply.send(Err(reason.clone()));
-                    return Err(reason);
+                    let _ = pending.reply.send(Err(error.clone()));
+                    return Err(error);
                 }
             };
             let previous_native = self.journal.records.get(&id).and_then(|r| r.native.clone());
@@ -687,18 +691,18 @@ impl Owner {
                     .journal
                     .records
                     .get_mut(&id)
-                    .ok_or("unknown learning checkpoint")?;
+                    .ok_or(crate::ResearchFailure::LearningCheckpointMissing)?;
                 if record.state != State::Running
                     || pending.unit != record.checkpoint + 1
                     || pending.unit > record.reserved_units
                     || pending.progress.unit != pending.unit
                 {
-                    return Err("learning checkpoint lacks original reservation".into());
+                    return Err(crate::ResearchFailure::LearningReservation.into());
                 }
                 let native = record
                     .native
                     .as_mut()
-                    .ok_or("learning checkpoint lacks snapshot")?;
+                    .ok_or(crate::ResearchFailure::LearningSnapshotMissing)?;
                 native.retain_progress(id, (*pending.progress).clone())?;
                 self.disk.verify_models(native)?;
                 self.save()
@@ -713,9 +717,8 @@ impl Owner {
                     self.learning_progress.insert(id, pending);
                 }
                 Err(error) => {
-                    let message = error.to_string();
-                    let _ = pending.reply.send(Err(message.clone()));
-                    return Err(message);
+                    let _ = pending.reply.send(Err(error.clone()));
+                    return Err(error);
                 }
                 Ok(()) => {
                     let _ = pending.reply.send(Ok(()));
@@ -729,7 +732,7 @@ impl Owner {
             ) {
                 Ok(lease) => lease,
                 Err(error) if error.retryable() => continue,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             let root = self
                 .learning_receipts
@@ -741,25 +744,29 @@ impl Owner {
             && let Err(error) = self.disk.collect_models(&mut self.journal)
             && !error.retryable()
         {
-            return Err(error.to_string());
+            return Err(error);
         }
         Ok(())
     }
 
-    fn persist_programs(&mut self) -> Result<(), String> {
+    fn persist_programs(&mut self) -> Result<(), crate::Error> {
         for id in self.programs.keys().copied().collect::<Vec<_>>() {
             let pending = self.programs.remove(&id).expect("owned candidate group");
             if pending.reply.is_closed() {
                 continue;
             }
             let result = (|| -> Result<(), crate::Error> {
-                let record = self.journal.records.get(&id).ok_or("unknown program job")?;
+                let record = self
+                    .journal
+                    .records
+                    .get(&id)
+                    .ok_or(crate::ResearchFailure::ProgramJobMissing)?;
                 if record.state != State::Running
                     || pending.unit != record.checkpoint + 1
                     || pending.unit > record.reserved_units
                     || !matches!(record.input, Input::Solve { .. })
                 {
-                    return Err("program group lacks its original reservation".into());
+                    return Err(crate::ResearchFailure::ProgramReservation.into());
                 }
                 let _disk = crate::resources::DiskLease::acquire(
                     self.disk.directory(),
@@ -779,14 +786,11 @@ impl Owner {
                     self.programs.insert(id, pending);
                 }
                 Err(error) if error.fatal() => {
-                    let message = error.to_string();
-                    let _ = pending.reply.send(Err(message.clone()));
-                    return Err(message);
+                    let _ = pending.reply.send(Err(error.clone()));
+                    return Err(error);
                 }
                 result => {
-                    let _ = pending
-                        .reply
-                        .send(result.map_err(|error| error.to_string()));
+                    let _ = pending.reply.send(result);
                 }
             }
         }
@@ -795,7 +799,7 @@ impl Owner {
 
     /// Atomically acknowledge the worker result and commit its replay receipt.
     /// The exact source was rechecked by this owner before entering here.
-    fn finish_peer_completion(&mut self, id: u64) -> Result<(), String> {
+    fn finish_peer_completion(&mut self, id: u64) -> Result<(), crate::Error> {
         self.charge(id)?;
         if self.journal.records[&id].state == State::Complete
             && allowance_expired(&self.journal, id)?
@@ -807,7 +811,7 @@ impl Owner {
                 .expect("owned peer result");
             record.state = State::Expired;
             record.result = None;
-            record.failure = Some("peer replay finalization allowance expired".into());
+            record.failure = Some(WorkerFailure::Deadline.into());
         }
         let updates = self.disk.finish_peer(&mut self.journal, id)?;
         self.journal
@@ -823,7 +827,7 @@ impl Owner {
         Ok(())
     }
 
-    fn complete(&mut self, id: u64, outcome: process::Outcome) -> Result<(), String> {
+    fn complete(&mut self, id: u64, outcome: process::Outcome) -> Result<(), crate::Error> {
         if outcome.state == State::InDoubt {
             // The completed task has already left tasks. Retain uncertainty
             // before any clock or disk operation can fail and lose its outcome.
@@ -831,15 +835,11 @@ impl Owner {
                 .journal
                 .records
                 .get_mut(&id)
-                .ok_or("unknown provider completion")?;
+                .ok_or(crate::InputFault::ProviderCompletionUnknown)?;
             record.state = State::InDoubt;
             record.acknowledged = false;
             record.result = None;
-            record.failure = outcome
-                .result
-                .as_ref()
-                .err()
-                .map(|error| failure_detail(error));
+            record.failure = outcome.result.as_ref().err().copied();
             let accounting = self.charge(id);
             self.running.remove(&id);
             self.clocks.remove(&id);
@@ -847,7 +847,7 @@ impl Owner {
             // clock even after rollback. This grants no new time or work.
             let retained = self.retain_uncertainty();
             return combine_outcomes(
-                Err("provider cleanup or effects require reconciliation".into()),
+                Err(crate::ResearchFailure::EffectsUnconfirmed.into()),
                 combine_outcomes(accounting, retained),
             );
         }
@@ -855,7 +855,7 @@ impl Owner {
             .journal
             .records
             .get(&id)
-            .ok_or("unknown provider completion")?;
+            .ok_or(crate::InputFault::ProviderCompletionUnknown)?;
         let peer = matches!(record.input, Input::Peer { .. });
         let proposed = if record.state.terminal() {
             record.result.as_ref()
@@ -866,7 +866,7 @@ impl Owner {
             match check_peer_completion(record, proposed) {
                 Ok(()) => false,
                 Err(error) if error.retryable() => true,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
         } else {
             false
@@ -877,7 +877,7 @@ impl Owner {
             .journal
             .records
             .get_mut(&id)
-            .ok_or("unknown provider completion")?;
+            .ok_or(crate::InputFault::ProviderCompletionUnknown)?;
         if !record.state.terminal() {
             record.state = if expired {
                 State::Expired
@@ -887,7 +887,7 @@ impl Owner {
             match outcome.result {
                 Ok(output) if !expired => record.result = Some(output),
                 Ok(_) => record.result = None,
-                Err(error) => record.failure = Some(failure_detail(&error)),
+                Err(error) => record.failure = Some(error),
             }
         }
         if let Some(cost) = record
@@ -897,7 +897,7 @@ impl Owner {
             .and_then(|p| p.cost.as_ref())
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_data_generation","job":id,"cost":cost}),
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeDataGeneration,"job":id,"cost":cost}),
             );
         }
         if peer {
@@ -931,16 +931,14 @@ impl Owner {
                     && let Some(progress) = &native.progress
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":"native_learning_qualification","job":id,"diagnostic":progress.diagnostic}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification}),
                     );
                 }
             }
             if let (
                 Input::Solve { question },
                 Some(Output::Native {
-                    solution,
-                    diagnostic,
-                    ..
+                    solution, terminal, ..
                 }),
             ) = (&record.input, &record.result)
                 && let Some(native) = &record.native
@@ -949,7 +947,7 @@ impl Owner {
                 learning.observe_result(
                     question,
                     solution.is_some(),
-                    diagnostic,
+                    terminal,
                     record.spent_ms.saturating_mul(1000),
                     native.base.search_budget(),
                 );
@@ -969,7 +967,7 @@ impl Owner {
             && let Some(update) = &progress.meta_update
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_meta_updated","job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.diagnostic}),
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaUpdated,"job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
             );
         }
         self.running.remove(&id);
@@ -979,7 +977,7 @@ impl Owner {
             self.internal_receivers.remove(&id);
         }
         if uncertain {
-            return Err("provider cleanup or effects require reconciliation".into());
+            return Err(crate::ResearchFailure::EffectsUnconfirmed.into());
         }
         Ok(())
     }
@@ -988,33 +986,28 @@ impl Owner {
         self.save_extra(Vec::new())
     }
     fn save_extra(&mut self, extra: Vec<crate::checkpoint::Update>) -> Result<(), crate::Error> {
-        let now = wall_ms().map_err(crate::Error::CorruptStorage)?;
+        let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err(crate::Error::CorruptStorage(
-                "research clock moved backwards; no fresh allowance".into(),
-            ));
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         self.journal.observed_ms = now;
         self.journal
             .remember_holds()
-            .map_err(crate::Error::CorruptStorage)?;
-        if !self
-            .compact_bytes(0)
-            .map_err(crate::Error::CorruptStorage)?
-        {
-            return Err(crate::Error::CorruptStorage(
-                "research reserved result byte capacity".into(),
-            ));
+            .map_err(crate::Error::fatal_storage)?;
+        if !self.compact_bytes(0).map_err(crate::Error::fatal_storage)? {
+            return Err(
+                crate::Error::from(crate::ResearchFailure::JournalReservedCapacity).fatal_storage(),
+            );
         }
         self.journal
             .validate_delta(self.settings)
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         self.disk.save_with(&mut self.journal, extra)?;
         self.flushed = Instant::now();
         Ok(())
     }
 
-    fn retain_uncertainty(&mut self) -> Result<(), String> {
+    fn retain_uncertainty(&mut self) -> Result<(), crate::Error> {
         // Preserve the clock already used for accounting without consulting a
         // rolled-back wall clock. This persistence path only retains a hold.
         self.journal.observed_ms = self.journal.observed_ms.max(
@@ -1027,7 +1020,7 @@ impl Owner {
         );
         self.journal.remember_holds()?;
         self.journal.validate_delta(self.settings)?;
-        self.disk.save(&mut self.journal).map_err(String::from)
+        self.disk.save(&mut self.journal)
     }
 
     fn submit(
@@ -1035,7 +1028,7 @@ impl Owner {
         input: Input,
         binding: Binding,
         reply: oneshot::Sender<Completion>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         self.submit_after(input, binding, Vec::new(), Default::default(), reply)
     }
     fn submit_after(
@@ -1045,7 +1038,7 @@ impl Owner {
         required: Vec<String>,
         prerequisites: crate::learning::Prerequisites,
         reply: oneshot::Sender<Completion>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if reply.is_closed() {
             return Ok(());
         }
@@ -1057,11 +1050,7 @@ impl Owner {
                     .as_ref()
                     .is_none_or(|state| prerequisites.require(state, &required).is_err())
             {
-                reject(
-                    reply,
-                    binding,
-                    "required checked prerequisites not retained",
-                );
+                reject(reply, binding, AdmissionFailure::PrerequisitesNotRetained);
                 return Ok(());
             }
             if self.journal.records.values().any(|r| {
@@ -1073,11 +1062,7 @@ impl Owner {
                             || required.iter().any(|id| !n.required.contains(id))
                     })
             }) {
-                reject(
-                    reply,
-                    binding,
-                    "in-flight snapshot predates required prerequisites",
-                );
+                reject(reply, binding, AdmissionFailure::InFlightPrerequisites);
                 return Ok(());
             }
         }
@@ -1103,7 +1088,7 @@ impl Owner {
                 reply,
                 binding,
                 State::InDoubt,
-                "research in-flight effects require reconciliation",
+                AdmissionFailure::InFlightUncertain,
             );
             return Ok(());
         }
@@ -1122,7 +1107,7 @@ impl Owner {
             let waiters = self.waiters.entry(record.id).or_default();
             waiters.retain(|reply| !reply.is_closed());
             if waiters.len() >= crate::resources::active_limits().waiters_per_job {
-                reject(reply, binding, "research duplicate waiter capacity");
+                reject(reply, binding, AdmissionFailure::DuplicateWaiterCapacity);
             } else {
                 waiters.push(reply);
                 self.clocks.entry(record.id).or_insert_with(Instant::now);
@@ -1140,11 +1125,7 @@ impl Owner {
                         || required.iter().any(|id| !n.required.contains(id))
                 })
             {
-                reject(
-                    reply,
-                    binding,
-                    "archived snapshot predates required prerequisites",
-                );
+                reject(reply, binding, AdmissionFailure::ArchivedPrerequisites);
                 return Ok(());
             }
             if record.state.terminal() || record.state == State::InDoubt {
@@ -1152,13 +1133,17 @@ impl Owner {
                 let _ = reply.send(completion);
                 return Ok(());
             }
-            return Err("nonterminal research job is absent from its resident working set".into());
+            return Err(crate::Error::ResearchJob {
+                code: crate::ResearchFailure::ResidentJobMissing,
+                job: record.id,
+            });
         }
-        if let Err(error) = crate::resources::require_disk_space(
+        if let Err(_error) = crate::resources::require_disk_space(
             self.disk.directory(),
-            u64::try_from(output_reservation(&input)).map_err(|_| "job disk reservation width")?,
+            u64::try_from(output_reservation(&input))
+                .map_err(|_| crate::ResearchFailure::DiskReservationWidth)?,
         ) {
-            reject(reply, binding, &error.to_string());
+            reject(reply, binding, AdmissionFailure::DiskReservation);
             return Ok(());
         }
         let native = if self.settings.native_proof_learning
@@ -1186,13 +1171,14 @@ impl Owner {
         };
         self.compact();
         let input_bytes = serde_json::to_vec(&(&input, &binding, settings, &native))
-            .map_err(|e| e.to_string())?
+            .map_err(|_| crate::ResearchFailure::JobInputEncoding)?
             .len();
-        let reservation = output_reservation(&input)
-            .checked_add(input_bytes + 4096)
-            .ok_or("research byte reservation overflow")?;
+        let reservation = input_bytes
+            .checked_add(4096)
+            .and_then(|bytes| output_reservation(&input).checked_add(bytes))
+            .ok_or(crate::ResearchFailure::JobReservationOverflow)?;
         if !self.compact_bytes(reservation)? {
-            reject(reply, binding, "research result byte reservation capacity");
+            reject(reply, binding, AdmissionFailure::ResultReservation);
             return Ok(());
         }
         let queued = self
@@ -1208,34 +1194,34 @@ impl Owner {
             || queued
                 >= crate::resources::active_limits().queued_jobs_per_role + lanes()[input.lane()]
         {
-            reject(reply, binding, "research role queue capacity");
+            reject(reply, binding, AdmissionFailure::QueueCapacity);
             return Ok(());
         }
         let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err("research clock rollback".into());
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         let mut created_ms = now;
         let mut expires_ms = now
             .checked_add(settings.limits.horizon_ms)
-            .ok_or("research horizon overflow")?;
+            .ok_or(crate::ResearchFailure::JobHorizonOverflow)?;
         let mut spent_ms = 0;
         let mut reserved_units = 0;
         if let Input::Find { cursor, .. } = input {
             if cursor < self.journal.next_cursor {
-                reject(reply, binding, "research finding cursor already consumed");
+                reject(reply, binding, AdmissionFailure::CursorConsumed);
                 return Ok(());
             }
             self.journal.next_cursor = cursor
                 .checked_add(1)
-                .ok_or("research finding cursor exhausted")?;
+                .ok_or(crate::InputFault::FindingCursorExhausted)?;
         } else if let Some(account) = original_account {
             if account.held.is_some() {
                 reject_state(
                     reply,
                     binding,
                     State::InDoubt,
-                    "research original effects require reconciliation",
+                    AdmissionFailure::AccountUncertain,
                 );
                 return Ok(());
             }
@@ -1248,7 +1234,7 @@ impl Owner {
                     reply,
                     binding,
                     State::Expired,
-                    "research original obligation allowance exhausted",
+                    AdmissionFailure::AllowanceExpired,
                 );
                 return Ok(());
             }
@@ -1267,7 +1253,9 @@ impl Owner {
             );
         }
         let id = self.journal.next_id;
-        self.journal.next_id = id.checked_add(1).ok_or("research job identity exhausted")?;
+        self.journal.next_id = id
+            .checked_add(1)
+            .ok_or(crate::InputFault::ResearchJobIdExhausted)?;
         self.journal.records.insert(
             id,
             Record {
@@ -1302,15 +1290,15 @@ impl Owner {
         self.clocks.insert(id, Instant::now());
         self.save()?;
         crate::network::emit(
-            serde_json::json!({"event":"research_created","job":id,"lane":input.lane(),"expires_ms":expires_ms}),
+            serde_json::json!({"event":crate::outcome::NodeEvent::ResearchCreated,"job":id,"lane":input.lane(),"expires_ms":expires_ms}),
         );
         Ok(())
     }
 
-    fn charge(&mut self, id: u64) -> Result<(), String> {
+    fn charge(&mut self, id: u64) -> Result<(), crate::Error> {
         let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err("research clock rollback".into());
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         let clock = if let Some(running) = self.running.get_mut(&id) {
             &mut running.clock
@@ -1323,13 +1311,13 @@ impl Owner {
             .as_nanos()
             .div_ceil(1_000_000)
             .try_into()
-            .map_err(|_| "research elapsed overflow")?;
+            .map_err(|_| crate::ResearchFailure::ElapsedOverflow)?;
         *clock = instant;
         let record = self
             .journal
             .records
             .get_mut(&id)
-            .ok_or("research accounting record absent")?;
+            .ok_or(crate::ResearchFailure::AccountingRecordMissing)?;
         record.spent_ms = record.spent_ms.saturating_add(elapsed);
         record.accounted_ms = now;
         self.journal.observed_ms = now;
@@ -1340,16 +1328,16 @@ impl Owner {
         Ok(())
     }
 
-    fn reserve(&mut self, id: u64, next: u32) -> Result<Reservation, String> {
+    fn reserve(&mut self, id: u64, next: u32) -> Result<Reservation, crate::Error> {
         self.charge(id)?;
         let now = wall_ms()?;
         let record = self
             .journal
             .records
             .get_mut(&id)
-            .ok_or("research reservation record absent")?;
+            .ok_or(crate::ResearchFailure::ReservationMissing)?;
         if record.state != State::Running || next != record.checkpoint + 1 {
-            return Err("research reservation lifecycle differs".into());
+            return Err(crate::ResearchFailure::ReservationSequence.into());
         }
         if !record
             .allowance(self.journal.accounts.get(&record.input.account_key()), now)
@@ -1396,7 +1384,7 @@ impl Owner {
         (queued, running, demand)
     }
 
-    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
+    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), crate::Error> {
         let (queued, running, demand) = self.scheduling_feedback();
         crate::resources::feedback::jobs(queued, running, demand);
         let first_lane = self.next_lane;
@@ -1442,7 +1430,7 @@ impl Owner {
                     ) {
                         Ok(lease) => Some(lease),
                         Err(error) if error.retryable() => continue,
-                        Err(error) => return Err(error.to_string()),
+                        Err(error) => return Err(error),
                     }
                 } else {
                     None
@@ -1456,7 +1444,7 @@ impl Owner {
                     .journal
                     .records
                     .get_mut(&id)
-                    .ok_or("queued research job absent")?;
+                    .ok_or(crate::ResearchFailure::QueuedJobMissing)?;
                 let allowance =
                     record.allowance(self.journal.accounts.get(&record.input.account_key()), now);
                 let finalizing = super::provider::complete(record, record.checkpoint)
@@ -1491,11 +1479,9 @@ impl Owner {
                     ))
                     .catch_unwind()
                     .await
-                    .unwrap_or_else(|_| process::Outcome {
+                    .unwrap_or(process::Outcome {
                         state: State::InDoubt,
-                        result: Err(
-                            "provider task panicked; cleanup requires reconciliation".into()
-                        ),
+                        result: Err(WorkerFailure::Panic.into()),
                     });
                     (id, outcome)
                 }));
@@ -1506,10 +1492,10 @@ impl Owner {
         Ok(())
     }
 
-    fn reconcile(&mut self) -> Result<(), String> {
+    fn reconcile(&mut self) -> Result<(), crate::Error> {
         let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err("research clock rollback".into());
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         let ids = self
             .journal
@@ -1568,15 +1554,17 @@ impl Owner {
         Ok(())
     }
 
-    fn deliver(&mut self, id: u64) -> Result<(), String> {
+    fn deliver(&mut self, id: u64) -> Result<(), crate::Error> {
         let record = &self.journal.records[&id];
         if !record.state.terminal() {
             return Ok(());
         }
         let completion = completion(record)?;
-        crate::network::emit(serde_json::json!({"event":"research_finished","job":id,
-            "state":format!("{:?}",completion.state),"spent_ms":completion.spent_ms,
-            "reserved_units":completion.reserved_units,"experience":completion.experience}));
+        crate::network::emit(
+            serde_json::json!({"event":crate::outcome::NodeEvent::ResearchFinished,"job":id,
+            "state":completion.state,"spent_ms":completion.spent_ms,
+            "reserved_units":completion.reserved_units,"experience":completion.experience}),
+        );
         if let Some(waiters) = self.waiters.remove(&id) {
             for waiter in waiters {
                 let _ = waiter.send(completion.clone());
@@ -1615,7 +1603,7 @@ impl Owner {
         }
     }
 
-    fn compact_bytes(&mut self, additional: usize) -> Result<bool, String> {
+    fn compact_bytes(&mut self, additional: usize) -> Result<bool, crate::Error> {
         self.compact();
         let future = self
             .journal
@@ -1625,12 +1613,13 @@ impl Owner {
             .try_fold(additional, |sum, r| {
                 sum.checked_add(output_reservation(&r.input))
             })
-            .ok_or("research result reservation overflow")?;
+            .ok_or(crate::ResearchFailure::JobResultReservationOverflow)?;
         loop {
             let encoded = self.journal.encoded_active_len()?;
             if encoded
                 .checked_add(future)
-                .is_some_and(|bytes| bytes + 256 <= crate::resources::limits().active_job_bytes)
+                .and_then(|bytes| bytes.checked_add(256))
+                .is_some_and(|bytes| bytes <= crate::resources::limits().active_job_bytes)
             {
                 return Ok(true);
             }
@@ -1653,12 +1642,12 @@ impl Owner {
         }
     }
 
-    async fn stop_all(&mut self) -> Result<(), String> {
+    async fn stop_all(&mut self) -> Result<(), crate::Error> {
         let mut failure = None;
         let ids = self.running.keys().copied().collect::<Vec<_>>();
         for id in ids {
             if let Err(error) = self.charge(id) {
-                failure = Some(append_failure(failure.take(), &error));
+                failure = Some(append_failure(failure.take(), error));
             }
             let record = self
                 .journal
@@ -1675,7 +1664,7 @@ impl Owner {
         }
         let saved = self.save();
         if let Err(error) = saved {
-            failure = Some(append_failure(failure.take(), &error.to_string()));
+            failure = Some(append_failure(failure.take(), error));
         }
         for (id, running) in std::mem::take(&mut self.running) {
             self.clocks.insert(id, running.clock);
@@ -1685,7 +1674,7 @@ impl Owner {
         }
         while let Some((id, outcome)) = self.tasks.next().await {
             if let Err(error) = self.charge(id) {
-                failure = Some(append_failure(failure.take(), &error));
+                failure = Some(append_failure(failure.take(), error));
             }
             if outcome.state == State::InDoubt {
                 let record = self
@@ -1696,10 +1685,10 @@ impl Owner {
                 record.state = State::InDoubt;
                 record.acknowledged = false;
                 record.result = None;
-                record.failure = outcome.result.err().map(|error| failure_detail(&error));
+                record.failure = outcome.result.err();
                 failure = Some(append_failure(
                     failure.take(),
-                    "provider cleanup is unconfirmed",
+                    crate::ResearchFailure::EffectsUnconfirmed.into(),
                 ));
             } else if let Ok(output) = outcome.result {
                 let record = self
@@ -1711,7 +1700,7 @@ impl Owner {
                     let exhausted = match allowance_expired(&self.journal, id) {
                         Ok(expired) => expired,
                         Err(error) => {
-                            failure = Some(append_failure(failure.take(), &error));
+                            failure = Some(append_failure(failure.take(), error));
                             true
                         }
                     };
@@ -1732,7 +1721,7 @@ impl Owner {
         }
         self.waiters.clear();
         if let Err(error) = self.save() {
-            failure = Some(append_failure(failure.take(), &error.to_string()));
+            failure = Some(append_failure(failure.take(), error));
             if self
                 .journal
                 .records
@@ -1740,18 +1729,23 @@ impl Owner {
                 .any(|record| record.state == State::InDoubt)
                 && let Err(error) = self.retain_uncertainty()
             {
-                failure = Some(append_failure(failure.take(), &error));
+                failure = Some(append_failure(failure.take(), error));
             }
         }
         failure.map_or(Ok(()), Err)
     }
 }
 
-fn reject(reply: oneshot::Sender<Completion>, binding: Binding, error: &str) {
+fn reject(reply: oneshot::Sender<Completion>, binding: Binding, error: AdmissionFailure) {
     reject_state(reply, binding, State::Failed, error);
 }
 
-fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: State, error: &str) {
+fn reject_state(
+    reply: oneshot::Sender<Completion>,
+    binding: Binding,
+    state: State,
+    error: AdmissionFailure,
+) {
     let _ = reply.send(Completion {
         experience: None,
         model_checkpoint: None,
@@ -1760,18 +1754,8 @@ fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: Sta
         spent_ms: 0,
         reserved_units: 0,
         state,
-        result: Err(error.into()),
+        result: Err(CompletionFailure::Admission(error)),
     });
-}
-
-fn failure_detail(error: &str) -> String {
-    error
-        .char_indices()
-        .take_while(|(index, ch)| {
-            index + ch.len_utf8() <= crate::resources::limits().failure_detail_bytes
-        })
-        .map(|(_, ch)| ch)
-        .collect()
 }
 
 fn output_reservation(input: &Input) -> usize {
@@ -1806,11 +1790,11 @@ fn check_peer_completion(record: &Record, output: Option<&Output>) -> Result<(),
     Ok(())
 }
 
-fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
+fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, crate::Error> {
     let record = journal
         .records
         .get(&id)
-        .ok_or("completion research identity absent")?;
+        .ok_or(crate::ResearchFailure::CompletionJobMissing)?;
     Ok(record
         .allowance(
             journal.accounts.get(&record.input.account_key()),
@@ -1818,10 +1802,17 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
         )
         .time_expired())
 }
-fn append_failure(previous: Option<String>, next: &str) -> String {
-    previous.map_or_else(|| next.to_owned(), |old| format!("{old}; cleanup: {next}"))
+fn append_failure(previous: Option<crate::Error>, next: crate::Error) -> crate::Error {
+    match previous {
+        Some(primary) => crate::Error::ResearchCombined {
+            primary: Box::new(primary),
+            cleanup: Box::new(next),
+        },
+        None => next,
+    }
 }
-fn completion(record: &Record) -> Result<Completion, String> {
+
+fn completion(record: &Record) -> Result<Completion, crate::Error> {
     Ok(Completion {
         experience: crate::learning::experience::ExperienceSummary::from_record(record)?,
         model_checkpoint: record.native.as_ref().map(|job| job.model_checkpoint()),
@@ -1830,18 +1821,24 @@ fn completion(record: &Record) -> Result<Completion, String> {
         spent_ms: record.spent_ms,
         reserved_units: record.reserved_units,
         state: record.state,
-        result: record
-            .result
-            .clone()
-            .ok_or_else(|| format!("research job {:?}", record.state)),
+        result: record.result.clone().ok_or_else(|| {
+            record.failure.map_or(
+                CompletionFailure::NoResult(record.state),
+                CompletionFailure::Worker,
+            )
+        }),
     })
 }
 
-fn combine_outcomes(result: Result<(), String>, cleanup: Result<(), String>) -> Result<(), String> {
+fn combine_outcomes(
+    result: Result<(), crate::Error>,
+    cleanup: Result<(), crate::Error>,
+) -> Result<(), crate::Error> {
     match (result, cleanup) {
-        (Err(primary), Err(cleanup)) => Err(format!(
-            "cleanup failed: {cleanup}; primary failure: {primary}"
-        )),
+        (Err(primary), Err(cleanup)) => Err(crate::Error::ResearchCombined {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }),
         (Err(error), _) | (_, Err(error)) => Err(error),
         _ => Ok(()),
     }
