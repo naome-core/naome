@@ -1176,6 +1176,30 @@ impl Supervisor for WorkerCheckpoint {
     }
 }
 
+fn run_native_job(owner: &mut Owner, id: u64) -> Completion {
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    let (progress, output) = drive_native(owner.journal.records[&id].clone());
+    let record = owner.journal.records.get_mut(&id).unwrap();
+    record
+        .native
+        .as_mut()
+        .unwrap()
+        .retain_progress(id, progress)
+        .unwrap();
+    record.checkpoint = 1;
+    owner
+        .complete(
+            id,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(output),
+            },
+        )
+        .unwrap();
+    completion(&owner.journal.records[&id]).unwrap()
+}
+
 fn drive_native(record: Record) -> (crate::learning::Progress, Output) {
     std::thread::spawn(move || {
         let mut provider = provider::select(&record).unwrap();
@@ -2024,30 +2048,6 @@ fn catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen() {
     use crate::frontier::{Frontier, evidence::Outcome};
     use crate::learning::Origin;
 
-    fn run(owner: &mut Owner, id: u64) -> Completion {
-        owner.journal.records.get_mut(&id).unwrap().state = State::Running;
-        owner.reserve(id, 1).unwrap();
-        let (progress, output) = drive_native(owner.journal.records[&id].clone());
-        let record = owner.journal.records.get_mut(&id).unwrap();
-        record
-            .native
-            .as_mut()
-            .unwrap()
-            .retain_progress(id, progress)
-            .unwrap();
-        record.checkpoint = 1;
-        owner
-            .complete(
-                id,
-                process::Outcome {
-                    state: State::Complete,
-                    result: Ok(output),
-                },
-            )
-            .unwrap();
-        completion(&owner.journal.records[&id]).unwrap()
-    }
-
     crate::resources::tests::budget(false);
     let graph_dir = Directory::new();
     let frontier_dir = Directory::new();
@@ -2070,7 +2070,7 @@ fn catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen() {
     let (reply, _receiver) = oneshot::channel();
     owner.submit(input.clone(), binding.clone(), reply).unwrap();
     let first = owner.journal.next_id - 1;
-    let miss = run(&mut owner, first);
+    let miss = run_native_job(&mut owner, first);
     assert!(matches!(
         miss.result,
         Ok(Output::Native { solution: None, .. })
@@ -2109,7 +2109,7 @@ fn catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen() {
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     let mut owner = Owner::new(disk, journal, settings, Arc::default());
     assert_eq!(owner.journal.records[&retry].binding, retry_binding);
-    let complete = run(&mut owner, retry);
+    let complete = run_native_job(&mut owner, retry);
     let solved = complete.experience.unwrap();
     assert!(matches!(solved.origin, Origin::Local));
     assert_eq!(solved.checkpoint, miss.experience.unwrap().checkpoint);
@@ -2147,4 +2147,183 @@ fn catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen() {
         after["accepted"],
         solved.policy,
     );
+}
+
+#[test]
+fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
+    const TEST: &str = "jobs::service::tests::learning::compact_planned_catalog_cut_is_verified_and_credits_the_finder";
+    if std::env::var_os("NAOME_COMPACT_CATALOG_CUT_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_COMPACT_CATALOG_CUT_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+
+    use crate::frontier::{Frontier, evidence::Outcome};
+    use crate::learning::experience::{Capacity, TerminalEvidence};
+    use naome_checker::question::ResearchQuestion;
+    use naome_foundation::{Formula, FreeVariable};
+
+    fn submit(owner: &mut Owner, question: &ResearchQuestion, binding: Binding) -> Completion {
+        let (reply, _receiver) = oneshot::channel();
+        owner
+            .submit(
+                Input::Solve {
+                    question: question.to_hex(),
+                },
+                binding,
+                reply,
+            )
+            .unwrap();
+        let id = owner.journal.next_id - 1;
+        let result = run_native_job(owner, id);
+        owner.journal.records.get_mut(&id).unwrap().acknowledged = true;
+        owner.compact();
+        owner.save().unwrap();
+        result
+    }
+
+    fn publish(
+        frontier: &mut Frontier,
+        graph: &mut crate::Graph,
+        question: &ResearchQuestion,
+        completion: &Completion,
+    ) -> (naome_proof::ArtifactId, String) {
+        let Ok(Output::Native {
+            solution: Some(solution),
+            ..
+        }) = &completion.result
+        else {
+            panic!("native job must produce a proof");
+        };
+        assert!(!solution.refuted);
+        solution.check_target(question).unwrap();
+        let root = crate::learning::tests::publish_catalog_solution(graph, solution);
+        frontier
+            .attempted(question, graph, completion, Outcome::Candidate)
+            .unwrap();
+        frontier.prepared(question, completion.id, root).unwrap();
+        frontier
+            .verified(question, graph, completion.id, root)
+            .unwrap();
+        (root, solution.proof_id.clone())
+    }
+
+    crate::resources::tests::budget(false);
+    let graph_dir = Directory::new();
+    let frontier_dir = Directory::new();
+    let mut graph = crate::Graph::open(&graph_dir.0).unwrap();
+    let (_jobs_dir, mut owner) = native();
+    let settings = owner.settings;
+    let mut frontier = Frontier::open(&frontier_dir.0, &graph, 937, settings).unwrap();
+    let mut gate = crate::question::LocalQuestions::new(Some(|_| std::future::ready(Ok(true))));
+    let [a, b, c, witness] = [0, 1, 2, 3].map(FreeVariable::new);
+    let atoms = [
+        Formula::member(a, b),
+        Formula::member(b, c),
+        Formula::member(c, a),
+        Formula::member(b, a),
+        Formula::member(c, b),
+        Formula::member(a, c),
+        Formula::member(a, a),
+        Formula::member(b, b),
+        Formula::member(c, c),
+        Formula::equal(a, b),
+        Formula::equal(a, c),
+        Formula::equal(b, c),
+    ];
+    let guard = |step: usize| {
+        let premise = atoms[(6 + (step + 3) * 5) % 12].clone();
+        let result = atoms[(6 + (step + 4) * 5) % 12].clone();
+        Formula::implies(Formula::negate(premise), result)
+    };
+    let body = [Formula::equal(a, b), Formula::member(a, c)]
+        .into_iter()
+        .chain((0..4).map(guard))
+        .fold(Formula::member(b, c), |body, premise| {
+            Formula::implies(premise, body)
+        });
+    let close = |body| {
+        [a, b, c]
+            .into_iter()
+            .rev()
+            .fold(body, |body, var| Formula::for_all(var, body))
+    };
+    let helper = ResearchQuestion::from_formula(close(body.clone())).unwrap();
+    let goal = ResearchQuestion::from_formula(close(Formula::implies(
+        Formula::for_all(witness, Formula::implies(body, Formula::member(witness, a))),
+        Formula::member(c, a),
+    )))
+    .unwrap();
+    assert!(gate.generation_decision(&graph, &goal).passed());
+    let miss = submit(&mut owner, &goal, gate.formal_context(&graph).binding());
+    let first = miss.experience.as_ref().unwrap();
+    assert_eq!(
+        first.terminal,
+        TerminalEvidence::Unsupported(Capacity::Facts)
+    );
+    assert_eq!(first.cost.as_ref().unwrap().search_expansions, 128);
+    frontier
+        .attempted(&goal, &graph, &miss, Outcome::NoCandidate)
+        .unwrap();
+    let plan = frontier
+        .loop_work(&goal, &graph, |q| {
+            gate.generation_decision(&graph, q).passed()
+        })
+        .unwrap();
+    assert_eq!(plan.pending.as_slice(), std::slice::from_ref(&helper));
+    assert!(
+        helper.to_hex().len() + 64 <= crate::resources::active_limits().question_cache_bytes / 2
+    );
+    drop(plan);
+    let result = submit(&mut owner, &helper, gate.formal_context(&graph).binding());
+    let (helper_id, proof) = publish(&mut frontier, &mut graph, &helper, &result);
+    assert_eq!(frontier.support_updates(), 0);
+
+    let planned = frontier.loop_work(&goal, &graph, |_| true).unwrap();
+    assert_eq!(planned.required, [proof]);
+    assert!(planned.pending.is_empty());
+    assert!(gate.generation_decision(&graph, &goal).passed());
+    let catalog = frontier
+        .planned_catalog_retry(&graph, &goal, &planned.required)
+        .unwrap()
+        .unwrap();
+    assert_eq!(naome_proof::ArtifactId::from(catalog.proof_id()), helper_id);
+    drop(planned);
+    let mut binding = gate.formal_context(&graph).binding();
+    binding.catalog = Some(catalog);
+    let retry = submit(&mut owner, &goal, binding);
+    assert_eq!(
+        retry.experience.as_ref().unwrap().checkpoint,
+        first.checkpoint
+    );
+    assert_eq!(
+        retry
+            .experience
+            .as_ref()
+            .unwrap()
+            .cost
+            .as_ref()
+            .unwrap()
+            .search_expansions,
+        5
+    );
+    let (root, _) = publish(&mut frontier, &mut graph, &goal, &retry);
+    assert_eq!(
+        graph.learning_proof_dependencies(root).unwrap().as_ref(),
+        &[helper_id]
+    );
+    assert_eq!(frontier.support_updates(), 1);
+    drop(frontier);
+    drop(graph);
+
+    let graph = crate::Graph::open(&graph_dir.0).unwrap();
+    let mut frontier = Frontier::open(&frontier_dir.0, &graph, 937, settings).unwrap();
+    let checkpoint = frontier.learning_snapshot();
+    frontier.verified(&goal, &graph, retry.id, root).unwrap();
+    assert_eq!(frontier.learning_snapshot(), checkpoint);
+    assert_eq!(frontier.support_updates(), 1);
 }

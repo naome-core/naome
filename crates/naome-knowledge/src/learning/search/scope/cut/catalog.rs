@@ -6,12 +6,26 @@ use crate::{
     learning::{GenerationCost, Solution, peer, search::Tree},
 };
 use naome_checker::{ContextView, context::BucketKind, question};
-use naome_proof::ArtifactId;
+use naome_proof::{ArtifactId, ProofId};
 use std::time::Instant;
 
 const BINDERS: usize = 4;
 const PREMISES: usize = 4;
 const CANDIDATES: usize = 4;
+
+fn open_catalog_scope(target: &Formula) -> Result<Option<Scope>, Error> {
+    Ok(Scope::open(target)?.filter(|scope| scope.assumptions.len() + BINDERS + 1 < FACTS))
+}
+
+fn retained_program(graph: &Graph, proof: ProofId) -> Result<Option<CatalogSource>, Error> {
+    let Some(manifest) = graph.program_manifest(ArtifactId::from(proof))? else {
+        return Ok(None);
+    };
+    graph
+        .peer_program(manifest)?
+        .map(CatalogSource::new)
+        .transpose()
+}
 
 fn closing_premises(
     scope: &Scope,
@@ -43,17 +57,38 @@ fn closing_premises(
 }
 
 impl CatalogSource {
+    /// Questions whose proved instances can discharge the catalog route's
+    /// closing premises. A proposal contains no proof or claim of solvability.
+    pub(crate) fn cut_questions(target: &Formula) -> Vec<question::ResearchQuestion> {
+        let Ok(Some(scope)) = open_catalog_scope(target) else {
+            return Vec::new();
+        };
+        closing_premises(&scope, 0)
+            .filter_map(|(_, _, premise)| {
+                let free = premise.free_variables();
+                if free.len() > BINDERS || !free.iter().all(|name| scope.binders.contains(name)) {
+                    return None;
+                }
+                let closed = scope
+                    .binders
+                    .iter()
+                    .rev()
+                    .filter(|name| free.contains(name))
+                    .fold(premise.clone(), |body, name| Formula::for_all(*name, body));
+                question::universal_operands(&closed, &premise, BINDERS).ok()??;
+                question::ResearchQuestion::from_formula(closed).ok()
+            })
+            .collect()
+    }
+
     pub(crate) fn for_local_scope(graph: &Graph, target: &Formula) -> Result<Option<Self>, Error> {
         let Ok(_memory) = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)
         else {
             return Ok(None);
         };
-        let Some(scope) = Scope::open(target)? else {
+        let Some(scope) = open_catalog_scope(target)? else {
             return Ok(None);
         };
-        if scope.assumptions.len() + BINDERS + 1 >= FACTS {
-            return Ok(None);
-        }
         let context = graph.checked_context();
         for (_, _, premise) in closing_premises(&scope, 0) {
             let key = question::universal_pattern(&premise)?;
@@ -74,12 +109,41 @@ impl CatalogSource {
                 if question::universal_operands(&lemma, &premise, BINDERS)?.is_none() {
                     continue;
                 }
-                if let Some(manifest) =
-                    graph.program_manifest(ArtifactId::from(header.proof_id()))?
-                    && let Some(packet) = graph.peer_program(manifest)?
-                {
-                    return Self::new(packet).map(Some);
+                if let Some(source) = retained_program(graph, header.proof_id())? {
+                    return Ok(Some(source));
                 }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reuse exactly the program selected by a checked single-helper plan.
+    pub(crate) fn for_planned_local_scope(
+        graph: &Graph,
+        target: &Formula,
+        proof: ProofId,
+    ) -> Result<Option<Self>, Error> {
+        let Ok(_memory) = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)
+        else {
+            return Ok(None);
+        };
+        let Some(scope) = open_catalog_scope(target)? else {
+            return Ok(None);
+        };
+        let context = graph.checked_context();
+        let Some(header) = context.proof_header(proof)? else {
+            return Ok(None);
+        };
+        let bytes = header.canonical_length();
+        if bytes > question::QUESTION_BYTES {
+            return Ok(None);
+        }
+        let Some(lemma) = context.proof_formula(header, bytes)? else {
+            return Ok(None);
+        };
+        for (_, _, premise) in closing_premises(&scope, 0) {
+            if question::universal_operands(&lemma, &premise, BINDERS)?.is_some() {
+                return retained_program(graph, proof);
             }
         }
         Ok(None)

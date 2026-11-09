@@ -1441,7 +1441,22 @@ impl Autonomous {
                     } else {
                         Vec::new()
                     };
+                    let mut binding = context.binding();
+                    if let Some(frontier) = &self.frontier {
+                        match frontier.planned_catalog_retry(graph, &question, &required) {
+                            Ok(catalog) => binding.catalog = catalog,
+                            Err(error) if error.fatal() => {
+                                self.error = Some(error);
+                                self.retain(question);
+                                return accepted;
+                            }
+                            Err(_) => {}
+                        }
+                    }
                     let inputs = (|| -> Result<_, crate::Error> {
+                        if binding.catalog.is_some() {
+                            return Ok((Vec::new(), Default::default()));
+                        }
                         let Some(frontier) = &self.frontier else {
                             return graph
                                 .solving_inputs(&required, &[])
@@ -1479,8 +1494,8 @@ impl Autonomous {
                             return accepted;
                         }
                     };
-                    let mut binding = context.binding();
-                    if required.is_empty()
+                    if binding.catalog.is_none()
+                        && required.is_empty()
                         && prerequisites.is_empty()
                         && let Some(frontier) = &self.frontier
                     {

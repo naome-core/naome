@@ -596,12 +596,19 @@ impl Evidence {
             } else {
                 Vec::new()
             };
+        let catalog_sources =
+            if cut_blocked && eligible && !record.loop_disabled && candidates.is_empty() {
+                finder::catalog_cut_sources(question, &record.helpers, 4, bytes)
+            } else {
+                Vec::new()
+            };
         // Capacity limits can motivate an exact decomposition. They establish
         // chronology for checked downstream use without training a miss.
         let observation = if exhausted {
             Some(Observation::Exhausted(completion.spent_ms))
         } else if cut_blocked
             && (!candidates.is_empty()
+                || !catalog_sources.is_empty()
                 || record.first_unresolved_job > 0 && !record.helpers.is_empty())
         {
             Some(Observation::CutBlocked)
@@ -625,6 +632,7 @@ impl Evidence {
             candidates.extend(finder::from_frontier(question, frontier, 4, bytes));
             record.frontier = Some(frontier.clone());
         }
+        record.helpers.extend(catalog_sources);
         for helper in candidates {
             if record.helpers.len() >= 4 {
                 break;

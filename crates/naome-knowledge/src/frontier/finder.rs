@@ -171,6 +171,54 @@ pub(super) fn cut_helpers(
     bounded(questions, maximum, bytes)
 }
 
+/// The catalog cut is queued as canonical source. Its decoded working set
+/// is leased here and again by the planner when it opens the retained source.
+pub(super) fn catalog_cut_sources(
+    goal: &ResearchQuestion,
+    existing: &[String],
+    maximum: usize,
+    bytes: usize,
+) -> Vec<String> {
+    const SOURCE_OVERHEAD: usize = 64;
+    if existing.len() >= maximum {
+        return Vec::new();
+    }
+    let mut retained = existing
+        .iter()
+        .map(|source| source.len() + SOURCE_OVERHEAD)
+        .sum::<usize>();
+    if retained >= bytes {
+        return Vec::new();
+    }
+    let Ok(_decoded) =
+        crate::resources::MemoryLease::acquire(16 * naome_checker::question::QUESTION_BYTES)
+    else {
+        return Vec::new();
+    };
+    let root_nodes = goal.formula().view().node_count_and_depth().0;
+    let mut sources = Vec::new();
+    for candidate in crate::jobs::CatalogSource::cut_questions(goal.proved_target()) {
+        let source = candidate.to_hex();
+        let cost = source.len() + SOURCE_OVERHEAD;
+        if cost <= bytes - retained
+            && candidate.resolution_id() != goal.resolution_id()
+            && candidate.formula().view().node_count_and_depth().0 < root_nodes
+            && meaningful(&candidate)
+            && independent_goal(&candidate, goal)
+            && crate::learning::State::eligible(&source)
+            && !existing.contains(&source)
+            && !sources.contains(&source)
+        {
+            retained += cost;
+            sources.push(source);
+            if existing.len() + sources.len() == maximum {
+                break;
+            }
+        }
+    }
+    sources
+}
+
 fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {
     let free = formula.free_variables().into_iter().collect::<Vec<_>>();
     if free.len() != 2 {

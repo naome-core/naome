@@ -329,16 +329,35 @@ impl Frontier {
         graph: &Graph,
         question: &ResearchQuestion,
     ) -> Result<Option<crate::jobs::CatalogSource>, crate::Error> {
-        if self.native
-            && self
-                .evidence
-                .get(question)?
-                .is_some_and(|record| record.paid_open_search())
-        {
+        if self.paid_catalog_retry(question)? {
             crate::jobs::CatalogSource::for_local_scope(graph, question.proved_target())
         } else {
             Ok(None)
         }
+    }
+
+    pub(crate) fn planned_catalog_retry(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+        required: &[String],
+    ) -> Result<Option<crate::jobs::CatalogSource>, crate::Error> {
+        let [proof] = required else {
+            return Ok(None);
+        };
+        if !question.dependencies().is_empty() || !self.paid_catalog_retry(question)? {
+            return Ok(None);
+        }
+        let proof = naome_proof::ProofId::from_bytes(crate::object::id_bytes(proof)?);
+        crate::jobs::CatalogSource::for_planned_local_scope(graph, question.proved_target(), proof)
+    }
+
+    fn paid_catalog_retry(&self, question: &ResearchQuestion) -> Result<bool, crate::Error> {
+        Ok(self.native
+            && self
+                .evidence
+                .get(question)?
+                .is_some_and(|record| record.paid_open_search()))
     }
 
     /// Exact planned cuts for an earlier open goal. The formal owner decides
