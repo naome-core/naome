@@ -39,7 +39,7 @@ impl Runtime {
             left: &'a GradientsParams,
             right: &'a GradientsParams,
             sums: [f64; 3],
-            error: Option<String>,
+            error: Option<crate::Error>,
         }
         impl ModuleMapper for Alignment<'_> {
             fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
@@ -63,7 +63,7 @@ impl Runtime {
                 {
                     match value.sum().into_data().try_to_vec::<f32>() {
                         Ok(values) => self.sums[i] += f64::from(values[0]),
-                        Err(error) => self.error = Some(error.to_string()),
+                        Err(error) => self.error = Some(tensor_data_failure(error)),
                     }
                 }
                 param
@@ -77,7 +77,7 @@ impl Runtime {
         };
         drop(self.policy.clone().map(&mut alignment));
         if let Some(error) = alignment.error {
-            return Err(error.into());
+            return Err(error);
         }
         cosine(alignment.sums)
     }

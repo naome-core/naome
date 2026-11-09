@@ -238,7 +238,7 @@ impl Drop for AdmissionPhase<'_> {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             halt.get_or_insert_with(|| {
-                crate::Error::CorruptStorage("checked admission aborted before publication".into())
+                crate::Error::from(crate::InputFault::CheckedAdmissionAborted).fatal_storage()
             });
         }
         // Recover poisoned gates only for fatal disposal, never continued use.

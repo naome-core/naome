@@ -557,7 +557,7 @@ impl Graph {
         self.ensure_live()?;
         if !Arc::ptr_eq(&source, &self.checked_storage) || !gate.matches(copy.epoch, &copy.target) {
             return self.cold(Err::<_, crate::Error>(
-                "checked copy source epoch or target changed".into(),
+                crate::InputFault::CheckedCopyChanged.into(),
             ));
         }
         // A copy transaction contains only this bounded quantum. Admissions

@@ -297,7 +297,9 @@ impl Catalog {
                             .parse()
                             .map_err(|_| crate::InputFault::CatalogPeerOriginSyntax)?;
                         if peer.to_string() != text {
-                            return Err(crate::Error::from("peer learning origin encoding"));
+                            return Err(crate::Error::from(
+                                crate::InputFault::CatalogPeerOriginEncoding,
+                            ));
                         }
                         Ok(peer)
                     })
@@ -845,7 +847,21 @@ fn configure(connection: &Connection) -> Result<usize, crate::Error> {
             .pragma_query_value(None, name, |row| row.get(0))
             .map_err(sql_error)?;
         if actual != expected {
-            return Err(format!("catalog pragma {name} differs").into());
+            let code = match name {
+                "synchronous" => crate::InputFault::CatalogPragmaSynchronous,
+                "foreign_keys" => crate::InputFault::CatalogPragmaForeignKeys,
+                "cache_size" => crate::InputFault::CatalogPragmaCacheSize,
+                "temp_store" => crate::InputFault::CatalogPragmaTempStore,
+                "mmap_size" => crate::InputFault::CatalogPragmaMmapSize,
+                "busy_timeout" => crate::InputFault::CatalogPragmaBusyTimeout,
+                "trusted_schema" => crate::InputFault::CatalogPragmaTrustedSchema,
+                _ => crate::InputFault::CatalogPragmaOther,
+            };
+            return Err(crate::Error::CatalogPragma {
+                code,
+                expected,
+                actual,
+            });
         }
     }
     #[cfg(target_os = "macos")]
@@ -902,7 +918,7 @@ fn verify_schema(connection: &Connection) -> Result<(), crate::Error> {
         .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
         .map_err(sql_error)?;
     if check != "ok" {
-        return Err(format!("catalog integrity failure: {check}").into());
+        return Err(crate::InputFault::CatalogIntegrityFailure.into());
     }
     verify_foreign_keys(connection)
 }

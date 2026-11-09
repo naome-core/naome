@@ -434,6 +434,12 @@ fn panic_after_checked_commits_discards_connections_and_keeps_canonical_roots() 
     );
     assert_eq!(graph.content_root(), root);
     assert_eq!(graph.store.summary().unwrap().count, 16);
+    let halt = graph.storage_error().unwrap();
+    assert!(halt.fatal());
+    assert_eq!(
+        serde_json::to_value(halt).unwrap()["cause_code"],
+        u32::from(crate::InputFault::CheckedAdmissionAborted)
+    );
     closed(&graph, &source, Some(&target));
 }
 

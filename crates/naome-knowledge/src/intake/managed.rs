@@ -164,7 +164,7 @@ impl Intake {
             if !description.transfer.live(now) {
                 return Progress::Skipped(
                     id,
-                    "queued metadata expired before research admission".into(),
+                    crate::InputFault::IntakeQueuedMetadataExpired.into(),
                 );
             }
             let until = questions.selection_deadline(now);

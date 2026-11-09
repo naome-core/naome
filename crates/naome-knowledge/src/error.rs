@@ -261,9 +261,15 @@ pub enum Error {
         code: InputFault,
         identity: Option<[u8; 32]>,
     },
+    CatalogPragma {
+        code: InputFault,
+        expected: i64,
+        actual: i64,
+    },
     QuestionLimit(naome_proof::QuestionLimit),
     StaleAuthority,
     Deadline,
+    #[cfg(test)]
     InvalidInput(String),
     MissingQuestionDefinition(naome_proof::DefinitionId),
     MissingRequiredTheorem(naome_proof::ProofId),
@@ -280,7 +286,6 @@ pub enum Error {
     /// Invalid data read from owned storage remains fatal while retaining the
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
-    CorruptStorage(String),
     CheckedContext(naome_checker::ContextError),
     UncertainDurability(DurabilityFailure),
     LearningEvidence(EvidenceFailure),
@@ -437,13 +442,16 @@ impl Error {
             Self::DiskOverload { .. } => OperationCode::DiskOverload,
             Self::ExecutionLimit => OperationCode::ExecutionLimit,
             Self::InputLimit(limit) => return (*limit).into(),
-            Self::InputFault(fault) | Self::ArtifactState { code: fault, .. } => {
+            Self::InputFault(fault)
+            | Self::ArtifactState { code: fault, .. }
+            | Self::CatalogPragma { code: fault, .. } => {
                 return (*fault).into();
             }
             Self::QuestionLimit(_) => OperationCode::QuestionLimit,
             Self::StaleAuthority => OperationCode::StaleAuthority,
             Self::Deadline => OperationCode::Deadline,
-            Self::InvalidInput(_) => OperationCode::InvalidInput,
+            #[cfg(test)]
+            Self::InvalidInput(_) => OperationCode::ExecutionFailed,
             Self::MissingQuestionDefinition(_) => OperationCode::MissingQuestionDefinition,
             Self::MissingRequiredTheorem(_) => OperationCode::MissingRequiredTheorem,
             Self::Proof(_) => OperationCode::ProofCheck,
@@ -454,7 +462,6 @@ impl Error {
             Self::DefinitionExpansion(_) => OperationCode::DefinitionExpansion,
             Self::Schema { .. } => OperationCode::Schema,
             Self::Stored(_) => OperationCode::InvalidStoredRecord,
-            Self::CorruptStorage(_) => OperationCode::CorruptStorage,
             Self::CheckedContext(_) => OperationCode::CheckedContext,
             Self::UncertainDurability(failure) => return failure.code.into(),
             Self::LearningEvidence(failure) => return failure.code().into(),
@@ -537,9 +544,11 @@ impl Error {
     }
     pub(crate) fn storage(self) -> Self {
         match self {
-            Self::InvalidInput(message) => Self::CorruptStorage(message),
+            #[cfg(test)]
+            Self::InvalidInput(message) => Self::Stored(Box::new(Self::InvalidInput(message))),
             error @ (Self::InputFault(_)
             | Self::ArtifactState { .. }
+            | Self::CatalogPragma { .. }
             | Self::MissingRequiredTheorem(_)
             | Self::QuestionLimit(_)
             | Self::QuestionInput(_)
@@ -577,7 +586,6 @@ impl Error {
             || matches!(
                 self,
                 Self::Stored(_)
-                    | Self::CorruptStorage(_)
                     | Self::ProgramSql { .. }
                     | Self::CatalogSql { .. }
                     | Self::BacklogSql { .. }
@@ -648,7 +656,7 @@ impl fmt::Display for Error {
             ),
             Self::ExecutionLimit => f.write_str("operation execution resources exhausted"),
             Self::InputLimit(limit) => f.write_str(limit.label()),
-            Self::ArtifactState { code, .. } => Self::InputFault(*code).fmt(f),
+            Self::ArtifactState { code, .. } | Self::CatalogPragma { code, .. } => Self::InputFault(*code).fmt(f),
             Self::InputFault(fault) => f.write_str(match fault {
                 InputFault::DescriptionAddressMismatch => "description proof address differs",
                 InputFault::ArtifactCompatibilityMismatch => "compatibility mismatch",
@@ -925,6 +933,25 @@ impl fmt::Display for Error {
                 InputFault::StartupHandoffExisting => "startup handoff requires a new daemon",
                 InputFault::StartupLifelineMissing => "startup parent lifeline missing",
                 InputFault::ResourceSnapshotEncoding => "effective resource snapshot encoding failed",
+                InputFault::EvidenceCandidateBinding => "verified research evidence is not bound to the checked candidate job",
+                InputFault::CheckedCopyChanged => "checked copy source epoch or target changed",
+                InputFault::IntakeQueuedMetadataExpired => "queued metadata expired before research admission",
+                InputFault::IntakeQueuedProgramExpired => "queued program metadata expired",
+                InputFault::IntakeStagedCapacity => "staged closure dependency capacity",
+                InputFault::IntakeQueuedRootDeadline => "queued root intake deadline",
+                InputFault::CatalogPeerOriginEncoding => "peer learning origin encoding",
+                InputFault::CatalogPragmaSynchronous => "catalog synchronous pragma differs",
+                InputFault::CatalogPragmaForeignKeys => "catalog foreign_keys pragma differs",
+                InputFault::CatalogPragmaCacheSize => "catalog cache_size pragma differs",
+                InputFault::CatalogPragmaTempStore => "catalog temp_store pragma differs",
+                InputFault::CatalogPragmaMmapSize => "catalog mmap_size pragma differs",
+                InputFault::CatalogPragmaBusyTimeout => "catalog busy_timeout pragma differs",
+                InputFault::CatalogPragmaTrustedSchema => "catalog trusted_schema pragma differs",
+                InputFault::CatalogPragmaOther => "catalog pragma differs",
+                InputFault::CatalogIntegrityFailure => "catalog integrity check failed",
+                InputFault::TrainingProgressBinding => "development progress requires distinct checkpoints and equal allowances",
+                InputFault::TrainingDiagnosticBudget => "verified training diagnostic exceeds its original allowance",
+                InputFault::CheckedAdmissionAborted => "checked admission aborted before publication",
                 InputFault::StateDuplicateProof => "checked proof already registered",
                 InputFault::StateDuplicateDerivation => "checked derivation already registered",
                 InputFault::StateProofCollision => "proof identity collision",
@@ -1331,6 +1358,7 @@ impl fmt::Display for Error {
                 }
             }),
             Self::QuestionLimit(limit) => naome_proof::QuestionError::Limit(*limit).fmt(f),
+            #[cfg(test)]
             Self::InvalidInput(message) => f.write_str(message),
             Self::MissingRequiredTheorem(id) => write!(f, "required theorem unavailable: {id:?}"),
             Self::MissingQuestionDefinition(id) => {
@@ -1355,7 +1383,6 @@ impl fmt::Display for Error {
                 write!(f, "certificate construction: {reason:?}")
             }
             Self::Stored(error) => write!(f, "storage halted: {error}"),
-            Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
             Self::CheckedContext(error) => write!(f, "storage halted: {error}"),
             Self::LearningEvidence(error) => error.fmt(f),
             Self::LearningGraph(error) => error.fmt(f),
@@ -3038,6 +3065,7 @@ impl From<std::io::Error> for Error {
         }
     }
 }
+#[cfg(test)]
 impl From<String> for Error {
     fn from(message: String) -> Self {
         Self::InvalidInput(message)
@@ -3065,11 +3093,13 @@ impl From<naome_checker::program::Error> for Error {
         }
     }
 }
+#[cfg(test)]
 impl From<&str> for Error {
     fn from(message: &str) -> Self {
         Self::InvalidInput(message.to_owned())
     }
 }
+#[cfg(test)]
 impl From<Error> for String {
     fn from(error: Error) -> Self {
         error.to_string()
@@ -3183,6 +3213,13 @@ impl serde::Serialize for Error {
         if let Self::ModelDigestMismatch(details) = cause {
             value.serialize_entry("expected_digest", &details.expected)?;
             value.serialize_entry("actual_digest", &details.actual)?;
+        }
+        if let Self::CatalogPragma {
+            expected, actual, ..
+        } = cause
+        {
+            value.serialize_entry("expected", expected)?;
+            value.serialize_entry("actual", actual)?;
         }
         if let Self::ArtifactState {
             identity: Some(identity),

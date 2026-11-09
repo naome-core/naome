@@ -285,9 +285,7 @@ fn probes(
                 if probe.spent_ms > solver.budget.horizon_ms
                     || probe.work_units > solver.budget.work_units
                 {
-                    return Err(
-                        "verified training diagnostic exceeds its original allowance".into(),
-                    );
+                    return Err(crate::InputFault::TrainingDiagnosticBudget.into());
                 }
                 let checked = question(graph, artifact)?;
                 if checked.resolution_id() != target.resolution_id()

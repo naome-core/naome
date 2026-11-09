@@ -684,9 +684,7 @@ impl Evidence {
         if record.last_outcome != Outcome::Candidate
             || record.prepared.as_deref() != Some(crate::hex(root.as_bytes()).as_str())
         {
-            return Err(
-                "verified research evidence is not bound to the checked candidate job".into(),
-            );
+            return Err(crate::InputFault::EvidenceCandidateBinding.into());
         }
         record.verified = Some(crate::hex(root.as_bytes()));
         record.verified_job = job;

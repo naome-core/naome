@@ -474,7 +474,7 @@ impl Intake {
             let root = self.active.take().expect("overloaded closure");
             return Progress::Skipped(
                 root.description.transfer.root(),
-                "staged closure dependency capacity".into(),
+                crate::InputFault::IntakeStagedCapacity.into(),
             );
         }
         if let Err(error) = self.advance_program_helpers(graph, questions)
@@ -511,7 +511,7 @@ impl Intake {
             if !description.transfer.live(Instant::now()) {
                 return Progress::Skipped(
                     description.transfer.root(),
-                    "queued root intake deadline".into(),
+                    crate::InputFault::IntakeQueuedRootDeadline.into(),
                 );
             }
             let mut selection =

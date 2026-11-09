@@ -310,3 +310,28 @@ fn checked_artifact_state_failure_preserves_kind_and_identity() {
     );
     assert_eq!(value["identity"], serde_json::json!(identity));
 }
+
+#[test]
+fn catalog_pragma_failure_keeps_values_and_storage_halt() {
+    let failure = crate::Error::CatalogPragma {
+        code: crate::InputFault::CatalogPragmaForeignKeys,
+        expected: 1,
+        actual: 0,
+    };
+    let encoded = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::InputFault::CatalogPragmaForeignKeys)
+    );
+    assert_eq!(encoded["expected"], 1);
+    assert_eq!(encoded["actual"], 0);
+    let stored = failure.storage();
+    assert!(stored.fatal());
+    let encoded = serde_json::to_value(stored).unwrap();
+    assert_eq!(
+        encoded["cause_code"],
+        u32::from(crate::InputFault::CatalogPragmaForeignKeys)
+    );
+    assert_eq!(encoded["expected"], 1);
+    assert_eq!(encoded["actual"], 0);
+}

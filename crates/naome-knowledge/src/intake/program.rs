@@ -252,7 +252,7 @@ impl Programs {
         {
             let id = offer.metadata.manifest.artifact_id();
             if !offer.transfer.live(Instant::now()) {
-                return Progress::Skipped(id, "queued program metadata expired".into());
+                return Progress::Skipped(id, crate::InputFault::IntakeQueuedProgramExpired.into());
             }
             let authority = (|| -> Result<Selection, crate::Error> {
                 let question = offer
