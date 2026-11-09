@@ -464,3 +464,13 @@ fn a_training_theorem_cannot_smuggle_a_reserved_lemma_into_its_context() {
     }
     assert!(found);
 }
+
+#[test]
+fn zero_search_allowance_has_a_machine_readable_cause() {
+    let mut solver = solver(1);
+    solver.budget.work_units = 0;
+    assert_eq!(
+        solver.validate(),
+        Err(crate::InputFault::TrainingAllowanceZero.into())
+    );
+}

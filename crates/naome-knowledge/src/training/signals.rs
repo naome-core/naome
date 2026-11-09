@@ -81,13 +81,13 @@ impl Signals {
     pub(super) fn new(graph: &Graph, request: &Request) -> Result<Self, Error> {
         let mut signals = Self::default();
         match (&request.development, &request.previous_development) {
-            (None, Some(_)) => return Err("prior development requires a current report".into()),
+            (None, Some(_)) => return Err(crate::InputFault::TrainingPriorMissingCurrent.into()),
             (None, None) => return Ok(signals),
             _ => {}
         }
         let development = request.development.as_ref().expect("current report");
         if development.solver != request.solver {
-            return Err("development checkpoint or allowance differs".into());
+            return Err(crate::InputFault::TrainingDevelopmentBinding.into());
         }
         let current = probes(
             graph,
@@ -117,7 +117,7 @@ impl Signals {
                     .iter()
                     .any(|(id, observed)| previous[id].input != observed.input)
             {
-                return Err("development progress questions differ".into());
+                return Err(crate::InputFault::TrainingDevelopmentQuestions.into());
             }
             Some(previous)
         } else {

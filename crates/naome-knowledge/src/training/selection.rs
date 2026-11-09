@@ -29,7 +29,7 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
             ordered.push(
                 objects
                     .remove(&id)
-                    .ok_or("training dependency order differs")?,
+                    .ok_or(crate::InputFault::TrainingDependencyOrder)?,
             );
             continue;
         }
@@ -48,11 +48,11 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
                 .definition_canonical_length(definition)?
                 .unwrap_or(0)
         } else {
-            return Err("training closure is not checked".into());
+            return Err(crate::InputFault::TrainingClosureUnchecked.into());
         };
         bytes = bytes
             .checked_add(length)
-            .ok_or("training closure byte overflow")?;
+            .ok_or(crate::InputFault::TrainingClosureBytesOverflow)?;
         if bytes > crate::resources::limits().closure_bytes
             || length > crate::resources::limits().proof_bytes
         {
@@ -62,9 +62,11 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
             length
                 .checked_mul(8)
                 .and_then(|n| n.checked_add(4096))
-                .ok_or("training working-set overflow")?,
+                .ok_or(crate::InputFault::TrainingWorkingSetOverflow)?,
         )?);
-        let envelope = graph.object(id)?.ok_or("training checked object missing")?;
+        let envelope = graph
+            .object(id)?
+            .ok_or(crate::InputFault::TrainingObjectMissing)?;
         // Programs require streamed model targets, outside this bounded native
         // certificate interface. Do not mislabel a manifest as a proof program.
         if envelope.payload.starts_with("ff") {
@@ -84,12 +86,9 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
             signals::rules(normal.certificate().steps(), &mut rules);
             cost = cost.saturating_add(normal.certificate().steps().len());
             if id == root {
-                let positive = question
-                    .positive_target()
-                    .encode_canonical()
-                    .map_err(|e| e.to_string())?;
+                let positive = question.positive_target().encode_canonical()?;
                 let positive = naome_proof::StatementId::of_canonical_formula(&positive)
-                    .ok_or("training target identity width")?;
+                    .ok_or(crate::InputFault::TrainingIdentityWidth)?;
                 target = Some((question, statement != positive));
             }
         }
@@ -104,7 +103,9 @@ fn load(graph: &Graph, root: ArtifactId) -> Result<Result<Loaded, Omission>, Err
     let Some((question, refuted)) = target else {
         return Ok(Err(Omission::Unsupported));
     };
-    let proof = ordered.pop().ok_or("training target closure is empty")?;
+    let proof = ordered
+        .pop()
+        .ok_or(crate::InputFault::TrainingClosureEmpty)?;
     let features = Features::of(&question);
     Ok(Ok(Loaded {
         example: Example {
@@ -231,12 +232,14 @@ pub(super) fn profile(graph: &Graph, request: &Request) -> Result<Signals, Error
     for root in &request.training_roots {
         let target = question(graph, root)?;
         if partition(&target) != Partition::Training {
-            return Err("reported training root belongs to another split".into());
+            return Err(crate::InputFault::TrainingRootOtherSplit.into());
         }
         if trained.insert(*target.resolution_id()) {
             let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
-            let example = load(graph, root)?
-                .map_err(|_| Error::from("reported training closure is not eligible"))?;
+            let example = load(graph, root)?.map_err(|omission| match omission {
+                Omission::Unsupported => crate::InputFault::TrainingClosureUnsupported,
+                Omission::OtherSplit => crate::InputFault::TrainingClosureOtherSplit,
+            })?;
             signals.covered(&example.features, &example.rules);
         }
     }

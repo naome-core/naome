@@ -48,7 +48,7 @@ impl Solver {
     fn validate(&self) -> Result<(), Error> {
         crate::object::id_bytes(&self.checkpoint)?;
         if self.budget.work_units == 0 || self.budget.horizon_ms == 0 {
-            return Err("training search allowance must be positive".into());
+            return Err(crate::InputFault::TrainingAllowanceZero.into());
         }
         Ok(())
     }
@@ -244,7 +244,7 @@ pub fn select(graph: &Graph, request: &Request) -> Result<Batch, Error> {
 
 fn question(graph: &Graph, root: &str) -> Result<ResearchQuestion, Error> {
     let id = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
-    let metadata = describe(graph, id)?.ok_or("training target is not a checked proof")?;
+    let metadata = describe(graph, id)?.ok_or(crate::InputFault::TrainingTargetNotChecked)?;
     metadata
         .compile(graph.checked_context())
         .map(|(_, _, question)| question)
@@ -267,7 +267,7 @@ fn probes(
 ) -> Result<Observations, Error> {
     solver.validate()?;
     if knowledge != crate::hex(&graph.content_root()) {
-        return Err("training evaluation knowledge differs".into());
+        return Err(crate::InputFault::TrainingKnowledgeMismatch.into());
     }
     if observations.len() > crate::resources::active_limits().question_page {
         return Err(Error::InputLimit(
@@ -278,7 +278,7 @@ fn probes(
     for probe in observations {
         let target = ResearchQuestion::from_hex(&probe.question)?;
         if partition(&target) != expected {
-            return Err("training evaluation partition differs".into());
+            return Err(crate::InputFault::TrainingPartitionMismatch.into());
         }
         let solved = match &probe.result {
             Outcome::Verified { artifact } => {
@@ -293,7 +293,7 @@ fn probes(
                 if checked.resolution_id() != target.resolution_id()
                     || checked.core() != target.core()
                 {
-                    return Err("training diagnostic proof target differs".into());
+                    return Err(crate::InputFault::TrainingProofTargetMismatch.into());
                 }
                 Some(true)
             }
@@ -312,14 +312,15 @@ fn probes(
             )
             .is_some()
         {
-            return Err("duplicate training evaluation question".into());
+            return Err(crate::InputFault::TrainingQuestionDuplicate.into());
         }
     }
     Ok(result)
 }
 
 fn request_digest(request: &impl Serialize) -> Result<String, Error> {
-    let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+    let bytes =
+        serde_json::to_vec(request).map_err(|_| crate::InputFault::TrainingRequestEncoding)?;
     Ok(crate::hex(&Sha256::digest(bytes)))
 }
 

@@ -22,7 +22,7 @@ impl Compute {
         .into_iter()
         .try_fold(0u64, |n, v| {
             n.checked_add(v)
-                .ok_or_else(|| "training compute overflow".into())
+                .ok_or_else(|| crate::InputFault::TrainingComputeOverflow.into())
         })
     }
 }
@@ -77,7 +77,7 @@ pub fn compare(
         || baseline.total_budget_micros == 0
         || baseline.total_budget_micros != targeted.total_budget_micros
     {
-        return Err("training comparison conditions differ".into());
+        return Err(crate::InputFault::TrainingComparisonConditions.into());
     }
     let before = probes(
         graph,
@@ -99,12 +99,12 @@ pub fn compare(
             .iter()
             .any(|(id, observed)| after[id].input != observed.input)
     {
-        return Err("training comparison reserved questions differ".into());
+        return Err(crate::InputFault::TrainingComparisonQuestions.into());
     }
     let summarize = |report: &Evaluation| -> Result<Results, Error> {
         let cpu = report.compute.total()?;
         if cpu > report.total_budget_micros {
-            return Err("training comparison exceeds its total compute budget".into());
+            return Err(crate::InputFault::TrainingComparisonBudget.into());
         }
         let mut groups = BTreeSet::new();
         let mut results = Results {
