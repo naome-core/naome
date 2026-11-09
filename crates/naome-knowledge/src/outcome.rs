@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26,
+        ResourceValidation = 26, CertificateConstruction = 27,
     }
 
     pub enum InputFault in 7 {
@@ -871,6 +871,7 @@ codes! {
         PeerReplayCapacity = 251, PeerClosureCapacity = 252, PeerConclusion = 253, PeerWorkCapacity = 254, PeerReconstructionIdentity = 255, PeerStepCapacity = 256, PeerImplicationIndex = 257, PeerImplicationShape = 258, PeerPremiseIndex = 259, PeerPremiseMismatch = 260, PeerGraphOverflow = 261, PeerGraphCapacity = 262, PeerGeneralizationIndex = 263, PeerCitationMissing = 264, PeerCitationFormulaMissing = 265,
         PeerProgramArtifact = 266, PeerProgramInference = 267, PeerProgramBinding = 268, PeerDagBinding = 269, PeerDagInference = 270, PeerArtifactIdentity = 271,
         EvidenceCheckerCapacity = 272, EvidenceCanonicalBinding = 273, EvidenceTargetBinding = 274,
+        NativeDagTargetMismatch = 275, NativeTermTargetMismatch = 276, NativeCheckedTargetMismatch = 277, KnowledgeTraceMissing = 278,
     }
 
 }

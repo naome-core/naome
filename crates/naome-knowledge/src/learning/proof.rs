@@ -52,8 +52,6 @@ fn record_checking_work(steps: usize) {
     });
 }
 
-pub const NATIVE_RESOURCE_LIMIT: &str =
-    "native certificate or reconstructed formula resource limit";
 pub const FORMULA_WORK_LIMIT: &str = "solver certificate formula-node limit";
 pub const STEP_WORK_LIMIT: &str = "solver certificate work limit";
 
@@ -285,11 +283,11 @@ pub(crate) fn verify_native(
     definitions: Vec<super::definitions::Entry>,
     lemmas: Vec<ProofCertificate>,
     expected: Option<&Formula>,
-) -> Result<Verified, String> {
+) -> Result<Verified, crate::Error> {
     let context = lemma_context(&definitions, &lemmas)?;
-    let checked = check(certificate, &context).map_err(|e| e.to_string())?;
+    let checked = check(certificate, &context).map_err(crate::Error::from)?;
     if expected.is_some_and(|target| checked.conclusion() != target) {
-        return Err("native DAG conclusion differs".into());
+        return Err(crate::ResearchFailure::NativeDagTargetMismatch.into());
     }
     let retained = lemmas::retain(&checked, &definitions, &lemmas)?;
     Ok(Verified {
@@ -303,9 +301,9 @@ pub(crate) fn verify_native(
 }
 
 /// No typed term is accepted as evidence until the existing checker accepts it.
-pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
+pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, crate::Error> {
     if term.formula() != *expected {
-        return Err("search term differs from the requested target".into());
+        return Err(crate::ResearchFailure::NativeTermTargetMismatch.into());
     }
     if let Term::Native {
         certificate,
@@ -326,35 +324,15 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         lemmas,
         definitions,
     } = lower_recipe(term, expected, true)?;
-    let certificate = ProofCertificate::new(steps).map_err(|error| match error {
-        naome_proof::ProofCertificateError::TooManySteps { .. }
-        | naome_proof::ProofCertificateError::InputTooLong { .. }
-        | naome_proof::ProofCertificateError::FormulaNodeLimitExceeded { .. } => {
-            NATIVE_RESOURCE_LIMIT.into()
-        }
-        naome_proof::ProofCertificateError::Formula(
-            naome_foundation::FormulaCodecError::NodeLimitExceeded { .. }
-            | naome_foundation::FormulaCodecError::DepthLimitExceeded { .. },
-        ) => NATIVE_RESOURCE_LIMIT.into(),
-        error => error.to_string(),
+    let certificate = ProofCertificate::new(steps).map_err(|error| {
+        crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
     })?;
     let checked =
         crate::learning::proof::check(certificate.clone(), &lemma_context(&definitions, &lemmas)?)
-            .map_err(|error| match error.kind() {
-                naome_checker::CheckErrorKind::DerivedFormula {
-                    source:
-                        naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
-                        | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
-                    ..
-                }
-                | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
-                    NATIVE_RESOURCE_LIMIT.to_owned()
-                }
-                _ => error.to_string(),
-            })?;
+            .map_err(crate::Error::from)?;
     let target = close(expected.clone());
     if checked.conclusion() != &target {
-        return Err("checked certificate proves a different target".into());
+        return Err(crate::ResearchFailure::NativeCheckedTargetMismatch.into());
     }
     // Internal closed lemmas are Foundation theorems, not new user questions.
     // Exact conclusion equality above and the independent checker establish
@@ -700,4 +678,46 @@ pub fn source_with_definitions(
         return Err("typed representation changed the checked conclusion".into());
     }
     Ok(artifact(checked.normal_form().certificate()))
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn native_proof_rejection_keeps_checker_diagnostic() {
+        let certificate = ProofCertificate::new(vec![ProofStep::ProofReference {
+            proof_id: naome_proof::ProofId::from_bytes([7; 32]),
+        }])
+        .unwrap();
+        let error = verify_native(certificate, vec![], vec![], None)
+            .err()
+            .unwrap();
+        assert!(error.diagnostic().is_some());
+        assert!(
+            serde_json::to_value(error)
+                .unwrap()
+                .get("diagnostic")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn proof_target_mismatch_and_construction_reason_are_structured() {
+        let variable = FreeVariable::new(0);
+        let target = Formula::equal(variable, variable);
+        let different = Formula::member(variable, variable);
+        let error = verify(&Term::Variable(0, different), &target)
+            .err()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::NativeTermTargetMismatch)
+        );
+        let raw = ProofCertificate::new(Vec::new()).unwrap_err();
+        let error = crate::Error::CertificateConstruction(crate::FormatFailure::from(&raw));
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], 0x0006_001b_u32);
+        assert!(value["format_reason"]["code"].as_u64().is_some());
+    }
 }

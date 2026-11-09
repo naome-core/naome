@@ -295,11 +295,11 @@ pub fn offer(
 pub fn validate(entries: &[Entry]) -> Result<(), String> {
     checked_entries(entries).map(drop)
 }
-pub fn verified(tree: &Tree) -> Result<proof::Verified, String> {
+pub fn verified(tree: &Tree) -> Result<proof::Verified, crate::Error> {
     let Tree::Knowledge { target, .. } = tree else {
-        return Err("theorem trace missing".into());
+        return Err(crate::ResearchFailure::KnowledgeTraceMissing.into());
     };
-    let target = Formula::decode_canonical(target).map_err(|e| e.to_string())?;
+    let target = Formula::decode_canonical(target).map_err(crate::Error::from)?;
     proof::verify(&super::search::compile(&target, tree)?.0, &target)
 }
 pub fn helpers(verified: &proof::Verified) -> Result<Vec<String>, String> {

@@ -248,6 +248,7 @@ pub enum Error {
     Proof(std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>),
     DiagnosticInspection(naome_checker::diagnostics::InspectionError),
     CertificateFormat(Box<CertificateFormatError>),
+    CertificateConstruction(FormatFailure),
     /// Invalid data read from owned storage remains fatal while retaining the
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
@@ -328,6 +329,7 @@ impl Error {
             Self::Proof(_) => OperationCode::ProofCheck,
             Self::DiagnosticInspection(_) => OperationCode::DiagnosticInspection,
             Self::CertificateFormat(_) => OperationCode::CertificateFormat,
+            Self::CertificateConstruction(_) => OperationCode::CertificateConstruction,
             Self::Stored(_) => OperationCode::InvalidStoredRecord,
             Self::CorruptStorage(_) => OperationCode::CorruptStorage,
             Self::CheckedContext(_) => OperationCode::CheckedContext,
@@ -393,7 +395,10 @@ impl Error {
             | Self::StorageIo { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)) => Self::Stored(Box::new(error)),
-            error @ (Self::Proof(_) | Self::CertificateFormat(_) | Self::ProgramCodec(_))
+            error @ (Self::Proof(_)
+            | Self::CertificateFormat(_)
+            | Self::CertificateConstruction(_)
+            | Self::ProgramCodec(_))
                 if !error.retryable() =>
             {
                 Self::Stored(Box::new(error))
@@ -573,6 +578,9 @@ impl fmt::Display for Error {
             Self::DiagnosticInspection(error) => error.fmt(f),
             Self::CertificateFormat(error) => {
                 write!(f, "malformed certificate: {:?}", error.reason)
+            }
+            Self::CertificateConstruction(reason) => {
+                write!(f, "certificate construction: {reason:?}")
             }
             Self::Stored(error) => write!(f, "storage halted: {error}"),
             Self::CorruptStorage(message) => write!(f, "storage halted: {message}"),
@@ -866,6 +874,14 @@ impl fmt::Display for Error {
                 }
                 crate::ResearchFailure::EvidenceTargetBinding => {
                     "construction evidence target differs"
+                }
+                crate::ResearchFailure::KnowledgeTraceMissing => "theorem trace missing",
+                crate::ResearchFailure::NativeDagTargetMismatch => "native DAG conclusion differs",
+                crate::ResearchFailure::NativeTermTargetMismatch => {
+                    "search term differs from the requested target"
+                }
+                crate::ResearchFailure::NativeCheckedTargetMismatch => {
+                    "checked certificate proves a different target"
                 }
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
@@ -1436,6 +1452,9 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
+        if let Self::CertificateConstruction(reason) = cause {
+            value.serialize_entry("format_reason", reason)?;
+        }
         if let Self::CheckedContext(context) = cause {
             match context {
                 naome_checker::ContextError::Storage(reason) => {

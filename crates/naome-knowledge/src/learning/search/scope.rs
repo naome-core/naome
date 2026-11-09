@@ -530,7 +530,7 @@ pub(crate) fn verified(
 ) -> Result<super::super::proof::Verified, crate::Error> {
     let target = Formula::decode_canonical(target).map_err(crate::Error::from)?;
     let (term, _) = compile(&target, actions)?;
-    super::super::proof::verify(&term, &target).map_err(Into::into)
+    super::super::proof::verify(&term, &target)
 }
 
 pub(crate) fn commands(
