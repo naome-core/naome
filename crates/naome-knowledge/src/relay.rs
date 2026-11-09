@@ -168,8 +168,13 @@ pub async fn run(path: &Path) -> Result<(), crate::Error> {
     // Provider records may refer to circuits through this service itself.
     book.relays.insert(own);
     let book = discovery::SharedBook::new(book);
-    let mut discovery = discovery::Behaviour::new(&key, &settings, true, true)
-        .map_err(|_| RuntimeFailure::RelayDiscovery)?;
+    let mut discovery =
+        discovery::Behaviour::new(&key, &settings, true, true).map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: RuntimeFailure::RelayDiscovery,
+                cause: Box::new(cause),
+            }
+        })?;
     if let Some(kad) = discovery.kad.as_mut() {
         kad.store_mut().set_relays(book.lock().relays.clone());
     }

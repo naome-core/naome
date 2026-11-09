@@ -451,7 +451,7 @@ impl Behaviour {
         config: &Config,
         relay: bool,
         automatic: bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let peer = key.public().to_peer_id();
         let identify = identify::Behaviour::new(
             identify::Config::new(protocol_version(relay), key.public())
@@ -478,14 +478,17 @@ impl Behaviour {
                         interfaces: crate::resources::limits().discovery_interfaces,
                     },
                 )
-                .map_err(|error| error.to_string())?,
+                .map_err(|error| crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::DiscoveryMdns,
+                    cause: Box::new(crate::Error::from(error)),
+                })?,
             )
         } else {
             None
         };
         let kad = if config.dht {
             let protocol = StreamProtocol::try_from_owned(internet::dht_protocol(config.internet))
-                .map_err(|error| error.to_string())?;
+                .map_err(|_| crate::InputFault::DiscoveryProtocolInvalid)?;
             let mut settings = kad::Config::new(protocol);
             settings
                 .set_query_timeout(crate::resources::limits().query_timeout)

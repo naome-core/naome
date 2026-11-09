@@ -875,6 +875,7 @@ impl fmt::Display for Error {
                 InputFault::CheckedPruneReclaimIncomplete => "startup checked storage reclaim is incomplete",
                 InputFault::CheckedIndexFileType => "checked index is not a regular file",
                 InputFault::CheckedIndexFileLinks => "checked index has linked aliases",
+                InputFault::DiscoveryProtocolInvalid => "invalid discovery protocol",
                 InputFault::NetworkRelayPolicy => "relay-only mode requires relays and disables mDNS",
                 InputFault::NetworkRelayId => "invalid relay identity",
                 InputFault::NetworkRelayAddress => "invalid relay address",
