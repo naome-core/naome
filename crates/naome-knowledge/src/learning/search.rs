@@ -391,7 +391,7 @@ fn decision(
     state: &State,
     actions: &[Action],
     expert: usize,
-) -> Result<Decision, String> {
+) -> Result<Decision, crate::Error> {
     let index = state
         .facts
         .iter()
@@ -407,7 +407,7 @@ fn decision(
                 delta: transition(state, action, &index)?,
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, crate::Error>>()?;
     decision_for(goal, state, &offers, expert)
 }
 
@@ -416,7 +416,7 @@ fn decision_for(
     state: &State,
     offers: &[Offer],
     expert: usize,
-) -> Result<Decision, String> {
+) -> Result<Decision, crate::Error> {
     let mut context: Vec<_> = state
         .facts
         .iter()
@@ -436,7 +436,10 @@ fn decision_for(
             Action::Witness(i, _) => (Rule::ExistentialWitness, vec![i]),
             Action::Substitute(i, j) => (Rule::EqualitySubstitution, vec![i, j]),
             Action::Cite(i) => {
-                let formula = state.knowledge.get(i).ok_or("theorem candidate index")?;
+                let formula = state
+                    .knowledge
+                    .get(i)
+                    .ok_or(crate::ResearchFailure::SearchTheoremIndex)?;
                 let index = context
                     .iter()
                     .position(|b| b.formula == *formula)
@@ -477,7 +480,7 @@ fn decision_for(
     })
 }
 
-fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
+fn next(state: &State, action: &Action) -> Result<Vec<State>, crate::Error> {
     let index = state
         .facts
         .iter()
@@ -491,7 +494,7 @@ fn transition(
     state: &State,
     action: &Action,
     index: &HashMap<naome_foundation::FormulaView<'_>, usize>,
-) -> Result<Delta, String> {
+) -> Result<Delta, crate::Error> {
     let mut delta = Delta {
         additions: Default::default(),
         count: 1,
@@ -508,7 +511,7 @@ fn transition(
             let formula = state
                 .knowledge
                 .get(i)
-                .ok_or("theorem candidate index")?
+                .ok_or(crate::ResearchFailure::SearchTheoremIndex)?
                 .clone();
             add(0, formula);
         }
@@ -517,7 +520,7 @@ fn transition(
                 .view()
                 .negated()
                 .and_then(|g| g.negated())
-                .ok_or("double action mismatch")?
+                .ok_or(crate::ResearchFailure::SearchDoubleAction)?
                 .to_owned();
             add(0, f);
         }
@@ -526,7 +529,7 @@ fn transition(
                 .view()
                 .negated()
                 .and_then(|g| g.implication_parts())
-                .ok_or("not implication action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchNegatedImplication)?;
             let a = a.to_owned();
             let b = c::not(b.to_owned());
             add(0, a);
@@ -536,9 +539,9 @@ fn transition(
             let (a, b) = state.facts[i]
                 .view()
                 .implication_parts()
-                .ok_or("MP action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchModusPonens)?;
             if a != state.facts[j].view() {
-                return Err("MP premise mismatch".into());
+                return Err(crate::ResearchFailure::SearchPremise.into());
             }
             let b = b.to_owned();
             add(0, b);
@@ -547,7 +550,7 @@ fn transition(
             let (a, b) = state.facts[i]
                 .view()
                 .implication_parts()
-                .ok_or("beta action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchBranchAction)?;
             let a = c::not(a.to_owned());
             let b = b.to_owned();
             add(0, a);
@@ -562,20 +565,20 @@ fn transition(
             } else {
                 let x = fresh(std::iter::once(f.clone()))?;
                 f.open_outer_universal(x)
-                    .ok_or("universal action mismatch")?
+                    .ok_or(crate::ResearchFailure::SearchUniversalAction)?
                     .substitute_free(x, variable)
             };
             let result = if let Action::InstantiateApply(_, _, premise) = *action {
                 let (antecedent, consequent) = f
                     .view()
                     .implication_parts()
-                    .ok_or("instantiated implication expected")?;
+                    .ok_or(crate::ResearchFailure::SearchInstantiationShape)?;
                 if state
                     .facts
                     .get(premise)
                     .is_none_or(|fact| fact.view() != antecedent)
                 {
-                    return Err("instantiated premise differs".into());
+                    return Err(crate::ResearchFailure::SearchInstantiationPremise.into());
                 }
                 consequent.to_owned()
             } else {
@@ -590,16 +593,16 @@ fn transition(
                 .iter()
                 .any(|f| f.free_variables().contains(&variable))
             {
-                return Err("witness variable is not fresh".into());
+                return Err(crate::ResearchFailure::SearchWitnessFreshness.into());
             }
             let universal = state.facts[i]
                 .view()
                 .negated()
-                .ok_or("witness negation")?
+                .ok_or(crate::ResearchFailure::SearchWitnessNegation)?
                 .to_owned();
             let opened = universal
                 .open_outer_universal(variable)
-                .ok_or("witness universal")?;
+                .ok_or(crate::ResearchFailure::SearchWitnessUniversal)?;
             add(0, c::not(opened));
             add(0, Formula::equal(variable, variable));
             delta.witness = Some(variable);
@@ -608,7 +611,7 @@ fn transition(
             let (a, b) = state.facts[i]
                 .view()
                 .equality_variables()
-                .ok_or("equality action mismatch")?;
+                .ok_or(crate::ResearchFailure::SearchEqualityAction)?;
             let f = state.facts[j].clone().substitute_free(a, b);
             add(0, f);
         }
@@ -1408,7 +1411,11 @@ mod witness_tests {
             domain: vec![y],
         };
         assert!(!actions(&state).contains(&Action::Instantiate(0, 1)));
-        assert!(next(&state, &Action::Witness(2, 0)).is_err());
+        let error = next(&state, &Action::Witness(2, 0)).err().unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::SearchWitnessFreshness)
+        );
         let action = actions(&state)
             .into_iter()
             .find(|a| matches!(a, Action::Witness(..)))

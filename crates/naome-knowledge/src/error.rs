@@ -758,6 +758,25 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::TraceSkippedAttempt => {
                     "search observation skipped an attempted action"
                 }
+                crate::ResearchFailure::SearchTheoremIndex => "theorem candidate index",
+                crate::ResearchFailure::SearchDoubleAction => "double action mismatch",
+                crate::ResearchFailure::SearchNegatedImplication => {
+                    "not implication action mismatch"
+                }
+                crate::ResearchFailure::SearchModusPonens => "MP action mismatch",
+                crate::ResearchFailure::SearchPremise => "MP premise mismatch",
+                crate::ResearchFailure::SearchBranchAction => "beta action mismatch",
+                crate::ResearchFailure::SearchUniversalAction => "universal action mismatch",
+                crate::ResearchFailure::SearchInstantiationShape => {
+                    "instantiated implication expected"
+                }
+                crate::ResearchFailure::SearchInstantiationPremise => {
+                    "instantiated premise differs"
+                }
+                crate::ResearchFailure::SearchWitnessFreshness => "witness variable is not fresh",
+                crate::ResearchFailure::SearchWitnessNegation => "witness negation",
+                crate::ResearchFailure::SearchWitnessUniversal => "witness universal",
+                crate::ResearchFailure::SearchEqualityAction => "equality action mismatch",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }
