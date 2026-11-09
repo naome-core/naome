@@ -306,13 +306,15 @@ impl Catalog {
         limit: usize,
     ) -> Result<Vec<(u64, BinaryArtifact)>, crate::Error> {
         page_limit(limit, crate::resources::active_limits().replay_page)?;
-        let after_sql = i64::try_from(after).map_err(|_| "catalog replay cursor width")?;
+        let after_sql =
+            i64::try_from(after).map_err(|_| crate::InputFault::CatalogReplayCursorWidth)?;
         let transaction = self.begin(TransactionBehavior::Deferred)?;
         let meta = read_meta(&transaction, Some(self.database_id))?;
         self.require_validated_version(&transaction)?;
-        let after_count = usize::try_from(after).map_err(|_| "catalog replay cursor width")?;
+        let after_count =
+            usize::try_from(after).map_err(|_| crate::InputFault::CatalogReplayCursorWidth)?;
         if after_count > meta.count {
-            return Err("catalog replay cursor exceeds corpus count".into());
+            return Err(crate::InputFault::CatalogReplayCursorBeyondCount.into());
         }
         let mut keys = Vec::with_capacity(limit);
         {
@@ -328,26 +330,29 @@ impl Catalog {
             while let Some(row) = rows.next().map_err(sql_error)? {
                 let ordinal = replay_ordinal(row.get(0).map_err(sql_error)?)?;
                 let expected = after
-                    .checked_add(u64::try_from(keys.len()).map_err(|_| "catalog page width")?)
+                    .checked_add(
+                        u64::try_from(keys.len())
+                            .map_err(|_| crate::InputFault::CatalogReplayPageWidth)?,
+                    )
                     .and_then(|value| value.checked_add(1))
-                    .ok_or("catalog replay ordinal overflow")?;
+                    .ok_or(crate::InputFault::CatalogReplayOrdinalOverflow)?;
                 if ordinal != expected {
-                    return Err("catalog replay ordering is incomplete".into());
+                    return Err(crate::InputFault::CatalogReplayOrderIncomplete.into());
                 }
                 keys.push((ordinal, key(row.get(1).map_err(sql_error)?)?));
             }
         }
         if keys.len() != limit.min(meta.count - after_count) {
-            return Err("catalog replay page count differs".into());
+            return Err(crate::InputFault::CatalogReplayPageCount.into());
         }
         let mut objects = Vec::with_capacity(keys.len());
         for (ordinal, id) in keys {
             let record = match read_record(&transaction, id, ReadAdmission::Work) {
                 Err(crate::Error::MemoryOverload { .. }) if !objects.is_empty() => break,
-                result => result?.ok_or("catalog replay proof disappeared")?,
+                result => result?.ok_or(crate::InputFault::CatalogReplayProofMissing)?,
             };
             if record.replay_order != ordinal {
-                return Err("catalog replay proof order differs".into());
+                return Err(crate::InputFault::CatalogReplayProofOrder.into());
             }
             objects.push((ordinal, record.object));
         }
@@ -380,7 +385,7 @@ impl Catalog {
             while let Some(row) = rows.next().map_err(sql_error)? {
                 let id = key(row.get(0).map_err(sql_error)?)?;
                 if previous.is_some_and(|value| value >= id) {
-                    return Err("catalog proof ID page ordering differs".into());
+                    return Err(crate::InputFault::CatalogProofIdOrdering.into());
                 }
                 ids.push(ArtifactId::from_bytes(id));
                 previous = Some(id);
@@ -454,14 +459,14 @@ impl Catalog {
                     || meta.bytes != summary.bytes
                     || meta.active && meta.corpus_root != Some(summary.root)
                 {
-                    return Err("catalog changed during mathematical replay".into());
+                    return Err(crate::InputFault::CatalogChangedDuringReplay.into());
                 }
                 summary
             }
             None => validate_catalog(&transaction, self.database_id)?,
         };
         if summary.root != root {
-            return Err("replayed corpus root differs from catalog".into());
+            return Err(crate::InputFault::CatalogReplayRoot.into());
         }
         if !read_meta(&transaction, Some(self.database_id))?.active {
             transaction
@@ -500,7 +505,7 @@ impl Catalog {
             .keys()
             .any(|id| !prepared.contains_key(id.as_bytes()))
         {
-            return Err("catalog question has no member".into());
+            return Err(crate::InputFault::CatalogQuestionMemberMissing.into());
         }
         let commit = commit_digest(
             root,
@@ -589,14 +594,14 @@ impl Catalog {
             .get()
             .is_some_and(|validated| validated != version)
         {
-            return Err("proof catalog changed outside its owned connection".into());
+            return Err(crate::InputFault::CatalogExternalChange.into());
         }
         Ok(version)
     }
 
     fn require_validated_version(&self, connection: &Connection) -> Result<(), crate::Error> {
         if self.validated_data_version.get().is_none() {
-            return Err("proof catalog has not been validated".into());
+            return Err(crate::InputFault::CatalogNotValidated.into());
         }
         self.check_data_version(connection).map(|_| ())
     }
@@ -843,7 +848,7 @@ fn verify_application(connection: &Connection) -> Result<(), crate::Error> {
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .map_err(sql_error)?;
     if application != APPLICATION_ID {
-        return Err("unsupported or uninitialized proof catalog".into());
+        return Err(crate::InputFault::CatalogSchemaUnsupported.into());
     }
     Ok(())
 }
@@ -867,14 +872,14 @@ fn verify_schema(connection: &Connection) -> Result<(), crate::Error> {
             "index" => INDEXES.iter().find(|(index, _)| *index == name),
             _ => None,
         }
-        .ok_or("unexpected catalog schema object")?;
+        .ok_or(crate::InputFault::CatalogSchemaObject)?;
         if sql.len() > 8192 || normalize_sql(&sql) != normalize_sql(expected.1) {
-            return Err("catalog schema differs from the current contract".into());
+            return Err(crate::InputFault::CatalogSchemaMismatch.into());
         }
         found += 1;
     }
     if found != TABLES.len() + INDEXES.len() {
-        return Err("incomplete catalog schema".into());
+        return Err(crate::InputFault::CatalogSchemaIncomplete.into());
     }
     let check: String = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
@@ -891,7 +896,7 @@ fn normalize_sql(sql: &str) -> String {
 
 fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<Meta, crate::Error> {
     if count(connection, "meta")? != 1 {
-        return Err("catalog metadata row count differs".into());
+        return Err(crate::InputFault::CatalogMetadataCardinality.into());
     }
     let (id, state, root, count, bytes): (Vec<u8>, String, Option<Vec<u8>>, i64, i64) = connection
         .query_row(
@@ -911,21 +916,21 @@ fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<M
         .map_err(sql_error)?;
     let database_id = key(id)?;
     if expected_id.is_some_and(|expected| expected != database_id) {
-        return Err("catalog database identity differs from lineage receipt".into());
+        return Err(crate::InputFault::CatalogDatabaseIdentity.into());
     }
     let active = match state.as_str() {
         "initializing" => false,
         "active" => true,
-        _ => return Err("catalog activation state differs".into()),
+        _ => return Err(crate::InputFault::CatalogActivationState.into()),
     };
     let corpus_root = root.map(key).transpose()?;
     if active != corpus_root.is_some() {
-        return Err("catalog activation root missing or premature".into());
+        return Err(crate::InputFault::CatalogActivationRoot.into());
     }
     let count = usize::try_from(count).map_err(|_| "catalog count width")?;
     let bytes = usize::try_from(bytes).map_err(|_| "catalog byte width")?;
     if !active && (count != 0 || bytes != 0) {
-        return Err("initializing catalog contains accepted data".into());
+        return Err(crate::InputFault::CatalogInitialData.into());
     }
     Ok(Meta {
         database_id,
@@ -959,19 +964,20 @@ fn validate_catalog(
             .checked_add(1)
             .ok_or("catalog replay count overflow")?;
         if ordinal != u64::try_from(observed).map_err(|_| "catalog replay count width")? {
-            return Err("catalog replay ordering is incomplete".into());
+            return Err(crate::InputFault::CatalogReplayOrderIncomplete.into());
         }
         let stored_ordinal: Option<i64> = proof_order
             .query_row(params![id.as_slice()], |row| row.get(0))
             .optional()
             .map_err(sql_error)?;
-        let stored_ordinal = stored_ordinal.ok_or("missing catalog proof during validation")?;
+        let stored_ordinal =
+            stored_ordinal.ok_or(crate::InputFault::CatalogValidationProofMissing)?;
         if replay_ordinal(stored_ordinal)? != ordinal {
-            return Err("catalog replay proof order differs".into());
+            return Err(crate::InputFault::CatalogReplayProofOrder.into());
         }
     }
     if observed != summary.count {
-        return Err("catalog payload count differs".into());
+        return Err(crate::InputFault::CatalogPayloadCount.into());
     }
     verify_commits(connection)?;
     Ok(summary)
@@ -979,13 +985,13 @@ fn validate_catalog(
 
 fn check_expected_summary(meta: &Meta, expected: Summary) -> Result<(), crate::Error> {
     if !meta.active {
-        return Err("canonical catalog is not active".into());
+        return Err(crate::InputFault::CatalogNotActive.into());
     }
     if meta.corpus_root != Some(expected.root)
         || meta.count != expected.count
         || meta.bytes != expected.bytes
     {
-        return Err("canonical catalog differs from the committed graph summary".into());
+        return Err(crate::InputFault::CatalogSummaryMismatch.into());
     }
     Ok(())
 }
@@ -1014,7 +1020,7 @@ fn read_record(
     };
     let length = usize::try_from(length).map_err(|_| "catalog payload length width")?;
     if length == 0 || length > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES {
-        return Err("catalog payload length differs".into());
+        return Err(crate::InputFault::CatalogPayloadLength.into());
     }
     let bytes = length.checked_mul(4).ok_or("proof memory overflow")?;
     let memory = match admission {
@@ -1073,7 +1079,7 @@ fn read_record(
         || usize::try_from(length).ok() != Some(payload.len())
         || <[u8; 32]>::from(Sha256::digest(&payload)) != digest
     {
-        return Err("catalog payload length or digest differs".into());
+        return Err(crate::InputFault::CatalogPayloadDigest.into());
     }
     if compatibility != crate::compatibility()
         || crate::object::record_content_id(
@@ -1083,7 +1089,7 @@ fn read_record(
         .as_bytes()
             != &id
     {
-        return Err("catalog canonical proof identity differs".into());
+        return Err(crate::InputFault::CatalogProofIdentity.into());
     }
     let dependencies = read_dependencies(connection, id)?;
     let object = BinaryArtifact {
@@ -1111,7 +1117,7 @@ fn read_record(
             .map_err(sql_error)?
     };
     if member_origin.map(key).transpose()? != Some(origin) {
-        return Err("catalog proof originating membership differs".into());
+        return Err(crate::InputFault::CatalogOriginMembership.into());
     }
     let exists: bool = {
         let mut statement = connection
@@ -1122,7 +1128,7 @@ fn read_record(
             .map_err(sql_error)?
     };
     if !exists {
-        return Err("catalog proof originating commit missing".into());
+        return Err(crate::InputFault::CatalogOriginCommitMissing.into());
     }
     let unordered: bool = {
         let mut statement = connection
@@ -1136,7 +1142,7 @@ fn read_record(
             .map_err(sql_error)?
     };
     if unordered {
-        return Err("catalog dependency replay order differs".into());
+        return Err(crate::InputFault::CatalogDependencyOrder.into());
     }
     Ok(Some(Record {
         member: Member {
@@ -1168,10 +1174,10 @@ fn verify_summary_fields(
         || summary.bytes != meta.bytes
         || (meta.active && meta.corpus_root != Some(summary.root))
     {
-        return Err("catalog corpus root, count or byte total differs".into());
+        return Err(crate::InputFault::CatalogCorpusSummary.into());
     }
     if count(connection, "members")? != summary.count {
-        return Err("catalog relation count differs".into());
+        return Err(crate::InputFault::CatalogRelationCount.into());
     }
     let (first, last): (i64, i64) = connection
         .query_row(
@@ -1182,7 +1188,7 @@ fn verify_summary_fields(
         .map_err(sql_error)?;
     let expected_first = if summary.count == 0 { 0 } else { 1 };
     if last != sql_width(summary.count)? || first != expected_first {
-        return Err("catalog replay ordering is incomplete".into());
+        return Err(crate::InputFault::CatalogReplayOrderIncomplete.into());
     }
     let incomplete: i64 = connection
         .query_row(
@@ -1202,7 +1208,7 @@ fn verify_summary_fields(
         )
         .map_err(sql_error)?;
     if incomplete != 0 || orphan_origin != 0 {
-        return Err("incomplete catalog commit membership".into());
+        return Err(crate::InputFault::CatalogMembershipIncomplete.into());
     }
     verify_foreign_keys(connection)?;
     let missing: i64 = connection.query_row(
@@ -1210,7 +1216,7 @@ fn verify_summary_fields(
         [], |row| row.get(0),
     ).map_err(sql_error)?;
     if missing != 0 {
-        return Err("catalog has missing proof dependencies".into());
+        return Err(crate::InputFault::CatalogDependencyMissing.into());
     }
     let unordered: bool = connection
         .query_row(
@@ -1221,7 +1227,7 @@ fn verify_summary_fields(
         )
         .map_err(sql_error)?;
     if unordered {
-        return Err("catalog dependency replay order differs".into());
+        return Err(crate::InputFault::CatalogDependencyOrder.into());
     }
     Ok(summary)
 }
@@ -1321,7 +1327,7 @@ fn insert_commit(
         return Ok(false);
     }
     if !objects.contains_key(&root) {
-        return Err("catalog commit root missing from members".into());
+        return Err(crate::InputFault::CatalogCommitRootMissing.into());
     }
     connection
         .execute(
@@ -1342,7 +1348,7 @@ fn insert_commit(
             let replay_order = preceding_count
                 .checked_add(object.input_order)
                 .and_then(|value| value.checked_add(1))
-                .ok_or("catalog replay ordinal overflow")?;
+                .ok_or(crate::InputFault::CatalogReplayOrdinalOverflow)?;
             connection.execute(
                 "INSERT INTO artifacts(id, statement, obligation, compatibility, payload, payload_length, payload_digest, origin_commit, replay_order)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -1431,7 +1437,7 @@ fn verify_proof(
         || record.object.bytes.as_ref() != expected.payload.as_slice()
         || record.origin != commit
     {
-        return Err("immutable catalog proof collision or corruption".into());
+        return Err(crate::InputFault::CatalogProofCollision.into());
     }
     Ok(())
 }
@@ -1516,7 +1522,7 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
             digest.push(&record.member, question.as_deref())
         })?;
         if digest.finish()? != id {
-            return Err("catalog commit digest differs".into());
+            return Err(crate::InputFault::CatalogCommitDigest.into());
         }
     }
     Ok(())
@@ -1552,7 +1558,7 @@ fn verify_foreign_keys(connection: &Connection) -> Result<(), crate::Error> {
         .map_err(sql_error)?
         .is_some()
     {
-        return Err("catalog foreign-key relation differs".into());
+        return Err(crate::InputFault::CatalogForeignKeyMismatch.into());
     }
     Ok(())
 }

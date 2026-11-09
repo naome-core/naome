@@ -135,11 +135,12 @@ fn unknown_normal_schema_objects_are_refused_without_changing_data() {
         database.execute_batch(sql).unwrap();
         drop(database);
         let before = fs::read(&path).unwrap();
-        assert!(
-            Graph::open(&directory.0)
-                .unwrap_err_string()
-                .contains("unexpected catalog schema object")
-        );
+        assert!(matches!(
+            Graph::open(&directory.0),
+            Err(crate::Error::InputFault(
+                crate::InputFault::CatalogSchemaObject
+            ))
+        ));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
