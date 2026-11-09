@@ -839,11 +839,11 @@ async fn transport_queue_failure_permanently_revokes_publication() {
     })
     .await
     .unwrap();
-    assert!(
+    assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), transport.shutdown())
             .await
-            .unwrap()
-            .is_err()
+            .unwrap(),
+        Err(crate::InputFault::TransportOwnerUnavailable.into()),
     );
     assert_eq!(guard.check().unwrap_err(), crate::publication::STALE_COMMIT);
     let terminal = shared.epoch.load(Ordering::Acquire);

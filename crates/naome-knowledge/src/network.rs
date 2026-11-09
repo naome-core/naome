@@ -389,7 +389,10 @@ where
                     .thread_name("naome-transport")
                     .enable_all()
                     .build()
-                    .map_err(|_| crate::RuntimeFailure::OwnerLaunch)?;
+                    .map_err(|cause| crate::Error::RuntimeContext {
+                        code: crate::RuntimeFailure::OwnerLaunch,
+                        cause: Box::new(cause.into()),
+                    })?;
                 runtime.block_on(run_owner(
                     config,
                     test_controls,
@@ -402,7 +405,10 @@ where
             })();
             let _ = reply.send(outcome);
         })
-        .map_err(|_| crate::RuntimeFailure::OwnerLaunch)?;
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::OwnerLaunch,
+            cause: Box::new(cause.into()),
+        })?;
     let mut owner = worker::OwnerThread {
         thread: Some(thread),
         stop: Some(stop),
@@ -792,7 +798,7 @@ where
                 }
             }, if !stopping => {},
             event = events.recv() => {
-                let event = event.ok_or("proof transport stopped or exceeded its event capacity")?;
+                let event = event.ok_or(crate::InputFault::TransportEventsClosed)?;
                 node.transport_epoch = event.epoch;
                 node.graph.set_commit_guard(crate::publication::CommitGuard::new(
                     node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
@@ -1423,7 +1429,7 @@ impl Node {
             })
             .count()
     }
-    fn want(&mut self, id: ArtifactId) -> Result<bool, String> {
+    fn want(&mut self, id: ArtifactId) -> Result<bool, crate::Error> {
         if self.graph.contains(id)? || self.intake.contains(id) || self.wanted.contains_key(&id) {
             return Ok(true);
         }
@@ -2131,7 +2137,7 @@ impl Node {
                 {
                     self.relay_failed(peer);
                 } else if listener_id == self.primary_listener {
-                    return Err("proof listener closed".into());
+                    return Err(crate::InputFault::NetworkListenerClosed.into());
                 }
             }
             SwarmEvent::ConnectionEstablished {

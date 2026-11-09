@@ -53,3 +53,16 @@ async fn control_shutdown_preserves_owner_failure_and_distinguishes_cancellation
         crate::Error::from(crate::InputFault::ControlTaskCancelled)
     );
 }
+
+#[test]
+fn owner_thread_panic_has_a_machine_readable_cause() {
+    let thread = std::thread::spawn(|| panic!("test owner panic"));
+    let mut owner = OwnerThread {
+        thread: Some(thread),
+        stop: None,
+    };
+    assert_eq!(
+        owner.join(),
+        Err(crate::InputFault::StateOwnerPanicked.into())
+    );
+}

@@ -108,7 +108,7 @@ impl Node {
         snapshot: InventorySnapshot,
         ids: Vec<[u8; 32]>,
         next: Option<InventoryCursor>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let Request { after, pages, .. } = request;
         if !valid_page(request, snapshot, &ids, next) {
             emit(

@@ -17,12 +17,12 @@ pub(super) struct OwnerThread {
     pub(super) stop: Option<oneshot::Sender<()>>,
 }
 impl OwnerThread {
-    pub(super) fn join(&mut self) -> Result<(), String> {
+    pub(super) fn join(&mut self) -> Result<(), crate::Error> {
         self.stop.take();
         self.thread.take().map_or(Ok(()), |thread| {
             thread
                 .join()
-                .map_err(|_| "node state owner panicked".into())
+                .map_err(|_| crate::InputFault::StateOwnerPanicked.into())
         })
     }
 }
@@ -249,7 +249,7 @@ impl Transport {
                     _ = driver.changed.notified() => continue,
                     event = std::future::poll_fn(|cx| {
                         std::pin::Pin::new(&mut *driver.swarm.lock().expect("transport lock")).poll_next(cx)
-                    }) => event.ok_or("proof transport ended")?,
+                    }) => event.ok_or(crate::InputFault::TransportStreamEnded)?,
                 };
                 let revokes = matches!(&event, SwarmEvent::ListenerClosed { listener_id, .. } if *listener_id == primary_listener);
                 {
@@ -318,7 +318,7 @@ impl Transport {
                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                             epoch.checked_add(1).filter(|next| *next != u64::MAX)
                         })
-                        .map_err(|_| "transport epoch exhausted")?;
+                        .map_err(|_| crate::InputFault::TransportEpochExhausted)?;
                 }
                 // Do not let slow checking retain unlimited inbound channels.
                 // Busy is a retryable protocol error; transport keeps progressing.
@@ -386,7 +386,7 @@ impl Transport {
                 match send.try_send(handoff) {
                     Ok(()) => {}
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        return Err("transport state owner unavailable".into());
+                        return Err(crate::InputFault::TransportOwnerUnavailable.into());
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(handoff)) => {
                         match handoff {
@@ -412,7 +412,7 @@ impl Transport {
                             // preserves response/disconnect ordering and grants;
                             // remote event pressure must not terminate the node.
                             handoff => tokio::select! {
-                                result = send.send(handoff) => result.map_err(|_| "transport state owner unavailable")?,
+                                result = send.send(handoff) => result.map_err(|_| crate::InputFault::TransportOwnerUnavailable)?,
                                 _ = &mut halted => return Ok(()),
                             },
                         }
