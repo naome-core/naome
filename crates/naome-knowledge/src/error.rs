@@ -661,6 +661,8 @@ impl fmt::Display for Error {
                 InputFault::ProgramReplyLimit => "program reply exceeds requested limit",
                 InputFault::ProgramDescriptionRoot => "program description root mismatch",
                 InputFault::ProgramDescriptionId => "program description identity mismatch",
+                InputFault::StoredQuestionProofHeaderMissing => "checked proof header missing",
+                InputFault::StoredQuestionBinding => "stored exchange question does not bind the checked proof",
                 InputFault::ResourceObservationDirectory => {
                     "resource observation directory is unavailable"
                 }

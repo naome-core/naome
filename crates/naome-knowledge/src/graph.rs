@@ -183,7 +183,7 @@ impl Graph {
         };
         let header = context
             .proof_header(proof)?
-            .ok_or("checked proof header missing")?;
+            .ok_or(crate::InputFault::StoredQuestionProofHeaderMissing)?;
         for formula in [question.positive_target(), question.negative_target()] {
             let target = if header.canonical_length() == usize::MAX {
                 use naome_proof::program::{formula_hash, graph_statement_id};
@@ -198,21 +198,26 @@ impl Graph {
         Ok(false)
     }
 
+    fn decode_exchange_question(
+        &self,
+        bytes: &[u8],
+    ) -> Result<naome_checker::question::ResearchQuestion, crate::Error> {
+        self.cold(
+            naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
+                bytes,
+                &self.context,
+            )
+            .map_err(|error| crate::Error::from(error).fatal_storage()),
+        )
+    }
+
     fn exchange_question(&self, id: ArtifactId) -> Result<Option<String>, crate::Error> {
         let Some(bytes) = self.cold(self.store.exchange_question(id, self.fixed_summary()))? else {
             return Ok(None);
         };
-        let question = self.cold(
-            naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
-                &bytes,
-                &self.context,
-            )
-            .map_err(|error| crate::Error::CorruptStorage(error.to_string())),
-        )?;
+        let question = self.decode_exchange_question(&bytes)?;
         if question.dependencies().is_empty() || !self.resolves_question(id, &question)? {
-            return self.cold(Err(crate::Error::CorruptStorage(
-                "stored exchange question does not bind the checked proof".into(),
-            )));
+            return self.cold(Err(crate::InputFault::StoredQuestionBinding));
         }
         Ok(Some(question.to_hex()))
     }

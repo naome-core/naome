@@ -1155,3 +1155,23 @@ fn peer_learning_rejects_cursor_beyond_checked_graph_with_code() {
         u32::from(crate::ResearchFailure::PeerCursorBeyondGraph)
     );
 }
+
+#[test]
+fn malformed_stored_exchange_question_halts_with_decoder_cause() {
+    let graph = Graph::default();
+    let bytes = [];
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::from_canonical_bytes_with_context(
+            &bytes,
+            &graph.context,
+        )
+        .unwrap_err(),
+    )
+    .fatal_storage();
+    assert!(expected.fatal());
+    assert_eq!(
+        graph.decode_exchange_question(&bytes).unwrap_err(),
+        expected
+    );
+    assert_eq!(graph.storage_error(), Some(expected));
+}
