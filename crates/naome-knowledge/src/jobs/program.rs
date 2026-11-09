@@ -7,9 +7,9 @@ pub(super) fn mock_group(
     unit: u32,
     units: u32,
     outcome: super::MockOutcome,
-) -> Result<Vec<Command>, String> {
+) -> Result<Vec<Command>, crate::Error> {
     if unit == 0 || unit > units {
-        return Err("invalid mock program unit".into());
+        return Err(crate::ResearchFailure::MockProgramUnit.into());
     }
     let start = u64::from(unit - 1) * 128;
     let mut commands = Vec::with_capacity(128);

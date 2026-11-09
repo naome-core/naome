@@ -139,3 +139,31 @@ fn durable_grants_preserve_closed_invalid_and_identity_failures() {
         .unwrap();
     assert_eq!(control(receiver).grant_data(1), Ok(None));
 }
+
+#[test]
+fn provider_lifeline_reports_truncation_and_capacity_with_codes() {
+    let mut truncated = std::io::Cursor::new(b"partial".as_slice());
+    assert_eq!(
+        line(&mut truncated, 32).unwrap_err(),
+        crate::Error::from(WorkerFailure::FrameTruncated)
+    );
+    let mut oversized = std::io::Cursor::new(b"abcd\n".as_slice());
+    let error = line(&mut oversized, 3).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::ProviderPipeCapacity,
+            expected: 3,
+            actual: 5,
+        }
+    );
+    let json = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::ResearchFailure::ProviderPipeCapacity)
+    );
+    assert_eq!(json["actual"], 5);
+    let mut valid = std::io::Cursor::new(b"ok\nnext\n".as_slice());
+    assert_eq!(line(&mut valid, 3).unwrap(), b"ok\n");
+    assert_eq!(line(&mut valid, 5).unwrap(), b"next\n");
+}

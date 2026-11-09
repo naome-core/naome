@@ -1211,7 +1211,10 @@ pub async fn execute() -> Result<(), crate::Error> {
         })?;
     }
     if let Some(result) = crate::jobs::internal(&arguments) {
-        return result.map_err(|_| Failure::Worker.into());
+        return result.map_err(|cause| crate::Error::RuntimeContext {
+            code: Failure::Worker,
+            cause: Box::new(cause),
+        });
     }
     let cli::Arguments {
         command,

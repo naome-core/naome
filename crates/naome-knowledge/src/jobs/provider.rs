@@ -170,13 +170,13 @@ pub(super) fn resumable(record: &Record) -> bool {
     contract(record).is_some_and(|c| c.resumable)
         && (cfg!(feature = "developer-tools") || record.settings.mock == MockWork::default())
 }
-pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
+pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, crate::Error> {
     match record.provider.as_str() {
         crate::frontier::PROVIDER => match &record.input {
             Input::Find { question, .. } => Ok(Box::new(Finding {
                 question: question.clone(),
             })),
-            _ => Err("structural finder role differs".into()),
+            _ => Err(crate::ResearchFailure::ProviderRoleMismatch.into()),
         },
         crate::learning::PROVIDER => Ok(Box::new(Native {
             record: record.clone(),
@@ -186,7 +186,7 @@ pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
             input: record.input.clone(),
             work: record.settings.mock,
         })),
-        _ => Err("unknown research provider".into()),
+        _ => Err(crate::ResearchFailure::ProviderUnknown.into()),
     }
 }
 /// Generation and its learned state belong to Frontier. This worker finalizes

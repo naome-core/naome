@@ -791,7 +791,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
     }
 }
 
-pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), String>> {
+pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), crate::Error>> {
     let [argument] = arguments else {
         return None;
     };
@@ -800,39 +800,43 @@ pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), St
             if std::env::var(INTERNAL).as_deref() == Ok("supervisor-v1") {
                 supervise()
             } else {
-                Err("internal provider invocation required".into())
+                Err(crate::ResearchFailure::ProviderInvocationRequired.into())
             },
         ),
         WORKER => Some(if std::env::var(INTERNAL).as_deref() == Ok("worker-v1") {
             work()
         } else {
-            Err("internal provider invocation required".into())
+            Err(crate::ResearchFailure::ProviderInvocationRequired.into())
         }),
         DESCENDANT => Some(
             if std::env::var(INTERNAL).as_deref() == Ok("descendant-v1") {
                 descendant()
             } else {
-                Err("internal provider invocation required".into())
+                Err(crate::ResearchFailure::ProviderInvocationRequired.into())
             },
         ),
         _ => None,
     }
 }
 
-fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
+fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, crate::Error> {
     let mut bytes = Vec::new();
     loop {
-        let buffer = reader.fill_buf().map_err(|e| e.to_string())?;
+        let buffer = reader.fill_buf()?;
         if buffer.is_empty() {
-            return Err("provider lifeline closed".into());
+            return Err(WorkerFailure::FrameTruncated.into());
         }
         let end = buffer
             .iter()
             .position(|b| *b == b'\n')
             .map(|n| n + 1)
             .unwrap_or(buffer.len());
-        if bytes.len() + end > limit {
-            return Err("provider pipe capacity".into());
+        if bytes.len().checked_add(end).is_none_or(|size| size > limit) {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::ProviderPipeCapacity,
+                expected: limit as u64,
+                actual: bytes.len().saturating_add(end) as u64,
+            });
         }
         let complete = buffer[end - 1] == b'\n';
         bytes.extend_from_slice(&buffer[..end]);
@@ -843,8 +847,8 @@ fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
     }
 }
 
-fn emit(frame: &Frame) -> Result<(), String> {
-    emit_coded(frame).map_err(|error| format!("{error:?}"))
+fn emit(frame: &Frame) -> Result<(), crate::Error> {
+    emit_coded(frame).map_err(Into::into)
 }
 
 fn emit_coded(frame: &Frame) -> Result<(), WorkerFailure> {
@@ -892,31 +896,31 @@ impl Drop for Worker {
     }
 }
 
-fn supervise() -> Result<(), String> {
+fn supervise() -> Result<(), crate::Error> {
     // The supervisor is the session/group leader. It stays alive during normal
     // cancellation so the group cannot be confused with a recycled PID.
-    nix::unistd::setsid().map_err(|e| e.to_string())?;
+    nix::unistd::setsid().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     let mut reader = std::io::BufReader::new(std::io::stdin());
     let bytes = line(&mut reader, max_frame_bytes())?;
-    let start: Start = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let start: Start = serde_json::from_slice(&bytes)
+        .map_err(|_| crate::ResearchFailure::ProviderStartDecoding)?;
     if start.version != 1
         || (start.remaining_ms == 0
             || Instant::now()
                 .checked_add(Duration::from_millis(start.remaining_ms))
                 .is_none())
     {
-        return Err("provider start version or horizon differs".into());
+        return Err(crate::ResearchFailure::ProviderStartInvalid.into());
     }
     start.record.input.validate()?;
     start.record.binding.validate()?;
-    let child = ProcessCommand::new(std::env::current_exe().map_err(|e| e.to_string())?)
+    let child = ProcessCommand::new(std::env::current_exe()?)
         .arg(WORKER)
         .env(INTERNAL, "worker-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .spawn()?;
     let mut child = Worker {
         child,
         teardown_started: false,
@@ -925,13 +929,13 @@ fn supervise() -> Result<(), String> {
         .child
         .stdin
         .take()
-        .ok_or("provider worker lifeline absent")?;
-    input.write_all(&bytes).map_err(|e| e.to_string())?;
+        .ok_or(crate::ResearchFailure::ProviderWorkerInputMissing)?;
+    input.write_all(&bytes)?;
     let output = child
         .child
         .stdout
         .take()
-        .ok_or("provider worker output absent")?;
+        .ok_or(crate::ResearchFailure::ProviderWorkerOutputMissing)?;
     let (sender, receiver) =
         sync_channel::sync_channel(crate::resources::active_limits().supervisor_commands);
     let parent = sender.clone();
@@ -1006,7 +1010,7 @@ fn supervise() -> Result<(), String> {
         let _ = emit(&Frame::CleanupFailed {
             id: start.record.id,
         });
-        return Err(error);
+        return Err(error.into());
     }
     emit(&Frame::CleanupComplete {
         id: start.record.id,
@@ -1016,9 +1020,9 @@ fn supervise() -> Result<(), String> {
         std::io::stdout()
             .write_all(&result)
             .and_then(|_| std::io::stdout().flush())
-            .map_err(|e| e.to_string())
+            .map_err(Into::into)
     } else {
-        Err("provider stopped or failed".into())
+        Err(crate::ResearchFailure::ProviderStopped.into())
     }
 }
 
@@ -1088,11 +1092,11 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
     }
 }
 
-fn work() -> Result<(), String> {
-    nix::unistd::setsid().map_err(|e| e.to_string())?;
+fn work() -> Result<(), crate::Error> {
+    nix::unistd::setsid().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     let mut reader = std::io::BufReader::new(std::io::stdin());
     let start: Start = serde_json::from_slice(&line(&mut reader, max_frame_bytes())?)
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| crate::ResearchFailure::ProviderStartDecoding)?;
     let record = start.record;
     record.input.validate()?;
     record.binding.validate()?;
@@ -1314,29 +1318,26 @@ impl super::provider::Supervisor for WorkerControl {
     }
 }
 
-fn descendant() -> Result<(), String> {
+fn descendant() -> Result<(), crate::Error> {
     // Stay in the worker's owned group and retain the inherited kernel slot.
     // A safe Tokio signal registration makes TERM non-cooperative; KILL must
     // still terminate this finite developer stand-in with its whole group.
-    std::thread::spawn(|| {
+    std::thread::spawn(|| -> Result<(), crate::Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
+            .build()?;
         runtime.block_on(async {
             let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .map_err(|e| e.to_string())?;
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
             std::io::stdout()
                 .write_all(b"naome descendant ready v1\n")
-                .and_then(|_| std::io::stdout().flush())
-                .map_err(|e| e.to_string())?;
+                .and_then(|_| std::io::stdout().flush())?;
             while terminate.recv().await.is_some() {}
-            Err("descendant signal stream ended".into())
+            Err(crate::ResearchFailure::DescendantSignalEnded.into())
         })
     })
     .join()
-    .map_err(|_| "descendant signal owner panicked")?
+    .map_err(|_| crate::ResearchFailure::DescendantOwnerPanic)?
 }
 
 #[cfg(test)]

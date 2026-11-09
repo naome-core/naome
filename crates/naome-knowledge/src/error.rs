@@ -1744,6 +1744,18 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::JournalActiveCapacity => "active journal byte capacity",
                 crate::ResearchFailure::JournalReservedCapacity => "research reserved result byte capacity",
                 crate::ResearchFailure::DiskReservationWidth => "job disk reservation width",
+                crate::ResearchFailure::ProviderInvocationRequired => "internal provider invocation required",
+                crate::ResearchFailure::ProviderPipeCapacity => "provider pipe capacity",
+                crate::ResearchFailure::ProviderStartDecoding => "provider start decoding failed",
+                crate::ResearchFailure::ProviderStartInvalid => "provider start version or horizon differs",
+                crate::ResearchFailure::ProviderWorkerInputMissing => "provider worker lifeline absent",
+                crate::ResearchFailure::ProviderWorkerOutputMissing => "provider worker output absent",
+                crate::ResearchFailure::ProviderStopped => "provider stopped or failed",
+                crate::ResearchFailure::DescendantSignalEnded => "descendant signal stream ended",
+                crate::ResearchFailure::DescendantOwnerPanic => "descendant signal owner panicked",
+                crate::ResearchFailure::ProviderRoleMismatch => "structural finder role differs",
+                crate::ResearchFailure::ProviderUnknown => "unknown research provider",
+                crate::ResearchFailure::MockProgramUnit => "invalid mock program unit",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

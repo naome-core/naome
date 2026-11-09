@@ -815,7 +815,7 @@ fn wall_ms() -> Result<u64, crate::Error> {
         .map_err(|_| crate::ResearchFailure::ClockOverflow.into())
 }
 
-pub(crate) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), String>> {
+pub(crate) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), crate::Error>> {
     process::internal(arguments)
 }
 
