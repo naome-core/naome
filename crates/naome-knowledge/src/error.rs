@@ -1500,6 +1500,52 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::JournalConfiguration => {
+                    "research journal compatibility, configuration or capacity differs"
+                }
+                crate::ResearchFailure::JournalSequence => {
+                    "research monotonic sequence or retired accounting differs"
+                }
+                crate::ResearchFailure::JournalUnitsOverflow => "research aggregate units overflow",
+                crate::ResearchFailure::JournalTimeOverflow => "research aggregate time overflow",
+                crate::ResearchFailure::JournalAllowance => {
+                    "research aggregate original allowance differs"
+                }
+                crate::ResearchFailure::JournalTrainingRole => "native training role differs",
+                crate::ResearchFailure::JournalLearningEpoch => "native learning epoch differs",
+                crate::ResearchFailure::JournalFrontierRole => {
+                    "open branch checkpoint role differs"
+                }
+                crate::ResearchFailure::JournalResolvedFrontier => {
+                    "resolved checkpoint has open branches"
+                }
+                crate::ResearchFailure::JournalHistoryJob => "history request original job differs",
+                crate::ResearchFailure::JournalMetaJob => {
+                    "meta experience source job identity differs"
+                }
+                crate::ResearchFailure::JournalProviderRole => {
+                    "native provider snapshot role differs"
+                }
+                crate::ResearchFailure::JournalProviderMissing => "native provider snapshot absent",
+                crate::ResearchFailure::JournalHorizonOverflow => "job horizon overflow",
+                crate::ResearchFailure::JournalRecordBinding => {
+                    "research record identity, lifecycle, checkpoint or budget differs"
+                }
+                crate::ResearchFailure::JournalProgramCheckpoint => {
+                    "retained program differs from original checkpoints"
+                }
+                crate::ResearchFailure::JournalAccountMissing => {
+                    "missing original obligation budget"
+                }
+                crate::ResearchFailure::JournalAccountBinding => {
+                    "research original obligation budget differs"
+                }
+                crate::ResearchFailure::JournalFinderCursor => {
+                    "research finding cursor binding differs"
+                }
+                crate::ResearchFailure::JournalAccountCorrupt => {
+                    "research obligation allowance corruption"
+                }
                 crate::ResearchFailure::ProgressMetaJobBinding => {
                     "meta experience source job differs"
                 }

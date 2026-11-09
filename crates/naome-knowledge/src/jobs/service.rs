@@ -992,7 +992,7 @@ impl Owner {
         }
         self.journal
             .validate_delta(self.settings)
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         self.disk.save_with(&mut self.journal, extra)?;
         self.flushed = Instant::now();
         Ok(())

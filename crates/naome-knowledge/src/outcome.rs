@@ -894,6 +894,7 @@ codes! {
         LearningExampleOwner = 400, LearningExampleEligibility = 401, LearningReplayPointer = 402, LearningProgramProvenance = 403, LearningProofProvenance = 404, LearningProgramTarget = 405, LearningDefinitionUtility = 406, LearningStateCapacity = 407, LearningReplayStrategyCapacity = 408, LearningFeedbackModel = 409,
         LearningFixedSnapshotCapacity = 410, LearningMetaHeadroom = 411, LearningMetaBatchCapacity = 412, LearningLocalCountOverflow = 413, LearningPeerCountOverflow = 414, LearningSequenceOverflow = 415, LearningRevisionOverflow = 416,
         ProgressMetaJobBinding = 417, ProgressRepeatedMismatch = 418, ProgressContinuationMismatch = 419, ProgressMetaTrialBinding = 420, ProgressFirstUnit = 421, ProgressTransferLoss = 422,
+        JournalConfiguration = 423, JournalSequence = 424, JournalUnitsOverflow = 425, JournalTimeOverflow = 426, JournalAllowance = 427, JournalTrainingRole = 428, JournalLearningEpoch = 429, JournalFrontierRole = 430, JournalResolvedFrontier = 431, JournalHistoryJob = 432, JournalMetaJob = 433, JournalProviderRole = 434, JournalProviderMissing = 435, JournalHorizonOverflow = 436, JournalRecordBinding = 437, JournalProgramCheckpoint = 438, JournalAccountMissing = 439, JournalAccountBinding = 440, JournalFinderCursor = 441, JournalAccountCorrupt = 442,
     }
 
 }

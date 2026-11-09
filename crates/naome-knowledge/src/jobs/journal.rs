@@ -888,21 +888,21 @@ impl Disk {
 }
 
 impl Journal {
-    pub(super) fn validate(&self, settings: Settings) -> Result<(), String> {
+    pub(super) fn validate(&self, settings: Settings) -> Result<(), crate::Error> {
         self.validate_changes(settings, true)
     }
 
-    pub(super) fn validate_delta(&self, settings: Settings) -> Result<(), String> {
+    pub(super) fn validate_delta(&self, settings: Settings) -> Result<(), crate::Error> {
         self.validate_changes(settings, false)
     }
 
-    fn validate_changes(&self, settings: Settings, full: bool) -> Result<(), String> {
+    fn validate_changes(&self, settings: Settings, full: bool) -> Result<(), crate::Error> {
         if self.compatibility != crate::hex(&crate::compatibility())
             || self.configuration != identity(&settings)
             || self.next_id == 0
             || self.slots.is_empty()
         {
-            return Err("research journal compatibility, configuration or capacity differs".into());
+            return Err(crate::ResearchFailure::JournalConfiguration.into());
         }
         if self
             .retired_jobs
@@ -910,20 +910,20 @@ impl Journal {
             .and_then(|n| n.checked_add(1))
             != Some(self.next_id)
         {
-            return Err("research monotonic sequence or retired accounting differs".into());
+            return Err(crate::ResearchFailure::JournalSequence.into());
         }
         let units = self
             .accounts
             .values()
             .try_fold(0u64, |sum, a| sum.checked_add(u64::from(a.reserved_units)))
-            .ok_or("research aggregate units overflow")?;
+            .ok_or(crate::ResearchFailure::JournalUnitsOverflow)?;
         let spent = self
             .accounts
             .values()
             .try_fold(0u64, |sum, a| sum.checked_add(a.spent_ms))
-            .ok_or("research aggregate time overflow")?;
+            .ok_or(crate::ResearchFailure::JournalTimeOverflow)?;
         if units > self.total_reserved_units || spent > self.total_spent_ms {
-            return Err("research aggregate original allowance differs".into());
+            return Err(crate::ResearchFailure::JournalAllowance.into());
         }
         for (id, r) in &self.records {
             if !full && !self.records.changed(id) {
@@ -956,36 +956,35 @@ fn validate_record(
     next_id: u64,
     next_cursor: u64,
     account: Option<&Account>,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     r.input.validate()?;
     if let Some(native) = &r.native {
         if native.training != matches!(r.input, Input::Train { .. }) {
-            return Err("native training role differs".into());
+            return Err(crate::ResearchFailure::JournalTrainingRole.into());
         }
         if let Input::Train { epoch } = r.input
             && epoch != native.base.learning_epoch()
         {
-            return Err("native learning epoch differs".into());
+            return Err(crate::ResearchFailure::JournalLearningEpoch.into());
         }
         native.validate()?;
         if let Some(report) = native.progress.as_ref().and_then(|p| p.frontier.as_ref()) {
             let Input::Solve { question } = &r.input else {
-                return Err("open branch checkpoint role differs".into());
+                return Err(crate::ResearchFailure::JournalFrontierRole.into());
             };
             if native.progress.as_ref().is_some_and(|p| p.result.is_some()) {
-                return Err("resolved checkpoint has open branches".into());
+                return Err(crate::ResearchFailure::JournalResolvedFrontier.into());
             }
-            report.validate(
-                &naome_checker::question::ResearchQuestion::from_hex(question)
-                    .map_err(|e| e.to_string())?,
-            )?;
+            report.validate(&naome_checker::question::ResearchQuestion::from_hex(
+                question,
+            )?)?;
         }
         if native
             .history_request
             .as_ref()
             .is_some_and(|request| request.horizon != r.id)
         {
-            return Err("history request original job differs".into());
+            return Err(crate::ResearchFailure::JournalHistoryJob.into());
         }
         if native
             .progress
@@ -993,14 +992,13 @@ fn validate_record(
             .and_then(|p| p.meta_update.as_ref())
             .is_some_and(|u| u.experience.job != id)
         {
-            return Err("meta experience source job identity differs".into());
+            return Err(crate::ResearchFailure::JournalMetaJob.into());
         }
         match &r.input {
             Input::Solve { question } => {
                 native.validate_generated_trace()?;
                 if let Some(solution) = native.progress.as_ref().and_then(|p| p.result.as_ref()) {
-                    let target = naome_checker::question::ResearchQuestion::from_hex(question)
-                        .map_err(|error| error.to_string())?;
+                    let target = naome_checker::question::ResearchQuestion::from_hex(question)?;
                     solution.check_target(&target)?;
                 }
             }
@@ -1024,10 +1022,10 @@ fn validate_record(
                 Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
             )
         {
-            return Err("native provider snapshot role differs".into());
+            return Err(crate::ResearchFailure::JournalProviderRole.into());
         }
     } else if r.provider == crate::learning::PROVIDER {
-        return Err("native provider snapshot absent".into());
+        return Err(crate::ResearchFailure::JournalProviderMissing.into());
     }
     r.binding.validate_role(&r.input)?;
     r.settings.validate_history()?;
@@ -1040,42 +1038,42 @@ fn validate_record(
         || r.expires_ms
             != r.created_ms
                 .checked_add(r.settings.limits.horizon_ms)
-                .ok_or("job horizon overflow")?
+                .ok_or(crate::ResearchFailure::JournalHorizonOverflow)?
         || r.checkpoint > r.reserved_units
         || r.reserved_units > r.settings.limits.work_units
         || r.acknowledged && !r.state.terminal()
         || (r.state == State::Complete) != r.result.is_some()
     {
-        return Err("research record identity, lifecycle, checkpoint or budget differs".into());
+        return Err(crate::ResearchFailure::JournalRecordBinding.into());
     }
     if let Some(output) = &r.result {
         output.validate_retained(&r.input)?;
         if let Output::Program { units } = output
             && *units != r.checkpoint
         {
-            return Err("retained program differs from original checkpoints".into());
+            return Err(crate::ResearchFailure::JournalProgramCheckpoint.into());
         }
     }
     if !matches!(r.input, Input::Find { .. }) {
-        let account = account.ok_or("missing original obligation budget")?;
+        let account = account.ok_or(crate::ResearchFailure::JournalAccountMissing)?;
         if account.settings != r.settings
             || account.created_ms != r.created_ms
             || account.expires_ms != r.expires_ms
             || account.reserved_units < r.reserved_units
             || account.spent_ms < r.spent_ms
         {
-            return Err("research original obligation budget differs".into());
+            return Err(crate::ResearchFailure::JournalAccountBinding.into());
         }
     }
     if let Input::Find { cursor, .. } = r.input
         && cursor >= next_cursor
     {
-        return Err("research finding cursor binding differs".into());
+        return Err(crate::ResearchFailure::JournalFinderCursor.into());
     }
     Ok(())
 }
 
-fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result<(), String> {
+fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result<(), crate::Error> {
     crate::object::id_bytes(key)?;
     account.settings.validate_history()?;
     if account.settings.limits.horizon_ms == 0
@@ -1087,7 +1085,7 @@ fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result
         || account.held == Some(0)
         || account.reserved_units > account.settings.limits.work_units
     {
-        return Err("research obligation allowance corruption".into());
+        return Err(crate::ResearchFailure::JournalAccountCorrupt.into());
     }
     Ok(())
 }
@@ -1114,4 +1112,36 @@ fn install_slots(root: &Path) -> Result<Vec<(u64, u64)>, String> {
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())?;
     Ok(slots)
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_journal_keeps_numeric_cause_when_storage_is_fatal() {
+        let settings = Settings::default();
+        let journal = Journal {
+            compatibility: String::new(),
+            configuration: String::new(),
+            next_id: 0,
+            next_cursor: 0,
+            observed_ms: 0,
+            retired_jobs: 0,
+            total_spent_ms: 0,
+            total_reserved_units: 0,
+            records: Default::default(),
+            accounts: Default::default(),
+            learning: None,
+            slots: vec![],
+        };
+        let error = journal.validate(settings).unwrap_err();
+        assert_eq!(error, crate::ResearchFailure::JournalConfiguration.into());
+        let value = serde_json::to_value(error.fatal_storage()).unwrap();
+        assert_eq!(value["fatal"], true);
+        assert_eq!(
+            value["cause_code"],
+            u32::from(crate::ResearchFailure::JournalConfiguration)
+        );
+    }
 }
