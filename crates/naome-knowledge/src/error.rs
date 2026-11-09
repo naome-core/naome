@@ -1517,6 +1517,12 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationActionLabel => {
                     "preservation prefix action lacks a checked label"
                 }
+                crate::ResearchFailure::UtilityGradientInvalid => {
+                    "non-finite native utility gradient"
+                }
+                crate::ResearchFailure::UtilityReferenceCapacity => {
+                    "native utility reference capacity"
+                }
                 crate::ResearchFailure::AbilityProfileCapacity => {
                     "ability observations exceed their bounded contract"
                 }

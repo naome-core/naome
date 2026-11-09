@@ -4,9 +4,9 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
-fn cosine([dot, left, right]: [f64; 3]) -> Result<Option<f32>, String> {
+fn cosine([dot, left, right]: [f64; 3]) -> Result<Option<f32>, crate::Error> {
     if [dot, left, right].iter().any(|n| !n.is_finite()) || left < 0. || right < 0. {
-        return Err("non-finite native utility gradient".into());
+        return Err(crate::ResearchFailure::UtilityGradientInvalid.into());
     }
     if left == 0. || right == 0. {
         return Ok(None);
@@ -20,9 +20,9 @@ impl Runtime {
         &self,
         candidate: &Graph,
         reference: &[Graph],
-    ) -> Result<Option<f32>, String> {
+    ) -> Result<Option<f32>, crate::Error> {
         if reference.is_empty() || reference.len() > 4 {
-            return Err("native utility reference capacity".into());
+            return Err(crate::ResearchFailure::UtilityReferenceCapacity.into());
         }
         let reference = Batch::from_graphs(reference, &self.device)?;
         let loss = checked_marginal(
@@ -77,7 +77,7 @@ impl Runtime {
         };
         drop(self.policy.clone().map(&mut alignment));
         if let Some(error) = alignment.error {
-            return Err(error);
+            return Err(error.into());
         }
         cosine(alignment.sums)
     }

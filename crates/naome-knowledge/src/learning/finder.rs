@@ -134,7 +134,7 @@ impl State {
             };
             passes += 2;
             let Some(alignment) =
-                engine.with(model, io, |runtime| runtime.utility_alignment(&g, &graphs))?
+                engine.with_error(model, io, |runtime| runtime.utility_alignment(&g, &graphs))?
             else {
                 continue;
             };

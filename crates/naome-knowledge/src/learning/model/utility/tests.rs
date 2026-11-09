@@ -11,7 +11,10 @@ fn cosine_preserves_sign_and_handles_zero_or_invalid_gradients() {
     assert_eq!(cosine([-2., 4., 1.]).unwrap(), Some(-1.));
     assert_eq!(cosine([0., 4., 1.]).unwrap(), Some(0.));
     assert_eq!(cosine([0., 0., 1.]).unwrap(), None);
-    assert!(cosine([f64::NAN, 1., 1.]).is_err());
+    assert_eq!(
+        cosine([f64::NAN, 1., 1.]).unwrap_err(),
+        crate::ResearchFailure::UtilityGradientInvalid.into()
+    );
 }
 
 #[test]
@@ -43,7 +46,7 @@ fn scoring_real_checked_graphs_preserves_model_adam_mask_and_cursor() {
     let saved = cursor;
     let before = engine.snapshot(&model, &mut io).unwrap();
     let score = engine
-        .with(&model, &mut io, |runtime| {
+        .with_error(&model, &mut io, |runtime| {
             runtime.utility_alignment(&graphs[0], &graphs[..1])
         })
         .unwrap()
