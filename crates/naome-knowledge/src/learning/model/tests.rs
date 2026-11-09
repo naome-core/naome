@@ -429,3 +429,30 @@ fn checkpoint_update_overflow_is_reported_before_writing_artifacts() {
     );
     assert!(io.0.is_empty());
 }
+
+#[test]
+fn model_backend_errors_have_categories_and_bounded_detail() {
+    let error = canonical_checkpoint(Bytes::from_bytes_vec(Vec::new())).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::ResearchFailure::BackendPackHeader)
+    );
+    let first = record_failure(burn::store::RecordError::Validation(
+        "private tensor path".into(),
+    ));
+    let same = record_failure(burn::store::RecordError::Validation(
+        "private tensor path".into(),
+    ));
+    let different = record_failure(burn::store::RecordError::Validation(
+        "another tensor".into(),
+    ));
+    assert_eq!(first, same);
+    assert_ne!(first, different);
+    let json = serde_json::to_value(first).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::ResearchFailure::BackendRecordValidation)
+    );
+    assert_eq!(json["detail_digest"].as_array().unwrap().len(), 32);
+    assert!(!json.to_string().contains("private tensor path"));
+}

@@ -285,11 +285,45 @@ pub struct Runtime {
     #[cfg(test)]
     contextual_preservation: bool,
 }
-fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
-    let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
+// Upstream Burn errors expose free-form detail; retain a bounded fingerprint and
+// a stable category without exporting potentially sensitive text.
+fn backend_failure(code: crate::ResearchFailure, detail: Option<String>) -> crate::Error {
+    use sha2::{Digest as _, Sha256};
+    crate::Error::External(Box::new(crate::ExternalFailure {
+        code,
+        detail_digest: detail.map(|value| Sha256::digest(value.as_bytes()).into()),
+    }))
+}
+fn pack_failure(error: burn_pack::Error) -> crate::Error {
+    use crate::ResearchFailure as F;
+    use burn_pack::Error as E;
+    let (code, detail) = match error {
+        E::InvalidHeader => (F::BackendPackHeader, None),
+        E::InvalidMagicNumber => (F::BackendPackMagic, None),
+        E::InvalidVersion => (F::BackendPackVersion, None),
+        E::MetadataSerializationError(s) => (F::BackendPackMetadataWrite, Some(s)),
+        E::MetadataDeserializationError(s) => (F::BackendPackMetadataRead, Some(s)),
+        E::IoError(s) => (F::BackendPackIo, Some(s)),
+        E::TensorNotFound(s) => (F::BackendPackTensorMissing, Some(s)),
+        E::TensorBytesSizeMismatch(s) => (F::BackendPackTensorSize, Some(s)),
+        E::ValidationError(s) => (F::BackendPackValidation, Some(s)),
+        E::AlreadyExists(s) => (F::BackendPackExists, Some(s)),
+    };
+    backend_failure(code, detail)
+}
+fn record_failure(error: burn::store::RecordError) -> crate::Error {
+    use burn::store::RecordError as E;
+    let (code, detail) = match error {
+        E::Io(s) => (crate::ResearchFailure::BackendRecordIo, s),
+        E::Validation(s) => (crate::ResearchFailure::BackendRecordValidation, s),
+    };
+    backend_failure(code, Some(detail))
+}
+fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, crate::Error> {
+    let reader = burn_pack::Reader::from_bytes(bytes).map_err(pack_failure)?;
     let metadata = reader.metadata().clone();
     let scalars = reader.scalars().clone();
-    let mut tensors = reader.into_tensors().map_err(|e| e.to_string())?;
+    let mut tensors = reader.into_tensors().map_err(pack_failure)?;
     tensors.sort_by(|a, b| a.name.cmp(&b.name));
     let mut writer = burn_pack::Writer::new(tensors);
     for (key, value) in metadata {
@@ -298,7 +332,7 @@ fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     for (key, value) in scalars {
         writer = writer.with_scalar(&key, value);
     }
-    writer.into_bytes().map_err(|e| e.to_string())
+    writer.into_bytes().map_err(pack_failure)
 }
 impl Runtime {
     fn observe_batches(&self) -> bool {
@@ -373,16 +407,15 @@ impl Runtime {
             policy = policy
                 .try_load_record(
                     ModuleRecord::from_bytes(Bytes::from_bytes_vec(bytes))
-                        .map_err(|e| e.to_string())?,
+                        .map_err(record_failure)?,
                 )
-                .map_err(|e| e.to_string())?
+                .map_err(record_failure)?
                 .train();
             let bytes = artifact::load(io, adam)?;
             let adam =
                 preservation.decode(Bytes::from_bytes_vec(bytes.clone()), checkpoint.updates)?;
-            optimizer = optimizer.from_bytes(adam).map_err(|e| e.to_string())?;
-            let restored =
-                preservation.encode(optimizer.into_bytes().map_err(|e| e.to_string())?)?;
+            optimizer = optimizer.from_bytes(adam).map_err(record_failure)?;
+            let restored = preservation.encode(optimizer.into_bytes().map_err(record_failure)?)?;
             if Blob::of(&restored[..]) != Blob::of(&bytes) {
                 return Err(crate::ResearchFailure::ModelOptimizerRestorationMismatch.into());
             }
@@ -421,11 +454,11 @@ impl Runtime {
                 .clone()
                 .into_record()
                 .into_bytes()
-                .map_err(|e| e.to_string())?,
+                .map_err(record_failure)?,
         )?;
         let optimizer = self
             .preservation
-            .encode(self.optimizer.into_bytes().map_err(|e| e.to_string())?)?;
+            .encode(self.optimizer.into_bytes().map_err(record_failure)?)?;
         Ok(Checkpoint {
             specification: parent.specification.clone(),
             seed: parent.seed,

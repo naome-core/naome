@@ -232,6 +232,15 @@ pub struct ModelDigestMismatch {
     pub actual: [u8; 32],
 }
 
+/// Bounded identity for a backend error whose upstream detail is unstructured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalFailure {
+    /// Stable category of the backend failure.
+    pub code: crate::ResearchFailure,
+    /// SHA-256 of upstream detail, if available. Guessable details can be inferred.
+    pub detail_digest: Option<[u8; 32]>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     MemoryOverload {
@@ -319,6 +328,7 @@ pub enum Error {
     },
     Research(crate::ResearchFailure),
     ModelDigestMismatch(Box<ModelDigestMismatch>),
+    External(Box<ExternalFailure>),
     ResearchMismatch {
         code: crate::ResearchFailure,
         expected: u64,
@@ -395,6 +405,7 @@ impl Error {
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
+            Self::External(failure) => return failure.code.into(),
             Self::ModelDigestMismatch(_) => {
                 return crate::ResearchFailure::ModelDigestMismatch.into();
             }
@@ -1621,6 +1632,25 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ModelParameterCountMismatch => "native graph policy parameter count differs",
                 crate::ResearchFailure::ModelOptimizerRestorationMismatch => "native optimizer did not restore exactly",
                 crate::ResearchFailure::ModelUpdatesOverflow => "native model updates overflow",
+                crate::ResearchFailure::BackendPackHeader => "model container header invalid",
+                crate::ResearchFailure::BackendPackMagic => "model container magic invalid",
+                crate::ResearchFailure::BackendPackVersion => "model container version invalid",
+                crate::ResearchFailure::BackendPackMetadataWrite => "model container metadata write failed",
+                crate::ResearchFailure::BackendPackMetadataRead => "model container metadata read failed",
+                crate::ResearchFailure::BackendPackIo => "model container I/O failed",
+                crate::ResearchFailure::BackendPackTensorMissing => "model container tensor missing",
+                crate::ResearchFailure::BackendPackTensorSize => "model container tensor size mismatch",
+                crate::ResearchFailure::BackendPackValidation => "model container validation failed",
+                crate::ResearchFailure::BackendPackExists => "model container destination exists",
+                crate::ResearchFailure::BackendRecordIo => "model record I/O failed",
+                crate::ResearchFailure::BackendRecordValidation => "model record validation failed",
+                crate::ResearchFailure::PreservationStepsMissing => "missing preservation step count",
+                crate::ResearchFailure::PreservationStepsInvalid => "preservation step count is not an unsigned integer",
+                crate::ResearchFailure::PreservationStepsExceeded => "preservation count exceeds actual updates",
+                crate::ResearchFailure::PreservationUnknownField => "unknown optimizer memory field",
+                crate::ResearchFailure::PreservationParameterMismatch => "EMA parameter path, type, shape or identity differs",
+                crate::ResearchFailure::PreservationValueInvalid => "non-finite or unbounded preservation memory",
+                crate::ResearchFailure::PreservationIncomplete => "incomplete preservation memory",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
@@ -1971,6 +2001,7 @@ impl fmt::Display for Error {
                 }
             }),
             Self::ModelDigestMismatch(_) => f.write_str("native model checkpoint content differs"),
+            Self::External(failure) => write!(f, "external research failure {}", u32::from(failure.code)),
             Self::ResearchMismatch {
                 code,
                 expected,
@@ -2220,6 +2251,11 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
+        if let Self::External(details) = cause
+            && let Some(digest) = details.detail_digest
+        {
+            value.serialize_entry("detail_digest", &digest)?;
+        }
         if let Self::ModelDigestMismatch(details) = cause {
             value.serialize_entry("expected_digest", &details.expected)?;
             value.serialize_entry("actual_digest", &details.actual)?;

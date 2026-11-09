@@ -314,9 +314,15 @@ fn current_optimizer_memory_rejects_missing_steps_and_nonfinite_ema() {
         let mut invalid = snapshot.clone();
         invalid.optimizer = Some(artifact::save(&mut io, &altered[..]).unwrap());
         assert_ne!(invalid.optimizer.as_ref().unwrap(), &Blob::of(&bytes));
-        assert!(
-            Runtime::load(&invalid, &mut io).is_err(),
-            "current optimizer memory corruption: {corruption}"
-        );
+        let error = Runtime::load(&invalid, &mut io)
+            .err()
+            .expect("corruption must be rejected");
+        let code = match corruption {
+            "missing_steps" => crate::ResearchFailure::PreservationStepsMissing,
+            "nonfinite" => crate::ResearchFailure::PreservationValueInvalid,
+            "unknown_parameter" => crate::ResearchFailure::PreservationParameterMismatch,
+            _ => unreachable!(),
+        };
+        assert_eq!(error.code(), u32::from(code), "{corruption}: {error}");
     }
 }

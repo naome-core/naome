@@ -33,7 +33,8 @@ pub use outcome::{
 };
 mod frontier;
 pub use error::{
-    CertificateFormatError, DurabilityFailure, Error, FormatFailure, ModelDigestMismatch,
+    CertificateFormatError, DurabilityFailure, Error, ExternalFailure, FormatFailure,
+    ModelDigestMismatch,
 };
 mod graph;
 mod index_storage;
