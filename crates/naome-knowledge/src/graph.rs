@@ -988,9 +988,10 @@ impl Graph {
         let source = self.checked_storage.clone();
         // The phase guard records every setup failure, including native close
         // errors. Do not overwrite that cleanup evidence through cold().
-        let phase = source
-            .admission_phase()
-            .map_err(|error| format!("storage halted: {error}"))?;
+        let phase = source.admission_phase().map_err(|error| {
+            self.storage_error()
+                .unwrap_or_else(|| error.fatal_storage())
+        })?;
         preparation.register_artifact(self, registration)?;
         let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;

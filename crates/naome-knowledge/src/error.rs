@@ -328,6 +328,14 @@ pub enum Error {
         reason: crate::SqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
+    CheckedIndexSql {
+        reason: crate::SqlFault,
+        sqlite_code: Option<NonZeroI32>,
+    },
+    StorageContext {
+        code: crate::InputFault,
+        cause: Box<Error>,
+    },
     Io {
         kind: crate::IoFaultKind,
         os_code: Option<NonZeroI32>,
@@ -435,6 +443,8 @@ impl Error {
             Self::CatalogSql { .. } => OperationCode::CatalogSql,
             Self::BacklogSql { .. } => OperationCode::BacklogSql,
             Self::CheckedIndexCloseSql { .. } => OperationCode::CheckedIndexCloseSql,
+            Self::CheckedIndexSql { .. } => OperationCode::CheckedIndexSql,
+            Self::StorageContext { code, .. } => return (*code).into(),
             Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Io { .. } => OperationCode::Io,
             Self::Runtime(failure) => return (*failure).into(),
@@ -529,6 +539,8 @@ impl Error {
                     | Self::CatalogSql { .. }
                     | Self::BacklogSql { .. }
                     | Self::CheckedIndexCloseSql { .. }
+                    | Self::CheckedIndexSql { .. }
+                    | Self::StorageContext { .. }
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
@@ -798,6 +810,16 @@ impl fmt::Display for Error {
                 InputFault::CatalogProgramInputHash => "staged program input hash differs",
                 InputFault::CatalogProgramStreamSuffix => "staged program stream suffix differs",
                 InputFault::CatalogProgramStreamRoot => "staged program stream root differs",
+                InputFault::CheckedIndexLockPoisoned => "checked index lock poisoned",
+                InputFault::CheckedCacheLockPoisoned => "checked cache lock poisoned",
+                InputFault::CheckedWritePhaseActive => "checked index write phase already active",
+                InputFault::CheckedWritePhaseMissing => "checked index write phase missing",
+                InputFault::CheckedWriteBufferActive => "startup buffer must finish before COMMIT",
+                InputFault::CheckedSourceBegin => "checked admission source BEGIN",
+                InputFault::CheckedMirrorBegin => "checked admission mirror BEGIN",
+                InputFault::CheckedSourceCommit => "checked admission source COMMIT",
+                InputFault::CheckedMirrorCommit => "checked admission mirror COMMIT",
+                InputFault::CheckedStartupPageUnavailable => "startup page already buffered or closed",
                 InputFault::CheckedIndexClosed => "checked index connection closed",
                 InputFault::CatalogProgramPrefixSummary => "staged program prefix summary differs",
                 InputFault::CatalogFileChanged => "proof catalog file changed outside its owned connection",
@@ -876,6 +898,8 @@ impl fmt::Display for Error {
                 "backlog SQLite failure {} ({sqlite_code:?})",
                 u32::from(*reason)
             ),
+            Self::CheckedIndexSql { reason, sqlite_code } => write!(f, "checked index SQLite failure {} ({sqlite_code:?})", u32::from(*reason)),
+            Self::StorageContext { code, cause } => write!(f, "storage phase {}: {cause}", u32::from(*code)),
             Self::CheckedIndexCloseSql { reason, sqlite_code } => write!(
                 f, "checked index close failure {} ({sqlite_code:?})", u32::from(*reason)
             ),
@@ -2369,7 +2393,7 @@ impl StdError for Error {
         match self {
             Self::Stored(error) => Some(error),
             Self::RuntimeContext { cause, .. } => Some(cause),
-            Self::ResearchContext { cause, .. } => Some(cause),
+            Self::ResearchContext { cause, .. } | Self::StorageContext { cause, .. } => Some(cause),
             Self::ResearchSlot { cause, .. } => Some(cause),
             Self::ResearchCombined { primary, .. } | Self::StorageCombined { primary, .. } => {
                 Some(primary)
@@ -2557,7 +2581,7 @@ impl serde::Serialize for Error {
         if let Self::RuntimeContext { cause, .. } = self {
             value.serialize_entry("cause", cause)?;
         }
-        if let Self::ResearchContext { cause, .. } = self {
+        if let Self::ResearchContext { cause, .. } | Self::StorageContext { cause, .. } = self {
             value.serialize_entry("cause", cause)?;
         }
         if let Self::ResearchSlot { index, cause } = self {
@@ -2712,6 +2736,10 @@ impl serde::Serialize for Error {
             sqlite_code,
         }
         | Self::CheckedIndexCloseSql {
+            reason,
+            sqlite_code,
+        }
+        | Self::CheckedIndexSql {
             reason,
             sqlite_code,
         } = cause

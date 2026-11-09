@@ -19,7 +19,7 @@ pub(in crate::graph) struct AdmissionGuards<'a> {
 }
 
 impl CheckedStorage {
-    pub(in crate::graph) fn admission_phase(&self) -> Result<AdmissionPhase<'_>, String> {
+    pub(in crate::graph) fn admission_phase(&self) -> Result<AdmissionPhase<'_>, crate::Error> {
         // Install the abort guard before any fallible phase setup. In
         // particular, a poisoned gate must still close its exact databases.
         let mut phase = AdmissionPhase {
@@ -57,13 +57,25 @@ impl CheckedStorage {
         #[cfg(test)]
         tests::prepare_failure(self, phase.target.as_deref());
         self.begin_write_phase()
-            .map_err(|error| format!("checked admission source BEGIN: {error}"))?;
+            .map_err(|error| self.phase_failure(crate::InputFault::CheckedSourceBegin, error))?;
         if let Some(target) = &phase.target {
-            target
-                .begin_write_phase()
-                .map_err(|error| format!("checked admission mirror BEGIN: {error}"))?;
+            target.begin_write_phase().map_err(|error| {
+                self.phase_failure(crate::InputFault::CheckedMirrorBegin, error)
+            })?;
         }
         Ok(phase)
+    }
+
+    fn phase_failure(&self, code: crate::InputFault, cause: crate::Error) -> crate::Error {
+        let failure = crate::Error::StorageContext {
+            code,
+            cause: Box::new(cause),
+        };
+        self.halt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(|| failure.clone());
+        failure
     }
 
     pub(super) fn require_live(&self) -> Result<(), String> {
@@ -115,7 +127,7 @@ impl AdmissionPhase<'_> {
     pub(in crate::graph) fn finish(
         &self,
         current: &CheckedStorage,
-    ) -> Result<AdmissionGuards<'_>, String> {
+    ) -> Result<AdmissionGuards<'_>, crate::Error> {
         let source = self.source.write_gate()?;
         let target = self
             .target
@@ -138,13 +150,15 @@ impl AdmissionPhase<'_> {
             return Err("checked admission generation, epoch or phase owner changed".into());
         }
         if let Some(target) = &self.target {
-            target
-                .finish_write_phase()
-                .map_err(|error| format!("checked admission mirror COMMIT: {error}"))?;
+            target.finish_write_phase().map_err(|error| {
+                self.source
+                    .phase_failure(crate::InputFault::CheckedMirrorCommit, error)
+            })?;
         }
-        self.source
-            .finish_write_phase()
-            .map_err(|error| format!("checked admission source COMMIT: {error}"))?;
+        self.source.finish_write_phase().map_err(|error| {
+            self.source
+                .phase_failure(crate::InputFault::CheckedSourceCommit, error)
+        })?;
         self.source.require_live()?;
         #[cfg(test)]
         tests::before_canonical(self.source, self.target.as_deref());

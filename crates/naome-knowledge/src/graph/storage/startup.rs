@@ -3,16 +3,16 @@
 use super::*;
 
 impl CheckedStorage {
-    pub(in crate::graph) fn begin_startup_page(&self) -> Result<(), String> {
+    pub(in crate::graph) fn begin_startup_page(&self) -> Result<(), crate::Error> {
         self.require_live()?;
         self.adapt_cache()?;
         self.begin_write_phase()?;
         let mut cache = self
             .cache
             .lock()
-            .map_err(|_| "checked cache lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?;
         if cache.buffering.is_some() || !cache.pending.is_empty() || cache.closed {
-            return Err("startup page already buffered or closed".into());
+            return Err(crate::InputFault::CheckedStartupPageUnavailable.into());
         }
         cache.buffering = Some(self.generation);
         Ok(())
@@ -21,41 +21,38 @@ impl CheckedStorage {
     pub(in crate::graph) fn finish_startup_page(
         &self,
         context: &DiskArtifactState,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let result = (|| {
             self.adapt_cache()?;
             // This generation is still private to Graph::open. A previously
             // materialized subtree cannot contain a buffered descendant.
-            context
-                .visit_pending_records(|address| {
-                    let mut cache = self.cache.lock().map_err(|_| {
-                        ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
-                    })?;
-                    if cache.buffering != Some(self.generation) {
-                        return Err(ContextError::Storage(
-                            naome_proof::ContextStorageFailure::StartupGeneration,
-                        ));
-                    }
-                    let Some(entry) = cache.entries.get_mut(&address) else {
-                        return Ok(false);
-                    };
-                    if matches!(entry.state, EntryState::Buffered | EntryState::Reachable) {
-                        entry.state = EntryState::Reachable;
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                })
-                .map_err(|e| e.to_string())?;
+            context.visit_pending_records(|address| {
+                let mut cache = self.cache.lock().map_err(|_| {
+                    ContextError::Storage(naome_proof::ContextStorageFailure::CacheLock)
+                })?;
+                if cache.buffering != Some(self.generation) {
+                    return Err(ContextError::Storage(
+                        naome_proof::ContextStorageFailure::StartupGeneration,
+                    ));
+                }
+                let Some(entry) = cache.entries.get_mut(&address) else {
+                    return Ok(false);
+                };
+                if matches!(entry.state, EntryState::Buffered | EntryState::Reachable) {
+                    entry.state = EntryState::Reachable;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })?;
             #[cfg(test)]
             tests::at_stage(tests::Cut::Mark)?;
             {
                 let mut cache = self
                     .cache
                     .lock()
-                    .map_err(|_| "checked cache lock poisoned")?;
-                self.flush_buffered(&mut cache, true)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?;
+                self.flush_buffered(&mut cache, true)?;
                 cache.buffering = None;
                 cache.trim(crate::resources::adaptive::cache(
                     crate::resources::active_limits().checked_cache_bytes,
@@ -71,7 +68,7 @@ impl CheckedStorage {
             self.halt
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .get_or_insert_with(|| crate::Error::CorruptStorage(error.clone()));
+                .get_or_insert_with(|| error.clone().fatal_storage());
         }
         result
     }

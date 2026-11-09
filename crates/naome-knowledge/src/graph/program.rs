@@ -247,9 +247,11 @@ impl ProgramAdmission {
             (records as u64).saturating_mul(128 * 1024),
         )?;
         let source = self.preparation.stamp().storage.clone();
-        let phase = source
-            .admission_phase()
-            .map_err(crate::Error::CorruptStorage)?;
+        let phase = source.admission_phase().map_err(|error| {
+            graph
+                .storage_error()
+                .unwrap_or_else(|| error.fatal_storage())
+        })?;
         let result = self
             .cursor
             .advance(proof.proof()?, records)

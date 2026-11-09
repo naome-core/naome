@@ -239,38 +239,48 @@ impl CheckedStorage {
 
     /// Batch only disposable index writes. Canonical admission has its own
     /// transaction; unfinished checked generations never become live roots.
-    pub(super) fn begin_write_phase(&self) -> Result<(), String> {
+    pub(super) fn begin_write_phase(&self) -> Result<(), crate::Error> {
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         let connection = connection_guard.open()?;
         if !connection.is_autocommit() {
-            return Err("checked index write phase already active".into());
+            return Err(crate::InputFault::CheckedWritePhaseActive.into());
         }
-        connection.execute_batch("BEGIN").map_err(|e| e.to_string())
+        connection.execute_batch("BEGIN").map_err(|error| {
+            let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+            crate::Error::CheckedIndexSql {
+                reason,
+                sqlite_code,
+            }
+        })
     }
-    pub(super) fn finish_write_phase(&self) -> Result<(), String> {
+    pub(super) fn finish_write_phase(&self) -> Result<(), crate::Error> {
         if self
             .cache
             .lock()
-            .map_err(|_| "checked cache lock poisoned")?
+            .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?
             .buffering
             .is_some()
         {
-            return Err("startup buffer must finish before COMMIT".into());
+            return Err(crate::InputFault::CheckedWriteBufferActive.into());
         }
         let connection_guard = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         let connection = connection_guard.open()?;
         if connection.is_autocommit() {
-            return Err("checked index write phase missing".into());
+            return Err(crate::InputFault::CheckedWritePhaseMissing.into());
         }
-        connection
-            .execute_batch("COMMIT")
-            .map_err(|e| e.to_string())
+        connection.execute_batch("COMMIT").map_err(|error| {
+            let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+            crate::Error::CheckedIndexSql {
+                reason,
+                sqlite_code,
+            }
+        })
     }
     #[cfg(test)]
     pub(super) fn evict_cache(&self) {

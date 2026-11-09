@@ -391,6 +391,23 @@ fn begin_insert_commit_epoch_and_poison_failures_close_both_indexes_without_cano
         let envelope = object(&graph, 8116);
         let _reset = probe(fault);
         assert!(graph.ingest(envelope, Instant::now()).is_err());
+        let expected = match fault {
+            Fault::SourceBegin => Some(crate::InputFault::CheckedSourceBegin),
+            Fault::TargetBegin => Some(crate::InputFault::CheckedMirrorBegin),
+            Fault::SourceCommit => Some(crate::InputFault::CheckedSourceCommit),
+            Fault::TargetCommit => Some(crate::InputFault::CheckedMirrorCommit),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let failure = graph.storage_error().unwrap();
+            assert!(
+                matches!(&failure, crate::Error::StorageContext { code, .. } if *code == expected),
+                "unexpected failure: {failure:?}"
+            );
+            let encoded = serde_json::to_value(failure).unwrap();
+            assert_eq!(encoded["code"], u32::from(expected));
+            assert!(encoded["cause"]["code"].is_number());
+        }
         assert_eq!(graph.content_root(), root);
         assert_eq!(graph.context.snapshot_id(), snapshot);
         assert_eq!(graph.accepted_count(), 16);
