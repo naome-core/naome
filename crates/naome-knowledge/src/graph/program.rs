@@ -437,7 +437,7 @@ impl Graph {
     pub(super) fn replay_program(
         &mut self,
         manifest: &Manifest,
-        observe: &mut dyn FnMut() -> Result<(), String>,
+        observe: &mut dyn FnMut() -> Result<(), crate::Error>,
     ) -> Result<(), crate::Error> {
         let mut check = ProgramCheck::open(self, manifest.clone())?;
         let proof = loop {

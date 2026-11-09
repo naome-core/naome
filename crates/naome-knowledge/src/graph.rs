@@ -286,14 +286,14 @@ impl Graph {
     }
     pub(crate) fn open_observed(
         directory: &Path,
-        observe: &mut dyn FnMut() -> Result<(), String>,
+        observe: &mut dyn FnMut() -> Result<(), crate::Error>,
     ) -> Result<Self, crate::Error> {
         Self::open_inner(directory, false, observe)
     }
     fn open_inner(
         directory: &Path,
         cleanup: bool,
-        observe: &mut dyn FnMut() -> Result<(), String>,
+        observe: &mut dyn FnMut() -> Result<(), crate::Error>,
     ) -> Result<Self, crate::Error> {
         let store = Arc::new(Store::open(directory)?);
         let summary = store.summary()?;

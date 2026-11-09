@@ -487,11 +487,7 @@ where
     } else {
         Graph::open(&config.directory)
     }
-    .map_err(|error| match error {
-        crate::Error::Runtime(_) | crate::Error::UncertainDurability(_) => error,
-        error if error.retryable() => error,
-        _ => crate::RuntimeFailure::CheckedStorageReplay.into(),
-    })?;
+    .map_err(checked_replay_error)?;
     let formal_goal = config
         .formal_goal
         .as_deref()
@@ -2845,6 +2841,17 @@ impl Node {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+fn checked_replay_error(error: crate::Error) -> crate::Error {
+    match error {
+        crate::Error::Runtime(_) | crate::Error::UncertainDurability(_) => error,
+        error if error.retryable() => error,
+        cause => crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::CheckedStorageReplay,
+            cause: Box::new(cause),
+        },
     }
 }
 

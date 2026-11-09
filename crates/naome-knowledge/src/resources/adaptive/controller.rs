@@ -8,7 +8,7 @@ pub(crate) struct Controller {
 }
 
 impl Controller {
-    pub(crate) fn open(directory: &Path) -> Result<Self, String> {
+    pub(crate) fn open(directory: &Path) -> Result<Self, crate::Error> {
         let mut owner = Self {
             directory: directory.to_owned(),
             observer: Observer::default(),
@@ -17,11 +17,11 @@ impl Controller {
         Ok(owner)
     }
 
-    pub(crate) fn refresh(&mut self) -> Result<(), String> {
+    pub(crate) fn refresh(&mut self) -> Result<(), crate::Error> {
         let Some(snapshot) = self
             .observer
             .poll(&self.directory)
-            .map_err(|error| error.to_string())?
+            .map_err(crate::Error::from)?
             .cloned()
         else {
             return Ok(());

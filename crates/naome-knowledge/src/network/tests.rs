@@ -1130,3 +1130,17 @@ fn transport_events_keep_endpoint_close_and_relay_client_context_structured() {
         assert!(event.get("detail").is_none());
     }
 }
+
+#[test]
+fn checked_replay_preserves_failure_and_retry_classification() {
+    let cause = crate::Error::from(crate::InputFault::CatalogSchemaMismatch);
+    let error = checked_replay_error(cause.clone());
+    assert!(error.fatal());
+    assert!(
+        matches!(error, crate::Error::RuntimeContext { code: crate::RuntimeFailure::CheckedStorageReplay, cause: actual } if *actual == cause)
+    );
+    assert_eq!(
+        checked_replay_error(crate::Error::ExecutionLimit),
+        crate::Error::ExecutionLimit
+    );
+}
