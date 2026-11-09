@@ -7,7 +7,7 @@ pub fn apply(
     mut original: proof::Verified,
     entries: &[definitions::Entry],
     protected: &BTreeSet<ProofId>,
-) -> Result<proof::Verified, String> {
+) -> Result<proof::Verified, crate::Error> {
     if entries.is_empty() || protected.contains(&original.native_id) {
         return Ok(original);
     }
@@ -22,20 +22,19 @@ pub fn apply(
         .chain(std::iter::once(&original.certificate))
         .enumerate()
     {
-        let old = crate::learning::proof::check(certificate.clone(), &primitive)
-            .map_err(|e| e.to_string())?;
+        let old = crate::learning::proof::check(certificate.clone(), &primitive)?;
         let target = old.conclusion().clone();
         let old_id = old.proof_id();
         if protected.contains(&old_id) {
             let certificate = old.normal_form().certificate().clone();
-            primitive.register_proof(old).map_err(|e| e.to_string())?;
-            let checked = proof::check(certificate.clone(), &context).map_err(|e| e.to_string())?;
-            context.register_proof(checked).map_err(|e| e.to_string())?;
+            primitive.register_proof(old)?;
+            let checked = proof::check(certificate.clone(), &context)?;
+            context.register_proof(checked)?;
             identities.insert(old_id, old_id);
             lemmas.push(certificate);
             continue;
         }
-        primitive.register_proof(old).map_err(|e| e.to_string())?;
+        primitive.register_proof(old)?;
         let steps = certificate
             .steps()
             .iter()
@@ -43,13 +42,15 @@ pub fn apply(
                 ProofStep::ProofReference { proof_id } => Ok(ProofStep::ProofReference {
                     proof_id: *identities
                         .get(proof_id)
-                        .ok_or("construction lemma dependency order")?,
+                        .ok_or(crate::Error::MissingRequiredTheorem(*proof_id))?,
                 }),
                 _ => Ok(step.clone()),
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, crate::Error>>()?;
         let candidate = proof::Verified {
-            certificate: ProofCertificate::new(steps).map_err(|e| e.to_string())?,
+            certificate: ProofCertificate::new(steps).map_err(|error| {
+                crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+            })?,
             target,
             native_id: old_id,
             payload_bytes: 0,
@@ -57,10 +58,9 @@ pub fn apply(
             definitions: Vec::new(),
         };
         let source = proof::source_with_definitions(&candidate, entries)?;
-        let checked =
-            crate::learning::proof::check_artifact(&source, &context).map_err(|e| e.to_string())?;
+        let checked = crate::learning::proof::check_artifact(&source, &context)?;
         if checked.conclusion() != &candidate.target {
-            return Err("construction meaning rewrite changed the claim".into());
+            return Err(crate::ResearchFailure::ConstructionMeaningMismatch.into());
         }
         identities.insert(old_id, checked.proof_id());
         used.extend(checked.direct_artifact_dependencies().iter().copied());
@@ -77,9 +77,9 @@ pub fn apply(
             return Ok(original);
         }
         lemmas.push(checked.normal_form().certificate().clone());
-        context.register_proof(checked).map_err(|e| e.to_string())?;
+        context.register_proof(checked)?;
     }
-    Err("missing construction root".into())
+    Err(crate::ResearchFailure::ConstructionRootMissing.into())
 }
 
 #[cfg(test)]
@@ -93,7 +93,7 @@ mod tests {
     use naome_foundation::{Formula, FreeVariable};
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -155,7 +155,7 @@ mod tests {
                 .is_none(),
             "one available plan has no ambiguous selection label"
         );
-        let text = proof::source(&found).unwrap();
+        let text = proof::source(&found);
         assert_eq!(
             crate::learning::proof::check_artifact(&text, &context)
                 .unwrap()

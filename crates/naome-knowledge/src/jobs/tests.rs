@@ -44,7 +44,7 @@ impl Manual {
                 | Command::DefinitionVerified { .. }
                 | Command::TheoremVerified { .. } => {}
                 Command::Program { reply, .. } => {
-                    let _ = reply.send(Err("manual provider has no retained program".into()));
+                    let _ = reply.send(Err(crate::ResearchFailure::ProgramGroupMissing.into()));
                 }
                 Command::Submit(input, binding, _required, _prerequisites, reply) => {
                     let id = self.next;
@@ -95,7 +95,7 @@ impl Manual {
             spent_ms: 0,
             reserved_units: 1,
             state,
-            result,
+            result: result.map_err(|_| CompletionFailure::NoResult(State::Failed)),
         });
     }
     pub(crate) fn recovery(&self) -> Recovery {
@@ -168,10 +168,10 @@ fn source_binding_preserves_original_question_orientation_and_strict_schema() {
 fn ordinary_product_rejects_developer_workloads_before_spawning() {
     let mut settings = Settings::default();
     settings.solving.mock.steps = 2;
-    assert_eq!(
+    assert!(matches!(
         settings.validate().unwrap_err(),
-        "controlled mock workloads require developer-tools"
-    );
+        crate::Error::Research(crate::ResearchFailure::DeveloperWorkloadUnavailable)
+    ));
     assert!(Settings::default().validate().is_ok());
 }
 
@@ -183,11 +183,68 @@ fn selected_finding_question_binds_the_returned_question() {
         question: supplied.clone(),
     };
     assert!(Output::Question(supplied).validate(&input).is_ok());
-    assert!(
+    assert_eq!(
         Output::Question("040101000000000100000000".into())
             .validate(&input)
-            .is_err()
+            .unwrap_err(),
+        crate::ResearchFailure::OutputTypeCapacity.into()
     );
+    let error = Output::Question("040101000000000100000000".into())
+        .validate(&input)
+        .unwrap_err();
+    assert_eq!(
+        u32::from(crate::outcome::JobFailureCode::from_owner(&error)),
+        u32::from(crate::ResearchFailure::OutputTypeCapacity)
+    );
+}
+
+#[test]
+fn job_states_use_registered_codes_and_reject_unknown_values() {
+    for (state, code) in [
+        (State::Queued, 0x001d_0001u32),
+        (State::Running, 0x001d_0002),
+        (State::Suspended, 0x001d_0003),
+        (State::Complete, 0x001d_0004),
+        (State::Failed, 0x001d_0005),
+        (State::Cancelled, 0x001d_0006),
+        (State::Expired, 0x001d_0007),
+        (State::InDoubt, 0x001d_0008),
+    ] {
+        assert_eq!(serde_json::to_value(state).unwrap(), code);
+        assert_eq!(serde_json::from_value::<State>(code.into()).unwrap(), state);
+    }
+    assert!(serde_json::from_value::<State>(0x001d_0009u32.into()).is_err());
+}
+
+#[test]
+fn selection_purposes_use_registered_codes_and_reject_unknown_values() {
+    for (purpose, code) in [
+        (Purpose::Assessment, 0x0039_0001u32),
+        (Purpose::Admission, 0x0039_0002),
+        (Purpose::Initial, 0x0039_0003),
+        (Purpose::Final, 0x0039_0004),
+        (Purpose::Publication, 0x0039_0005),
+    ] {
+        assert_eq!(serde_json::to_value(purpose).unwrap(), code);
+        assert_eq!(
+            serde_json::from_value::<Purpose>(code.into()).unwrap(),
+            purpose
+        );
+    }
+    assert!(serde_json::from_value::<Purpose>(0x0039_0006u32.into()).is_err());
+    let input = Input::Select {
+        question: crate::mocks::create_question(0),
+        purpose: Purpose::Admission,
+        root: None,
+    };
+    let mut encoded = serde_json::to_value(&input).unwrap();
+    assert_eq!(encoded["purpose"], 0x0039_0002u32);
+    assert_eq!(
+        serde_json::from_value::<Input>(encoded.clone()).unwrap(),
+        input
+    );
+    encoded["purpose"] = 0x0039_0006u32.into();
+    assert!(serde_json::from_value::<Input>(encoded).is_err());
 }
 
 #[test]
@@ -201,4 +258,104 @@ fn cooperative_job_binding_is_limited_to_solving() {
             .is_ok()
     );
     assert!(binding.validate_role(&Input::find(0)).is_err());
+}
+
+#[test]
+fn invalid_role_settings_report_machine_readable_reason() {
+    let mut settings = Settings::default();
+    settings.solving.limits.work_units = 0;
+    let error = settings.validate().unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::Research(crate::ResearchFailure::InvalidRoleLimits)
+    ));
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::InvalidRoleLimits)
+    );
+}
+
+#[test]
+fn research_command_capacity_and_service_stop_have_distinct_codes() {
+    let owner = Manual::new();
+    for ordinal in 0..crate::resources::limits().job_commands {
+        owner.client.peer_cursor(ordinal as u64).unwrap();
+    }
+    let full = owner.client.peer_cursor(99).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(full).unwrap()["code"],
+        u32::from(crate::ResearchFailure::CommandQueueFull)
+    );
+    let client = owner.client.clone();
+    drop(owner);
+    let stopped = client.peer_cursor(100).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(stopped).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ServiceStopped)
+    );
+}
+
+#[test]
+fn research_submission_preserves_validation_and_capacity_codes() {
+    let owner = Manual::new();
+    let binding = Binding::new([0; 32], [0; 32]);
+    let error = owner
+        .client
+        .submit(Input::Train { epoch: 0 }, binding.clone())
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputFault::EmptyTrainingEpoch)
+    );
+    let mut invalid = binding.clone();
+    invalid.compatibility = "00".repeat(32);
+    let error = owner.client.submit(Input::find(0), invalid).err().unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputFault::ResearchCompatibility)
+    );
+    for ordinal in 0..crate::resources::limits().job_commands {
+        owner.client.peer_cursor(ordinal as u64).unwrap();
+    }
+    let error = owner.client.submit(Input::find(0), binding).err().unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::CommandQueueFull)
+    );
+}
+
+#[test]
+fn oversized_peer_certificate_keeps_its_capacity_code() {
+    let owner = Manual::new();
+    let input = Input::Peer {
+        evidence: crate::learning::peer::Source::Certificate(vec![
+            0;
+            crate::learning::knowledge::BYTES
+                + 1
+        ]),
+        question: String::new(),
+        artifact: String::new(),
+        peer: String::new(),
+    };
+    let error = owner
+        .client
+        .submit(input, Binding::new([0; 32], [0; 32]))
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::InputLimit::PeerCertificateCapacity)
+    );
+}
+
+#[test]
+fn historical_role_format_has_a_numeric_cause() {
+    let mut role = RoleSettings::default();
+    role.limits.work_units = 0;
+    assert_eq!(
+        role.validate_history().unwrap_err(),
+        crate::ResearchFailure::RoleHistoryFormat.into()
+    );
 }

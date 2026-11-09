@@ -23,14 +23,35 @@ pub fn steps(tree: &Tree) -> usize {
         _ => 0,
     }
 }
-fn position(index: usize, from: &State, to: &State) -> Result<usize, String> {
-    let formula = from.facts.get(index).ok_or("core premise index")?;
+// Slicing is an optional optimization. Any failure falls back to the original
+// trace, which is still reconstructed and checked by `checked`.
+#[derive(Debug)]
+enum SliceFailure {
+    PremiseIndex,
+    RemovedFact,
+    WorkOverflow,
+    WorkCapacity,
+    ReplayDepth,
+    NestedAxiom,
+    BranchArity,
+    MissingBranch,
+    SliceDepth,
+    SourceArity,
+    Transition,
+}
+impl From<crate::Error> for SliceFailure {
+    fn from(_: crate::Error) -> Self {
+        Self::Transition
+    }
+}
+fn position(index: usize, from: &State, to: &State) -> Result<usize, SliceFailure> {
+    let formula = from.facts.get(index).ok_or(SliceFailure::PremiseIndex)?;
     to.facts
         .iter()
         .position(|f| f == formula)
-        .ok_or("core needs removed fact".into())
+        .ok_or(SliceFailure::RemovedFact)
 }
-fn action(action: &Action, from: &State, to: &State) -> Result<Action, String> {
+fn action(action: &Action, from: &State, to: &State) -> Result<Action, SliceFailure> {
     Ok(match *action {
         Action::Cite(i) => Action::Cite(i),
         Action::Double(i) => Action::Double(position(i, from, to)?),
@@ -47,10 +68,10 @@ fn action(action: &Action, from: &State, to: &State) -> Result<Action, String> {
         }
     })
 }
-fn spend(work: &mut usize) -> Result<(), String> {
-    *work = work.checked_add(1).ok_or("core work overflow")?;
+fn spend(work: &mut usize) -> Result<(), SliceFailure> {
+    *work = work.checked_add(1).ok_or(SliceFailure::WorkOverflow)?;
     if *work > 8192 {
-        return Err("core work allowance".into());
+        return Err(SliceFailure::WorkCapacity);
     }
     Ok(())
 }
@@ -60,10 +81,10 @@ fn rebase(
     to: &State,
     work: &mut usize,
     depth: usize,
-) -> Result<Tree, String> {
+) -> Result<Tree, SliceFailure> {
     spend(work)?;
     if depth > 40 {
-        return Err("core replay depth".into());
+        return Err(SliceFailure::ReplayDepth);
     }
     if let Some((a, b)) = close(to) {
         return Ok(Tree::Close(a, b));
@@ -81,14 +102,14 @@ fn rebase(
         | Tree::Constructed { .. }
         | Tree::Stored { .. }
         | Tree::Knowledge { .. }
-        | Tree::Definitions { .. } => Err("nested core axiom".into()),
+        | Tree::Definitions { .. } => Err(SliceFailure::NestedAxiom),
         Tree::Step {
             action: old,
             children,
         } => {
             let before = next(from, old)?;
             if before.len() != children.len() {
-                return Err("core branch arity".into());
+                return Err(SliceFailure::BranchArity);
             }
             if let Ok(selected) = action(old, from, to)
                 && actions(to).contains(&selected)
@@ -106,15 +127,15 @@ fn rebase(
             } else if children.len() == 1 {
                 rebase(&children[0], &before[0], to, work, depth + 1)
             } else {
-                Err("core branching premise is absent".into())
+                Err(SliceFailure::MissingBranch)
             }
         }
     }
 }
-fn slice(tree: &Tree, state: &State, work: &mut usize, depth: usize) -> Result<Tree, String> {
+fn slice(tree: &Tree, state: &State, work: &mut usize, depth: usize) -> Result<Tree, SliceFailure> {
     spend(work)?;
     if depth > 40 {
-        return Err("core slice depth".into());
+        return Err(SliceFailure::SliceDepth);
     }
     if let Some((a, b)) = close(state) {
         return Ok(Tree::Close(a, b));
@@ -124,7 +145,7 @@ fn slice(tree: &Tree, state: &State, work: &mut usize, depth: usize) -> Result<T
     };
     let states = next(state, action)?;
     if states.len() != children.len() {
-        return Err("core source branch arity".into());
+        return Err(SliceFailure::SourceArity);
     }
     let children = children
         .iter()
@@ -152,7 +173,7 @@ fn slice(tree: &Tree, state: &State, work: &mut usize, depth: usize) -> Result<T
 pub fn checked(
     target: &Formula,
     tree: &Tree,
-) -> Result<(Tree, Cost, super::super::proof::Verified), String> {
+) -> Result<(Tree, Cost, super::super::proof::Verified), crate::Error> {
     let original_steps = steps(tree);
     let mut work = 0;
     let candidate = if let Tree::Definitions {
@@ -198,6 +219,21 @@ pub fn checked(
 mod tests {
     use super::*;
     use naome_checker::question::ResearchQuestion;
+    #[test]
+    fn checked_preserves_scoped_target_failure() {
+        let q = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
+        let tree = Tree::Scoped {
+            target: Vec::new(),
+            actions: Vec::new(),
+        };
+        assert!(matches!(
+            checked(q.proved_target(), &tree),
+            Err(crate::Error::Research(
+                crate::ResearchFailure::ReplayScopedTarget
+            ))
+        ));
+    }
+
     #[test]
     fn irrelevant_effects_are_removed_and_all_fact_indices_are_replayed() {
         let q = ResearchQuestion::from_hex(

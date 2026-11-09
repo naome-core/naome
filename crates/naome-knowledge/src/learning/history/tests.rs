@@ -74,6 +74,37 @@ fn journal_views_rotate_with_independent_cursors_and_canonical_keys() {
 }
 
 #[test]
+fn invalid_history_request_and_cursor_keep_specific_outcomes() {
+    let missing = Request {
+        lane: Lane::Records,
+        after: None,
+        horizon: 0,
+    };
+    assert_eq!(
+        missing.validate().unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::HistoryRequestJobMissing)
+    );
+    let noncanonical = Request {
+        lane: Lane::Records,
+        after: Some("01".into()),
+        horizon: 2,
+    };
+    assert_eq!(
+        noncanonical.validate().unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::HistoryRecordKeyEncoding)
+    );
+    let invalid = Request {
+        lane: Lane::Records,
+        after: Some("x".into()),
+        horizon: 2,
+    };
+    assert_eq!(
+        invalid.validate().unwrap_err(),
+        crate::Error::Research(crate::ResearchFailure::HistoryRecordKeySyntax)
+    );
+}
+
+#[test]
 fn an_evicted_owned_proof_returns_without_new_counts_epoch_anchors_or_model_changes() {
     let (job, page, receipt) = fixture();
     let working = Working::prepare(&job, &page, &receipt).unwrap();
@@ -118,10 +149,13 @@ fn source_substitution_missing_closure_and_omitted_records_fail_before_training(
         }
         let receipt = receipt(&page);
         job.history = Some(receipt.clone());
-        assert!(
-            Working::prepare(&job, &page, &receipt).is_err(),
-            "mutation {mutation}"
-        );
+        let error = Working::prepare(&job, &page, &receipt).unwrap_err();
+        if mutation != 1 {
+            assert!(matches!(
+                error,
+                crate::Error::Research(crate::ResearchFailure::HistorySourcePageMismatch)
+            ));
+        }
     }
 }
 

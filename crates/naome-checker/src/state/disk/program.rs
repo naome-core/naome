@@ -157,7 +157,7 @@ impl ProgramRegistration {
                     ArtifactStateError::Context(if error.resource_shortage() {
                         ContextError::Limit
                     } else {
-                        ContextError::Storage(error.to_string())
+                        program_read_failure(error)
                     })
                 })?;
             for dependency in &dependencies {
@@ -202,7 +202,7 @@ impl ProgramRegistration {
                     ArtifactStateError::Context(if error.resource_shortage() {
                         ContextError::Limit
                     } else {
-                        ContextError::Storage(error.to_string())
+                        program_read_failure(error)
                     })
                 })?;
             for definition_id in &definitions {
@@ -234,7 +234,7 @@ impl ProgramRegistration {
                     ArtifactStateError::Context(if e.resource_shortage() {
                         ContextError::Limit
                     } else {
-                        ContextError::Storage(e.to_string())
+                        program_read_failure(e)
                     })
                 })?;
                 self.next
@@ -299,5 +299,16 @@ impl ProgramRegistration {
             return Err(ContextError::Limit);
         }
         Ok(self.next)
+    }
+}
+
+fn program_read_failure(error: crate::program::Error) -> ContextError {
+    use naome_proof::ContextStorageFailure;
+    match error {
+        crate::program::Error::Context(error) => error,
+        crate::program::Error::Storage(rusqlite::Error::SqliteFailure(error, _)) => {
+            ContextError::Storage(ContextStorageFailure::Sqlite(Some(error.extended_code)))
+        }
+        _ => ContextError::Storage(ContextStorageFailure::ProgramRead),
     }
 }

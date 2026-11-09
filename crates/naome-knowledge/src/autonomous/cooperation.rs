@@ -76,7 +76,8 @@ impl Cooperation {
     ) -> bool
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if self.pending.is_some()
             || self.selected.is_some()
@@ -125,7 +126,8 @@ impl Cooperation {
         questions: &mut question::LocalQuestions<F>,
     ) where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         if self
             .selected

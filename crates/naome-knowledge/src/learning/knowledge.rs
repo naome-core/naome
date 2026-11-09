@@ -40,17 +40,17 @@ pub(super) mod packet {
     }
 }
 impl Entry {
-    pub fn verified(&self) -> Result<proof::Verified, String> {
+    pub fn verified(&self) -> Result<proof::Verified, crate::Error> {
         if self.packet.len() > BYTES {
-            return Err("theorem snapshot capacity".into());
+            return Err(crate::ResearchFailure::TheoremCapacity.into());
         }
         let verified = evidence::checked(&self.packet)?;
         if !verified.target.free_variables().is_empty() {
-            return Err("theorem is not closed".into());
+            return Err(crate::ResearchFailure::TheoremNotClosed.into());
         }
         Ok(verified)
     }
-    pub fn term(&self) -> Result<proof::Term, String> {
+    pub fn term(&self) -> Result<proof::Term, crate::Error> {
         let verified = self.verified()?;
         Ok(proof::Term::Native {
             certificate: verified.certificate,
@@ -145,7 +145,7 @@ pub fn relevance(formula: &Formula, target: &Formula) -> usize {
     let target = fragments(target);
     fragments(formula).intersection(&target).map(Vec::len).sum()
 }
-pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, String> {
+pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, crate::Error> {
     let mut ids = BTreeSet::new();
     for entry in entries {
         let verified = entry.verified()?;
@@ -156,7 +156,7 @@ pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, St
     Ok(ids)
 }
 /// Whether the checked lemma supplies an exact local action for this goal.
-pub(crate) fn directly_applies(target: &Formula, lemma: &Formula) -> Result<bool, String> {
+pub(crate) fn directly_applies(target: &Formula, lemma: &Formula) -> Result<bool, crate::Error> {
     super::search::scope::lemma_closes(target, lemma)
 }
 
@@ -167,9 +167,14 @@ pub(super) struct CheckedEntry<'a> {
     steps: usize,
 }
 
-pub(super) fn checked_entries(entries: &[Entry]) -> Result<Vec<CheckedEntry<'_>>, String> {
-    if entries.len() > CAPACITY || entries.iter().map(|e| e.packet.len()).sum::<usize>() > BYTES {
-        return Err("theorem snapshot capacity".into());
+pub(super) fn checked_entries(entries: &[Entry]) -> Result<Vec<CheckedEntry<'_>>, crate::Error> {
+    if entries.len() > CAPACITY
+        || entries
+            .iter()
+            .try_fold(0usize, |total, e| total.checked_add(e.packet.len()))
+            .is_none_or(|total| total > BYTES)
+    {
+        return Err(crate::ResearchFailure::TheoremCapacity.into());
     }
     let mut ids = BTreeSet::new();
     entries
@@ -177,14 +182,15 @@ pub(super) fn checked_entries(entries: &[Entry]) -> Result<Vec<CheckedEntry<'_>>
         .map(|entry| {
             let verified = entry.verified()?;
             if !ids.insert(verified.native_id) {
-                return Err("duplicate theorem snapshot".into());
+                return Err(crate::ResearchFailure::TheoremDuplicate.into());
             }
-            let steps = verified.certificate.steps().len()
-                + verified
-                    .lemmas
-                    .iter()
-                    .map(|proof| proof.steps().len())
-                    .sum::<usize>();
+            let steps = verified
+                .lemmas
+                .iter()
+                .try_fold(verified.certificate.steps().len(), |total, proof| {
+                    total.checked_add(proof.steps().len())
+                })
+                .ok_or(crate::ResearchFailure::TheoremStepOverflow)?;
             Ok(CheckedEntry {
                 entry,
                 target: verified.target,
@@ -200,7 +206,7 @@ pub(super) struct Snapshot<'a> {
     keys: Vec<Vec<[u8; 32]>>,
 }
 impl<'a> Snapshot<'a> {
-    pub fn new(entries: &'a [Entry]) -> Result<Self, String> {
+    pub fn new(entries: &'a [Entry]) -> Result<Self, crate::Error> {
         let checked = checked_entries(entries)?;
         let keys = checked
             .iter()
@@ -218,9 +224,9 @@ impl<'a> Snapshot<'a> {
         &self,
         target: &Formula,
         required: &[String],
-    ) -> Result<(Vec<Entry>, usize), String> {
+    ) -> Result<(Vec<Entry>, usize), crate::Error> {
         if required.len() > CAPACITY {
-            return Err("required theorem capacity".into());
+            return Err(crate::ResearchFailure::RequiredTheoremCapacity.into());
         }
         let requested: BTreeSet<_> = lookup_keys(target, 2048).into_iter().collect();
         let fragments = fragments(target);
@@ -260,12 +266,15 @@ impl<'a> Snapshot<'a> {
                 .checked
                 .iter()
                 .find(|entry| entry.id == id)
-                .ok_or("required checked theorem not retained")?;
+                .ok_or(crate::Error::MissingRequiredTheorem(id))?;
             if !selected.iter().any(|old| old.id == id) {
                 selected.push(entry);
             }
         }
-        let steps = selected.iter().map(|entry| entry.steps).sum();
+        let steps = selected
+            .iter()
+            .try_fold(0usize, |total, entry| total.checked_add(entry.steps))
+            .ok_or(crate::ResearchFailure::TheoremStepOverflow)?;
         Ok((
             selected
                 .into_iter()
@@ -277,7 +286,7 @@ impl<'a> Snapshot<'a> {
 }
 
 #[cfg(test)]
-pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, String> {
+pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, crate::Error> {
     offer(target, entries, &[])
 }
 
@@ -286,23 +295,23 @@ pub fn offer(
     target: &Formula,
     entries: &[Entry],
     required: &[String],
-) -> Result<Vec<Entry>, String> {
+) -> Result<Vec<Entry>, crate::Error> {
     Snapshot::new(entries)?
         .offer(target, required)
         .map(|(entries, _)| entries)
 }
 
-pub fn validate(entries: &[Entry]) -> Result<(), String> {
+pub fn validate(entries: &[Entry]) -> Result<(), crate::Error> {
     checked_entries(entries).map(drop)
 }
-pub fn verified(tree: &Tree) -> Result<proof::Verified, String> {
+pub fn verified(tree: &Tree) -> Result<proof::Verified, crate::Error> {
     let Tree::Knowledge { target, .. } = tree else {
-        return Err("theorem trace missing".into());
+        return Err(crate::ResearchFailure::KnowledgeTraceMissing.into());
     };
-    let target = Formula::decode_canonical(target).map_err(|e| e.to_string())?;
+    let target = Formula::decode_canonical(target).map_err(crate::Error::from)?;
     proof::verify(&super::search::compile(&target, tree)?.0, &target)
 }
-pub fn helpers(verified: &proof::Verified) -> Result<Vec<String>, String> {
+pub fn helpers(verified: &proof::Verified) -> Result<Vec<String>, crate::Error> {
     let mut output = Vec::new();
     super::definitions::append_artifacts(&verified.definitions, &mut output)?;
     for lemma in proof::lemma_sources(&verified.definitions, &verified.lemmas)? {
@@ -320,11 +329,11 @@ pub fn validate_offered(
     definitions: &[super::definitions::Entry],
     available_only: bool,
     required: &[String],
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     match tree {
         Tree::Knowledge { entries, proof, .. } => {
             if *entries != offer(target, known, required)? {
-                return Err("theorem availability differs from owner snapshot".into());
+                return Err(crate::ResearchFailure::TheoremAvailabilityMismatch.into());
             }
             validate_offered(target, proof, known, definitions, available_only, required)?;
         }
@@ -335,7 +344,7 @@ pub fn validate_offered(
             if selection.known != offer(target, known, required)?
                 || selection.definitions != definitions
             {
-                return Err("construction availability differs from owner snapshot".into());
+                return Err(crate::ResearchFailure::ConstructionAvailabilityMismatch.into());
             }
         }
         Tree::Definitions {
@@ -351,7 +360,7 @@ pub fn validate_offered(
                         .take_while(|entry| definitions.contains(entry))
                         .count()
             {
-                return Err("definition availability differs from owner snapshot".into());
+                return Err(crate::ResearchFailure::DefinitionSnapshotMismatch.into());
             }
             validate_offered(target, proof, known, definitions, available_only, required)?;
         }
@@ -366,7 +375,7 @@ pub fn validate_availability(
     tree: &Tree,
     known: &[Entry],
     definitions: &[super::definitions::Entry],
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     validate_offered(target, tree, known, definitions, false, &[])
 }
 
@@ -380,10 +389,41 @@ mod tests {
     use super::*;
     struct Ordered;
     impl Ranker for Ordered {
-        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
+    #[test]
+    fn snapshot_rejects_duplicate_and_reports_missing_exact_theorem() {
+        let axiom = naome_foundation::ZfcAxiom::Foundation;
+        let term = calculus::axiom(naome_proof::ProofStep::ZfcAxiom(axiom)).unwrap();
+        let checked = proof::verify(&term, &axiom.formula()).unwrap();
+        let entry = Entry {
+            packet: evidence::pack(&checked).unwrap(),
+        };
+        let error = Snapshot::new(&[entry.clone(), entry.clone()])
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            crate::Error::from(crate::ResearchFailure::TheoremDuplicate)
+        );
+        let missing = naome_proof::ProofId::from_bytes([7; 32]);
+        let error = offer(
+            &axiom.formula(),
+            &[entry],
+            &[crate::hex(missing.as_bytes())],
+        )
+        .unwrap_err();
+        assert_eq!(error, crate::Error::MissingRequiredTheorem(missing));
+        let json = serde_json::to_value(error).unwrap();
+        assert_eq!(
+            json["code"],
+            u32::from(crate::outcome::OperationCode::MissingRequiredTheorem)
+        );
+        assert_eq!(json["proof_id"], serde_json::to_value([7u8; 32]).unwrap());
+    }
+
     #[test]
     fn canonical_theorem_packets_preserve_exact_native_bytes_and_identity() {
         let axiom = naome_foundation::ZfcAxiom::Foundation;
@@ -635,7 +675,7 @@ mod tests {
                 .any(|c| proof::check(c.clone(), &context).unwrap().proof_id() == lemma.native_id)
         );
         let solution = super::super::Solution {
-            source: proof::source(&extended).unwrap(),
+            source: proof::source(&extended),
             helpers: super::super::definitions::helpers(&wrapped).unwrap(),
             proof_id: crate::hex(extended.native_id.as_bytes()),
             refuted: false,
@@ -646,7 +686,7 @@ mod tests {
             crate::hex(solution.checked().unwrap().proof_id().as_bytes()),
             solution.proof_id
         );
-        let source = proof::source(&checked).unwrap();
+        let source = proof::source(&checked);
         let helpers = super::super::definitions::helpers(&tree).unwrap();
         let mut graph = crate::Graph::default();
         let (root, batch) = graph.prepare_generated(&source, &helpers, &q).unwrap();

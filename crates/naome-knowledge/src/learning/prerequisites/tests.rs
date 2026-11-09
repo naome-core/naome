@@ -27,7 +27,7 @@ fn inputs() -> (
 }
 struct NoNeural;
 impl super::super::model::Ranker for NoNeural {
-    fn scores(&mut self, _: &super::super::model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, _: &super::super::model::Decision) -> Result<Vec<f32>, crate::Error> {
         panic!("checked composition must not invent a neural decision");
     }
 }
@@ -165,6 +165,22 @@ fn full_prerequisites_compose_without_populating_the_neural_snapshot() {
 fn claimed_addresses_do_not_replace_checked_identity_or_complete_dependencies() {
     let (_, graph, required) = inputs();
     let full = graph.prerequisites(&required).unwrap().unwrap();
+    let mut duplicate = full.0.artifacts.clone();
+    duplicate.push(duplicate[0].clone());
+    assert!(matches!(
+        Prerequisites::new(duplicate),
+        Err(crate::Error::InputFault(
+            crate::InputFault::PrerequisiteDuplicate
+        ))
+    ));
+    let mut incompatible = full.0.artifacts.clone();
+    incompatible[0].compatibility = crate::hex(&[0; 32]);
+    assert!(matches!(
+        Prerequisites::new(incompatible),
+        Err(crate::Error::InputFault(
+            crate::InputFault::ArtifactCompatibilityMismatch
+        ))
+    ));
     let mut artifacts = full.0.artifacts.clone();
     artifacts[0].artifact_id = crate::hex(&[3; 32]);
     assert!(
@@ -270,6 +286,62 @@ fn large_checked_prerequisites_resolve_the_observed_missing_root() {
     .unwrap();
     eprintln!(
         "{}",
-        serde_json::json!({"event":"observed_large_context_resolved","cost":generated.cost,"proof_id":solution.proof_id})
+        serde_json::json!({"event":crate::outcome::NodeEvent::ObservedLargeContextResolved,"cost":generated.cost,"proof_id":solution.proof_id})
     );
+}
+
+#[test]
+fn lemma_search_preserves_memory_reservation_failure() {
+    let inputs = Prerequisites::default();
+    let variable = naome_foundation::FreeVariable::new(0);
+    let target = naome_foundation::Formula::equal(variable, variable);
+    crate::resources::fail_next_memory_allocation();
+    assert!(matches!(
+        inputs.search_native_lemma(&target, &mut NoNeural, 1, std::time::Instant::now()),
+        Err(crate::Error::MemoryOverload { .. })
+    ));
+}
+
+#[test]
+fn prerequisite_capture_preserves_memory_reservation_failure() {
+    let (_, graph, required) = inputs();
+    let captured = graph.prerequisites(&required).unwrap().unwrap();
+    assert!(!captured.0.artifacts.is_empty());
+    let artifacts = captured.0.artifacts.clone();
+    crate::resources::fail_next_memory_allocation();
+    assert!(matches!(
+        Prerequisites::new(artifacts),
+        Err(crate::Error::MemoryOverload { .. })
+    ));
+}
+
+#[test]
+fn prerequisite_reconstruction_preserves_preparation_memory_failure() {
+    let (_, graph, required) = inputs();
+    let captured = graph.prerequisites(&required).unwrap().unwrap();
+    crate::resources::fail_next_memory_allocation();
+    assert!(matches!(
+        captured.terms(&required),
+        Err(crate::Error::MemoryOverload { .. })
+    ));
+}
+
+#[test]
+fn missing_required_theorem_keeps_its_identity() {
+    let id = [42; 32];
+    let required = vec![crate::hex(&id)];
+    let error = Prerequisites::default()
+        .require(&State::fresh(), &required)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::MissingRequiredTheorem(naome_proof::ProofId::from_bytes(id))
+    );
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["code"],
+        u32::from(crate::outcome::OperationCode::MissingRequiredTheorem)
+    );
+    assert_eq!(json["proof_id"], serde_json::json!(id));
+    assert!(error.storage().fatal());
 }

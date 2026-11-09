@@ -23,7 +23,9 @@ impl ContextStorage for Storage {
     }
     fn write(&self, address: Identity, bytes: &[u8]) -> Result<(), ContextError> {
         if *self.fail_writes.lock().unwrap() {
-            return Err(ContextError::Storage("injected destination failure".into()));
+            return Err(ContextError::Storage(
+                naome_proof::ContextStorageFailure::Injected,
+            ));
         }
         let mut records = self.bytes.lock().unwrap();
         if let Some(previous) = records.get(&address) {

@@ -43,7 +43,12 @@ fn hardware_capacities_fit_small_large_and_fractional_cpu_hosts() {
 
 #[test]
 fn unavailable_reserves_are_explicit_instead_of_overcommitting() {
-    assert!(capacity(&host(256 * MIB as u64, 1000)).is_err());
+    assert_eq!(
+        capacity_with_descriptors(&host(256 * MIB as u64, 1000), 128)
+            .err()
+            .unwrap(),
+        crate::Error::from(crate::InputFault::CalibrationMemoryReserve)
+    );
 }
 
 #[test]
@@ -62,5 +67,8 @@ fn descriptor_shortage_reduces_lanes_and_sockets_before_opening_the_node() {
     assert!(small.discovery_interfaces <= small.workers[0]);
     assert!(large.workers[0] > small.workers[0]);
     assert!(large.established_connections > small.established_connections);
-    assert!(capacity_with_descriptors(&observed, 127).is_err());
+    assert_eq!(
+        capacity_with_descriptors(&observed, 127).err().unwrap(),
+        crate::Error::from(crate::InputFault::CalibrationDescriptorReserve)
+    );
 }

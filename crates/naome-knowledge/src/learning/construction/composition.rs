@@ -3,7 +3,7 @@ use super::{logic, proof};
 use naome_foundation::Formula;
 use std::{collections::BTreeSet, time::Instant};
 
-pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>, String> {
+pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>, crate::Error> {
     let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
     let mut ids = context
         .proof_conclusions()
@@ -16,18 +16,18 @@ pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>
         .cloned()
         .collect())
 }
-pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), String> {
+pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), crate::Error> {
     if inputs.is_empty()
         || inputs.len() > super::super::knowledge::CAPACITY
         || inputs.iter().collect::<BTreeSet<_>>().len() != inputs.len()
         || work == 0
         || work > 16
     {
-        return Err("composition trace capacity".into());
+        return Err(crate::ResearchFailure::CompositionTraceCapacity.into());
     }
     let verified = super::super::evidence::checked(packet)?;
     if used(&verified, inputs)? != inputs {
-        return Err("composition input binding differs".into());
+        return Err(crate::ResearchFailure::CompositionInputBinding.into());
     }
     let mut state = super::super::definitions::context(&verified.definitions)?;
     let mut preceding = Vec::new();
@@ -37,7 +37,7 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
         .iter()
         .chain(std::iter::once(&verified.certificate))
     {
-        let checked = proof::check(certificate.clone(), &state).map_err(|e| e.to_string())?;
+        let checked = proof::check(certificate.clone(), &state)?;
         let id = crate::hex(checked.proof_id().as_bytes());
         if inputs.contains(&id) {
             available.insert(
@@ -52,7 +52,7 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
         }
         preceding.push(certificate.clone());
         if !state.contains_proof(checked.proof_id()) {
-            state.register_proof(checked).map_err(|e| e.to_string())?;
+            state.register_proof(checked)?;
         }
     }
     let terms = inputs
@@ -60,14 +60,15 @@ pub fn validate(packet: &[u8], inputs: &[String], work: usize) -> Result<(), Str
         .map(|id| {
             available
                 .remove(id)
-                .ok_or("composition checked input missing")
+                .ok_or(crate::ResearchFailure::CompositionCheckedInputMissing)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let (replayed, replay_work) = construct(&verified.target, &terms, work, Instant::now())?;
     if replay_work > work || replayed.is_none_or(|p| p.native_id != verified.native_id) {
-        return Err(format!(
-            "composition reconstruction differs at work {replay_work}/{work}"
-        ));
+        return Err(crate::Error::CompositionReplay {
+            work: replay_work,
+            maximum: work,
+        });
     }
     Ok(())
 }
@@ -81,7 +82,7 @@ pub(in crate::learning) fn scoped_operands(
     target: &Formula,
     tree: &super::super::search::Tree,
     selected: &super::super::definitions::Entry,
-) -> Result<Option<ScopedOperands>, String> {
+) -> Result<Option<ScopedOperands>, crate::Error> {
     let super::super::search::Tree::Composed { packet, inputs, .. } = tree else {
         return Ok(None);
     };
@@ -116,7 +117,7 @@ fn deductions(
     terms: &mut Vec<proof::Term>,
     maximum: usize,
     started: Instant,
-) -> Result<usize, String> {
+) -> Result<usize, crate::Error> {
     fn missing(target: &Formula, terms: &[proof::Term], depth: usize, output: &mut Vec<Formula>) {
         if depth >= 2 {
             return;
@@ -251,14 +252,16 @@ fn deductions(
             .iter()
             .any(|id| !state.contains_proof(*id))
         {
-            return Err("temporary deduction original source missing".into());
+            return Err(crate::ResearchFailure::CompositionDeductionSourceMissing.into());
         }
         let certificate =
             naome_proof::ProofCertificate::from_canonical_bytes(witness.canonical_certificate())
-                .map_err(|e| e.to_string())?;
-        let checked = proof::check(certificate, &state).map_err(|e| e.to_string())?;
+                .map_err(|error| {
+                    crate::object::certificate_error(witness.canonical_certificate(), error)
+                })?;
+        let checked = proof::check(certificate, &state)?;
         if checked.proof_id() != witness.proof_id() {
-            return Err("temporary deduction identity differs".into());
+            return Err(crate::ResearchFailure::CompositionDeductionIdentity.into());
         }
         // An answered obligation can be refuted; only its exact positive
         // conclusion supplies this requested conjunction prerequisite.
@@ -278,7 +281,7 @@ fn deductions(
             target: part,
         });
         if !state.contains_proof(checked.proof_id()) {
-            state.register_proof(checked).map_err(|e| e.to_string())?;
+            state.register_proof(checked)?;
             lemmas.push(certificate);
             bytes = next_bytes;
             steps = next_steps;
@@ -290,13 +293,16 @@ fn primitive(
     target: &Formula,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<proof::Verified>, usize), String> {
+) -> Result<(Option<proof::Verified>, usize), crate::Error> {
     if maximum == 0 {
         return Ok((None, 0));
     }
     struct Ordered;
     impl super::super::model::Ranker for Ordered {
-        fn scores(&mut self, decision: &super::super::model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(
+            &mut self,
+            decision: &super::super::model::Decision,
+        ) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; decision.candidates.len()])
         }
     }
@@ -315,7 +321,7 @@ pub fn construct(
     context: &[proof::Term],
     maximum: usize,
     started: Instant,
-) -> Result<(Option<proof::Verified>, usize), String> {
+) -> Result<(Option<proof::Verified>, usize), crate::Error> {
     let (term, work) = construct_term(target, context, maximum, started, false)?;
     let proof = term.map(|term| proof::verify(&term, target)).transpose()?;
     Ok((proof, work))
@@ -327,7 +333,7 @@ pub(crate) fn construct_term(
     maximum: usize,
     started: Instant,
     native: bool,
-) -> Result<(Option<proof::Term>, usize), String> {
+) -> Result<(Option<proof::Term>, usize), crate::Error> {
     let maximum = maximum.min(16);
     let mut context = context.to_vec();
     let deduction_work = deductions(target, &mut context, maximum, started)?;
@@ -337,4 +343,77 @@ pub(crate) fn construct_term(
     }
     let term = search.prove(target, &context)?;
     Ok((term, deduction_work + search.work))
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use naome_foundation::FreeVariable;
+
+    #[test]
+    fn construction_preserves_invalid_input_proof_diagnostic() {
+        let atom = Formula::member(FreeVariable::new(0), FreeVariable::new(1));
+        let target = Formula::negate(Formula::implies(
+            atom.clone(),
+            Formula::negate(atom.clone()),
+        ));
+        let unrelated = Formula::member(FreeVariable::new(2), FreeVariable::new(3));
+        let certificate =
+            naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+                proof_id: naome_proof::ProofId::from_bytes([0; 32]),
+            }])
+            .unwrap();
+        let term = proof::Term::Native {
+            certificate,
+            lemmas: Vec::new(),
+            definitions: Vec::new(),
+            target: unrelated.clone(),
+        };
+        let expected = proof::verify(&term, &unrelated).err().unwrap();
+        assert!(matches!(expected, crate::Error::Proof(_)));
+        let actual = construct_term(&target, &[term], 16, Instant::now(), false).unwrap_err();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn validation_preserves_evidence_failure_and_replay_work() {
+        assert!(matches!(
+            validate(&[], &["input".into()], 1),
+            Err(crate::Error::LearningEvidence(
+                crate::learning::evidence::Failure::Framing
+            ))
+        ));
+        let error = crate::Error::CompositionReplay {
+            work: 3,
+            maximum: 2,
+        };
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(
+            value["code"],
+            u32::from(crate::ResearchFailure::CompositionReplayMismatch)
+        );
+        assert_eq!(value["work"], 3);
+        assert_eq!(value["maximum"], 2);
+    }
+
+    #[test]
+    fn scoped_operands_preserves_malformed_evidence_diagnostic() {
+        let atom = Formula::member(FreeVariable::new(0), FreeVariable::new(1));
+        let target = Formula::negate(Formula::implies(atom.clone(), Formula::negate(atom)));
+        let tree = super::super::super::search::Tree::Composed {
+            packet: Vec::new(),
+            inputs: Vec::new(),
+            work: 1,
+        };
+        let entry = super::super::super::definitions::Entry {
+            certificate: Vec::new(),
+            obligation: None,
+        };
+        assert!(matches!(
+            scoped_operands(&target, &tree, &entry),
+            Err(crate::Error::LearningEvidence(
+                crate::learning::evidence::Failure::Framing
+            ))
+        ));
+    }
 }

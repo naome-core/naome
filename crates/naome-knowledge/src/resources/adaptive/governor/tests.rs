@@ -307,8 +307,8 @@ fn external_cpu_requires_sustained_pressure_and_a_quiet_recovery_window() {
     assert!(at(11, 95).budget.paused.is_none());
     let paused = at(21, 95);
     assert_eq!(
-        paused.budget.paused.as_deref(),
-        Some("sustained external CPU pressure")
+        paused.budget.paused,
+        Some(crate::PauseReason::ExternalCpuPressure)
     );
     assert_eq!(paused.budget.batch_steps, 0);
     assert_eq!(paused.budget.network_requests, 1);
@@ -370,8 +370,8 @@ fn energy_thermal_and_observation_failures_hold_until_confirmed_recovery() {
     let unavailable = governor.unavailable(Selection::default()).unwrap();
     assert_eq!(unavailable.timestamp_ms, last_good.timestamp_ms);
     assert_eq!(
-        unavailable.budget.paused.as_deref(),
-        Some("hardware observation unavailable")
+        unavailable.budget.paused,
+        Some(crate::PauseReason::HardwareObservationUnavailable)
     );
     let waiting = governor
         .update(

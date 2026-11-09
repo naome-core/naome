@@ -10,72 +10,104 @@ pub(crate) const RESEARCH_MARKER: &[u8] = b"naome-research-jobs\n";
 
 /// Node state contains the identity key and private local research records.
 /// Tighten only the owned node directory, without changing parent directories.
-pub(crate) fn private_directory(directory: &Path) -> Result<(), String> {
-    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
-    let metadata = fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
+pub(crate) fn private_directory(directory: &Path) -> Result<(), crate::Error> {
+    use crate::StorageIoOperation as Operation;
+    fs::create_dir_all(directory)
+        .map_err(|error| crate::error::storage_io_error(Operation::CreateNodeDirectory, error))?;
+    let directory = fs::canonicalize(directory)
+        .map_err(|error| crate::error::storage_io_error(Operation::ResolveNodeDirectory, error))?;
+    let metadata = fs::symlink_metadata(&directory)
+        .map_err(|error| crate::error::storage_io_error(Operation::InspectNodeDirectory, error))?;
     if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
-        return Err("node state must be one owned directory".into());
+        return Err(crate::InputFault::NodeDirectoryInvalid.into());
     }
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())
+        .map_err(|error| crate::error::storage_io_error(Operation::SecureNodeDirectory, error))
 }
 
-pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
+pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, crate::Error> {
     let path = directory.join("research");
     match fs::symlink_metadata(&path) {
         Ok(metadata)
             if metadata.is_dir()
                 && !metadata.file_type().is_symlink()
                 && metadata.uid() == nix::unistd::geteuid().as_raw() => {}
-        Ok(_) => return Err("research path must be one owned directory".into()),
+        Ok(_) => return Err(crate::InputFault::ResearchDirectoryInvalid.into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if marker_valid(&directory.join("research.initialized"), RESEARCH_MARKER)? {
-                return Err("established research directory is missing; no fresh allowance".into());
+                return Err(crate::RuntimeFailure::ResearchDirectoryMissing.into());
             }
-            fs::create_dir(&path).map_err(|e| e.to_string())?;
+            fs::create_dir(&path).map_err(|error| {
+                crate::error::storage_io_error(
+                    crate::StorageIoOperation::CreateResearchDirectory,
+                    error,
+                )
+            })?;
             File::open(directory)
                 .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| {
+                    crate::error::storage_io_error(
+                        crate::StorageIoOperation::SyncResearchParent,
+                        error,
+                    )
+                })?;
         }
-        Err(e) => return Err(e.to_string()),
+        Err(error) => {
+            return Err(crate::error::storage_io_error(
+                crate::StorageIoOperation::InspectResearchDirectory,
+                error,
+            ));
+        }
     }
     Ok(path)
 }
 
-pub(crate) fn marker_valid(path: &Path, expected: &[u8]) -> Result<bool, String> {
+pub(crate) fn marker_valid(path: &Path, expected: &[u8]) -> Result<bool, crate::Error> {
     match read_owned(path, 64)? {
         None => Ok(false),
         Some(bytes) if bytes == expected => Ok(true),
-        Some(_) => Err("research initialization marker corruption".into()),
+        Some(_) => Err(crate::InputFault::MarkerCorrupt.into()),
     }
 }
 
-pub(crate) fn write_marker(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_marker(path: &Path, bytes: &[u8]) -> Result<(), crate::Error> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
         .open(path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    File::open(path.parent().ok_or("research marker parent absent")?)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::CreateMarker, error)
+        })?;
+    file.write_all(bytes).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::WriteMarker, error)
+    })?;
+    file.sync_all().map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::SyncMarker, error)
+    })?;
+    File::open(
+        path.parent()
+            .ok_or(crate::InputFault::MarkerParentMissing)?,
+    )
+    .and_then(|f| f.sync_all())
+    .map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::SyncMarkerParent, error)
+    })
 }
 
 /// Read one bounded local input after validating the opened descriptor. Opening
 /// special files must not wait for another process before their type is known.
-pub(crate) fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, crate::Error> {
     read_input(path, limit, InputLinks::One)
 }
 
 /// Mutable configuration may be replaced after opening. Its opened generation
 /// remains a coherent owned snapshot, even after the old directory entry is gone.
-pub(crate) fn read_owned_snapshot(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn read_owned_snapshot(
+    path: &Path,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, crate::Error> {
     read_input(path, limit, InputLinks::Snapshot)
 }
 
@@ -85,7 +117,11 @@ enum InputLinks {
     Snapshot,
 }
 
-fn read_input(path: &Path, limit: usize, links: InputLinks) -> Result<Option<Vec<u8>>, String> {
+fn read_input(
+    path: &Path,
+    limit: usize,
+    links: InputLinks,
+) -> Result<Option<Vec<u8>>, crate::Error> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
@@ -93,46 +129,63 @@ fn read_input(path: &Path, limit: usize, links: InputLinks) -> Result<Option<Vec
     {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+        Err(error) => {
+            return Err(crate::error::storage_io_error(
+                crate::StorageIoOperation::OpenInput,
+                error,
+            ));
+        }
     };
     read_descriptor(file, limit, links).map(Some)
 }
 
-fn read_descriptor(file: File, limit: usize, links: InputLinks) -> Result<Vec<u8>, String> {
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
+fn read_descriptor(file: File, limit: usize, links: InputLinks) -> Result<Vec<u8>, crate::Error> {
+    let metadata = file.metadata().map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::InspectInput, error)
+    })?;
     require_input_owned(&metadata, links)?;
     let mut bytes = Vec::new();
     let maximum = u64::try_from(limit)
         .ok()
         .and_then(|limit| limit.checked_add(1))
-        .ok_or("local input read limit")?;
+        .ok_or(crate::InputFault::OwnedInputLimitWidth)?;
     file.take(maximum)
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::ReadInput, error)
+        })?;
     if bytes.len() > limit {
-        return Err("local input byte capacity".into());
+        return Err(crate::InputFault::OwnedInputCapacity.into());
     }
     Ok(bytes)
 }
 
-pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, crate::Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        crate::error::storage_io_error(crate::StorageIoOperation::InspectOwnedFile, error)
+    })?;
     require_owned(&metadata)?;
     Ok(metadata)
 }
-fn require_owned(metadata: &fs::Metadata) -> Result<(), String> {
+fn require_owned(metadata: &fs::Metadata) -> Result<(), crate::Error> {
     require_input_owned(metadata, InputLinks::One)
 }
 
-fn require_input_owned(metadata: &fs::Metadata, links: InputLinks) -> Result<(), String> {
+fn require_input_owned(metadata: &fs::Metadata, links: InputLinks) -> Result<(), crate::Error> {
     let links_valid = match links {
         InputLinks::One => metadata.nlink() == 1,
         // Atomic replacement can unlink this already-open generation. It has
         // no pathname aliases; multiple hard links remain invalid.
         InputLinks::Snapshot => metadata.nlink() <= 1,
     };
-    if !metadata.is_file() || !links_valid || metadata.uid() != nix::unistd::geteuid().as_raw() {
-        return Err("local store must be one owned regular file".into());
+    if !metadata.is_file() {
+        return Err(crate::InputFault::OwnedFileType.into());
+    }
+    if !links_valid {
+        return Err(crate::InputFault::OwnedFileLinks.into());
+    }
+    if metadata.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(crate::InputFault::OwnedFileOwner.into());
     }
     Ok(())
 }

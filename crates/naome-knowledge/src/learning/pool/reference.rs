@@ -5,14 +5,14 @@ use super::*;
 pub(super) fn focus(
     pool: &mut Pool,
     feedback: &crate::training::ability::Feedback,
-    mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, String>,
-) -> Result<(), String> {
+    mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, crate::Error>,
+) -> Result<(), crate::Error> {
     pool.reference = true;
     pool.priorities.clear();
     for graph in &pool.graphs {
         let scores = scores(graph)?;
         if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
-            return Err("preparation prediction shape or value differs".into());
+            return Err(crate::ResearchFailure::PoolPredictionInvalid.into());
         }
         let best = scores
             .iter()

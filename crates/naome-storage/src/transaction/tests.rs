@@ -74,7 +74,11 @@ fn a_denied_rollback_is_uncertain_even_if_drop_later_attempts_it_again() {
             Err::<(), _>("rejected".to_owned())
         },
     );
-    assert!(matches!(result, Err(CommitError::Uncertain(_))));
+    assert!(matches!(
+        result,
+        Err(CommitError::Uncertain(UncertainCommit::Rollback { sqlite_code }))
+            if sqlite_code.is_some_and(|code| code.get() == rusqlite::ffi::SQLITE_AUTH)
+    ));
     connection
         .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();

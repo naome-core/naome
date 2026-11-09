@@ -377,7 +377,7 @@ fn train(
             "matched_input_sha256":manifest,"elapsed":clock.elapsed()});
         eprintln!(
             "{}",
-            serde_json::json!({"event":"adaptive_round_completed","seed":seed,"arm":arm,"round":round,"accepted":state.accepted,"completed":completed,"units":performed,"updates":state.model.updates,"elapsed":clock.elapsed()})
+            serde_json::json!({"event":crate::outcome::NodeEvent::AdaptiveRoundCompleted,"seed":seed,"arm":arm,"round":round,"accepted":state.accepted,"completed":completed,"units":performed,"updates":state.model.updates,"elapsed":clock.elapsed()})
         );
         events.push(event);
         write(&path.join("rounds.json"), &events);
@@ -630,7 +630,7 @@ fn matched_adaptive_learning_experiment() {
             );
             eprintln!(
                 "{}",
-                serde_json::json!({"event":"adaptive_confirmation","seed":run.seed,"arm":run.arm,"model":name,"budget":budget,"solved":rows.iter().filter(|r|r["solved"]==true).count(),"total":rows.len()})
+                serde_json::json!({"event":crate::outcome::NodeEvent::AdaptiveConfirmation,"seed":run.seed,"arm":run.arm,"model":name,"budget":budget,"solved":rows.iter().filter(|r|r["solved"]==true).count(),"total":rows.len()})
             );
             evaluations.push(serde_json::json!({"model":name,"budget":budget,"rows":rows}));
         }

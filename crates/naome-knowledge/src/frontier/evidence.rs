@@ -8,15 +8,19 @@ pub(crate) use experience::tests::observed_completion;
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
 const MAX_RECORD: usize = 6 * naome_checker::question::QUESTION_BYTES + 4096;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Outcome {
-    Candidate,
-    NoCandidate,
-    Rejected,
-    Failed,
-    Expired,
-    InDoubt,
+pub(crate) use crate::outcome::FinderEvidenceOutcome as Outcome;
+
+impl Outcome {
+    const fn index(self) -> usize {
+        match self {
+            Self::Candidate => 0,
+            Self::NoCandidate => 1,
+            Self::Rejected => 2,
+            Self::Failed => 3,
+            Self::Expired => 4,
+            Self::InDoubt => 5,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,32 +92,32 @@ impl Record {
             .saturating_sub(u64::from(self.verified.is_some()))
     }
     pub(super) fn substantive_attempts(&self) -> u64 {
-        self.outcomes[..=Outcome::Rejected as usize]
+        self.outcomes[..=Outcome::Rejected.index()]
             .iter()
             .fold(0u64, |sum, n| sum.saturating_add(*n))
     }
-    fn validate(&self, key: &str, observations: u64) -> Result<(), String> {
-        let question = ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
+    fn validate(&self, key: &str, observations: u64) -> Result<(), crate::Error> {
+        let question = ResearchQuestion::from_hex(&self.question).map_err(crate::Error::from)?;
         experience::record(&question, self)?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
-            return Err("research evidence identity differs".into());
+            return Err(crate::ResearchFailure::EvidenceIdentity.into());
         }
         if self.helpers.len() > 4
             || self.helpers.iter().map(String::len).sum::<usize>()
                 > 4 * (2 * naome_checker::question::QUESTION_BYTES)
         {
-            return Err("research helper plan capacity".into());
+            return Err(crate::ResearchFailure::EvidenceHelperCapacity.into());
         }
         if let Some(frontier) = &self.frontier {
             frontier.validate(&question)?;
         }
         for source in &self.helpers {
-            let helper = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
+            let helper = ResearchQuestion::from_hex(source).map_err(crate::Error::from)?;
             if helper.resolution_id() == question.resolution_id()
                 || !crate::learning::State::eligible(source)
                 || !crate::learning::State::eligible(&question.to_hex())
             {
-                return Err("research helper plan source differs".into());
+                return Err(crate::ResearchFailure::EvidenceHelperSource.into());
             }
         }
         crate::object::id_bytes(&self.knowledge)?;
@@ -136,7 +140,7 @@ impl Record {
             || self.verified_units as u64 > self.units
             || self.last_units as u64 > self.units
         {
-            return Err("research evidence outcome or cost differs".into());
+            return Err(crate::ResearchFailure::EvidenceOutcome.into());
         }
         Ok(())
     }
@@ -158,7 +162,7 @@ impl Evidence {
         directory: &Path,
         seed: u64,
         settings: jobs::Settings,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let directory = crate::storage::research_directory(directory)?;
         let path = directory.join("evidence.sqlite3");
         let marker = directory.join("evidence.initialized");
@@ -167,7 +171,7 @@ impl Evidence {
             Checkpoint::open_for_replay(&path, DOMAIN)?
         } else {
             if crate::storage::marker_valid(&marker, MARKER)? {
-                return Err("established research evidence is missing".into());
+                return Err(crate::ResearchFailure::EvidenceMissing.into());
             }
             Checkpoint::create(
                 &path,
@@ -185,13 +189,13 @@ impl Evidence {
         };
         let mut header: Header = checkpoint.header()?;
         if header.random == 0 {
-            return Err("invalid research random state".into());
+            return Err(crate::ResearchFailure::EvidenceRandomState.into());
         }
         crate::object::id_bytes(&header.model_contract)?;
         header.model.validate()?;
         header.learning.validate()?;
         if header.observations < header.model.updates {
-            return Err("finder observation sequence differs".into());
+            return Err(crate::ResearchFailure::EvidenceObservationSequence.into());
         }
         if header.model_contract != solver {
             header.model_contract = solver.clone();
@@ -229,7 +233,7 @@ impl Evidence {
             || self.header.model.rehearsals != 0
             || self.header.model.utility_observations != 0
         {
-            return Err("Finder initialization would replace actual experience".into());
+            return Err(crate::ResearchFailure::EvidenceInitialization.into());
         }
         let mut header = self.header.clone();
         header.model = finder::Model::seeded(seed);
@@ -265,19 +269,16 @@ impl Evidence {
     }
     pub(super) fn replay(
         &mut self,
-        mut visit: impl FnMut(&Record) -> Result<bool, String>,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&Record) -> Result<bool, crate::Error>,
+    ) -> Result<(), crate::Error> {
         let mut after = None;
         loop {
-            let page = self
-                .checkpoint
-                .page(
-                    "question",
-                    after.as_deref(),
-                    16,
-                    crate::resources::active_limits().question_cache_bytes,
-                )
-                .map_err(|e| e.to_string())?;
+            let page = self.checkpoint.page(
+                "question",
+                after.as_deref(),
+                16,
+                crate::resources::active_limits().question_cache_bytes,
+            )?;
             if page.is_empty() {
                 return Ok(());
             }
@@ -288,9 +289,8 @@ impl Evidence {
                     record.verified = record.prepared.clone();
                     record.verified_job = record.last_job;
                     let question =
-                        ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
-                    self.put_observation(&question, &record, Some((true, record.verified_ms)))
-                        .map_err(|e| e.to_string())?;
+                        ResearchQuestion::from_hex(&record.question).map_err(crate::Error::from)?;
+                    self.put_observation(&question, &record, Some((true, record.verified_ms)))?;
                 }
                 after = Some(key);
             }
@@ -304,7 +304,7 @@ impl Evidence {
         }
         Ok(record)
     }
-    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, String> {
+    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, crate::Error> {
         self.checkpoint
             .page(
                 "question",
@@ -342,7 +342,7 @@ impl Evidence {
                 .header
                 .draws
                 .checked_add(1)
-                .ok_or("research draw overflow")?,
+                .ok_or(crate::ResearchFailure::EvidenceDrawOverflow)?,
             ..self.header.clone()
         };
         if let Some((question, recipe)) = question {
@@ -383,7 +383,7 @@ impl Evidence {
             header.observations = header
                 .observations
                 .checked_add(1)
-                .ok_or("finder observation overflow")?;
+                .ok_or(crate::ResearchFailure::EvidenceObservationOverflow)?;
             if resolved && record.verified_at == 0 {
                 record.verified_at = header.observations;
             } else if !resolved && record.first_unresolved_at == 0 {
@@ -435,7 +435,7 @@ impl Evidence {
         // Evidence is keyed by the expanded resolution and must be replayable
         // without depending on a node's mutable definition context.
         let evidence_question = ResearchQuestion::from_formula(question.formula().clone())
-            .map_err(|error| crate::Error::InvalidInput(error.to_string()))?;
+            .map_err(crate::Error::from)?;
         let mut record = self.get(question)?.unwrap_or(Record {
             question: evidence_question.to_hex(),
             model_checkpoint: None,
@@ -469,7 +469,7 @@ impl Evidence {
                 && let (Some(incoming), Some(stored)) = (experience, &record.experience)
                 && incoming.receipt != stored.receipt
             {
-                return Err("finder experience substituted a completed receipt".into());
+                return Err(crate::ResearchFailure::EvidenceCompletedReceipt.into());
             }
             return Ok(false);
         }
@@ -480,17 +480,17 @@ impl Evidence {
         record.model_checkpoint = completion.model_checkpoint.clone();
         record.experience = experience.cloned();
         record.last_outcome = outcome;
-        record.outcomes[outcome as usize] = record.outcomes[outcome as usize]
+        record.outcomes[outcome.index()] = record.outcomes[outcome.index()]
             .checked_add(1)
-            .ok_or("research attempt overflow")?;
+            .ok_or(crate::ResearchFailure::EvidenceAttemptOverflow)?;
         record.units = record
             .units
             .checked_add(u64::from(completion.reserved_units))
-            .ok_or("research work overflow")?;
+            .ok_or(crate::ResearchFailure::EvidenceWorkOverflow)?;
         record.spent_ms = record
             .spent_ms
             .checked_add(completion.spent_ms)
-            .ok_or("research time overflow")?;
+            .ok_or(crate::ResearchFailure::EvidenceTimeOverflow)?;
         record.last_units = completion.reserved_units;
         record.prepared = None;
         record.publication_abandoned = false;
@@ -515,7 +515,7 @@ impl Evidence {
             .header
             .observations
             .checked_add(u64::from(observation.is_some()))
-            .ok_or("finder observation overflow")?;
+            .ok_or(crate::ResearchFailure::EvidenceObservationOverflow)?;
         if observation.is_some()
             && (record.frontier.is_none() || knowledge_changed)
             && let Ok(jobs::Output::Native {
@@ -613,11 +613,11 @@ impl Evidence {
                 .len()
                 != plan.members.len()
         {
-            return Err("research recursive plan binding or capacity".into());
+            return Err(crate::ResearchFailure::EvidencePlanBinding.into());
         }
         for id in &plan.members {
             if crate::object::id_bytes(id)? == *goal.resolution_id() {
-                return Err("research recursive plan cycle".into());
+                return Err(crate::ResearchFailure::EvidencePlanCycle.into());
             }
         }
         Ok(plan.members)
@@ -642,10 +642,10 @@ impl Evidence {
             return Ok(());
         };
         if record.last_job != job {
-            return Err("research prepared job differs".into());
+            return Err(crate::ResearchFailure::EvidencePreparedJob.into());
         }
         if record.last_outcome != Outcome::Candidate {
-            return Err("only a candidate job can supply checked evidence".into());
+            return Err(crate::ResearchFailure::EvidenceCandidateRequired.into());
         }
         record.prepared = Some(crate::hex(root.as_bytes()));
         self.put(question, &record)
@@ -663,10 +663,10 @@ impl Evidence {
         }
         record.last_outcome = Outcome::Rejected;
         record.prepared = None;
-        record.outcomes[Outcome::Candidate as usize] =
-            record.outcomes[Outcome::Candidate as usize].saturating_sub(1);
-        record.outcomes[Outcome::Rejected as usize] =
-            record.outcomes[Outcome::Rejected as usize].saturating_add(1);
+        record.outcomes[Outcome::Candidate.index()] =
+            record.outcomes[Outcome::Candidate.index()].saturating_sub(1);
+        record.outcomes[Outcome::Rejected.index()] =
+            record.outcomes[Outcome::Rejected.index()].saturating_add(1);
         self.put(question, &record)
     }
     pub(super) fn verified(
@@ -684,9 +684,7 @@ impl Evidence {
         if record.last_outcome != Outcome::Candidate
             || record.prepared.as_deref() != Some(crate::hex(root.as_bytes()).as_str())
         {
-            return Err(
-                "verified research evidence is not bound to the checked candidate job".into(),
-            );
+            return Err(crate::InputFault::EvidenceCandidateBinding.into());
         }
         record.verified = Some(crate::hex(root.as_bytes()));
         record.verified_job = job;
@@ -725,10 +723,10 @@ impl Evidence {
         let mut producer = self
             .checkpoint
             .get::<Record>("question", &key, MAX_RECORD)?
-            .ok_or("finder proof index source is missing")?;
+            .ok_or(crate::ResearchFailure::EvidenceProofSourceMissing)?;
         producer.validate(&key, self.header.observations)?;
         if producer.verified.as_deref() != Some(lemma.as_str()) {
-            return Err("finder proof index identity differs".into());
+            return Err(crate::ResearchFailure::EvidenceProofIdentity.into());
         }
         // Job IDs are allocated before execution; concurrent completions may
         // arrive in another order. Only durable observations establish timing.
@@ -737,7 +735,8 @@ impl Evidence {
         {
             return Ok(None);
         }
-        let question = ResearchQuestion::from_hex(&producer.question).map_err(|e| e.to_string())?;
+        let question =
+            ResearchQuestion::from_hex(&producer.question).map_err(crate::Error::from)?;
         let Some(actual_lemma) = checked(&question)? else {
             return Ok(None);
         };
@@ -763,7 +762,7 @@ impl Evidence {
                 || receipt.lemma_at >= receipt.goal_at
                 || receipt.goal_at > self.header.observations
             {
-                return Err("finder support receipt identity differs".into());
+                return Err(crate::ResearchFailure::EvidenceSupportReceipt.into());
             }
             return Ok(None);
         }
@@ -771,7 +770,7 @@ impl Evidence {
         header.observations = header
             .observations
             .checked_add(1)
-            .ok_or("finder observation overflow")?;
+            .ok_or(crate::ResearchFailure::EvidenceObservationOverflow)?;
         if crate::learning::State::eligible(&question.to_hex()) {
             header.model.support(&question)?;
             header.learning.support(&mut header.model, &question)?;
@@ -779,7 +778,7 @@ impl Evidence {
         producer.supports = producer
             .supports
             .checked_add(1)
-            .ok_or("finder support count overflow")?;
+            .ok_or(crate::ResearchFailure::EvidenceSupportOverflow)?;
         let receipt = Support {
             lemma,
             goal: crate::hex(root.as_bytes()),
@@ -800,5 +799,40 @@ impl Evidence {
         )?;
         self.header = header;
         Ok(Some(question))
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn evidence_identity_failure_has_registered_code() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let question = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
+        let mut evidence = Evidence::open(&directory.0, 1, jobs::Settings::default()).unwrap();
+        let completion = jobs::Completion {
+            experience: None,
+            model_checkpoint: None,
+            id: 1,
+            binding: jobs::Binding::new([1; 32], [2; 32]),
+            spent_ms: 7,
+            reserved_units: 2,
+            state: jobs::State::Complete,
+            result: Ok(jobs::Output::NoCandidate),
+        };
+        evidence
+            .attempted(&question, [0; 32], &completion, Outcome::NoCandidate)
+            .unwrap();
+        let mut record = evidence.get(&question).unwrap().unwrap();
+        let key = record_key(&record.solver, &question);
+        record.last_job = 0;
+        let error = record
+            .validate(&key, evidence.header.observations)
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::EvidenceIdentity)
+        );
     }
 }

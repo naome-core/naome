@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Ordinary formal-goal input, autonomous ZFC construction, gossip and replay."""
+from fixture_result import FixtureResult
 import argparse
 import json
 from pathlib import Path
 import sqlite3
 
+from proof_network import sqlite_is
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
 from proof_network import stored_objects
 from native_learning import snapshot
@@ -32,7 +34,7 @@ def records(node):
             return [json.loads(row[0]) for row in db.execute(
                 "SELECT payload FROM entries WHERE kind='record'")]
     except sqlite3.OperationalError as error:
-        if "locked" in str(error).lower() or "busy" in str(error).lower():
+        if sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             return []
         raise
 
@@ -63,9 +65,9 @@ def run(trial):
 
     def published():
         assert not [event for node in trial.nodes for event in node.logs()
-                    if event.get("event") == "fatal_error"]
+                    if event.get("event") == 0x00170017]
         accepted = a.ids()
-        return next((event for event in a.logs() if event.get("event") == "proof_generated"
+        return next((event for event in a.logs() if event.get("event") == 0x00170046
                      and event["id"] in accepted), None)
 
     produced = trial.wait(published, maximum=45)
@@ -100,7 +102,7 @@ def run(trial):
     objects = stored_objects(SimpleNamespace(directory=a.directory))
     program = next(o["program_manifest"] for o in objects if o["artifact_id"] == root)
     checked_program = next(e for e in a.logs()
-        if e.get("event") == "native_program_checked" and e.get("id") == root)
+        if e.get("event") == 0x00170031 and e.get("id") == root)
     assert checked_program["job"] == produced["job"]
     assert checked_program["input_bytes"] == program["input_bytes"]
     assert checked_program["checker_work"] > 0
@@ -150,7 +152,7 @@ def run(trial):
     for node in trial.nodes:
         node.stop()
         status = node.start()
-        assert status["artifact_verification"] == "checked"
+        assert status["artifact_verification"] == 0x0020_0001
         assert node.ids() == all_ids
     assert peer_replay() == received, "the exact peer program replay must survive restart"
     a.stop()
@@ -173,7 +175,7 @@ def run(trial):
                 progress = record["native"]["progress"]
                 if progress and progress["unit"] == 1:
                     assert progress["result"] is None
-                    return {"job": record["id"], "diagnostic": progress["diagnostic"],
+                    return {"job": record["id"], "qualification": progress["qualification"],
                             "reserved_units": record["reserved_units"], "cost": progress["cost"]}
         return None
 
@@ -183,7 +185,7 @@ def run(trial):
         node.stop()
     trial.summary["scenarios"]["restart"] = {"exact_closure_rechecked": True,
                                                "canonical_goal": GOAL}
-    trial.summary["result"] = "pass"
+    trial.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -198,12 +200,12 @@ def main():
     try:
         run(trial)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)
-    assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary.get("cleanup")
 
 
 if __name__ == "__main__":

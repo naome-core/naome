@@ -274,7 +274,7 @@ fn public_ingest_batches_real_artifact_and_mirror_inserts_before_canonical_commi
                 .ingest(envelope.clone(), Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         PROBE.with(|slot| {
             let probe = slot.borrow();
@@ -391,6 +391,24 @@ fn begin_insert_commit_epoch_and_poison_failures_close_both_indexes_without_cano
         let envelope = object(&graph, 8116);
         let _reset = probe(fault);
         assert!(graph.ingest(envelope, Instant::now()).is_err());
+        let expected = match fault {
+            Fault::SourceBegin => Some(crate::InputFault::CheckedSourceBegin),
+            Fault::TargetBegin => Some(crate::InputFault::CheckedMirrorBegin),
+            Fault::SourceCommit => Some(crate::InputFault::CheckedSourceCommit),
+            Fault::TargetCommit => Some(crate::InputFault::CheckedMirrorCommit),
+            Fault::Epoch => Some(crate::InputFault::CheckedSourceGate),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let failure = graph.storage_error().unwrap();
+            assert!(
+                matches!(&failure, crate::Error::StorageContext { code, .. } if *code == expected),
+                "unexpected failure: {failure:?}"
+            );
+            let encoded = serde_json::to_value(failure).unwrap();
+            assert_eq!(encoded["code"], u32::from(expected));
+            assert!(encoded["cause"]["code"].is_number());
+        }
         assert_eq!(graph.content_root(), root);
         assert_eq!(graph.context.snapshot_id(), snapshot);
         assert_eq!(graph.accepted_count(), 16);
@@ -416,6 +434,12 @@ fn panic_after_checked_commits_discards_connections_and_keeps_canonical_roots() 
     );
     assert_eq!(graph.content_root(), root);
     assert_eq!(graph.store.summary().unwrap().count, 16);
+    let halt = graph.storage_error().unwrap();
+    assert!(halt.fatal());
+    assert_eq!(
+        serde_json::to_value(halt).unwrap()["cause_code"],
+        u32::from(crate::InputFault::CheckedAdmissionAborted)
+    );
     closed(&graph, &source, Some(&target));
 }
 
@@ -561,4 +585,73 @@ fn prepared_batch_staleness_deadline_and_last_snapshot_generation_lifetime_survi
     drop(old);
     assert!(weak.upgrade().is_none());
     assert!(!path.exists());
+}
+
+#[test]
+fn sqlite_close_refusal_quarantines_the_exact_handle_and_keeps_numeric_cause() {
+    const TEST: &str = "graph::storage::admission::tests::sqlite_close_refusal_quarantines_the_exact_handle_and_keeps_numeric_cause";
+    if std::env::var_os("NAOME_TEST_INDEX_CLOSE_REFUSAL").is_none() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_TEST_INDEX_CLOSE_REFUSAL", &directory.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let directory = std::env::var_os("NAOME_TEST_INDEX_CLOSE_REFUSAL").unwrap();
+    let graph = Graph::open(std::path::Path::new(&directory)).unwrap();
+    let storage = &graph.checked_storage;
+    {
+        let slot = storage.connection.lock().unwrap();
+        let connection = slot.open().unwrap();
+        // Deliberately retain a native statement to make sqlite3_close refuse.
+        // This isolated subprocess releases the statement at process exit.
+        let statement = connection.prepare("SELECT 1").unwrap();
+        std::mem::forget(statement);
+    }
+    let primary = crate::Error::from(crate::InputFault::CheckedInventoryMismatch).fatal_storage();
+    *storage.halt.lock().unwrap() = Some(primary.clone());
+    storage.close_admission_connection();
+    let combined = graph.storage_error().unwrap();
+    let cleanup = match &combined {
+        crate::Error::StorageCombined {
+            primary: actual,
+            cleanup,
+        } => {
+            assert_eq!(**actual, primary);
+            assert!(matches!(**cleanup, crate::Error::CheckedIndexCloseSql {
+                reason: crate::SqlFault::Engine, sqlite_code: Some(code)
+            } if code.get() == rusqlite::ffi::SQLITE_BUSY));
+            (**cleanup).clone()
+        }
+        other => panic!("expected both failures, got {other:?}"),
+    };
+    let encoded = serde_json::to_value(&combined).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::outcome::OperationCode::StorageCombined)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::outcome::OperationCode::CheckedIndexCloseSql)
+    );
+    assert_eq!(
+        encoded["cleanup"]["sqlite_code"],
+        rusqlite::ffi::SQLITE_BUSY
+    );
+    storage.close_admission_connection();
+    assert_eq!(graph.storage_error(), Some(combined));
+    let slot = storage.connection.lock().unwrap();
+    assert!(slot.0.is_some());
+    assert_eq!(slot.open().err(), Some(cleanup));
+    // Avoid dropping a connection with an intentionally outstanding statement;
+    // process exit closes the isolated test's descriptors and memory.
+    std::process::exit(0);
 }

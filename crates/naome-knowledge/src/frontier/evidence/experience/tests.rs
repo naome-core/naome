@@ -64,7 +64,6 @@ pub(crate) fn observed_completion(
         result: Ok(jobs::Output::Native {
             solution: None,
             terminal: Box::new(terminal),
-            diagnostic: "deliberately unrelated diagnostic text".into(),
             frontier,
         }),
     }
@@ -253,5 +252,42 @@ fn an_existing_receipt_cannot_be_replaced_or_reclassified() {
             .unwrap()
             .receipt,
         original.experience.unwrap().receipt
+    );
+}
+
+#[test]
+fn mismatched_completion_identity_reports_registered_code() {
+    let (goal, _) = crate::learning::tests::helper_goal();
+    let mut completion = observed(
+        &goal,
+        TerminalEvidence::Budget(Budget::Expansions),
+        128,
+        None,
+    );
+    let summary = completion.experience.as_mut().unwrap();
+    summary.job += 1;
+    reseal(summary);
+    let error = super::completion(&goal, &completion, Outcome::NoCandidate).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ExperienceJobBinding)
+    );
+}
+
+#[test]
+fn corrupted_experience_receipt_reports_identity_code() {
+    let (goal, _) = crate::learning::tests::helper_goal();
+    let mut completion = observed(
+        &goal,
+        TerminalEvidence::Budget(Budget::Expansions),
+        128,
+        None,
+    );
+    let summary = completion.experience.as_mut().unwrap();
+    summary.receipt = "00".repeat(32);
+    let error = summary.validate().unwrap_err();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ExperienceReceiptIdentity)
     );
 }

@@ -8,7 +8,7 @@ macro_rules! operating_fields {
     (@select [$($field:ident: $ty:ty;)*]) => {
         /// Process-local working sets only; format, authority and custody
         /// ceilings are available exclusively from the installed Limits.
-        #[derive(Clone, Debug, PartialEq, Eq)]
+        #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
         pub(crate) struct OperatingLimits { $(pub(crate) $field: $ty,)* }
         impl OperatingLimits {
             fn at_capacity(capacity: &Limits) -> Self {

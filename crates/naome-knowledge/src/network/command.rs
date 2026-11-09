@@ -11,7 +11,9 @@ impl QueuedCommand {
     pub(super) fn parse(&self) -> Result<(Value, Arc<MemoryLease>), Error> {
         let budget = crate::resources::limits()
             .command_parse_budget()
-            .ok_or(Error::InputLimit("CLI JSON allocation budget overflow"))?;
+            .ok_or(Error::InputLimit(
+                crate::InputLimit::CliJsonAllocationBudgetOverflow,
+            ))?;
         let bytes = {
             // The streaming pass retains only serde_json's string scratch space.
             let _scratch = MemoryLease::acquire_control(
@@ -24,7 +26,7 @@ impl QueuedCommand {
         };
         let memory = MemoryLease::acquire_control(bytes)?;
         let value = serde_json::from_slice(&self.bytes)
-            .map_err(|error| Error::InvalidInput(error.to_string()))?;
+            .map_err(|_| Error::InputFault(crate::InputFault::MalformedJson))?;
         Ok((value, memory))
     }
 }

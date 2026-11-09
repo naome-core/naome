@@ -23,9 +23,9 @@ impl Recipe {
     fn index(self) -> usize {
         self.level as usize * OPERATORS + self.operator as usize
     }
-    fn validate(self) -> Result<(), String> {
+    fn validate(self) -> Result<(), crate::Error> {
         if self.operator as usize >= OPERATORS || self.level as usize >= LEVELS {
-            return Err("finder construction recipe differs".into());
+            return Err(crate::ResearchFailure::FinderRecipeInvalid.into());
         }
         Ok(())
     }
@@ -150,19 +150,19 @@ impl Learning {
         }
         false
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         crate::object::id_bytes(&self.checkpoint)?;
         if !self.utility_receipt.is_empty() {
             crate::object::id_bytes(&self.utility_receipt)?;
         }
         if self.cells.len() != CELLS || self.pending.len() > MEMORY || self.samples.len() > MEMORY {
-            return Err("finder curriculum capacity differs".into());
+            return Err(crate::ResearchFailure::FinderCurriculumCapacity.into());
         }
         for cell in &self.cells {
             if cell.solved > cell.attempts
                 || cell.utility_sum > cell.utility_count.saturating_mul(65535)
             {
-                return Err("finder curriculum counters differ".into());
+                return Err(crate::ResearchFailure::FinderCurriculumCounts.into());
             }
         }
         let mut ids = std::collections::BTreeSet::new();
@@ -173,7 +173,7 @@ impl Learning {
                     .utility
                     .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
             {
-                return Err("finder rehearsal identity or labels differ".into());
+                return Err(crate::ResearchFailure::FinderRehearsalInvalid.into());
             }
             if let Some(checkpoint) = &sample.checkpoint {
                 crate::object::id_bytes(checkpoint)?;
@@ -288,7 +288,7 @@ impl Learning {
         question: &ResearchQuestion,
         resolved: bool,
         millis: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         #[cfg(test)]
         if matches!(
             self.treatment,
@@ -311,7 +311,11 @@ impl Learning {
         resolved: bool,
         millis: u64,
         draw: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
+        let cursor = self
+            .cursor
+            .checked_add(1)
+            .ok_or(crate::ResearchFailure::FinderCursorOverflow)?;
         let existing = self
             .samples
             .iter()
@@ -339,10 +343,7 @@ impl Learning {
             cell.millis = cell.millis.saturating_add(millis);
             cell.last = draw;
         }
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .ok_or("finder replay cursor overflow")?;
+        self.cursor = cursor;
         self.samples.push_back(Sample {
             offer,
             checkpoint: checkpoint.map(str::to_owned),
@@ -359,7 +360,7 @@ impl Learning {
         self.trim();
         self.rehearse(model)
     }
-    pub fn support(&mut self, model: &mut Model, q: &ResearchQuestion) -> Result<(), String> {
+    pub fn support(&mut self, model: &mut Model, q: &ResearchQuestion) -> Result<(), crate::Error> {
         if let Some(sample) = self
             .samples
             .iter_mut()
@@ -369,7 +370,7 @@ impl Learning {
         }
         self.rehearse(model)
     }
-    fn rehearse(&mut self, model: &mut Model) -> Result<(), String> {
+    fn rehearse(&mut self, model: &mut Model) -> Result<(), crate::Error> {
         #[cfg(test)]
         if matches!(
             self.treatment,
@@ -466,7 +467,7 @@ impl Learning {
         &mut self,
         model: &mut Model,
         snapshot: &crate::learning::finder::Utility,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::Error> {
         #[cfg(test)]
         if matches!(
             self.treatment,
@@ -513,7 +514,7 @@ impl Learning {
         &mut self,
         model: &mut Model,
         feedback: &crate::training::ability::Feedback,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::Error> {
         feedback.validate()?;
         let changed = self.checkpoint != feedback.checkpoint;
         self.bind(&feedback.checkpoint);

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite ordinary-node jobs, control, peer admission and restart qualification."""
+from fixture_result import FixtureResult
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -63,7 +64,7 @@ class Probe:
 
     def observe(self,node):
         for event in node.logs():
-            if event.get('event') not in {'research_started','research_worker','research_descendant'}:
+            if event.get('event') not in {0x0017005f,0x00170060,0x0017005a}:
                 continue
             key=(node.index,event['event'],event['job'],event['pid'])
             if key in self.seen:continue
@@ -100,16 +101,16 @@ class Probe:
     def cpu_active(self,node):
         active={}
         for event in node.logs():
-            if event.get('event')=='research_working':active[event['job']]=event['phase']
-        return {job for job,phase in active.items() if phase=='cpu_active'
-            and str(job) in journal(node)['records'] and journal(node)['records'][str(job)]['state']=='running'}
+            if event.get('event')==0x00170061:active[event['job']]=event['phase']
+        return {job for job,phase in active.items() if phase==0x0015_0007
+            and str(job) in journal(node)['records'] and journal(node)['records'][str(job)]['state']==0x001d_0002}
 
     def witness_cpu(self,node,*,respect_admission=False):
         jobs=(observe_work(self.trial,node,f'cpu_worker_node_{node.index}',lambda:self.cpu_active(node),5,1)
               if respect_admission else self.trial.wait(lambda:self.cpu_active(node),maximum=5))
         if jobs is None:
             return None
-        workers={event['pid'] for event in node.logs() if event.get('event')=='research_worker' and event['job'] in jobs}
+        workers={event['pid'] for event in node.logs() if event.get('event')==0x00170060 and event['job'] in jobs}
         identities={pid:process_identity(pid) for pid in workers}
         assert identities and all(identities.values()),'CPU witness requires live worker identities'
         def samples():
@@ -171,7 +172,7 @@ def observe_work(trial, node, name, predicate, maximum, slots):
             assert 0 <= time.time() * 1000 - active['timestamp_ms'] < 5000, 'live owner budget observation is stale'
             budget = active['budget']
             assert type(budget['concurrency']) is int and budget['concurrency'] >= 0, budget
-            assert budget['paused'] is None or (isinstance(budget['paused'], str) and budget['paused']), budget
+            assert budget['paused'] is None or (type(budget['paused']) is int and 0x0004_0001 <= budget['paused'] <= 0x0004_000A), budget
             assert (budget['concurrency'] == 0) == (budget['paused'] is not None), budget
             receipt['samples'].append({'concurrency': budget['concurrency'], 'paused': budget['paused']})
             sample_at = time.monotonic() + 0.5
@@ -207,19 +208,19 @@ def roles(trial,probe):
     receiver.write_config();receiver.start()
     def overlapping():
         state=journal(receiver)
-        running={lane(record) for record in state['records'].values() if record['state']=='running'}
+        running={lane(record) for record in state['records'].values() if record['state']==0x001d_0002}
         return state if {0,1,2}.issubset(running) else None
     overlap=observe_work(trial,receiver,'three_role_overlap',overlapping,15,role_slots)
     cpu_jobs=probe.witness_cpu(receiver,respect_admission=True)
     trial.summary['native_receiver_cpu_work_observed']=bool(cpu_jobs)
     trial.summary['overlap']={'native_three_role_overlap_observed':bool(overlap),
-        'running_lanes':sorted({lane(r) for r in (overlap or journal(receiver))['records'].values() if r['state']=='running'}),
+        'running_lanes':sorted({lane(r) for r in (overlap or journal(receiver))['records'].values() if r['state']==0x001d_0002}),
         'journal_sha256':digest(receiver.directory/'research/jobs.sqlite3')}
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
-    observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
-        and event.get('selection')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
-    pending_solve=any(record['state']=='running' and lane(record)==1
+    observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')==0x0017004b and event.get('formal_pass')
+        and event.get('selection')==0x001e_0002 for event in receiver.logs())>=3,12,role_slots)
+    pending_solve=any(record['state']==0x001d_0002 and lane(record)==1
         for record in journal(receiver)['records'].values())
     trial.summary['pending_local_solve_on_peer_start']=pending_solve
     donor.config['runtime']['question_interval_ms']=100
@@ -227,18 +228,18 @@ def roles(trial,probe):
     donor.write_config();donor.start()
     def all_peer_answers():
         stored=receiver.ids()
-        accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
+        accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')==0x180001}
         return len(stored)==3 and stored==donor.ids() and accepted==stored
     delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,role_slots)
     if delivered and pending_solve:
-        assert any(event.get('event')=='solve_cancelled_by_answer' for event in receiver.logs())
+        assert any(event.get('event')==0x00170066 for event in receiver.logs())
     if not delivered:
-        assert any(event.get('event')=='identified' and event.get('peer')==donor.peer for event in receiver.logs()), \
+        assert any(event.get('event')==0x0017001f and event.get('peer')==donor.peer for event in receiver.logs()), \
             'resource-limited node did not authenticate its peer'
-        assert any(event.get('peer')==donor.peer and event.get('event') in {'exchange_request','exchange_response'}
-            and event.get('kind') in {'inventory','inventory_result'} for event in receiver.logs()), \
+        assert any(event.get('peer')==donor.peer and event.get('event') in {0x00170012,0x00170013}
+            and event.get('kind') in {0x1a0001,0x1a0002} for event in receiver.logs()), \
             'resource-limited node did not service inventory traffic'
-    accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
+    accepted={event['id'] for event in receiver.logs() if event.get('event')==0x00170001 and event.get('source')==0x180001}
     if delivered:
         assert accepted==receiver.ids(),'peer answers must arrive during pending local solving'
     else:
@@ -268,7 +269,7 @@ def roles(trial,probe):
     started=time.monotonic();busy.stop();assert time.monotonic()-started<5
     probe.ended()
     trial.summary['scenarios']['native_resource_admission_peer_control_and_group_cleanup']={
-        'result':'pass','three_role_overlap_observed':bool(overlap),'checked_peer_delivery_observed':bool(delivered)}
+        'result':FixtureResult.PASS,'three_role_overlap_observed':bool(overlap),'checked_peer_delivery_observed':bool(delivered)}
 
 
 def recovery(trial,probe):
@@ -290,10 +291,10 @@ def recovery(trial,probe):
     cpu=Node(trial,1)
     cpu.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':15000,'descendant':True}))
     cpu.write_config();cpu.start()
-    trial.wait(lambda:any(event.get('event')=='research_descendant' for event in cpu.logs()),maximum=5)
-    trial.wait(lambda:any(r['reserved_units']==1 and r['state']=='running' for r in journal(cpu)['records'].values()),maximum=5)
+    trial.wait(lambda:any(event.get('event')==0x0017005a for event in cpu.logs()),maximum=5)
+    trial.wait(lambda:any(r['reserved_units']==1 and r['state']==0x001d_0002 for r in journal(cpu)['records'].values()),maximum=5)
     probe.crash(cpu);cpu.start();probe.observe(cpu);cpu.stop();probe.ended()
-    trial.summary['scenarios']['crash_resume_preserves_identity_progress_budgets_and_kills_cpu_descendants']={'result':'pass'}
+    trial.summary['scenarios']['crash_resume_preserves_identity_progress_budgets_and_kills_cpu_descendants']={'result':FixtureResult.PASS}
 
 
 def limits(trial,probe):
@@ -301,7 +302,7 @@ def limits(trial,probe):
         node=Node(trial,index)
         node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(solving={'outcome':outcome,'work_units':2}))
         node.write_config();node.start()
-        expected='proof_candidate_rejected' if outcome!='failed' else 'solve_obligation_held_or_expired'
+        expected=0x00170044 if outcome != 'failed' else 0x00170067
         trial.wait(lambda:any(event.get('event')==expected for event in node.logs()),maximum=12)
         assert not node.ids()
         probe.observe(node);assert trial.call(node,'status')['accepted_artifacts']==0
@@ -309,7 +310,7 @@ def limits(trial,probe):
     node=Node(trial,3)
     node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':3,'work_units':2}))
     node.write_config();node.start()
-    expired=trial.wait(lambda:next((r for r in journal(node)['records'].values() if r['state']=='expired'),None),maximum=5)
+    expired=trial.wait(lambda:next((r for r in journal(node)['records'].values() if r['state']==0x001d_0007),None),maximum=5)
     assert expired['reserved_units']==2 and expired['checkpoint']==2
     assert not node.ids();probe.observe(node);node.stop();probe.ended()
     def rejected_start(case,expected):
@@ -320,11 +321,11 @@ def limits(trial,probe):
         try:
             trial.call(node,'start',success=False)
             events=node.logs()[offset:]
-            failures=[e for e in events if e.get('event')=='fatal_error']
-            assert len(failures)==1 and expected in failures[0].get('error',''),(case,failures)
-            assert not any(e.get('event') in {'research_started','research_worker','research_descendant'} for e in events)
+            failures=[e for e in events if e.get('event')==0x00170017]
+            assert len(failures)==1 and failures[0].get('error', {}).get('code') == expected,(case,failures)
+            assert not any(e.get('event') in {0x0017005f,0x00170060,0x0017005a} for e in events)
             recorded=trial.call(node,'status')
-            assert not recorded['running'] and recorded['artifact_verification']=='not_run'
+            assert not recorded['running'] and recorded['artifact_verification']==0x0020_0002
             assert not (node.directory/'control.json').exists()
             trial.summary.setdefault('startup_rejections',[]).append({'case':case,
                 'expected_error':expected,'fatal_error':failures[0]['error'],'research_process_started':False})
@@ -346,20 +347,20 @@ def limits(trial,probe):
         action()
     path=node.directory/'research/jobs.sqlite3';original=path.read_bytes()
     path.write_bytes(b'{corrupt')
-    try:rejected_start('corrupt_journal','transactional checkpoint:')
+    try:rejected_start('corrupt_journal',0x000C_000B)
     finally:restore_state(lambda:path.write_bytes(original))
     saved_journal=node.directory/'saved-journal';path.rename(saved_journal)
-    try:rejected_start('missing_journal','research journal is missing; refusing a fresh allowance')
+    try:rejected_start('missing_journal',0x000C_000A)
     finally:restore_state(lambda:saved_journal.rename(path))
     slot=node.directory/'research/slot-0.lock';saved=node.directory/'saved-slot'
     slot.rename(saved)
-    try:rejected_start('missing_slot','research slot-0 unavailable:')
+    try:rejected_start('missing_slot',0x000C_000C)
     finally:restore_state(lambda:saved.rename(slot))
     research=node.directory/'research';backup=node.directory/'saved-research';research.rename(backup)
-    try:rejected_start('missing_research_directory','established research directory is missing; no fresh allowance')
+    try:rejected_start('missing_research_directory',0x000C_0009)
     finally:restore_state(lambda:backup.rename(research))
     write_receipt(trial.output/'research-startup-rejection-witness.json',trial.summary['startup_rejections'])
-    trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':'pass'}
+    trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':FixtureResult.PASS}
 
 
 def faults(trial,probe):
@@ -369,38 +370,38 @@ def faults(trial,probe):
     completed=Node(trial,3)
     completed.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'step_ms':500}))
     completed.write_config();completed.start()
-    launched=trial.wait(lambda:next((e for e in completed.logs() if e.get('event')=='research_worker'),None),maximum=5)
+    launched=trial.wait(lambda:next((e for e in completed.logs() if e.get('event')==0x00170060),None),maximum=5)
     probe.observe(completed)
     job=launched['job']
-    ids={e['pid'] for e in completed.logs() if e.get('job')==job and e.get('event') in {'research_started','research_worker'}}
+    ids={e['pid'] for e in completed.logs() if e.get('job')==job and e.get('event') in {0x0017005f,0x00170060}}
     retained=[identity for identity in probe.identities.values() if identity['pid'] in ids]
     assert len(retained)==2,'completed provider identities missing'
-    finished=trial.wait(lambda:next((r for r in journal(completed)['records'].values() if r['id']==job and r['state']=='complete'),None),maximum=5)
-    reaped=next(e for e in completed.logs() if e.get('event')=='research_reaped' and e['job']==job)
+    finished=trial.wait(lambda:next((r for r in journal(completed)['records'].values() if r['id']==job and r['state']==0x001d_0004),None),maximum=5)
+    reaped=next(e for e in completed.logs() if e.get('event')==0x0017005c and e['job']==job)
     assert reaped['exit']==0 and finished['checkpoint']==finished['reserved_units']==1
     probe.ended(retained)
     write_receipt(trial.output/'completed-provider-cleanup-witness.json',{'job':job,
         'checkpoint':finished['checkpoint'],'reserved_units':finished['reserved_units'],'state':finished['state'],
         'supervisor_reaped_exit':reaped['exit'],'processes':retained,'remaining_groups':probe.remaining(retained)})
     completed.stop();probe.ended()
-    trial.summary['scenarios']['completed_provider_is_reaped_before_result_delivery']={'result':'pass'}
+    trial.summary['scenarios']['completed_provider_is_reaped_before_result_delivery']={'result':FixtureResult.PASS}
     trial.summary['node_count']=4
     # Lose only a currently identified supervisor while its owned CPU worker
     # and TERM-ignoring child are alive. EOF must end their separate group.
     node=Node(trial,0)
     node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':20000,'descendant':True}))
     node.write_config();node.start();probe.witness_cpu(node)
-    event=next(e for e in reversed(node.logs()) if e.get('event')=='research_started')
+    event=next(e for e in reversed(node.logs()) if e.get('event')==0x0017005f)
     identity=process_identity(event['pid']);assert identity and identity['pid']==identity['group']==identity['session']
     assert str(trial.binary) in identity['command'] and '--research-supervisor-v1' in identity['command']
     assert process_identity(identity['pid'])==identity
     os.kill(identity['pid'],signal.SIGKILL)
     trial.wait(lambda:not process_group(node.process),maximum=8);probe.ended()
-    state=journal(node);assert any(r['state']=='in_doubt' and not r['acknowledged'] for r in state['records'].values())
-    assert any(e.get('event')=='fatal_error' and 'cleanup' in e.get('error','') for e in node.logs())
+    state=journal(node);assert any(r['state']==0x001d_0008 and not r['acknowledged'] for r in state['records'].values())
+    assert any(e.get('event')==0x00170017 and e.get('error', {}).get('code') in {0x000C_000D, 0x000C_000E} for e in node.logs())
     node.process=None  # expected fatal exit, not a claimed graceful stop
     node.start();probe.observe(node)
-    assert any(r['state']=='in_doubt' for r in journal(node)['records'].values())
+    assert any(r['state']==0x001d_0008 for r in journal(node)['records'].values())
     node.stop();probe.ended()
 
     # A small server send buffer forces an actual response writer to wait for
@@ -420,7 +421,7 @@ def faults(trial,probe):
     try:
         trial.wait(lambda:not process_group(slow.process),maximum=5);probe.ended()
         elapsed=time.monotonic()-started;assert elapsed<5
-        assert any(e.get('event')=='control_rejected' and 'write timeout' in e.get('error','') for e in slow.logs()),'slow writer was not exercised'
+        assert any(e.get('event')==0x0017000b and e.get('error') == 0x000E_0005 for e in slow.logs()),'slow writer was not exercised'
         received=b''
         while block:=client.recv(8192):received+=block
         assert 0<len(received)<8192 and not received.endswith(b'\n'),'partial response write was not observed'
@@ -435,19 +436,19 @@ def faults(trial,probe):
     output=Node(trial,2)
     output.config['runtime'].update(question_interval_ms=100,jobs=job_settings(solving={'proof_padding_bytes':65536,'result_delay_ms':1500,'descendant':True}))
     output.write_config();output.start()
-    ready=trial.wait(lambda:next((e for e in reversed(output.logs()) if e.get('event')=='research_working' and e.get('phase')=='result_ready'),None),maximum=10)
+    ready=trial.wait(lambda:next((e for e in reversed(output.logs()) if e.get('event')==0x00170061 and e.get('phase')==0x150009),None),maximum=10)
     probe.observe(output);original=output.process;assert process_identity(original['pid'])==original
     os.kill(original['pid'],signal.SIGSTOP)
     try:
         time.sleep(2)
-        supplier=next(e for e in output.logs() if e.get('event')=='research_started' and e['job']==ready['job'])
+        supplier=next(e for e in output.logs() if e.get('event')==0x0017005f and e['job']==ready['job'])
         assert process_identity(supplier['pid']) is not None,'result supplier exited instead of facing unread pipe backpressure'
         os.kill(original['pid'],signal.SIGKILL)
         trial.wait(lambda:not process_group(original),maximum=5);probe.ended()
     finally:
         if process_identity(original['pid'])==original:os.kill(original['pid'],signal.SIGCONT)
     output.start();probe.observe(output);output.stop();probe.ended()
-    trial.summary['scenarios']['supervisor_loss_unread_response_and_result_pipe_cleanup']={'result':'pass'}
+    trial.summary['scenarios']['supervisor_loss_unread_response_and_result_pipe_cleanup']={'result':FixtureResult.PASS}
 
 
 def basic(trial,probe):
@@ -461,7 +462,7 @@ def basic(trial,probe):
     trial.summary['convergence_seconds']=time.monotonic()-started
     trial.summary['status_seconds']={str(count):probe.statuses(first,count) for count in [2,8]}
     probe.observe(first);probe.observe(second);first.stop();second.stop();probe.ended()
-    trial.summary['scenarios']['matched_default_mock_workload_two_and_eight_control_clients']={'result':'pass'}
+    trial.summary['scenarios']['matched_default_mock_workload_two_and_eight_control_clients']={'result':FixtureResult.PASS}
 
 
 def main():
@@ -484,19 +485,19 @@ def main():
         claim='finite deterministic providers, native checking and local real transport; no model or multi-day uptime claim')
     started=time.monotonic()
     try:
-        globals()[args.mode](trial,probe);trial.summary['result']='pass'
+        globals()[args.mode](trial,probe);trial.summary['result']=FixtureResult.PASS
     except Exception as error:
-        trial.summary.update(result='fail',error=str(error));traceback.print_exc()
+        trial.summary.update(result=FixtureResult.FAIL,error=str(error));traceback.print_exc()
     finally:
         for node in trial.nodes:
             try:probe.observe(node)
-            except Exception as error:trial.summary.setdefault('observation_errors',[]).append(str(error));trial.summary['result']='fail'
+            except Exception as error:trial.summary.setdefault('observation_errors',[]).append(str(error));trial.summary['result']=FixtureResult.FAIL
         trial.summary['resource_peaks']=probe.peaks
         trial.summary['measurement_scope']='retained finite milestone samples, not complete lifetime maxima'
         trial.close()
         trial.summary['execution_seconds']=time.monotonic()-started
         retain_evidence(trial.output,trial.summary,'long-jobs-'+args.mode,args.profile)
     print(json.dumps({'result':trial.summary['result'],'output':str(trial.output)}),flush=True)
-    return 0 if trial.summary['result']=='pass' else 1
+    return 0 if trial.summary['result']==FixtureResult.PASS else 1
 
 if __name__=='__main__':raise SystemExit(main())

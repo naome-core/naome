@@ -69,15 +69,15 @@ impl Preparation {
         let prior_bytes = prefix.as_ref().map_or(0, |prefix| prefix.payload_bytes);
         let count = count
             .checked_add(prefix.as_ref().map_or(0, |prefix| prefix.entries.len()))
-            .ok_or("checked batch count overflow")?;
+            .ok_or(crate::InputFault::CheckedBatchCountOverflow)?;
         if count > crate::resources::limits().closure_objects {
             return Err(crate::Error::InputLimit(
-                "checked closure operation capacity",
+                crate::InputLimit::CheckedClosureOperationCapacity,
             ));
         }
         let bytes = bytes
             .checked_add(prior_bytes)
-            .ok_or("checked batch byte overflow")?;
+            .ok_or(crate::InputFault::CheckedBatchBytesOverflow)?;
         match prefix {
             Some(mut batch) => {
                 batch._disk.grow_to(
@@ -119,7 +119,7 @@ impl Preparation {
     }
     fn require_absent(&self, graph: &Graph, id: ArtifactId) -> Result<(), crate::Error> {
         if graph.contains(id)? || self.batch.edges.contains_key(&id) {
-            return Err("duplicate staged object".into());
+            return Err(crate::InputFault::StagedObjectDuplicate.into());
         }
         Ok(())
     }
@@ -141,20 +141,22 @@ impl Preparation {
     ) -> Result<ArtifactRegistration, crate::Error> {
         self.require_absent(graph, record.id)?;
         if checked.id() != record.id || checked.statement() != record.statement {
-            return Err("checked identity mismatch".into());
+            return Err(crate::Error::InputFault(
+                crate::InputFault::CheckedIdentityMismatch,
+            ));
         }
         let growth = graph.registration_growth(&self.batch.context, &checked)?;
         let context_bytes = self
             .batch
             .context_bytes
             .checked_add(growth)
-            .ok_or("checked context capacity")?;
+            .ok_or(crate::InputFault::CheckedContextCapacity)?;
         Ok(ArtifactRegistration {
             payload_bytes: self
                 .batch
                 .payload_bytes
                 .checked_add(record.bytes.len())
-                .ok_or("checked batch byte overflow")?,
+                .ok_or(crate::InputFault::CheckedBatchBytesOverflow)?,
             checked,
             record,
             context_bytes,
@@ -194,13 +196,13 @@ impl Preparation {
             .batch
             .context_bytes
             .checked_add(growth)
-            .ok_or("checked program context width")?;
+            .ok_or(crate::InputFault::CheckedProgramContextWidth)?;
         self.batch.context = context;
         self.batch.payload_bytes = self
             .batch
             .payload_bytes
             .checked_add(record.bytes.len())
-            .ok_or("checked batch byte overflow")?;
+            .ok_or(crate::InputFault::CheckedBatchBytesOverflow)?;
         self.batch.edges.insert(record.id, dependencies);
         self.batch.entries.push((record.id, record));
         Ok(())
@@ -244,11 +246,11 @@ pub(super) fn require_closure<'a>(
     let mut records = BTreeMap::new();
     for (id, dependencies) in entries {
         if records.insert(id, dependencies).is_some() {
-            return Err("duplicate staged object".into());
+            return Err(crate::InputFault::StagedObjectDuplicate.into());
         }
     }
     if !records.contains_key(&root) {
-        return Err("missing staged root".into());
+        return Err(crate::InputFault::StagedRootMissing.into());
     }
     let mut reachable = BTreeSet::new();
     let mut queue = vec![root];
@@ -256,14 +258,17 @@ pub(super) fn require_closure<'a>(
         if !reachable.insert(id) {
             continue;
         }
-        for dependency in *records.get(&id).ok_or("missing staged dependency")? {
+        for dependency in *records
+            .get(&id)
+            .ok_or(crate::InputFault::StagedDependencyMissing)?
+        {
             if !graph.contains(*dependency)? {
                 queue.push(*dependency);
             }
         }
     }
     if reachable.len() != records.len() {
-        return Err("unrequested staged object".into());
+        return Err(crate::InputFault::StagedObjectUnrequested.into());
     }
     Ok(())
 }

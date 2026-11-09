@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite startup lifeline cases; internal custody is separate from ordinary CLI."""
+from fixture_result import FixtureResult
 import argparse
 import hashlib
 import json
@@ -130,8 +131,8 @@ def internal_case(trial, node, name, hold_seconds=0):
                 return trial.call(node, "status")["running"]
             wait_until(ready, time.monotonic() + trial.remaining(5))
             phases = [event for event in node.logs()[offset:]
-                if event.get("event") == "startup_replay" and event.get("pid") == child.pid]
-            assert [event["phase"] for event in phases] == ["begin", "checked"], phases
+                if event.get("event") == 0x00170069 and event.get("pid") == child.pid]
+            assert [event["phase"] for event in phases] == [0x190001, 0x190002], phases
             assert all(event["instance_sha256"] == record["instance_sha256"] for event in phases)
             child.stdin.write(("ready " + token + "\n").encode())
             child.stdin.flush()
@@ -148,10 +149,10 @@ def internal_case(trial, node, name, hold_seconds=0):
             assert record["actual_direct_child_reaped_during_stop"] and record["stop_cli"]["reaped"], "internal stop did not actually reap both direct children"
             assert child.returncode == 0, "acknowledged internal daemon did not stop normally"
         assert not process_group(identity), "internal owned group remained"
-        record.update(result="pass", actual_direct_child_reaped=True,
+        record.update(result=FixtureResult.PASS, actual_direct_child_reaped=True,
             exit_code=child.returncode, owned_group_empty=True)
     except BaseException as error:
-        record.update(result="fail", error_kind=type(error).__name__)
+        record.update(result=FixtureResult.FAIL, error_kind=type(error).__name__)
         raise
     finally:
         if child.stdin is not None and not child.stdin.closed:
@@ -171,7 +172,7 @@ def internal_case(trial, node, name, hold_seconds=0):
 def handoff_abort_case(trial, node, name, active_ns):
     """Real installed pipe/nonce/TERM controls; never a mock abort receipt."""
     node.release_port()
-    record = {"case": name, "result": "fail", "closure_errors": [],
+    record = {"case": name, "result": FixtureResult.FAIL, "closure_errors": [],
               "ownership_disposition": "NO_PYTHON_GROUP_AUTHORITY"}
     trial.summary.setdefault("handoff_abort_cases", []).append(record)
     assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) < active_ns, "original handoff control endpoint expired before launch"
@@ -198,7 +199,7 @@ def handoff_abort_case(trial, node, name, active_ns):
             frame.extend(block)
             assert block and len(frame) <= 4096, "missing/oversized original custody offer"
         candidate = json.loads(bytes(frame).split(b"\n", 1)[0])
-        assert candidate["kind"] == "STARTUP_CHILD_CUSTODY_V1"
+        assert candidate["kind"] == 1835010
         assert candidate["active_ns"] == active_ns
         assert candidate["cleanup_ns"] == active_ns + 10_000_000_000
         assert type(candidate["pid"]) is int and candidate["pid"] > 1
@@ -247,9 +248,9 @@ def handoff_abort_case(trial, node, name, active_ns):
         record["identity_receipt_published_ns"] = published
         assert published < active_ns, "original control endpoint expired during ownership publication"
         expected_primary = {
-            "eof_after_offer": "startup owner lifeline closed before custody acknowledgement",
-            "wrong_nonce_after_offer": "startup owner instance mismatch",
-            "term_after_offer": "node startup cancelled",
+            "eof_after_offer": 0x000D_0001,
+            "wrong_nonce_after_offer": 0x000D_0002,
+            "term_after_offer": 0x000D_0003,
         }[name]
         # Reserve the existing800ms custodian cap inside the same original A.
         # A late fsync/native sample never earns a new control interval.
@@ -357,7 +358,7 @@ def handoff_abort_case(trial, node, name, active_ns):
             except (ValueError, UnicodeError) as error:
                 record["closure_errors"].append("malformed custodian output: " + repr(error))
                 continue
-            if isinstance(value, dict) and value.get("kind") == "STARTUP_ABORT_COMPLETION_V1":
+            if isinstance(value, dict) and value.get("kind") == 1835009:
                 completions.append(value)
         assert len(completions) == 1, "missing/duplicate real Rust abort completion"
         done = completions[0]
@@ -372,8 +373,8 @@ def handoff_abort_case(trial, node, name, active_ns):
         assert done["observed_ns"] <= min(time.clock_gettime_ns(time.CLOCK_MONOTONIC), active_ns + 700_000_000)
         assert proof["complete"] is True and proof["original_child_reaped"] is True
         assert proof["original_child_pid"] == done["pid"]
-        assert proof["errors"] == [] and proof["authority_lost"] is False and "clock_error" not in proof
-        assert proof["session_state"] == "CONFIRMED_STOPPED_DETACHED_SESSION"
+        assert proof["errors"] == [] and proof["authority_lost"] is False
+        assert proof["session_state"] == 0x0013_0002  # AbortSession::Detached
         assert proof["owned_group_empty"] is True
         assert process.returncode == 1 and not forced
         assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) <= custodian_end
@@ -396,11 +397,16 @@ def handoff_abort_case(trial, node, name, active_ns):
     assert control_issued and control_request["operation_returned"] is True
     assert control_request["attempted_ns"] <= control_request["completed_ns"] < active_ns
     assert control_request["attempted_ns"] <= record["actual_abort_completion"]["observed_ns"]
-    expected_error = "naome: " + control_request["expected_primary_abort"] + "; owned startup child reaped\n"
-    assert stderr.decode() == expected_error, "abort primary error does not prove the named control"
-    control_request["causal_primary_abort"] = stderr.decode().rstrip("\n")
+    fatal = json.loads(stderr)
+    assert fatal["event"] == 0x00170017, fatal
+    error = fatal["error"]
+    assert error["code"] == control_request["expected_primary_abort"] and error["reaped"] is True, (
+        "abort primary error does not prove the named control", fatal)
+    assert isinstance(error.get("cause"), dict) and error["cause"]["code"] == error["code"], (
+        "abort primary cause missing", fatal)
+    control_request["causal_primary_abort"] = error
     assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) <= custodian_end, "original custodian endpoint expired before case completion"
-    record.update(result="pass", abort_elapsed_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - started,
+    record.update(result=FixtureResult.PASS, abort_elapsed_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - started,
                   native_runtime_qualification="THIS_EXACT_CASE_ONLY")
 
 
@@ -411,11 +417,11 @@ def run_handoff_abort_controls(trial, profile):
         for index, name in enumerate(("eof_after_offer", "wrong_nonce_after_offer", "term_after_offer")):
             node = Node(trial, index)
             handoff_abort_case(trial, node, name, active_ns)
-        trial.summary["result"] = "pass"
+        trial.summary["result"] = FixtureResult.PASS
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "startup-handoff", profile)
-    return 0 if trial.summary["result"] == "pass" else 1
+    return 0 if trial.summary["result"] == FixtureResult.PASS else 1
 
 
 def main():
@@ -448,15 +454,15 @@ def main():
         for name in trial.summary["internal_required_cases"]:
             internal_case(trial, node, name, 16 if name == "held_begin_after_old15s" else 0)
         assert len(trial.summary["internal_startup_cases"]) == 5
-        assert all(case["result"] == "pass" for case in trial.summary["internal_startup_cases"])
-        trial.summary["result"] = "pass"
+        assert all(case["result"] == FixtureResult.PASS for case in trial.summary["internal_startup_cases"])
+        trial.summary["result"] = FixtureResult.PASS
     except BaseException as error:
-        trial.summary.update(result="fail", error_kind=type(error).__name__)
+        trial.summary.update(result=FixtureResult.FAIL, error_kind=type(error).__name__)
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "startup", args.profile)
     print(json.dumps({"result": trial.summary["result"], "output": str(trial.output)}))
-    return 0 if trial.summary["result"] == "pass" else 1
+    return 0 if trial.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

@@ -68,7 +68,7 @@ impl CheckedWork {
     pub(crate) fn proof(&self) -> Result<&CheckedProgram, crate::Error> {
         let metadata = crate::storage::owned_file(&self.path)?;
         if self.identity != (metadata.dev(), metadata.ino()) {
-            return Err("proof work changed outside its owner".into());
+            return Err(crate::InputFault::ProofWorkChanged.into());
         }
         Ok(&self.proof)
     }
@@ -85,9 +85,10 @@ impl Work {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         fs::create_dir_all(parent).map_err(crate::Error::from)?;
-        let path = fs::canonicalize(parent)
-            .map_err(crate::Error::from)?
-            .join(path.file_name().ok_or("proof work filename missing")?);
+        let path = fs::canonicalize(parent).map_err(crate::Error::from)?.join(
+            path.file_name()
+                .ok_or(crate::InputFault::ProofWorkFilename)?,
+        );
         let _disk = crate::resources::DiskLease::acquire(
             path.parent().expect("proof work parent"),
             128 * 1024,
@@ -133,7 +134,7 @@ impl Work {
     fn live(&self) -> Result<(), crate::Error> {
         let metadata = crate::storage::owned_file(&self.path)?;
         if self.identity != (metadata.dev(), metadata.ino()) {
-            return Err("proof work changed outside its owner".into());
+            return Err(crate::InputFault::ProofWorkChanged.into());
         }
         Ok(())
     }
@@ -193,7 +194,10 @@ impl Work {
             }
             if bytes > RECORD_BYTES {
                 self.append_group(&pending)?;
-                return Err("proof command byte capacity; split construction into records".into());
+                return Err(crate::Error::ProofCommandInput {
+                    reason: crate::ProofCommandFault::RecordBytes,
+                    appended: count + pending.len() as u64,
+                });
             }
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
@@ -202,11 +206,16 @@ impl Work {
                 Ok(command) => command,
                 Err(e) => {
                     self.append_group(&pending)?;
-                    return Err(format!(
-                        "proof command after {} appended records: {e}",
-                        count + pending.len() as u64
-                    )
-                    .into());
+                    let reason = match crate::error::json_fault(&e) {
+                        crate::JsonFault::Io => crate::ProofCommandFault::JsonIo,
+                        crate::JsonFault::Syntax => crate::ProofCommandFault::JsonSyntax,
+                        crate::JsonFault::Data => crate::ProofCommandFault::JsonData,
+                        crate::JsonFault::Eof => crate::ProofCommandFault::JsonEof,
+                    };
+                    return Err(crate::Error::ProofCommandInput {
+                        reason,
+                        appended: count + pending.len() as u64,
+                    });
                 }
             };
             pending.push(command);
@@ -233,7 +242,7 @@ impl Work {
         }) {
             self.engine.record_budget(
                 &serde_json::to_vec(snapshot)
-                    .map_err(|error| crate::Error::InvalidInput(error.to_string()))?,
+                    .map_err(|_| crate::InputFault::ProofBudgetEncoding)?,
             )?;
             self.last_recorded_budget = Some(snapshot.clone());
         }
@@ -305,7 +314,7 @@ impl Work {
             || budget.cache_bytes > (budget.memory_bytes / 4).max(4096)
             || budget.cache_bytes > crate::resources::limits().memory_bytes as u64 / 4
         {
-            return Err("invalid effective cache budget".into());
+            return Err(crate::InputFault::ProofCacheBudget.into());
         }
         let cache = crate::resources::program_cache(
             budget.cache_bytes.min(
@@ -323,7 +332,7 @@ impl Work {
             || budget.batch_steps > budget.memory_bytes as usize / 8192
             || budget.concurrency == 0
         {
-            return Err("invalid effective proof budget".into());
+            return Err(crate::InputFault::ProofWorkBudget.into());
         }
         let _disk = crate::resources::DiskLease::acquire(
             self.directory(),

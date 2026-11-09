@@ -109,10 +109,7 @@ fn native_program_errors_and_bounded_inspection_survive_json_without_admission()
     );
     let report = error.diagnostic().unwrap();
     let json = serde_json::to_value(&error).unwrap();
-    assert_eq!(
-        json["diagnostic"]["failure"]["code"],
-        "mp.expected_implication"
-    );
+    assert_eq!(json["diagnostic"]["failure"]["code"], 0x0025_0001u32);
     let query = FormulaQuery {
         operand: OperandRole::Implication,
         root: report
@@ -361,7 +358,7 @@ fn pressure_pauses_mid_transformation_and_resumes_every_mathematical_step() {
     let before = work.status().unwrap();
     assert!(!before.fully_checked);
     let mut paused = quantum.clone();
-    paused.paused = Some("memory pressure".into());
+    paused.paused = Some(crate::PauseReason::MemoryPressure);
     paused.batch_steps = 0;
     assert!(
         !work
@@ -706,4 +703,57 @@ fn every_logical_recipe_and_both_schemas_match_foundation_tree_semantics() {
             "{command:?}"
         );
     }
+}
+
+#[test]
+fn malformed_proof_command_reports_committed_prefix_without_input_text() {
+    let directory = Directory::new();
+    let mut work = Work::open(&directory.path()).unwrap();
+    let mut input = serde_json::to_vec(&Command::Reflexivity { variable: 0 }).unwrap();
+    input.extend_from_slice(b"\n{\n");
+    let error = work
+        .append_reader(&mut std::io::Cursor::new(input))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::ProofCommandInput {
+            reason: crate::ProofCommandFault::JsonEof,
+            appended: 1
+        }
+    );
+    let json = serde_json::to_value(error).unwrap();
+    assert_eq!(json["reason"], u32::from(crate::ProofCommandFault::JsonEof));
+    assert_eq!(json["appended"], 1);
+    assert_eq!(work.status().unwrap().commands, 1);
+
+    let mut oversized = serde_json::to_vec(&Command::Reflexivity { variable: 1 }).unwrap();
+    oversized.push(b'\n');
+    oversized.extend(std::iter::repeat_n(b'x', RECORD_BYTES + 1));
+    let error = work
+        .append_reader(&mut std::io::Cursor::new(oversized))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::ProofCommandInput {
+            reason: crate::ProofCommandFault::RecordBytes,
+            appended: 1
+        }
+    );
+    assert_eq!(work.status().unwrap().commands, 2);
+}
+
+#[test]
+fn proof_owner_reports_replacement_without_touching_it() {
+    let directory = Directory::new();
+    let work = Work::open(&directory.path()).unwrap();
+    let replacement = directory.0.join("replacement");
+    fs::write(&replacement, b"foreign").unwrap();
+    fs::rename(&replacement, directory.path()).unwrap();
+    let error = work.status().unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::ProofWorkChanged)
+    );
+    drop(work);
+    assert_eq!(fs::read(directory.path()).unwrap(), b"foreign");
 }

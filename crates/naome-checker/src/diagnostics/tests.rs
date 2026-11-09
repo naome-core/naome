@@ -562,3 +562,131 @@ fn tree_continuation_preserves_exact_variables_and_rejects_foreign_addresses() {
         Err(InspectionError::UnknownFormula)
     );
 }
+
+#[test]
+fn diagnostic_failure_codes_keep_typed_witnesses() {
+    let failure = Failure::FormulaWorkLimit {
+        actual: 42,
+        maximum: 11,
+    };
+    let encoded = serde_json::to_value(&failure).unwrap();
+    assert_eq!(encoded["code"], 0x0025_000fu32);
+    assert_eq!(encoded["actual"], 42);
+    assert_eq!(encoded["maximum"], 11);
+    let context = serde_json::to_value(Failure::ContextLimit).unwrap();
+    assert_eq!(context["code"], 0x0025_0010u32);
+    assert_eq!(context.as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn nested_formula_and_expansion_failures_have_numeric_codes_and_witnesses() {
+    let failure = Failure::Expansion {
+        reason: ExpansionFailure::Formula {
+            reason: FormulaFailure::DanglingBoundVariable {
+                index: 3,
+                binder_depth: 2,
+            },
+        },
+    };
+    let json = serde_json::to_value(&failure).unwrap();
+    assert_eq!(json["code"], 0x0025_000d_u32);
+    assert_eq!(json["reason"]["code"], 0x0029_0007_u32);
+    assert_eq!(json["reason"]["reason"]["code"], 0x0028_0007_u32);
+    assert_eq!(json["reason"]["reason"]["index"], 3);
+    assert_eq!(json["reason"]["reason"]["binder_depth"], 2);
+    assert!(json["reason"].get("kind").is_none());
+}
+
+#[test]
+fn diagnostic_unit_values_have_registered_numeric_codes() {
+    assert_eq!(
+        serde_json::to_value(InputFormat::Program).unwrap(),
+        0x002d_0002_u32
+    );
+    assert_eq!(
+        serde_json::to_value(Outcome::MissingDependency).unwrap(),
+        0x002e_0002_u32
+    );
+    assert_eq!(
+        serde_json::to_value(Rule::ModusPonens).unwrap(),
+        0x002f_0015_u32
+    );
+    assert_eq!(
+        serde_json::to_value(OperandRole::Implication).unwrap(),
+        0x0030_0002_u32
+    );
+    assert_eq!(
+        serde_json::to_value(ClaimField::Commands).unwrap(),
+        0x0031_0001_u32
+    );
+    assert_eq!(
+        serde_json::to_value(NodeKind::ForAll).unwrap(),
+        0x0035_0005_u32
+    );
+    assert_eq!(
+        serde_json::to_value(PathSegment::Consequent).unwrap(),
+        0x0037_0003_u32
+    );
+    assert_eq!(
+        serde_json::to_value(VariableNamespace::Source).unwrap(),
+        0x0038_0002_u32
+    );
+    let codes: Vec<_> = outcome_codes().map(|(_, _, code)| code).collect();
+    let unique: std::collections::BTreeSet<_> = codes.iter().copied().collect();
+    assert_eq!(codes.len(), unique.len());
+    assert!(!unique.contains(&0));
+}
+
+#[test]
+fn inspection_and_formula_values_preserve_numeric_types_and_witnesses() {
+    let mismatch = Failure::ManifestMismatch {
+        field: ClaimField::Commands,
+        expected: ClaimValue::Count(2),
+        actual: ClaimValue::Count(3),
+    };
+    let value = serde_json::to_value(mismatch).unwrap();
+    assert_eq!(value["field"], 0x0031_0001_u32);
+    assert_eq!(value["expected"]["code"], 0x0032_0001_u32);
+    assert_eq!(value["expected"]["value"], 2);
+    assert_eq!(value["actual"]["value"], 3);
+    let inspection = InspectionError::ReplayRequired {
+        checked_before: 3,
+        required_before: 9,
+    };
+    let value = serde_json::to_value(inspection).unwrap();
+    assert_eq!(value["code"], 0x0033_0006_u32);
+    assert_eq!(value["required_before"], 9);
+    let node = FormulaNode::Equal {
+        left: Variable::Free(4),
+        right: Variable::Bound(2),
+    };
+    let value = serde_json::to_value(node).unwrap();
+    assert_eq!(value["code"], 0x0036_0001_u32);
+    assert_eq!(value["left"]["code"], 0x0034_0001_u32);
+    assert_eq!(value["left"]["identifier"], 4);
+    assert_eq!(value["right"]["code"], 0x0034_0002_u32);
+    assert_eq!(value["right"]["identifier"], 2);
+    assert!(value.get("kind").is_none());
+}
+
+#[test]
+fn graph_materialization_preserves_machine_readable_cause() {
+    use naome_foundation::graph::MaterializationError;
+    use naome_proof::DefinedFormulaCodecError;
+    let error = DefinedFormulaCodecError::Graph(MaterializationError::DanglingBinder {
+        index: u64::MAX,
+        binder_depth: 2,
+    });
+    assert_eq!(
+        FormulaFailure::from(&error),
+        FormulaFailure::GraphDanglingBinder {
+            index: u64::MAX,
+            binder_depth: 2
+        }
+    );
+    let limit = DefinedFormulaCodecError::Graph(MaterializationError::NodeLimit { maximum: 42 });
+    assert_eq!(
+        FormulaFailure::from(&limit),
+        FormulaFailure::NodeLimit { maximum: 42 }
+    );
+}

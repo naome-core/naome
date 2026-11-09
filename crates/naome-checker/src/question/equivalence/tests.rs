@@ -46,7 +46,10 @@ fn elementary_equivalence_rejects_without_stored_bridges_and_rechecks_both_direc
             "{:?}: {result:?}",
             question
         );
-        assert_eq!(result.rule, "Q05_ELEMENTARY_EQUIVALENCE");
+        assert_eq!(
+            result.rule,
+            crate::question::PrefilterRule::Q05ElementaryEquivalence
+        );
         assert_eq!(result.related_record, Some([1; 32]));
         assert!(!result.has_answer());
         assert!(result.novelty().is_none());
@@ -235,7 +238,10 @@ fn an_expensive_equivalence_candidate_cannot_hide_a_short_checked_answer() {
         &policy,
     );
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q04CheckedMpClosure
+    );
     assert!(result.equivalence.is_none());
     assert!(result.novelty().is_none());
 }

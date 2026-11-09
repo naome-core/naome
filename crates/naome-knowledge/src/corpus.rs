@@ -27,8 +27,8 @@ pub(crate) struct InventoryPage {
 
 /// The checked map maintains its key-only Patricia root incrementally. The
 /// fingerprint is an untrusted synchronization hint, never proof authority.
-pub(crate) fn root(count: usize, fingerprint: [u8; 32]) -> Result<[u8; 32], String> {
-    let count = u64::try_from(count).map_err(|_| "corpus count width")?;
+pub(crate) fn root(count: usize, fingerprint: [u8; 32]) -> Result<[u8; 32], crate::Error> {
+    let count = u64::try_from(count).map_err(|_| crate::InputFault::CorpusCountWidth)?;
     let mut hash = Sha256::new();
     hash.update(ROOT_FORMAT.as_bytes());
     hash.update([0]);

@@ -21,17 +21,28 @@ impl ProgramRead {
 
     /// Routing and admission only. The store still authenticates the chunk
     /// chain and canonical commands before accepting any payload bytes.
-    pub(super) fn matches_reply(
+    pub(super) fn check_reply(
         &self,
         root: [u8; 32],
         id: [u8; 32],
         chunk: &naome_proof::program::Chunk,
-    ) -> bool {
-        root == *self.root.as_bytes()
-            && id == *self.id.as_bytes()
-            && chunk.start == self.start
-            && !chunk.records.is_empty()
-            && chunk.records.len() <= self.limit
+    ) -> Result<(), crate::InputFault> {
+        if root != *self.root.as_bytes() {
+            return Err(crate::InputFault::ProgramReplyRoot);
+        }
+        if id != *self.id.as_bytes() {
+            return Err(crate::InputFault::ProgramReplyId);
+        }
+        if chunk.start != self.start {
+            return Err(crate::InputFault::ProgramReplyStart);
+        }
+        if chunk.records.is_empty() {
+            return Err(crate::InputFault::ProgramReplyEmpty);
+        }
+        if chunk.records.len() > self.limit {
+            return Err(crate::InputFault::ProgramReplyLimit);
+        }
+        Ok(())
     }
 }
 

@@ -19,8 +19,9 @@ fn encoded() -> Vec<u8> {
 #[test]
 fn current_message_schema_requires_exact_fields_and_types() {
     for body in [
-        serde_json::json!({"kind":"Inventory","after":null,"limit":"untrusted"}),
-        serde_json::json!({"kind":"Inventory","after":null,"limit":1,"extra":true}),
+        serde_json::json!([crate::outcome::MessageKind::Inventory,{"known":null,"after":null,"limit":"untrusted"}]),
+        serde_json::json!([crate::outcome::MessageKind::Inventory,{"known":null,"after":null,"limit":1,"extra":true}]),
+        serde_json::json!([crate::outcome::MessageKind::Inventory,{"after":null,"limit":1}]),
     ] {
         assert!(
             serde_json::from_value::<Message>(
@@ -32,31 +33,66 @@ fn current_message_schema_requires_exact_fields_and_types() {
     assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge");
 }
 
+#[test]
+fn peer_outcomes_accept_only_codes_in_their_own_domain() {
+    let busy = Body::Error {
+        code: PeerFailure::OwnerBusy,
+    };
+    assert_eq!(
+        serde_json::to_vec(&busy).unwrap(),
+        br#"[1703948,{"code":65537}]"#
+    );
+    assert!(matches!(
+        serde_json::from_slice::<Body>(br#"[1703948,{"code":65537}]"#),
+        Ok(Body::Error {
+            code: PeerFailure::OwnerBusy
+        })
+    ));
+    for input in [
+        br#"[1703948,{"code":131073}]"#.as_slice(),
+        br#"[1703948,{"code":131071}]"#,
+        br#"[1703948,{"code":65537,"grant":true}]"#,
+    ] {
+        assert!(serde_json::from_slice::<Body>(input).is_err());
+    }
+}
+
+#[test]
+fn numeric_control_body_rejects_unknown_binary_and_extra_fields() {
+    use crate::outcome::MessageKind;
+    let missing = u32::from(MessageKind::Missing);
+    assert!(matches!(
+        serde_json::from_str::<Body>(&format!("[{missing},{{}}]")),
+        Ok(Body::Missing)
+    ));
+    for input in [
+        format!("[{missing},{{\"extra\":true}}]"),
+        format!("[{missing},{{}},0]"),
+        format!("[{missing}]"),
+        format!("[{},{{}}]", u32::from(MessageKind::Object)),
+        "[4294967295,{}]".to_owned(),
+    ] {
+        assert!(serde_json::from_str::<Body>(&input).is_err(), "{input}");
+    }
+}
+
 #[tokio::test]
 async fn strict_frames_reject_oversize_trailing_and_truncation() {
     let codec = Codec::default();
     assert!(codec.read(&mut Cursor::new(encoded())).await.is_ok());
     let mut trailing = encoded();
     trailing.push(0);
-    assert!(
-        codec
-            .read(&mut Cursor::new(trailing))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("trailing")
+    assert_eq!(
+        stream_failure(&codec.read(&mut Cursor::new(trailing)).await.unwrap_err()),
+        WireFailure::TrailingFrameBytes
     );
     let mut truncated = encoded();
     truncated.pop();
     assert!(codec.read(&mut Cursor::new(truncated)).await.is_err());
     let header = (frame_limit() as u32 + 1).to_be_bytes().to_vec();
-    assert!(
-        codec
-            .read(&mut Cursor::new(header))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("byte limit")
+    assert_eq!(
+        stream_failure(&codec.read(&mut Cursor::new(header)).await.unwrap_err()),
+        WireFailure::FrameLimit
     );
 }
 
@@ -68,13 +104,9 @@ async fn frame_custody_is_shared_and_released_after_handling() {
     for _ in 0..crate::resources::active_limits().inbound_frames {
         retained.push(codec.read(&mut Cursor::new(encoded())).await.unwrap());
     }
-    assert!(
-        other
-            .read(&mut Cursor::new(encoded()))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("capacity")
+    assert_eq!(
+        stream_failure(&other.read(&mut Cursor::new(encoded())).await.unwrap_err()),
+        WireFailure::FrameCapacity
     );
     retained.pop();
     assert!(other.read(&mut Cursor::new(encoded())).await.is_ok());
@@ -221,20 +253,44 @@ async fn cold_artifact_frame_packs_exact_bytes_and_bounds_expansion() {
     wrong_length[declared..payload].copy_from_slice(&expanded.to_be_bytes());
 
     let mut corrupt = bytes.clone();
-    // LZ4's extended literal length must end with a byte smaller than 255.
     let question_flag = corrupt.len() - 1;
     corrupt[payload..question_flag].fill(0xff);
 
     for (frame, expected) in [
-        (oversized, Some("payload capacity")),
-        (wrong_length, Some("expanded length differs")),
-        (corrupt, None),
+        (oversized, WireFailure::ArtifactPayloadLimit),
+        (wrong_length, WireFailure::ArtifactCompression),
+        (corrupt, WireFailure::ArtifactCompression),
     ] {
         let error = codec.read(&mut Cursor::new(frame)).await.unwrap_err();
-        if let Some(expected) = expected {
-            assert!(error.to_string().contains(expected), "{error}");
-        }
+        assert_eq!(stream_failure(&error), expected);
         assert_eq!(codec.budget.available_permits(), capacity);
         assert!(codec.read(&mut Cursor::new(&bytes)).await.is_ok());
     }
+}
+
+#[test]
+fn cooperative_messages_use_numeric_kinds_and_strict_payloads() {
+    let offer = Body::WorkOffer {
+        goal: [7; 32],
+        question: "abc".into(),
+    };
+    let value = serde_json::to_value(&offer).unwrap();
+    assert_eq!(value[0], 0x001a_0011_u32);
+    assert!(
+        matches!(serde_json::from_value::<Body>(value.clone()), Ok(Body::WorkOffer { goal, question }) if goal == [7; 32] && question == "abc")
+    );
+    let mut incomplete = value;
+    incomplete[1].as_object_mut().unwrap().remove("question");
+    assert!(serde_json::from_value::<Body>(incomplete).is_err());
+    let status = Body::WorkStatus {
+        goal: [7; 32],
+        question: [8; 32],
+        active: true,
+        sequence: 9,
+    };
+    let value = serde_json::to_value(status).unwrap();
+    assert_eq!(value[0], 0x001a_0012_u32);
+    assert!(
+        matches!(serde_json::from_value::<Body>(value), Ok(Body::WorkStatus { goal, question, active: true, sequence: 9 }) if goal == [7; 32] && question == [8; 32])
+    );
 }

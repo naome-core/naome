@@ -22,17 +22,17 @@ impl Hash for Kernel {
 }
 
 impl Kernel {
-    pub fn new(step: ProofStep) -> Result<Self, String> {
+    pub fn new(step: ProofStep) -> Result<Self, crate::Error> {
         Self::with_context(step, &naome_checker::ArtifactState::new())
     }
     pub fn with_context(
         step: ProofStep,
         context: &dyn naome_checker::ContextView,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let primitive = |f: &naome_proof::ProofFormula| {
             f.expand_with(context)
                 .map(std::borrow::Cow::into_owned)
-                .map_err(|e| e.to_string())
+                .map_err(crate::Error::from)
         };
         let formula = match &step {
             ProofStep::Simplification {
@@ -78,7 +78,7 @@ impl Kernel {
                 parameters: instance.parameters.clone(),
             }
             .formula()
-            .map_err(|e| e.to_string())?,
+            .map_err(crate::Error::from)?,
             ProofStep::Replacement(instance) => naome_foundation::Replacement {
                 predicate: primitive(&instance.predicate)?,
                 input: instance.input,
@@ -89,11 +89,13 @@ impl Kernel {
                 parameters: instance.parameters.clone(),
             }
             .formula()
-            .map_err(|e| e.to_string())?,
-            _ => return Err("unsupported kernel constant".into()),
+            .map_err(crate::Error::from)?,
+            _ => return Err(crate::ResearchFailure::KernelUnsupported.into()),
         };
         let key = ProofCertificate::new(vec![step.clone()])
-            .map_err(|e| e.to_string())?
+            .map_err(|error| {
+                crate::Error::CertificateConstruction(crate::FormatFailure::from(&error))
+            })?
             .to_canonical_bytes();
         Ok(Self { step, formula, key })
     }
@@ -102,5 +104,46 @@ impl Kernel {
     }
     pub fn step(&self) -> ProofStep {
         self.step.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use naome_foundation::FreeVariable;
+
+    #[test]
+    fn missing_definition_keeps_expansion_diagnostic() {
+        let variable = FreeVariable::new(0);
+        let missing = naome_proof::DefinitionId::from_bytes([7; 32]);
+        let defined = naome_proof::DefinedFormula::defined_relation(missing, [variable]);
+        let step = ProofStep::Simplification {
+            antecedent: naome_proof::ProofFormula::from_defined(defined).unwrap(),
+            consequent: Formula::equal(variable, variable).into(),
+        };
+        let error = Kernel::new(step).unwrap_err();
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], 0x0006_001d_u32);
+        assert!(value["expansion"]["code"].as_u64().is_some());
+    }
+
+    #[test]
+    fn schema_role_collision_keeps_code_and_variable() {
+        let variable = FreeVariable::new(3);
+        let step = ProofStep::Separation(naome_proof::ProofSeparation {
+            predicate: Formula::equal(variable, variable).into(),
+            element: variable,
+            source: variable,
+            result: FreeVariable::new(4),
+            parameters: vec![],
+        });
+        let error = Kernel::new(step).unwrap_err();
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], 0x0006_001e_u32);
+        assert_eq!(
+            value["reason"],
+            u32::from(crate::SchemaFailure::RoleCollision)
+        );
+        assert_eq!(value["variable"], 3);
     }
 }

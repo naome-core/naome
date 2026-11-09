@@ -30,7 +30,7 @@ fn interrupted_or_paused_finalization_reopens_unchecked_and_reproduces_the_manif
             work.prepare_export(&quantum).unwrap();
         }
         let mut paused = quantum.clone();
-        paused.paused = Some("resource reduction".into());
+        paused.paused = Some(crate::PauseReason::MemoryPressure);
         paused.batch_steps = 0;
         assert!(!work.prepare_export(&paused).unwrap());
         drop(work);
@@ -67,7 +67,15 @@ fn candidate_retirement_preserves_replacement_foreign_files_and_live_custody() {
     drop(connection);
     let expected = fs::read(&foreign).unwrap();
     fs::rename(&foreign, &path).unwrap();
-    assert!(retire_candidate(&directory.0, 1).is_err());
+    let error = retire_candidate(&directory.0, 1).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::CandidateFormat)
+    );
+    assert_eq!(
+        serde_json::to_value(&error).unwrap()["code"],
+        u32::from(crate::InputFault::CandidateFormat)
+    );
     assert_eq!(fs::read(&path).unwrap(), expected);
     fs::rename(&path, &foreign).unwrap();
     symlink(&foreign, &path).unwrap();

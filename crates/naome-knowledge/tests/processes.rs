@@ -126,7 +126,7 @@ fn cold_mock_helper_proves_defined_offer_and_requester_rechecks_it() {
                 .ingest(envelope, std::time::Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            naome_knowledge::IngestStatus::Accepted
         );
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -231,7 +231,7 @@ fn defined_workgroup(helper_provider: &str) {
         let mut graph = naome_knowledge::Graph::open(&seed).unwrap();
         let envelope = graph.author(&naome_knowledge::hex(&artifact)).unwrap();
         let receipt = graph.ingest(envelope, std::time::Instant::now()).unwrap();
-        assert_eq!(receipt.status, "accepted");
+        assert_eq!(receipt.status, naome_knowledge::IngestStatus::Accepted);
     }
     let result = Command::new("python3")
         .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -843,4 +843,70 @@ mod developer_transport {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn resource_initialization_failure_retains_machine_readable_cause() {
+    let output = Command::new(env!("CARGO_BIN_EXE_naome"))
+        .arg("status")
+        .env("NAOME_EFFECTIVE_RESOURCES", "{")
+        .env_remove("NAOME_RESOURCE_CONFIG")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let event: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(naome_knowledge::RuntimeFailure::Resources)
+    );
+    assert_eq!(event["error"]["fatal"], true);
+    assert_eq!(event["error"]["cause"]["code"], 0x0006_0019_u32);
+    assert_eq!(
+        event["error"]["cause"]["reason"],
+        u32::from(naome_knowledge::JsonFault::Eof)
+    );
+    assert_eq!(event["error"]["cause"]["line"], 1);
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn developer_identity_creation_reports_the_os_cause_without_overwriting_key() {
+    let directory = std::env::temp_dir().join(format!(
+        "naome-dev-identity-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let binary = env!("CARGO_BIN_EXE_naome-knowledge-dev");
+    let first = Command::new(binary)
+        .arg("init")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let key = std::fs::read(directory.join("identity.key")).unwrap();
+    let second = Command::new(binary)
+        .arg("init")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    let event: serde_json::Value = serde_json::from_slice(&second.stderr).unwrap();
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(naome_knowledge::RuntimeFailure::DeveloperIdentityCreate)
+    );
+    assert_eq!(
+        event["error"]["cause"]["kind"],
+        u32::from(naome_knowledge::IoFaultKind::AlreadyExists)
+    );
+    assert_eq!(std::fs::read(directory.join("identity.key")).unwrap(), key);
+    std::fs::remove_dir_all(directory).unwrap();
 }

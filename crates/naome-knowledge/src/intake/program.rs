@@ -109,43 +109,43 @@ impl Programs {
         metadata: ProgramMetadata,
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<&'static str, crate::Error> {
+    ) -> Result<OfferStatus, crate::Error> {
         let id = metadata.manifest.artifact_id();
         if graph.contains(id)? {
-            return Ok("duplicate");
+            return Ok(OfferStatus::Duplicate);
         }
         if let Some(root) = &mut self.active
             && root.offer.metadata.manifest.artifact_id() == id
         {
             if root.offer.metadata.manifest != metadata.manifest {
-                return Err("program manifest changed during transfer".into());
+                return Err(crate::InputFault::IntakeManifestChanged.into());
             }
             root.offer.transfer = TransferGrant::new(peer, id, grant);
             root.refresh = false;
-            return Ok("metadata_refreshed");
+            return Ok(OfferStatus::MetadataRefreshed);
         }
         if self
             .declined
             .get(&id)
             .is_some_and(|until| *until > Instant::now())
         {
-            return Ok("declined");
+            return Ok(OfferStatus::Declined);
         }
         if metadata.question(graph.checked_context())?.is_none() {
-            return Ok("unselected");
+            return Ok(OfferStatus::Unselected);
         }
         if self
             .queue
             .iter()
             .any(|offer| offer.metadata.manifest.artifact_id() == id)
         {
-            return Ok("queued_duplicate");
+            return Ok(OfferStatus::QueuedDuplicate);
         }
         self.queue.push_back(Offer {
             metadata,
             transfer: TransferGrant::new(peer, id, grant),
         });
-        Ok("queued")
+        Ok(OfferStatus::Queued)
     }
     fn request(&self, graph: &Graph) -> Result<Option<ProgramRequest>, crate::Error> {
         let Some(root) = &self.active else {
@@ -198,9 +198,12 @@ impl Programs {
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
-        let root = self.active.as_mut().ok_or("unrequested program payload")?;
+        let root = self
+            .active
+            .as_mut()
+            .ok_or(crate::InputFault::IntakeProgramUnrequested)?;
         if !root.fetching() {
-            return Err("unrequested program payload".into());
+            return Err(crate::InputFault::IntakeProgramUnrequested.into());
         }
         root.offer.transfer.authorize(peer, id, Instant::now())?;
         let progress = graph
@@ -241,7 +244,8 @@ impl Programs {
     ) -> Progress
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+        Fut:
+            Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
     {
         self.declined.retain(|_, until| *until > Instant::now());
         if self.active.is_none()
@@ -249,13 +253,13 @@ impl Programs {
         {
             let id = offer.metadata.manifest.artifact_id();
             if !offer.transfer.live(Instant::now()) {
-                return Progress::Skipped(id, "queued program metadata expired".into());
+                return Progress::Skipped(id, crate::InputFault::IntakeQueuedProgramExpired.into());
             }
             let authority = (|| -> Result<Selection, crate::Error> {
                 let question = offer
                     .metadata
                     .question(graph.checked_context())?
-                    .ok_or("program has no supported selection question")?;
+                    .ok_or(crate::InputFault::IntakeSelectionQuestionMissing)?;
                 Ok(Selection::new(id, question))
             })();
             match authority {
@@ -338,7 +342,7 @@ impl Programs {
             root.closure.advance(graph)?;
             if root.closure.member_count() > crate::resources::limits().closure_objects {
                 return Err(crate::Error::InputLimit(
-                    "program closure dependency capacity",
+                    crate::InputLimit::ProgramClosureDependencyCapacity,
                 ));
             }
             if !root.closure.ready() && !matches!(root.stage, Stage::Start | Stage::Fetch) {
@@ -363,7 +367,7 @@ impl Programs {
                         if root.closure.member_count() > crate::resources::limits().closure_objects
                         {
                             return Err(crate::Error::InputLimit(
-                                "program closure dependency capacity",
+                                crate::InputLimit::ProgramClosureDependencyCapacity,
                             ));
                         }
                         if !complete || !root.closure.ready() {
@@ -412,7 +416,9 @@ impl Programs {
                     if root.refresh || !root.offer.transfer.live(Instant::now()) {
                         return Ok(None);
                     }
-                    let mut batch = prepared.take_batch().ok_or("program batch absent")?;
+                    let mut batch = prepared
+                        .take_batch()
+                        .ok_or(crate::InputFault::IntakeBatchMissing)?;
                     root.closure.attach_questions(graph, &mut batch)?;
                     // The transferred batch owns the prefix. If preparation or
                     // publication defers, rebuild it from the checked helpers.
@@ -456,7 +462,7 @@ impl Intake {
         metadata: ProgramMetadata,
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<&'static str, crate::Error> {
+    ) -> Result<OfferStatus, crate::Error> {
         if self
             .programs
             .helper_contains(metadata.manifest.artifact_id())
@@ -465,12 +471,12 @@ impl Intake {
                 .as_ref()
                 .is_some_and(|root| root.closure.contains(metadata.manifest.artifact_id()))
         {
-            return Ok("cited_program_pending");
+            return Ok(OfferStatus::CitedProgramPending);
         }
         if self.description_capacity() == 0
             && !self.programs.contains(metadata.manifest.artifact_id())
         {
-            return Err("program description queue capacity".into());
+            return Err(crate::InputLimit::IntakeProgramDescriptionCapacity.into());
         }
         self.programs.enqueue(peer, metadata, graph, grant)
     }
@@ -525,9 +531,12 @@ impl Intake {
         }
         if root_id != id {
             if !self.authorizes(peer, root_id, id) {
-                return Err("unrequested cited program payload".into());
+                return Err(crate::InputFault::IntakeCitedProgramUnrequested.into());
             }
-            let root = self.active.as_mut().ok_or("cited program parent missing")?;
+            let root = self
+                .active
+                .as_mut()
+                .ok_or(crate::InputFault::IntakeCitedParentMissing)?;
             root.description.transfer.check(Instant::now())?;
             return root.closure.payload(id, chunk, graph);
         }

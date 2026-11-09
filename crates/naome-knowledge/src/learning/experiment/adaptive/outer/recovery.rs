@@ -51,7 +51,7 @@ fn later(source: &Source) -> acquisition::FrozenRound {
         state.observe_result(
             row["question"].as_str().unwrap(),
             !row["solution"].is_null(),
-            row["diagnostic"].as_str().unwrap(),
+            &serde_json::from_value(row["experience"]["terminal"].clone()).unwrap(),
             row["elapsed_micros"].as_u64().unwrap(),
             128,
         );
@@ -86,7 +86,7 @@ fn warm(
     assert_eq!(state.model, parent.state.model);
     if !state.needs_training() {
         write(&directory.join("input-state.json"), &state);
-        return serde_json::json!({"complete":false,"reason":"no_eligible_continuation_epoch","elapsed":clock.elapsed()});
+        return serde_json::json!({"complete":false,"reason":crate::outcome::ExperimentReason::ContinuationUnavailable,"elapsed":clock.elapsed()});
     }
     let mut io = history::Io {
         store: fork_store(&source.common.store),
@@ -189,7 +189,7 @@ fn warm(
     job_limits(&clock);
     serde_json::json!({"complete":true,"promoted":promoted,"selected":state.model,"parent_job":parent.job,
         "parent_checkpoint":parent.state.model,"prepared":progress.prepared,"plan":progress.plan,
-        "diagnostic":progress.diagnostic,"before":progress.incumbent_score,"after":progress.candidate_score,
+        "qualification":progress.qualification,"before":progress.incumbent_score,"after":progress.candidate_score,
         "protected_loss":progress.development_regression,"anchor_loss":progress.anchor_regression,"transfer":progress.transfer,
         "elapsed":clock.elapsed(),"source_read_bytes":io.source_bytes,"source_read_operations":io.source_reads,
         "model_read_bytes":io.store.read_bytes,"model_written_bytes":io.store.written_bytes,
@@ -263,7 +263,7 @@ fn bounded_source_recovery_comparison() {
         }
         let mut parent = parent.unwrap();
         if !parent.promoted {
-            rows.push(serde_json::json!({"context":context,"warm_coverage":false,"reason":"no_genuine_parent"}));
+            rows.push(serde_json::json!({"context":context,"warm_coverage":false,"reason":crate::outcome::ExperimentReason::ParentAbsent}));
             write(&output.join("trials.json"), &rows);
             continue;
         }

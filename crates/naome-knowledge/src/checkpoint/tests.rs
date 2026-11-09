@@ -204,3 +204,328 @@ pub(crate) fn question_source(index: usize) -> String {
     }
     crate::test_inputs::question(Formula::for_all(x, formula)).to_hex()
 }
+
+#[test]
+fn row_read_limit_and_digest_failures_remain_distinct_and_fail_closed() {
+    let directory = Directory::new();
+    let path = directory.0.join("typed-row.sqlite3");
+    let checkpoint = Checkpoint::create(
+        &path,
+        "test",
+        &1u64,
+        vec![Update::put("record", "one", &"retained payload").unwrap()],
+    )
+    .unwrap();
+    let error = checkpoint.page("record", None, 0, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointPageBudget)
+    );
+    let error = checkpoint.page("record", None, 1, 64).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointPageMemoryLimit)
+    );
+    let error = checkpoint.page("record", None, 1, 2).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointRecordReadLimit)
+    );
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["fatal"], true);
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(crate::InputFault::CheckpointRecordReadLimit)
+    );
+
+    checkpoint
+        .connection
+        .execute(
+            "UPDATE entries SET digest = zeroblob(32) WHERE kind = 'record' AND key = 'one'",
+            [],
+        )
+        .unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointRecordDigest)
+    );
+    assert_eq!(
+        serde_json::to_value(error.storage()).unwrap()["fatal"],
+        true
+    );
+    let count: i64 = checkpoint
+        .connection
+        .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn external_checkpoint_change_and_replacement_keep_specific_fail_closed_causes() {
+    let directory = Directory::new();
+    let path = directory.0.join("owner.sqlite3");
+    let mut checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    let outside = Connection::open(&path).unwrap();
+    outside
+        .execute("UPDATE checkpoint SET header = X'32'", [])
+        .unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointOutsideOwner)
+    );
+    let error = checkpoint.query(|_| Ok(())).unwrap_err();
+    assert!(error.fatal());
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["cause_code"],
+        u32::from(crate::InputFault::CheckpointOutsideOwner)
+    );
+    let error = checkpoint.query_mut(|_| Ok(())).unwrap_err();
+    assert!(error.fatal());
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["cause_code"],
+        u32::from(crate::InputFault::CheckpointOutsideOwner)
+    );
+    drop(outside);
+    drop(checkpoint);
+
+    let path = directory.0.join("replaced.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    fs::rename(&path, directory.0.join("old.sqlite3")).unwrap();
+    fs::write(&path, b"replacement").unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointFileReplaced)
+    );
+    assert!(checkpoint.query(|_| Ok(())).unwrap_err().fatal());
+}
+
+#[test]
+fn uncertain_checkpoint_commit_requires_replay_before_any_read() {
+    let directory = Directory::new();
+    let path = directory.0.join("uncertain.sqlite3");
+    let mut checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    fail_after_commit();
+    assert!(matches!(
+        checkpoint.commit(&2u64, vec![]),
+        Err(CommitError::Uncertain(_))
+    ));
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    assert!(matches!(error, crate::Error::UncertainDurability(_)));
+    assert!(error.fatal());
+    drop(checkpoint);
+    let recovered = Checkpoint::open(&path, "test").unwrap();
+    assert_eq!(recovered.header::<u64>().unwrap(), 2);
+}
+
+#[test]
+fn checkpoint_json_errors_keep_categories_positions_and_storage_fatality() {
+    for (bytes, expected) in [
+        (b"{!".as_slice(), crate::JsonFault::Syntax),
+        (b"{".as_slice(), crate::JsonFault::Eof),
+    ] {
+        let error = decode::<serde_json::Value>(bytes).unwrap_err();
+        assert!(
+            matches!(error, crate::Error::CheckpointDecode { reason, line: 1, column: _, } if reason == expected)
+        );
+    }
+    let error = decode::<u64>(b"\"wrong\"").unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::CheckpointDecode {
+            reason: crate::JsonFault::Data,
+            ..
+        }
+    ));
+    let error = decode::<serde_json::Value>(b" {\"value\":1}").unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointNoncanonical)
+    );
+
+    let directory = Directory::new();
+    let path = directory.0.join("bad-json.sqlite3");
+    let checkpoint = Checkpoint::create(
+        &path,
+        "test",
+        &1u64,
+        vec![Update::put("record", "one", &1u64).unwrap()],
+    )
+    .unwrap();
+    let bytes = b"{!";
+    checkpoint
+        .connection
+        .execute(
+            "UPDATE entries SET payload = ?1, digest = ?2 WHERE kind = 'record' AND key = 'one'",
+            params![
+                bytes.as_slice(),
+                digest("test", "record", "one", bytes).as_slice()
+            ],
+        )
+        .unwrap();
+    let error = checkpoint
+        .get::<serde_json::Value>("record", "one", 1024)
+        .unwrap_err();
+    let value = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(value["fatal"], true);
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::outcome::OperationCode::CheckpointDecode)
+    );
+    assert_eq!(value["reason"], u32::from(crate::JsonFault::Syntax));
+    assert_eq!(value["line"], 1);
+}
+
+#[test]
+fn checkpoint_header_domain_and_digest_failures_keep_specific_causes() {
+    let directory = Directory::new();
+    let path = directory.0.join("header.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    checkpoint
+        .connection
+        .execute("UPDATE checkpoint SET domain = 'other'", [])
+        .unwrap();
+    let error = checkpoint.header::<u64>().unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderDomain)
+    );
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["fatal"], true);
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(crate::InputFault::CheckpointHeaderDomain)
+    );
+    checkpoint
+        .connection
+        .execute(
+            "UPDATE checkpoint SET domain = 'test', digest = zeroblob(32)",
+            [],
+        )
+        .unwrap();
+    let error = checkpoint.header::<u64>().unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderDigest)
+    );
+    assert!(error.storage().fatal());
+    checkpoint
+        .connection
+        .execute("DELETE FROM checkpoint", [])
+        .unwrap();
+    let error = checkpoint.header::<u64>().unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderCardinality)
+    );
+    assert!(error.storage().fatal());
+}
+
+#[test]
+fn checkpoint_sql_read_failure_retains_native_code_and_fails_closed() {
+    let directory = Directory::new();
+    let path = directory.0.join("missing-table.sqlite3");
+    let checkpoint = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    checkpoint
+        .connection
+        .execute("DROP TABLE entries", [])
+        .unwrap();
+    let error = checkpoint.page("record", None, 1, 1024).unwrap_err();
+    let value = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(value["fatal"], true);
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::outcome::OperationCode::CheckpointSql)
+    );
+    assert_eq!(value["reason"], u32::from(crate::SqlFault::Engine));
+    assert_eq!(value["sqlite_code"], rusqlite::ffi::SQLITE_ERROR);
+}
+
+#[test]
+fn checkpoint_direct_reads_and_kind_validation_retain_specific_failures() {
+    let directory = Directory::new();
+    let path = directory.0.join("direct.sqlite3");
+    let checkpoint = Checkpoint::create(
+        &path,
+        "test",
+        &1u64,
+        vec![
+            Update::put("record", "one", &"long payload").unwrap(),
+            Update::put("unexpected", "two", &2u64).unwrap(),
+        ],
+    )
+    .unwrap();
+    let error = checkpoint.get_bytes("record", "one", 2).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointRecordReadLimit)
+    );
+    let error = checkpoint.require_kinds(&["record"]).unwrap_err();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointUnexpectedKind)
+    );
+    assert!(error.storage().fatal());
+}
+
+#[test]
+fn checkpoint_creation_reports_io_cause_without_creating_missing_parent() {
+    let directory = Directory::new();
+    let parent = directory.0.join("missing");
+    let path = parent.join("checkpoint.sqlite3");
+    let error = Checkpoint::create(&path, "test", &1u64, vec![])
+        .err()
+        .unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::outcome::OperationCode::StorageIo)
+    );
+    assert_eq!(
+        value["operation"],
+        u32::from(crate::StorageIoOperation::CreateStage)
+    );
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::NotFound));
+    assert_eq!(value["os_code"], nix::errno::Errno::ENOENT as i32);
+    assert!(!parent.exists());
+}
+
+#[test]
+fn oversized_initial_header_does_not_publish_and_stage_can_recover() {
+    let directory = Directory::new();
+    let path = directory.0.join("capacity.sqlite3");
+    let oversized = "x".repeat(MAX_HEADER);
+    let error = Checkpoint::create(&path, "test", &oversized, vec![])
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::CheckpointHeaderCapacity)
+    );
+    assert!(error.storage().fatal());
+    assert!(!path.exists());
+    let recovered = Checkpoint::create(&path, "test", &1u64, vec![]).unwrap();
+    assert_eq!(recovered.header::<u64>().unwrap(), 1);
+}
+
+#[test]
+fn update_encoding_failure_preserves_its_machine_cause() {
+    struct Invalid;
+    impl serde::Serialize for Invalid {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("private detail"))
+        }
+    }
+    let error = match Update::put("kind", "key", &Invalid) {
+        Err(error) => error,
+        Ok(_) => panic!("invalid serializer unexpectedly succeeded"),
+    };
+    assert_eq!(error, crate::InputFault::CheckpointEncoding.into());
+    assert!(
+        !serde_json::to_string(&error)
+            .unwrap()
+            .contains("private detail")
+    );
+}

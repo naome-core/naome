@@ -1,6 +1,6 @@
 //! Anchor-only CPL: attenuate the actual Adam proposal, never its raw gradient.
 //! This signal is a local first-order heuristic; native promotion owns quality.
-use super::{Policy, canonical_checkpoint};
+use super::{Policy, backend_failure, canonical_checkpoint, pack_failure, record_failure};
 use burn::{
     module::{Module, ModuleMapper, Param},
     optim::GradientsParams,
@@ -73,21 +73,21 @@ impl Preservation {
         proposed: Policy,
         gradient: &GradientsParams,
         mode: Mode,
-    ) -> Result<Policy, String> {
+    ) -> Result<Policy, crate::Error> {
         #[cfg(test)]
         if matches!(mode, Mode::Unmasked) {
             return Ok(proposed);
         }
-        self.steps = self
+        let steps = self
             .steps
             .checked_add(1)
-            .ok_or("preservation steps overflow")?;
+            .ok_or(crate::ResearchFailure::PreservationStepsOverflow)?;
         let mut update = Apply {
             before: Values::of(before),
             previous: Values::of(&self.ema),
             next: Values::default(),
             gradient,
-            steps: self.steps,
+            steps,
             mode,
             error: None,
         };
@@ -103,16 +103,17 @@ impl Preservation {
             }
         }
         self.ema = self.ema.clone().map(&mut Restore(update.next));
+        self.steps = steps;
         Ok(policy)
     }
 
-    pub fn encode(&self, adam: Bytes) -> Result<Bytes, String> {
+    pub fn encode(&self, adam: Bytes) -> Result<Bytes, crate::Error> {
         let ema = self
             .ema
             .clone()
             .into_record()
             .into_bytes()
-            .map_err(|e| e.to_string())?;
+            .map_err(record_failure)?;
         let mut tensors = Vec::new();
         let mut metadata = Vec::new();
         let mut scalars = vec![(
@@ -120,7 +121,7 @@ impl Preservation {
             burn_pack::Scalar::from(self.steps),
         )];
         for (prefix, bytes) in [("adam/", adam), ("ema/", ema)] {
-            let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
+            let reader = burn_pack::Reader::from_bytes(bytes).map_err(pack_failure)?;
             metadata.extend(
                 reader
                     .metadata()
@@ -133,7 +134,7 @@ impl Preservation {
                     .iter()
                     .map(|(k, v)| (format!("{prefix}{k}"), *v)),
             );
-            for mut tensor in reader.into_tensors().map_err(|e| e.to_string())? {
+            for mut tensor in reader.into_tensors().map_err(pack_failure)? {
                 tensor.name = format!("{prefix}{}", tensor.name);
                 tensors.push(tensor);
             }
@@ -146,19 +147,24 @@ impl Preservation {
         for (key, value) in scalars {
             writer = writer.with_scalar(&key, value);
         }
-        writer.into_bytes().map_err(|e| e.to_string())
+        writer.into_bytes().map_err(pack_failure)
     }
 
-    pub fn decode(&mut self, bytes: Bytes, updates: u64) -> Result<Bytes, String> {
-        let reader = burn_pack::Reader::from_bytes(bytes).map_err(|e| e.to_string())?;
+    pub fn decode(&mut self, bytes: Bytes, updates: u64) -> Result<Bytes, crate::Error> {
+        let reader = burn_pack::Reader::from_bytes(bytes).map_err(pack_failure)?;
         let steps = reader
             .scalars()
             .get("preservation_steps")
             .copied()
-            .ok_or("missing preservation step count")?;
-        let steps = u64::try_from(steps).map_err(|e| e.to_string())?;
+            .ok_or(crate::ResearchFailure::PreservationStepsMissing)?;
+        let steps =
+            u64::try_from(steps).map_err(|_| crate::ResearchFailure::PreservationStepsInvalid)?;
         if steps > updates {
-            return Err("preservation count exceeds actual updates".into());
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::PreservationStepsExceeded,
+                expected: updates,
+                actual: steps,
+            });
         }
         // Module loading may restore source parameter IDs. Bind EMA explicitly
         // to the current policy's paths, shapes and IDs before loading it.
@@ -167,12 +173,12 @@ impl Preservation {
             .clone()
             .into_record()
             .into_bytes()
-            .map_err(|e| e.to_string())?;
+            .map_err(record_failure)?;
         let mut expected: std::collections::BTreeMap<_, _> =
             burn_pack::Reader::from_bytes(template)
-                .map_err(|e| e.to_string())?
+                .map_err(pack_failure)?
                 .into_tensors()
-                .map_err(|e| e.to_string())?
+                .map_err(pack_failure)?
                 .into_iter()
                 .map(|t| (t.name, (t.dtype, t.shape, t.param_id)))
                 .collect();
@@ -184,7 +190,7 @@ impl Preservation {
             prefixes
                 .iter()
                 .position(|p| name.starts_with(p))
-                .ok_or_else(|| "unknown optimizer memory field".to_owned())
+                .ok_or_else(|| backend_failure(crate::ResearchFailure::PreservationUnknownField))
         };
         for (key, value) in reader.metadata() {
             let i = group(key)?;
@@ -197,7 +203,7 @@ impl Preservation {
             let i = group(key)?;
             scalars[i].push((key[prefixes[i].len()..].to_owned(), *value));
         }
-        for mut tensor in reader.into_tensors().map_err(|e| e.to_string())? {
+        for mut tensor in reader.into_tensors().map_err(pack_failure)? {
             let i = group(&tensor.name)?;
             tensor.name = tensor.name[prefixes[i].len()..].to_owned();
             if i == 1 {
@@ -205,26 +211,22 @@ impl Preservation {
                 if descriptor != Some((tensor.dtype, tensor.shape.clone(), tensor.param_id))
                     || tensor.dtype != burn_pack::DType::F32
                 {
-                    return Err("EMA parameter path, type, shape or identity differs".into());
+                    return Err(crate::ResearchFailure::PreservationParameterMismatch.into());
                 }
-                for word in tensor
-                    .to_bytes()
-                    .map_err(|e| e.to_string())?
-                    .chunks_exact(4)
-                {
+                for word in tensor.to_bytes().map_err(pack_failure)?.chunks_exact(4) {
                     let value = f32::from_le_bytes(word.try_into().unwrap());
                     if !value.is_finite()
                         || !(0.0..=1.0).contains(&value)
                         || steps == 0 && value != 0.0
                     {
-                        return Err("non-finite or unbounded preservation memory".into());
+                        return Err(crate::ResearchFailure::PreservationValueInvalid.into());
                     }
                 }
             }
             tensors[i].push(tensor);
         }
         if !expected.is_empty() {
-            return Err("incomplete preservation memory".into());
+            return Err(crate::ResearchFailure::PreservationIncomplete.into());
         }
         let mut parts = Vec::new();
         for i in 0..2 {
@@ -235,15 +237,15 @@ impl Preservation {
             for (k, v) in &scalars[i] {
                 writer = writer.with_scalar(k, *v);
             }
-            parts.push(writer.into_bytes().map_err(|e| e.to_string())?);
+            parts.push(writer.into_bytes().map_err(pack_failure)?);
         }
         self.ema = self
             .ema
             .clone()
             .try_load_record(
-                ModuleRecord::from_bytes(parts.pop().unwrap()).map_err(|e| e.to_string())?,
+                ModuleRecord::from_bytes(parts.pop().unwrap()).map_err(record_failure)?,
             )
-            .map_err(|e| e.to_string())?
+            .map_err(record_failure)?
             .valid();
         self.steps = steps;
         canonical_checkpoint(parts.pop().unwrap())
@@ -257,14 +259,14 @@ struct Apply<'a> {
     gradient: &'a GradientsParams,
     steps: u64,
     mode: Mode,
-    error: Option<String>,
+    error: Option<crate::Error>,
 }
 impl ModuleMapper for Apply<'_> {
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
         let id = param.id;
         let (Some(before), Some(previous)) = (self.before.0.remove(id), self.previous.0.remove(id))
         else {
-            self.error = Some("preservation parameter identity differs".into());
+            self.error = Some(crate::ResearchFailure::PreservationIdentityMismatch.into());
             return param;
         };
         param.map(|proposed| {

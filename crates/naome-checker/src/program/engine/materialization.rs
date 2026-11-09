@@ -108,9 +108,10 @@ impl Tree {
                 for variable in [a, b] {
                     let (tag, value) = match variable {
                         Variable::Free(v) => (0, v),
-                        Variable::Bound(v) => {
-                            (1, u32::try_from(v).map_err(|_| "tree variable width")?)
-                        }
+                        Variable::Bound(v) => (
+                            1,
+                            u32::try_from(v).map_err(|_| ProgramFault::TreeVariableWidth)?,
+                        ),
                     };
                     self.bytes.push(tag);
                     self.bytes.extend_from_slice(&value.to_be_bytes());
@@ -123,9 +124,9 @@ impl Tree {
     }
     pub fn finish(&self) -> Result<Formula, Error> {
         if !self.pending.is_empty() {
-            return Err("formula projection is incomplete".into());
+            return Err(ProgramFault::IncompleteProjection.into());
         }
-        Formula::decode_canonical(&self.bytes).map_err(|e| e.to_string().into())
+        Formula::decode_canonical(&self.bytes).map_err(Error::from)
     }
 }
 
@@ -142,11 +143,11 @@ impl Engine {
             return Ok(false);
         }
         if self.finalization.is_none() {
-            let root = self.accepted.ok_or("program has no checked conclusion")?;
+            let root = self.accepted.ok_or(ProgramFault::UncheckedConclusion)?;
             self.load(root)?;
             let shape = self
                 .authenticated(root)?
-                .ok_or("conclusion is not authenticated")?
+                .ok_or(ProgramFault::UnauthenticatedConclusion)?
                 .2;
             sql(self.connection.execute(
                 "INSERT OR IGNORE INTO export_pending VALUES(?1)",

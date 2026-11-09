@@ -57,9 +57,9 @@ class ProviderBudgetOracleTests(unittest.TestCase):
 
 class ResourceObservationTests(unittest.TestCase):
     def test_restarted_node_cannot_borrow_observations_from_the_previous_process(self):
-        first = {"event": "resource_observation", "snapshot": {"pid": 10}, "capacity_bytes": 100}
-        second = {"event": "resource_observation", "snapshot": {"pid": 20}, "capacity_bytes": 200}
-        events = [first, second, {"event": "ready"}, first]
+        first = {"event": 0x00170062, "snapshot": {"pid": 10}, "capacity_bytes": 100}
+        second = {"event": 0x00170062, "snapshot": {"pid": 20}, "capacity_bytes": 200}
+        events = [first, second, {"event": 0x00170050}, first]
         node = SimpleNamespace(process={"pid": 20}, logs=lambda: events)
         self.assertEqual(latest(node), second)
         node.process = {"pid": 30}

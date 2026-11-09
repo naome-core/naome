@@ -24,14 +24,14 @@ pub(crate) struct Utility {
     pub gradient_passes: u32,
 }
 impl Utility {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         crate::object::id_bytes(&self.checkpoint)?;
         if self.references.is_empty()
             || self.references.len() > 4
             || self.scores.len() > 4
             || self.gradient_passes > 8
         {
-            return Err("native finder utility capacity differs".into());
+            return Err(crate::ResearchFailure::FinderUtilityCapacity.into());
         }
         let mut ids = std::collections::BTreeSet::new();
         for reference in &self.references {
@@ -41,7 +41,7 @@ impl Utility {
             crate::object::id_bytes(&score.resolution)?;
             crate::object::id_bytes(&score.proof)?;
             if score.alignment == i16::MIN || !ids.insert(&score.resolution) {
-                return Err("native finder utility identity differs".into());
+                return Err(crate::ResearchFailure::FinderUtilityIdentity.into());
             }
         }
         Ok(())
@@ -50,13 +50,13 @@ impl Utility {
 fn example(
     example: &Example,
     evidence: &[Evidence],
-) -> Result<Option<(ResearchQuestion, graph::Graph)>, String> {
+) -> Result<Option<(ResearchQuestion, graph::Graph)>, crate::Error> {
     if !matches!(example.origin, Origin::Local)
         || curriculum::owned::case(&example.question).is_none()
     {
-        return Err("finder utility requires eligible local training proofs".into());
+        return Err(crate::ResearchFailure::FinderExampleEligibility.into());
     }
-    let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
+    let q = ResearchQuestion::from_hex(&example.question)?;
     let target = if example.refuted {
         q.refuted_target()
     } else {
@@ -64,7 +64,7 @@ fn example(
     };
     let (core, _, verified) = search::core::checked(target, example.trajectory(evidence)?)?;
     if crate::hex(verified.native_id.as_bytes()) != example.proof_id {
-        return Err("finder utility proof identity differs".into());
+        return Err(crate::ResearchFailure::FinderProofIdentity.into());
     }
     let graphs = search::compile(target, &core)?.1;
     Ok(graphs
@@ -79,7 +79,7 @@ impl State {
         evidence: &[Evidence],
         engine: &mut Engine,
         io: &mut I,
-    ) -> Result<Option<Utility>, String> {
+    ) -> Result<Option<Utility>, crate::Error> {
         if !self
             .anchors
             .iter()
@@ -95,8 +95,7 @@ impl State {
         let cpu = meta::cpu_micros()?;
         // This small diagnostic shares the admitted native job's original work
         // envelope. Its rechecks, backward passes and IO count in job elapsed.
-        let _memory = crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)
-            .map_err(|e| e.to_string())?;
+        let _memory = crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)?;
         let mut references = Vec::new();
         let mut questions = Vec::new();
         let mut graphs = Vec::new();
@@ -135,7 +134,7 @@ impl State {
             };
             passes += 2;
             let Some(alignment) =
-                engine.with(model, io, |runtime| runtime.utility_alignment(&g, &graphs))?
+                engine.with_error(model, io, |runtime| runtime.utility_alignment(&g, &graphs))?
             else {
                 continue;
             };

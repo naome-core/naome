@@ -93,11 +93,9 @@ impl Transport for SystemDns {
         {
             return Err(TransportError::MultiaddrNotSupported(address));
         }
-        let permit = self
-            .pending
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| TransportError::Other(io::Error::other("DNS resolution capacity")))?;
+        let permit = self.pending.clone().try_acquire_owned().map_err(|_| {
+            TransportError::Other(io::Error::other(crate::outcome::WireFailure::DnsCapacity))
+        })?;
         let inner = self.inner.clone();
         Ok(Box::pin(async move {
             let _permit = permit;
@@ -117,7 +115,7 @@ impl Transport for SystemDns {
             }
             let mut last_error = io::Error::new(
                 io::ErrorKind::AddrNotAvailable,
-                "DNS returned no usable address",
+                crate::outcome::WireFailure::DnsNoAddress,
             );
             for ip in endpoints {
                 let mut resolved = Multiaddr::empty().with(Protocol::from(ip));

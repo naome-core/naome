@@ -1,7 +1,7 @@
 use super::*;
 
 static CALLS: AtomicUsize = AtomicUsize::new(0);
-fn counted(_: ResearchQuestion) -> Ready<Result<bool, String>> {
+fn counted(_: ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>> {
     CALLS.fetch_add(1, Ordering::SeqCst);
     ready(Ok(true))
 }
@@ -103,7 +103,7 @@ async fn temporary_overload_retains_final_selection_without_declining_or_repeati
             if !intake.refresh_needed().is_empty() {
                 assert_eq!(
                     intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-                    "metadata_refreshed"
+                    OfferStatus::MetadataRefreshed
                 );
             }
             for (_, root, needed) in intake.needed() {
@@ -350,9 +350,7 @@ async fn sealed_selection_cannot_publish_through_a_different_root_grant() {
     assert_eq!(
         root.selection
             .publish(&mut graph, &mut questions, &wrong, *batch),
-        Err(crate::Error::InvalidInput(
-            "publication root differs from selection".into()
-        ))
+        Err(crate::InputFault::SelectionRootMismatch.into())
     );
     assert_eq!(graph.content_root(), before);
     assert_eq!(graph.accepted_count(), 0);

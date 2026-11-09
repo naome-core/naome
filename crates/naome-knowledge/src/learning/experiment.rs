@@ -67,7 +67,6 @@ fn completed_search(
         result: Ok(crate::jobs::Output::Native {
             terminal: result.terminal.clone().into(),
             solution: result.solution.clone(),
-            diagnostic: result.diagnostic.clone(),
             frontier: result.frontier.clone(),
         }),
     }
@@ -275,7 +274,7 @@ fn train_seed(
                 io.0.retain(|(hash, _), _| keep.contains(hash));
             }
             let p = job.progress.as_ref().unwrap();
-            gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"original_score":p.original_score,"first_loss":p.first_loss,"last_loss":p.last_loss});
+            gate = serde_json::json!({"qualification":p.qualification,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"original_score":p.original_score,"first_loss":p.first_loss,"last_loss":p.last_loss});
             assert!(state.qualify(&job));
             state.validate().unwrap();
         }
@@ -301,7 +300,7 @@ fn train_seed(
                 let term = search::compile(target, tree).unwrap().0;
                 let verified = proof::verify(&term, target).unwrap();
                 assert_eq!(crate::hex(verified.native_id.as_bytes()), e.proof_id);
-                serde_json::json!({"example":e,"source":proof::source(&verified).unwrap(),"helpers":definitions::helpers(tree).unwrap()})
+                serde_json::json!({"example":e,"source":proof::source(&verified),"helpers":definitions::helpers(tree).unwrap()})
             })
             .collect::<Vec<_>>();
         write(
@@ -392,7 +391,7 @@ fn native_learning_progress_experiment() {
         .collect::<Vec<_>>();
     struct Ordered;
     impl model::Ranker for Ordered {
-        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }
@@ -460,7 +459,7 @@ fn native_learning_progress_experiment() {
 fn selection_gate_headroom() {
     struct Ordered;
     impl model::Ranker for Ordered {
-        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
             Ok(vec![0.; d.candidates.len()])
         }
     }

@@ -6,6 +6,28 @@ use crate::{
 use naome_foundation::{FormulaView, FreeVariable, ZfcAxiom};
 use std::collections::{HashMap, hash_map::Entry};
 
+/// A rejected structural projection of an inference recipe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ProjectionFailure {
+    SiteNotModusPonens = 1,
+    MissingInstantiation = 2,
+    ReferencedInstantiation = 3,
+    EmptyRecipe = 4,
+    ForwardReference = 5,
+}
+impl std::fmt::Display for ProjectionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "projection failure {}", *self as u8)
+    }
+}
+impl std::error::Error for ProjectionFailure {}
+impl From<ProjectionFailure> for String {
+    fn from(value: ProjectionFailure) -> Self {
+        value.to_string()
+    }
+}
+
 /// A structural projection of a bounded certificate into a shared program.
 /// The program requires independent checking and has its own manifest identity.
 pub struct Projection {
@@ -26,7 +48,10 @@ impl Projection {
 
     /// Fold selected instantiation axioms into their sole modus ponens use.
     /// Independently replay the program before treating its results as checked.
-    pub fn with_instantiations(proof: &ProofNormalForm, sites: &[usize]) -> Result<Self, String> {
+    pub fn with_instantiations(
+        proof: &ProofNormalForm,
+        sites: &[usize],
+    ) -> Result<Self, ProjectionFailure> {
         let steps = proof.certificate().steps();
         let uses = reference_counts(steps)?;
         Self::lower_steps(steps, &uses, sites.iter().copied())
@@ -36,7 +61,7 @@ impl Projection {
         steps: &[ProofStep],
         uses: &[usize],
         sites: impl IntoIterator<Item = usize>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ProjectionFailure> {
         let mut omitted = vec![false; steps.len()];
         let mut folds = vec![None; steps.len()];
         for site in sites {
@@ -45,19 +70,17 @@ impl Projection {
                 implication,
             }) = steps.get(site)
             else {
-                return Err("instantiation site must select modus ponens".into());
+                return Err(ProjectionFailure::SiteNotModusPonens);
             };
             let axiom = *implication as usize;
             let ProofStep::UniversalInstantiation {
                 replacement, body, ..
             } = &steps[axiom]
             else {
-                return Err("instantiation site has no instantiation axiom".into());
+                return Err(ProjectionFailure::MissingInstantiation);
             };
             if uses[axiom] != 1 || body.as_defined().is_some() || omitted[axiom] {
-                return Err(
-                    "instantiation site cannot be folded without losing a reference".into(),
-                );
+                return Err(ProjectionFailure::ReferencedInstantiation);
             }
             omitted[axiom] = true;
             folds[site] = Some((axiom, *premise as usize, *replacement));
@@ -84,7 +107,7 @@ impl Projection {
             results[index] = StepResult::Result(position);
         }
         builder.push(Command::Seal {
-            proof: *handles.last().ok_or("program inference recipe is empty")?,
+            proof: *handles.last().ok_or(ProjectionFailure::EmptyRecipe)?,
         });
         Ok(Self {
             commands: builder.commands,
@@ -93,13 +116,13 @@ impl Projection {
     }
 
     /// Use a typed instantiation when an axiom has only one application.
-    pub fn with_native_instantiations(proof: &ProofNormalForm) -> Result<Self, String> {
+    pub fn with_native_instantiations(proof: &ProofNormalForm) -> Result<Self, ProjectionFailure> {
         Self::from_inference_steps(proof.certificate().steps())
     }
 
     /// Lower an untrusted, dependency-ordered inference recipe directly into
     /// typed commands. The independent program checker validates the result.
-    pub fn from_inference_steps(steps: &[ProofStep]) -> Result<Self, String> {
+    pub fn from_inference_steps(steps: &[ProofStep]) -> Result<Self, ProjectionFailure> {
         let uses = reference_counts(steps)?;
         let sites = steps.iter().enumerate().filter_map(|(index, step)| {
             let ProofStep::ModusPonens { implication, .. } = step else {
@@ -189,12 +212,12 @@ impl Projection {
     }
 }
 
-fn reference_counts(steps: &[ProofStep]) -> Result<Vec<usize>, String> {
+fn reference_counts(steps: &[ProofStep]) -> Result<Vec<usize>, ProjectionFailure> {
     let mut uses = vec![0; steps.len()];
     for (position, step) in steps.iter().enumerate() {
         for reference in step.local_references().into_iter().flatten() {
             if reference as usize >= position {
-                return Err("program inference recipe has a forward reference".into());
+                return Err(ProjectionFailure::ForwardReference);
             }
             uses[reference as usize] += 1;
         }
@@ -416,4 +439,17 @@ fn binder(depth: u32) -> u32 {
 
 fn bound_identifier(depth: u32, index: u32) -> u32 {
     binder(depth - 1 - index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_inference_recipe_has_a_typed_failure() {
+        assert!(matches!(
+            Projection::from_inference_steps(&[]),
+            Err(ProjectionFailure::EmptyRecipe)
+        ));
+    }
 }

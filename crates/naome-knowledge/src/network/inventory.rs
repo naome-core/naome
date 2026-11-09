@@ -21,7 +21,7 @@ pub(super) fn response(
     }
     if limit == 0 {
         return Err(crate::Error::InputLimit(
-            "inventory page limit must be positive",
+            crate::InputLimit::InventoryPageLimitMustBePositive,
         ));
     }
     let Some(page) = graph.inventory_page(
@@ -108,10 +108,12 @@ impl Node {
         snapshot: InventorySnapshot,
         ids: Vec<[u8; 32]>,
         next: Option<InventoryCursor>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         let Request { after, pages, .. } = request;
         if !valid_page(request, snapshot, &ids, next) {
-            emit(json!({"event":"rejected","error":"invalid inventory"}));
+            emit(
+                json!({"event":crate::outcome::NodeEvent::Rejected,"error":crate::outcome::WireFailure::InvalidInventory}),
+            );
             return Ok(());
         }
         // A full queue retries this exact page; new admissions cannot reset or
@@ -135,10 +137,12 @@ impl Node {
                     .insert(peer, (snapshot.root, self.graph.content_root()));
             }
         }
-        emit(json!({"event":"inventory_page", "peer":peer.to_string(),
+        emit(
+            json!({"event":crate::outcome::NodeEvent::InventoryPage, "peer":peer.to_string(),
             "after":after.map(|cursor| cursor.after), "page":pages,
             "count":ids.len(), "retained":retained, "horizon":snapshot.count,
-            "last":ids.last().map(|id|hex(id))}));
+            "last":ids.last().map(|id|hex(id))}),
+        );
         Ok(())
     }
 }

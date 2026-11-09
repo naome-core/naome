@@ -225,7 +225,9 @@ fn root_and_helper_certificates_share_one_cumulative_step_limit() {
     assert_eq!(closure.certificate_steps(), 2);
     assert!(matches!(
         closure.certificate_payload(id(&helper), helper.clone(), &graph, &transfer),
-        Err(crate::Error::InputLimit("staged closure step work limit"))
+        Err(crate::Error::InputLimit(
+            crate::InputLimit::StagedClosureStepWorkLimit
+        ))
     ));
     assert_eq!(closure.certificate_count(), 2);
     assert_eq!(closure.certificate_steps(), 2);

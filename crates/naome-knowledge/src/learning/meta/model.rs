@@ -128,9 +128,9 @@ impl Network {
         }
         (loss, gradient)
     }
-    pub fn update(&mut self, batch: &[&Experience]) -> Result<f32, String> {
+    pub fn update(&mut self, batch: &[&Experience]) -> Result<f32, crate::Error> {
         if batch.is_empty() {
-            return Err("meta update lacks real trial experience".into());
+            return Err(crate::ResearchFailure::MetaUpdateExperienceMissing.into());
         }
         let mut gradient = vec![0.; PARAMETERS];
         let mut loss = 0.;
@@ -142,12 +142,12 @@ impl Network {
             }
         }
         if !loss.is_finite() || gradient.iter().any(|g| !g.is_finite()) {
-            return Err("non-finite meta optimization".into());
+            return Err(crate::ResearchFailure::MetaOptimizationNonFinite.into());
         }
         self.updates = self
             .updates
             .checked_add(1)
-            .ok_or("meta optimizer counter overflow")?;
+            .ok_or(crate::ResearchFailure::MetaOptimizerCounterOverflow)?;
         let b1 = 1. - 0.9f32.powf(self.updates as f32);
         let b2 = 1. - 0.999f32.powf(self.updates as f32);
         for (i, g) in gradient.into_iter().enumerate() {
@@ -173,12 +173,34 @@ impl Network {
             .collect();
         (weights, optimizer)
     }
-    pub fn decode(weights: &[u8], optimizer: &[u8], updates: u64) -> Result<Self, String> {
-        if weights.len() != PARAMETERS * 4
-            || optimizer.len() != 8 + PARAMETERS * 8
-            || u64::from_le_bytes(optimizer[..8].try_into().unwrap()) != updates
-        {
-            return Err("meta paired checkpoint dimensions or counter differ".into());
+    pub fn decode(weights: &[u8], optimizer: &[u8], updates: u64) -> Result<Self, crate::Error> {
+        let mismatch = |code, expected: usize, actual: usize| crate::Error::ResearchMismatch {
+            code,
+            expected: expected as u64,
+            actual: actual as u64,
+        };
+        if weights.len() != PARAMETERS * 4 {
+            return Err(mismatch(
+                crate::ResearchFailure::MetaWeightWidth,
+                PARAMETERS * 4,
+                weights.len(),
+            ));
+        }
+        if optimizer.len() != 8 + PARAMETERS * 8 {
+            return Err(mismatch(
+                crate::ResearchFailure::MetaOptimizerWidth,
+                8 + PARAMETERS * 8,
+                optimizer.len(),
+            ));
+        }
+        let actual =
+            u64::from_le_bytes(optimizer[..8].try_into().expect("checked optimizer header"));
+        if actual != updates {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::MetaOptimizerCounter,
+                expected: updates,
+                actual,
+            });
         }
         let floats = |bytes: &[u8]| {
             bytes
@@ -188,10 +210,23 @@ impl Network {
         };
         let weights = floats(weights);
         let values = floats(&optimizer[8..]);
-        if weights.iter().chain(&values).any(|x| !x.is_finite())
-            || values[PARAMETERS..].iter().any(|x| *x < 0.)
-        {
-            return Err("invalid meta checkpoint value".into());
+        if let Some(index) = weights.iter().position(|x| !x.is_finite()) {
+            return Err(crate::Error::ResearchIndex {
+                code: crate::ResearchFailure::MetaWeightValue,
+                index,
+            });
+        }
+        if let Some(index) = values.iter().position(|x| !x.is_finite()) {
+            return Err(crate::Error::ResearchIndex {
+                code: crate::ResearchFailure::MetaOptimizerValue,
+                index,
+            });
+        }
+        if let Some(index) = values[PARAMETERS..].iter().position(|x| *x < 0.) {
+            return Err(crate::Error::ResearchIndex {
+                code: crate::ResearchFailure::MetaSecondMoment,
+                index,
+            });
         }
         Ok(Self {
             weights,

@@ -42,7 +42,7 @@ impl Node {
             | Flight::Work { peer: owner, .. } => *owner != peer,
         });
         let _ = self.swarm.disconnect_peer_id(peer);
-        emit(json!({"event":"contact_expired", "peer":peer.to_string()}));
+        emit(json!({"event":crate::outcome::NodeEvent::ContactExpired, "peer":peer.to_string()}));
     }
 
     pub(super) fn discovery_action(&mut self, action: discovery::Action) {
@@ -180,7 +180,7 @@ impl Node {
                     .build(),
             ) {
                 emit(
-                    json!({"event":"dial_failed", "peer":peer.to_string(), "stage":"request", "error":error.to_string()}),
+                    json!({"event":crate::outcome::NodeEvent::DialFailed, "peer":peer.to_string(), "stage":crate::outcome::DialStage::Request, "error":dial_failure(&error), "cause":dial_cause(&error)}),
                 );
             }
         }
@@ -220,8 +220,8 @@ impl Node {
                 Ok(listener) => {
                     self.relay_listeners.insert(peer, listener);
                 }
-                Err(error) => emit(
-                    json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),
+                Err(_) => emit(
+                    json!({"event":crate::outcome::NodeEvent::RelayListenFailed, "peer":peer.to_string(), "error":WireFailure::TransportNegotiation}),
                 ),
             }
         }

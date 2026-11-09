@@ -92,15 +92,21 @@ fn chunk_boundaries_resume_the_exact_authenticated_prefix() {
 
 #[test]
 fn noncanonical_records_manifests_and_corrupt_transitions_are_rejected() {
-    for bytes in [
-        [0x1d, 0x81, 0].as_slice(), // An overlong encoding of 1.
-        &[0x1d, 0x81],
-        &[0x1d, 1, 0],
-        &[0xff, 1],
+    for (bytes, reason) in [
+        (
+            [0x1d, 0x81, 0].as_slice(),
+            CodecFailure::NoncanonicalInteger,
+        ),
+        (&[0x1d, 0x81], CodecFailure::Truncated),
+        (&[0x1d, 1, 0], CodecFailure::TrailingCommandBytes),
+        (&[0xff, 1], CodecFailure::Opcode),
     ] {
-        assert!(decode_command(bytes).is_err());
+        assert_eq!(decode_command(bytes), Err(reason));
     }
-    assert!(decode_command(&vec![b' '; RECORD_BYTES + 1]).is_err());
+    assert_eq!(
+        decode_command(&vec![b' '; RECORD_BYTES + 1]),
+        Err(CodecFailure::CommandBytes)
+    );
     let (manifest, chunk, initial) = fixture();
     let bytes = manifest.canonical_bytes().unwrap();
     assert_eq!(Manifest::from_canonical_bytes(&bytes).unwrap(), manifest);

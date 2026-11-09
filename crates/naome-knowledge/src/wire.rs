@@ -1,4 +1,8 @@
-use crate::{Envelope, object::Metadata};
+use crate::{
+    Envelope,
+    object::Metadata,
+    outcome::{OfferStatus, PeerFailure, WireFailure},
+};
 use libp2p::{
     StreamProtocol,
     futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -13,8 +17,7 @@ mod artifact;
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
 pub(crate) const TOPIC: &str = "naome-knowledge";
 const BINARY_ARTIFACT: u32 = 1 << 31;
-pub(crate) const FRAME_CONTRACT: &str =
-    "naome:frames:json-control,packed-binary-artifact,defined-question-per-proof,cooperative-work";
+pub(crate) const FRAME_CONTRACT: &str = "naome:frames:numeric-control,packed-binary-artifact,defined-question-per-proof,cooperative-work";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,81 +26,122 @@ pub(crate) struct Message {
     pub body: Body,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(test, derive(Clone))]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub(crate) enum Body {
-    WorkOffer {
-        goal: [u8; 32],
-        question: String,
-    },
-    WorkStatus {
-        goal: [u8; 32],
-        question: [u8; 32],
-        active: bool,
-        sequence: u64,
-    },
-    Inventory {
-        known: Option<[u8; 32]>,
-        after: Option<crate::corpus::InventoryCursor>,
-        limit: usize,
-    },
-    Describe {
-        id: [u8; 32],
-    },
-    Get {
-        root: [u8; 32],
-        id: [u8; 32],
-    },
-    Offer {
-        metadata: Metadata,
-    },
-    InventoryUnchanged {
-        root: [u8; 32],
-    },
-    InventoryResult {
-        snapshot: crate::corpus::InventorySnapshot,
-        ids: Vec<[u8; 32]>,
-        next: Option<crate::corpus::InventoryCursor>,
-    },
-    InventoryRestart,
-    Description {
-        metadata: Metadata,
-    },
-    #[serde(skip)]
-    Object {
-        root: [u8; 32],
-        object: Envelope,
-        question: Option<String>,
-    },
-    #[serde(skip)]
-    ProgramDescription {
-        root: Option<[u8; 32]>,
-        metadata: crate::object::ProgramMetadata,
-    },
-    #[serde(skip)]
-    ProgramOffer {
-        metadata: crate::object::ProgramMetadata,
-    },
-    ProgramGet {
-        root: [u8; 32],
-        id: [u8; 32],
-        start: u64,
-        limit: usize,
-    },
-    #[serde(skip)]
-    ProgramData {
-        root: [u8; 32],
-        id: [u8; 32],
-        chunk: naome_proof::program::Chunk,
-    },
-    Missing,
-    Receipt {
-        status: String,
-    },
-    Error {
-        reason: String,
-    },
+fn required_field<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    T::deserialize(deserializer)
+}
+
+// The same declaration owns the payload schema and its numeric message kind.
+macro_rules! bodies {
+    (
+        controls { $( $variant:ident => $kind:ident { $( $field:ident: $ty:ty ),* $(,)? } ),+ $(,)? }
+        units { $( $unit:ident => $unit_kind:ident ),+ $(,)? }
+        binary { $( $binary:ident => $binary_kind:ident { $( $binary_field:ident: $binary_ty:ty ),+ $(,)? } ),+ $(,)? }
+    ) => {
+        #[derive(Debug)]
+        #[cfg_attr(test, derive(Clone))]
+        pub(crate) enum Body {
+            $( $variant { $( $field: $ty ),* }, )+
+            $( $unit, )+
+            $( $binary { $( $binary_field: $binary_ty ),+ }, )+
+        }
+
+        impl Body {
+            pub(crate) fn kind(&self) -> crate::outcome::MessageKind {
+                match self {
+                    $( Self::$variant { .. } => crate::outcome::MessageKind::$kind, )+
+                    $( Self::$unit => crate::outcome::MessageKind::$unit_kind, )+
+                    $( Self::$binary { .. } => crate::outcome::MessageKind::$binary_kind, )+
+                }
+            }
+        }
+
+        impl serde::Serialize for Body {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::{Error as _, SerializeTuple};
+                let mut tuple = serializer.serialize_tuple(2)?;
+                match self {
+                    $( Self::$variant { $( $field ),* } => {
+                        #[derive(serde::Serialize)]
+                        struct Payload<'a> { $( $field: &'a $ty ),* }
+                        tuple.serialize_element(&self.kind())?;
+                        tuple.serialize_element(&Payload { $( $field ),* })?;
+                    }, )+
+                    $( Self::$unit => {
+                        #[derive(serde::Serialize)]
+                        struct Empty {}
+                        tuple.serialize_element(&self.kind())?;
+                        tuple.serialize_element(&Empty {})?;
+                    }, )+
+                    $( Self::$binary { .. } => return Err(S::Error::custom("binary body in control frame")), )+
+                }
+                tuple.end()
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for Body {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                struct BodyVisitor;
+                impl<'de> serde::de::Visitor<'de> for BodyVisitor {
+                    type Value = Body;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a numeric control body")
+                    }
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Body, A::Error> {
+                        use serde::de::Error as _;
+                        let kind: crate::outcome::MessageKind = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                        let body = match kind {
+                            $( crate::outcome::MessageKind::$kind => {
+                                #[derive(serde::Deserialize)]
+                                #[serde(deny_unknown_fields)]
+                                struct Payload { $( #[serde(deserialize_with = "required_field")] $field: $ty ),* }
+                                let payload: Payload = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                                Body::$variant { $( $field: payload.$field ),* }
+                            }, )+
+                            $( crate::outcome::MessageKind::$unit_kind => {
+                                #[derive(serde::Deserialize)]
+                                #[serde(deny_unknown_fields)]
+                                struct Payload {}
+                                let _: Payload = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                                Body::$unit
+                            }, )+
+                            $( crate::outcome::MessageKind::$binary_kind => return Err(A::Error::custom("binary body in control frame")), )+
+                        };
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(A::Error::invalid_length(3, &self));
+                        }
+                        Ok(body)
+                    }
+                }
+                deserializer.deserialize_tuple(2, BodyVisitor)
+            }
+        }
+    };
+}
+
+bodies! {
+    controls {
+        WorkOffer => WorkOffer { goal: [u8; 32], question: String },
+        WorkStatus => WorkStatus { goal: [u8; 32], question: [u8; 32], active: bool, sequence: u64 },
+        Inventory => Inventory { known: Option<[u8; 32]>, after: Option<crate::corpus::InventoryCursor>, limit: usize },
+        Describe => Describe { id: [u8; 32] },
+        Get => Get { root: [u8; 32], id: [u8; 32] },
+        Offer => Offer { metadata: Metadata },
+        InventoryUnchanged => InventoryUnchanged { root: [u8; 32] },
+        InventoryResult => InventoryResult { snapshot: crate::corpus::InventorySnapshot, ids: Vec<[u8; 32]>, next: Option<crate::corpus::InventoryCursor> },
+        Description => Description { metadata: Metadata },
+        ProgramGet => ProgramGet { root: [u8; 32], id: [u8; 32], start: u64, limit: usize },
+        Receipt => Receipt { status: OfferStatus },
+        Error => PeerError { code: PeerFailure },
+    }
+    units { InventoryRestart => InventoryRestart, Missing => Missing }
+    binary {
+        Object => Object { root: [u8; 32], object: Envelope, question: Option<String> },
+        ProgramDescription => ProgramDescription { root: Option<[u8; 32]>, metadata: crate::object::ProgramMetadata },
+        ProgramOffer => ProgramOffer { metadata: crate::object::ProgramMetadata },
+        ProgramData => ProgramData { root: [u8; 32], id: [u8; 32], chunk: naome_proof::program::Chunk },
+    }
 }
 
 #[derive(Debug)]
@@ -145,13 +189,13 @@ impl Codec {
         let binary = header & BINARY_ARTIFACT != 0;
         let length = (header & !BINARY_ARTIFACT) as usize;
         if length > frame_limit() {
-            return Err(invalid("frame byte limit"));
+            return Err(WireFailure::FrameLimit.into());
         }
         let permit = self
             .budget
             .clone()
             .try_acquire_owned()
-            .map_err(|_| invalid("frame capacity"))?;
+            .map_err(|_| WireFailure::FrameCapacity)?;
         let commands = if binary {
             // Every instruction occupies at least two bytes on the wire.
             (length / 2).min(naome_proof::program::CHUNK_RECORDS)
@@ -165,12 +209,15 @@ impl Codec {
         stream.read_exact(&mut bytes).await?;
         let mut trailing = [0];
         if stream.read(&mut trailing).await? != 0 {
-            return Err(invalid("trailing frame bytes"));
+            return Err(WireFailure::TrailingFrameBytes.into());
         }
         let (message, expanded) = if binary {
-            artifact::decode(&bytes).map_err(invalid)?
+            artifact::decode(&bytes)?
         } else {
-            (serde_json::from_slice(&bytes).map_err(invalid)?, Vec::new())
+            (
+                serde_json::from_slice(&bytes).map_err(|_| WireFailure::ControlRecord)?,
+                Vec::new(),
+            )
         };
         Ok(Frame {
             message,
@@ -185,17 +232,24 @@ impl Codec {
         stream: &mut T,
         frame: Frame,
     ) -> io::Result<()> {
-        let _memory = crate::resources::MemoryLease::acquire(frame_limit()).map_err(invalid)?;
+        let _memory = crate::resources::MemoryLease::acquire(frame_limit())
+            .map_err(|_| WireFailure::FrameMemory)?;
         let binary = artifact::binary(&frame.message.body);
         let bytes = if binary {
-            artifact::encode(&frame.message).map_err(invalid)?
+            artifact::encode(&frame.message)?
         } else {
             let mut output = BoundedOutput(Vec::new());
-            serde_json::to_writer(&mut output, &frame.message).map_err(invalid)?;
+            serde_json::to_writer(&mut output, &frame.message).map_err(|error| {
+                if error.is_io() {
+                    WireFailure::FrameLimit
+                } else {
+                    WireFailure::ControlRecord
+                }
+            })?;
             output.0
         };
         if bytes.len() > frame_limit() {
-            return Err(invalid("frame byte limit"));
+            return Err(WireFailure::FrameLimit.into());
         }
         let header = (bytes.len() as u32) | if binary { BINARY_ARTIFACT } else { 0 };
         stream.write_all(&header.to_be_bytes()).await?;
@@ -213,9 +267,9 @@ fn frame_memory(
         length
             .checked_mul(if binary { 16 } else { 4 })
             .and_then(|bytes| bytes.checked_add(commands))
-            .ok_or_else(|| invalid("frame memory overflow"))?,
+            .ok_or(WireFailure::FrameMemory)?,
     )
-    .map_err(invalid)
+    .map_err(|_| WireFailure::FrameMemory.into())
 }
 
 fn frame_limit() -> usize {
@@ -226,7 +280,7 @@ struct BoundedOutput(Vec<u8>);
 impl std::io::Write for BoundedOutput {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > frame_limit().saturating_sub(self.0.len()) {
-            return Err(invalid("frame byte limit"));
+            return Err(WireFailure::FrameLimit.into());
         }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -236,8 +290,26 @@ impl std::io::Write for BoundedOutput {
     }
 }
 
-fn invalid(error: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+impl std::fmt::Display for WireFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        u32::from(*self).fmt(formatter)
+    }
+}
+
+impl std::error::Error for WireFailure {}
+
+impl From<WireFailure> for io::Error {
+    fn from(error: WireFailure) -> Self {
+        Self::new(io::ErrorKind::InvalidData, error)
+    }
+}
+
+pub(crate) fn stream_failure(error: &io::Error) -> WireFailure {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<WireFailure>())
+        .copied()
+        .unwrap_or(WireFailure::StreamIo)
 }
 
 impl request_response::Codec for Codec {

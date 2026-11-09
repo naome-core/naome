@@ -3,97 +3,36 @@ use naome_foundation::FormulaCodecError;
 use naome_proof::{DefinedFormulaCodecError, DefinitionExpansionError};
 use serde::Serialize;
 
-/// The failed condition, with typed witnesses instead of prose interpretation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "code")]
-pub enum Failure {
-    #[serde(rename = "mp.expected_implication")]
-    ExpectedImplication { operand: OperandRole },
-    #[serde(rename = "instantiation.expected_universal")]
-    ExpectedUniversal { operand: OperandRole },
-    #[serde(rename = "mp.antecedent_mismatch")]
-    AntecedentMismatch,
-    #[serde(rename = "inference.input_not_proved")]
-    InputNotProved {
-        operand: OperandRole,
-        reference: u64,
-    },
-    #[serde(rename = "reference.not_earlier")]
-    ReferenceNotEarlier {
-        operand: OperandRole,
-        reference: u64,
-    },
-    #[serde(rename = "schema.role_collision")]
-    RoleCollision {
-        variable: u32,
-        roles: Vec<OperandRole>,
-    },
-    #[serde(rename = "schema.parameter_role_collision")]
-    ParameterRoleCollision {
-        variable: u32,
-        role: OperandRole,
-        parameter: u32,
-    },
-    #[serde(rename = "schema.duplicate_parameter")]
-    DuplicateParameter {
-        variable: u32,
-        first: u32,
-        second: u32,
-    },
-    #[serde(rename = "schema.forbidden_predicate_variable")]
-    ForbiddenPredicateVariable { variable: u32, role: OperandRole },
-    #[serde(rename = "schema.undeclared_predicate_variable")]
-    UndeclaredPredicateVariable { variable: u32 },
-    #[serde(rename = "conclusion.open")]
-    OpenConclusion,
-    #[serde(rename = "reference.missing_proof")]
-    MissingProof { proof_id: Digest },
-    #[serde(rename = "definition.expansion")]
-    Expansion { reason: ExpansionFailure },
-    #[serde(rename = "formula.invalid")]
-    Formula { reason: FormulaFailure },
-    #[serde(rename = "checker.formula_work_limit")]
-    FormulaWorkLimit { actual: usize, maximum: usize },
-    #[serde(rename = "context.limit")]
-    ContextLimit,
-    #[serde(rename = "context.corrupt")]
-    ContextCorrupt,
-    #[serde(rename = "context.storage")]
-    ContextStorage,
-    #[serde(rename = "target.mismatch")]
-    TargetMismatch,
-    #[serde(rename = "program.manifest_mismatch")]
-    ManifestMismatch {
-        field: ClaimField,
-        expected: ClaimValue,
-        actual: ClaimValue,
-    },
-}
-impl Failure {
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::ExpectedImplication { .. } => "mp.expected_implication",
-            Self::ExpectedUniversal { .. } => "instantiation.expected_universal",
-            Self::AntecedentMismatch => "mp.antecedent_mismatch",
-            Self::InputNotProved { .. } => "inference.input_not_proved",
-            Self::ReferenceNotEarlier { .. } => "reference.not_earlier",
-            Self::RoleCollision { .. } => "schema.role_collision",
-            Self::ParameterRoleCollision { .. } => "schema.parameter_role_collision",
-            Self::DuplicateParameter { .. } => "schema.duplicate_parameter",
-            Self::ForbiddenPredicateVariable { .. } => "schema.forbidden_predicate_variable",
-            Self::UndeclaredPredicateVariable { .. } => "schema.undeclared_predicate_variable",
-            Self::OpenConclusion => "conclusion.open",
-            Self::MissingProof { .. } => "reference.missing_proof",
-            Self::Expansion { .. } => "definition.expansion",
-            Self::Formula { .. } => "formula.invalid",
-            Self::FormulaWorkLimit { .. } => "checker.formula_work_limit",
-            Self::ContextLimit => "context.limit",
-            Self::ContextCorrupt => "context.corrupt",
-            Self::ContextStorage => "context.storage",
-            Self::TargetMismatch => "target.mismatch",
-            Self::ManifestMismatch { .. } => "program.manifest_mismatch",
-        }
+diagnostic_codes! {
+    /// The failed condition, with typed witnesses instead of prose interpretation.
+    Failure, DIAGNOSTIC_FAILURE_CODES, "ProofFailure",
+    structured {
+        ExpectedImplication = 0x0025_0001 { operand: OperandRole },
+        ExpectedUniversal = 0x0025_0002 { operand: OperandRole },
+        InputNotProved = 0x0025_0004 { operand: OperandRole, reference: u64 },
+        ReferenceNotEarlier = 0x0025_0005 { operand: OperandRole, reference: u64 },
+        RoleCollision = 0x0025_0006 { variable: u32, roles: Vec<OperandRole> },
+        ParameterRoleCollision = 0x0025_0007 { variable: u32, role: OperandRole, parameter: u32 },
+        DuplicateParameter = 0x0025_0008 { variable: u32, first: u32, second: u32 },
+        ForbiddenPredicateVariable = 0x0025_0009 { variable: u32, role: OperandRole },
+        UndeclaredPredicateVariable = 0x0025_000a { variable: u32 },
+        MissingProof = 0x0025_000c { proof_id: Digest },
+        Expansion = 0x0025_000d { reason: ExpansionFailure },
+        Formula = 0x0025_000e { reason: FormulaFailure },
+        FormulaWorkLimit = 0x0025_000f { actual: usize, maximum: usize },
+        ManifestMismatch = 0x0025_0014 { field: ClaimField, expected: ClaimValue, actual: ClaimValue },
     }
+    units {
+        AntecedentMismatch = 0x0025_0003,
+        OpenConclusion = 0x0025_000b,
+        ContextLimit = 0x0025_0010,
+        ContextCorrupt = 0x0025_0011,
+        ContextStorage = 0x0025_0012,
+        TargetMismatch = 0x0025_0013,
+    }
+}
+
+impl Failure {
     pub fn outcome(&self) -> Outcome {
         match self {
             Self::MissingProof { .. }
@@ -126,36 +65,61 @@ impl Failure {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClaimField {
-    Commands,
-    InputBytes,
-    ProgramHash,
-    StreamRoot,
-    Statement,
+diagnostic_units! {
+    ClaimField, CLAIM_FIELD_CODES, "ClaimField", 49 {
+        Commands = 1,
+        InputBytes = 2,
+        ProgramHash = 3,
+        StreamRoot = 4,
+        Statement = 5,
+    }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClaimValue {
     Count(u64),
     Digest(Digest),
 }
+impl Serialize for ClaimValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("ClaimValue", 2)?;
+        match self {
+            Self::Count(count) => {
+                value.serialize_field("code", &0x0032_0001_u32)?;
+                value.serialize_field("value", count)?;
+            }
+            Self::Digest(digest) => {
+                value.serialize_field("code", &0x0032_0002_u32)?;
+                value.serialize_field("value", digest)?;
+            }
+        }
+        value.end()
+    }
+}
+/// Assigned claim value classes for the machine catalog.
+pub const CLAIM_VALUE_CODES: &[(&str, &str, u32)] = &[
+    ("ClaimValue", "Count", 0x0032_0001),
+    ("ClaimValue", "Digest", 0x0032_0002),
+];
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FormulaFailure {
-    ByteLimit { actual: usize, maximum: usize },
-    NodeLimit { maximum: usize },
-    DepthLimit { maximum: u32 },
-    UnexpectedEnd,
-    UnknownFormulaTag { tag: u8 },
-    UnknownVariableTag { tag: u8 },
-    DanglingBoundVariable { index: u32, binder_depth: u32 },
-    TrailingBytes { remaining: usize },
-    DefinitionArgumentLimit { actual: usize },
-    UnexpandedDefinition { definition_id: Digest },
-    Unsupported,
+diagnostic_codes! {
+    FormulaFailure, FORMULA_FAILURE_CODES, "FormulaFailure",
+    structured {
+        ByteLimit = 0x0028_0001 { actual: usize, maximum: usize },
+        NodeLimit = 0x0028_0002 { maximum: usize },
+        DepthLimit = 0x0028_0003 { maximum: u32 },
+        UnknownFormulaTag = 0x0028_0005 { tag: u8 },
+        UnknownVariableTag = 0x0028_0006 { tag: u8 },
+        DanglingBoundVariable = 0x0028_0007 { index: u32, binder_depth: u32 },
+        TrailingBytes = 0x0028_0008 { remaining: usize },
+        DefinitionArgumentLimit = 0x0028_0009 { actual: usize },
+        UnexpandedDefinition = 0x0028_000a { definition_id: Digest },
+        GraphDanglingBinder = 0x0028_000c { index: u64, binder_depth: u32 },
+    }
+    units {
+        UnexpectedEnd = 0x0028_0004,
+        Unsupported = 0x0028_000b,
+    }
 }
 impl FormulaFailure {
     pub fn is_limit(&self) -> bool {
@@ -223,38 +187,39 @@ impl From<&DefinedFormulaCodecError> for FormulaFailure {
                 Self::TrailingBytes { remaining }
             }
             DefinedFormulaCodecError::Primitive(ref error) => Self::from(error),
+            DefinedFormulaCodecError::Graph(ref error) => match *error {
+                naome_foundation::graph::MaterializationError::DepthLimit { maximum } => {
+                    Self::DepthLimit { maximum }
+                }
+                naome_foundation::graph::MaterializationError::NodeLimit { maximum } => {
+                    Self::NodeLimit { maximum }
+                }
+                naome_foundation::graph::MaterializationError::DanglingBinder {
+                    index,
+                    binder_depth,
+                } => Self::GraphDanglingBinder {
+                    index,
+                    binder_depth,
+                },
+                naome_foundation::graph::MaterializationError::Read(never) => match never {},
+            },
             _ => Self::Unsupported,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ExpansionFailure {
-    UnknownDefinition {
-        definition_id: Digest,
-    },
-    ArityMismatch {
-        definition_id: Digest,
-        expected: usize,
-        actual: usize,
-    },
-    CyclicDefinition {
-        definition_id: Digest,
-    },
-    UndeclaredFormalVariable {
-        identifier: u32,
-    },
-    NodeLimit {
-        maximum: usize,
-    },
-    DepthLimit {
-        maximum: u32,
-    },
-    Formula {
-        reason: FormulaFailure,
-    },
-    Unsupported,
+diagnostic_codes! {
+    ExpansionFailure, EXPANSION_FAILURE_CODES, "ExpansionFailure",
+    structured {
+        UnknownDefinition = 0x0029_0001 { definition_id: Digest },
+        ArityMismatch = 0x0029_0002 { definition_id: Digest, expected: usize, actual: usize },
+        CyclicDefinition = 0x0029_0003 { definition_id: Digest },
+        UndeclaredFormalVariable = 0x0029_0004 { identifier: u32 },
+        NodeLimit = 0x0029_0005 { maximum: usize },
+        DepthLimit = 0x0029_0006 { maximum: u32 },
+        Formula = 0x0029_0007 { reason: FormulaFailure },
+    }
+    units { Unsupported = 0x0029_0008 }
 }
 impl ExpansionFailure {
     pub fn is_limit(&self) -> bool {

@@ -52,9 +52,9 @@ fn fresh(context: &[Term], goal: &Formula) -> FreeVariable {
 /// A checked closed sublemma becomes opaque to bracket abstraction, preventing
 /// repeated discharge from expanding its derivation. The final checker still
 /// checks every emitted primitive step.
-fn seal(term: Term, names: &Names) -> Result<Term, String> {
+fn seal(term: Term, names: &Names) -> Result<Term, crate::Error> {
     if !term.free_assumptions().is_empty() {
-        return Err("open construction lemma".into());
+        return Err(crate::ResearchFailure::LogicOpenLemma.into());
     }
     let formula = term.formula();
     if names.native_programs {
@@ -70,13 +70,13 @@ fn seal(term: Term, names: &Names) -> Result<Term, String> {
         term = c::instantiate(term, v)?;
     }
     if term.formula() != formula {
-        return Err("construction lemma instantiation".into());
+        return Err(crate::ResearchFailure::LogicLemmaInstantiation.into());
     }
     Ok(term)
 }
-fn project(value: Term, second: bool, names: &mut Names) -> Result<Term, String> {
+fn project(value: Term, second: bool, names: &mut Names) -> Result<Term, crate::Error> {
     let formula = value.formula();
-    let (a, b) = conjunction(&formula).ok_or("conjunction projection")?;
+    let (a, b) = conjunction(&formula).ok_or(crate::ResearchFailure::LogicProjectionShape)?;
     let (id, assumed) = names.assumption(formula.clone());
     let (left, nnb) = c::not_implies(assumed, names)?;
     let result = if second {
@@ -87,11 +87,11 @@ fn project(value: Term, second: bool, names: &mut Names) -> Result<Term, String>
     let law = seal(Term::Lambda(id, formula, Box::new(result)), names)?;
     let result = c::app(law, value)?;
     if result.formula() != if second { b } else { a } {
-        return Err("projection result".into());
+        return Err(crate::ResearchFailure::LogicProjectionResult.into());
     }
     Ok(result)
 }
-pub(in crate::learning) fn join(a: Term, b: Term, names: &mut Names) -> Result<Term, String> {
+pub(in crate::learning) fn join(a: Term, b: Term, names: &mut Names) -> Result<Term, crate::Error> {
     let af = a.formula();
     let bf = b.formula();
     let (i, av) = names.assumption(af.clone());
@@ -111,10 +111,14 @@ fn exists_intro(
     v: FreeVariable,
     body: Term,
     names: &mut Names,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let bf = body.formula();
     let (j, b) = names.assumption(bf.clone());
-    let all = goal.view().negated().ok_or("existential goal")?.to_owned();
+    let all = goal
+        .view()
+        .negated()
+        .ok_or(crate::ResearchFailure::LogicExistentialGoal)?
+        .to_owned();
     let (i, h) = names.assumption(all.clone());
     let negative = c::instantiate(h, v)?;
     let result = c::neg_intro(i, all, b, negative, names)?;
@@ -127,9 +131,10 @@ fn eliminate(
     id: usize,
     result: Term,
     names: &mut Names,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let goal = result.formula();
-    let body = existential(&value.formula(), v).ok_or("existential premise")?;
+    let body =
+        existential(&value.formula(), v).ok_or(crate::ResearchFailure::LogicExistentialPremise)?;
     let (i, ng) = names.assumption(c::not(goal.clone()));
     let negative = c::neg_intro(id, body, result, ng, names)?;
     let all = Term::Generalize(v, Box::new(negative));
@@ -141,12 +146,13 @@ fn exists_elim(
     id: usize,
     result: Term,
     names: &mut Names,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let goal = result.formula();
     if goal.free_variables().contains(&v) {
-        return Err("existential eigenvariable escapes".into());
+        return Err(crate::ResearchFailure::LogicEigenvariableEscape.into());
     }
-    let body = existential(&value.formula(), v).ok_or("existential elimination")?;
+    let body = existential(&value.formula(), v)
+        .ok_or(crate::ResearchFailure::LogicExistentialElimination)?;
     let bridge = Term::Generalize(
         v,
         Box::new(Term::Lambda(id, body.clone(), Box::new(result))),
@@ -169,7 +175,7 @@ fn instances(
     term: &Term,
     domain: &BTreeSet<FreeVariable>,
     goal: &Formula,
-) -> Result<Vec<Term>, String> {
+) -> Result<Vec<Term>, crate::Error> {
     let original = term.formula().free_variables();
     let wanted = goal.free_variables();
     let mut choices = Vec::new();
@@ -219,7 +225,11 @@ impl Search {
         self.work += 1;
         true
     }
-    pub fn prove(&mut self, goal: &Formula, context: &[Term]) -> Result<Option<Term>, String> {
+    pub fn prove(
+        &mut self,
+        goal: &Formula,
+        context: &[Term],
+    ) -> Result<Option<Term>, crate::Error> {
         self.visit(goal, context, BTreeSet::new(), 0)
     }
     fn visit(
@@ -228,7 +238,7 @@ impl Search {
         context: &[Term],
         used: BTreeSet<Vec<u8>>,
         depth: usize,
-    ) -> Result<Option<Term>, String> {
+    ) -> Result<Option<Term>, crate::Error> {
         if !self.spend(depth) || context.len() > 32 {
             return Ok(None);
         }
@@ -323,7 +333,7 @@ impl Search {
         }
         for t in context {
             if let Some(body) = existential(&t.formula(), v) {
-                let key = t.formula().encode_canonical().map_err(|e| e.to_string())?;
+                let key = t.formula().encode_canonical().map_err(crate::Error::from)?;
                 if used.contains(&key) {
                     continue;
                 }
@@ -347,7 +357,8 @@ impl Search {
         // bounded fact set. Candidate variables come only from this sequent.
         if existential(goal, v).is_some() {
             for d in domain.iter().rev() {
-                let body = existential(goal, *d).ok_or("existential opening")?;
+                let body =
+                    existential(goal, *d).ok_or(crate::ResearchFailure::LogicExistentialOpening)?;
                 if let Some(term) = self.visit(&body, context, used.clone(), depth + 1)? {
                     return Ok(Some(exists_intro(goal, *d, term, &mut self.names)?));
                 }

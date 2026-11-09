@@ -24,7 +24,10 @@ fn opposite_short_answers_survive_a_dense_unprovable_direction_with_the_same_bud
                 RejectionReason::KnownProof
             })
         );
-        assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+        assert_eq!(
+            result.rule,
+            crate::question::PrefilterRule::Q04CheckedMpClosure
+        );
         assert!(result.novelty().is_none());
         let witness = result.deduction.unwrap();
         let checked = normalize_and_check_with_state(

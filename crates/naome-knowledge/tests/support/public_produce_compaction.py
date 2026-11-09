@@ -6,6 +6,7 @@ inclusive8GiB/free20GiB/reserve64MiB controls. This case adds no observer.
 It keeps the single direct Node Popen, bounded IO and an unchanged600s+10s
 cutoff; output and test data belong inside that owner's admitted namespace.
 """
+from fixture_result import FixtureResult
 import argparse
 from collections import deque
 import gzip
@@ -30,7 +31,6 @@ COUNT, FIRST = 4096, 8100
 LARGE_COUNT = 12288
 LINE_LIMIT, SOURCE_LIMIT = 524288, 65536
 RAW_LIMIT = 256 * 1024**2
-EXPECTED_METADATA_MESSAGE = "question limit exceeded: question target nodes"
 
 
 def streaming_digest(path):
@@ -97,11 +97,11 @@ class PublicNode(Node):
                     event = json.loads(raw)
                     assert isinstance(event, dict), "stdout event must be an object"
                     with self.condition:
-                        if event.get("event") == "response":
+                        if event.get("event") == 0x00170063:
                             request = event.get("request")
                             assert self.pending is not None and request == self.pending and request not in self.responses, "unsolicited/duplicate response"
                             self.responses[request] = event
-                        if event.get("event") in ("starting", "ready", "stopped"):
+                        if event.get("event") in (0x00170068, 0x00170050, 0x0017006a):
                             self.events.append(event)
                         self.condition.notify_all()
         except Exception as error:
@@ -215,7 +215,7 @@ class Screen(Driver):
         contract = json.loads(self.helper_output([str(self.binary), "contract"]))
         assert contract["limits"]["proof_bytes"] == SOURCE_LIMIT
         assert contract["limits"]["command_bytes"] == LINE_LIMIT
-        self.summary = {"schema": 1, "result": "running", "node_count": 1,
+        self.summary = {"schema": 1, "result": FixtureResult.RUNNING, "node_count": 1,
                         "contract": contract, "commands": [], "processes": [],
                         "binary": str(self.binary), "binary_sha256": streaming_digest(self.binary),
                         "source_sha256": streaming_digest(__file__),
@@ -307,7 +307,7 @@ def main():
                     finally:
                         duration = time.monotonic_ns() - mark
                         row["roundtrip_ns"] = duration
-                    assert result["result"] == {"status": "accepted", "id": identifier}
+                    assert result["result"] == {"status": 0x0016_0001, "id": identifier}
                     envelope = result["object"]
                     assert set(envelope) == {"artifact_id", "statement_id", "compatibility", "payload", "obligation_proof"}
                     assert envelope["artifact_id"] == identifier and envelope["statement_id"] == statement
@@ -315,8 +315,8 @@ def main():
                     assert bytes.fromhex(envelope["payload"]) == b"\0" + canonical
                     assert result["metadata"] is None, result
                     error = result["metadata_error"]
-                    assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
-                    assert error["message"] == EXPECTED_METADATA_MESSAGE, error
+                    assert error["code"] == 0x0006_000D, error
+                    assert error["limit"] == 1, error
                     assert error["retryable"] is False and error["fatal"] is False, error
                     identifiers.append(identifier)
                     timings.append(duration)

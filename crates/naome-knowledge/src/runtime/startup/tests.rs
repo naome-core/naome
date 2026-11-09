@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Cursor;
 
-fn check(bytes: Vec<u8>, ready: bool, expired: bool) -> Result<(), String> {
+fn check(bytes: Vec<u8>, ready: bool, expired: bool) -> Result<(), crate::Error> {
     let (send, receive) = mpsc::sync_channel(1);
     let token = "ab".repeat(32);
     let deadline = Instant::now()
@@ -122,8 +122,105 @@ async fn startup_expiry_and_wrong_instance_never_reset_the_original_deadline() {
         .await
         .unwrap()
         .unwrap_err()
-        .contains("startup deadline")
+            == crate::Error::from(crate::InputFault::StartupDeadline)
     );
     assert!(tokio::time::Instant::now() >= deadline);
     assert!(tokio::time::Instant::now() - started < Duration::from_millis(100));
+}
+
+#[test]
+fn startup_cleanup_retains_both_causes_as_machine_outcomes() {
+    let error = crate::Error::StartupCleanup {
+        primary: Box::new(crate::Error::from(crate::InputFault::StartupDeadline)),
+        cleanup: Box::new(crate::Error::from(
+            crate::InputFault::StartupReapUnconfirmed,
+        )),
+    };
+    assert!(error.fatal());
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(value["code"], u32::from(crate::RuntimeFailure::Cleanup));
+    assert_eq!(
+        value["primary"]["code"],
+        u32::from(crate::InputFault::StartupDeadline)
+    );
+    assert_eq!(
+        value["cleanup"]["code"],
+        u32::from(crate::InputFault::StartupReapUnconfirmed)
+    );
+}
+
+#[test]
+fn reaped_startup_preserves_original_abort_code() {
+    for code in [
+        crate::StartupFailure::LifelineClosed,
+        crate::StartupFailure::InstanceMismatch,
+        crate::StartupFailure::Cancelled,
+    ] {
+        let error = super::super::startup_reaped(code.into());
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], u32::from(code));
+        assert_eq!(value["cause"]["code"], u32::from(code));
+        assert_eq!(value["reaped"], true);
+    }
+}
+
+#[test]
+fn abort_report_preserves_output_failure() {
+    struct Broken;
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(nix::libc::EPIPE))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let error = write_abort_report(&mut Broken, &serde_json::json!({"kind": 1})).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(std::io::Error::from_raw_os_error(nix::libc::EPIPE))
+    );
+}
+
+#[test]
+fn handoff_deadline_errors_preserve_their_cause() {
+    let expired = Handoff {
+        input: std::io::stdin(),
+        active_ns: 0,
+        cleanup_ns: 0,
+    };
+    assert_eq!(
+        expired.remaining(),
+        Err(crate::InputFault::HandoffDeadline.into())
+    );
+    let overflow = Handoff {
+        input: std::io::stdin(),
+        active_ns: u64::MAX,
+        cleanup_ns: u64::MAX,
+    };
+    assert_eq!(
+        overflow.abort_deadline(),
+        Err(crate::InputFault::HandoffEndpointOverflow.into())
+    );
+    let cause = crate::Error::from(crate::InputFault::HandoffDeadline);
+    let error = handoff_launch(cause.clone());
+    assert!(
+        matches!(error, crate::Error::Startup { code: crate::StartupFailure::Launch, reaped: false, cause: Some(actual) } if *actual == cause)
+    );
+}
+
+#[test]
+fn startup_lifeline_rejections_keep_machine_causes() {
+    assert_eq!(
+        check(Vec::new(), false, false),
+        Err(crate::InputFault::StartupParentClosed.into())
+    );
+    assert_eq!(
+        check(vec![b'x'; MAX_FRAME + 1], false, false),
+        Err(crate::InputFault::StartupFrameLimit.into())
+    );
+    assert_eq!(
+        check(b"incorrect\n".to_vec(), false, false),
+        Err(crate::InputFault::StartupFrameMismatch.into())
+    );
 }

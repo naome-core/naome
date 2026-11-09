@@ -12,7 +12,7 @@ pub enum Lane {
     Records,
 }
 impl Lane {
-    fn key(self, key: &str) -> Result<(), String> {
+    fn key(self, key: &str) -> Result<(), crate::Error> {
         match self {
             Self::Sources => {
                 crate::object::id_bytes(key)?;
@@ -21,9 +21,9 @@ impl Lane {
             Self::Records => {
                 let id = key
                     .parse::<u64>()
-                    .map_err(|_| "history record key syntax")?;
+                    .map_err(|_| crate::ResearchFailure::HistoryRecordKeySyntax)?;
                 if id == 0 || id.to_string() != key {
-                    return Err("history record key encoding".into());
+                    return Err(crate::ResearchFailure::HistoryRecordKeyEncoding.into());
                 }
                 Ok(())
             }
@@ -40,7 +40,7 @@ pub struct Cursor {
     lane: Lane,
 }
 impl Cursor {
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), crate::Error> {
         for (lane, key) in [
             (Lane::Sources, &self.sources),
             (Lane::Records, &self.records),
@@ -82,9 +82,9 @@ pub struct Request {
     pub horizon: u64,
 }
 impl Request {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.horizon == 0 {
-            return Err("history request lacks its original job".into());
+            return Err(crate::ResearchFailure::HistoryRequestJobMissing.into());
         }
         if let Some(after) = &self.after {
             self.lane.key(after)?;
@@ -104,7 +104,7 @@ pub struct Receipt {
     pub read_cpu_micros: u64,
 }
 impl Receipt {
-    pub fn validate(&self, request: &Request) -> Result<(), String> {
+    pub fn validate(&self, request: &Request) -> Result<(), crate::Error> {
         request.validate()?;
         self.blob.validate()?;
         if self.request != *request
@@ -112,12 +112,12 @@ impl Receipt {
             || self.read_bytes > crate::resources::limits().native_model_blob_bytes
             || self.read_operations > 4 * SOURCES + 1
         {
-            return Err("history page differs from its bounded request".into());
+            return Err(crate::ResearchFailure::HistoryPageRequestMismatch.into());
         }
         if let Some(next) = &self.next {
             request.lane.key(next)?;
             if request.after.as_ref().is_some_and(|after| next <= after) {
-                return Err("history cursor did not advance".into());
+                return Err(crate::ResearchFailure::HistoryCursorNotAdvanced.into());
             }
         }
         Ok(())
@@ -134,17 +134,16 @@ pub struct Source {
     pub peer_evidence: Option<peer::Source>,
 }
 impl Source {
-    fn example(&self) -> Result<Example, String> {
+    fn example(&self) -> Result<Example, crate::Error> {
         match (&self.origin, &self.peer_evidence) {
             (Origin::Local, None) => {
-                let question =
-                    ResearchQuestion::from_hex(&self.question).map_err(|e| e.to_string())?;
+                let question = ResearchQuestion::from_hex(&self.question)?;
                 self.solution.check_target(&question)?;
             }
             (Origin::Peer { artifact, .. }, Some(evidence)) => {
                 peer::validate_source(&self.question, artifact, evidence, &self.solution)?;
             }
-            _ => return Err("historical origin lacks its exact admission evidence".into()),
+            _ => return Err(crate::ResearchFailure::HistoryOriginEvidence.into()),
         }
         let example = Example {
             origin: self.origin.clone(),
@@ -157,7 +156,7 @@ impl Source {
         // A pointer or a checked flag cannot substitute the complete original
         // context, definitions, helper closure and reconstructed native proof.
         if matches!(example.tree, search::Tree::Stored { .. }) {
-            return Err("history source lacks its complete trajectory".into());
+            return Err(crate::ResearchFailure::HistoryTrajectoryMissing.into());
         }
         state::validate_example(&example)?;
         Ok(example)
@@ -183,7 +182,7 @@ pub struct Record {
     pub observation: Option<experience::Observation>,
 }
 impl Page {
-    fn validate(&self, receipt: &Receipt) -> Result<(), String> {
+    fn validate(&self, receipt: &Receipt) -> Result<(), crate::Error> {
         receipt.validate(&self.request)?;
         let bytes = crate::checkpoint::encode(self)?;
         if Blob::of(&bytes) != receipt.blob
@@ -193,7 +192,7 @@ impl Page {
             || self.records.len() > self.examined.len()
             || !self.examined.windows(2).all(|pair| pair[0].0 < pair[1].0)
         {
-            return Err("history page identity or sequence differs".into());
+            return Err(crate::ResearchFailure::HistoryPageIdentity.into());
         }
         for (proof, job) in &self.examined {
             self.request.lane.key(proof)?;
@@ -204,7 +203,7 @@ impl Page {
                     .as_ref()
                     .is_some_and(|after| proof <= after)
             {
-                return Err("history page source cursor differs".into());
+                return Err(crate::ResearchFailure::HistoryPageCursor.into());
             }
         }
         if self
@@ -212,7 +211,7 @@ impl Page {
             .as_ref()
             .is_some_and(|next| self.examined.last().is_none_or(|(last, _)| next != last))
         {
-            return Err("history continuation lacks its last examined source".into());
+            return Err(crate::ResearchFailure::HistoryPageContinuation.into());
         }
         if self.request.lane == Lane::Records {
             if !self.sources.is_empty()
@@ -223,22 +222,20 @@ impl Page {
                     .zip(&self.examined)
                     .any(|(record, (key, job))| record.job != *job || key != &job.to_string())
             {
-                return Err("history record page omitted or substituted a scanned job".into());
+                return Err(crate::ResearchFailure::HistoryRecordPageMismatch.into());
             }
             for record in &self.records {
                 if let Some(observation) = &record.observation {
                     observation.validate()?;
                     if observation.summary.job != record.job || record.job >= self.request.horizon {
-                        return Err(
-                            "history observation differs from its original job horizon".into()
-                        );
+                        return Err(crate::ResearchFailure::HistoryObservationHorizon.into());
                     }
                 }
             }
             return Ok(());
         }
         if !self.records.is_empty() {
-            return Err("admitted source page contains a different journal view".into());
+            return Err(crate::ResearchFailure::HistorySourcePageLane.into());
         }
         let expected: Vec<_> = self
             .examined
@@ -252,7 +249,7 @@ impl Page {
             .map(|source| (source.solution.proof_id.clone(), source.job))
             .collect();
         if actual != expected {
-            return Err("historical page omitted or substituted an owned source".into());
+            return Err(crate::ResearchFailure::HistorySourcePageMismatch.into());
         }
         Ok(())
     }
@@ -285,7 +282,7 @@ pub(super) struct Sources {
     pub observations: Vec<experience::Observation>,
 }
 impl Working {
-    fn prepare(job: &Job, page: &Page, receipt: &Receipt) -> Result<Self, String> {
+    fn prepare(job: &Job, page: &Page, receipt: &Receipt) -> Result<Self, crate::Error> {
         page.validate(receipt)?;
         let mut state = job.base.clone();
         let mut evidence: BTreeMap<_, _> = job
@@ -344,13 +341,13 @@ impl Working {
             retained,
         };
         if crate::checkpoint::encode(&result)?.len() > PAGE_BYTES + 32 * 1024 + 8192 {
-            return Err("prepared replay exceeds existing working source capacity".into());
+            return Err(crate::ResearchFailure::HistoryPreparedCapacity.into());
         }
         Ok(result)
     }
-    fn state(&self, job: &Job) -> Result<State, String> {
+    fn state(&self, job: &Job) -> Result<State, crate::Error> {
         if self.base_hash != job.base_hash || Some(&self.page) != job.history.as_ref() {
-            return Err("prepared replay differs from its immutable job".into());
+            return Err(crate::ResearchFailure::HistoryPreparedIdentity.into());
         }
         let mut state = job.base.clone();
         state.replay.clone_from(&self.replay);
@@ -388,7 +385,7 @@ impl Job {
         progress: &mut Progress,
         engine: &mut Engine,
         io: &mut I,
-    ) -> Result<Option<Sources>, String> {
+    ) -> Result<Option<Sources>, crate::Error> {
         let Some(request) = self.history_request.clone() else {
             return Ok(None);
         };
@@ -424,7 +421,7 @@ impl Job {
         };
         if let Some(previous) = &progress.prepared {
             if *previous != prepared || artifact::load(io, &previous.blob)? != bytes {
-                return Err("prepared replay changed across continuation".into());
+                return Err(crate::ResearchFailure::HistoryPreparedChanged.into());
             }
         } else {
             artifact::save(io, &bytes)?;
@@ -444,7 +441,7 @@ impl Job {
 #[cfg(test)]
 pub(crate) fn inspect_reload(job: &Job, receipt: &Receipt, bytes: &[u8]) -> Result<State, String> {
     let page: Page = crate::checkpoint::decode(bytes)?;
-    Working::prepare(job, &page, receipt)?.state(job)
+    Ok(Working::prepare(job, &page, receipt)?.state(job)?)
 }
 
 #[cfg(test)]

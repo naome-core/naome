@@ -50,7 +50,7 @@ fn local_and_peer_certificate_errors_preserve_the_report_through_json_serializat
         InputFormat::Certificate
     );
     let binary_json = serde_json::to_value(&error).unwrap();
-    assert_eq!(binary_json["code"], "proof.check");
+    assert_eq!(binary_json["code"], u32::from(OperationCode::ProofCheck));
     assert_eq!(
         binary_json["diagnostic"]["failure"],
         local_json["diagnostic"]["failure"]
@@ -68,7 +68,7 @@ fn inspection_errors_keep_their_typed_retry_requirements_in_json() {
         },
     ));
     let json = serde_json::to_value(&error).unwrap();
-    assert_eq!(json["inspection_error"]["code"], "replay_required");
+    assert_eq!(json["inspection_error"]["code"], 0x0033_0006_u32);
     assert_eq!(json["inspection_error"]["checked_before"], 3);
     assert_eq!(json["inspection_error"]["required_before"], 9);
 }
@@ -94,16 +94,244 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
         .ingest(envelope, std::time::Instant::now())
         .unwrap_err();
     let json = serde_json::to_value(&error).unwrap();
-    assert_eq!(json["code"], "certificate.format");
+    assert_eq!(json["code"], u32::from(OperationCode::CertificateFormat));
     assert_eq!(
         json["format_error"]["input_digest"],
         naome_checker::diagnostics::Digest::of(&bytes).to_string()
     );
-    assert_eq!(json["format_error"]["reason"]["kind"], "unexpected_end");
+    assert_eq!(json["format_error"]["reason"]["code"], 0x002a_0004_u32);
     assert!(!error.fatal() && !error.retryable());
     let stored = error.storage();
     let stored_json = serde_json::to_value(&stored).unwrap();
     assert!(stored.fatal() && !stored.retryable());
-    assert_eq!(stored_json["code"], "storage.invalid_record");
+    assert_eq!(
+        stored_json["code"],
+        u32::from(OperationCode::InvalidStoredRecord)
+    );
     assert_eq!(stored_json["format_error"], json["format_error"]);
+}
+
+#[test]
+fn checked_context_storage_cause_retains_its_native_code() {
+    use naome_checker::ContextError;
+    use naome_proof::ContextStorageFailure;
+
+    let error = crate::Error::from(ContextError::Storage(ContextStorageFailure::Sqlite(Some(
+        2067,
+    ))));
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], 0x0006_0013u32);
+    assert_eq!(value["reason"], 1);
+    assert_eq!(value["native_code"], 2067);
+    assert_eq!(value["fatal"], true);
+    assert_eq!(value["retryable"], false);
+    assert!(value.get("message").is_none());
+}
+
+#[test]
+fn formula_codec_failures_preserve_numeric_reason_and_context() {
+    let error = Error::from(naome_foundation::FormulaCodecError::UnknownFormulaTag(42));
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::Formula));
+    assert_eq!(value["formula"]["code"], 0x0028_0005_u32);
+    assert_eq!(value["formula"]["tag"], 42);
+    assert!(value["formula"].get("kind").is_none());
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["cause_code"], u32::from(OperationCode::Formula));
+    assert_eq!(stored["formula"], value["formula"]);
+    assert_eq!(stored["fatal"], true);
+}
+
+#[test]
+fn certificate_format_reasons_encode_domains_and_witnesses() {
+    use naome_proof::ProofCertificateError;
+    let limit = FormatFailure::from(&ProofCertificateError::TooManySteps {
+        actual: 9,
+        maximum: 8,
+    });
+    let value = serde_json::to_value(limit).unwrap();
+    assert_eq!(value["code"], 0x002a_0002_u32);
+    assert_eq!(value["resource"], 0x002b_0001_u32);
+    assert_eq!(value["actual"], 9);
+    assert_eq!(value["maximum"], 8);
+    let tag = FormatFailure::from(&ProofCertificateError::UnknownZfcAxiomTag(42));
+    let value = serde_json::to_value(tag).unwrap();
+    assert_eq!(value["code"], 0x002a_0005_u32);
+    assert_eq!(value["domain"], 0x002c_0002_u32);
+    assert_eq!(value["tag"], 42);
+    assert!(value.get("kind").is_none());
+}
+
+#[test]
+fn question_registry_failure_keeps_its_checker_reason() {
+    use naome_checker::question::{
+        QuestionRegistry, RegisteredQuestion, RejectionReason, ResearchQuestion,
+    };
+    let question = ResearchQuestion::from_hex(&crate::mocks::create_question(0)).unwrap();
+    let mut registry = QuestionRegistry::new();
+    registry
+        .insert(RegisteredQuestion::from_research_question(&question).unwrap())
+        .unwrap();
+    let error = registry
+        .insert(RegisteredQuestion::from_research_question(&question).unwrap())
+        .map_err(Error::from)
+        .unwrap_err();
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(OperationCode::QuestionRegistration)
+    );
+    assert_eq!(value["reason"], RejectionReason::InvalidRegistry.code());
+    assert!(!error.retryable());
+    assert!(!error.fatal());
+    let stored = error.storage();
+    assert!(stored.fatal());
+    let value = serde_json::to_value(stored).unwrap();
+    assert_eq!(
+        value["cause_code"],
+        u32::from(OperationCode::QuestionRegistration)
+    );
+    assert_eq!(value["reason"], RejectionReason::InvalidRegistry.code());
+}
+
+#[test]
+fn definition_format_reasons_retain_arity_and_formal_variable_witnesses() {
+    use naome_proof::DefinitionCertificateError as E;
+    let too_large = FormatFailure::from(&E::ArityTooLarge {
+        actual: 12,
+        maximum: 8,
+    });
+    let value = serde_json::to_value(too_large).unwrap();
+    assert_eq!(value["code"], 0x002a_0002_u32);
+    assert_eq!(value["resource"], u32::from(FormatResource::Arity));
+    assert_eq!(value["actual"], 12);
+    assert_eq!(value["maximum"], 8);
+    let missing = FormatFailure::from(&E::MissingFormalVariable {
+        identifier: 2,
+        arity: 3,
+    });
+    let value = serde_json::to_value(missing).unwrap();
+    assert_eq!(value["code"], 0x002a_000d_u32);
+    assert_eq!(value["identifier"], 2);
+    assert_eq!(value["arity"], 3);
+}
+
+#[test]
+fn definition_checker_preserves_obligation_identity_and_storage_fatality() {
+    let statement = naome_proof::StatementId::from_bytes([9; 32]);
+    let error: Error = naome_checker::DefinitionCheckError::UnknownObligationStatement {
+        statement_id: statement,
+    }
+    .into();
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::DefinitionCheck));
+    assert_eq!(
+        value["reason"],
+        u32::from(crate::outcome::DefinitionCheckReason::UnknownObligation)
+    );
+    assert_eq!(value["statement"], serde_json::json!(vec![9; 32]));
+    assert_eq!(value["fatal"], false);
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(OperationCode::DefinitionCheck)
+    );
+    assert_eq!(stored["reason"], value["reason"]);
+    assert_eq!(stored["statement"], value["statement"]);
+    assert_eq!(stored["fatal"], true);
+}
+
+#[test]
+fn program_sql_failure_preserves_extended_code_and_resource_classification() {
+    let source = naome_checker::program::Error::Storage(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE),
+        Some("private SQL detail".into()),
+    ));
+    let error = Error::from(source);
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::ProgramSql));
+    assert_eq!(value["reason"], u32::from(crate::SqlFault::Engine));
+    assert_eq!(
+        value["sqlite_code"],
+        rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    );
+    assert_eq!(value["fatal"], true);
+    assert!(!value.to_string().contains("private SQL detail"));
+
+    let busy = naome_checker::program::Error::Storage(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        None,
+    ));
+    assert_eq!(Error::from(busy), Error::ExecutionLimit);
+}
+
+#[test]
+fn generic_io_failure_is_numeric_and_preserves_storage_severity() {
+    let error = Error::from(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "private input detail",
+    ));
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::Io));
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::InvalidData));
+    assert_eq!(value["fatal"], false);
+    assert!(!value.to_string().contains("private input detail"));
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["fatal"], true);
+    assert_eq!(stored["kind"], u32::from(crate::IoFaultKind::InvalidData));
+
+    let native = serde_json::to_value(Error::from(std::io::Error::from_raw_os_error(2))).unwrap();
+    assert_eq!(native["kind"], u32::from(crate::IoFaultKind::NotFound));
+    assert_eq!(native["os_code"], 2);
+    assert_eq!(
+        Error::from(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+        Error::ExecutionLimit
+    );
+}
+
+#[test]
+fn checked_artifact_state_failure_preserves_kind_and_identity() {
+    let identity = [7; 32];
+    let error = crate::Error::from(naome_checker::ArtifactStateError::MissingProofDependency {
+        proof_id: naome_proof::ProofId::from_bytes(identity),
+    });
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::StateProofDependencyMissing)
+    );
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["identity"], serde_json::json!(identity));
+    let stored = error.storage();
+    assert!(stored.fatal());
+    let value = serde_json::to_value(stored).unwrap();
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::InputFault::StateProofDependencyMissing)
+    );
+    assert_eq!(value["identity"], serde_json::json!(identity));
+}
+
+#[test]
+fn catalog_pragma_failure_keeps_values_and_storage_halt() {
+    let failure = crate::Error::CatalogPragma {
+        code: crate::InputFault::CatalogPragmaForeignKeys,
+        expected: 1,
+        actual: 0,
+    };
+    let encoded = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::InputFault::CatalogPragmaForeignKeys)
+    );
+    assert_eq!(encoded["expected"], 1);
+    assert_eq!(encoded["actual"], 0);
+    let stored = failure.storage();
+    assert!(stored.fatal());
+    let encoded = serde_json::to_value(stored).unwrap();
+    assert_eq!(
+        encoded["cause_code"],
+        u32::from(crate::InputFault::CatalogPragmaForeignKeys)
+    );
+    assert_eq!(encoded["expected"], 1);
+    assert_eq!(encoded["actual"], 0);
 }

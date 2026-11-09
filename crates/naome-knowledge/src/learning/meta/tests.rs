@@ -125,11 +125,41 @@ fn exact_paired_meta_adam_restore_preserves_the_next_real_update() {
     n.update(&[&e]).unwrap();
     restored.update(&[&e]).unwrap();
     assert_eq!(n.encode(), restored.encode());
-    assert!(model::Network::decode(&w, &o, 8).is_err());
+    let error = model::Network::decode(&w, &o, 8).err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::MetaOptimizerCounter,
+            expected: 8,
+            actual: 7
+        }
+    );
+    let value = serde_json::to_value(error.fatal_storage()).unwrap();
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::ResearchFailure::MetaOptimizerCounter)
+    );
+    assert_eq!(value["expected"], 8);
+    assert_eq!(value["actual"], 7);
     let mut corrupt = w.clone();
     corrupt[..4].copy_from_slice(&f32::NAN.to_le_bytes());
-    assert!(model::Network::decode(&corrupt, &o, 7).is_err());
-    assert!(model::Network::decode(&w, &o[..o.len() - 1], 7).is_err());
+    assert_eq!(
+        model::Network::decode(&corrupt, &o, 7).err().unwrap(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::MetaWeightValue,
+            index: 0
+        }
+    );
+    assert_eq!(
+        model::Network::decode(&w, &o[..o.len() - 1], 7)
+            .err()
+            .unwrap(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::MetaOptimizerWidth,
+            expected: o.len() as u64,
+            actual: (o.len() - 1) as u64
+        }
+    );
 }
 #[test]
 fn maximum_typed_meta_memory_fits_its_existing_state_headroom() {

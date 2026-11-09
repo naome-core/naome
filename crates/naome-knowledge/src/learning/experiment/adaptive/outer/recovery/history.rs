@@ -45,7 +45,7 @@ pub(super) struct Io {
     pub source_reads: u64,
 }
 impl ArtifactIo for Io {
-    fn history(&mut self, request: &Request) -> Result<Receipt, String> {
+    fn history(&mut self, request: &Request) -> Result<Receipt, crate::Error> {
         request.validate()?;
         if request.lane != crate::learning::history::Lane::Sources {
             return Err("admitted-source fixture cannot supply operational job history".into());
@@ -128,10 +128,15 @@ impl ArtifactIo for Io {
         self.source_reads += read_operations as u64;
         Ok(receipt)
     }
-    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, crate::Error> {
         self.store.read(blob, range)
     }
-    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.store.write(blob, range, bytes)
     }
 }

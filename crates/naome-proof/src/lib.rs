@@ -24,9 +24,9 @@ use naome_foundation::{FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAx
 
 pub use artifact::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactPayload, ArtifactPayloadError};
 pub use defined_formula::{
-    DefinedFormula, DefinedFormulaCodecError, DefinedFormulaNode, DefinedFormulaView,
-    DefinitionAccessError, DefinitionExpansionError, DefinitionResolution, DefinitionResolver,
-    Variable as DefinedVariable,
+    ContextStorageFailure, DefinedFormula, DefinedFormulaCodecError, DefinedFormulaNode,
+    DefinedFormulaView, DefinitionAccessError, DefinitionExpansionError, DefinitionResolution,
+    DefinitionResolver, Variable as DefinedVariable,
 };
 pub use definition::{
     DEFINITION_MAX_BYTES, DEFINITION_MAX_GRAPH_ARITY, DefinitionCertificate,
@@ -36,7 +36,7 @@ pub use identity::{ArtifactId, DefinitionId, DerivationId, ProofId, StatementId}
 pub use proof_formula::ProofFormula;
 pub use question::{
     QUESTION_EXPANSION_MAX_NODES, QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES,
-    QuestionError, QuestionTarget,
+    QuestionError, QuestionFault, QuestionLimit, QuestionTarget,
 };
 
 /// Maximum encoded length admitted for one proof certificate.

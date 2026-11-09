@@ -13,16 +13,22 @@ use naome_proof::{
 };
 
 use super::{
-    DeductionWitness, INDEX_WORK_BYTES, RejectionReason, Work, checker_reason, context_failure,
-    known, load_formula, lookup_id,
+    DeductionWitness, INDEX_WORK_BYTES, PrefilterRule, RejectionReason, Work, checker_reason,
+    context_failure, known, load_formula, lookup_id,
 };
 use crate::{
     CHECKER_MAX_FORMULA_WORK_BYTES, ContextView, normalize_and_check_with_state, statement_id,
 };
 
-pub(super) type Failure = (RejectionReason, &'static str);
-pub(super) const LIMIT: Failure = (RejectionReason::ExecutionLimit, "Q08_EXECUTION");
-pub(super) const INVALID: Failure = (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT");
+pub(super) type Failure = (RejectionReason, PrefilterRule);
+pub(super) const LIMIT: Failure = (
+    RejectionReason::ExecutionLimit,
+    crate::question::PrefilterRule::Q08Execution,
+);
+pub(super) const INVALID: Failure = (
+    RejectionReason::InvalidEvidence,
+    crate::question::PrefilterRule::Q02CheckedContext,
+);
 
 struct Goal {
     formula: Formula,
@@ -612,9 +618,9 @@ fn check_reserved(
         (
             reason,
             if reason == RejectionReason::ExecutionLimit {
-                "Q08_EXECUTION"
+                crate::question::PrefilterRule::Q08Execution
             } else {
-                "Q02_CHECKED_CONTEXT"
+                crate::question::PrefilterRule::Q02CheckedContext
             },
         )
     })?;

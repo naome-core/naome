@@ -12,7 +12,9 @@ use std::{
     },
 };
 
-type Questions = LocalQuestions<fn(ResearchQuestion) -> Ready<Result<bool, String>>>;
+type Questions = LocalQuestions<
+    fn(ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>>,
+>;
 fn questions() -> Questions {
     LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _))
 }
@@ -29,7 +31,7 @@ async fn admitted<F, Fut>(
     question: &ResearchQuestion,
 ) where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     let (reply, receiver) = oneshot::channel();
     questions.process(question::Command::Admit(question.clone(), reply), graph);
@@ -535,7 +537,12 @@ fn deferred_completion_receipt_preserves_the_unsolved_question_and_closed_servic
     assert!(autonomous.pending_receipt.is_none());
     drop(owner);
     assert!(!autonomous.acknowledge(999));
-    assert!(autonomous.error().unwrap().contains("stopped"));
+    assert!(matches!(
+        autonomous.error(),
+        Some(crate::Error::Runtime(
+            crate::RuntimeFailure::AutonomousReceipt
+        ))
+    ));
     assert!(
         autonomous.pending_receipt.is_none(),
         "a stopped owner is not an endless capacity retry"
@@ -735,4 +742,52 @@ async fn recursive_plan_offers_its_unadmitted_descendants_to_the_finding_owner()
     );
     assert!(graph.ids().is_empty());
     assert!(autonomous.error().is_none());
+}
+
+#[test]
+fn archive_recovery_defers_full_queue_but_reports_closed_service() {
+    let owner = jobs::tests::Manual::new();
+    for ordinal in 0..crate::resources::limits().job_commands {
+        owner.client.peer_cursor(ordinal as u64).unwrap();
+    }
+    let mut recovery = owner.recovery();
+    recovery.archive_end = 2;
+    let mut autonomous =
+        Autonomous::new(intervals(3_600_000), owner.client.clone(), recovery, vec![]);
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    autonomous.advance(&mut graph, &mut questions);
+    assert_eq!(autonomous.archive_after, Some(0));
+    assert!(autonomous.error().is_none());
+    drop(owner);
+    autonomous.advance(&mut graph, &mut questions);
+    assert!(
+        matches!(autonomous.error(), Some(crate::Error::RuntimeContext { code: crate::RuntimeFailure::AutonomousArchive, cause }) if matches!(cause.as_ref(), crate::Error::Research(crate::ResearchFailure::ServiceStopped)))
+    );
+}
+
+#[test]
+fn archive_recovery_preserves_retrieval_failure_cause() {
+    let owner = jobs::tests::Manual::new();
+    let mut recovery = owner.recovery();
+    recovery.archive_end = 2;
+    let mut autonomous =
+        Autonomous::new(intervals(3_600_000), owner.client.clone(), recovery, vec![]);
+    let (send, receive) = oneshot::channel();
+    assert!(
+        send.send(Err(crate::ResearchFailure::RecoveryRecordMissing.into()))
+            .is_ok()
+    );
+    autonomous.recovery_reply = Some(receive);
+    autonomous.advance(&mut Graph::default(), &mut questions());
+    let error = autonomous.error().unwrap();
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::RuntimeFailure::AutonomousArchive)
+    );
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::ResearchFailure::RecoveryRecordMissing)
+    );
 }

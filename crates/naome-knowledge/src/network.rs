@@ -7,6 +7,7 @@ use crate::{
     corpus::{InventoryCursor, InventorySnapshot},
     discovery, hex,
     object::{Metadata, id_bytes},
+    outcome::{OfferStatus, PeerFailure, WireFailure},
     quota::{Quota, Rate},
     wire::{Body, Codec, Frame, PROTOCOL},
 };
@@ -33,8 +34,6 @@ use inventory::response as inventory_response;
 use program_read::ProgramRead;
 mod worker;
 use std::sync::{Arc, atomic::Ordering};
-
-const OWNER_BUSY: &str = "node state owner busy";
 
 // JSON may encode one source byte as six bytes (for example, a control byte).
 // Leave additional bounded space for peer metadata and formatting.
@@ -273,7 +272,7 @@ pub(crate) async fn run_autonomous(
     config: Config,
     intervals: crate::autonomous::Intervals,
     startup: crate::runtime::Startup,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
@@ -286,7 +285,8 @@ pub(crate) async fn run_autonomous(
         None::<
             fn(
                 naome_checker::question::ResearchQuestion,
-            ) -> std::future::Ready<Result<bool, String>>,
+            )
+                -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
         >,
         commands,
         Some((intervals, startup)),
@@ -295,7 +295,7 @@ pub(crate) async fn run_autonomous(
 }
 
 /// Ordinary peers use the node's automatic research selection.
-pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
+pub async fn run(config: Config, test_controls: bool) -> Result<(), crate::Error> {
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
@@ -323,10 +323,12 @@ pub async fn run_with_questions<F, Fut>(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
     selection: F,
-) -> Result<(), String>
+) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<bool, crate::question::SelectionProviderError>>
+        + Send
+        + 'static,
 {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
@@ -348,7 +350,7 @@ pub async fn run_with_questions_without_selection(
     config: Config,
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
     run_inner(
@@ -358,7 +360,8 @@ pub async fn run_with_questions_without_selection(
         None::<
             fn(
                 naome_checker::question::ResearchQuestion,
-            ) -> std::future::Ready<Result<bool, String>>,
+            )
+                -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
         >,
         commands,
         None,
@@ -371,12 +374,14 @@ pub(crate) async fn run_inner<F, Fut>(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
     selection: Option<F>,
-    commands: mpsc::Receiver<Result<QueuedCommand, String>>,
+    commands: mpsc::Receiver<Result<QueuedCommand, crate::Error>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
-) -> Result<(), String>
+) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<bool, crate::question::SelectionProviderError>>
+        + Send
+        + 'static,
 {
     let (stop, cancel) = tokio::sync::oneshot::channel();
     let (reply, result) = tokio::sync::oneshot::channel();
@@ -390,7 +395,10 @@ where
                     .thread_name("naome-transport")
                     .enable_all()
                     .build()
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|cause| crate::Error::RuntimeContext {
+                        code: crate::RuntimeFailure::OwnerLaunch,
+                        cause: Box::new(cause.into()),
+                    })?;
                 runtime.block_on(run_owner(
                     config,
                     test_controls,
@@ -403,16 +411,54 @@ where
             })();
             let _ = reply.send(outcome);
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::OwnerLaunch,
+            cause: Box::new(cause.into()),
+        })?;
     let mut owner = worker::OwnerThread {
         thread: Some(thread),
         stop: Some(stop),
     };
     let outcome = result
         .await
-        .unwrap_or_else(|_| Err("node state owner stopped without a receipt".into()));
+        .unwrap_or(Err(crate::RuntimeFailure::OwnerReceipt.into()));
     owner.join()?;
     outcome
+}
+
+fn validate_config(config: &Config, native: bool) -> Result<(), crate::Error> {
+    if config.formal_goal.is_some() && !native {
+        return Err(crate::Error::InputFault(
+            crate::InputFault::FormalGoalRequiresNative,
+        ));
+    }
+    if config.peers.len() > crate::resources::limits().configured_peers {
+        return Err(crate::Error::InputLimit(crate::InputLimit::ConfiguredPeers));
+    }
+    let bytes = config
+        .producer_artifacts
+        .iter()
+        .try_fold(0usize, |total, source| total.checked_add(source.len()));
+    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
+        || bytes.is_none_or(|bytes| bytes > 2 * crate::resources::limits().producer_bytes)
+    {
+        return Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue));
+    }
+    Ok(())
+}
+
+fn checked_formal_goal(
+    source: &str,
+    graph: &Graph,
+) -> Result<naome_checker::question::ResearchQuestion, crate::Error> {
+    let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
+        source,
+        graph.checked_context(),
+    )?;
+    if !question.dependencies().is_empty() {
+        naome_checker::question::ResearchQuestion::from_formula(question.formula().clone())?;
+    }
+    Ok(question)
 }
 
 pub(crate) async fn run_owner<F, Fut>(
@@ -420,13 +466,15 @@ pub(crate) async fn run_owner<F, Fut>(
     test_controls: bool,
     mut inbox: crate::question::QuestionInbox,
     selection: Option<F>,
-    mut commands: mpsc::Receiver<Result<QueuedCommand, String>>,
+    mut commands: mpsc::Receiver<Result<QueuedCommand, crate::Error>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
     mut cancel: tokio::sync::oneshot::Receiver<()>,
-) -> Result<(), String>
+) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<bool, crate::question::SelectionProviderError>>
+        + Send
+        + 'static,
 {
     // Register before publishing readiness or performing synchronous owner work.
     let shutdown = shutdown_signal()?;
@@ -435,26 +483,12 @@ where
         Some((intervals, startup)) => (Some(intervals), Some(startup)),
         None => (None, None),
     };
-    if config.formal_goal.is_some()
-        && autonomy.is_none_or(|intervals| !intervals.jobs.native_proof_learning)
-    {
-        return Err("formal_goal requires native proof learning in the ordinary runtime".into());
-    }
-    if config.peers.len() > crate::resources::limits().configured_peers {
-        return Err("peer count limit".into());
-    }
-    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
-        || config
-            .producer_artifacts
-            .iter()
-            .map(String::len)
-            .sum::<usize>()
-            > 2 * crate::resources::limits().producer_bytes
-    {
-        return Err("producer queue capacity".into());
-    }
+    validate_config(
+        &config,
+        autonomy.is_some_and(|intervals| intervals.jobs.native_proof_learning),
+    )?;
     if let Some(startup) = &startup {
-        startup.phase("begin");
+        startup.phase(crate::outcome::StartupPhase::Begin);
     }
     // One resource owner spans synchronous checked replay and the live loop.
     // Refresh at replay boundaries instead of freezing its initial quantum.
@@ -463,35 +497,25 @@ where
         .map(|_| crate::resources::adaptive::Controller::open(&config.directory))
         .transpose()?;
     let graph = if let Some(resources) = &mut resources {
-        Graph::open_observed(&config.directory, &mut || resources.refresh())?
+        Graph::open_observed(&config.directory, &mut || resources.refresh())
     } else {
-        Graph::open(&config.directory)?
-    };
+        Graph::open(&config.directory)
+    }
+    .map_err(checked_replay_error)?;
     let formal_goal = config
         .formal_goal
         .as_deref()
-        .map(|source| {
-            let question = naome_checker::question::ResearchQuestion::from_hex_with_context(
-                source,
-                graph.checked_context(),
-            )
-            .map_err(|e| e.to_string())?;
-            if !question.dependencies().is_empty() {
-                naome_checker::question::ResearchQuestion::from_formula(question.formula().clone())
-                    .map_err(|e| e.to_string())?;
-            }
-            Ok::<_, String>(question)
-        })
+        .map(|source| checked_formal_goal(source, &graph))
         .transpose()?;
     if let Some(startup) = &startup {
-        startup.phase("checked");
+        startup.phase(crate::outcome::StartupPhase::Checked);
     }
     let directory = config.directory.clone();
     let key = identity::Keypair::from_protobuf_encoding(&crate::store::read_bounded(
         &config.directory.join("identity.key"),
         1024,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| crate::InputFault::IdentityKeyDecode)?;
     let own_id = key.public().to_peer_id();
     #[cfg(unix)]
     let control = if autonomy.is_some() {
@@ -521,10 +545,10 @@ where
         || settings.relays.len() > crate::resources::limits().relay_peers
         || settings.external_addresses.len() > crate::resources::limits().addresses_per_contact
     {
-        return Err("discovery configuration capacity".into());
+        return Err(crate::InputLimit::NetworkDiscoveryCapacity.into());
     }
     if settings.relay_only && (settings.relays.is_empty() || settings.mdns) {
-        return Err("relay-only mode requires configured relays and disables mDNS".into());
+        return Err(crate::InputFault::NetworkRelayPolicy.into());
     }
     let mut book = discovery::Book::new(own_id, automatic, &settings);
     let mut configured = BTreeMap::new();
@@ -532,42 +556,42 @@ where
         let id: PeerId = peer
             .id
             .parse()
-            .map_err(|error| format!("relay ID: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkRelayId)?;
         let address: Multiaddr = peer
             .address
             .parse()
-            .map_err(|error| format!("relay address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkRelayAddress)?;
         book.pin(id, &address, true)?;
     }
     for peer in &settings.bootstrap {
         let id: PeerId = peer
             .id
             .parse()
-            .map_err(|error| format!("bootstrap ID: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkBootstrapId)?;
         let address: Multiaddr = peer
             .address
             .parse()
-            .map_err(|error| format!("bootstrap address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkBootstrapAddress)?;
         book.pin(id, &address, false)?;
     }
     for peer in config.peers {
         let id: PeerId = peer
             .id
             .parse()
-            .map_err(|error| format!("peer ID: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkPeerId)?;
         let address: Multiaddr = peer
             .address
             .parse()
-            .map_err(|error| format!("peer address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkPeerAddress)?;
         book.pin(id, &address, false)?;
         if configured.insert(id, address).is_some() {
-            return Err("duplicate peer".into());
+            return Err(crate::InputFault::NetworkDuplicatePeer.into());
         }
     }
     let listen: Multiaddr = config
         .listen
         .parse()
-        .map_err(|error| format!("listen address: {error}"))?;
+        .map_err(|_| crate::InputFault::NetworkListenAddress)?;
     require_tcp_address(&listen)?;
     let mut allowed = allow_block_list::Behaviour::default();
     for id in book.contacts.keys() {
@@ -595,16 +619,16 @@ where
         .max_transmit_size(crate::resources::limits().gossip_packet_bytes)
         .heartbeat_interval(crate::resources::limits().gossip_heartbeat)
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| crate::RuntimeFailure::NetworkGossipConfig)?;
     let mut gossip = gossipsub::Behaviour::new(
         gossipsub::MessageAuthenticity::Signed(key.clone()),
         gossip_config,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| crate::RuntimeFailure::NetworkGossipBehaviour)?;
     let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);
     gossip
         .subscribe(&topic)
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| crate::RuntimeFailure::NetworkGossipSubscribe)?;
     let exchange = exchange::Exchange::new(
         request_response::Behaviour::with_codec(
             Codec::default(),
@@ -619,9 +643,9 @@ where
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_other_transport(move |key| transport::tcp(key, tcp_book))
-        .map_err(|error| error.to_string())?
+        .map_err(|_| crate::RuntimeFailure::NetworkTransport)?
         .with_relay_client(noise::Config::new, yamux_config)
-        .map_err(|error| error.to_string())?
+        .map_err(|_| crate::RuntimeFailure::NetworkRelayTransport)?
         .with_behaviour(|_, relay| Behaviour {
             gate: discovery::Gate(book.clone()),
             allowed: (!automatic).then_some(allowed).into(),
@@ -631,7 +655,7 @@ where
             gossip,
             exchange,
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|_| crate::RuntimeFailure::NetworkBehaviour)?
         .with_swarm_config(|config| {
             config
                 .with_idle_connection_timeout(crate::resources::limits().idle_connection_timeout)
@@ -639,14 +663,16 @@ where
         })
         .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
-    let primary_listener = swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    let primary_listener = swarm
+        .listen_on(listen)
+        .map_err(|_| crate::RuntimeFailure::NetworkListener)?;
     for address in &settings.external_addresses {
         let address: Multiaddr = address
             .parse()
-            .map_err(|error| format!("external address: {error}"))?;
+            .map_err(|_| crate::InputFault::NetworkExternalAddress)?;
         let address = discovery::routing_address(&address, own_id, &book.lock().relays)?;
         if settings.relay_only && !discovery::is_relayed(&address) {
-            return Err("relay-only mode must not advertise direct endpoints".into());
+            return Err(crate::InputFault::NetworkDirectAdvertisement.into());
         }
         swarm.add_external_address(address);
     }
@@ -742,17 +768,17 @@ where
     }
     let mut controls = worker::Controls::spawn(control.clone(), published.clone());
     emit(
-        json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
+        json!({"event":crate::outcome::NodeEvent::Starting, "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
     let owner_busy = node.swarm.busy.clone();
-    let outcome:Result<(),String>=worker::while_polled(owner_busy, async {
+    let outcome:Result<(),crate::Error>=worker::while_polled(owner_busy, async {
     loop {
         if let Some(resources)=&mut resources {resources.refresh()?;}
         let period = crate::resources::active_limits().tick_interval;
         if tick.period() != period { tick = tokio::time::interval(period); tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
         let work = node.computation.try_enter();
         if let Some(control) = &control
-            && questions.select(control.selection().ok()) {
+            && questions.select(Some(control.selection())) {
             node.intake.invalidate_selection();
             node.inventory_summaries.clear();
         }
@@ -780,7 +806,7 @@ where
                 }
             }, if !stopping => {},
             event = events.recv() => {
-                let event = event.ok_or("proof transport stopped or exceeded its event capacity")?;
+                let event = event.ok_or(crate::InputFault::TransportEventsClosed)?;
                 node.transport_epoch = event.epoch;
                 node.graph.set_commit_guard(crate::publication::CommitGuard::new(
                     node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
@@ -795,14 +821,14 @@ where
                 match command {
                     Some(Ok(command)) => {
                         match command.parse() {
-                            Err(error) => emit(json!({"event":"command_error","error":error})),
+                            Err(error) => emit(json!({"event":crate::outcome::NodeEvent::CommandError,"error":error})),
                             Ok((value, _parsed_memory)) => { if !node.command(value) { break; } },
                         }
                     },
-                    Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
+                    Some(Err(error)) => emit(json!({"event":crate::outcome::NodeEvent::CommandError, "error":error})),
                     None => {
                         command_input_open = false;
-                        emit(json!({"event":"command_input_closed"}));
+                        emit(json!({"event":crate::outcome::NodeEvent::CommandInputClosed}));
                     },
                 }
             },
@@ -815,7 +841,7 @@ where
             },
             selection = questions.completed(),if work.is_some() && !stopping => {
                 if let Some(control)=&control
-                    && questions.select(control.selection().ok()){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
+                    && questions.select(Some(control.selection())){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
                 questions.finish(&node.graph, selection);
             },
             _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
@@ -826,10 +852,9 @@ where
             signal = &mut shutdown => { signal?; break; }
         }
         published.count.store(node.graph.accepted_count(), Ordering::Release);
-        if let Some(error)=node.graph.storage_error(){return Err(format!(
-            "durable storage failed; restart must reverify: {error}"));}
-        if let Some(error)=questions.storage_error(){return Err(error.to_owned());}
-        if let Some(error)=research.as_ref().and_then(crate::jobs::Service::error){return Err(error);}
+        if let Some(error)=node.graph.storage_error(){return Err(error);}
+        if let Some(error)=questions.storage_error(){return Err(error);}
+        if let Some(error)=research.as_ref().and_then(crate::jobs::Service::error){return Err(crate::Error::RuntimeContext { code: crate::RuntimeFailure::ResearchService, cause: Box::new(error) });}
         if stopping {
             break;
         }
@@ -842,7 +867,7 @@ where
             continue;
         }
         if let Some(control)=&control
-                && questions.select(control.selection().ok()){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
+                && questions.select(Some(control.selection())){node.intake.invalidate_selection(); node.inventory_summaries.clear();}
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));
@@ -857,17 +882,17 @@ where
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
             crate::intake::Progress::Skipped(id, error) => {
-                emit(json!({"event":"proof_skipped","id":hex(id.as_bytes()),"error":error}));
+                emit(json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(id.as_bytes()),"error":error}));
             }
             crate::intake::Progress::Accepted(ids) => {
-                node.publish_admitted(&ids, "fetch");
+                node.publish_admitted(&ids, crate::outcome::EventSource::Fetch);
                 // Earlier explicit owner ingestion can now resolve. This is
                 // not part of the approved peer closure or its atomic batch.
                 let (admitted, rejected) = node.graph.resolve_pending()?;
-                node.publish_admitted(&admitted, "local_pending");
+                node.publish_admitted(&admitted, crate::outcome::EventSource::LocalPending);
                 for (id, error) in rejected {
                     emit(
-                        json!({"event":"rejected", "id":hex(id.as_bytes()),"source":"local_pending","error":error}),
+                        json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()),"source":crate::outcome::EventSource::LocalPending,"error":error}),
                     );
                 }
             }
@@ -906,7 +931,7 @@ where
                 }
             }
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
-            node.publish_admitted(&admitted,if node.learning.is_some(){"native_solver"}else{"mock_producer"});
+            node.publish_admitted(&admitted,if node.learning.is_some(){crate::outcome::EventSource::NativeSolver}else{crate::outcome::EventSource::MockProducer});
             if let Some((goal, question)) = autonomous.cooperation().wanted() {
                 node.offer_work(goal, question);
             }
@@ -914,21 +939,19 @@ where
                 && !node.work_notice(peer, goal, question, active, sequence) {
                 autonomous.cooperation().defer_notice((peer, goal, question, active, sequence, expires));
             }
-            if let Some(error)=autonomous.error(){return Err(error.to_owned());}
+            if let Some(error) = autonomous.error() { return Err(error.clone()); }
         }
         if !stopping && work.is_some() && let Some(learning) = &mut node.learning {
             learning.advance(&node.graph, questions.formal_context(&node.graph).binding())?;
         }
-        if let Some(error) = questions.storage_error() { return Err(error.to_owned()); }
+        if let Some(error) = questions.storage_error() { return Err(error); }
         node.requests();
         published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error) = node.graph.storage_error() {
-            return Err(format!(
-                "durable storage failed; restart must reverify: {error}"
-            ));
+            return Err(error);
         }
-        if let Some(error) = crate::runtime::log_error() {
-            return Err(format!("runtime log failed: {error}"));
+        if let Some(cause) = crate::runtime::log_error() {
+            return Err(crate::Error::RuntimeContext { code: crate::RuntimeFailure::Log, cause: Box::new(cause) });
         }
     }
     Ok(())
@@ -941,28 +964,51 @@ where
         Some(service) => service.shutdown().await,
         None => Ok(()),
     };
-    let cleanup = cleanup.and(control_cleanup).and(transport_cleanup);
+    let cleanup = combine_shutdown(cleanup, control_cleanup, transport_cleanup);
     match (outcome, cleanup) {
-        (Err(primary), Err(cleanup)) => {
-            return Err(format!(
-                "research cleanup failed: {cleanup}; node failure: {primary}"
-            ));
+        (Err(primary), Err(error)) => {
+            emit(json!({"event":crate::outcome::NodeEvent::ShutdownFailed,"error":error}));
+            return Err(primary);
         }
-        (Err(error), _) | (_, Err(error)) => return Err(error),
+        (Err(error), _) => return Err(error),
+        (_, Err(error)) => return Err(error),
         _ => {}
     }
-    emit(json!({"event":"stopped", "root":hex(&node.graph.content_root())}));
+    emit(
+        json!({"event":crate::outcome::NodeEvent::Stopped, "root":hex(&node.graph.content_root())}),
+    );
     Ok(())
 }
 
-pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), String> {
+fn combine_shutdown(
+    research: Result<(), crate::Error>,
+    control: Result<(), crate::Error>,
+    transport: Result<(), crate::Error>,
+) -> Result<(), crate::Error> {
+    let mut failure = None;
+    for error in [research, control, transport]
+        .into_iter()
+        .filter_map(Result::err)
+    {
+        failure = Some(match failure {
+            Some(primary) => crate::Error::RuntimeCombined {
+                primary: Box::new(primary),
+                cleanup: Box::new(error),
+            },
+            None => error,
+        });
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), crate::Error> {
     use libp2p::multiaddr::Protocol;
     let mut protocols = address.iter();
     if !matches!(protocols.next(), Some(Protocol::Ip4(_) | Protocol::Ip6(_)))
         || !matches!(protocols.next(), Some(Protocol::Tcp(_)))
         || protocols.next().is_some()
     {
-        return Err("expected /ip4 or /ip6 address with one TCP endpoint".into());
+        return Err(crate::InputFault::NetworkListenAddress.into());
     }
     Ok(())
 }
@@ -973,28 +1019,6 @@ pub(crate) fn yamux_config() -> yamux::Config {
     config
 }
 
-fn body_kind(body: &Body) -> &'static str {
-    match body {
-        Body::WorkOffer { .. } => "work_offer",
-        Body::WorkStatus { .. } => "work_status",
-        Body::Inventory { .. } => "inventory",
-        Body::InventoryResult { .. } => "inventory_result",
-        Body::InventoryUnchanged { .. } => "inventory_unchanged",
-        Body::InventoryRestart => "inventory_restart",
-        Body::Get { .. } => "get",
-        Body::Describe { .. } => "describe",
-        Body::Description { .. } => "description",
-        Body::Object { .. } => "object",
-        Body::Offer { .. } => "offer",
-        Body::Receipt { .. } => "receipt",
-        Body::Missing => "missing",
-        Body::Error { .. } => "error",
-        Body::ProgramDescription { .. } => "program_description",
-        Body::ProgramOffer { .. } => "program_offer",
-        Body::ProgramGet { .. } => "program_get",
-        Body::ProgramData { .. } => "program_data",
-    }
-}
 fn body_position(body: &Body) -> Option<u64> {
     match body {
         Body::ProgramGet { start, .. } => Some(*start),
@@ -1046,7 +1070,7 @@ impl QueuedCommand {
     }
 }
 
-fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
+fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, crate::Error>>) {
     use std::io::{BufRead, Read};
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -1056,7 +1080,7 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
         ) {
             Ok(memory) => memory,
             Err(error) => {
-                let _ = sender.blocking_send(Err(error.to_string()));
+                let _ = sender.blocking_send(Err(error));
                 break;
             }
         };
@@ -1070,8 +1094,12 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
                 if bytes.len() > crate::resources::limits().command_bytes
                     || bytes.last() != Some(&b'\n') =>
             {
-                let _ =
-                    sender.blocking_send(Err("command byte limit or missing final newline".into()));
+                let fault = if bytes.len() > crate::resources::limits().command_bytes {
+                    crate::InputFault::CommandFrameLimit
+                } else {
+                    crate::InputFault::CommandFrameIncomplete
+                };
+                let _ = sender.blocking_send(Err(crate::Error::InputFault(fault)));
                 break;
             }
             Ok(_) => {
@@ -1085,10 +1113,67 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
                     break;
                 }
             }
-            Err(error) => {
-                let _ = sender.blocking_send(Err(error.to_string()));
+            Err(_) => {
+                let _ = sender.blocking_send(Err(crate::Error::InputFault(
+                    crate::InputFault::CommandRead,
+                )));
                 break;
             }
+        }
+    }
+}
+
+fn connection_endpoint(endpoint: &libp2p::core::ConnectedPoint) -> Value {
+    use crate::outcome::{ConnectionEndpoint as Kind, ConnectionPort as Port};
+    use libp2p::core::{ConnectedPoint, Endpoint, transport::PortUse};
+    match endpoint {
+        ConnectedPoint::Dialer {
+            address,
+            role_override,
+            port_use,
+        } => json!({
+            "kind":Kind::Dialer, "address":address.to_string(),
+            "role":match role_override { Endpoint::Dialer => Kind::Dialer, Endpoint::Listener => Kind::Listener },
+            "port":match port_use { PortUse::New => Port::New, PortUse::Reuse => Port::Reused },
+        }),
+        ConnectedPoint::Listener {
+            local_addr,
+            send_back_addr,
+        } => json!({
+            "kind":Kind::Listener, "local":local_addr.to_string(), "remote":send_back_addr.to_string(),
+        }),
+    }
+}
+
+fn connection_close(cause: Option<&libp2p::swarm::ConnectionError>) -> Option<Value> {
+    use crate::outcome::ConnectionClose as Code;
+    cause.map(|cause| match cause {
+        libp2p::swarm::ConnectionError::IO(error) => json!({"kind":Code::Io,"io_kind":crate::outcome::io_fault_kind(error),"os_code":error.raw_os_error()}),
+        libp2p::swarm::ConnectionError::KeepAliveTimeout => json!({"kind":Code::KeepAliveTimeout}),
+    })
+}
+
+fn relay_client_event(event: relay::client::Event) -> Value {
+    use crate::outcome::{NodeEvent, RelayClientEvent as Kind};
+    macro_rules! limit_value {
+        ($limit:expr) => { $limit.map(|limit| json!({"duration":limit.duration().map(|duration| json!({"seconds":duration.as_secs(),"nanoseconds":duration.subsec_nanos()})),"bytes":limit.data_in_bytes()})) };
+    }
+    match event {
+        relay::client::Event::ReservationReqAccepted {
+            relay_peer_id,
+            renewal,
+            limit,
+        } => {
+            json!({"event":NodeEvent::RelayClient,"kind":Kind::ReservationAccepted,"peer":relay_peer_id.to_string(),"renewed":renewal,"limit":limit_value!(limit)})
+        }
+        relay::client::Event::OutboundCircuitEstablished {
+            relay_peer_id,
+            limit,
+        } => {
+            json!({"event":NodeEvent::RelayClient,"kind":Kind::OutboundCircuit,"peer":relay_peer_id.to_string(),"limit":limit_value!(limit)})
+        }
+        relay::client::Event::InboundCircuitEstablished { src_peer_id, limit } => {
+            json!({"event":NodeEvent::RelayClient,"kind":Kind::InboundCircuit,"peer":src_peer_id.to_string(),"limit":limit_value!(limit)})
         }
     }
 }
@@ -1101,15 +1186,13 @@ pub(crate) fn emit(value: Value) {
 }
 
 pub(crate) fn shutdown_signal()
--> Result<impl std::future::Future<Output = Result<(), String>>, String> {
+-> Result<impl std::future::Future<Output = Result<(), crate::Error>>, crate::Error> {
     #[cfg(unix)]
     {
         let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .map_err(|error| error.to_string())?;
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut interrupt =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                .map_err(|error| error.to_string())?;
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         Ok(async move {
             tokio::select! {
                 _ = interrupt.recv() => Ok(()),
@@ -1118,11 +1201,97 @@ pub(crate) fn shutdown_signal()
         })
     }
     #[cfg(not(unix))]
-    Ok(async {
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|error| error.to_string())
+    Ok(async { tokio::signal::ctrl_c().await.map_err(crate::Error::from) })
+}
+
+fn dial_failure(error: &libp2p::swarm::DialError) -> WireFailure {
+    use libp2p::swarm::DialError;
+    match error {
+        DialError::LocalPeerId { .. } => WireFailure::SelfConnection,
+        DialError::NoAddresses => WireFailure::NoAddress,
+        DialError::DialPeerConditionFalse(_) => WireFailure::DialCondition,
+        DialError::Aborted => WireFailure::Aborted,
+        DialError::WrongPeerId { .. } => WireFailure::IdentityMismatch,
+        DialError::Denied { cause } => admission_failure(cause),
+        DialError::Transport(_) => WireFailure::TransportNegotiation,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct TransportFailures {
+    total: usize,
+    codes: Vec<WireFailure>,
+}
+
+fn transport_failures(error: &libp2p::swarm::DialError) -> Option<TransportFailures> {
+    let libp2p::swarm::DialError::Transport(errors) = error else {
+        return None;
+    };
+    let codes = errors
+        .iter()
+        .take(crate::resources::limits().addresses_per_contact)
+        .map(|(_, error)| match error {
+            libp2p::core::transport::TransportError::MultiaddrNotSupported(_) => {
+                WireFailure::TransportAddressUnsupported
+            }
+            libp2p::core::transport::TransportError::Other(error) => {
+                let mut source: Option<&(dyn std::error::Error + 'static)> = error
+                    .get_ref()
+                    .map(|inner| inner as &(dyn std::error::Error + 'static));
+                for _ in 0..8 {
+                    let Some(current) = source else { break };
+                    if let Some(code) = current.downcast_ref::<WireFailure>() {
+                        return *code;
+                    }
+                    source = current
+                        .downcast_ref::<std::io::Error>()
+                        .and_then(std::io::Error::get_ref)
+                        .map(|inner| inner as &(dyn std::error::Error + 'static))
+                        .or_else(|| current.source());
+                }
+                if error.kind() == std::io::ErrorKind::TimedOut {
+                    WireFailure::TimedOut
+                } else {
+                    WireFailure::StreamIo
+                }
+            }
+        })
+        .collect();
+    Some(TransportFailures {
+        total: errors.len(),
+        codes,
     })
+}
+
+fn dial_cause(error: &libp2p::swarm::DialError) -> Option<&crate::Error> {
+    let libp2p::swarm::DialError::Denied { cause } = error else {
+        return None;
+    };
+    admission_cause(cause)
+}
+
+fn admission_cause(cause: &libp2p::swarm::ConnectionDenied) -> Option<&crate::Error> {
+    cause
+        .downcast_ref::<std::io::Error>()?
+        .get_ref()?
+        .downcast_ref::<crate::Error>()
+}
+
+fn admission_failure(cause: &libp2p::swarm::ConnectionDenied) -> WireFailure {
+    cause
+        .downcast_ref::<WireFailure>()
+        .copied()
+        .unwrap_or(WireFailure::AdmissionDenied)
+}
+
+fn peer_failure(error: &crate::Error) -> PeerFailure {
+    if error.fatal() {
+        PeerFailure::RequestFailed
+    } else if error.retryable() {
+        PeerFailure::ResourceUnavailable
+    } else {
+        PeerFailure::InvalidRequest
+    }
 }
 
 fn retryable_publication(error: &crate::Error) -> bool {
@@ -1130,11 +1299,15 @@ fn retryable_publication(error: &crate::Error) -> bool {
 }
 
 impl PeerLearning {
-    fn advance(&mut self, graph: &Graph, binding: crate::jobs::Binding) -> Result<(), String> {
+    fn advance(
+        &mut self,
+        graph: &Graph,
+        binding: crate::jobs::Binding,
+    ) -> Result<(), crate::Error> {
         let page = match graph.peer_learning_page(self.cursor) {
             Ok(page) => page,
             Err(error) if error.retryable() => return Ok(()),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(error),
         };
         for (ordinal, id, peer) in page {
             match graph.learning_definition(id) {
@@ -1151,13 +1324,13 @@ impl PeerLearning {
                 }
                 Ok(None) => {}
                 Err(error) if error.retryable() => break,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             }
             let Some(peer) = peer else {
                 let packet = match graph.learning_certificate(id) {
                     Ok(packet) => packet,
                     Err(error) if error.retryable() => break,
-                    Err(error) => return Err(error.to_string()),
+                    Err(error) => return Err(error),
                 };
                 let observed = if let Some(packet) = packet {
                     self.client
@@ -1174,7 +1347,7 @@ impl PeerLearning {
             let question = match graph.learning_question(id) {
                 Ok(q) => q,
                 Err(error) if error.retryable() => break,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             use crate::learning::peer::Source;
             let evidence = graph
@@ -1190,7 +1363,7 @@ impl PeerLearning {
             let evidence = match evidence {
                 Ok(value) => value,
                 Err(error) if error.retryable() => break,
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error),
             };
             let admission = crate::jobs::PeerAdmission {
                 evidence,
@@ -1310,7 +1483,7 @@ impl Node {
             })
             .count()
     }
-    fn want(&mut self, id: ArtifactId) -> Result<bool, String> {
+    fn want(&mut self, id: ArtifactId) -> Result<bool, crate::Error> {
         if self.graph.contains(id)? || self.intake.contains(id) || self.wanted.contains_key(&id) {
             return Ok(true);
         }
@@ -1342,24 +1515,32 @@ impl Node {
         );
     }
 
-    fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, crate::Error> {
+    fn ingest(
+        &mut self,
+        object: Envelope,
+        source: crate::outcome::EventSource,
+    ) -> Result<Value, crate::Error> {
         let result = self.graph.ingest(object, Instant::now())?;
         self.ingested(result, source)
     }
-    fn ingested(&mut self, result: crate::Ingest, source: &str) -> Result<Value, crate::Error> {
+    fn ingested(
+        &mut self,
+        result: crate::Ingest,
+        source: crate::outcome::EventSource,
+    ) -> Result<Value, crate::Error> {
         self.wanted.remove(&result.id);
         self.publish_admitted(&result.admitted, source);
         for (id, error) in result.rejected {
             emit(
-                json!({"event":"rejected", "id":hex(id.as_bytes()), "error":error, "source":"pending"}),
+                json!({"event":crate::outcome::NodeEvent::Rejected, "id":hex(id.as_bytes()), "error":error, "source":crate::outcome::EventSource::Pending}),
             );
         }
         let value = json!({"status":result.status, "id":hex(result.id.as_bytes())});
-        emit(json!({"event":"ingest", "result":value, "source":source}));
+        emit(json!({"event":crate::outcome::NodeEvent::Ingest, "result":value, "source":source}));
         Ok(value)
     }
 
-    fn publish_admitted(&mut self, ids: &[ArtifactId], source: &str) {
+    fn publish_admitted(&mut self, ids: &[ArtifactId], source: crate::outcome::EventSource) {
         for id in ids {
             self.wanted.remove(id);
             let mut announcement = crate::compatibility().to_vec();
@@ -1370,7 +1551,7 @@ impl Node {
                 .gossip
                 .publish(self.topic.clone(), announcement);
             emit(
-                json!({"event":"accepted", "id":hex(id.as_bytes()), "source":source, "root":hex(&self.graph.content_root())}),
+                json!({"event":crate::outcome::NodeEvent::Accepted, "id":hex(id.as_bytes()), "source":source, "root":hex(&self.graph.content_root())}),
             );
         }
     }
@@ -1381,15 +1562,19 @@ impl Node {
             match value
                 .get("command")
                 .and_then(Value::as_str)
-                .ok_or("command missing")?
+                .ok_or(crate::InputFault::CommandMissing)?
             {
                 "status" => {
                     let after = value
                         .get("after")
                         .filter(|after| !after.is_null())
                         .map(|after| {
-                            id_bytes(after.as_str().ok_or("after must be a proof ID")?)
-                                .map(ArtifactId::from_bytes)
+                            id_bytes(
+                                after
+                                    .as_str()
+                                    .ok_or(crate::InputFault::CommandAfterInvalid)?,
+                            )
+                            .map(ArtifactId::from_bytes)
                         })
                         .transpose()?;
                     let status_page = crate::resources::active_limits().status_page;
@@ -1413,13 +1598,13 @@ impl Node {
                     let source = value
                         .get("artifact")
                         .and_then(Value::as_str)
-                        .ok_or("artifact missing")?;
+                        .ok_or(crate::InputFault::CommandArtifactMissing)?;
                     let (object, ingestion) = self.graph.produce(source)?;
                     let id = ingestion.id;
-                    let result = self.ingested(ingestion, "producer")?;
+                    let result = self.ingested(ingestion, crate::outcome::EventSource::Producer)?;
                     let metadata = self.graph.describe(id);
                     if let Some(error) = self.graph.storage_error() {
-                        return Err(error.into());
+                        return Err(error);
                     }
                     Ok(json!({"result":result,"object":object,
                     "metadata":metadata.as_ref().ok().and_then(Option::as_ref),
@@ -1427,55 +1612,68 @@ impl Node {
                 }
                 "ingest" => {
                     let object = serde_json::from_value(
-                        value.get("object").cloned().ok_or("object missing")?,
+                        value
+                            .get("object")
+                            .cloned()
+                            .ok_or(crate::InputFault::CommandObjectMissing)?,
                     )
-                    .map_err(|error| error.to_string())?;
-                    self.ingest(object, "local")
+                    .map_err(crate::error::record_decode)?;
+                    self.ingest(object, crate::outcome::EventSource::Local)
                 }
                 "object" => Ok(
-                    json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
+                    json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or(crate::InputFault::CommandIdMissing)?)?}),
                 ),
                 "test_check" => {
                     if !self.test_controls {
-                        return Err("test controls disabled".into());
+                        return Err(crate::InputFault::CommandTestDisabled.into());
                     }
                     Ok(
-                        json!({"object":self.graph.author(value.get("artifact").and_then(Value::as_str).ok_or("artifact missing")?)?}),
+                        json!({"object":self.graph.author(value.get("artifact").and_then(Value::as_str).ok_or(crate::InputFault::CommandArtifactMissing)?)?}),
                     )
                 }
                 "test_descriptor" => {
                     if !self.test_controls {
-                        return Err("test controls disabled".into());
+                        return Err(crate::InputFault::CommandTestDisabled.into());
                     }
                     let metadata: Metadata = serde_json::from_value(
-                        value.get("metadata").cloned().ok_or("metadata missing")?,
+                        value
+                            .get("metadata")
+                            .cloned()
+                            .ok_or(crate::InputFault::CommandMetadataMissing)?,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::error::record_decode)?;
                     let (id, _, _) = metadata.compile(self.graph.checked_context())?;
                     if self.test_objects.len() >= crate::resources::limits().developer_objects
                         && !self.test_objects.contains_key(&id)
                     {
-                        return Err("test object capacity".into());
+                        return Err(crate::InputFault::CommandTestCapacity.into());
                     }
                     self.test_objects.insert(id, (metadata, None));
                     Ok(json!({"installed":true}))
                 }
                 "describe" => Ok(
-                    json!({"metadata":self.graph.describe(ArtifactId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
+                    json!({"metadata":self.graph.describe(ArtifactId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or(crate::InputFault::CommandIdMissing)?)?))?}),
                 ),
                 "links" => {
                     if self.discovery.book.lock().automatic {
-                        return Err("links requires static discovery mode".into());
+                        return Err(crate::InputFault::CommandStaticDiscovery.into());
                     }
-                    let peers: Vec<String> =
-                        serde_json::from_value(value.get("peers").cloned().ok_or("peers missing")?)
-                            .map_err(|error| error.to_string())?;
+                    let peers: Vec<String> = serde_json::from_value(
+                        value
+                            .get("peers")
+                            .cloned()
+                            .ok_or(crate::InputFault::CommandPeersMissing)?,
+                    )
+                    .map_err(crate::error::record_decode)?;
                     let desired: BTreeSet<PeerId> = peers
                         .into_iter()
-                        .map(|id| id.parse().map_err(|error| format!("peer: {error}")))
+                        .map(|id| {
+                            id.parse()
+                                .map_err(|_| crate::InputFault::CommandPeerInvalid)
+                        })
                         .collect::<Result<_, _>>()?;
                     if !desired.iter().all(|id| self.configured.contains_key(id)) {
-                        return Err("unconfigured peer".into());
+                        return Err(crate::InputFault::CommandPeerUnconfigured.into());
                     }
                     for peer in self.configured.keys() {
                         if desired.contains(peer) {
@@ -1511,10 +1709,10 @@ impl Node {
                         value
                             .get("id")
                             .and_then(Value::as_str)
-                            .ok_or("id missing")?,
+                            .ok_or(crate::InputFault::CommandIdMissing)?,
                     )?);
                     if !self.graph.contains(id)? {
-                        return Err("only accepted artifacts can be announced".into());
+                        return Err(crate::InputFault::CommandAnnounceUnaccepted.into());
                     }
                     let mut bytes = crate::compatibility().to_vec();
                     bytes.extend_from_slice(id.as_bytes());
@@ -1535,11 +1733,11 @@ impl Node {
                     let peer: PeerId = value
                         .get("peer")
                         .and_then(Value::as_str)
-                        .ok_or("peer missing")?
+                        .ok_or(crate::InputFault::CommandPeerMissing)?
                         .parse()
-                        .map_err(|error| format!("peer: {error}"))?;
+                        .map_err(|_| crate::InputFault::CommandPeerInvalid)?;
                     if !self.enabled.contains(&peer) || !self.swarm.is_connected(&peer) {
-                        return Err("peer not connected and enabled".into());
+                        return Err(crate::InputFault::CommandPeerDisabled.into());
                     }
                     if self.flight_count(peer) >= crate::resources::limits().flights_per_peer {
                         return Err(crate::Error::ExecutionLimit);
@@ -1550,22 +1748,25 @@ impl Node {
                     }
                     let metadata = if value["command"] == "test_offer" {
                         if !self.test_controls {
-                            return Err("test controls disabled".into());
+                            return Err(crate::InputFault::CommandTestDisabled.into());
                         }
                         let metadata: Metadata = serde_json::from_value(
-                            value.get("metadata").cloned().ok_or("metadata missing")?,
+                            value
+                                .get("metadata")
+                                .cloned()
+                                .ok_or(crate::InputFault::CommandMetadataMissing)?,
                         )
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::error::record_decode)?;
                         if let Some(object) = value.get("object") {
                             if self.test_objects.len()
                                 >= crate::resources::limits().developer_objects
                             {
-                                return Err("test object capacity".into());
+                                return Err(crate::InputFault::CommandTestCapacity.into());
                             }
                             let object: Envelope = serde_json::from_value(object.clone())
-                                .map_err(|error| error.to_string())?;
+                                .map_err(crate::error::record_decode)?;
                             if object.payload.len() > 2 * crate::resources::limits().proof_bytes {
-                                return Err("test proof byte limit".into());
+                                return Err(crate::InputFault::CommandTestProofLimit.into());
                             }
                             self.test_objects.insert(
                                 ArtifactId::from_bytes(id_bytes(&metadata.artifact_id)?),
@@ -1578,19 +1779,22 @@ impl Node {
                             value
                                 .get("id")
                                 .and_then(Value::as_str)
-                                .ok_or("id missing")?,
+                                .ok_or(crate::InputFault::CommandIdMissing)?,
                         )?);
                         self.graph
                             .describe(id)?
-                            .ok_or("object not supported for question exchange")?
+                            .ok_or(crate::InputFault::CommandExchangeUnsupported)?
                     };
                     let mut frame = Frame::new(Body::Offer { metadata });
                     if let Some(compat) = value.get("test_compatibility") {
                         if !self.test_controls {
-                            return Err("test controls disabled".into());
+                            return Err(crate::InputFault::CommandTestDisabled.into());
                         }
-                        frame.message.compatibility =
-                            id_bytes(compat.as_str().ok_or("compatibility string")?)?;
+                        frame.message.compatibility = id_bytes(
+                            compat
+                                .as_str()
+                                .ok_or(crate::InputFault::CommandCompatibilityType)?,
+                        )?;
                     }
                     let id = self
                         .swarm
@@ -1608,13 +1812,15 @@ impl Node {
                     Ok(json!({"sent":true}))
                 }
                 "stop" => Ok(json!({"stopping":true})),
-                _ => Err("unknown command".into()),
+                _ => Err(crate::InputFault::CommandUnknown.into()),
             }
         })();
         match result {
-            Ok(result) => emit(json!({"event":"response","request":request,"result":result})),
+            Ok(result) => emit(
+                json!({"event":crate::outcome::NodeEvent::Response,"request":request,"result":result}),
+            ),
             Err(error) => emit(
-                json!({"event":"response","request":request,"retryable":retryable_publication(&error),"error":error}),
+                json!({"event":crate::outcome::NodeEvent::Response,"request":request,"retryable":retryable_publication(&error),"error":error}),
             ),
         }
         value.get("command").and_then(Value::as_str) != Some("stop")
@@ -1630,30 +1836,37 @@ impl Node {
             && let Some(source) = self.producer_artifacts.pop_front()
         {
             self.next_production = now + crate::resources::active_limits().production_interval;
-            let result = self
-                .graph
-                .produce(&source)
-                .and_then(|(_, result)| self.ingested(result, "deterministic_producer"));
+            let result = self.graph.produce(&source).and_then(|(_, result)| {
+                self.ingested(result, crate::outcome::EventSource::DeterministicProducer)
+            });
             match result {
-                Ok(result) => emit(json!({"event":"producer_result", "result":result})),
+                Ok(result) => emit(
+                    json!({"event":crate::outcome::NodeEvent::ProducerResult, "result":result}),
+                ),
                 Err(error) if retryable_publication(&error) => {
                     self.producer_artifacts.push_back(source);
-                    emit(json!({"event":"producer_deferred", "error":error}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::ProducerDeferred, "error":error}),
+                    );
                 }
-                Err(error) => emit(json!({"event":"producer_rejected", "error":error})),
+                Err(error) => emit(
+                    json!({"event":crate::outcome::NodeEvent::ProducerRejected, "error":error}),
+                ),
             }
         }
         if work.is_some() {
             match self.graph.resolve_pending() {
                 Ok((admitted, rejected)) => {
-                    self.publish_admitted(&admitted, "local_backlog");
+                    self.publish_admitted(&admitted, crate::outcome::EventSource::LocalBacklog);
                     for (id, error) in rejected {
                         emit(
-                            json!({"event":"rejected","id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
+                            json!({"event":crate::outcome::NodeEvent::Rejected,"id":hex(id.as_bytes()),"source":crate::outcome::EventSource::LocalBacklog,"error":error}),
                         );
                     }
                 }
-                Err(error) => emit(json!({"event":"proof_backlog_error","error":error})),
+                Err(error) => emit(
+                    json!({"event":crate::outcome::NodeEvent::ProofBacklogError,"error":error}),
+                ),
             }
         }
         let wanted_before = self.wanted.len();
@@ -1699,8 +1912,8 @@ impl Node {
         peer: PeerId,
         artifact: ArtifactId,
         grant: Option<crate::publication::PeerGrant>,
-        result: Result<&'static str, crate::Error>,
-    ) -> Result<&'static str, crate::Error> {
+        result: Result<OfferStatus, crate::Error>,
+    ) -> Result<OfferStatus, crate::Error> {
         let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
             return result;
         };
@@ -1719,7 +1932,7 @@ impl Node {
             &self.graph,
             grant,
         )?;
-        Ok("awaiting_definition")
+        Ok(OfferStatus::AwaitingDefinition)
     }
 
     fn fetch_grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
@@ -1731,10 +1944,10 @@ impl Node {
     fn proof_fetch_error(&mut self, root: ArtifactId, error: crate::Error) {
         self.graph.program_failure(&error);
         let event = if error.retryable() {
-            "proof_deferred"
+            crate::outcome::NodeEvent::ProofDeferred
         } else {
             self.intake.abort(root);
-            "proof_skipped"
+            crate::outcome::NodeEvent::ProofSkipped
         };
         emit(json!({"event":event, "id":hex(root.as_bytes()),"error":error}));
     }
@@ -1966,12 +2179,12 @@ impl Node {
         &mut self,
         event: SwarmEvent<BehaviourEvent>,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.ready = true;
                 emit(
-                    json!({"event":"ready","address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
+                    json!({"event":crate::outcome::NodeEvent::Ready,"address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
                 );
             }
             SwarmEvent::ListenerError { listener_id, error } => {
@@ -1983,12 +2196,14 @@ impl Node {
                     self.relay_failed(peer);
                     self.swarm.remove_listener(listener_id);
                     emit(
-                        json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),
+                        json!({"event":crate::outcome::NodeEvent::RelayListenFailed, "peer":peer.to_string(), "error":crate::wire::stream_failure(&error)}),
                     );
                 } else if listener_id == self.primary_listener {
-                    return Err(format!("listener: {error}"));
+                    return Err(crate::RuntimeFailure::Listener.into());
                 } else {
-                    emit(json!({"event":"retired_listener_error", "error":error.to_string()}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::RetiredListenerError, "error":crate::wire::stream_failure(&error)}),
+                    );
                 }
             }
             SwarmEvent::ListenerClosed { listener_id, .. } => {
@@ -1999,7 +2214,7 @@ impl Node {
                 {
                     self.relay_failed(peer);
                 } else if listener_id == self.primary_listener {
-                    return Err("proof listener closed".into());
+                    return Err(crate::InputFault::NetworkListenerClosed.into());
                 }
             }
             SwarmEvent::ConnectionEstablished {
@@ -2017,12 +2232,12 @@ impl Node {
                 }
                 self.next_inventory.remove(&peer_id);
                 emit(
-                    json!({"event":"connected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
-                    "connections":num_established.get(), "relayed":relayed, "endpoint":format!("{endpoint:?}")}),
+                    json!({"event":crate::outcome::NodeEvent::Connected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
+                    "connections":num_established.get(), "relayed":relayed, "endpoint":connection_endpoint(&endpoint)}),
                 );
                 if relayed && self.discovery.config.hole_punch {
                     emit(
-                        json!({"event":"hole_punch_attempt", "peer":peer_id.to_string(), "relayed_connection_id":connection_id.to_string()}),
+                        json!({"event":crate::outcome::NodeEvent::HolePunchAttempt, "peer":peer_id.to_string(), "relayed_connection_id":connection_id.to_string()}),
                     );
                 }
             }
@@ -2033,10 +2248,21 @@ impl Node {
                 error,
                 ..
             } => {
+                use libp2p::swarm::ListenError;
+                let code = match &error {
+                    ListenError::Aborted => WireFailure::Aborted,
+                    ListenError::WrongPeerId { .. } => WireFailure::IdentityMismatch,
+                    ListenError::LocalPeerId { .. } => WireFailure::SelfConnection,
+                    ListenError::Denied { cause } => admission_failure(cause),
+                    ListenError::Transport(_) => WireFailure::TransportNegotiation,
+                };
+                let cause = match &error {
+                    ListenError::Denied { cause } => admission_cause(cause),
+                    _ => None,
+                };
                 emit(
-                    json!({"event":"incoming_connection_failed", "connection_id":connection_id.to_string(),
-                    "local":local_addr.to_string(), "remote":send_back_addr.to_string(),
-                    "error":error.to_string(), "detail":format!("{error:?}")}),
+                    json!({"event":crate::outcome::NodeEvent::IncomingConnectionFailed, "connection_id":connection_id.to_string(),
+                    "local":local_addr.to_string(), "remote":send_back_addr.to_string(), "error":code, "cause":cause}),
                 );
             }
             SwarmEvent::ConnectionClosed {
@@ -2058,22 +2284,28 @@ impl Node {
                     }
                 }
                 emit(
-                    json!({"event":"disconnected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
-                    "connections":num_established, "cause":format!("{cause:?}")}),
+                    json!({"event":crate::outcome::NodeEvent::Disconnected, "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
+                    "connections":num_established, "cause":connection_close(cause.as_ref())}),
                 );
             }
             SwarmEvent::NewExternalAddrCandidate { address } => {
                 // Identify observations are DCUtR candidates, not evidence of
                 // public reachability and not automatically confirmed addresses.
-                emit(json!({"event":"external_candidate", "address":address.to_string()}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ExternalCandidate, "address":address.to_string()}),
+                );
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
                 self.discovery.addresses_changed();
-                emit(json!({"event":"external_confirmed", "address":address.to_string()}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ExternalConfirmed, "address":address.to_string()}),
+                );
             }
             SwarmEvent::ExternalAddrExpired { address } => {
                 self.discovery.addresses_changed();
-                emit(json!({"event":"external_expired", "address":address.to_string()}));
+                emit(
+                    json!({"event":crate::outcome::NodeEvent::ExternalExpired, "address":address.to_string()}),
+                );
             }
             SwarmEvent::Behaviour(BehaviourEvent::Discovery(event)) => {
                 let upgrade = match &event {
@@ -2104,11 +2336,11 @@ impl Node {
                 }
             }
             SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
-                emit(json!({"event":"relay_client", "detail":format!("{event:?}")}));
+                emit(relay_client_event(event));
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
-                json!({"event":"dial_failed","peer":peer_id.map(|peer|peer.to_string()),
-                    "stage":"transport", "error":error.to_string(), "detail":format!("{error:?}")}),
+                json!({"event":crate::outcome::NodeEvent::DialFailed,"peer":peer_id.map(|peer|peer.to_string()),
+                    "stage":crate::outcome::DialStage::Transport, "error":dial_failure(&error), "cause":dial_cause(&error), "transport_errors":transport_failures(&error)}),
             ),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,
@@ -2125,7 +2357,9 @@ impl Node {
                     if self.graph.contains(id)? || !self.charge(propagation_source) {
                         return Ok(());
                     }
-                    emit(json!({"event":"announcement","id":hex(id.as_bytes())}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::Announcement,"id":hex(id.as_bytes())}),
+                    );
                     self.want(id)?;
                 }
             }
@@ -2138,21 +2372,21 @@ impl Node {
                     request, channel, ..
                 } => {
                     emit(
-                        json!({"event":"exchange_request", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
-                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&request.message.body),
+                        json!({"event":crate::outcome::NodeEvent::ExchangeRequest, "peer":peer.to_string(), "connection_id":connection_id.to_string(),
+                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":request.message.body.kind(),
                         "object_id":body_id(&request.message.body),"root_id":body_root(&request.message.body),"position":body_position(&request.message.body)}),
                     );
                     let body = if !self.enabled.contains(&peer) {
                         Body::Error {
-                            reason: "peer disabled".into(),
+                            code: PeerFailure::Disabled,
                         }
                     } else if request.message.compatibility != crate::compatibility() {
                         Body::Error {
-                            reason: "compatibility mismatch".into(),
+                            code: PeerFailure::Incompatible,
                         }
                     } else if !self.charge(peer) {
                         Body::Error {
-                            reason: "peer rate limit".into(),
+                            code: PeerFailure::RateLimited,
                         }
                     } else {
                         self.request(peer, request.message.body, grant)?
@@ -2168,8 +2402,8 @@ impl Node {
                     response,
                 } => {
                     emit(
-                        json!({"event":"exchange_response", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
-                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&response.message.body),
+                        json!({"event":crate::outcome::NodeEvent::ExchangeResponse, "peer":peer.to_string(), "connection_id":connection_id.to_string(),
+                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":response.message.body.kind(),
                         "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body),"position":body_position(&response.message.body)}),
                     );
                     if let Some(flight) = self.flights.remove(&request_id) {
@@ -2193,7 +2427,7 @@ impl Node {
                         } else if let Flight::Get { root, .. } = flight {
                             self.intake.abort(root);
                             emit(
-                                json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":crate::Error::from("payload response peer or compatibility revoked")}),
+                                json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(root.as_bytes()),"error":WireFailure::ResponsePeerMismatch}),
                             );
                         }
                     }
@@ -2211,14 +2445,32 @@ impl Node {
                 if let Some(Flight::Get { root, .. }) = self.flights.remove(&request_id) {
                     self.intake.abort(root);
                     emit(
-                        json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from("required payload request failed")}),
+                        json!({"event":crate::outcome::NodeEvent::ProofSkipped, "id":hex(root.as_bytes()),"error":WireFailure::StreamIo}),
                     );
                 }
-                emit(json!({"event":"request_failed","error":error.to_string()}));
+                use request_response::OutboundFailure as Failure;
+                let code = match &error {
+                    Failure::DialFailure => WireFailure::DialFailed,
+                    Failure::Timeout => WireFailure::TimedOut,
+                    Failure::ConnectionClosed => WireFailure::ConnectionClosed,
+                    Failure::UnsupportedProtocols => WireFailure::UnsupportedProtocols,
+                    Failure::Io(error) => crate::wire::stream_failure(error),
+                };
+                emit(json!({"event":crate::outcome::NodeEvent::RequestFailed,"error":code}));
             }
             SwarmEvent::Behaviour(BehaviourEvent::Exchange(
                 request_response::Event::InboundFailure { error, .. },
-            )) => emit(json!({"event":"inbound_failed","error":error.to_string()})),
+            )) => {
+                use request_response::InboundFailure as Failure;
+                let code = match &error {
+                    Failure::Timeout => WireFailure::TimedOut,
+                    Failure::ConnectionClosed => WireFailure::ConnectionClosed,
+                    Failure::UnsupportedProtocols => WireFailure::UnsupportedProtocols,
+                    Failure::ResponseOmission => WireFailure::ResponseOmitted,
+                    Failure::Io(error) => crate::wire::stream_failure(error),
+                };
+                emit(json!({"event":crate::outcome::NodeEvent::InboundFailed,"error":code}));
+            }
             _ => {}
         }
         Ok(())
@@ -2229,13 +2481,13 @@ impl Node {
         peer: PeerId,
         body: Body,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<Body, String> {
+    ) -> Result<Body, crate::Error> {
         let _work = if matches!(&body, Body::Offer { .. } | Body::ProgramOffer { .. }) {
             match self.computation.try_enter() {
                 Some(work) => Some(work),
                 None => {
                     return Ok(Body::Error {
-                        reason: "computation paused".into(),
+                        code: PeerFailure::ComputationPaused,
                     });
                 }
             }
@@ -2250,7 +2502,7 @@ impl Node {
                     || self.work_offers.iter().any(|offer| offer.peer == peer)
                 {
                     Body::Error {
-                        reason: "work offer unavailable".into(),
+                        code: PeerFailure::WorkOfferUnavailable,
                     }
                 } else if let Ok(memory) = crate::resources::MemoryLease::acquire(
                     question.len().saturating_mul(2).saturating_add(256),
@@ -2264,11 +2516,11 @@ impl Node {
                         _memory: memory,
                     });
                     Body::Receipt {
-                        status: "queued".into(),
+                        status: OfferStatus::Queued,
                     }
                 } else {
                     Body::Error {
-                        reason: "work offer capacity".into(),
+                        code: PeerFailure::WorkOfferCapacity,
                     }
                 }
             }
@@ -2294,18 +2546,18 @@ impl Node {
                         Instant::now() + crate::resources::limits().pending_retry,
                     ) {
                         return Ok(Body::Receipt {
-                            status: "stale".into(),
+                            status: OfferStatus::Stale,
                         });
                     }
                     emit(
-                        json!({"event":"workgroup_member", "peer":peer.to_string(), "goal":hex(&goal), "resolution_id":hex(&question), "active":active}),
+                        json!({"event":crate::outcome::NodeEvent::WorkgroupMember, "peer":peer.to_string(), "goal":hex(&goal), "resolution_id":hex(&question), "active":active}),
                     );
                     Body::Receipt {
-                        status: "recorded".into(),
+                        status: OfferStatus::Recorded,
                     }
                 } else {
                     Body::Error {
-                        reason: "unknown work offer".into(),
+                        code: PeerFailure::UnknownWorkOffer,
                     }
                 }
             }
@@ -2316,9 +2568,9 @@ impl Node {
             } => match inventory_response(&self.graph, known, after, limit) {
                 Ok(body) => body,
                 Err(error) if !error.fatal() => Body::Error {
-                    reason: error.to_string(),
+                    code: peer_failure(&error),
                 },
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             },
             Body::Describe { id } => match self.graph.description(ArtifactId::from_bytes(id)) {
                 Ok(Some(crate::object::ProofDescription::Program(metadata))) => {
@@ -2345,7 +2597,7 @@ impl Node {
                     })
                     .unwrap_or(Body::Missing),
                 Err(error) => Body::Error {
-                    reason: error.to_string(),
+                    code: peer_failure(&error),
                 },
             },
             Body::ProgramGet {
@@ -2356,7 +2608,7 @@ impl Node {
             } => {
                 if crate::resources::adaptive::network(1) == 0 {
                     Body::Error {
-                        reason: "program resources paused".into(),
+                        code: PeerFailure::ProgramResourcesPaused,
                     }
                 } else {
                     let maximum = (crate::resources::limits().proof_bytes / 2)
@@ -2370,7 +2622,7 @@ impl Node {
                         Ok(Some(chunk)) => Body::ProgramData { root, id, chunk },
                         Ok(None) => Body::Missing,
                         Err(error) => Body::Error {
-                            reason: error.to_string(),
+                            code: peer_failure(&error),
                         },
                     }
                 }
@@ -2381,11 +2633,9 @@ impl Node {
                     self.intake
                         .enqueue_program(peer, metadata, &self.graph, grant.clone());
                 match self.finish_description(peer, id, grant, queued) {
-                    Ok(status) => Body::Receipt {
-                        status: status.into(),
-                    },
+                    Ok(status) => Body::Receipt { status },
                     Err(error) => Body::Error {
-                        reason: error.to_string(),
+                        code: peer_failure(&error),
                     },
                 }
             }
@@ -2426,24 +2676,22 @@ impl Node {
                     self.finish_description(peer, ArtifactId::from_bytes(id), grant, queued)
                 });
                 match queued {
-                    Ok(status) => Body::Receipt {
-                        status: status.into(),
-                    },
+                    Ok(status) => Body::Receipt { status },
                     Err(error) => {
                         let event = if self.graph.storage_error().is_some() {
-                            "storage_error"
+                            crate::outcome::NodeEvent::StorageError
                         } else {
-                            "rejected"
+                            crate::outcome::NodeEvent::Rejected
                         };
                         emit(json!({"event":event,"error":error}));
                         Body::Error {
-                            reason: error.to_string(),
+                            code: peer_failure(&error),
                         }
                     }
                 }
             }
             _ => Body::Error {
-                reason: "unexpected request kind".into(),
+                code: PeerFailure::UnexpectedRequest,
             },
         };
         if let Some(error) = self.graph.storage_error() {
@@ -2458,7 +2706,7 @@ impl Node {
         flight: Flight,
         body: Body,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         // In-flight replies remain bounded by their original transport limits.
         // Dropped payloads can be requested again; no unchecked input is adopted.
         let Some(_work) = self.computation.try_enter() else {
@@ -2473,7 +2721,9 @@ impl Node {
             | Flight::Offer { peer, .. } => *peer,
         };
         if peer != expected_peer {
-            emit(json!({"event":"rejected", "error":"response peer mismatch"}));
+            emit(
+                json!({"event":crate::outcome::NodeEvent::Rejected, "error":WireFailure::ResponsePeerMismatch}),
+            );
             return Ok(());
         }
         match (flight, body) {
@@ -2485,17 +2735,21 @@ impl Node {
                 },
             ) => {
                 if metadata.manifest.artifact_id() != id {
-                    emit(json!({"event":"rejected","error":"program description ID mismatch"}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::DescriptionIdentityMismatch}),
+                    );
                 } else {
                     let queued =
                         self.intake
                             .enqueue_program(peer, metadata, &self.graph, grant.clone());
                     match self.finish_description(peer, id, grant, queued) {
-                        Ok("duplicate") => {
+                        Ok(OfferStatus::Duplicate) => {
                             self.wanted.remove(&id);
                         }
                         Ok(_) => {}
-                        Err(error) => emit(json!({"event":"rejected","error":error.to_string()})),
+                        Err(error) => {
+                            emit(json!({"event":crate::outcome::NodeEvent::Rejected,"error":error}))
+                        }
                     }
                 }
             }
@@ -2510,28 +2764,24 @@ impl Node {
                     metadata,
                 },
             ) => {
-                let result = if root != *expected_root.as_bytes()
-                    || metadata.manifest.artifact_id() != id
-                {
-                    Err(crate::Error::InvalidInput(
-                        "cited program description scope mismatch".into(),
-                    ))
+                let result = if root != *expected_root.as_bytes() {
+                    Err(crate::InputFault::ProgramDescriptionRoot.into())
+                } else if metadata.manifest.artifact_id() != id {
+                    Err(crate::InputFault::ProgramDescriptionId.into())
                 } else {
                     self.intake
                         .enqueue_program_helper(peer, expected_root, metadata, &self.graph)
                 };
                 if let Err(error) = result {
                     self.graph.program_failure(&error);
-                    emit(json!({"event":"rejected","error":error.to_string()}));
+                    emit(json!({"event":crate::outcome::NodeEvent::Rejected,"error":error}));
                 }
             }
             (Flight::Program { read, .. }, Body::ProgramData { root, id, chunk }) => {
                 let expected_root = read.root;
                 let expected_id = read.id;
-                let result = if !read.matches_reply(root, id, &chunk) {
-                    Err(crate::Error::InvalidInput(
-                        "program response scope mismatch".into(),
-                    ))
+                let result = if let Err(error) = read.check_reply(root, id, &chunk) {
+                    Err(error.into())
                 } else {
                     self.intake.program_payload(
                         peer,
@@ -2545,7 +2795,7 @@ impl Node {
                     self.graph.program_failure(&error);
                     self.intake.program_failed(peer, expected_id);
                     emit(
-                        json!({"event":"program_chunk_rejected","id":hex(expected_id.as_bytes()),"error":error}),
+                        json!({"event":crate::outcome::NodeEvent::ProgramChunkRejected,"id":hex(expected_id.as_bytes()),"error":error}),
                     );
                 }
             }
@@ -2553,12 +2803,12 @@ impl Node {
                 let id = read.id;
                 self.intake.program_failed(peer, id);
                 let error = match body {
-                    Body::Error { reason } => reason,
-                    Body::Missing => "program input unavailable".into(),
-                    _ => "unexpected program response".into(),
+                    Body::Error { code } => code,
+                    Body::Missing => PeerFailure::RequiredPayloadMissing,
+                    _ => PeerFailure::UnexpectedResponse,
                 };
                 emit(
-                    json!({"event":"program_transfer_deferred","id":hex(id.as_bytes()),"error":error}),
+                    json!({"event":crate::outcome::NodeEvent::ProgramTransferDeferred,"id":hex(id.as_bytes()),"error":error}),
                 );
             }
             (
@@ -2571,13 +2821,15 @@ impl Node {
                 Body::InventoryUnchanged { root },
             ) => {
                 if request.after.is_some() || known != Some(root) {
-                    emit(json!({"event":"rejected","error":"unsolicited inventory summary"}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::UnsolicitedInventory}),
+                    );
                 } else {
                     self.inventory_progress.remove(&peer);
                     self.inventory_summaries
                         .insert(peer, (root, self.graph.content_root()));
                     emit(
-                        json!({"event":"inventory_unchanged","peer":peer.to_string(),"root":hex(&root)}),
+                        json!({"event":crate::outcome::NodeEvent::InventoryUnchanged,"peer":peer.to_string(),"root":hex(&root)}),
                     );
                 }
             }
@@ -2604,21 +2856,25 @@ impl Node {
             }
             (Flight::Describe { id, .. }, Body::Description { metadata }) => {
                 if metadata.artifact_id != hex(id.as_bytes()) {
-                    emit(json!({"event":"rejected","error":"description ID mismatch"}));
+                    emit(
+                        json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::DescriptionIdentityMismatch}),
+                    );
                     return Ok(());
                 }
                 let queued =
                     self.intake
                         .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
                 match self.finish_description(peer, id, grant, queued) {
-                    Ok("duplicate") => {
+                    Ok(OfferStatus::Duplicate) => {
                         self.wanted.remove(&id);
                     }
                     // Preserve attempts and the original bounded hint epoch
                     // through queued/declined assessment. Otherwise a wrong
                     // descriptor can monopolize retries for the same ArtifactId.
                     Ok(_) => {}
-                    Err(error) => emit(json!({"event":"rejected","error":error})),
+                    Err(error) => {
+                        emit(json!({"event":crate::outcome::NodeEvent::Rejected,"error":error}))
+                    }
                 }
             }
             (
@@ -2634,7 +2890,7 @@ impl Node {
                 },
             ) => {
                 let result = if root != *expected_root.as_bytes() {
-                    Err("response root mismatch".into())
+                    Err(crate::InputFault::ResponseRootMismatch.into())
                 } else {
                     self.intake.payload_with_question(
                         peer,
@@ -2650,41 +2906,50 @@ impl Node {
                 }
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {
-                emit(json!({"event":"offer_result","status":status}))
+                emit(json!({"event":crate::outcome::NodeEvent::OfferResult,"status":status}))
             }
             (Flight::Work { .. }, Body::Receipt { status }) => {
-                emit(json!({"event":"workgroup_receipt","status":status}))
+                emit(json!({"event":crate::outcome::NodeEvent::WorkgroupReceipt,"status":status}))
             }
-            (Flight::Get { root, .. }, Body::Error { reason }) if reason == OWNER_BUSY => {
+            (
+                Flight::Get { root, .. },
+                Body::Error {
+                    code: PeerFailure::OwnerBusy,
+                },
+            ) => {
                 // Keep the existing approved closure and its original grant.
                 // Automatic request pacing retries without renewing authority.
                 emit(
-                    json!({"event":"proof_deferred", "id":hex(root.as_bytes()),"error":crate::Error::ExecutionLimit}),
+                    json!({"event":crate::outcome::NodeEvent::ProofDeferred, "id":hex(root.as_bytes()),"error":PeerFailure::OwnerBusy}),
                 );
             }
-            (Flight::Get { root, .. }, Body::Error { reason }) => {
+            (Flight::Get { root, .. }, Body::Error { code }) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from(reason)}),
+                    json!({"event":crate::outcome::NodeEvent::ProofSkipped, "id":hex(root.as_bytes()),"error":code}),
                 );
             }
             (Flight::Get { root, .. }, Body::Missing) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from("required dependency missing")}),
+                    json!({"event":crate::outcome::NodeEvent::ProofSkipped, "id":hex(root.as_bytes()),"error":PeerFailure::RequiredPayloadMissing}),
                 );
             }
-            (_, Body::Error { reason }) => emit(json!({"event":"peer_error","error":reason})),
+            (_, Body::Error { code }) => {
+                emit(json!({"event":crate::outcome::NodeEvent::PeerError,"error":code}))
+            }
             // Keep the bounded attempt counter so the next retry rotates to
             // another peer. A missing descriptor is no decline authority.
             (Flight::Describe { .. }, Body::Missing) => {}
             (Flight::Get { root, .. }, _) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":crate::Error::from("unexpected required payload response")}),
+                    json!({"event":crate::outcome::NodeEvent::ProofSkipped,"id":hex(root.as_bytes()),"error":PeerFailure::UnexpectedResponse}),
                 );
             }
-            _ => emit(json!({"event":"rejected","error":"unexpected response kind"})),
+            _ => emit(
+                json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::ResponseScopeMismatch}),
+            ),
         }
         if let Some(error) = self.graph.storage_error() {
             return Err(error);
@@ -2693,12 +2958,26 @@ impl Node {
     }
 }
 
-pub fn read_config(path: &Path) -> Result<Config, String> {
+fn checked_replay_error(error: crate::Error) -> crate::Error {
+    match error {
+        crate::Error::Runtime(_) | crate::Error::UncertainDurability(_) => error,
+        error if error.retryable() => error,
+        cause => crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::CheckedStorageReplay,
+            cause: Box::new(cause),
+        },
+    }
+}
+
+pub fn read_config(path: &Path) -> Result<Config, crate::Error> {
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| crate::Error::RuntimeContext {
+        code: crate::RuntimeFailure::NetworkConfigParse,
+        cause: Box::new(crate::error::config_decode(error)),
+    })?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()

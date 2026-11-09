@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[cfg(all(test, feature = "developer-tools"))]
 pub(super) mod control;
 
-pub(super) fn losses(replay: &[Example], anchors: &[Example]) -> Result<Vec<usize>, String> {
+pub(super) fn losses(replay: &[Example], anchors: &[Example]) -> Result<Vec<usize>, crate::Error> {
     #[cfg(all(test, feature = "developer-tools"))]
     if !control::enabled() {
         return Ok(vec![0; replay.len()]);
@@ -72,7 +72,7 @@ std::thread_local! {
     static CACHE: std::cell::RefCell<VecDeque<(String, Profile)>> = const { std::cell::RefCell::new(VecDeque::new()) };
 }
 impl Profile {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if self.bits.len() != PROFILE_BYTES
             || self.features == 0
             || self.features > crate::resources::limits().closure_steps
@@ -84,11 +84,11 @@ impl Profile {
                 > self.features
             || self.bits.iter().all(|byte| *byte == 0)
         {
-            return Err("replay coverage filter capacity or occupancy".into());
+            return Err(crate::ResearchFailure::CoverageFilterInvalid.into());
         }
         Ok(())
     }
-    pub fn of(example: &Example) -> Result<Self, String> {
+    pub fn of(example: &Example) -> Result<Self, crate::Error> {
         if let search::Tree::Stored { coverage, .. } = &example.tree {
             coverage.validate()?;
             return Ok(coverage.clone());
@@ -109,7 +109,7 @@ impl Profile {
         }) {
             return Ok(profile);
         }
-        let q = ResearchQuestion::from_hex(&example.question).map_err(|e| e.to_string())?;
+        let q = ResearchQuestion::from_hex(&example.question)?;
         let target = if example.refuted {
             q.refuted_target()
         } else {
@@ -118,13 +118,13 @@ impl Profile {
         let mut features = BTreeSet::new();
         let graphs = if let search::Tree::Program(packet) = &example.tree {
             if example.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
-                return Err("replay coverage program identity differs".into());
+                return Err(crate::ResearchFailure::CoverageProgramIdentity.into());
             }
             super::peer::program_graphs(target, packet)?
         } else {
             let (core, _, checked) = search::core::checked(target, &example.tree)?;
             if crate::hex(checked.native_id.as_bytes()) != example.proof_id {
-                return Err("replay coverage proof identity differs".into());
+                return Err(crate::ResearchFailure::CoverageProofIdentity.into());
             }
             for certificate in checked
                 .lemmas
@@ -140,7 +140,10 @@ impl Profile {
                         if let Some(reference) = reference {
                             let reference = reference as usize;
                             if reference >= index {
-                                return Err("coverage dependency order differs".into());
+                                return Err(crate::Error::ResearchIndex {
+                                    code: crate::ResearchFailure::CoverageDependencyOrder,
+                                    index: reference,
+                                });
                             }
                             depth = depth.max(depths[reference] + 1);
                             features.insert(Feature::Dependency(
@@ -166,10 +169,14 @@ impl Profile {
         // Irrelevant context, offered alternatives and artifact IDs are omitted.
         for graph in graphs {
             for action in &graph.successes {
-                let selected = *graph
-                    .candidates
-                    .get(*action)
-                    .ok_or("coverage action missing")?;
+                let selected =
+                    *graph
+                        .candidates
+                        .get(*action)
+                        .ok_or(crate::Error::ResearchIndex {
+                            code: crate::ResearchFailure::CoverageActionMissing,
+                            index: *action,
+                        })?;
                 features.insert(Feature::Action(digest(&structure(&graph, &[selected])?)));
             }
         }
@@ -215,20 +222,20 @@ impl Profile {
             .collect()
     }
 }
-fn structure(graph: &Graph, roots: &[usize]) -> Result<Vec<(i32, usize, usize)>, String> {
+fn structure(graph: &Graph, roots: &[usize]) -> Result<Vec<(i32, usize, usize)>, crate::Error> {
     fn visit(
         graph: &Graph,
         at: usize,
         ids: &mut BTreeMap<usize, usize>,
         out: &mut Vec<(i32, usize, usize)>,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, crate::Error> {
         if let Some(id) = ids.get(&at) {
             return Ok(*id);
         }
-        let node = graph
-            .nodes
-            .get(at)
-            .ok_or("coverage graph reference missing")?;
+        let node = graph.nodes.get(at).ok_or(crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::CoverageGraphReference,
+            index: at,
+        })?;
         let id = out.len();
         ids.insert(at, id);
         out.push((node.kind, 0, 0));

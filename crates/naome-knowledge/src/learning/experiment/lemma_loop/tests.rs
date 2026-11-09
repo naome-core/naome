@@ -81,7 +81,7 @@ fn preflight_fresh_composition_questions() {
         let overlap = actual.intersection(&previous).cloned().collect::<Vec<_>>();
         rows.push(json!({"question":question.to_hex(),"id":crate::hex(question.resolution_id()),"group":case.family,
             "shape":case.shape,"eligible":State::eligible(&question.to_hex()),"initial_formal_passed":decision.passed(),
-            "has_answer":decision.has_answer(),"rule":decision.rule,"reason":format!("{:?}",decision.reason),
+            "has_answer":decision.has_answer(),"rule":decision.rule,"reason":decision.reason.map(|reason| reason.code()),
             "structural_families":actual,"development_family_overlap":overlap}));
     }
     write(

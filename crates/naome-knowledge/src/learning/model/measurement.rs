@@ -52,36 +52,43 @@ impl Default for TrainingMeasurements {
     }
 }
 impl TrainingMeasurements {
-    pub(in crate::learning) fn include(&mut self, unit: &Self) -> Result<(), String> {
+    pub(in crate::learning) fn include(&mut self, unit: &Self) -> Result<(), crate::Error> {
         if self.slots > 0
             && (self.readout_only != unit.readout_only
                 || self.trainable_parameters != unit.trainable_parameters)
         {
-            return Err("native training scope changed within a job".into());
+            return Err(crate::ResearchFailure::MeasurementScopeMismatch.into());
         }
+        macro_rules! counters {
+            ($operation:ident; $($field:ident),+ $(,)?) => { $($operation!(self, unit, $field);)+ };
+        }
+        macro_rules! check {
+            ($current:ident, $incoming:ident, $field:ident) => {
+                $current
+                    .$field
+                    .checked_add($incoming.$field)
+                    .ok_or(crate::ResearchFailure::MeasurementCounterOverflow)?
+            };
+        }
+        macro_rules! add {
+            ($current:ident, $incoming:ident, $field:ident) => {
+                $current.$field += $incoming.$field
+            };
+        }
+        counters!(check; slots, auxiliary_slots, active_auxiliary_slots, masked_auxiliary_slots,
+            additional_positive_targets, active_additional_positive_targets, cost_targets,
+            preference_targets, internal_steps, candidate_transitions, reference_slots,
+            reference_replayed_edges);
         self.readout_only = unit.readout_only;
         self.trainable_parameters = unit.trainable_parameters;
         self.input_digest = super::super::digest(&(&self.input_digest, &unit.input_digest));
         self.target_digest = super::super::digest(&(&self.target_digest, &unit.target_digest));
         self.reference_digest =
             super::super::digest(&(&self.reference_digest, &unit.reference_digest));
-        macro_rules! add {
-            ($($field:ident),+ $(,)?) => { $(self.$field = self.$field.checked_add(unit.$field).ok_or("native measurement counter overflow")?;)+ };
-        }
-        add!(
-            slots,
-            auxiliary_slots,
-            active_auxiliary_slots,
-            masked_auxiliary_slots,
-            additional_positive_targets,
-            active_additional_positive_targets,
-            cost_targets,
-            preference_targets,
-            internal_steps,
-            candidate_transitions,
-            reference_slots,
-            reference_replayed_edges
-        );
+        counters!(add; slots, auxiliary_slots, active_auxiliary_slots, masked_auxiliary_slots,
+            additional_positive_targets, active_additional_positive_targets, cost_targets,
+            preference_targets, internal_steps, candidate_transitions, reference_slots,
+            reference_replayed_edges);
         self.reference_max_depth = self.reference_max_depth.max(unit.reference_max_depth);
         Ok(())
     }
@@ -195,5 +202,29 @@ impl TrainingMeasurements {
             self.reference_max_depth = self.reference_max_depth.max(depth);
             depths.push(depth);
         }
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn counter_overflow_leaves_all_measurements_unchanged() {
+        let mut current = TrainingMeasurements {
+            reference_replayed_edges: usize::MAX,
+            ..TrainingMeasurements::default()
+        };
+        let before = serde_json::to_value(&current).unwrap();
+        let incoming = TrainingMeasurements {
+            slots: 1,
+            reference_replayed_edges: 1,
+            ..TrainingMeasurements::default()
+        };
+        assert_eq!(
+            current.include(&incoming),
+            Err(crate::ResearchFailure::MeasurementCounterOverflow.into())
+        );
+        assert_eq!(serde_json::to_value(&current).unwrap(), before);
     }
 }

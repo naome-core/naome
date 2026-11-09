@@ -43,10 +43,12 @@ fn fixture(index: usize) -> (Envelope, Metadata) {
     (object, producer.describe(id).unwrap().unwrap())
 }
 
-fn accepting(_: ResearchQuestion) -> Ready<Result<bool, String>> {
+fn accepting(_: ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>> {
     ready(Ok(true))
 }
-type Questions = LocalQuestions<fn(ResearchQuestion) -> Ready<Result<bool, String>>>;
+type Questions = LocalQuestions<
+    fn(ResearchQuestion) -> Ready<Result<bool, crate::question::SelectionProviderError>>,
+>;
 fn new_questions() -> Questions {
     LocalQuestions::new(Some(accepting as fn(_) -> _))
 }
@@ -68,7 +70,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
     let metadata = fixture(41).1;
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-        "queued"
+        OfferStatus::Queued
     );
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -90,7 +92,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
     );
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-        "metadata_refreshed"
+        OfferStatus::MetadataRefreshed
     );
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -103,7 +105,7 @@ async fn managed_selection_survives_unrelated_graph_growth_without_provider_retr
 async fn selection<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     assert!(!questions.available());
     let result = questions.completed().await;
@@ -113,7 +115,7 @@ where
 fn registered<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph) -> usize
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     let (sender, mut receiver) = oneshot::channel();
     questions.process(Command::Context(sender), graph);
@@ -123,7 +125,7 @@ where
 async fn approve<F, Fut>(intake: &mut Intake, questions: &mut LocalQuestions<F>, graph: &mut Graph)
 where
     F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    Fut: Future<Output = Result<bool, crate::question::SelectionProviderError>> + Send + 'static,
 {
     assert!(matches!(
         intake.advance(graph, questions),
@@ -187,7 +189,10 @@ async fn metadata_capacity_keeps_one_active_root_and_eight_bounded_waiting_descr
     approve(&mut intake, &mut questions, &mut graph).await;
     let selected = intake.needed();
     assert_eq!(intake.description_capacity(), 1);
-    assert_eq!(intake.enqueue(peer, next, &graph).unwrap(), "queued");
+    assert_eq!(
+        intake.enqueue(peer, next, &graph).unwrap(),
+        OfferStatus::Queued
+    );
     assert_eq!(intake.description_capacity(), 0);
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -278,7 +283,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
                 .ingest(object.clone(), Instant::now())
                 .unwrap()
                 .status,
-            "accepted"
+            crate::IngestStatus::Accepted
         );
         let metadata = producer.describe(id).unwrap().unwrap();
         let peer = PeerId::random();
@@ -335,8 +340,11 @@ async fn absent_false_error_and_timeout_selection_never_authorize_payloads() {
         let mut questions = LocalQuestions::new(Some(move |_| async move {
             match mode {
                 0 => Ok(false),
-                1 => Err("selection failed".into()),
-                _ => std::future::pending::<Result<bool, String>>().await,
+                1 => Err(crate::question::SelectionProviderError),
+                _ => {
+                    std::future::pending::<Result<bool, crate::question::SelectionProviderError>>()
+                        .await
+                }
             }
         }));
         let mut intake = Intake::default();
@@ -429,17 +437,20 @@ async fn declined_metadata_does_not_poison_new_question_record_or_peer_for_same_
     ));
     assert_eq!(
         intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
-        "declined"
+        OfferStatus::Declined
     );
     let mut changed = metadata.clone();
     changed.question = format!("0202{}", changed.question);
-    assert_eq!(intake.enqueue(peer, changed, &graph).unwrap(), "queued");
+    assert_eq!(
+        intake.enqueue(peer, changed, &graph).unwrap(),
+        OfferStatus::Queued
+    );
     approve(&mut intake, &mut questions, &mut graph).await;
     let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     assert!(intake.authorizes(peer, id, id));
     assert_eq!(
         intake.enqueue(PeerId::random(), metadata, &graph).unwrap(),
-        "queued"
+        OfferStatus::Queued
     );
 }
 
@@ -465,7 +476,10 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
         Progress::Skipped(..)
     ));
     assert!(intake.needed().is_empty());
-    assert_eq!(intake.enqueue(peer, metadata, &graph).unwrap(), "queued");
+    assert_eq!(
+        intake.enqueue(peer, metadata, &graph).unwrap(),
+        OfferStatus::Queued
+    );
     approve(&mut intake, &mut questions, &mut graph).await;
     let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.payload(peer, root, root, object, &graph).unwrap();
@@ -628,7 +642,7 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
     let mut graph = Graph::default();
     assert_eq!(
         graph.ingest(owner, Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     let peer = PeerId::random();
     let mut questions = new_questions();
@@ -735,7 +749,7 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
                 } else if mode == 0 {
                     Ok(false)
                 } else if mode == 1 {
-                    Err("final selection failed".into())
+                    Err(crate::question::SelectionProviderError)
                 } else {
                     std::future::pending().await
                 }
@@ -1035,3 +1049,28 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
 
 mod retry;
 mod staging;
+
+#[test]
+fn malformed_artifact_header_has_a_machine_readable_cause() {
+    let mut envelope = Envelope {
+        compatibility: String::new(),
+        artifact_id: String::new(),
+        statement_id: None,
+        obligation_proof: None,
+        payload: String::new(),
+    };
+    assert_eq!(
+        certificate::resources(&envelope),
+        Err(crate::InputFault::IntakeArtifactHeader.into())
+    );
+    envelope.payload = "00".into();
+    assert_eq!(
+        certificate::resources(&envelope),
+        Err(crate::InputFault::IntakeCertificateHeader.into())
+    );
+    envelope.payload = "ff".into();
+    assert_eq!(
+        certificate::resources(&envelope),
+        Err(crate::InputFault::IntakePayloadTag.into())
+    );
+}

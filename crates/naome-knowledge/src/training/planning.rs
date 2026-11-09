@@ -64,7 +64,9 @@ pub fn plan(graph: &Graph, request: &Request, candidates: &[String]) -> Result<P
         || request.take > request.scan
         || request.training_roots.len() > limits.question_page
     {
-        return Err(Error::InputLimit("training question page limit"));
+        return Err(Error::InputLimit(
+            crate::InputLimit::TrainingQuestionPageLimit,
+        ));
     }
     let memory = crate::resources::MemoryLease::acquire(limits.question_cache_bytes)?;
     let signals = selection::profile(graph, request)?;

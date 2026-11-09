@@ -3,6 +3,20 @@ use crate::{checkpoint::tests::Directory, mocks};
 use std::time::{Duration, Instant};
 
 #[test]
+fn finder_outcomes_have_distinct_numeric_codes() {
+    let evidence = serde_json::to_value(Outcome::NoCandidate).unwrap();
+    assert_eq!(evidence, 0x003d_0002u32);
+    assert_eq!(
+        serde_json::from_value::<Outcome>(evidence).unwrap(),
+        Outcome::NoCandidate
+    );
+    assert!(serde_json::from_value::<Outcome>(0x003d_ffffu32.into()).is_err());
+    let event =
+        serde_json::json!({"outcome": crate::outcome::FinderLearningOutcome::CheckedResolution});
+    assert_eq!(event["outcome"], 0x003c_0001u32);
+}
+
+#[test]
 fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() {
     let directory = Directory::new();
     let graph = Graph::default();
@@ -1312,7 +1326,6 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
                 terminal: crate::learning::experience::TerminalEvidence::certified(&solution)
                     .into(),
                 solution: Some(solution.clone()),
-                diagnostic: "certified_candidate".into(),
                 frontier: None,
             },
             jobs::State::Complete,
@@ -1397,5 +1410,20 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
             .unwrap()
             .pending
             .is_empty()
+    );
+}
+
+#[test]
+fn missing_established_evidence_remains_a_structured_start_failure() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    drop(Frontier::open(&directory.0, &graph, 1, jobs::Settings::default()).unwrap());
+    std::fs::remove_file(directory.0.join("research/evidence.sqlite3")).unwrap();
+    let error = Frontier::open(&directory.0, &graph, 1, jobs::Settings::default())
+        .err()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::EvidenceMissing)
     );
 }

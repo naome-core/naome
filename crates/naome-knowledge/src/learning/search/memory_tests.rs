@@ -6,7 +6,7 @@ struct Observed<'a> {
     calls: Vec<(String, Option<model::Memory>, model::Plan)>,
 }
 impl Ranker for Observed<'_> {
-    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, decision: &Decision) -> Result<Vec<f32>, crate::Error> {
         self.runtime.scores(decision)
     }
     fn plan(
@@ -15,7 +15,7 @@ impl Ranker for Observed<'_> {
         graph: &Graph,
         offered: &str,
         memory: Option<&model::Memory>,
-    ) -> Result<model::Plan, String> {
+    ) -> Result<model::Plan, crate::Error> {
         let mut plan = self.runtime.plan(decision, graph, offered, memory)?;
         // The fixture chooses the branching path explicitly. Neural working
         // state still follows every actual symbolic action and child.
@@ -108,7 +108,7 @@ fn sibling_and_backtracked_alternatives_restore_their_actual_parent_memory() {
     let mut restarted = native::Engine::default();
     let restored = restarted
         .with(&saved, &mut io, |runtime| {
-            solve(q.proved_target(), runtime, 32)
+            solve(q.proved_target(), runtime, 32).map_err(Into::into)
         })
         .unwrap();
     assert!(restored.execution.is_some());

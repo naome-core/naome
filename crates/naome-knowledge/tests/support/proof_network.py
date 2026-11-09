@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite four-process proof-network acceptance driver; no inference provider."""
+from fixture_result import FixtureResult
 
 import argparse
 import hashlib
@@ -13,6 +14,11 @@ import subprocess
 import threading
 import time
 import traceback
+
+
+def sqlite_is(error, *primary_codes):
+    code = getattr(error, "sqlite_errorcode", None)
+    return code is not None and (code & 0xFF) in primary_codes
 
 
 def digest(path):
@@ -458,7 +464,7 @@ class Node:
             thread = threading.Thread(target=self.read, args=(name, stream, log), daemon=True)
             thread.start()
             self.threads.append(thread)
-        self.wait_event(lambda event: event.get("event") == "ready", timeout=15, since=event_offset)
+        self.wait_event(lambda event: event.get("event") == 0x00170050, timeout=15, since=event_offset)
 
     def read(self, name, stream, log):
         with log.open("w") as output:
@@ -474,7 +480,7 @@ class Node:
                 event["observed_monotonic"] = time.monotonic()
                 with self.condition:
                     self.events.append(event)
-                    if event.get("event") == "response":
+                    if event.get("event") == 0x00170063:
                         self.responses[event["request"]] = event
                     self.condition.notify_all()
         with self.condition:
@@ -597,7 +603,7 @@ class Driver:
         contract = json.loads(self.helper_output([str(self.binary), "contract"]))
         repo = Path(__file__).resolve().parents[4]
         self.summary = {
-            "schema": 1, "result": "running", "node_count": 4, "physical_host_count": 1,
+            "schema": 1, "result": FixtureResult.RUNNING, "node_count": 4, "physical_host_count": 1,
             "producer": "finite deterministic formal source queues and checked-context authoring; no LLM inference",
             "contract": contract, "scenarios": {}, "commands": [], "processes": [], "proofs": {},
             **source_metadata(repo, self.helper_output),
@@ -640,7 +646,7 @@ class Driver:
             str(index): {"connected": statuses.get(index, {}).get("connected"),
                          "expected": sorted(peers),
                          "events": [event for event in self.nodes[index].events
-                                    if event.get("event") in ["connected", "disconnected", "dial_failed", "request_failed", "inbound_failed"]][-10:]}
+                                    if event.get("event") in [0x00170009, 0x0017000f, 0x0017000e, 0x00170058, 0x00170020]][-10:]}
             for index, peers in expected.items()
         }
         raise AssertionError(f"topology did not match configured partition: {json.dumps(diagnostics)}")
@@ -668,7 +674,7 @@ class Driver:
                     times.pop(str(index), None)
                     final.pop(str(index), None)
             if len(times) == len(indices):
-                result = {"result": "pass", "ids": sorted(expected), "root": root,
+                result = {"result": FixtureResult.PASS, "ids": sorted(expected), "root": root,
                           "all_node_seconds": max(times.values()), "per_node_seconds": times,
                           "statuses": final}
                 self.summary["scenarios"][name] = result
@@ -689,7 +695,7 @@ class Driver:
 
     def produce(self, node, depth, label):
         result = self.nodes[node].command("produce", artifact=source(depth))
-        assert result["result"]["status"] == "accepted"
+        assert result["result"]["status"] == 0x0016_0001
         object = result["object"]
         self.retain_proof(label, object)
         return object
@@ -724,7 +730,7 @@ class Driver:
                 for used in range(depth):
                     self.check_deadline()
                     result = self.nodes[0].command("produce", artifact=inventory_source(depth, used))
-                    assert result["result"]["status"] == "accepted"
+                    assert result["result"]["status"] == 0x0016_0001
                     ids.append(result["object"]["artifact_id"])
             assert len(ids) == len(set(ids)) == 595
             reservations[1].close()
@@ -735,20 +741,20 @@ class Driver:
             self.topology([[0, 1]])
             self.convergence("ten_page_inventory_complete_content_catchup", range(2), ids,
                              started, timeout=210, interval=0.5)
-            pages = [event for event in self.nodes[1].events if event.get("event") == "inventory_page"]
+            pages = [event for event in self.nodes[1].events if event.get("event") == 0x00170024]
             assert any(event["page"] >= 9 for event in pages)
             assert all(len(stored_objects(node)) == 595 for node in self.nodes)
             self.nodes[1].stop()
             self.nodes[1].start()
             self.convergence("ten_page_complete_batch_restart", range(2), ids, time.monotonic(), timeout=15)
             self.summary["scenarios"]["inventory_tail_discovery"] = {
-                "result": "pass", "object_count": 595, "page_size": 64,
+                "result": FixtureResult.PASS, "object_count": 595, "page_size": 64,
                 "pages": pages, "tail_proof_id": max(ids),
                 "receiver_tail_present": max(ids) in self.nodes[1].ids(),
             }
             self.summary["accepted_ids"] = sorted(ids)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], ids)
-            self.summary["result"] = "pass"
+            self.summary["result"] = FixtureResult.PASS
         finally:
             for reservation in reservations:
                 reservation.close()
@@ -768,11 +774,16 @@ class Driver:
                 reservations[index].close()
                 producer_source = source(index + 1, padding=64000)
                 node.start([producer_source])
+                if index == 0:
+                    response = node._command_once(
+                        "unknown-command", min(self.deadline, time.monotonic() + 10), {}
+                    )
+                    assert response["error"]["code"] == 0x0007_0280
                 node.command("links", peers=[])
             assert len({node.identity for node in self.nodes}) == 4
             assert len({node.process.pid for node in self.nodes}) == 4
             for index, node in enumerate(self.nodes):
-                event = node.wait_event(lambda event: event.get("event") == "producer_result")
+                event = node.wait_event(lambda event: event.get("event") == 0x0017003d)
                 id = event["result"]["id"]
                 status = node.status_snapshot()
                 assert status["ids"] == [id]
@@ -781,11 +792,11 @@ class Driver:
             assert len(set(initial)) == 4
             padded = source(1, padding=64000)
             duplicate = self.nodes[0].command("produce", artifact=padded)
-            assert duplicate["result"]["status"] == "duplicate"
+            assert duplicate["result"]["status"] == 0x0016_0002
             assert duplicate["object"]["artifact_id"] == initial[0]
             self.summary["scenarios"]["large_canonical_command_normalizes_duplicate"] = {
-                "result": "pass", "input_bytes": len(padded) // 2,
-                "artifact_id": initial[0], "status": "duplicate",
+                "result": FixtureResult.PASS, "input_bytes": len(padded) // 2,
+                "artifact_id": initial[0], "status": duplicate["result"]["status"],
             }
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
@@ -803,11 +814,11 @@ class Driver:
             self.retain_proof("dependent", child)
             before = len(self.nodes[3].events)
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
-            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and "required dependency missing" in event.get("error", {}).get("message", ""), since=before)
+            self.nodes[3].wait_event(lambda event: event.get("event") == 0x00170047 and event.get("error") == 0x0001_000B, since=before)
             status = self.nodes[3].status_snapshot()
             assert not status["pending"] and set(status["ids"]) == set(initial)
             assert len(stored_objects(self.nodes[3])) == len(initial)
-            self.summary["scenarios"]["dependent_before_parent"] = {"result": "pass", "isolated_failed_closure": status, "no_orphan": True}
+            self.summary["scenarios"]["dependent_before_parent"] = {"result": FixtureResult.PASS, "isolated_failed_closure": status, "no_orphan": True}
             started = time.monotonic()
             parent_metadata = self.nodes[0].command("describe", id=parent["artifact_id"])["metadata"]
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=parent_metadata, object=parent)
@@ -836,56 +847,56 @@ class Driver:
                 q = question_fixture(50 + index)
                 if label == "malformed":
                     object["payload"] = "0000000001ff"
-                    expected_error = "malformed certificate"
+                    expected_error = 0x0006_000a
                 elif label == "claimed_id":
                     object["artifact_id"] = "00" * 32
-                    expected_error = "description proof address differs"
+                    expected_error = 0x0007_0001
                 elif label == "compatibility":
                     object["compatibility"] = "00" * 32
-                    expected_error = "compatibility mismatch"
+                    expected_error = 0x0007_0002
                 elif label == "mathematical":
                     object["payload"] = "0000000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
-                    expected_error = "mp.expected_implication"
+                    expected_error = 0x0025_0001
                 else:
                     unrelated_source = source(60)
                     unrelated = self.nodes[0].command("test_check", artifact=unrelated_source)["object"]
                     object["statement_id"] = unrelated["statement_id"]
                     q = question_fixture(60)
-                    expected_error = "checked identity mismatch"
+                    expected_error = 0x0007_0003
                 if label != "claimed_id":
                     object["artifact_id"] = artifact_id(object["statement_id"], object["payload"])
                 metadata = proof_metadata(object, q)
                 offset = len(self.nodes[1].events)
                 sender_offset = len(self.nodes[0].events)
                 self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
-                expected_event = "rejected" if label == "claimed_id" else "proof_skipped"
+                expected_event = 0x00170051 if label == "claimed_id" else 0x00170047
                 event = self.nodes[1].wait_event(lambda event: event.get("event") == expected_event and (
                     (event.get("error", {}).get("diagnostic") or {}).get("failure", {}).get("code") == expected_error
-                    if label == "mathematical" else expected_error in event.get("error", {}).get("message", "")), since=offset)
+                    if label == "mathematical" else event.get("error", {}).get("code") == expected_error), since=offset)
                 if label == "claimed_id":
-                    assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get"
+                    assert not any(event.get("event") == 0x00170012 and event.get("kind") == 0x1a0005
                                    and event.get("object_id") == object["artifact_id"]
                                    for event in self.nodes[0].events[sender_offset:]), "invalid metadata must not authorize payload retrieval"
                 status = self.nodes[1].status_snapshot()
                 assert status["ids"] == baseline["ids"] and status["root"] == baseline["root"] and not status["pending"]
                 assert len(stored_objects(self.nodes[1])) == len(baseline["ids"])
-                self.summary["scenarios"][f"reject_{label}"] = {"result": "pass", "error": event["error"], "unchanged_root": status["root"], "metadata_first": True}
+                self.summary["scenarios"][f"reject_{label}"] = {"result": FixtureResult.PASS, "error": event["error"], "unchanged_root": status["root"], "metadata_first": True}
                 time.sleep(0.2)
             offset = len(self.nodes[0].events)
             self.nodes[0].command("test_offer", peer=self.nodes[1].identity,
                                  metadata=self.nodes[0].command("describe", id=left["artifact_id"])["metadata"],
                                  test_compatibility="00" * 32)
-            self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and event.get("error") == "compatibility mismatch", since=offset)
-            self.summary["scenarios"]["reject_transport_compatibility"] = {"result": "pass"}
+            self.nodes[0].wait_event(lambda event: event.get("event") == 0x00170039 and event.get("error") == 0x0001_0003, since=offset)
+            self.summary["scenarios"]["reject_transport_compatibility"] = {"result": FixtureResult.PASS}
             for _ in range(3):
                 offset = len(self.nodes[0].events)
                 self.nodes[0].command("offer", peer=self.nodes[1].identity, id=left["artifact_id"])
-                self.nodes[0].wait_event(lambda event: event.get("event") == "offer_result" and event.get("status") == "duplicate", since=offset)
+                self.nodes[0].wait_event(lambda event: event.get("event") == 0x00170034 and event.get("status") == 0x0005_0002, since=offset)
                 self.nodes[0].command("announce", id=left["artifact_id"])
                 time.sleep(0.2)
             status = self.nodes[1].status_snapshot()
             assert status["root"] == baseline["root"] and status["ids"] == baseline["ids"]
-            self.summary["scenarios"]["duplicate_delivery_and_announcements"] = {"result": "pass", "deliveries": 3, "announcements": 3, "unchanged_root": status["root"]}
+            self.summary["scenarios"]["duplicate_delivery_and_announcements"] = {"result": FixtureResult.PASS, "deliveries": 3, "announcements": 3, "unchanged_root": status["root"]}
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
             union += [left["artifact_id"], right["artifact_id"]]
@@ -919,10 +930,10 @@ class Driver:
                     ".disposable-questions.lock", "proof-backlog.initialized",
                     "proof-backlog.sqlite3", "questions.sqlite3"]
                 assert len(stored_objects(node)) == len(union)
-            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive locks, immutable binary proof catalog, durable local question/proof queues and initialization receipts; no ledger, reward or balance state"}
+            self.summary["scenarios"]["economy_independence"] = {"result": FixtureResult.PASS, "storage": "identity, exclusive locks, immutable binary proof catalog, durable local question/proof queues and initialization receipts; no ledger, reward or balance state"}
             self.summary["accepted_ids"] = sorted(union)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], union)
-            self.summary["result"] = "pass"
+            self.summary["result"] = FixtureResult.PASS
         finally:
             for reservation in reservations:
                 reservation.close()
@@ -936,7 +947,7 @@ class Driver:
                 cleanup_errors.append(str(error))
         self.summary["cleanup"] = {"all_processes_exited": all(node.process is None or node.process.poll() is not None for node in self.nodes), "errors": cleanup_errors}
         if cleanup_errors:
-            self.summary["result"] = "fail"
+            self.summary["result"] = FixtureResult.FAIL
         # Keep transport identities private; digest only public reproduction inputs/evidence.
         files = [path for path in self.output.iterdir() if path.is_file() and path.name != "summary.json"]
         self.summary["artifacts"] = {str(path): digest(path) for path in sorted(files)}
@@ -958,13 +969,13 @@ def main():
         else:
             driver.run()
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
         traceback.print_exc()
     finally:
         driver.finish()
     print(json.dumps({"result": driver.summary["result"], "summary": str(driver.output / "summary.json")}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

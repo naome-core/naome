@@ -45,20 +45,21 @@ mod binary {
     }
 }
 
-fn frame(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
-    let width = u32::try_from(bytes.len()).map_err(|_| "peer program frame width")?;
+fn frame(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), crate::Error> {
+    let width = u32::try_from(bytes.len())
+        .map_err(|_| crate::ResearchFailure::PeerProgramFrameOutputWidth)?;
     out.extend_from_slice(&width.to_le_bytes());
     out.extend_from_slice(bytes);
     Ok(())
 }
 
-fn take<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], String> {
+fn take<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], crate::Error> {
     let (width, rest) = input
         .split_first_chunk::<4>()
-        .ok_or("peer program frame width")?;
+        .ok_or(crate::ResearchFailure::PeerProgramFrameWidth)?;
     let (bytes, rest) = rest
         .split_at_checked(u32::from_le_bytes(*width) as usize)
-        .ok_or("peer program frame truncated")?;
+        .ok_or(crate::ResearchFailure::PeerProgramFrameTruncated)?;
     *input = rest;
     Ok(bytes)
 }
@@ -104,17 +105,17 @@ impl ContextStorage for ReplayStorage {
     }
 }
 
-fn read_commands(manifest: &Manifest, tail: &mut &[u8]) -> Result<Vec<Command>, String> {
+fn read_commands(manifest: &Manifest, tail: &mut &[u8]) -> Result<Vec<Command>, crate::Error> {
     if manifest.commands == 0 || manifest.commands > crate::resources::limits().closure_steps as u64
     {
-        return Err("peer program replay command capacity".into());
+        return Err(crate::ResearchFailure::PeerProgramCommandCapacity.into());
     }
     (0..manifest.commands)
-        .map(|_| decode_command(take(tail)?))
+        .map(|_| decode_command(take(tail)?).map_err(crate::Error::from))
         .collect()
 }
 
-fn write_commands(out: &mut Vec<u8>, commands: &[Command]) -> Result<(), String> {
+fn write_commands(out: &mut Vec<u8>, commands: &[Command]) -> Result<(), crate::Error> {
     for command in commands {
         frame(out, &encode_command(command)?)?;
     }
@@ -126,41 +127,29 @@ fn evaluate(
     commands: &[Command],
     context: &dyn ContextView,
     work: &mut usize,
-) -> Result<CheckedProgram, String> {
+) -> Result<CheckedProgram, crate::Error> {
     let limits = crate::resources::limits();
-    let conn = rusqlite::Connection::open_in_memory().map_err(|error| error.to_string())?;
-    let mut engine = Engine::open(conn).map_err(|error| error.to_string())?;
+    let conn =
+        rusqlite::Connection::open_in_memory().map_err(naome_checker::program::Error::from)?;
+    let mut engine = Engine::open(conn)?;
     for group in commands.chunks(naome_proof::program::CHUNK_RECORDS) {
-        engine
-            .append_group(group)
-            .map_err(|error| error.to_string())?;
+        engine.append_group(group)?;
     }
     let quantum = crate::resources::adaptive::batch(limits.closure_steps).max(1);
     let cache = crate::resources::program_cache(1024 * 1024);
-    while !engine
-        .status()
-        .map_err(|error| error.to_string())?
-        .fully_checked
-    {
-        let progress = engine
-            .advance(quantum, cache, context)
-            .map_err(|error| error.to_string())?;
+    while !engine.status()?.fully_checked {
+        let progress = engine.advance(quantum, cache, context)?;
         let spent = engine.last_quantum_steps();
         *work = work
             .checked_add(spent)
-            .ok_or("peer program checker work overflow")?;
+            .ok_or(crate::ResearchFailure::PeerProgramWorkOverflow)?;
         if *work > 16 * limits.closure_steps || !progress && spent == 0 {
-            return Err("peer program checker work capacity".into());
+            return Err(crate::ResearchFailure::PeerProgramWorkCapacity.into());
         }
     }
-    while !engine
-        .prepare_export(quantum)
-        .map_err(|error| error.to_string())?
-    {}
-    let checked = engine.checked().map_err(|error| error.to_string())?;
-    checked
-        .check_manifest(manifest)
-        .map_err(|error| error.to_string())?;
+    while !engine.prepare_export(quantum)? {}
+    let checked = engine.checked()?;
+    checked.check_manifest(manifest)?;
     Ok(checked)
 }
 
@@ -185,63 +174,52 @@ impl InputChecker {
         }
     }
 
-    fn register(&mut self, bytes: &[u8]) -> Result<(), String> {
+    fn register(&mut self, bytes: &[u8]) -> Result<(), crate::Error> {
         let limits = crate::resources::limits();
         self.objects += 1;
         if self.objects >= limits.closure_objects {
-            return Err("peer program context capacity".into());
+            return Err(crate::ResearchFailure::PeerProgramContextCapacity.into());
         }
         if let Some(mut inner) = bytes.strip_prefix(MANIFEST_MAGIC) {
             let manifest = Manifest::from_canonical_bytes(take(&mut inner)?)?;
             let commands = read_commands(&manifest, &mut inner)?;
             if !inner.is_empty() {
-                return Err("peer program dependency trailing bytes".into());
+                return Err(crate::ResearchFailure::PeerProgramDependencyTrailing.into());
             }
             self.steps = self
                 .steps
                 .checked_add(commands.len())
-                .ok_or("peer program context step overflow")?;
+                .ok_or(crate::ResearchFailure::PeerProgramStepOverflow)?;
             if self.steps > limits.closure_steps {
-                return Err("peer program context step capacity".into());
+                return Err(crate::ResearchFailure::PeerProgramStepCapacity.into());
             }
             let checked = evaluate(&manifest, &commands, &self.context, &mut self.work)?;
-            let mut registration = self
-                .context
-                .begin_program_registration(&checked)
-                .map_err(|error| error.to_string())?;
+            let mut registration = self.context.begin_program_registration(&checked)?;
             while !registration.complete() {
-                registration
-                    .advance(&checked, 64)
-                    .map_err(|error| error.to_string())?;
+                registration.advance(&checked, 64)?;
             }
-            self.context = registration.finish().map_err(|error| error.to_string())?;
+            self.context = registration.finish()?;
             return Ok(());
         }
         if bytes.len() > limits.proof_bytes {
-            return Err("peer program context object capacity".into());
+            return Err(crate::ResearchFailure::PeerProgramObjectCapacity.into());
         }
-        match ArtifactPayload::from_canonical_bytes(bytes).map_err(|error| error.to_string())? {
+        match crate::object::decode_payload(bytes)? {
             ArtifactPayload::Proof(certificate) => {
                 self.steps = self
                     .steps
                     .checked_add(certificate.steps().len())
-                    .ok_or("peer program context step overflow")?;
+                    .ok_or(crate::ResearchFailure::PeerProgramStepOverflow)?;
                 if self.steps > limits.closure_steps {
-                    return Err("peer program context step capacity".into());
+                    return Err(crate::ResearchFailure::PeerProgramStepCapacity.into());
                 }
-                let checked =
-                    proof::check(certificate, &self.context).map_err(|error| error.to_string())?;
-                self.context
-                    .register_proof_for_replication(checked)
-                    .map_err(|error| error.to_string())?;
+                let checked = proof::check(certificate, &self.context)?;
+                self.context.register_proof_for_replication(checked)?;
             }
             ArtifactPayload::Definition(certificate) => {
                 let checked =
-                    naome_checker::check_definition_with_state(certificate, &self.context)
-                        .map_err(|error| error.to_string())?;
-                self.context
-                    .register_definition(checked)
-                    .map_err(|error| error.to_string())?;
+                    naome_checker::check_definition_with_state(certificate, &self.context)?;
+                self.context.register_definition(checked)?;
             }
         }
         Ok(())
@@ -266,7 +244,7 @@ impl Packet {
         manifest: Manifest,
         commands: &[Command],
         context: &[Arc<[u8]>],
-    ) -> Result<Option<Self>, String> {
+    ) -> Result<Option<Self>, crate::Error> {
         let mut raw = Vec::new();
         write_commands(&mut raw, commands)?;
         for artifact in context {
@@ -287,14 +265,14 @@ impl Packet {
     pub(crate) fn context_record(
         manifest: &Manifest,
         commands: &[Command],
-    ) -> Result<Arc<[u8]>, String> {
+    ) -> Result<Arc<[u8]>, crate::Error> {
         let mut record = MANIFEST_MAGIC.to_vec();
         frame(&mut record, &manifest.canonical_bytes()?)?;
         write_commands(&mut record, commands)?;
         Ok(record.into())
     }
 
-    pub fn validate_width(&self) -> Result<(), String> {
+    pub fn validate_width(&self) -> Result<(), crate::Error> {
         let limits = crate::resources::limits();
         if self.manifest.commands == 0
             || self.manifest.commands > limits.closure_steps as u64
@@ -302,12 +280,12 @@ impl Packet {
             || self.bytes.len() < 4
             || self.bytes.len() > limits.proof_bytes
         {
-            return Err("peer program replay capacity".into());
+            return Err(crate::InputLimit::PeerProgramCapacity.into());
         }
         Ok(())
     }
 
-    pub(crate) fn commands(&self) -> Result<Vec<Command>, String> {
+    pub(crate) fn commands(&self) -> Result<Vec<Command>, crate::Error> {
         read_commands(&self.manifest, &mut self.decoded()?.as_slice())
     }
 
@@ -315,14 +293,14 @@ impl Packet {
         self.bytes.len()
     }
 
-    pub(crate) fn target(&self) -> Result<Formula, String> {
+    pub(crate) fn target(&self) -> Result<Formula, crate::Error> {
         Ok(self.rechecked()?.target.clone())
     }
 
     pub(super) fn replay(&self, target: &Formula) -> Result<Arc<Replay>, crate::Error> {
         let replay = self.rechecked()?;
         if &replay.target != target {
-            return Err("peer program conclusion differs".into());
+            return Err(crate::ResearchFailure::PeerProgramConclusionMismatch.into());
         }
         Ok(replay)
     }
@@ -346,22 +324,26 @@ impl Packet {
         Ok(replay)
     }
 
-    fn decoded(&self) -> Result<Vec<u8>, String> {
+    fn decoded(&self) -> Result<Vec<u8>, crate::Error> {
         self.validate_width()?;
         let (width, compressed) = self
             .bytes
             .split_first_chunk::<4>()
-            .ok_or("peer program frame width")?;
+            .ok_or(crate::ResearchFailure::PeerProgramFrameWidth)?;
         let width = u32::from_le_bytes(*width) as usize;
         if width > crate::resources::limits().closure_bytes {
-            return Err("peer program decoded capacity".into());
+            return Err(crate::InputLimit::PeerProgramCapacity.into());
         }
         let mut raw = vec![0; width];
-        if lz4_flex::block::decompress_into(compressed, &mut raw)
-            .map_err(|error| error.to_string())?
-            != width
-        {
-            return Err("peer program decoded extent differs".into());
+        let actual = lz4_flex::block::decompress_into(compressed, &mut raw)
+            .map_err(|error| crate::Error::Compression(error.into()))?;
+        if actual != width {
+            return Err(crate::Error::Compression(
+                crate::CompressionFailure::SizeMismatch {
+                    expected: width,
+                    actual,
+                },
+            ));
         }
         Ok(raw)
     }
@@ -371,7 +353,7 @@ impl Packet {
         commands: &[Command],
         programs: &[Self],
         artifacts: impl IntoIterator<Item = Arc<[u8]>>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         use naome_proof::{
             StatementId,
             program::{Prefix, formula_hash, stream_hash},
@@ -384,11 +366,9 @@ impl Packet {
         for command in commands.iter().rev() {
             stream_root = stream_hash(&encode_command(command)?, stream_root);
         }
-        let bytes = target
-            .encode_canonical()
-            .map_err(|error| error.to_string())?;
-        let statement =
-            StatementId::of_canonical_formula(&bytes).ok_or("native program statement width")?;
+        let bytes = target.encode_canonical()?;
+        let statement = StatementId::of_canonical_formula(&bytes)
+            .ok_or(crate::ResearchFailure::CandidateStatementWidth)?;
         let manifest = Manifest {
             commands: prefix.commands,
             input_bytes: prefix.input_bytes,
@@ -399,7 +379,7 @@ impl Packet {
         };
         let context = Self::ordered_inputs(programs, artifacts)?;
         let packet = Self::pack(manifest, commands, &context)?
-            .ok_or("native program replay packet capacity")?;
+            .ok_or(crate::ResearchFailure::PeerProgramPacketCapacity)?;
         packet.replay(target)?;
         Ok(packet)
     }
@@ -407,17 +387,17 @@ impl Packet {
     fn ordered_inputs(
         programs: &[Self],
         artifacts: impl IntoIterator<Item = Arc<[u8]>>,
-    ) -> Result<Vec<Arc<[u8]>>, String> {
+    ) -> Result<Vec<Arc<[u8]>>, crate::Error> {
         let mut context = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut extent = 0usize;
-        let mut append = |bytes: Arc<[u8]>| -> Result<(), String> {
+        let mut append = |bytes: Arc<[u8]>| -> Result<(), crate::Error> {
             if seen.insert(crate::learning::digest(&bytes.as_ref())) {
                 extent = extent
                     .checked_add(bytes.len() + 4)
-                    .ok_or("peer program context byte overflow")?;
+                    .ok_or(crate::ResearchFailure::PeerProgramContextBytesOverflow)?;
                 if extent > crate::resources::limits().closure_bytes {
-                    return Err("peer program context byte capacity".into());
+                    return Err(crate::ResearchFailure::PeerProgramContextBytesCapacity.into());
                 }
                 context.push(bytes);
             }
@@ -443,7 +423,7 @@ impl Packet {
     pub(crate) fn checked_inputs(
         programs: &[Self],
         artifacts: &[crate::object::Candidate],
-    ) -> Result<DiskArtifactState, String> {
+    ) -> Result<DiskArtifactState, crate::Error> {
         let mut inputs = InputChecker::new(0);
         for record in Self::ordered_inputs(programs, artifacts.iter().map(|a| a.bytes.clone()))? {
             inputs.register(&record)?;
@@ -453,36 +433,32 @@ impl Packet {
                 crate::object::CandidatePayload::Proof(_) => {
                     let header = inputs
                         .context
-                        .artifact_proof_header(artifact.id)
-                        .map_err(|error| error.to_string())?
-                        .ok_or("temporary prerequisite checked binding differs")?;
+                        .artifact_proof_header(artifact.id)?
+                        .ok_or(crate::ResearchFailure::PeerPrerequisiteProofBinding)?;
                     if Some(header.statement_id()) != artifact.statement {
-                        return Err("temporary prerequisite checked statement differs".into());
+                        return Err(crate::ResearchFailure::PeerPrerequisiteStatement.into());
                     }
                 }
                 crate::object::CandidatePayload::Definition(definition) => {
                     let id = definition.definition_id();
-                    if inputs
-                        .context
-                        .definition_canonical_length(id)
-                        .map_err(|error| error.to_string())?
-                        .is_none()
-                    {
-                        return Err("temporary definition checked binding differs".into());
+                    if inputs.context.definition_canonical_length(id)?.is_none() {
+                        return Err(
+                            crate::ResearchFailure::PeerPrerequisiteDefinitionBinding.into()
+                        );
                     }
                     if let Some(obligation) = artifact.obligation {
                         let header = inputs
                             .context
-                            .proof_header(obligation)
-                            .map_err(|error| error.to_string())?
-                            .ok_or("temporary definition checked obligation is missing")?;
+                            .proof_header(obligation)?
+                            .ok_or(crate::ResearchFailure::PeerPrerequisiteObligationMissing)?;
                         let checked = naome_checker::check_definition_with_state(
                             definition.clone(),
                             &inputs.context,
-                        )
-                        .map_err(|error| error.to_string())?;
+                        )?;
                         if Some(header.statement_id()) != checked.obligation_statement_id() {
-                            return Err("temporary definition checked obligation differs".into());
+                            return Err(
+                                crate::ResearchFailure::PeerPrerequisiteObligationBinding.into()
+                            );
                         }
                     }
                 }
@@ -506,7 +482,7 @@ impl Packet {
         let mut definitions = Vec::new();
         let target = checked
             .conclusion()
-            .ok_or("peer replay formula capacity")?
+            .ok_or(crate::ResearchFailure::PeerProgramConclusionCapacity)?
             .clone();
         for command in &commands {
             if let Command::DefinedRelation { definition_id, .. } = command {
@@ -569,20 +545,20 @@ fn operand_mp(
     target: &Formula,
     recent: &VecDeque<(usize, Formula, Rule)>,
     observed: (usize, usize),
-) -> Result<Option<Graph>, String> {
-    let lookup = |position| -> Result<Option<Formula>, String> {
+) -> Result<Option<Graph>, crate::Error> {
+    let lookup = |position| -> Result<Option<Formula>, crate::Error> {
         if let Some((_, formula, _)) = recent.iter().find(|(index, _, _)| *index == position) {
             return Ok(Some(formula.clone()));
         }
         engine
             .proved_formula(position as u64)
-            .map_err(|error| error.to_string())
+            .map_err(crate::Error::from)
     };
     let (Some(premise), Some(implication)) = (lookup(observed.0)?, lookup(observed.1)?) else {
         return Ok(None);
     };
     let Some((_, consequence)) = implication.view().implication_parts() else {
-        return Err("checked peer implication operand differs".into());
+        return Err(crate::ResearchFailure::PeerImplicationShape.into());
     };
     let alternative = recent.iter().rev().find_map(|(index, formula, rule)| {
         let (antecedent, candidate) = formula.view().implication_parts()?;
@@ -657,10 +633,10 @@ fn operand_mp(
     };
     match Graph::encode(&decision) {
         Ok(graph) => Ok(Some(graph)),
-        Err(error) if error == "formula_graph_capacity" => {
-            Graph::encode_at_depth(&decision, 4).map(Some)
-        }
-        Err(error) => Err(error),
+        Err(crate::LearningGraphFailure::Capacity) => Graph::encode_at_depth(&decision, 4)
+            .map(Some)
+            .map_err(Into::into),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -669,23 +645,24 @@ fn graphs(
     target: &Formula,
     commands: &[Command],
     context: &dyn ContextView,
-) -> Result<Decisions, String> {
+) -> Result<Decisions, crate::Error> {
     let goal_parts = crate::learning::knowledge::fragments(target);
     let mut used = vec![false; commands.len()];
     let mut pending = vec![
         commands
             .len()
             .checked_sub(1)
-            .ok_or("peer program seal missing")?,
+            .ok_or(crate::ResearchFailure::PeerSealMissing)?,
     ];
     while let Some(position) = pending.pop() {
         if std::mem::replace(&mut used[position], true) {
             continue;
         }
         for input in commands[position].operands() {
-            let index = usize::try_from(input).map_err(|_| "peer program operand width")?;
+            let index =
+                usize::try_from(input).map_err(|_| crate::ResearchFailure::PeerOperandWidth)?;
             if index >= position {
-                return Err("peer program operand order differs".into());
+                return Err(crate::ResearchFailure::PeerOperandOrder.into());
             }
             pending.push(index);
         }
@@ -708,15 +685,15 @@ fn graphs(
     for id in ids.into_iter().take(16) {
         let header = context
             .proof_header(id)
-            .map_err(|error| error.to_string())?
-            .ok_or("checked peer program citation missing")?;
+            .map_err(crate::Error::from)?
+            .ok_or(crate::ResearchFailure::PeerCitationMissing)?;
         if header.canonical_length() > crate::resources::limits().proof_bytes {
             continue;
         }
         let formula = context
             .proof_formula(header, header.canonical_length())
-            .map_err(|error| error.to_string())?
-            .ok_or("checked peer program citation formula missing")?
+            .map_err(crate::Error::from)?
+            .ok_or(crate::ResearchFailure::PeerCitationFormulaMissing)?
             .into_owned();
         if &formula != target {
             available.push((id, formula));
@@ -755,7 +732,7 @@ fn graphs(
                 };
                 let encoded = match Graph::encode(&decision) {
                     Ok(graph) => Some(graph),
-                    Err(error) if error == "formula_graph_capacity" => {
+                    Err(crate::LearningGraphFailure::Capacity) => {
                         if let Some((left, right)) =
                             differing_operands(group[0].1.clone(), group[1].1.clone())
                         {
@@ -773,15 +750,15 @@ fn graphs(
                             None
                         }
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 };
                 if let Some(mut graph) = encoded {
                     graph.binding = crate::learning::digest(&(position, cited.as_bytes()));
                     bytes = bytes
                         .checked_add(graph.work_bytes())
-                        .ok_or("peer program graph work overflow")?;
+                        .ok_or(crate::ResearchFailure::PeerGraphOverflow)?;
                     if bytes > MODEL_REQUIREMENTS.work_bytes / 16 {
-                        return Err("peer program graph work capacity".into());
+                        return Err(crate::ResearchFailure::PeerGraphCapacity.into());
                     }
                     graphs.push(graph);
                 }
@@ -810,7 +787,7 @@ fn graphs(
                 graph.binding = crate::learning::digest(&(position, operands));
                 bytes = bytes
                     .checked_add(graph.work_bytes())
-                    .ok_or("peer program graph work overflow")?;
+                    .ok_or(crate::ResearchFailure::PeerGraphOverflow)?;
                 if bytes > MODEL_REQUIREMENTS.work_bytes / 16 {
                     break;
                 }
@@ -819,7 +796,7 @@ fn graphs(
         }
         if let Some(formula) = engine
             .proved_formula(position as u64)
-            .map_err(|error| error.to_string())?
+            .map_err(crate::Error::from)?
         {
             if recent.len() == 32 {
                 recent.pop_front();
@@ -835,4 +812,137 @@ fn graphs(
         }
     }
     Ok(graphs.finish())
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn input_checker_preserves_artifact_and_proof_diagnostics() {
+        let mut inputs = InputChecker::new(0);
+        let expected = crate::object::decode_payload(&[]).unwrap_err();
+        assert_eq!(inputs.register(&[]).unwrap_err(), expected);
+        let certificate =
+            naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+                proof_id: ProofId::from_bytes([0; 32]),
+            }])
+            .unwrap();
+        let expected = crate::Error::from(
+            proof::check(certificate.clone(), &inputs.context)
+                .err()
+                .unwrap(),
+        );
+        let payload = ArtifactPayload::Proof(certificate).to_canonical_bytes();
+        assert_eq!(inputs.register(&payload).unwrap_err(), expected);
+        assert!(matches!(expected, crate::Error::Proof(_)));
+    }
+
+    #[test]
+    fn compressed_inputs_share_numeric_failure_details() {
+        let bytes = vec![1, 0, 0, 0, 0x10];
+        let expected = crate::CompressionFailure::from(
+            lz4_flex::block::decompress_into(&bytes[4..], &mut [0]).unwrap_err(),
+        );
+        let manifest = Manifest {
+            commands: 1,
+            input_bytes: 1,
+            program_hash: [0; 32],
+            stream_root: [0; 32],
+            conclusion: [0; 32],
+            statement: [0; 32],
+        };
+        let packet = Packet {
+            manifest,
+            bytes: bytes.clone(),
+        };
+        assert_eq!(
+            packet.decoded().unwrap_err(),
+            crate::Error::Compression(expected)
+        );
+        assert_eq!(
+            Packet::checked_inputs(std::slice::from_ref(&packet), &[])
+                .err()
+                .unwrap(),
+            crate::Error::Compression(expected)
+        );
+        assert!(matches!(super::super::super::evidence::decode(&bytes),
+            Err(crate::EvidenceFailure::Compression(actual)) if actual == expected));
+        let evidence = serde_json::to_value(crate::EvidenceFailure::Compression(expected)).unwrap();
+        let program = serde_json::to_value(crate::Error::Compression(expected)).unwrap();
+        assert_eq!(evidence["compression"], program["compression"]);
+        let short = vec![1, 0, 0, 0, 0];
+        let mismatch = crate::CompressionFailure::SizeMismatch {
+            expected: 1,
+            actual: 0,
+        };
+        assert!(matches!(super::super::super::evidence::decode(&short),
+            Err(crate::EvidenceFailure::Compression(actual)) if actual == mismatch));
+        let packet = Packet {
+            manifest: packet.manifest.clone(),
+            bytes: short,
+        };
+        assert_eq!(
+            packet.decoded().unwrap_err(),
+            crate::Error::Compression(mismatch)
+        );
+        let width = serde_json::to_value(crate::CompressionFailure::OutputTooSmall {
+            expected: 5,
+            actual: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            width,
+            serde_json::json!({"reason": 1, "expected": 5, "actual": 2})
+        );
+    }
+
+    #[test]
+    fn command_frames_preserve_codec_and_truncation_failures() {
+        let manifest = Manifest {
+            commands: 1,
+            input_bytes: 1,
+            program_hash: [0; 32],
+            stream_root: [0; 32],
+            conclusion: [0; 32],
+            statement: [0; 32],
+        };
+        let malformed = [1, 0, 0, 0, 255];
+        let packet = Packet {
+            manifest: manifest.clone(),
+            bytes: lz4_flex::block::compress_prepend_size(&malformed),
+        };
+        let expected = crate::Error::from(decode_command(&[255]).unwrap_err());
+        assert_eq!(packet.commands().unwrap_err(), expected);
+        assert!(matches!(expected, crate::Error::ProgramCodec(_)));
+
+        let packet = Packet {
+            manifest,
+            bytes: lz4_flex::block::compress_prepend_size(&[2, 0, 0, 0, 255]),
+        };
+        assert_eq!(
+            packet.commands().unwrap_err(),
+            crate::ResearchFailure::PeerProgramFrameTruncated.into()
+        );
+    }
+
+    #[test]
+    fn invalid_program_capacity_has_registered_code() {
+        let packet = Packet {
+            manifest: Manifest {
+                commands: 0,
+                input_bytes: 0,
+                program_hash: [0; 32],
+                stream_root: [0; 32],
+                conclusion: [0; 32],
+                statement: [0; 32],
+            },
+            bytes: vec![],
+        };
+        let error = packet.validate_width().unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::InputLimit::PeerProgramCapacity)
+        );
+    }
 }

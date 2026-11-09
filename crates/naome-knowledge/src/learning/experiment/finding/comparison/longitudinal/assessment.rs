@@ -35,7 +35,7 @@ pub(super) fn selected(design: &design::Design, pilot: bool) -> Result<Vec<Value
 }
 
 // Follow actual native references transitively, not offered knowledge or text.
-fn dependencies(verified: &proof::Verified) -> Result<BTreeSet<String>, String> {
+fn dependencies(verified: &proof::Verified) -> Result<BTreeSet<String>, crate::Error> {
     let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
     let mut available = BTreeMap::new();
     for lemma in &verified.lemmas {
@@ -66,7 +66,7 @@ fn dependencies(verified: &proof::Verified) -> Result<BTreeSet<String>, String> 
 pub(super) fn early_knowledge(
     state: &State,
     first_acquired: &BTreeMap<String, usize>,
-) -> Result<BTreeSet<String>, String> {
+) -> Result<BTreeSet<String>, crate::Error> {
     state
         .knowledge
         .iter()
@@ -119,7 +119,7 @@ fn provenance(directory: &Path, meter: &mut Meter) -> Result<BTreeMap<String, us
 pub(super) fn without_early(
     state: &State,
     early: &BTreeSet<String>,
-) -> Result<Vec<crate::learning::knowledge::Entry>, String> {
+) -> Result<Vec<crate::learning::knowledge::Entry>, crate::Error> {
     state
         .knowledge
         .iter()

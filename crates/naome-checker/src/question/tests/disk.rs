@@ -58,16 +58,25 @@ impl ContextStorage for Files {
         let mut remaining = self.remaining.lock().unwrap();
         if let Some(count) = remaining.as_mut() {
             if *count == 0 {
-                return Err(ContextError::Storage("injected cold read failure".into()));
+                return Err(ContextError::Storage(
+                    naome_proof::ContextStorageFailure::Injected,
+                ));
             }
             *count -= 1;
         }
         drop(remaining);
-        let file = fs::File::open(self.path(address))
-            .map_err(|error| ContextError::Storage(error.to_string()))?;
+        let file = fs::File::open(self.path(address)).map_err(|error| {
+            ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                error.raw_os_error(),
+            ))
+        })?;
         if file
             .metadata()
-            .map_err(|error| ContextError::Storage(error.to_string()))?
+            .map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })?
             .len()
             > maximum as u64
         {
@@ -76,7 +85,11 @@ impl ContextStorage for Files {
         let mut bytes = Vec::new();
         file.take(maximum as u64 + 1)
             .read_to_end(&mut bytes)
-            .map_err(|error| ContextError::Storage(error.to_string()))?;
+            .map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })?;
         if bytes.len() > maximum {
             return Err(ContextError::Limit);
         }
@@ -85,11 +98,20 @@ impl ContextStorage for Files {
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
         let path = self.path(address);
         if path.exists() {
-            if fs::read(path).map_err(|error| ContextError::Storage(error.to_string()))? != bytes {
+            if fs::read(path).map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })? != bytes
+            {
                 return Err(ContextError::Corrupt);
             }
         } else {
-            fs::write(path, bytes).map_err(|error| ContextError::Storage(error.to_string()))?;
+            fs::write(path, bytes).map_err(|error| {
+                ContextError::Storage(naome_proof::ContextStorageFailure::System(
+                    error.raw_os_error(),
+                ))
+            })?;
         }
         Ok(())
     }
@@ -299,7 +321,10 @@ fn cold_dynamic_mp_requires_both_seeds_and_identical_original_citations() {
     assert!(twin.compare(&target, &registry, &policy).passed());
     let _ = twin.register(super::schema_steps(true));
     let result = twin.compare(&target, &registry, &policy);
-    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q04CheckedMpClosure
+    );
     assert_eq!(
         result.deduction.as_ref().unwrap().original_proofs().len(),
         3
@@ -362,7 +387,10 @@ fn target_directed_instantiation_matches_cold_replay_and_certifies_original_sour
     let registry = QuestionRegistry::new();
     let policy = PrefilterPolicy::default();
     let result = twin.compare(&target, &registry, &policy);
-    assert_eq!(result.rule, "Q07_CHECKED_INSTANTIATED_CLOSURE");
+    assert_eq!(
+        result.rule,
+        crate::question::PrefilterRule::Q07CheckedInstantiatedClosure
+    );
     let witness = result.deduction.as_ref().unwrap();
     let mut expected = vec![first, second];
     expected.sort();
@@ -485,7 +513,7 @@ fn cold_large_mp_intermediate_is_never_truncated_by_the_question_limit() {
             &PrefilterPolicy::default()
         )
         .rule,
-        "Q04_CHECKED_MP_CLOSURE"
+        crate::question::PrefilterRule::Q04CheckedMpClosure
     );
 }
 

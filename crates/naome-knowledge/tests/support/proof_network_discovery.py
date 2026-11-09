@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Finite real mDNS, bootstrap DHT, relay circuit and DCUtR process evidence."""
+from fixture_result import FixtureResult
 
 import argparse
 import json
@@ -21,7 +22,7 @@ USED_PORTS = set()
 
 def contact_retired(status, events, peer, was_known):
     return peer not in {contact["peer"] for contact in status["contacts"]} and (not was_known or any(
-        event.get("event") == "contact_expired" and event.get("peer") == peer for event in events))
+        event.get("event") == 0x0017000a and event.get("peer") == peer for event in events))
 
 
 def port():
@@ -53,7 +54,7 @@ class Relay(Node):
             thread = threading.Thread(target=self.read, args=(name, stream, log), daemon=True)
             thread.start()
             self.threads.append(thread)
-        self.wait_event(lambda event: event.get("event") == "ready", timeout=15)
+        self.wait_event(lambda event: event.get("event") == 0x00170050, timeout=15)
 
 
 class DiscoveryDriver(Driver):
@@ -101,8 +102,8 @@ class DiscoveryDriver(Driver):
                    network_config=self.settings(node))
 
     def own_proof(self, node):
-        event = node.wait_event(lambda event: event.get("event") == "producer_result", timeout=15)
-        assert event["result"]["status"] in ["accepted", "duplicate"]
+        event = node.wait_event(lambda event: event.get("event") == 0x0017003d, timeout=15)
+        assert event["result"]["status"] in [0x0016_0001, 0x0016_0002]
         object = node.command("object", id=event["result"]["id"])["object"]
         return self.retain_proof(f"independent-{node.index}", object)
 
@@ -128,7 +129,7 @@ class DiscoveryDriver(Driver):
         expected_source = "mdns" if self.mode == "mdns" else "dht"
         if self.mode == "mdns":
             for node in self.nodes[1:3]:
-                assert any(event.get("event") == "discovered" and event.get("source") == "mdns"
+                assert any(event.get("event") == 0x00170010 and event.get("source") == 0x18000b
                            and event.get("peer") in {other.identity for other in self.nodes if other is not node}
                            for event in node.events)
         if self.mode == "dht":
@@ -138,9 +139,9 @@ class DiscoveryDriver(Driver):
                 # discovery to actual participation records and the identified
                 # non-seed peer, rather than a particular hint callback order.
                 other = self.nodes[3 - node.index].identity
-                node.wait_event(lambda event:event.get("event") == "dht_participant" and event.get("peer") == other, timeout=25)
-                node.wait_event(lambda event:event.get("event") == "identified" and event.get("peer") == other, timeout=10)
-        self.summary["scenarios"]["peer_discovery_without_roster"] = {"result": "pass", "mechanism": expected_source,
+                node.wait_event(lambda event:event.get("event") == 0x0017000c and event.get("peer") == other, timeout=25)
+                node.wait_event(lambda event:event.get("event") == 0x0017001f and event.get("peer") == other, timeout=10)
+        self.summary["scenarios"]["peer_discovery_without_roster"] = {"result": FixtureResult.PASS, "mechanism": expected_source,
             "proof_ids": sorted(initial), "bootstrap_count_per_node": 0 if self.mode == "mdns" else 1,
             "configured_proof_peers": 0}
 
@@ -198,7 +199,7 @@ class DiscoveryDriver(Driver):
                 break
             time.sleep(0.5)
         assert retired == {0, 1, 3}, f"stale contact not retired on all active nodes: {sorted(retired)}"
-        self.summary["scenarios"]["disappearing_contact_retirement"] = {"result":"pass", "peer":stale_peer,
+        self.summary["scenarios"]["disappearing_contact_retirement"] = {"result":FixtureResult.PASS, "peer":stale_peer,
             "active_nodes":sorted(retired), "initially_known_on":sorted(initially_known),
             "observed_contact_on":sorted(observed), "deadline_seconds":45, "hint_ttl_seconds":30}
         self.convergence("retained_graph_after_contact_retirement", [0, 1, 3], initial, time.monotonic(), timeout=5)
@@ -225,8 +226,8 @@ class DiscoveryDriver(Driver):
             status = victim.command("status")
             connected = attacker_ids.intersection(status["connected"])
             assert len(connected) <= 4, "rotating identities exceeded the default network-group limit"
-            witnessed = bool(connected) and any(event.get("event") == "incoming_connection_failed"
-                and "network group peer limit" in event.get("detail", "") for event in victim.events)
+            witnessed = bool(connected) and any(event.get("event") == 0x00170021
+                and event.get("error") == 0x000B_001B for event in victim.events)
             if witnessed:
                 break
             time.sleep(0.1)
@@ -239,7 +240,7 @@ class DiscoveryDriver(Driver):
         assert len(attacker_ids.intersection(victim.command("status")["connected"])) <= 4
         assert all(node.process.poll() is None for node in self.nodes)
         self.assert_caps()
-        self.summary["scenarios"]["authenticated_identity_flood"] = {"result": "pass",
+        self.summary["scenarios"]["authenticated_identity_flood"] = {"result": FixtureResult.PASS,
             "distinct_attacker_keys": len(attacker_ids), "default_network_group_limit": 4,
             "trusted_outbound_peer_connected": honest.identity in victim.command("status")["connected"]}
         assert self.summary["scenarios"]["authenticated_identity_flood"]["trusted_outbound_peer_connected"]
@@ -263,18 +264,27 @@ class DiscoveryDriver(Driver):
             transfers = []
             for node in self.nodes:
                 connections = {event["connection_id"]:event for event in node.events
-                    if event.get("event") == "connected" and event.get("peer") != self.relay.identity}
+                    if event.get("event") == 0x00170009 and event.get("peer") != self.relay.identity}
                 assert connections and all(event["relayed"] is True for event in connections.values())
-                objects = [event for event in node.events if event.get("event") == "exchange_response"
-                    and event.get("kind") == "object" and event.get("relayed") is True
+                assert all(event["endpoint"]["kind"] in (0x00440001, 0x00440002)
+                           for event in connections.values())
+                reservations = [event for event in node.events
+                                if event.get("event") == 0x00170053 and event.get("kind") == 0x00470001]
+                assert reservations and all(event["peer"] == self.relay.identity
+                                            and event["limit"]["bytes"] > 0
+                                            and event["limit"]["duration"]["seconds"] > 0
+                                            for event in reservations)
+                objects = [event for event in node.events if event.get("event") == 0x00170013
+                    and event.get("kind") == 0x1a0008 and event.get("relayed") is True
                     and event.get("object_id") in expected]
                 assert objects, f"node {node.index} has no circuit object response"
                 assert all(event["connection_id"] in connections for event in objects)
-                assert any(event.get("event") == "accepted" and event.get("source") == "fetch" for event in node.events)
+                assert any(event.get("event") == 0x00170001 and event.get("source") == 0x180001 for event in node.events)
                 transfers.append({"node":node.index, "connections":connections, "object_responses":objects})
-            assert any("CircuitReqAccepted" in event.get("detail", "") for event in self.relay.events)
+            assert any(event.get("event") == 0x00170056 and event.get("kind") == 0x00400006
+                       for event in self.relay.events)
             self.summary["scenarios"]["proof_payload_requires_relay_circuit"] = {
-                "result":"pass", "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
+                "result":FixtureResult.PASS, "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
             self.relay.stop()
             fresh = self.produce(0, 63, "relay-outage-proof")["artifact_id"]
             assert all(node.process.poll() is None for node in self.nodes)
@@ -286,7 +296,7 @@ class DiscoveryDriver(Driver):
             deadline = min(self.deadline, time.monotonic() + 30)
             while time.monotonic() < deadline:
                 native = [(node, event) for node in self.nodes for event in node.events
-                          if event.get("event") == "hole_punch_result"]
+                          if event.get("event") == 0x0017001e]
                 if native:
                     break
                 time.sleep(0.05)
@@ -294,10 +304,10 @@ class DiscoveryDriver(Driver):
             results = []
             for node in self.nodes:
                 other = self.nodes[1 - node.index]
-                attempts = [event for event in node.events if event.get("event") == "hole_punch_attempt"
+                attempts = [event for event in node.events if event.get("event") == 0x0017001d
                             and event.get("peer") == other.identity]
                 assert attempts
-                outcomes = [event for event in node.events if event.get("event") == "hole_punch_result"
+                outcomes = [event for event in node.events if event.get("event") == 0x0017001e
                             and event.get("peer") == other.identity]
                 results.append({"node":node.index, "peer_id":node.identity,
                                 "attempts":attempts, "native_outcomes":outcomes})
@@ -307,15 +317,15 @@ class DiscoveryDriver(Driver):
                     # The pinned behaviour reports success only for its own
                     # outgoing upgrade. Bind the receiving endpoint as well;
                     # it need not emit another native DCUtR success event.
-                    node.wait_event(lambda connection:connection.get("event") == "connected"
+                    node.wait_event(lambda connection:connection.get("event") == 0x00170009
                                     and connection.get("connection_id") == event["connection_id"]
                                     and connection.get("relayed") is False, timeout=5)
                     other = self.nodes[1 - node.index]
-                    other.wait_event(lambda connection:connection.get("event") == "connected"
+                    other.wait_event(lambda connection:connection.get("event") == 0x00170009
                                      and connection.get("peer") == node.identity
                                      and connection.get("relayed") is False, timeout=5)
             self.summary["scenarios"]["bounded_dcutr_terminal_outcome"] = {
-                "result":"pass", "outcomes":results, "physical_nat_traversal_qualified":False,
+                "result":FixtureResult.PASS, "outcomes":results, "physical_nat_traversal_qualified":False,
                 "native_result_scope":"The pinned behaviour reports locally initiated outgoing upgrades; the counterpart is bound by its authenticated direct endpoint",
                 "evidence":"Real local circuit followed by a DCUtR terminal result; one host, zero physical NAT routers"}
         self.summary["accepted_ids"] = sorted(expected)
@@ -333,7 +343,7 @@ class DiscoveryDriver(Driver):
             "errors":errors, "process_exit_codes":[node.process.returncode if node.process is not None else None for node in processes],
             "relay_shutdown":"SIGTERM"}
         if errors:
-            self.summary["result"] = "fail"
+            self.summary["result"] = FixtureResult.FAIL
         self.summary["artifacts"] = {str(path):digest(path) for path in sorted(self.output.rglob("*"))
             if path.is_file() and path.name not in ["summary.json", "identity.key", "knowledge.lock"]}
         (self.output / "summary.json").write_text(json.dumps(self.summary, indent=2) + "\n")
@@ -363,15 +373,15 @@ def main():
             driver.discovery()
         else:
             driver.circuit()
-        driver.summary["result"] = "pass"
+        driver.summary["result"] = FixtureResult.PASS
     except Exception as error:
-        driver.summary["result"] = "fail"
+        driver.summary["result"] = FixtureResult.FAIL
         driver.summary["error"] = str(error)
         driver.summary["traceback"] = traceback.format_exc()
     finally:
         driver.finish()
     print(json.dumps({"result":driver.summary["result"], "output":str(driver.output), "error":driver.summary.get("error")}))
-    return 0 if driver.summary["result"] == "pass" else 1
+    return 0 if driver.summary["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

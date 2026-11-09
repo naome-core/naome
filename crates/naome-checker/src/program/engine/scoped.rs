@@ -2,7 +2,7 @@
 //! assumptions are open the available rules are axiom instances and modus
 //! ponens. The deduction theorem then gives the ordered implication chain.
 //! No local assumption or result gets a position in the checked program.
-use super::{Engine, Error, Operation, compile, push};
+use super::{Engine, Error, Operation, ProgramFault, compile, push};
 use crate::derived::{COMMUTATION, Step, Term};
 use crate::program::Context;
 use naome_foundation::construction::{self as recipe, Expression};
@@ -48,7 +48,7 @@ impl Preparation {
     ) -> Result<bool, Error> {
         if let Some(&position) = self.assumptions.get(self.facts.len()) {
             if position >= engine.cursor {
-                return Err("deduction assumption is not in the checked prefix".into());
+                return Err(ProgramFault::DeductionAssumption.into());
             }
             self.facts.push(push(
                 operations,
@@ -96,7 +96,7 @@ fn fact(facts: &[usize], position: u32) -> Result<usize, Error> {
     facts
         .get(position as usize)
         .copied()
-        .ok_or_else(|| "fact is outside the earlier deduction scope".into())
+        .ok_or_else(|| ProgramFault::FactOutsideScope.into())
 }
 
 fn apply(operations: &mut Vec<Operation>, premise: usize, implication: usize) -> usize {

@@ -34,7 +34,7 @@ impl Attempt {
         sample: Sample,
         outstanding: Option<u32>,
         complete: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkerFailure> {
         let elapsed_nanos = self
             .sample
             .elapsed_nanos
@@ -42,7 +42,7 @@ impl Attempt {
         if !sample.validate(self.started.elapsed())
             || u128::from(elapsed_nanos) > self.started.elapsed().as_nanos()
         {
-            return Err("provider feedback measurement differs from its owned attempt".into());
+            return Err(WorkerFailure::FeedbackMeasurement);
         }
         match phase {
             Phase::Setup
@@ -67,7 +67,7 @@ impl Attempt {
             {
                 self.finalized = Some(sample.succeeded)
             }
-            _ => return Err("provider feedback phase or work-unit sequence differs".into()),
+            _ => return Err(WorkerFailure::FeedbackSequence),
         }
         self.sample.elapsed_nanos = elapsed_nanos;
         self.sample.blocked_nanos = self
@@ -88,9 +88,9 @@ impl Attempt {
     pub(super) fn unit_ready(&self, unit: u32) -> bool {
         self.unit == Some((unit, true))
     }
-    pub(super) fn checkpoint(&mut self, unit: u32) -> Result<(), String> {
+    pub(super) fn checkpoint(&mut self, unit: u32) -> Result<(), WorkerFailure> {
         if !self.unit_ready(unit) {
-            return Err("provider progress lacks successful measured work".into());
+            return Err(WorkerFailure::FeedbackCheckpoint);
         }
         self.unit = None;
         feedback::provider_checkpoint(self.role);

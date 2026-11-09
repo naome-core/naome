@@ -23,7 +23,7 @@ impl Governor {
         sample: observation::Sample,
         capacity: u64,
         now: Instant,
-    ) -> Result<Snapshot, String> {
+    ) -> Result<Snapshot, crate::Error> {
         self.update(
             selection,
             sample.observed,
@@ -42,7 +42,7 @@ impl Governor {
         statistics: Statistics,
         pressure: Pressure,
         now: Instant,
-    ) -> Result<Snapshot, String> {
+    ) -> Result<Snapshot, crate::Error> {
         let mut next = Snapshot::derive(selection, observed, capacity)?;
         let quantum = super::super::limits().transport_busy_grace;
         if let Some((before_time, before, previous)) = &self.previous {
@@ -176,7 +176,7 @@ impl Governor {
                     .min((before.budget.network_requests / 2).max(1));
             }
             if pressure.memory == Some(true) {
-                next.budget.paused = Some("operating system memory pressure".into());
+                next.budget.paused = Some(crate::PauseReason::SystemMemoryPressure);
             }
         }
         next.budget.concurrency = next
@@ -189,10 +189,10 @@ impl Governor {
             .saturating_add(statistics.descendant_rss)
             > capacity
         {
-            next.budget.paused = Some("node process tree memory pressure".into());
+            next.budget.paused = Some(crate::PauseReason::ProcessTreeMemoryPressure);
         }
         if pressure.memory == Some(true) {
-            next.budget.paused = Some("operating system memory pressure".into());
+            next.budget.paused = Some(crate::PauseReason::SystemMemoryPressure);
             next.budget.cache_bytes = (next.budget.cache_bytes / 2).max(4096);
         }
         self.pause.apply(
@@ -228,7 +228,7 @@ impl Governor {
             .budget
             .network_requests
             .min(previous.budget.network_requests);
-        snapshot.budget.paused = Some("hardware observation unavailable".into());
+        snapshot.budget.paused = Some(crate::PauseReason::HardwareObservationUnavailable);
         snapshot.budget.concurrency = 0;
         snapshot.budget.batch_steps = 0;
         snapshot.budget.network_requests = snapshot.budget.network_requests.min(1);

@@ -22,10 +22,12 @@ pub const SCOPE_ACTIONS: usize = 32;
 pub const ACTION_PREMISES: usize = 8;
 
 mod binary;
+mod codec_failure;
+pub use codec_failure::CodecFailure;
 mod projection;
 mod stream;
 pub use binary::{decode_command, encode_command};
-pub use projection::{Projection, StepResult};
+pub use projection::{Projection, ProjectionFailure, StepResult};
 pub use stream::{
     ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_records, encode_records,
 };
@@ -162,35 +164,35 @@ pub fn graph_statement_id(root: [u8; 32]) -> StatementId {
     StatementId::from_bytes(hash.finalize().into())
 }
 
-pub fn decode_graph_node(bytes: &[u8]) -> Result<(Node<[u8; 32]>, Properties), String> {
+pub fn decode_graph_node(bytes: &[u8]) -> Result<(Node<[u8; 32]>, Properties), CodecFailure> {
     let body = bytes
         .strip_prefix(GRAPH_NODE_DOMAIN)
-        .ok_or("formula node domain")?;
+        .ok_or(CodecFailure::GraphDomain)?;
     let offset = match body.len() {
         28 => 0,
         42 => 32,
         74 => 64,
-        _ => return Err("formula node width".into()),
+        _ => return Err(CodecFailure::GraphNodeWidth),
     };
-    let child = |at| -> Result<[u8; 32], String> {
+    let child = |at| -> Result<[u8; 32], CodecFailure> {
         body.get(at..at + 32)
-            .ok_or("formula child width")?
+            .ok_or(CodecFailure::GraphChildWidth)?
             .try_into()
-            .map_err(|_| "formula child width".into())
+            .map_err(|_| CodecFailure::GraphChildWidth)
     };
-    let variable = |at| -> Result<Variable, String> {
+    let variable = |at| -> Result<Variable, CodecFailure> {
         let value = u64::from_be_bytes(
             body.get(at + 1..at + 9)
-                .ok_or("formula variable width")?
+                .ok_or(CodecFailure::GraphVariableWidth)?
                 .try_into()
-                .map_err(|_| "formula variable width")?,
+                .map_err(|_| CodecFailure::GraphVariableWidth)?,
         );
         match body[at] {
             0 => u32::try_from(value)
                 .map(Variable::Free)
-                .map_err(|_| "free variable width".into()),
+                .map_err(|_| CodecFailure::GraphVariableWidth),
             1 => Ok(Variable::Bound(value)),
-            _ => Err("formula variable tag".into()),
+            _ => Err(CodecFailure::GraphVariableTag),
         }
     };
     let node = match (offset, body[offset]) {
@@ -199,35 +201,35 @@ pub fn decode_graph_node(bytes: &[u8]) -> Result<(Node<[u8; 32]>, Properties), S
         (32, 2) => Node::Not(child(0)?),
         (64, 3) => Node::Implies(child(0)?, child(32)?),
         (32, 4) => Node::ForAll(child(0)?),
-        _ => return Err("formula node tag".into()),
+        _ => return Err(CodecFailure::GraphNodeTag),
     };
     let tail = body.len() - 9;
     let has_free_variables = match body[tail] {
         0 => false,
         1 => true,
-        _ => return Err("formula property flag".into()),
+        _ => return Err(CodecFailure::GraphPropertyFlag),
     };
     let required_binders = u64::from_be_bytes(
         body[tail + 1..]
             .try_into()
-            .map_err(|_| "formula property width")?,
+            .map_err(|_| CodecFailure::GraphPropertyWidth)?,
     );
     let properties = Properties {
         has_free_variables,
         required_binders,
     };
     if graph_node_bytes(node, properties) != bytes {
-        return Err("noncanonical formula node".into());
+        return Err(CodecFailure::GraphNoncanonical);
     }
     Ok((node, properties))
 }
 
 /// Materialize only formulas admitted by the existing tree codec. Exceeding
 /// that representation returns None, without rejecting the graph formula.
-pub fn bounded_formula<I: Copy>(
+pub fn bounded_formula<I: Copy, E: From<naome_foundation::FormulaCodecError>>(
     root: I,
-    mut load: impl FnMut(I) -> Result<Node<I>, String>,
-) -> Result<Option<Formula>, String> {
+    mut load: impl FnMut(I) -> Result<Node<I>, E>,
+) -> Result<Option<Formula>, E> {
     let mut pending = vec![(root, 0u32)];
     let mut bytes = Vec::new();
     let mut count = 0;
@@ -270,7 +272,7 @@ pub fn bounded_formula<I: Copy>(
     }
     Formula::decode_canonical(&bytes)
         .map(Some)
-        .map_err(|e| e.to_string())
+        .map_err(Into::into)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -518,5 +520,15 @@ impl From<Axiom> for naome_foundation::ZfcAxiom {
             Axiom::Foundation => Self::Foundation,
             Axiom::Choice => Self::Choice,
         }
+    }
+}
+
+#[cfg(test)]
+mod graph_failure_tests {
+    use super::*;
+
+    #[test]
+    fn truncated_graph_domain_is_a_typed_failure() {
+        assert_eq!(decode_graph_node(b"bad"), Err(CodecFailure::GraphDomain));
     }
 }

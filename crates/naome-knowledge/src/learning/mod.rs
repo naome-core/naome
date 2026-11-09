@@ -1,4 +1,5 @@
 //! Local operational learning state; never a mathematical artifact or gossip item.
+use crate::outcome::{GenerationOutcome, Qualification};
 mod artifact;
 mod calculus;
 mod construction;
@@ -76,7 +77,10 @@ pub(crate) struct Evidence {
     pub trace: search::Tree,
 }
 impl Example {
-    fn trajectory<'a>(&'a self, evidence: &'a [Evidence]) -> Result<&'a search::Tree, String> {
+    fn trajectory<'a>(
+        &'a self,
+        evidence: &'a [Evidence],
+    ) -> Result<&'a search::Tree, crate::Error> {
         let search::Tree::Stored {
             bytes,
             ref binding,
@@ -89,21 +93,18 @@ impl Example {
         let source = evidence
             .iter()
             .find(|e| e.job == self.job && e.proof_id == self.proof_id)
-            .ok_or("owned replay snapshot missing")?;
-        if serde_json::to_vec(&source.trace)
-            .map_err(|e| e.to_string())?
-            .len()
-            != bytes
+            .ok_or(crate::ResearchFailure::ReplaySnapshotMissing)?;
+        if crate::checkpoint::encode(&source.trace)?.len() != bytes
             || digest(&source.trace) != *binding
         {
-            return Err("owned replay snapshot binding differs".into());
+            return Err(crate::ResearchFailure::ReplaySnapshotBinding.into());
         }
         let restored = Self {
             tree: source.trace.clone(),
             ..self.clone()
         };
         if coverage::Profile::of(&restored)? != *coverage {
-            return Err("owned replay coverage binding differs".into());
+            return Err(crate::ResearchFailure::ReplayCoverageBinding.into());
         }
         Ok(&source.trace)
     }
@@ -199,7 +200,8 @@ pub(crate) struct Progress {
     pub meta_cpu_micros: u64,
     pub meta_wall_micros: u64,
     pub result: Option<Solution>,
-    pub diagnostic: String,
+    pub qualification: Qualification,
+    pub generation: Option<GenerationOutcome>,
     pub frontier: Option<SearchFrontier>,
     pub executions: Vec<SearchTrace>,
     pub terminal: experience::TerminalEvidence,
@@ -210,19 +212,19 @@ impl Progress {
         source: &str,
         candidate: &Checkpoint,
         result: &transfer::Evaluation,
-    ) -> Result<(), String> {
-        let target = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
+    ) -> Result<(), crate::Error> {
+        let target = ResearchQuestion::from_hex(source)?;
         self.development_before.observe(
             &target,
             32,
-            crate::training::ability::completion(result.before.solved, &result.before.diagnostic),
+            crate::training::ability::completion(result.before.solved, &result.before.terminal),
             result.before.micros,
         );
         self.development_after.checkpoint = digest(candidate);
         self.development_after.observe(
             &target,
             32,
-            crate::training::ability::completion(result.after.solved, &result.after.diagnostic),
+            crate::training::ability::completion(result.after.solved, &result.after.terminal),
             result.after.micros,
         );
         let (skills, _) = crate::training::ability::signature(&target);
@@ -271,7 +273,7 @@ pub(crate) struct GenerationCost {
     pub definition_references: usize,
     pub definition_check_steps: usize,
     pub definition_micros: u64,
-    pub definition_failure: Option<String>,
+    pub(crate) definition_failure: Option<GenerationOutcome>,
     pub certificate_failures: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -287,7 +289,10 @@ pub(crate) struct Solution {
 impl Solution {
     /// The local acceptance receipt publishes this bounded hint atomically
     /// with replay; the canonical graph remains the mathematical owner.
-    pub fn theorem(&self, question: &ResearchQuestion) -> Result<Option<knowledge::Entry>, String> {
+    pub fn theorem(
+        &self,
+        question: &ResearchQuestion,
+    ) -> Result<Option<knowledge::Entry>, crate::Error> {
         if matches!(self.tree, search::Tree::Program(_)) {
             return Ok(None);
         }
@@ -298,12 +303,12 @@ impl Solution {
         };
         let (_, _, verified) = search::core::checked(target, &self.tree)?;
         if crate::hex(verified.native_id.as_bytes()) != self.proof_id {
-            return Err("accepted theorem identity differs".into());
+            return Err(crate::ResearchFailure::TheoremIdentityMismatch.into());
         }
         let packet = evidence::pack(&verified)?;
         Ok((packet.len() <= knowledge::BYTES).then_some(knowledge::Entry { packet }))
     }
-    pub fn check_target(&self, question: &ResearchQuestion) -> Result<(), String> {
+    pub fn check_target(&self, question: &ResearchQuestion) -> Result<(), crate::Error> {
         let target = if self.refuted {
             question.refuted_target()
         } else {
@@ -314,23 +319,22 @@ impl Solution {
                 || self.proof_id != crate::hex(packet.manifest.proof_id().as_bytes())
                 || &packet.target()? != target
             {
-                return Err("native program source or conclusion differs".into());
+                return Err(crate::ResearchFailure::NativeProgramBinding.into());
             }
         } else if self.checked()?.conclusion() != target {
-            return Err("native certificate conclusion differs".into());
+            return Err(crate::ResearchFailure::NativeCertificateConclusion.into());
         }
         Ok(())
     }
 
-    pub fn checked(&self) -> Result<naome_checker::CheckedProof, String> {
+    pub fn checked(&self) -> Result<naome_checker::CheckedProof, crate::Error> {
         if self.helpers != definitions::helpers(&self.tree)? {
-            return Err("definition helper source binding differs".into());
+            return Err(crate::ResearchFailure::NativeDefinitionHelpers.into());
         }
         let context = definitions::proof_context(&self.tree)?;
-        let proof = crate::learning::proof::check_artifact(&self.source, &context)
-            .map_err(|e| e.to_string())?;
+        let proof = crate::learning::proof::check_artifact(&self.source, &context)?;
         if crate::hex(proof.proof_id().as_bytes()) != self.proof_id {
-            return Err("native source identity differs".into());
+            return Err(crate::ResearchFailure::NativeSourceIdentity.into());
         }
         Ok(proof)
     }
@@ -355,20 +359,20 @@ impl Job {
 
     /// Bind worker reports to the plan and candidate already retained by this
     /// job owner. Re-delivery of a persisted unit is exactly idempotent.
-    pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), String> {
+    pub fn retain_progress(&mut self, job: u64, next: Progress) -> Result<(), crate::Error> {
         if next
             .meta_update
             .as_ref()
             .is_some_and(|u| u.experience.job != job)
         {
-            return Err("meta experience source job differs".into());
+            return Err(crate::ResearchFailure::ProgressMetaJobBinding.into());
         }
         if let Some(previous) = &self.progress {
             if next.unit == previous.unit {
                 return if digest(&next) == digest(previous) {
                     Ok(())
                 } else {
-                    Err("repeated learning checkpoint differs".into())
+                    Err(crate::ResearchFailure::ProgressRepeatedMismatch.into())
                 };
             }
             if next.unit != previous.unit + 1
@@ -383,7 +387,7 @@ impl Job {
                     != 0
                 || (previous.transfer.after ^ next.transfer.after) & previous.transfer.observed != 0
             {
-                return Err("learning plan or measured continuation differs".into());
+                return Err(crate::ResearchFailure::ProgressContinuationMismatch.into());
             }
             if let Some(update) = &next.meta_update
                 && (update.experience.candidate_model != previous.candidate.as_ref().map(digest)
@@ -394,13 +398,13 @@ impl Job {
                             .wall_micros
                             .saturating_sub(previous.meta_wall_micros))
             {
-                return Err("meta outcome differs from its retained trial".into());
+                return Err(crate::ResearchFailure::ProgressMetaTrialBinding.into());
             }
         } else if next.unit != 1 {
-            return Err("learning checkpoint lacks its first unit".into());
+            return Err(crate::ResearchFailure::ProgressFirstUnit.into());
         }
         if !self.preserves_incumbent_transfer(&next) {
-            return Err("learning checkpoint loses an incumbent transfer success".into());
+            return Err(crate::ResearchFailure::ProgressTransferLoss.into());
         }
         let previous = self.progress.replace(next);
         if let Err(error) = self.validate() {
@@ -438,47 +442,47 @@ impl Job {
             1
         }
     }
-    pub fn validate_generated_trace(&self) -> Result<(), String> {
-        fn generated(tree: &search::Tree) -> bool {
+    pub fn validate_generated_trace(&self) -> Result<(), crate::Error> {
+        fn generated(tree: &search::Tree) -> Result<(), crate::Error> {
             match tree {
                 search::Tree::Composed {
                     packet,
                     inputs,
                     work,
                     ..
-                } => construction::composition::validate(packet, inputs, *work).is_ok(),
+                } => construction::composition::validate(packet, inputs, *work),
                 search::Tree::Certificate(_)
                 | search::Tree::Stored { .. }
                 | search::Tree::Constructed {
                     selection: None, ..
-                } => false,
+                } => Err(crate::ResearchFailure::GeneratedTraceMissing.into()),
                 search::Tree::Knowledge { proof, .. } | search::Tree::Definitions { proof, .. } => {
                     generated(proof)
                 }
-                search::Tree::Step { children, .. } => children.iter().all(generated),
-                _ => true,
+                search::Tree::Step { children, .. } => {
+                    for child in children {
+                        generated(child)?;
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
             }
         }
-        if self
-            .progress
-            .as_ref()
-            .and_then(|p| p.result.as_ref())
-            .is_some_and(|s| !generated(&s.tree))
-        {
-            return Err("local discovery lacks its generated decision trace".into());
+        if let Some(solution) = self.progress.as_ref().and_then(|p| p.result.as_ref()) {
+            generated(&solution.tree)?;
         }
         Ok(())
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if digest(&self.base) != self.base_hash {
-            return Err("learning parent snapshot differs".into());
+            return Err(crate::ResearchFailure::JobParentSnapshot.into());
         }
         self.base.validate()?;
         if !self.prerequisites.is_empty()
             && (self.training
                 || self.required.is_empty() && !self.prerequisites.has_optional_context())
         {
-            return Err("temporary prerequisites lack a solving role".into());
+            return Err(crate::ResearchFailure::JobPrerequisiteRole.into());
         }
         if self.required.len() > knowledge::CAPACITY
             || self
@@ -488,19 +492,19 @@ impl Job {
                 .len()
                 != self.required.len()
         {
-            return Err("required theorem set capacity or duplicate".into());
+            return Err(crate::InputFault::RequiredTheorems.into());
         }
         self.prerequisites.require(&self.base, &self.required)?;
         if let Some(request) = &self.history_request {
             request.validate()?;
             if !self.training || !self.base.history_cursor.matches(request) {
-                return Err("history request differs from its training parent".into());
+                return Err(crate::ResearchFailure::JobHistoryRequestBinding.into());
             }
             if let Some(receipt) = &self.history {
                 receipt.validate(request)?;
             }
         } else if self.history.is_some() {
-            return Err("history receipt lacks its original request".into());
+            return Err(crate::ResearchFailure::JobHistoryRequestMissing.into());
         }
         let mut expected = if self.training {
             self.base
@@ -514,10 +518,7 @@ impl Job {
         expected.dedup();
         let actual = self.evidence.iter().map(|e| e.job).collect::<Vec<_>>();
         if expected != actual
-            || serde_json::to_vec(&self.evidence)
-                .map_err(|e| e.to_string())?
-                .len()
-                > REPLAY * 8 * 1024 + 4096
+            || crate::checkpoint::encode(&self.evidence)?.len() > REPLAY * 8 * 1024 + 4096
             || self.evidence.iter().any(|e| {
                 !self.base.examples().any(|r| {
                     r.job == e.job
@@ -529,7 +530,7 @@ impl Job {
                 })
             })
         {
-            return Err("peer replay snapshot binding differs".into());
+            return Err(crate::ResearchFailure::JobReplaySnapshotBinding.into());
         }
 
         if self.written.len() > 2 * (model::TRAINING_UNITS as usize + 2)
@@ -539,11 +540,11 @@ impl Job {
                     / crate::resources::limits().native_model_chunk_bytes
                     * 2
         {
-            return Err("native artifact lifetime allowance".into());
+            return Err(crate::ResearchFailure::JobArtifactLifetimeCapacity.into());
         }
         for (unit, blob) in &self.written {
             if *unit == 0 || *unit > self.units() {
-                return Err("native artifact reservation differs".into());
+                return Err(crate::ResearchFailure::JobArtifactReservation.into());
             }
             blob.validate()?;
         }
@@ -556,10 +557,10 @@ impl Job {
                     || prepared.available > history::SOURCES
                     || prepared.retained > prepared.available
                 {
-                    return Err("prepared replay lacks its original history receipt".into());
+                    return Err(crate::ResearchFailure::JobReplayReceiptBinding.into());
                 }
             } else if self.history_request.is_some() && self.units() > 1 {
-                return Err("training progress lacks its frozen replay preparation".into());
+                return Err(crate::ResearchFailure::JobReplayPreparationMissing.into());
             }
             p.terminal.validate(p.result.as_ref())?;
             if p.executions.len() > 2
@@ -571,13 +572,17 @@ impl Job {
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
                     != p.executions.len()
-                || p.executions.iter().try_fold(0usize, |n, trace| {
-                    trace.validate()?;
-                    n.checked_add(trace.attempts)
-                        .ok_or_else(|| "search observation work overflow".to_owned())
-                })? > p.cost.as_ref().map_or(0, |cost| cost.search_expansions)
+                || p.executions.iter().try_fold(
+                    0usize,
+                    |n, trace| -> Result<usize, crate::Error> {
+                        trace.validate()?;
+                        n.checked_add(trace.attempts).ok_or_else(|| {
+                            crate::ResearchFailure::JobObservationWorkOverflow.into()
+                        })
+                    },
+                )? > p.cost.as_ref().map_or(0, |cost| cost.search_expansions)
             {
-                return Err("search observations exceed the actual bounded execution".into());
+                return Err(crate::ResearchFailure::JobObservationBinding.into());
             }
             if let Some(selection) = &p.plan {
                 selection.validate()?;
@@ -586,18 +591,21 @@ impl Job {
                         .as_ref()
                         .map_or_else(|| meta::context(&self.base), |r| r.context)
                 {
-                    return Err("meta plan context differs from its parent".into());
+                    return Err(crate::ResearchFailure::JobMetaPlanContext.into());
                 }
             } else if self.units() > 1 && self.base.preparation == Preparation::Meta {
-                return Err("native meta trial lacks its selected plan".into());
+                return Err(crate::ResearchFailure::JobMetaPlanMissing.into());
             }
             if p.meta_cpu_micros > p.cpu_micros || p.meta_wall_micros > p.wall_micros {
-                return Err("meta cost exceeds actual job cost".into());
+                return Err(crate::ResearchFailure::JobMetaCost.into());
             }
             if let Some(update) = &p.meta_update {
                 update.model.validate()?;
                 update.experience.validate()?;
-                let selected = p.plan.as_ref().ok_or("meta update without selected plan")?;
+                let selected = p
+                    .plan
+                    .as_ref()
+                    .ok_or(crate::ResearchFailure::JobMetaUpdatePlanMissing)?;
                 if self.units() == 1
                     || p.unit != self.units()
                     || self.base.preparation != Preparation::Meta
@@ -619,24 +627,20 @@ impl Job {
                     || !update.first_loss.is_finite()
                     || !update.last_loss.is_finite()
                 {
-                    return Err(
-                        "meta experience or optimizer is not bound to the actual completed trial"
-                            .into(),
-                    );
+                    return Err(crate::ResearchFailure::JobMetaUpdateBinding.into());
                 }
             } else if self.units() > 1
                 && p.unit == self.units()
                 && self.base.preparation == Preparation::Meta
             {
-                return Err("completed meta trial lacks its real update".into());
+                return Err(crate::ResearchFailure::JobMetaUpdateMissing.into());
             }
-            if serde_json::to_vec(p)
-                .map_err(|e| e.to_string())?
+            if crate::checkpoint::encode(p)?
                 .len()
                 .checked_mul(self.units() as usize)
                 .is_none_or(|bytes| bytes > crate::resources::limits().provider_stream_bytes / 2)
             {
-                return Err("local checkpoints exceed original provider stream capacity".into());
+                return Err(crate::ResearchFailure::JobCheckpointCapacity.into());
             }
 
             p.model.validate()?;
@@ -646,7 +650,7 @@ impl Job {
                     || p.development_regression
                     || !p.transfer.supports_recorded_promotion())
             {
-                return Err("retained promotion lacks complete protected transfer gain".into());
+                return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             p.transfer.validate()?;
             let expected_transfer = transfer::Summary::prefix(
@@ -655,12 +659,12 @@ impl Job {
                     .min(transfer::CASES as u32) as usize,
             );
             if p.first_loss.is_some() && p.transfer.observed != expected_transfer {
-                return Err("transfer coverage differs from the retained unit".into());
+                return Err(crate::ResearchFailure::JobTransferCoverage.into());
             }
             p.development_before.validate()?;
             p.development_after.validate()?;
             if p.development_before.checkpoint != digest(&self.base.model) {
-                return Err("development observations differ from their incumbent".into());
+                return Err(crate::ResearchFailure::JobDevelopmentBinding.into());
             }
             if let Some(solution) = &p.result
                 && !matches!(&solution.tree, search::Tree::Program(_))
@@ -669,7 +673,7 @@ impl Job {
                 if let Some(inputs) = solution.tree.composition()
                     && inputs.iter().any(|id| !self.required.contains(id))
                 {
-                    return Err("composition differs from requested prerequisites".into());
+                    return Err(crate::ResearchFailure::JobCompositionBinding.into());
                 }
                 let definitions = self
                     .prerequisites
@@ -691,13 +695,13 @@ impl Job {
                     && p.promotions == self.base.promotions
                     && p.model != self.base.model
             {
-                return Err("native model changed before successful qualification".into());
+                return Err(crate::ResearchFailure::JobModelQualification.into());
             }
             if p.rng < self.base.draws
                 || p.rng.saturating_sub(self.base.draws)
                     > u64::from(model::TRAINING_UNITS) * model::UPDATES_PER_UNIT * 16
             {
-                return Err("native sampling continuation differs".into());
+                return Err(crate::ResearchFailure::JobSamplingContinuation.into());
             }
             if p.promotions < self.base.promotions
                 || p.promotions > self.base.promotions.saturating_add(1)
@@ -706,16 +710,16 @@ impl Job {
                 || p.trained < self.base.trained
                 || p.trained > self.base.epoch
             {
-                return Err("native qualification sequence differs".into());
+                return Err(crate::ResearchFailure::JobQualificationSequence.into());
             }
             if let Some(utility) = &p.finder {
                 utility.validate()?;
                 if utility.checkpoint != digest(&p.model) || p.unit != self.units() {
-                    return Err("native finder diagnostic source differs".into());
+                    return Err(crate::ResearchFailure::JobFinderBinding.into());
                 }
             }
             if p.unit == 0 || p.unit > self.units() {
-                return Err("learning checkpoint unit differs".into());
+                return Err(crate::ResearchFailure::JobCheckpointUnit.into());
             }
             if let Some(candidate) = &p.candidate {
                 candidate.validate()?;
@@ -730,12 +734,12 @@ impl Job {
         job: u64,
         engine: &mut Engine,
         io: &mut I,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if self.progress.as_ref().is_some_and(|p| p.unit == unit) {
             return Ok(());
         }
         if unit != self.progress.as_ref().map_or(1, |p| p.unit + 1) {
-            return Err("learning checkpoint sequence differs".into());
+            return Err(crate::ResearchFailure::LearningUnitSequence.into());
         }
         let wall_started = std::time::Instant::now();
         let cpu_started = meta::cpu_micros()?;
@@ -773,7 +777,8 @@ impl Job {
             meta_cpu_micros: 0,
             meta_wall_micros: 0,
             result: None,
-            diagnostic: "no_new_accepted_solutions".into(),
+            qualification: Qualification::NoNewAcceptedSolutions,
+            generation: None,
         });
         let working = if self.units() > 1 && unit <= model::TRAINING_UNITS {
             self.prepare_history(&mut p, engine, io)?
@@ -803,7 +808,7 @@ impl Job {
             let phase = p
                 .plan
                 .as_ref()
-                .ok_or("training plan absent")?
+                .ok_or(crate::ResearchFailure::TrainingPlanMissing)?
                 .plan
                 .phase(unit - 1);
             if let Some((candidate, first, last)) = engine.train_replay_using(
@@ -852,21 +857,20 @@ impl Job {
                     .training_cost
                     .sampled_sequence_edges
                     .checked_add(engine.cost.sampled_sequence_edges)
-                    .ok_or("native sampled sequence count overflow")?;
+                    .ok_or(crate::ResearchFailure::SampledSequenceOverflow)?;
                 p.training_cost
                     .measurements
                     .include(&engine.cost.measurements)?;
                 p.first_loss.get_or_insert(first);
                 p.last_loss = Some(last);
                 p.candidate = Some(candidate);
-                p.diagnostic = if p.last_loss < p.first_loss {
-                    "candidate_requires_qualification"
+                p.qualification = if p.last_loss < p.first_loss {
+                    Qualification::Pending
                 } else {
-                    "optimization_or_representation_unresolved"
-                }
-                .into();
+                    Qualification::OptimizationUnresolved
+                };
             } else {
-                p.diagnostic = "no_ambiguous_training_decisions".into();
+                p.qualification = Qualification::NoAmbiguousTrainingDecisions;
             }
             if unit == model::TRAINING_UNITS {
                 p.trained = self.base.epoch;
@@ -919,27 +923,29 @@ impl Job {
                 {
                     p.model = candidate;
                     p.promotions += 1;
-                    p.diagnostic = "candidate_promoted".into();
+                    p.qualification = Qualification::Promoted;
                 } else {
                     p.rejections += 1;
-                    p.diagnostic = if p.development_regression {
-                        "development_regression_rejected"
+                    p.qualification = if p.development_regression {
+                        Qualification::DevelopmentRegression
                     } else if p.anchor_regression {
-                        "forgetting_rejected"
+                        Qualification::AnchorRegression
                     } else if p.candidate_score <= p.incumbent_score {
-                        "no_development_gain_rejected"
+                        Qualification::NoDevelopmentGain
                     } else if !p.transfer.complete() {
-                        "incomplete_transfer_rejected"
+                        Qualification::IncompleteTransfer
                     } else if p.transfer.loss() > 0. {
-                        "transfer_regression_rejected"
+                        Qualification::TransferRegression
                     } else {
-                        "no_transfer_gain_rejected"
-                    }
-                    .into();
+                        Qualification::NoTransferGain
+                    };
                 }
             }
             if self.units() > 1 && self.base.preparation == Preparation::Meta {
-                let selection = p.plan.as_ref().ok_or("meta trial plan absent")?;
+                let selection = p
+                    .plan
+                    .as_ref()
+                    .ok_or(crate::ResearchFailure::MetaTrialPlanMissing)?;
                 let experience = meta::Experience {
                     job,
                     context: selection.context,
@@ -964,16 +970,15 @@ impl Job {
                 p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
             }
             if let Some(question) = question {
-                let q = ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
+                let q = ResearchQuestion::from_hex(question)?;
                 if curriculum::reserved(&crate::hex(q.resolution_id())) {
-                    p.diagnostic = "reserved_question_excluded".into();
                     p.terminal = experience::TerminalEvidence::NoSearch(
                         experience::NoSearch::ReservedQuestion,
                     );
                 } else {
                     let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
-                    let generated = engine.with(&p.model, io, |runtime| {
-                        solve_with_report(
+                    let generated = engine.with_error(&p.model, io, |runtime| {
+                        solve_with_report_typed(
                             question,
                             runtime,
                             budget,
@@ -991,9 +996,7 @@ impl Job {
                     p.frontier = generated.frontier;
                     p.executions = generated.executions;
                     p.terminal = generated.terminal;
-                    if generated.solution.is_none() {
-                        p.diagnostic = generated.diagnostic;
-                    }
+                    p.generation = Some(generated.diagnostic);
                     p.result = generated.solution;
                 }
             }
@@ -1022,7 +1025,7 @@ impl Job {
 }
 struct Generation {
     solution: Option<Solution>,
-    diagnostic: String,
+    diagnostic: GenerationOutcome,
     cost: GenerationCost,
     frontier: Option<SearchFrontier>,
     executions: Vec<SearchTrace>,
@@ -1034,7 +1037,7 @@ struct Exploring<'a> {
     explore: bool,
 }
 impl Exploring<'_> {
-    fn scores_encoded(&mut self, graph: &graph::Graph) -> Result<Vec<f32>, String> {
+    fn scores_encoded(&mut self, graph: &graph::Graph) -> Result<Vec<f32>, crate::Error> {
         // Commit the draw only after the input passes the model's gates.
         let mut next = self.seed;
         let scores = if self.explore && model::random(&mut next).is_multiple_of(5) {
@@ -1050,7 +1053,7 @@ impl Exploring<'_> {
     }
 }
 impl model::Ranker for Exploring<'_> {
-    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         self.scores_encoded(&graph::Graph::encode(d)?)
     }
     fn plan(
@@ -1059,7 +1062,7 @@ impl model::Ranker for Exploring<'_> {
         graph: &graph::Graph,
         offered: &str,
         memory: Option<&model::Memory>,
-    ) -> Result<model::Plan, String> {
+    ) -> Result<model::Plan, crate::Error> {
         let mut plan = if self.model.recurrent() {
             let mut plan = self.model.plan(d, graph, offered, memory)?;
             let mut next = self.seed;
@@ -1073,7 +1076,7 @@ impl model::Ranker for Exploring<'_> {
             plan
         } else {
             if memory.is_some() {
-                return Err("stateless exploration received memory".into());
+                return Err(crate::ResearchFailure::StatelessExplorationMemory.into());
             }
             model::Plan::scores(if d.candidates.len() == 1 {
                 vec![0.]
@@ -1103,7 +1106,7 @@ fn program_generation(
     refuted: bool,
     mut cost: GenerationCost,
     executions: Vec<search::trace::Trace>,
-) -> Result<Generation, String> {
+) -> Result<Generation, crate::Error> {
     let steps = packet.manifest.commands as usize;
     cost.original_steps = steps;
     cost.useful_steps = steps;
@@ -1129,13 +1132,14 @@ fn program_generation(
             refuted,
             tree: search::Tree::Program(Box::new(packet)),
         }),
-        diagnostic: "certified_program_candidate".into(),
+        diagnostic: GenerationOutcome::CertifiedProgram,
         cost,
         frontier: None,
         executions,
         terminal: experience::TerminalEvidence::CertifiedCandidate { proof_id, refuted },
     })
 }
+#[cfg(test)]
 fn solve_with_report(
     source: &str,
     model: &mut model::Runtime,
@@ -1143,7 +1147,16 @@ fn solve_with_report(
     job: u64,
     context: SolveContext<'_>,
 ) -> Result<Generation, String> {
-    let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+    solve_with_report_typed(source, model, budget, job, context).map_err(Into::into)
+}
+fn solve_with_report_typed(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    context: SolveContext<'_>,
+) -> Result<Generation, crate::Error> {
+    let question = ResearchQuestion::from_hex(source)?;
     let definitions = context
         .prerequisites
         .map(|inputs| inputs.definitions(context.definitions, context.required))
@@ -1264,7 +1277,7 @@ fn solve_with_report(
             match search::core::checked(target, &tree) {
                 Ok((tree, _, checked)) => {
                     cost.definition_check_steps = checked.certificate.steps().len();
-                    let source = proof::source(&checked)?;
+                    let source = proof::source(&checked);
                     let helpers = definitions::helpers(&tree)?;
                     if source.len() + helpers.iter().map(String::len).sum::<usize>()
                         <= 2 * crate::resources::limits().closure_bytes
@@ -1302,11 +1315,10 @@ fn solve_with_report(
                                 .sum();
                         }
                     } else {
-                        cost.definition_failure =
-                            Some("definition certificate or helper capacity".into());
+                        cost.definition_failure = Some(GenerationOutcome::DefinitionLimit);
                     }
                 }
-                Err(error) => cost.definition_failure = Some(error),
+                Err(_) => cost.definition_failure = Some(GenerationOutcome::DefinitionCheckFailed),
             }
         }
         cost.definition_micros = definition_started
@@ -1329,6 +1341,7 @@ fn solve_with_report(
         terminal,
     })
 }
+#[cfg(test)]
 fn solve_with_definitions(
     source: &str,
     model: &mut model::Runtime,
@@ -1336,7 +1349,7 @@ fn solve_with_definitions(
     job: u64,
     known: &[definitions::Entry],
     theorems: &[knowledge::Entry],
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+) -> Result<(Option<Solution>, GenerationOutcome, GenerationCost), String> {
     solve_with_report(
         source,
         model,
@@ -1357,7 +1370,7 @@ fn search_question_with_knowledge(
     budget: usize,
     theorems: &[knowledge::Entry],
     definitions: &[definitions::Entry],
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+) -> Result<(Option<Solution>, GenerationOutcome, GenerationCost), String> {
     search_question_report(
         source,
         ranker,
@@ -1369,13 +1382,14 @@ fn search_question_with_knowledge(
         },
     )
     .map(|g| (g.solution, g.diagnostic, g.cost))
+    .map_err(Into::into)
 }
 #[cfg(test)]
 fn search_question(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
-) -> Result<(Option<Solution>, String), String> {
+) -> Result<(Option<Solution>, GenerationOutcome), String> {
     let (solution, diagnostic, _) = search_question_measured(source, ranker, budget)?;
     Ok((solution, diagnostic))
 }
@@ -1384,7 +1398,7 @@ fn search_question_measured(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+) -> Result<(Option<Solution>, GenerationOutcome, GenerationCost), String> {
     search_question_with_knowledge(source, ranker, budget, &[], &[])
 }
 #[cfg(test)]
@@ -1393,8 +1407,8 @@ fn search_question_report(
     ranker: &mut dyn model::Ranker,
     budget: usize,
     context: &SolveContext<'_>,
-) -> Result<Generation, String> {
-    let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+) -> Result<Generation, crate::Error> {
+    let question = ResearchQuestion::from_hex(source)?;
     search_compiled_question(&question, ranker, budget, context)
 }
 
@@ -1403,13 +1417,13 @@ fn search_compiled_question(
     ranker: &mut dyn model::Ranker,
     budget: usize,
     context: &SolveContext<'_>,
-) -> Result<Generation, String> {
+) -> Result<Generation, crate::Error> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
     let mut retrieval_micros = 0;
     let mut retrieved = 0;
     let mut dependency_steps = 0;
-    let mut failure = "calculus_or_strategy_unresolved".to_owned();
+    let mut failure = GenerationOutcome::Unresolved;
     let mut terminal = if budget == 0 {
         experience::TerminalEvidence::Budget(experience::Budget::Expansions)
     } else {
@@ -1522,9 +1536,9 @@ fn search_compiled_question(
                 );
                 let (verified, work) = match attempt {
                     Ok(result) => result,
-                    Err(error) => {
+                    Err(_) => {
                         certificate_failures += 1;
-                        failure = format!("composition_unresolved: {error}");
+                        failure = GenerationOutcome::CompositionFailed;
                         terminal = experience::TerminalEvidence::TechnicalFailure;
                         // An interrupted generator cannot claim unused allowance.
                         (None, remaining.min(16))
@@ -1555,9 +1569,9 @@ fn search_compiled_question(
                 tree: Some(search::Tree::Composed {
                     packet: match evidence::pack(&verified) {
                         Ok(packet) => packet,
-                        Err(error) => {
+                        Err(_) => {
                             certificate_failures += 1;
-                            failure = format!("composition_capacity: {error}");
+                            failure = GenerationOutcome::CompositionLimit;
                             terminal = experience::TerminalEvidence::Unsupported(
                                 experience::Capacity::Certificate,
                             );
@@ -1585,7 +1599,7 @@ fn search_compiled_question(
             let (selected, steps) = match selection {
                 Ok(selected) => selected,
                 Err(_error) if !terms.is_empty() => {
-                    failure = "temporary_prerequisite_composition_unresolved".into();
+                    failure = GenerationOutcome::PrerequisiteCompositionFailed;
                     terminal = experience::TerminalEvidence::Unsupported(
                         experience::Capacity::Dependencies,
                     );
@@ -1643,10 +1657,10 @@ fn search_compiled_question(
                     context.definitions,
                 ) {
                     Ok(result) => result,
-                    Err(error) => {
+                    Err(_) => {
                         certificate_failures += 1;
                         remaining = 0;
-                        failure = format!("construction_unresolved: {error}");
+                        failure = GenerationOutcome::ConstructionFailed;
                         terminal = experience::TerminalEvidence::TechnicalFailure;
                         break;
                     }
@@ -1664,9 +1678,9 @@ fn search_compiled_question(
                             &mut remaining,
                         ) {
                             Ok(bytes) => bytes,
-                            Err(error) => {
+                            Err(_) => {
                                 certificate_failures += 1;
-                                failure = format!("construction_capacity: {error}");
+                                failure = GenerationOutcome::ConstructionLimit;
                                 terminal = experience::TerminalEvidence::Unsupported(
                                     experience::Capacity::Certificate,
                                 );
@@ -1728,8 +1742,8 @@ fn search_compiled_question(
                             executions,
                         );
                     }
-                    Err(error) => {
-                        failure = format!("program_unresolved: {error}");
+                    Err(_) => {
+                        failure = GenerationOutcome::ProgramFailed;
                         terminal = experience::TerminalEvidence::CheckerRejected;
                         continue;
                     }
@@ -1737,110 +1751,100 @@ fn search_compiled_question(
             }
             let (tree, cost, verified) = match search::core::checked(&target, &tree) {
                 Ok(checked) => checked,
-                Err(error) => {
+                Err(_) => {
                     certificate_failures += 1;
-                    failure = format!("certificate_unresolved: {error}");
+                    failure = GenerationOutcome::CertificateFailed;
                     terminal = experience::TerminalEvidence::CheckerRejected;
                     continue;
                 }
             };
-            match Ok::<_, String>(verified).and_then(|verified| {
-                Ok((
-                    proof::source(&verified)?,
-                    crate::hex(verified.native_id.as_bytes()),
-                    verified.payload_bytes,
-                    verified
-                        .certificate
-                        .steps()
+            let (source, proof_id, payload_bytes, references, check_steps) = (
+                proof::source(&verified),
+                crate::hex(verified.native_id.as_bytes()),
+                verified.payload_bytes,
+                verified
+                    .certificate
+                    .steps()
+                    .iter()
+                    .chain(verified.lemmas.iter().flat_map(|c| c.steps().iter()))
+                    .map(|step| step.definition_references().len())
+                    .sum::<usize>(),
+                verified.certificate.steps().len()
+                    + verified
+                        .lemmas
                         .iter()
-                        .chain(verified.lemmas.iter().flat_map(|c| c.steps().iter()))
-                        .map(|step| step.definition_references().len())
-                        .sum::<usize>(),
-                    verified.certificate.steps().len()
-                        + verified
-                            .lemmas
-                            .iter()
-                            .map(|c| c.steps().len())
-                            .sum::<usize>()
-                        + verified.definitions.len(),
-                ))
-            }) {
-                Ok((source, proof_id, payload_bytes, references, check_steps))
-                    if source.len() <= 2 * crate::resources::limits().proof_bytes
-                        && payload_bytes
-                            <= crate::resources::limits()
-                                .proof_bytes
-                                .min(crate::resources::limits().closure_bytes) =>
+                        .map(|c| c.steps().len())
+                        .sum::<usize>()
+                    + verified.definitions.len(),
+            );
+            if source.len() <= 2 * crate::resources::limits().proof_bytes
+                && payload_bytes
+                    <= crate::resources::limits()
+                        .proof_bytes
+                        .min(crate::resources::limits().closure_bytes)
+            {
+                let helpers = definitions::helpers(&tree)?;
+                if helpers.len() >= crate::resources::limits().closure_objects
+                    || helpers
+                        .iter()
+                        .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
+                    || source.len() + helpers.iter().map(String::len).sum::<usize>()
+                        > 2 * crate::resources::limits().closure_bytes
                 {
-                    let helpers = definitions::helpers(&tree)?;
-                    if helpers.len() >= crate::resources::limits().closure_objects
-                        || helpers
-                            .iter()
-                            .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
-                        || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                            > 2 * crate::resources::limits().closure_bytes
-                    {
-                        failure = "certificate_closure_capacity".into();
-                        terminal = experience::TerminalEvidence::Unsupported(
-                            experience::Capacity::Certificate,
-                        );
-                        continue;
-                    }
-                    let unique_states = search::compile(&target, &tree)?
-                        .1
-                        .iter()
-                        .map(graph::Graph::key)
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len();
-                    let work = proof::checking_work();
-                    let measured = GenerationCost {
-                        checker_calls: work.calls.saturating_sub(checking.calls),
-                        submitted_checker_steps: work.steps.saturating_sub(checking.steps),
-                        retrieved_lemmas: retrieved,
-                        retrieval_micros,
-                        dependency_check_steps: dependency_steps,
-                        definition_candidates: definitions::selected(&tree)?.len(),
-                        definition_references: references,
-                        definition_check_steps: if references > 0 { check_steps } else { 0 },
-                        certificate_failures,
-                        search_expansions: budget - remaining,
-                        original_steps: cost.original_steps,
-                        useful_steps: cost.useful_steps,
-                        core_work: cost.replay_work,
-                        unique_states,
-                        generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
-                            as u64,
-                        ..GenerationCost::default()
-                    };
-                    return Ok(Generation {
-                        executions,
-                        terminal: experience::TerminalEvidence::CertifiedCandidate {
-                            proof_id: proof_id.clone(),
-                            refuted,
-                        },
-                        solution: Some(Solution {
-                            helpers,
-                            cost: Box::new(measured.clone()),
-                            source,
-                            proof_id,
-                            refuted,
-                            tree,
-                        }),
-                        diagnostic: "certified_candidate".into(),
-                        cost: measured,
-                        frontier: None,
-                    });
-                }
-                Ok(_) => {
-                    failure = "certificate_capacity".into();
+                    failure = GenerationOutcome::CertificateClosureLimit;
                     terminal = experience::TerminalEvidence::Unsupported(
                         experience::Capacity::Certificate,
                     );
+                    continue;
                 }
-                Err(error) => {
-                    failure = format!("certificate_unresolved: {error}");
-                    terminal = experience::TerminalEvidence::TechnicalFailure;
-                }
+                let unique_states = search::compile(&target, &tree)?
+                    .1
+                    .iter()
+                    .map(graph::Graph::key)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+                let work = proof::checking_work();
+                let measured = GenerationCost {
+                    checker_calls: work.calls.saturating_sub(checking.calls),
+                    submitted_checker_steps: work.steps.saturating_sub(checking.steps),
+                    retrieved_lemmas: retrieved,
+                    retrieval_micros,
+                    dependency_check_steps: dependency_steps,
+                    definition_candidates: definitions::selected(&tree)?.len(),
+                    definition_references: references,
+                    definition_check_steps: if references > 0 { check_steps } else { 0 },
+                    certificate_failures,
+                    search_expansions: budget - remaining,
+                    original_steps: cost.original_steps,
+                    useful_steps: cost.useful_steps,
+                    core_work: cost.replay_work,
+                    unique_states,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                };
+                return Ok(Generation {
+                    executions,
+                    terminal: experience::TerminalEvidence::CertifiedCandidate {
+                        proof_id: proof_id.clone(),
+                        refuted,
+                    },
+                    solution: Some(Solution {
+                        helpers,
+                        cost: Box::new(measured.clone()),
+                        source,
+                        proof_id,
+                        refuted,
+                        tree,
+                    }),
+                    diagnostic: GenerationOutcome::CertifiedCertificate,
+                    cost: measured,
+                    frontier: None,
+                });
+            } else {
+                failure = GenerationOutcome::CertificateLimit;
+                terminal =
+                    experience::TerminalEvidence::Unsupported(experience::Capacity::Certificate);
             }
         } else {
             if let Some(reason) = found.failure {

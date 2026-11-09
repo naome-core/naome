@@ -94,6 +94,14 @@ fn statement_metadata_preserves_the_actual_sign_for_conjunctive_proof_feedback()
                 .unwrap()
                 .to_hex(),
         };
+        let mut mismatch = metadata.clone();
+        mismatch.statement_id = crate::hex(&[0; 32]);
+        assert_eq!(
+            mismatch
+                .compile(&naome_checker::ArtifactState::new())
+                .unwrap_err(),
+            crate::Error::from(crate::InputFault::DescriptionStatementMismatch)
+        );
         assert_eq!(
             metadata
                 .statement_question(&naome_checker::ArtifactState::new())
@@ -102,4 +110,38 @@ fn statement_metadata_preserves_the_actual_sign_for_conjunctive_proof_feedback()
             target
         );
     }
+}
+
+#[test]
+fn fixed_identity_decoder_checks_width_and_canonical_hex() {
+    let value = "0123456789abcdef".repeat(4);
+    assert_eq!(hex(&id_bytes(&value).unwrap()), value);
+    assert_eq!(
+        id_bytes("00").unwrap_err(),
+        crate::Error::InputFault(crate::InputFault::IdentityWidth)
+    );
+    assert_eq!(
+        id_bytes(&"AA".repeat(32)).unwrap_err(),
+        crate::Error::InputFault(crate::InputFault::HexNoncanonical)
+    );
+    assert_eq!(
+        unhex("0").unwrap_err(),
+        crate::Error::InputFault(crate::InputFault::HexWidth)
+    );
+}
+
+#[test]
+fn artifact_binding_and_payload_errors_have_machine_causes() {
+    assert_eq!(
+        record_content_id(None, &[ArtifactPayload::PROOF_TAG]),
+        Err(crate::InputFault::ObjectProofStatementMissing.into())
+    );
+    assert_eq!(
+        record_content_id(None, &[0x7f]),
+        Err(crate::InputFault::ObjectPayloadTag.into())
+    );
+    assert_eq!(
+        program_manifest(&[0xff]),
+        Err(crate::InputFault::ObjectProgramFormat.into())
+    );
 }

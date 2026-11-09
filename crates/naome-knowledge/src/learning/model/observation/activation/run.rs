@@ -63,13 +63,18 @@ impl Io {
     }
 }
 impl ArtifactIo for Io {
-    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String> {
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, crate::Error> {
         let value = self.store.read(blob, range)?;
         self.bytes += value.len();
         self.operations += 1;
         Ok(value)
     }
-    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::Error> {
         self.bytes += bytes.len();
         self.operations += 1;
         self.store.write(blob, range, bytes)
@@ -108,7 +113,7 @@ fn run(input: Input, output: &Path) -> Result<(), String> {
         || arm["retained_updates"] != 0
         || arm["rounds"].as_array().is_none_or(|rows| rows.len() != 1)
         || arm["rounds"][0]["trial"] != trial
-        || trial["status"] != "complete"
+        || trial["status"] != serde_json::json!(crate::outcome::ExperimentStatus::Complete)
         || trial["retained_update"] != false
         || trial["selected_model"]
             != serde_json::to_value(&state.model).map_err(|e| e.to_string())?

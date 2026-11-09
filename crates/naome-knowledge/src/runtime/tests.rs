@@ -103,7 +103,7 @@ async fn canonical_inputs_match_autonomous_mock_roots_and_replays_checked_storag
         assert_eq!(replayed.ids(), vec![root]);
         assert_eq!(
             replayed.ingest(envelope, Instant::now()).unwrap().status,
-            "duplicate"
+            crate::IngestStatus::Duplicate
         );
         assert_eq!(
             ResearchQuestion::from_canonical_bytes(original_bytes).unwrap(),
@@ -124,7 +124,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     let mut graph = Graph::open(&directory.0).unwrap();
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     assert_eq!(graph.accepted_count(), 0);
     let incomplete = [(root_id, root.clone().prepare().unwrap())].into();
@@ -161,11 +161,11 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     );
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
-        "duplicate"
+        crate::IngestStatus::Duplicate
     );
     assert_eq!(
         graph.ingest(helper.clone(), Instant::now()).unwrap().status,
-        "duplicate"
+        crate::IngestStatus::Duplicate
     );
     let mut invalid = root.clone();
     invalid.payload = "ff".into();
@@ -283,9 +283,9 @@ async fn stop_fails_closed_when_group_exit_remains_denied_at_the_deadline() {
         observed > 1,
         "denied observation must be retried until the deadline"
     );
-    assert!(
-        error.contains("process group exit is unconfirmed"),
-        "{error}"
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::StopProcessGroupUnconfirmed)
     );
 }
 
@@ -298,7 +298,9 @@ async fn stop_requires_directory_release_and_reports_offline_admissions_without_
     })
     .await
     .unwrap_err();
-    assert!(held.contains("knowledge directory already owned"), "{held}");
+    assert!(
+        matches!(held, crate::Error::RuntimeContext { code: crate::RuntimeFailure::StopReleaseUnconfirmed, cause } if *cause == crate::Error::from(crate::InputFault::CatalogDirectoryOwned))
+    );
     drop(graph);
     let (helper, _, _) = closure();
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -316,6 +318,53 @@ async fn stop_requires_directory_release_and_reports_offline_admissions_without_
 }
 
 #[test]
+fn failed_log_falls_back_to_a_structured_fatal_error_on_stderr() {
+    const CHILD: &str = "NAOME_FATAL_LOG_FALLBACK_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        let directory = Directory::new();
+        assert!(
+            LOG.set(Mutex::new(Log::open(&directory.0).unwrap()))
+                .is_ok()
+        );
+        let oversized = serde_json::json!({"detail": "x".repeat(crate::resources::limits().log_segment_bytes as usize)});
+        assert!(emit_log(&oversized));
+        let cause = log_error().unwrap();
+        assert_eq!(
+            cause,
+            crate::Error::from(crate::InputFault::LogRecordCapacity)
+        );
+        report_error(&crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::Log,
+            cause: Box::new(cause),
+        });
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::tests::failed_log_falls_back_to_a_structured_fatal_error_on_stderr",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let event: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        event["event"],
+        u32::from(crate::outcome::NodeEvent::FatalError)
+    );
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(crate::RuntimeFailure::Log)
+    );
+    assert_eq!(
+        event["error"]["cause"]["code"],
+        u32::from(crate::InputFault::LogRecordCapacity)
+    );
+}
+
+#[test]
 fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events() {
     let directory = Directory::new();
     for name in ["node.log", "node.log.previous"] {
@@ -327,12 +376,12 @@ fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events()
     }
     let mut log = Log::open(&directory.0).unwrap();
     for _ in 0..4 {
-        log.write(&serde_json::json!({"event":"bounded","detail":"x".repeat(900*1024)}))
+        log.write(&serde_json::json!({"event":crate::outcome::NodeEvent::Bounded,"detail":"x".repeat(900*1024)}))
             .unwrap();
     }
-    assert!(
-        log.write(&serde_json::json!({"detail":"x".repeat(crate::resources::limits().log_segment_bytes as usize)}))
-            .is_err()
+    assert_eq!(
+        log.write(&serde_json::json!({"detail":"x".repeat(crate::resources::limits().log_segment_bytes as usize)})).unwrap_err(),
+        crate::Error::from(crate::InputFault::LogRecordCapacity),
     );
     for name in ["node.log", "node.log.previous"] {
         let path = directory.0.join(name);
@@ -373,10 +422,9 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
     let key = fs::read(directory.0.join("identity.key")).unwrap();
     let receipt = fs::read(directory.0.join("identity.json")).unwrap();
     fs::remove_file(directory.0.join("identity.key")).unwrap();
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("refusing to replace")
+    assert_eq!(
+        initialize(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::IdentityKeyMissing)
     );
     assert!(!directory.0.join("identity.key").exists());
     assert_eq!(
@@ -394,13 +442,17 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
         .to_protobuf_encoding()
         .unwrap();
     fs::write(directory.0.join("identity.key"), other).unwrap();
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("does not match")
+    assert_eq!(
+        initialize(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::IdentityReceiptMismatch)
     );
     fs::write(directory.0.join("identity.key"), b"invalid").unwrap();
-    assert!(initialize(&directory.0).is_err());
+    let error = initialize(&directory.0).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::IdentityKeyDecode)
+    );
+    assert!(!serde_json::to_string(&error).unwrap().contains("invalid"));
     fs::write(directory.0.join("identity.key"), &key).unwrap();
     initialize(&directory.0).unwrap();
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
@@ -424,15 +476,17 @@ fn identity_receipt_corruption_or_loss_never_changes_an_established_key() {
         br#"{"version":1,"peer_id":42}"#,
     ] {
         fs::write(&receipt_path, invalid).unwrap();
-        assert!(initialize(&directory.0).is_err());
+        assert!(matches!(
+            initialize(&directory.0),
+            Err(crate::Error::RecordDecode { .. })
+        ));
         assert_eq!(fs::read(&receipt_path).unwrap(), invalid);
         assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
     }
     fs::remove_file(&receipt_path).unwrap();
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("receipt is missing")
+    assert_eq!(
+        initialize(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::IdentityReceiptMissing)
     );
     assert!(!receipt_path.exists());
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
@@ -501,10 +555,13 @@ async fn handoff_abort_stabilizes_inherited_child_without_inventing_group_absenc
     )
     .await
     .unwrap();
-    assert_eq!(report["complete"], true, "{report}");
-    assert_eq!(report["original_child_reaped"], true);
-    assert_eq!(report["session_state"], "CONFIRMED_STOPPED_BEFORE_DETACH");
-    assert!(report["owned_group_empty"].is_null());
+    assert!(report.complete, "{report:?}");
+    assert!(report.original_child_reaped);
+    assert_eq!(
+        report.session_state,
+        crate::outcome::AbortSession::Inherited
+    );
+    assert!(report.owned_group_empty.is_none());
 }
 
 #[tokio::test]
@@ -529,13 +586,108 @@ async fn handoff_abort_handles_the_actual_setsid_race_while_original_child_is_he
     )
     .await
     .unwrap();
-    assert_eq!(report["complete"], true, "{report}");
-    assert_eq!(report["original_child_reaped"], true);
-    match report["session_state"].as_str().unwrap() {
-        "CONFIRMED_STOPPED_DETACHED_SESSION" => assert_eq!(report["owned_group_empty"], true),
-        "CONFIRMED_STOPPED_BEFORE_DETACH" => assert!(report["owned_group_empty"].is_null()),
-        other => panic!("unproved session cannot complete: {other};{report}"),
+    assert!(report.complete, "{report:?}");
+    assert!(report.original_child_reaped);
+    match report.session_state {
+        crate::outcome::AbortSession::Detached => assert_eq!(report.owned_group_empty, Some(true)),
+        crate::outcome::AbortSession::Inherited => assert!(report.owned_group_empty.is_none()),
+        other => panic!("unproved session cannot complete: {other:?};{report:?}"),
     }
 }
 
 mod offline;
+
+#[test]
+fn machine_status_uses_registered_computation_and_verification_codes() {
+    let status = Status {
+        running: true,
+        computation: crate::resources::ComputationState::Paused,
+        computation_reason: Some(crate::PauseReason::MemoryPressure),
+        accepted_artifacts: 3,
+        artifact_verification: ArtifactVerification::Checked,
+    };
+    let mut encoded = serde_json::to_value(&status).unwrap();
+    assert_eq!(encoded["computation"], 0x001f_0004u32);
+    assert_eq!(encoded["artifact_verification"], 0x0020_0001u32);
+    assert_eq!(
+        serde_json::from_value::<Status>(encoded.clone()).unwrap(),
+        status
+    );
+    encoded["computation"] = 0x001f_0005u32.into();
+    assert!(serde_json::from_value::<Status>(encoded).is_err());
+}
+
+#[tokio::test]
+async fn control_frames_report_bounded_and_structured_failures() {
+    use tokio::io::AsyncWriteExt;
+    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    writer.write_all(b"{\n").await.unwrap();
+    let error = read_frame::<Request>(&mut reader).await.err().unwrap();
+    assert_eq!(error, crate::Error::from(crate::InputFault::ControlJsonEof));
+
+    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    writer.write_all(b"{}").await.unwrap();
+    writer.shutdown().await.unwrap();
+    let error = read_frame::<Request>(&mut reader).await.err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::ControlFrameIncomplete)
+    );
+}
+
+#[tokio::test]
+async fn status_preserves_invalid_endpoint_cause() {
+    let directory = Directory::new();
+    fs::write(directory.0.join("control.json"), b"{} ").unwrap();
+    let error = status(&directory.0).await.unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::ControlJsonData)
+    );
+}
+
+#[test]
+fn runtime_configuration_preserves_parse_and_owner_failures() {
+    let directory = Directory::new();
+    let config = directory.0.join("config.json");
+    fs::write(&config, b"{").unwrap();
+    let error = configuration(&directory.0).err().unwrap();
+    assert!(matches!(
+        error,
+        crate::Error::ConfigDecode {
+            reason: crate::JsonFault::Eof,
+            ..
+        }
+    ));
+    fs::write(&config, b"[]").unwrap();
+    assert_eq!(
+        configuration(&directory.0).err().unwrap(),
+        crate::Error::from(crate::InputFault::RuntimeConfigObject)
+    );
+    let other = Directory::new();
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({"directory": other.0})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration(&directory.0).err().unwrap(),
+        crate::Error::from(crate::InputFault::RuntimeConfigOwner)
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_lock_preserves_the_open_failure_kind() {
+    let directory = Directory::new();
+    let error = operation_lock(&directory.0.join("missing"))
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        crate::Error::Io {
+            kind: crate::IoFaultKind::NotFound,
+            ..
+        }
+    ));
+}

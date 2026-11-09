@@ -46,7 +46,10 @@ fn reports_cannot_skip_duplicate_or_reorder_the_owned_unit_lifecycle() {
             .is_err()
     );
     assert!(!attempt.finished());
-    assert!(attempt.checkpoint(2).is_err());
+    assert_eq!(
+        attempt.checkpoint(2),
+        Err(WorkerFailure::FeedbackCheckpoint)
+    );
     assert!(attempt.checkpoint(1).is_ok());
     assert!(attempt.checkpoint(1).is_err());
     assert!(
@@ -66,18 +69,17 @@ fn reports_cannot_skip_duplicate_or_reorder_the_owned_unit_lifecycle() {
 #[test]
 fn failed_work_and_forged_time_cannot_authorize_checkpoint_or_result() {
     let mut attempt = Attempt::new(Role::Solving);
-    assert!(
-        attempt
-            .observe(
-                Phase::Setup,
-                Sample {
-                    elapsed_nanos: u64::MAX,
-                    ..sample(true)
-                },
-                None,
-                false
-            )
-            .is_err()
+    assert_eq!(
+        attempt.observe(
+            Phase::Setup,
+            Sample {
+                elapsed_nanos: u64::MAX,
+                ..sample(true)
+            },
+            None,
+            false,
+        ),
+        Err(WorkerFailure::FeedbackMeasurement)
     );
     attempt
         .observe(Phase::Setup, sample(true), None, false)

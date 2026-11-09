@@ -14,7 +14,8 @@ impl Catalog {
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
-        let current_count = u64::try_from(expected.count).map_err(|_| "inventory count width")?;
+        let current_count = u64::try_from(expected.count)
+            .map_err(|_| crate::InputFault::CatalogInventoryCountWidth)?;
         let (snapshot, position) = match after {
             Some(cursor) => {
                 if cursor.snapshot.lineage != self.database_id
@@ -55,7 +56,7 @@ impl Catalog {
             while let Some(row) = rows.next().map_err(sql_error)? {
                 let ordinal = replay_ordinal(row.get(0).map_err(sql_error)?)?;
                 if ordinal != position + ids.len() as u64 + 1 {
-                    return Err("catalog inventory order is incomplete".into());
+                    return Err(crate::InputFault::CatalogInventoryOrder.into());
                 }
                 ids.push(ArtifactId::from_bytes(key(row
                     .get(1)
@@ -63,7 +64,7 @@ impl Catalog {
             }
         }
         if ids.len() as u64 != (snapshot.count - position).min(limit as u64) {
-            return Err("catalog inventory page count differs".into());
+            return Err(crate::InputFault::CatalogInventoryPageCount.into());
         }
         let end = position + ids.len() as u64;
         let next = (end < snapshot.count).then_some(InventoryCursor {

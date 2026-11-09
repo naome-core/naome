@@ -1,4 +1,5 @@
 """Record a finite real multicast loopback probe for hosted macOS CI."""
+from fixture_result import FixtureResult
 
 import argparse
 import hashlib
@@ -153,7 +154,7 @@ def main():
     args = parser.parse_args()
     uid = os.geteuid() if hasattr(os, "geteuid") else None
     record = {
-        "schema": 1, "result": "fail", "effective_uid": uid,
+        "schema": 1, "result": FixtureResult.FAIL, "effective_uid": uid,
         "pid": os.getpid(), "python": sys.executable,
         "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "platform": platform.uname()._asdict(),
@@ -205,9 +206,9 @@ def main():
                     if data == token:
                         record["matching_receives"] += 1
                         record["received_from"] = address
-                        record["result"] = "pass"
+                        record["result"] = FixtureResult.PASS
                         break
-                if record["result"] != "pass":
+                if record["result"] != FixtureResult.PASS:
                     raise TimeoutError("no matching multicast packet received")
     except (OSError, ValueError) as error:
         record["error"] = str(error)
@@ -216,7 +217,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record))
-    return 0 if record["result"] == "pass" else 1
+    return 0 if record["result"] == FixtureResult.PASS else 1
 
 
 if __name__ == "__main__":

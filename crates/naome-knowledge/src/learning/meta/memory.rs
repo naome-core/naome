@@ -39,10 +39,10 @@ impl From<&Experience> for Packed {
     }
 }
 impl TryFrom<Packed> for Experience {
-    type Error = String;
+    type Error = crate::Error;
     fn try_from(p: Packed) -> Result<Self, Self::Error> {
         if p.2.iter().any(|v| *v > 31 || (v >> 2) & 3 > 2) {
-            return Err("meta memory phase encoding differs".into());
+            return Err(crate::ResearchFailure::MetaMemoryPhase.into());
         }
         let experience = Self {
             job: p.0,

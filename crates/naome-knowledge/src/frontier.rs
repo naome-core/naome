@@ -107,7 +107,7 @@ impl Frontier {
         graph: &Graph,
         seed: u64,
         settings: jobs::Settings,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::Error> {
         let evidence = Evidence::open(directory, seed, settings)?;
         let random = Random::new(evidence.random());
         let mut local = Self {
@@ -149,8 +149,7 @@ impl Frontier {
                     })
                     .saturating_add(finder::Model::memory_bytes())
                     .saturating_add(finder::Learning::reservation()),
-            )
-            .map_err(|e| e.to_string())?,
+            )?,
         };
         // A durable success flag alone cannot restore demonstrated ability.
         let mut successes = [0u64; SIGNALS];
@@ -160,7 +159,7 @@ impl Frontier {
         let mut goals = VecDeque::new();
         local.evidence.replay(|record| {
             let question =
-                ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
+                ResearchQuestion::from_hex(&record.question).map_err(crate::Error::from)?;
             if record.first_unresolved_job > 0 && record.verified.is_none() {
                 Self::retain_goal(&mut goals, question.clone());
             }
@@ -171,9 +170,9 @@ impl Frontier {
             }
             if let Some(root) = record.verified.as_ref().or(record.prepared.as_ref()) {
                 let question =
-                    ResearchQuestion::from_hex(&record.question).map_err(|e| e.to_string())?;
+                    ResearchQuestion::from_hex(&record.question).map_err(crate::Error::from)?;
                 let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
-                if Self::checked_target(graph, root, &question).map_err(|e| e.to_string())? {
+                if Self::checked_target(graph, root, &question)? {
                     let features = Features::of(&question);
                     for index in 0..SIGNALS {
                         if features.counts[index] > 0 {
@@ -210,13 +209,9 @@ impl Frontier {
                     {
                         let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
                         let question = ResearchQuestion::from_hex(&record.question)
-                            .map_err(|e| e.to_string())?;
-                        if Self::checked_target(graph, root, &question)
-                            .map_err(|e| e.to_string())?
-                        {
-                            local
-                                .verified(&question, graph, record.verified_job, root)
-                                .map_err(|e| e.to_string())?;
+                            .map_err(crate::Error::from)?;
+                        if Self::checked_target(graph, root, &question)? {
+                            local.verified(&question, graph, record.verified_job, root)?;
                         }
                     }
                     after = Some(key);
@@ -813,7 +808,7 @@ impl Frontier {
             && let Some(current) = self.evidence.get(question)?
         {
             for source in current.helpers {
-                let helper = ResearchQuestion::from_hex(&source).map_err(|e| e.to_string())?;
+                let helper = ResearchQuestion::from_hex(&source)?;
                 if let Some(producer) = self.evidence.get(&helper)?
                     && producer.verified_at > record.last_attempt_at
                     && let Some(root) = producer.verified
@@ -996,7 +991,7 @@ impl Frontier {
             && let Some(feedback) = &self.feedback
         {
             crate::network::emit(
-                serde_json::json!({"event":"native_curriculum_selected", "checkpoint":feedback.checkpoint,
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeCurriculumSelected, "checkpoint":feedback.checkpoint,
                 "feedback_revision":feedback.revision,"resolution_id":crate::hex(candidates[index].resolution_id()),
                 "priority":weighted[position].1,"candidates":candidates.len(),"structural_group":crate::training::group(candidates[index])}),
             );
@@ -1007,7 +1002,7 @@ impl Frontier {
                 |descriptor| self.evidence.model().weight_from(descriptor),
             );
             crate::network::emit(serde_json::json!({
-                "event":"finder_selected", "resolution_id":crate::hex(candidates[index].resolution_id()),
+                "event":crate::outcome::NodeEvent::FinderSelected, "resolution_id":crate::hex(candidates[index].resolution_id()),
                 "question":candidates[index].to_hex(), "model_updates":self.evidence.model().updates,
                 "model_weight":model_weight, "candidates":candidates.len()
             }));
@@ -1088,7 +1083,7 @@ impl Frontier {
         root: ArtifactId,
     ) -> Result<(), crate::Error> {
         if !Self::checked_target(graph, root, question)? {
-            return Err("research evidence lacks a checked exact solution".into());
+            return Err(crate::InputFault::EvidenceExactSolutionMissing.into());
         }
         let before = self.evidence.model().updates;
         if let Some((units, millis)) = self.evidence.verified(question, job, root)? {
@@ -1098,7 +1093,7 @@ impl Frontier {
         if self.native {
             let actual_goal = graph
                 .describe(root)?
-                .ok_or("checked goal disappeared")?
+                .ok_or(crate::InputFault::EvidenceGoalMissing)?
                 .statement_question(graph.checked_context())?;
             for dependency in graph.direct_dependencies(root)? {
                 if let Some(lemma) = self.evidence.support(
@@ -1117,10 +1112,12 @@ impl Frontier {
                             .transpose()
                     },
                 )? {
-                    crate::network::emit(serde_json::json!({"event":"finder_goal_supported",
+                    crate::network::emit(
+                        serde_json::json!({"event":crate::outcome::NodeEvent::FinderGoalSupported,
                         "lemma":crate::hex(dependency.as_bytes()), "goal":crate::hex(root.as_bytes()),
                         "lemma_resolution":crate::hex(lemma.resolution_id()), "goal_resolution":crate::hex(question.resolution_id()),
-                        "support_updates":self.evidence.model().supports}));
+                        "support_updates":self.evidence.model().supports}),
+                    );
                 }
             }
         }
@@ -1133,8 +1130,8 @@ impl Frontier {
         let model = self.evidence.model();
         if self.native && model.updates > before {
             crate::network::emit(serde_json::json!({
-                "event":"finder_learned", "resolution_id":crate::hex(question.resolution_id()),
-                "outcome":if resolved { "checked_resolution" } else { "unresolved_search" },
+                "event":crate::outcome::NodeEvent::FinderLearned, "resolution_id":crate::hex(question.resolution_id()),
+                "outcome":if resolved { crate::outcome::FinderLearningOutcome::CheckedResolution } else { crate::outcome::FinderLearningOutcome::UnresolvedSearch },
                 "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
                 "supports":model.supports,"rehearsals":model.rehearsals,"utility_observations":model.utility_observations,
                 "model_weight":model.weight(question)

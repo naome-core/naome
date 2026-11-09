@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Two ordinary processes coordinate a finite request over real libp2p."""
+from fixture_result import FixtureResult
 import argparse
 from pathlib import Path
 import shutil
@@ -38,17 +39,17 @@ def run(trial, args):
 
     def completed():
         failures = [event for node in trial.nodes for event in node.logs()
-                    if event.get("event") == "fatal_error"]
+                    if event.get("event") == 0x00170017]
         assert not failures, failures
-        for joined in (e for e in helper.logs() if e.get("event") == "workgroup_joined"):
+        for joined in (e for e in helper.logs() if e.get("event") == 0x0017006c):
             if args.seed and joined["resolution_id"] != args.resolution:
                 continue
-            for generated in (e for e in helper.logs() if e.get("event") == "proof_generated"
+            for generated in (e for e in helper.logs() if e.get("event") == 0x00170046
                               and e.get("resolution_id") == joined["resolution_id"]):
                 root = generated["id"]
                 if args.seed and root != args.expected_proof:
                     continue
-                membership = any(e.get("event") == "workgroup_member"
+                membership = any(e.get("event") == 0x0017006e
                                  and e.get("resolution_id") == joined["resolution_id"]
                                  and e.get("peer") == helper.peer for e in requester.logs())
                 if membership and root in requester.ids() and root in helper.ids():
@@ -57,18 +58,18 @@ def run(trial, args):
         return None
 
     result = trial.wait(completed, maximum=60)
-    source = "native_solver" if args.helper_provider == "native" else "mock_producer"
-    assert any(e.get("event") == "accepted" and e.get("source") == source
+    source = 0x00180004 if args.helper_provider == "native" else 0x00180005
+    assert any(e.get("event") == 0x00170001 and e.get("source") == source
                and e.get("id") == result["root"] for e in helper.logs())
     if not args.seed:
-        assert any(e.get("event") == "question_generated" for e in requester.logs())
+        assert any(e.get("event") == 0x0017004d for e in requester.logs())
     else:
         events = helper.logs()
-        offer = next(i for i, e in enumerate(events) if e.get("event") == "exchange_request"
-                     and e.get("kind") == "work_offer" and e.get("peer") == requester.peer)
-        fetched = next(i for i, e in enumerate(events) if e.get("event") == "accepted"
-                       and e.get("source") == "fetch" and e.get("id") == args.definition_id)
-        joined = next(i for i, e in enumerate(events) if e.get("event") == "workgroup_joined"
+        offer = next(i for i, e in enumerate(events) if e.get("event") == 0x00170012
+                     and e.get("kind") == 0x001a0011 and e.get("peer") == requester.peer)
+        fetched = next(i for i, e in enumerate(events) if e.get("event") == 0x00170001
+                       and e.get("source") == 0x00180001 and e.get("id") == args.definition_id)
+        joined = next(i for i, e in enumerate(events) if e.get("event") == 0x0017006c
                       and e.get("resolution_id") == result["resolution"])
         assert offer < fetched < joined, (offer, fetched, joined)
         assert args.definition_id in helper.ids()
@@ -77,14 +78,14 @@ def run(trial, args):
                    and record.get("input", {}).get("role") == "solve"
                    and record.get("result", {}).get("kind") == "proof"
                    for record in records(helper)), "no completed cooperative mock proof job"
-    assert any(e.get("event") == "exchange_request" and e.get("kind") == "work_offer"
+    assert any(e.get("event") == 0x00170012 and e.get("kind") == 0x001a0011
                for e in helper.logs())
-    assert any(e.get("event") == "workgroup_receipt" and e.get("status") == "queued"
+    assert any(e.get("event") == 0x0017006f and e.get("status") == 0x00050001
                for e in requester.logs())
-    assert not any(e.get("event") == "rejected" and e.get("error") == "unexpected response kind"
+    assert not any(e.get("event") == 0x00170051 and e.get("error") == 0x000b0024
                    for node in trial.nodes for e in node.logs())
-    assert any(e.get("event") == "accepted" and e.get("id") == result["root"]
-               and e.get("source") == "fetch" for e in requester.logs())
+    assert any(e.get("event") == 0x00170001 and e.get("id") == result["root"]
+               and e.get("source") == 0x00180001 for e in requester.logs())
     if args.seed:
         requester.stop()
         assert result["root"] in requester.ids()
@@ -96,7 +97,7 @@ def run(trial, args):
                               "mathematical performance claim.")
     trial.summary["helper_provider"] = args.helper_provider
     trial.summary["scenarios"]["cooperative_checked_proof"] = result
-    trial.summary["result"] = "pass"
+    trial.summary["result"] = FixtureResult.PASS
 
 
 def main():
@@ -115,12 +116,12 @@ def main():
     try:
         run(trial, args)
     except BaseException as error:
-        trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
+        trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
         raise
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "workgroups", args.profile)
-    assert trial.summary["result"] == "pass", trial.summary.get("cleanup")
+    assert trial.summary["result"] == FixtureResult.PASS, trial.summary.get("cleanup")
 
 
 if __name__ == "__main__":

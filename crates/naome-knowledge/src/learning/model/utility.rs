@@ -4,9 +4,9 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
-fn cosine([dot, left, right]: [f64; 3]) -> Result<Option<f32>, String> {
+fn cosine([dot, left, right]: [f64; 3]) -> Result<Option<f32>, crate::Error> {
     if [dot, left, right].iter().any(|n| !n.is_finite()) || left < 0. || right < 0. {
-        return Err("non-finite native utility gradient".into());
+        return Err(crate::ResearchFailure::UtilityGradientInvalid.into());
     }
     if left == 0. || right == 0. {
         return Ok(None);
@@ -20,9 +20,9 @@ impl Runtime {
         &self,
         candidate: &Graph,
         reference: &[Graph],
-    ) -> Result<Option<f32>, String> {
+    ) -> Result<Option<f32>, crate::Error> {
         if reference.is_empty() || reference.len() > 4 {
-            return Err("native utility reference capacity".into());
+            return Err(crate::ResearchFailure::UtilityReferenceCapacity.into());
         }
         let reference = Batch::from_graphs(reference, &self.device)?;
         let loss = checked_marginal(
@@ -39,7 +39,7 @@ impl Runtime {
             left: &'a GradientsParams,
             right: &'a GradientsParams,
             sums: [f64; 3],
-            error: Option<String>,
+            error: Option<crate::Error>,
         }
         impl ModuleMapper for Alignment<'_> {
             fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
@@ -63,7 +63,7 @@ impl Runtime {
                 {
                     match value.sum().into_data().try_to_vec::<f32>() {
                         Ok(values) => self.sums[i] += f64::from(values[0]),
-                        Err(error) => self.error = Some(error.to_string()),
+                        Err(error) => self.error = Some(tensor_data_failure(error)),
                     }
                 }
                 param

@@ -111,7 +111,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     let mut graph = Graph::open(&directory.0).unwrap();
     assert_eq!(
         graph.ingest(child, Instant::now()).unwrap().status,
-        "waiting"
+        crate::IngestStatus::Waiting
     );
     let target = ResearchQuestion::from_hex("040001000000000100000000").unwrap();
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &target).unwrap();
@@ -227,7 +227,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     assert!(
         exchange(&control, &endpoint, json!("status"), 2).await["report"]["status"]
             ["computation_reason"]
-            .is_string()
+            .is_u64()
     );
     publish(Snapshot::derive(selection(128 * MIB), hardware(), 512 * MIB).unwrap());
     assert_eq!(graph.resolve_pending().unwrap().0.len(), 1);
@@ -304,8 +304,10 @@ fn custom_limits_validate_and_live_switches_respect_reserves() {
         .is_err()
     );
     assert!(
-        serde_json::from_str::<Selection>(r#"{"profile":"custom","custom":{"unknown":1}}"#)
-            .is_err()
+        serde_json::from_value::<Selection>(
+            serde_json::json!({"profile":Profile::Custom,"custom":{"unknown":1}})
+        )
+        .is_err()
     );
 }
 #[test]
@@ -377,4 +379,19 @@ fn container_ancestors_and_v1_cpu_quotas_reduce_effective_hardware() {
     assert_eq!(observed.memory_available, 96 * MIB);
     assert_eq!(observed.cpu_millis, 250);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn adaptive_profiles_have_registered_numeric_codes() {
+    for (profile, expected) in [
+        (Profile::Dynamic, 0x004c_0001_u32),
+        (Profile::Heavy, 0x004c_0002),
+        (Profile::Light, 0x004c_0003),
+        (Profile::Custom, 0x004c_0004),
+    ] {
+        let value = serde_json::to_value(profile).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(serde_json::from_value::<Profile>(value).unwrap(), profile);
+    }
+    assert!(serde_json::from_value::<Profile>(0x004c_ffff_u32.into()).is_err());
 }

@@ -34,7 +34,7 @@ fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
     let generation = Generation {
         terminal: experience::TerminalEvidence::certified(&solution),
         solution: Some(solution.clone()),
-        diagnostic: String::new(),
+        diagnostic: crate::outcome::GenerationOutcome::Unresolved,
         cost,
         frontier: None,
         executions: Vec::new(),
@@ -42,7 +42,7 @@ fn completion_feedback_compacts_before_the_next_actual_source_snapshot() {
     let job = 42;
     let completion = completed_search(&state, &q, job, &generation, context(&state), SEARCH, 0);
     let mut control = state.clone();
-    control.observe_result(&q.to_hex(), true, "", 0, SEARCH as u32);
+    control.observe_result(&q.to_hex(), true, &generation.terminal, 0, SEARCH as u32);
     assert!(
         control.validate().is_err(),
         "fixture must cross the actual existing byte boundary"
@@ -171,7 +171,7 @@ fn live_sources_keep_their_actual_context_and_lifetime_admission() {
         let generation = Generation {
             terminal: experience::TerminalEvidence::certified(&solution),
             solution: Some(solution),
-            diagnostic: String::new(),
+            diagnostic: crate::outcome::GenerationOutcome::Unresolved,
             cost,
             frontier: None,
             executions: Vec::new(),

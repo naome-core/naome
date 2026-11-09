@@ -107,12 +107,12 @@ async fn request(client: &mut Swarm<Behaviour>, server: PeerId, body: Body) -> B
             )) = event
             {
                 if request_id == id {
-                    if let Body::Error { reason } = &response.message.body {
-                        let delay = match reason.as_str() {
-                            "peer disabled" | "node state owner busy" => {
+                    if let Body::Error { code } = &response.message.body {
+                        let delay = match code {
+                            PeerFailure::Disabled | PeerFailure::OwnerBusy => {
                                 Some(crate::resources::limits().transport_busy_grace)
                             }
-                            "peer rate limit" => {
+                            PeerFailure::RateLimited => {
                                 Some(crate::resources::limits().request_rate_window)
                             }
                             _ => None,
@@ -224,7 +224,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
         crate::resources::limits().memory_bytes as u64,
     )
     .unwrap();
-    paused.budget.paused = Some("sustained external CPU pressure".into());
+    paused.budget.paused = Some(crate::PauseReason::ExternalCpuPressure);
     paused.budget.concurrency = 0;
     paused.budget.batch_steps = 0;
     paused.budget.network_requests = 1;
@@ -290,8 +290,12 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
             },
         },
     ] {
-        assert!(matches!(request(&mut late, server, offer).await,
-            Body::Error { reason } if reason == "computation paused"));
+        assert!(matches!(
+            request(&mut late, server, offer).await,
+            Body::Error {
+                code: PeerFailure::ComputationPaused
+            }
+        ));
     }
 
     let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);

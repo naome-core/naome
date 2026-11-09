@@ -125,7 +125,7 @@ pub(super) fn advance(
         *job += 1;
         let episodes = io.episodes();
         let training = if arm == "frozen_solver" {
-            json!({"status":"frozen_solver","retained_update":false,"selected_model":state.model})
+            json!({"status":crate::outcome::ExperimentStatus::FrozenSolver,"retained_update":false,"selected_model":state.model})
         } else {
             run::train(
                 state,

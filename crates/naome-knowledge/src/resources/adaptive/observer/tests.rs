@@ -21,6 +21,7 @@ impl Observer {
             snapshot: Some(snapshot),
             next: Instant::now() + Duration::from_secs(1),
             governor: Governor::default(),
+            failure_reported: false,
         }
     }
 }
@@ -53,11 +54,16 @@ fn missing_initial_telemetry_never_fabricates_an_admission_budget() {
         .poll_with(
             now,
             || Ok(Selection::default()),
-            || Err("probe failed".into()),
+            || Err(crate::InputFault::ProbeDeadline.into()),
         )
         .unwrap_err();
-    assert_eq!(error.to_string(), "probe failed");
-    assert!(crate::Error::from(error).retryable());
+    let error = crate::Error::from(error);
+    assert!(error.retryable());
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::ProbeDeadline)
+    );
     assert!(observer.snapshot.is_none());
     assert!(observer.due(now));
 }
@@ -77,15 +83,25 @@ fn failed_observations_pause_retained_work_and_recover_only_after_the_quiet_wind
         .poll_with(
             failure_time,
             || Ok(Selection::default()),
-            || Err("probe failed".into()),
+            || Err(crate::InputFault::ProbeDeadline.into()),
         )
         .unwrap()
         .unwrap()
         .clone();
+    assert!(observer.failure_reported);
+    let event = failure_event(&crate::Error::from(crate::InputFault::ProbeDeadline));
+    assert_eq!(
+        event["event"],
+        u32::from(crate::outcome::NodeEvent::ResourceObservationFailure)
+    );
+    assert_eq!(
+        event["error"]["code"],
+        u32::from(crate::InputFault::ProbeDeadline)
+    );
     assert_eq!(paused.timestamp_ms, first.timestamp_ms);
     assert_eq!(
-        paused.budget.paused.as_deref(),
-        Some("hardware observation unavailable")
+        paused.budget.paused,
+        Some(crate::PauseReason::HardwareObservationUnavailable)
     );
     assert_eq!(paused.budget.batch_steps, 0);
     assert_eq!(paused.budget.concurrency, 0);
@@ -117,6 +133,7 @@ fn failed_observations_pause_retained_work_and_recover_only_after_the_quiet_wind
         .unwrap();
     assert!(recovered.budget.paused.is_none());
     assert!(recovered.budget.batch_steps > 0 && recovered.budget.concurrency > 0);
+    assert!(!observer.failure_reported);
 }
 
 #[test]
@@ -125,11 +142,35 @@ fn invalid_settings_are_distinct_from_a_retryable_telemetry_failure() {
     let error = observer
         .poll_with(
             Instant::now(),
-            || Err("invalid profile".into()),
+            || Err(crate::InputFault::ResourceCustomInvalid.into()),
             || panic!("invalid settings must not sample"),
         )
         .unwrap_err();
-    assert_eq!(error.to_string(), "invalid profile");
-    assert!(!crate::Error::from(error).retryable());
+    let error = crate::Error::from(error);
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::ResourceCustomInvalid)
+    );
+    assert!(!error.retryable());
     assert!(observer.snapshot.is_none());
+}
+
+#[test]
+fn invalid_observed_values_preserve_derived_failure() {
+    let mut observer = Observer::default();
+    let error = observer
+        .poll_with(
+            Instant::now(),
+            || Ok(Selection::default()),
+            || {
+                let mut sample = hardware();
+                sample.observed.memory_total = 0;
+                Ok(sample)
+            },
+        )
+        .unwrap_err();
+    let error = crate::Error::from(error);
+    assert!(
+        matches!(error, crate::Error::ObservationUnavailable(cause) if *cause == crate::Error::from(crate::InputFault::ObservationIncomplete))
+    );
 }
