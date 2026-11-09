@@ -76,7 +76,11 @@ pub enum Construction<F> {
         result: u32,
     },
     Reference(naome_proof::ProofId),
-    Definition(naome_proof::DefinitionId, Vec<u32>),
+    Definition {
+        id: naome_proof::DefinitionId,
+        arguments: Vec<u32>,
+        authored_body: Option<F>,
+    },
 }
 
 /// Derive a fixed-size construction recipe from previously checked results.
@@ -141,12 +145,23 @@ pub fn prepare<C: Context>(
         Command::DefinedRelation {
             definition_id,
             ref arguments,
+        }
+        | Command::AuthoredRelation {
+            definition_id,
+            ref arguments,
+            ..
         } => {
+            let authored_body = if let Command::AuthoredRelation { body, .. } = *command {
+                Some(formula(body, R::Body)?)
+            } else {
+                None
+            };
             return Ok(Plan {
-                construction: Construction::Definition(
-                    naome_proof::DefinitionId::from_bytes(definition_id),
-                    arguments.clone(),
-                ),
+                construction: Construction::Definition {
+                    id: naome_proof::DefinitionId::from_bytes(definition_id),
+                    arguments: arguments.clone(),
+                    authored_body,
+                },
                 proved: false,
                 seal: false,
                 absent,

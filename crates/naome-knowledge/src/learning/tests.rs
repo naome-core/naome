@@ -1778,3 +1778,204 @@ fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
             .is_empty()
     );
 }
+
+#[test]
+fn discovered_relation_is_authored_from_a_previously_checked_meaning() {
+    use naome_proof::{ArtifactPayload, ProofSeparation, ProofStep, program::Command};
+
+    const CASE: &str =
+        "learning::tests::discovered_relation_is_authored_from_a_previously_checked_meaning";
+    const ISOLATED: &str = "NAOME_DEFINITION_AUTHORING_TEST";
+    if std::env::var_os(ISOLATED).is_none() {
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success() && String::from_utf8_lossy(&run.stdout).contains("running 1 test"),
+            "{}
+{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        return;
+    }
+    crate::resources::tests::budget(false);
+
+    fn construct(
+        predicate: &Formula,
+        earlier: &[definitions::Entry],
+        author: bool,
+    ) -> (Formula, construction::ProgramCandidate) {
+        let term = calculus::axiom(ProofStep::Separation(ProofSeparation {
+            predicate: predicate.clone().into(),
+            element: FreeVariable::new(0),
+            source: FreeVariable::new(1),
+            result: FreeVariable::new(2),
+            parameters: Vec::new(),
+        }))
+        .unwrap();
+        let target = term.formula();
+        let mut recipe = proof::recipe(&term, &target).unwrap();
+        recipe.definitions = definitions::construction_choices(&target, earlier).unwrap();
+        let candidate = construction::program_from_authored_recipe(
+            &target,
+            recipe,
+            if author { earlier } else { &[] },
+        )
+        .unwrap();
+        (target, candidate)
+    }
+    fn used_meaning(
+        candidate: &construction::ProgramCandidate,
+        formula: &Formula,
+    ) -> definitions::Entry {
+        candidate
+            .helpers
+            .iter()
+            .find_map(|artifact| {
+                let bytes = crate::unhex(artifact).unwrap();
+                let ArtifactPayload::Definition(certificate) =
+                    ArtifactPayload::from_canonical_bytes(&bytes).unwrap()
+                else {
+                    return None;
+                };
+                let entry = definitions::Entry {
+                    certificate: certificate.to_canonical_bytes(),
+                    obligation: None,
+                };
+                (entry.body().unwrap() == *formula).then_some(entry)
+            })
+            .expect("the discovered predicate is an actual helper")
+    }
+
+    fn publish(graph: &mut crate::Graph, candidate: &construction::ProgramCandidate, name: &str) {
+        use crate::{
+            graph::program::PreparedProgram, proof_work::Work, resources::adaptive::Budget,
+        };
+        use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS};
+        use std::time::{Duration, Instant};
+
+        let staged = graph.prepare_generated_helpers(&candidate.helpers).unwrap();
+        let mut work = Work::open(&graph.ownership().directory().join(name)).unwrap();
+        work.append_group(&candidate.packet.commands().unwrap())
+            .unwrap();
+        let budget = Budget {
+            memory_bytes: 256 * 1024 * 1024,
+            concurrency: 1,
+            cache_bytes: 32768,
+            batch_steps: 64,
+            network_requests: 1,
+            yield_ms: 0,
+            paused: None,
+        };
+        while work.advance(&budget, staged.context()).unwrap() {}
+        while !work.prepare_export(&budget).unwrap() {}
+        let mut checked = PreparedProgram::new(work.into_checked().unwrap());
+        let proof = checked.proof().unwrap();
+        let manifest = &candidate.packet.manifest;
+        proof.check_manifest(manifest).unwrap();
+        let store = graph.ownership();
+        let mut progress = store.start_program(manifest).unwrap();
+        while progress.commands < manifest.commands {
+            let chunk = proof
+                .input_chunk(progress.commands, CHUNK_RECORDS, CHUNK_BYTES)
+                .unwrap();
+            progress = store.append_program(manifest, &chunk).unwrap();
+        }
+        if !checked.advance_after(graph, 64, Some(staged)).unwrap() {
+            while !checked.advance(graph, 64).unwrap() {}
+        }
+        graph
+            .commit_batch(
+                manifest.artifact_id(),
+                checked.take_batch().unwrap(),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+    }
+
+    let x = FreeVariable::new(0);
+    let membership = Formula::member(x, x);
+    let equality = Formula::equal(x, x);
+    let simple = Formula::implies(
+        Formula::negate(membership),
+        Formula::implies(equality.clone(), Formula::negate(equality.clone())),
+    );
+    let compound = Formula::conjunction(simple.clone(), equality);
+    let (first_target, first) = construct(&simple, &[], true);
+    let parent = used_meaning(&first, &simple);
+    let parent_id = parent.certificate().unwrap().definition_id();
+    assert!(
+        peer::program_definitions(&first_target, &first.packet)
+            .unwrap()
+            .contains(&parent_id)
+    );
+    let (target, candidate) = construct(&compound, std::slice::from_ref(&parent), true);
+    let derived = used_meaning(&candidate, &compound)
+        .certificate()
+        .unwrap()
+        .definition_id();
+    let (_, control) = construct(&compound, std::slice::from_ref(&parent), false);
+    assert_eq!(
+        candidate.packet.target().unwrap(),
+        control.packet.target().unwrap()
+    );
+    assert_eq!(
+        candidate.packet.manifest.statement_id(),
+        control.packet.manifest.statement_id()
+    );
+    assert_ne!(parent_id, derived);
+
+    let commands = candidate.packet.commands().unwrap();
+    assert!(commands.iter().any(|command| matches!(command, Command::AuthoredRelation { definition_id, .. } if definition_id == derived.as_bytes())));
+    let used = peer::program_definitions(&target, &candidate.packet).unwrap();
+    assert!(used.contains(&parent_id) && used.contains(&derived));
+    assert!(
+        !peer::program_definitions(&target, &control.packet)
+            .unwrap()
+            .contains(&parent_id)
+    );
+
+    let parent_artifact = parent.artifact().unwrap();
+    let missing_parent = candidate
+        .helpers
+        .iter()
+        .filter(|helper| **helper != parent_artifact)
+        .map(|source| std::sync::Arc::from(crate::unhex(source).unwrap()));
+    assert!(peer::Packet::compose(&target, &commands, &[], missing_parent).is_err());
+
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = crate::Graph::open(&directory.0).unwrap();
+    publish(&mut graph, &first, "first.sqlite3");
+    let parent = graph
+        .learning_definition(parent_id.into())
+        .unwrap()
+        .unwrap();
+    assert_eq!(parent.artifact().unwrap(), parent_artifact);
+    assert!(!graph.contains(derived.into()).unwrap());
+    publish(&mut graph, &candidate, "composed.sqlite3");
+    let manifest = candidate.packet.manifest.clone();
+    drop(graph);
+
+    let mut graph = crate::Graph::open(&directory.0).unwrap();
+    let replay = graph.peer_program(manifest.clone()).unwrap().unwrap();
+    assert_eq!(replay.manifest, manifest);
+    assert_eq!(replay.commands().unwrap(), commands);
+    assert_eq!(replay.target().unwrap(), target);
+    let earlier = graph.learning_definition(derived.into()).unwrap().unwrap();
+    let continuation = Formula::conjunction(compound, Formula::negate(Formula::equal(x, x)));
+    let (later_target, later) = construct(&continuation, &[earlier], true);
+    assert_ne!(
+        later.packet.manifest.statement_id(),
+        manifest.statement_id()
+    );
+    assert!(
+        peer::program_definitions(&later_target, &later.packet)
+            .unwrap()
+            .contains(&derived)
+    );
+    publish(&mut graph, &later, "downstream.sqlite3");
+    assert!(graph.contains(later.packet.manifest.artifact_id()).unwrap());
+}

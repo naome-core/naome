@@ -235,6 +235,29 @@ pub(super) fn represent(
         .map_err(|error| error.to_string())
 }
 
+/// Reconstruct a checked authoring body from the earlier selected meanings.
+pub(super) fn authored_body(
+    entry: &Entry,
+    earlier: &[Entry],
+    context: &ArtifactState,
+) -> Result<Option<DefinedFormula>, String> {
+    let certificate = entry.certificate()?;
+    let authored = represent(&entry.body()?, earlier)?;
+    let Some(authored) = authored.as_defined() else {
+        return Ok(None);
+    };
+    let checked = naome_checker::normalize_and_check_definition_with_state(
+        certificate.kind(),
+        authored.clone(),
+        context,
+    )
+    .map_err(|error| error.to_string())?;
+    if checked.definition_id() != certificate.definition_id() {
+        return Err("authored definition identity differs".into());
+    }
+    Ok(Some(authored.clone()))
+}
+
 pub fn discover(target: &Formula) -> Result<Option<Entry>, String> {
     Ok(discover_many(target, 1)?.into_iter().next())
 }

@@ -1134,12 +1134,7 @@ fn program_generation(
     cost.definition_references = packet
         .commands()?
         .iter()
-        .filter(|command| {
-            matches!(
-                command,
-                naome_proof::program::Command::DefinedRelation { .. }
-            )
-        })
+        .filter(|command| command.definition_reference().is_some())
         .count();
     let proof_id = crate::hex(packet.manifest.proof_id().as_bytes());
     Ok(Generation {
@@ -1769,7 +1764,11 @@ fn search_compiled_question(
                         recipe.definitions.push(entry);
                     }
                 }
-                match construction::program_from_recipe(&target, recipe) {
+                match construction::program_from_authored_recipe(
+                    &target,
+                    recipe,
+                    context.definitions,
+                ) {
                     Ok(candidate) => {
                         return program_generation(
                             candidate.packet,

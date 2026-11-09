@@ -277,15 +277,12 @@ impl Graph {
         &self,
         manifest: naome_proof::program::Manifest,
     ) -> Result<Option<crate::learning::peer::Packet>, crate::Error> {
-        use naome_proof::{DefinitionId, ProofId, program::Command};
+        use naome_proof::{ProofId, program::Command};
         use std::collections::BTreeSet;
         fn references(commands: &[Command]) -> impl Iterator<Item = ArtifactId> + '_ {
             commands.iter().filter_map(|command| match command {
                 Command::ProofReference { proof_id } => Some(ProofId::from_bytes(*proof_id).into()),
-                Command::DefinedRelation { definition_id, .. } => {
-                    Some(DefinitionId::from_bytes(*definition_id).into())
-                }
-                _ => None,
+                _ => command.definition_reference().map(ArtifactId::from),
             })
         }
         let limits = crate::resources::limits();

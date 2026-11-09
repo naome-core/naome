@@ -169,3 +169,83 @@ fn restarting_a_partial_definition_replays_input_and_requires_the_selected_defin
     drop(checked);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn authored_relation_checks_the_formal_body_before_substituting_arguments() {
+    let [left, right] = [0, 1].map(FreeVariable::new);
+    let base = DefinitionCertificate::relation(2, DefinedFormula::member(left, right)).unwrap();
+    let base_id = base.definition_id();
+    let relation = DefinitionCertificate::relation(
+        2,
+        DefinedFormula::negate(DefinedFormula::member(left, right)),
+    )
+    .unwrap();
+    let relation_id = relation.definition_id();
+    let mut context = ArtifactState::new();
+    for certificate in [base, relation] {
+        context
+            .register_definition(crate::check_definition_with_state(certificate, &context).unwrap())
+            .unwrap();
+    }
+    let authored = Command::AuthoredRelation {
+        definition_id: *relation_id.as_bytes(),
+        arguments: vec![17, 17],
+        body: 1,
+    };
+    let bytes = naome_proof::program::encode_command(&authored).unwrap();
+    assert_eq!(
+        naome_proof::program::decode_command(&bytes).unwrap(),
+        authored
+    );
+    for formal_arguments in [vec![0, 1], vec![1, 0]] {
+        let valid = formal_arguments == [0, 1];
+        let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+        engine
+            .append_group(&[
+                Command::DefinedRelation {
+                    definition_id: *base_id.as_bytes(),
+                    arguments: formal_arguments,
+                },
+                Command::Not { formula: 0 },
+                authored.clone(),
+                Command::Separation {
+                    predicate: 2,
+                    element: 17,
+                    source: 18,
+                    result: 19,
+                },
+                Command::Seal { proof: 3 },
+            ])
+            .unwrap();
+        if !valid {
+            let failure = loop {
+                if let Err(error) = engine.advance(1, 4096, &context) {
+                    break error;
+                }
+                assert!(engine.status().unwrap().checked_commands < 3);
+            };
+            assert!(matches!(
+                failure,
+                Error::Check(diagnostic)
+                    if diagnostic.failure == crate::diagnostics::Failure::DefinitionBodyMismatch
+            ));
+            continue;
+        }
+        while engine.advance(1, 4096, &context).unwrap() {}
+        while !engine.prepare_export(128).unwrap() {}
+        let checked = engine.checked().unwrap();
+        let x = FreeVariable::new(17);
+        let oracle = crate::normalize_and_check(
+            ProofCertificate::new(vec![ProofStep::Separation(ProofSeparation {
+                predicate: Formula::negate(Formula::member(x, x)).into(),
+                element: x,
+                source: FreeVariable::new(18),
+                result: FreeVariable::new(19),
+                parameters: Vec::new(),
+            })])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(checked.conclusion(), Some(oracle.conclusion()));
+    }
+}

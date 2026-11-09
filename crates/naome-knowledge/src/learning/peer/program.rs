@@ -503,19 +503,19 @@ impl Packet {
         }
         let context = inputs.context;
         let checked = evaluate(&self.manifest, &commands, &context, &mut inputs.work)?;
-        let mut definitions = Vec::new();
         let target = checked
             .conclusion()
             .ok_or("peer replay formula capacity")?
             .clone();
-        for command in &commands {
-            if let Command::DefinedRelation { definition_id, .. } = command {
-                let id = naome_proof::DefinitionId::from_bytes(*definition_id);
-                if !definitions.contains(&id) {
-                    definitions.push(id);
-                }
-            }
-        }
+        let used = used_commands(&commands, Command::operands)?;
+        let definitions = commands
+            .iter()
+            .zip(used)
+            .filter(|(_, contributes)| *contributes)
+            .filter_map(|(command, _)| command.definition_reference())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let graph_memory =
             crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)?;
         let graphs = graphs(&checked, &target, &commands, &context)?;
@@ -705,6 +705,7 @@ pub(crate) fn contributing_proofs(
         Command::Alias { input } | Command::Seal { proof: input } => vec![input],
         Command::Graph { .. }
         | Command::DefinedRelation { .. }
+        | Command::AuthoredRelation { .. }
         | Command::Equal { .. }
         | Command::Member { .. }
         | Command::Not { .. }

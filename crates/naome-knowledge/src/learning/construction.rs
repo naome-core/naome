@@ -183,7 +183,7 @@ pub(super) fn construct_program(
                     recipe.definitions.push(entry.clone());
                 }
             }
-            program_from_recipe(target, recipe).map(Some)
+            program_from_authored_recipe(target, recipe, definitions).map(Some)
         },
     )?;
     Ok((candidate, work))
@@ -196,6 +196,14 @@ pub(super) fn program_from_recipe(
     program_from_recipe_with_inputs(target, recipe, &[], [], None)
 }
 
+pub(super) fn program_from_authored_recipe(
+    target: &Formula,
+    recipe: proof::Recipe,
+    earlier: &[super::definitions::Entry],
+) -> Result<ProgramCandidate, String> {
+    assemble_program(target, recipe, &[], [], None, earlier)
+}
+
 pub(super) fn program_from_recipe_with_inputs(
     target: &Formula,
     recipe: proof::Recipe,
@@ -203,8 +211,18 @@ pub(super) fn program_from_recipe_with_inputs(
     inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
     inline: Option<naome_proof::ProofId>,
 ) -> Result<ProgramCandidate, String> {
-    let (steps, helpers) = program_recipe(recipe, inline)?;
-    let commands = naome_proof::program::Projection::from_inference_steps(&steps)?.into_commands();
+    assemble_program(target, recipe, programs, inputs, inline, &[])
+}
+
+fn assemble_program(
+    target: &Formula,
+    recipe: proof::Recipe,
+    programs: &[super::peer::Packet],
+    inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
+    inline: Option<naome_proof::ProofId>,
+    earlier: &[super::definitions::Entry],
+) -> Result<ProgramCandidate, String> {
+    let (commands, helpers) = program_recipe(recipe, inline, earlier)?;
     let artifacts = helpers
         .iter()
         .map(|source| {
@@ -227,7 +245,8 @@ pub(super) fn program_from_recipe_with_inputs(
 fn program_recipe(
     recipe: proof::Recipe,
     inline: Option<naome_proof::ProofId>,
-) -> Result<(Vec<ProofStep>, Vec<String>), String> {
+    earlier: &[super::definitions::Entry],
+) -> Result<(Vec<naome_proof::program::Command>, Vec<String>), String> {
     use std::collections::{BTreeMap, BTreeSet};
     fn append(
         output: &mut Vec<ProofStep>,
@@ -302,10 +321,47 @@ fn program_recipe(
     if conclusion as usize + 1 != output.len() {
         return Err("native helper root differs".into());
     }
-    let used = output
+    let references = output
         .iter()
-        .chain(kept.iter().flat_map(|proof| proof.steps()))
         .flat_map(ProofStep::definition_references)
+        .collect::<BTreeSet<_>>();
+    let mut authored = BTreeMap::new();
+    if !earlier.is_empty() {
+        let earlier_ids = earlier
+            .iter()
+            .map(super::definitions::Entry::address)
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let entries = recipe
+            .definitions
+            .iter()
+            .map(|entry| Ok((entry.address()?, entry)))
+            .collect::<Result<Vec<_>, String>>()?;
+        let earlier = entries
+            .iter()
+            .filter(|(id, _)| earlier_ids.contains(id))
+            .map(|(_, entry)| (*entry).clone())
+            .collect::<Vec<_>>();
+        for (id, entry) in entries {
+            let definition = entry.certificate()?.definition_id();
+            if references.contains(&definition)
+                && !earlier_ids.contains(&id)
+                && let Some(body) = super::definitions::authored_body(entry, &earlier, &context)?
+            {
+                authored.insert(definition, body);
+            }
+        }
+    }
+    let commands =
+        naome_proof::program::Projection::from_authored_steps(&output, &authored)?.into_commands();
+    let used = commands
+        .iter()
+        .filter_map(naome_proof::program::Command::definition_reference)
+        .chain(kept.iter().flat_map(|proof| {
+            proof
+                .steps()
+                .iter()
+                .flat_map(ProofStep::definition_references)
+        }))
         .collect::<BTreeSet<_>>();
     let definitions = recipe
         .definitions
@@ -323,7 +379,7 @@ fn program_recipe(
             helpers.push(lemma);
         }
     }
-    Ok((output, helpers))
+    Ok((commands, helpers))
 }
 
 struct ConstructionContext<'a> {

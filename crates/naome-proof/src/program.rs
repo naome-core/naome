@@ -287,6 +287,13 @@ pub enum Command {
         definition_id: [u8; 32],
         arguments: Vec<u32>,
     },
+    /// Apply a checked definition and verify its authored body at formal
+    /// arguments 0..arity. The body can use earlier checked definitions.
+    AuthoredRelation {
+        definition_id: [u8; 32],
+        arguments: Vec<u32>,
+        body: u64,
+    },
     Equal {
         left: u32,
         right: u32,
@@ -401,6 +408,17 @@ pub enum Command {
 }
 
 impl Command {
+    /// The checked definition applied by this command, if any.
+    pub fn definition_reference(&self) -> Option<crate::DefinitionId> {
+        match self {
+            Self::DefinedRelation { definition_id, .. }
+            | Self::AuthoredRelation { definition_id, .. } => {
+                Some(crate::DefinitionId::from_bytes(*definition_id))
+            }
+            _ => None,
+        }
+    }
+
     /// Earlier top-level operands. A deduction scope keeps its private
     /// addresses separate from these program-level references.
     pub fn operands(&self) -> Vec<u64> {
@@ -430,6 +448,7 @@ impl Command {
                 third,
             } => vec![*first, *second, *third],
             Self::ForAll { body, .. }
+            | Self::AuthoredRelation { body, .. }
             | Self::Substitute { body, .. }
             | Self::Instantiation { body, .. }
             | Self::Substitution { body, .. } => vec![*body],

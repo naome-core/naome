@@ -48,6 +48,8 @@ pub enum Failure {
     OpenConclusion,
     #[serde(rename = "reference.missing_proof")]
     MissingProof { proof_id: Digest },
+    #[serde(rename = "definition.authored_body_mismatch")]
+    DefinitionBodyMismatch,
     #[serde(rename = "definition.expansion")]
     Expansion { reason: ExpansionFailure },
     #[serde(rename = "formula.invalid")]
@@ -85,6 +87,7 @@ impl Failure {
             Self::OpenConclusion => "conclusion.open",
             Self::MissingProof { .. } => "reference.missing_proof",
             Self::Expansion { .. } => "definition.expansion",
+            Self::DefinitionBodyMismatch => "definition.authored_body_mismatch",
             Self::Formula { .. } => "formula.invalid",
             Self::FormulaWorkLimit { .. } => "checker.formula_work_limit",
             Self::ContextLimit => "context.limit",

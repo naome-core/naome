@@ -71,6 +71,9 @@ fn metadata(command: &Command) -> CommandMetadata {
             Node::ForAll(body) => (Rule::ForAll, vec![(R::Body, body)], vec![]),
         },
         Command::DefinedRelation { .. } => (Rule::DefinedRelation, vec![], vec![]),
+        Command::AuthoredRelation { body, .. } => {
+            (Rule::DefinedRelation, vec![(R::Body, body)], vec![])
+        }
         Command::Equal { left, right } => (
             Rule::Equal,
             vec![],

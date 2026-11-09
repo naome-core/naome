@@ -798,8 +798,12 @@ impl Engine {
                 let mut instantiation_axiom = None;
                 let mut deduction = None;
                 match plan.construction {
-                    checker::Construction::Definition(definition_id, arguments) => {
-                        definition = Some(DefinitionEvaluation::new(definition_id, arguments));
+                    checker::Construction::Definition {
+                        id,
+                        arguments,
+                        authored_body,
+                    } => {
+                        definition = Some(DefinitionEvaluation::new(id, arguments, authored_body));
                         operations.push(Operation::Definition);
                     }
                     checker::Construction::Formula(expression) => {
