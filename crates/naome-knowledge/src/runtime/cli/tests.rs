@@ -39,3 +39,19 @@ fn startup_handoff_is_explicit_and_bound_to_start() {
             .startup_handoff
     );
 }
+
+#[test]
+fn invalid_arguments_preserve_the_specific_machine_cause() {
+    assert!(matches!(
+        Arguments::parse(&["unknown".into()]),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CliArgumentsInvalid
+        ))
+    ));
+    assert!(matches!(
+        Arguments::parse(&["--json".into(), "--startup-handoff".into(), "status".into()]),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CliHandoffCommand
+        ))
+    ));
+}

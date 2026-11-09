@@ -67,7 +67,7 @@ pub(super) struct Arguments<'a> {
 }
 
 impl<'a> Arguments<'a> {
-    pub fn parse(arguments: &'a [OsString]) -> Result<Self, String> {
+    pub fn parse(arguments: &'a [OsString]) -> Result<Self, crate::Error> {
         // Only a leading option selects machine output.
         let (json, arguments) = match arguments.split_first() {
             Some((option, rest)) if option == "--json" => (true, rest),
@@ -81,10 +81,10 @@ impl<'a> Arguments<'a> {
             [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
                 command.to_str().expect("matched UTF-8 command")
             }
-            _ => return Err("usage: naome [--json] start | stop | status\nplace --json before the command for machine output".into()),
+            _ => return Err(crate::InputFault::CliArgumentsInvalid.into()),
         };
         if startup_handoff && command != "start" {
-            return Err("startup handoff is only valid for --json start".into());
+            return Err(crate::InputFault::CliHandoffCommand.into());
         }
         Ok(Self {
             command,
@@ -94,7 +94,7 @@ impl<'a> Arguments<'a> {
     }
 }
 
-pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), String> {
+pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), crate::Error> {
     let stdout = io::stdout();
     let color = stdout.is_terminal()
         && std::env::var_os("NO_COLOR").is_none()
@@ -102,7 +102,7 @@ pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), St
     let output = if json {
         format!(
             "{}\n",
-            serde_json::to_string(status).map_err(|error| error.to_string())?
+            serde_json::to_string(status).map_err(|_| crate::InputFault::StatusEncoding)?
         )
     } else {
         human(command, status, color)
@@ -110,7 +110,7 @@ pub(super) fn print(command: &str, json: bool, status: &Status) -> Result<(), St
     stdout
         .lock()
         .write_all(output.as_bytes())
-        .map_err(|error| error.to_string())
+        .map_err(crate::Error::from)
 }
 
 fn human(command: &str, status: &Status, color: bool) -> String {

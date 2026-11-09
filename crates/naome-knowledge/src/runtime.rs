@@ -1290,7 +1290,10 @@ pub async fn execute() -> Result<(), crate::Error> {
         command,
         json,
         startup_handoff,
-    } = cli::Arguments::parse(&arguments).map_err(|_| Failure::Arguments)?;
+    } = cli::Arguments::parse(&arguments).map_err(|cause| crate::Error::RuntimeContext {
+        code: Failure::Arguments,
+        cause: Box::new(cause),
+    })?;
     let _replay_guard = replay_guard::optional(command).map_err(|_| Failure::ReplayGuard)?;
     let directory = directory().map_err(|cause| crate::Error::RuntimeContext {
         code: Failure::Directory,
@@ -1330,7 +1333,10 @@ pub async fn execute() -> Result<(), crate::Error> {
                 artifact_verification: ArtifactVerification::NotRun,
             },
         )
-        .map_err(|_| Failure::Output)?;
+        .map_err(|cause| crate::Error::RuntimeContext {
+            code: Failure::Output,
+            cause: Box::new(cause),
+        })?;
         return Ok(());
     }
     crate::storage::private_directory(&directory).map_err(|cause| {
@@ -1369,5 +1375,8 @@ pub async fn execute() -> Result<(), crate::Error> {
             })?,
         _ => unreachable!(),
     };
-    cli::print(command, json, &status).map_err(|_| Failure::Output.into())
+    cli::print(command, json, &status).map_err(|cause| crate::Error::RuntimeContext {
+        code: Failure::Output,
+        cause: Box::new(cause),
+    })
 }
