@@ -963,6 +963,74 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::DefinitionScores => "definition reference scores differ",
                 crate::ResearchFailure::DefinitionChoicesEmpty => "definition choices empty",
                 crate::ResearchFailure::KernelUnsupported => "unsupported kernel constant",
+                crate::ResearchFailure::FragmentFormulaEncoding => {
+                    "contextual proof formula encoding differs"
+                }
+                crate::ResearchFailure::FragmentObservedJob => {
+                    "contextual proof lacks its observed job"
+                }
+                crate::ResearchFailure::FragmentCapacity => {
+                    "contextual proof capacity or scope differs"
+                }
+                crate::ResearchFailure::FragmentVariableScope => {
+                    "contextual proof free-variable scope differs"
+                }
+                crate::ResearchFailure::FragmentClosedTarget => {
+                    "contextual proof closed target differs"
+                }
+                crate::ResearchFailure::FragmentIdentity => {
+                    "contextual proof conclusion or identity differs"
+                }
+                crate::ResearchFailure::FragmentSourceLineage => {
+                    "contextual proof source lineage differs"
+                }
+                crate::ResearchFailure::FragmentBranchSource => {
+                    "contextual proof branch leaves its checked source"
+                }
+                crate::ResearchFailure::FragmentChild => "contextual proof child differs",
+                crate::ResearchFailure::FragmentTransition => "contextual proof transition differs",
+                crate::ResearchFailure::FragmentBranchBinding => {
+                    "contextual proof assumptions or branch binding differs"
+                }
+                crate::ResearchFailure::FragmentObservedParent => {
+                    "contextual proof does not cite an observed parent"
+                }
+                crate::ResearchFailure::FragmentObservedReceipt => {
+                    "contextual proof observed receipt differs"
+                }
+                crate::ResearchFailure::FragmentExecutionMissing => {
+                    "contextual proof original execution absent"
+                }
+                crate::ResearchFailure::FragmentClosedBranchMissing => {
+                    "contextual proof closed branch is missing or truncated"
+                }
+                crate::ResearchFailure::FragmentObservedSubtree => {
+                    "contextual proof observed subtree differs"
+                }
+                crate::ResearchFailure::FragmentRecordedScope => {
+                    "contextual proof differs from its recorded scope"
+                }
+                crate::ResearchFailure::FragmentNegatedGoal => {
+                    "contextual proof lacks the original negated goal"
+                }
+                crate::ResearchFailure::FragmentNegationBinding => {
+                    "contextual proof negation binding"
+                }
+                crate::ResearchFailure::FragmentOpenScope => {
+                    "contextual proof left an open assumption or variable"
+                }
+                crate::ResearchFailure::DerivationDepth => "checked sequence depth differs",
+                crate::ResearchFailure::DerivationNestedEvidence => {
+                    "checked sequence contains unsupported nested evidence"
+                }
+                crate::ResearchFailure::DerivationAction => {
+                    "checked sequence action is not offered"
+                }
+                crate::ResearchFailure::DerivationArity => "checked sequence branch arity differs",
+                crate::ResearchFailure::DerivationCitationIndex => "checked citation index",
+                crate::ResearchFailure::DerivationSourceIdentity => {
+                    "checked sequence source identity differs"
+                }
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }

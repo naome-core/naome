@@ -173,10 +173,13 @@ fn contextual_fragments_recheck_all_premises_scope_and_original_branch() {
             }
             _ => changed.state = "ff".repeat(32),
         }
-        assert!(
-            changed.validate_source(target, &tree, &id).is_err(),
-            "mutation {mutation}"
-        );
+        let error = changed.validate_source(target, &tree, &id).unwrap_err();
+        if mutation == 3 {
+            assert_eq!(
+                serde_json::to_value(error).unwrap()["code"],
+                u32::from(crate::ResearchFailure::FragmentSourceLineage)
+            );
+        }
     }
     let invalid = Tree::Step {
         action: Action::Mp(0, 2),
