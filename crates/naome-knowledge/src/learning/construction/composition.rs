@@ -117,7 +117,7 @@ fn deductions(
     terms: &mut Vec<proof::Term>,
     maximum: usize,
     started: Instant,
-) -> Result<usize, String> {
+) -> Result<usize, crate::Error> {
     fn missing(target: &Formula, terms: &[proof::Term], depth: usize, output: &mut Vec<Formula>) {
         if depth >= 2 {
             return;
@@ -252,14 +252,16 @@ fn deductions(
             .iter()
             .any(|id| !state.contains_proof(*id))
         {
-            return Err("temporary deduction original source missing".into());
+            return Err(crate::ResearchFailure::CompositionDeductionSourceMissing.into());
         }
         let certificate =
             naome_proof::ProofCertificate::from_canonical_bytes(witness.canonical_certificate())
-                .map_err(|e| e.to_string())?;
-        let checked = proof::check(certificate, &state).map_err(|e| e.to_string())?;
+                .map_err(|error| {
+                    crate::object::certificate_error(witness.canonical_certificate(), error)
+                })?;
+        let checked = proof::check(certificate, &state)?;
         if checked.proof_id() != witness.proof_id() {
-            return Err("temporary deduction identity differs".into());
+            return Err(crate::ResearchFailure::CompositionDeductionIdentity.into());
         }
         // An answered obligation can be refuted; only its exact positive
         // conclusion supplies this requested conjunction prerequisite.
@@ -279,7 +281,7 @@ fn deductions(
             target: part,
         });
         if !state.contains_proof(checked.proof_id()) {
-            state.register_proof(checked).map_err(|e| e.to_string())?;
+            state.register_proof(checked)?;
             lemmas.push(certificate);
             bytes = next_bytes;
             steps = next_steps;
@@ -291,7 +293,7 @@ fn primitive(
     target: &Formula,
     maximum: usize,
     started: Instant,
-) -> Result<(Option<proof::Verified>, usize), String> {
+) -> Result<(Option<proof::Verified>, usize), crate::Error> {
     if maximum == 0 {
         return Ok((None, 0));
     }
@@ -319,7 +321,7 @@ pub fn construct(
     context: &[proof::Term],
     maximum: usize,
     started: Instant,
-) -> Result<(Option<proof::Verified>, usize), String> {
+) -> Result<(Option<proof::Verified>, usize), crate::Error> {
     let (term, work) = construct_term(target, context, maximum, started, false)?;
     let proof = term.map(|term| proof::verify(&term, target)).transpose()?;
     Ok((proof, work))
@@ -331,7 +333,7 @@ pub(crate) fn construct_term(
     maximum: usize,
     started: Instant,
     native: bool,
-) -> Result<(Option<proof::Term>, usize), String> {
+) -> Result<(Option<proof::Term>, usize), crate::Error> {
     let maximum = maximum.min(16);
     let mut context = context.to_vec();
     let deduction_work = deductions(target, &mut context, maximum, started)?;
@@ -347,6 +349,31 @@ pub(crate) fn construct_term(
 mod diagnostic_tests {
     use super::*;
     use naome_foundation::FreeVariable;
+
+    #[test]
+    fn construction_preserves_invalid_input_proof_diagnostic() {
+        let atom = Formula::member(FreeVariable::new(0), FreeVariable::new(1));
+        let target = Formula::negate(Formula::implies(
+            atom.clone(),
+            Formula::negate(atom.clone()),
+        ));
+        let unrelated = Formula::member(FreeVariable::new(2), FreeVariable::new(3));
+        let certificate =
+            naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
+                proof_id: naome_proof::ProofId::from_bytes([0; 32]),
+            }])
+            .unwrap();
+        let term = proof::Term::Native {
+            certificate,
+            lemmas: Vec::new(),
+            definitions: Vec::new(),
+            target: unrelated.clone(),
+        };
+        let expected = proof::verify(&term, &unrelated).err().unwrap();
+        assert!(matches!(expected, crate::Error::Proof(_)));
+        let actual = construct_term(&target, &[term], 16, Instant::now(), false).unwrap_err();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn validation_preserves_evidence_failure_and_replay_work() {

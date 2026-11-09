@@ -879,6 +879,7 @@ codes! {
         FragmentFormulaEncoding = 313, FragmentObservedJob = 314, FragmentCapacity = 315, FragmentVariableScope = 316, FragmentClosedTarget = 317, FragmentIdentity = 318, FragmentSourceLineage = 319, FragmentBranchSource = 320, FragmentChild = 321, FragmentTransition = 322, FragmentBranchBinding = 323, FragmentObservedParent = 324, FragmentObservedReceipt = 325, FragmentExecutionMissing = 326, FragmentClosedBranchMissing = 327, FragmentObservedSubtree = 328, FragmentRecordedScope = 329, FragmentNegatedGoal = 330, FragmentNegationBinding = 331, FragmentOpenScope = 332, DerivationDepth = 333, DerivationNestedEvidence = 334, DerivationAction = 335, DerivationArity = 336, DerivationCitationIndex = 337, DerivationSourceIdentity = 338,
         CompositionTraceCapacity = 339, CompositionInputBinding = 340,
         CompositionCheckedInputMissing = 341, CompositionReplayMismatch = 342,
+        CompositionDeductionSourceMissing = 343, CompositionDeductionIdentity = 344,
     }
 
 }

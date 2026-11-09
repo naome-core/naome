@@ -1394,6 +1394,12 @@ impl fmt::Display for Error {
                     "composition checked input missing"
                 }
                 crate::ResearchFailure::CompositionReplayMismatch => "composition replay differs",
+                crate::ResearchFailure::CompositionDeductionSourceMissing => {
+                    "temporary deduction original source missing"
+                }
+                crate::ResearchFailure::CompositionDeductionIdentity => {
+                    "temporary deduction identity differs"
+                }
                 crate::ResearchFailure::OfferedProofFormulaMissing => {
                     "offered theorem formula missing"
                 }
