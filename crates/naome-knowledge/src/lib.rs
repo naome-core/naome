@@ -28,7 +28,8 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
 pub use outcome::{
     CheckpointSqlFault, DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault,
     InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ResearchFailure,
-    ResourceValidationReason, RuntimeFailure, StartupFailure, StorageIoOperation, WorkerFailure,
+    ResourceValidationReason, RuntimeFailure, SchemaFailure, StartupFailure, StorageIoOperation,
+    WorkerFailure,
 };
 mod frontier;
 pub use error::{CertificateFormatError, DurabilityFailure, Error, FormatFailure};

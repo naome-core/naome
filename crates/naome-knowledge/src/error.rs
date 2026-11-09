@@ -250,6 +250,11 @@ pub enum Error {
     CertificateFormat(Box<CertificateFormatError>),
     CertificateConstruction(FormatFailure),
     DefinedFormula(naome_checker::diagnostics::FormulaFailure),
+    DefinitionExpansion(naome_checker::diagnostics::ExpansionFailure),
+    Schema {
+        reason: crate::SchemaFailure,
+        variable: u32,
+    },
     /// Invalid data read from owned storage remains fatal while retaining the
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
@@ -332,6 +337,8 @@ impl Error {
             Self::CertificateFormat(_) => OperationCode::CertificateFormat,
             Self::CertificateConstruction(_) => OperationCode::CertificateConstruction,
             Self::DefinedFormula(_) => OperationCode::DefinedFormula,
+            Self::DefinitionExpansion(_) => OperationCode::DefinitionExpansion,
+            Self::Schema { .. } => OperationCode::Schema,
             Self::Stored(_) => OperationCode::InvalidStoredRecord,
             Self::CorruptStorage(_) => OperationCode::CorruptStorage,
             Self::CheckedContext(_) => OperationCode::CheckedContext,
@@ -397,7 +404,9 @@ impl Error {
             | Self::StorageIo { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)
-            | Self::DefinedFormula(_)) => Self::Stored(Box::new(error)),
+            | Self::DefinedFormula(_)
+            | Self::DefinitionExpansion(_)
+            | Self::Schema { .. }) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_)
             | Self::CertificateFormat(_)
             | Self::CertificateConstruction(_)
@@ -583,6 +592,10 @@ impl fmt::Display for Error {
                 write!(f, "malformed certificate: {:?}", error.reason)
             }
             Self::DefinedFormula(reason) => write!(f, "defined formula: {reason:?}"),
+            Self::DefinitionExpansion(reason) => write!(f, "definition expansion: {reason:?}"),
+            Self::Schema { reason, variable } => {
+                write!(f, "schema {} variable {variable}", u32::from(*reason))
+            }
             Self::CertificateConstruction(reason) => {
                 write!(f, "certificate construction: {reason:?}")
             }
@@ -950,6 +963,7 @@ impl fmt::Display for Error {
                 }
                 crate::ResearchFailure::DefinitionScores => "definition reference scores differ",
                 crate::ResearchFailure::DefinitionChoicesEmpty => "definition choices empty",
+                crate::ResearchFailure::KernelUnsupported => "unsupported kernel constant",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }
@@ -1540,6 +1554,13 @@ impl serde::Serialize for Error {
         if let Self::ProgramInput(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;
         }
+        if let Self::DefinitionExpansion(reason) = cause {
+            value.serialize_entry("expansion", reason)?;
+        }
+        if let Self::Schema { reason, variable } = cause {
+            value.serialize_entry("reason", reason)?;
+            value.serialize_entry("variable", variable)?;
+        }
         if let Self::DefinedFormula(reason) = cause {
             value.serialize_entry("formula", reason)?;
         }
@@ -1730,6 +1751,36 @@ impl From<naome_checker::question::ResolutionError> for Error {
     }
 }
 
+impl From<naome_proof::DefinitionExpansionError> for Error {
+    fn from(error: naome_proof::DefinitionExpansionError) -> Self {
+        match error {
+            naome_proof::DefinitionExpansionError::Access(source) => {
+                naome_checker::ContextError::from(source).into()
+            }
+            other => Self::DefinitionExpansion((&other).into()),
+        }
+    }
+}
+impl From<naome_foundation::SchemaError> for Error {
+    fn from(error: naome_foundation::SchemaError) -> Self {
+        use naome_foundation::SchemaError as S;
+        let (reason, variable) = match error {
+            S::RoleVariableCollision(v) => (crate::SchemaFailure::RoleCollision, v),
+            S::ParameterCollidesWithRole(v) => (crate::SchemaFailure::ParameterRoleCollision, v),
+            S::DuplicateParameter(v) => (crate::SchemaFailure::DuplicateParameter, v),
+            S::ForbiddenPredicateVariable(v) => {
+                (crate::SchemaFailure::ForbiddenPredicateVariable, v)
+            }
+            S::UndeclaredPredicateVariable(v) => {
+                (crate::SchemaFailure::UndeclaredPredicateVariable, v)
+            }
+        };
+        Self::Schema {
+            reason,
+            variable: variable.identifier(),
+        }
+    }
+}
 impl From<naome_proof::DefinedFormulaCodecError> for Error {
     fn from(error: naome_proof::DefinedFormulaCodecError) -> Self {
         Self::DefinedFormula((&error).into())

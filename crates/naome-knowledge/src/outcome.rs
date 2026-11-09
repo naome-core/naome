@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30,
     }
 
     pub enum InputFault in 7 {
@@ -741,6 +741,7 @@ codes! {
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
     pub enum JsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
     pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
+    pub enum SchemaFailure in 79 { RoleCollision = 1, ParameterRoleCollision = 2, DuplicateParameter = 3, ForbiddenPredicateVariable = 4, UndeclaredPredicateVariable = 5 }
     pub enum ResourceValidationReason in 78 {
         ProfileVersion = 1, MemoryBudget = 2, ScalingOverflow = 3, FieldWidth = 4,
         ResidentOverflow = 5, FieldBudget = 6, FieldZero = 7, Timer = 8,
@@ -874,7 +875,7 @@ codes! {
         NativeDagTargetMismatch = 275, NativeTermTargetMismatch = 276, NativeCheckedTargetMismatch = 277, KnowledgeTraceMissing = 278,
         ProofApplicationShape = 279, ProofApplicationAntecedent = 280, ProofCombinatorShape = 281, ProofCombinatorAntecedent = 282, ProofGeneralizationCapture = 283, ProofUnboundVariable = 284, ProofLemmaTarget = 285, ProofSealedTarget = 286, ProofUndischargedAssumption = 287, ProofIndexWidth = 288,
         LogicOpenLemma = 289, LogicLemmaInstantiation = 290, LogicProjectionShape = 291, LogicProjectionResult = 292, LogicExistentialGoal = 293, LogicExistentialPremise = 294, LogicEigenvariableEscape = 295, LogicExistentialElimination = 296, LogicExistentialOpening = 297, LogicContradiction = 298, LogicDoubleNegation = 299, LogicNegatedImplication = 300, LogicFreshVariable = 301, LogicUniversalPremise = 302,
-        ProofExpansion = 303, ProofReferenceReplacement = 304, ProofRepresentationMismatch = 305, DefinitionBinderSpace = 306, DefinitionBinder = 307, DefinitionProposalBinder = 308, DefinitionProposalUniversal = 309, DefinitionScores = 310, DefinitionChoicesEmpty = 311,
+        ProofExpansion = 303, ProofReferenceReplacement = 304, ProofRepresentationMismatch = 305, DefinitionBinderSpace = 306, DefinitionBinder = 307, DefinitionProposalBinder = 308, DefinitionProposalUniversal = 309, DefinitionScores = 310, DefinitionChoicesEmpty = 311, KernelUnsupported = 312,
     }
 
 }
