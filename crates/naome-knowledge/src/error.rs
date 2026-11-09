@@ -249,6 +249,7 @@ pub enum Error {
     DiagnosticInspection(naome_checker::diagnostics::InspectionError),
     CertificateFormat(Box<CertificateFormatError>),
     CertificateConstruction(FormatFailure),
+    DefinedFormula(naome_checker::diagnostics::FormulaFailure),
     /// Invalid data read from owned storage remains fatal while retaining the
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
@@ -330,6 +331,7 @@ impl Error {
             Self::DiagnosticInspection(_) => OperationCode::DiagnosticInspection,
             Self::CertificateFormat(_) => OperationCode::CertificateFormat,
             Self::CertificateConstruction(_) => OperationCode::CertificateConstruction,
+            Self::DefinedFormula(_) => OperationCode::DefinedFormula,
             Self::Stored(_) => OperationCode::InvalidStoredRecord,
             Self::CorruptStorage(_) => OperationCode::CorruptStorage,
             Self::CheckedContext(_) => OperationCode::CheckedContext,
@@ -394,7 +396,8 @@ impl Error {
             | Self::CheckpointSql { .. }
             | Self::StorageIo { .. }
             | Self::ProgramInput(_)
-            | Self::Formula(_)) => Self::Stored(Box::new(error)),
+            | Self::Formula(_)
+            | Self::DefinedFormula(_)) => Self::Stored(Box::new(error)),
             error @ (Self::Proof(_)
             | Self::CertificateFormat(_)
             | Self::CertificateConstruction(_)
@@ -579,6 +582,7 @@ impl fmt::Display for Error {
             Self::CertificateFormat(error) => {
                 write!(f, "malformed certificate: {:?}", error.reason)
             }
+            Self::DefinedFormula(reason) => write!(f, "defined formula: {reason:?}"),
             Self::CertificateConstruction(reason) => {
                 write!(f, "certificate construction: {reason:?}")
             }
@@ -934,6 +938,10 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ProofRepresentationMismatch => {
                     "typed representation changed the checked conclusion"
                 }
+                crate::ResearchFailure::DefinitionBinderSpace => {
+                    "definition binder space exhausted"
+                }
+                crate::ResearchFailure::DefinitionBinder => "definition binder cannot be opened",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }
@@ -1524,6 +1532,9 @@ impl serde::Serialize for Error {
         if let Self::ProgramInput(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;
         }
+        if let Self::DefinedFormula(reason) = cause {
+            value.serialize_entry("formula", reason)?;
+        }
         if let Self::Formula(reason) = cause {
             value.serialize_entry(
                 "formula",
@@ -1711,6 +1722,11 @@ impl From<naome_checker::question::ResolutionError> for Error {
     }
 }
 
+impl From<naome_proof::DefinedFormulaCodecError> for Error {
+    fn from(error: naome_proof::DefinedFormulaCodecError) -> Self {
+        Self::DefinedFormula((&error).into())
+    }
+}
 impl From<naome_foundation::FormulaCodecError> for Error {
     fn from(error: naome_foundation::FormulaCodecError) -> Self {
         Self::Formula(error)

@@ -603,7 +603,7 @@ pub(super) fn define_steps(
         let primitive = value
             .expand_with(&ArtifactState::new())
             .map_err(|_| crate::ResearchFailure::ProofExpansion)?;
-        super::definitions::represent(primitive.as_ref(), definitions).map_err(crate::Error::from)
+        super::definitions::represent(primitive.as_ref(), definitions)
     };
     steps
         .iter()

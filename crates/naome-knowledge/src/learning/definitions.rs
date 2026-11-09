@@ -24,15 +24,15 @@ impl Entry {
         DefinitionCertificate::from_canonical_bytes(&self.certificate)
             .map_err(|error| crate::object::definition_error(&self.certificate, error))
     }
-    pub fn address(&self) -> Result<ArtifactId, String> {
+    pub fn address(&self) -> Result<ArtifactId, crate::Error> {
         Ok(self.certificate()?.definition_id().into())
     }
-    pub fn body(&self) -> Result<Formula, String> {
+    pub fn body(&self) -> Result<Formula, crate::Error> {
         self.certificate()?
             .body()
             .clone()
             .into_primitive()
-            .map_err(|e| e.to_string())
+            .map_err(crate::Error::from)
     }
     pub fn bytes(&self) -> usize {
         self.certificate.len() + self.obligation.as_ref().map_or(0, Vec::len)
@@ -153,7 +153,10 @@ fn canonical(formula: &Formula) -> (Formula, Vec<FreeVariable>) {
 }
 
 /// IDs route the reference; only its actual expanded body enters model features.
-fn application(formula: &Formula, entries: &[Entry]) -> Result<Option<DefinedFormula>, String> {
+fn application(
+    formula: &Formula,
+    entries: &[Entry],
+) -> Result<Option<DefinedFormula>, crate::Error> {
     fn variable(
         pattern: naome_foundation::graph::Variable,
         actual: naome_foundation::graph::Variable,
@@ -213,8 +216,8 @@ fn application(formula: &Formula, entries: &[Entry]) -> Result<Option<DefinedFor
 pub(super) fn represent(
     formula: &Formula,
     entries: &[Entry],
-) -> Result<naome_proof::ProofFormula, String> {
-    fn defined(f: &Formula, entries: &[Entry]) -> Result<DefinedFormula, String> {
+) -> Result<naome_proof::ProofFormula, crate::Error> {
+    fn defined(f: &Formula, entries: &[Entry]) -> Result<DefinedFormula, crate::Error> {
         if let Some(reference) = application(f, entries)? {
             return Ok(reference);
         }
@@ -229,17 +232,16 @@ pub(super) fn represent(
                 let variable = (0..=u32::MAX)
                     .map(FreeVariable::new)
                     .find(|v| !used.contains(v))
-                    .ok_or("definition binder space")?;
+                    .ok_or(crate::ResearchFailure::DefinitionBinderSpace)?;
                 let body = f
                     .open_outer_universal(variable)
-                    .ok_or("definition binder")?;
+                    .ok_or(crate::ResearchFailure::DefinitionBinder)?;
                 DefinedFormula::for_all(variable, defined(&body, entries)?)
             }
-            _ => DefinedFormula::from_primitive(f).map_err(|error| error.to_string())?,
+            _ => DefinedFormula::from_primitive(f).map_err(crate::Error::from)?,
         })
     }
-    naome_proof::ProofFormula::from_defined(defined(formula, entries)?)
-        .map_err(|error| error.to_string())
+    naome_proof::ProofFormula::from_defined(defined(formula, entries)?).map_err(crate::Error::from)
 }
 
 pub fn discover(target: &Formula) -> Result<Option<Entry>, String> {
@@ -509,6 +511,15 @@ mod tests {
             obligation: None,
         }
     }
+    #[test]
+    fn malformed_defined_formula_preserves_numeric_reason() {
+        let reason = DefinedFormula::decode_canonical(&[255]).unwrap_err();
+        let error = crate::Error::from(reason);
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], 0x0006_001c_u32);
+        assert!(value["formula"]["code"].as_u64().is_some());
+    }
+
     #[test]
     fn invalid_definition_and_obligation_retain_structured_diagnostics() {
         let invalid = Entry {

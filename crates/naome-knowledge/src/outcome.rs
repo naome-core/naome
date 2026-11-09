@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28,
     }
 
     pub enum InputFault in 7 {
@@ -874,7 +874,7 @@ codes! {
         NativeDagTargetMismatch = 275, NativeTermTargetMismatch = 276, NativeCheckedTargetMismatch = 277, KnowledgeTraceMissing = 278,
         ProofApplicationShape = 279, ProofApplicationAntecedent = 280, ProofCombinatorShape = 281, ProofCombinatorAntecedent = 282, ProofGeneralizationCapture = 283, ProofUnboundVariable = 284, ProofLemmaTarget = 285, ProofSealedTarget = 286, ProofUndischargedAssumption = 287, ProofIndexWidth = 288,
         LogicOpenLemma = 289, LogicLemmaInstantiation = 290, LogicProjectionShape = 291, LogicProjectionResult = 292, LogicExistentialGoal = 293, LogicExistentialPremise = 294, LogicEigenvariableEscape = 295, LogicExistentialElimination = 296, LogicExistentialOpening = 297, LogicContradiction = 298, LogicDoubleNegation = 299, LogicNegatedImplication = 300, LogicFreshVariable = 301, LogicUniversalPremise = 302,
-        ProofExpansion = 303, ProofReferenceReplacement = 304, ProofRepresentationMismatch = 305,
+        ProofExpansion = 303, ProofReferenceReplacement = 304, ProofRepresentationMismatch = 305, DefinitionBinderSpace = 306, DefinitionBinder = 307,
     }
 
 }
