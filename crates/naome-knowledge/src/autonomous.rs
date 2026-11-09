@@ -41,7 +41,7 @@ impl Intervals {
             self.proof_interval_ms
         }
     }
-    pub(crate) fn validate(self) -> Result<Self, String> {
+    pub(crate) fn validate(self) -> Result<Self, crate::Error> {
         if [self.question_interval_ms, self.proof_interval_ms]
             .iter()
             .any(|ms| {
@@ -50,7 +50,7 @@ impl Intervals {
                     .is_none()
             })
         {
-            return Err("runtime intervals must be representable".into());
+            return Err(crate::InputFault::RuntimeIntervalsWidth.into());
         }
         self.jobs.validate()?;
         Ok(self)

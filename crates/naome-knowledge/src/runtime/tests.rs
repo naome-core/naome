@@ -640,3 +640,33 @@ async fn status_preserves_invalid_endpoint_cause() {
         crate::Error::from(crate::InputFault::ControlJsonData)
     );
 }
+
+#[test]
+fn runtime_configuration_preserves_parse_and_owner_failures() {
+    let directory = Directory::new();
+    let config = directory.0.join("config.json");
+    fs::write(&config, b"{").unwrap();
+    let error = configuration(&directory.0).err().unwrap();
+    assert!(matches!(
+        error,
+        crate::Error::ConfigDecode {
+            reason: crate::JsonFault::Eof,
+            ..
+        }
+    ));
+    fs::write(&config, b"[]").unwrap();
+    assert_eq!(
+        configuration(&directory.0).err().unwrap(),
+        crate::Error::from(crate::InputFault::RuntimeConfigObject)
+    );
+    let other = Directory::new();
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({"directory": other.0})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        configuration(&directory.0).err().unwrap(),
+        crate::Error::from(crate::InputFault::RuntimeConfigOwner)
+    );
+}

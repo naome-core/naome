@@ -776,20 +776,20 @@ fn initialize(directory: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn configuration(directory: &Path) -> Result<(network::Config, Intervals), String> {
+fn configuration(directory: &Path) -> Result<(network::Config, Intervals), crate::Error> {
     let mut value: serde_json::Value = serde_json::from_slice(&crate::store::read_bounded(
         &directory.join("config.json"),
         crate::resources::limits().network_config_bytes,
     )?)
-    .map_err(|error| error.to_string())?;
+    .map_err(crate::error::config_decode)?;
     let object = value
         .as_object_mut()
-        .ok_or("node configuration must be an object")?;
+        .ok_or(crate::InputFault::RuntimeConfigObject)?;
     let intervals = object
         .remove("runtime")
         .map(serde_json::from_value)
         .transpose()
-        .map_err(|error| error.to_string())?
+        .map_err(crate::error::config_decode)?
         .unwrap_or_default();
     let intervals: Intervals = intervals;
     let configured = object
@@ -798,21 +798,21 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
     let configured_path = PathBuf::from(
         configured
             .as_str()
-            .ok_or("configuration directory must be a path")?,
+            .ok_or(crate::InputFault::RuntimeConfigDirectory)?,
     );
     let configured_path = if configured_path.is_absolute() {
         configured_path
     } else {
         directory.join(configured_path)
     };
-    if fs::canonicalize(configured_path).map_err(|error| error.to_string())? != directory {
-        return Err("configuration belongs to another node directory".into());
+    if fs::canonicalize(configured_path)? != directory {
+        return Err(crate::InputFault::RuntimeConfigOwner.into());
     }
     *configured = serde_json::json!(directory);
     let config: network::Config =
-        serde_json::from_value(value).map_err(|error| error.to_string())?;
+        serde_json::from_value(value).map_err(crate::error::config_decode)?;
     if !config.producer_artifacts.is_empty() {
-        return Err("producer_artifacts is a developer-only operation; ordinary runtime owns autonomous research".into());
+        return Err(crate::InputFault::RuntimeConfigProducer.into());
     }
     Ok((config, intervals.validate()?))
 }
@@ -1271,7 +1271,11 @@ pub async fn execute() -> Result<(), crate::Error> {
             }
         })?))
         .map_err(|_| Failure::Log)?;
-        let (config, intervals) = configuration(&directory).map_err(|_| Failure::DaemonSetup)?;
+        let (config, intervals) =
+            configuration(&directory).map_err(|cause| crate::Error::RuntimeContext {
+                code: Failure::DaemonSetup,
+                cause: Box::new(cause),
+            })?;
         return network::run_autonomous(config, intervals, startup).await;
     }
     if matches!(command, "stop" | "status") && !directory.exists() {
