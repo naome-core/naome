@@ -13,6 +13,14 @@ fn lanes() -> [usize; 4] {
     crate::resources::limits().workers
 }
 
+fn requires_native_model(record: &Record) -> bool {
+    record.provider == crate::learning::PROVIDER
+        && matches!(
+            record.input,
+            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
+        )
+}
+
 #[derive(Clone)]
 pub(crate) struct Recovery {
     pub next_cursor: u64,
@@ -257,6 +265,7 @@ impl Owner {
                 Err("research driver panicked; pending effects require reconciliation".into())
             });
         let cleanup = self.stop_all().await;
+        crate::resources::feedback::jobs([0; 4], [0; 4], 0);
 
         combine_outcomes(result, cleanup)
     }
@@ -1360,18 +1369,36 @@ impl Owner {
         Ok(Reservation::Granted)
     }
 
-    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
+    fn scheduling_feedback(&self) -> ([usize; 4], [usize; 4], u64) {
         let mut queued = [0; 4];
         let mut running = [0; 4];
+        let mut native = false;
         for record in self.journal.records.values() {
             if matches!(record.state, State::Queued | State::Suspended) {
                 queued[record.input.lane()] += 1;
+                native |= requires_native_model(record)
+                    && self
+                        .waiters
+                        .get(&record.id)
+                        .is_some_and(|waiters| waiters.iter().any(|waiter| !waiter.is_closed()));
             }
         }
         for id in self.running.keys() {
-            running[self.journal.records[id].input.lane()] += 1;
+            let record = &self.journal.records[id];
+            running[record.input.lane()] += 1;
+            native |= requires_native_model(record);
         }
-        crate::resources::feedback::jobs(queued, running);
+        let demand = if native {
+            crate::resources::limits().native_model_work_bytes as u64
+        } else {
+            0
+        };
+        (queued, running, demand)
+    }
+
+    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
+        let (queued, running, demand) = self.scheduling_feedback();
+        crate::resources::feedback::jobs(queued, running, demand);
         let first_lane = self.next_lane;
         for offset in 0..lanes().len() {
             let lane = (first_lane + offset) % lanes().len();
@@ -1404,13 +1431,12 @@ impl Owner {
                 let Some(computation) = self.computation.try_enter() else {
                     break;
                 };
-                let model_memory = if self.journal.records.get(&id).is_some_and(|r| {
-                    r.provider == crate::learning::PROVIDER
-                        && matches!(
-                            r.input,
-                            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
-                        )
-                }) {
+                let model_memory = if self
+                    .journal
+                    .records
+                    .get(&id)
+                    .is_some_and(requires_native_model)
+                {
                     match crate::resources::MemoryLease::acquire(
                         crate::resources::limits().native_model_work_bytes,
                     ) {

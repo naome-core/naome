@@ -15,6 +15,42 @@ fn hardware() -> Observed {
 }
 
 #[test]
+fn queued_native_work_has_room_only_within_safe_dynamic_capacity() {
+    let demand = crate::learning::MODEL_REQUIREMENTS.work_bytes as u64;
+    let normal = Snapshot::derive(Selection::default(), hardware(), 4 * 1024 * MIB).unwrap();
+    assert!(normal.budget.memory_bytes - normal.observed.process_rss < demand);
+    let waiting =
+        Snapshot::derive_with_demand(Selection::default(), hardware(), 4 * 1024 * MIB, demand)
+            .unwrap();
+    assert!(waiting.budget.memory_bytes >= normal.budget.memory_bytes + demand);
+    let limited =
+        Snapshot::derive_with_demand(Selection::default(), hardware(), 512 * MIB, demand).unwrap();
+    assert!(limited.budget.memory_bytes <= 512 * MIB);
+    assert!(limited.budget.memory_bytes - limited.observed.process_rss < demand);
+    let light = Selection {
+        profile: Profile::Light,
+        custom: None,
+    };
+    let baseline = Snapshot::derive(light.clone(), hardware(), 4 * 1024 * MIB).unwrap();
+    let explicit = Snapshot::derive_with_demand(light, hardware(), 4 * 1024 * MIB, demand).unwrap();
+    assert_eq!(baseline.budget.memory_bytes, explicit.budget.memory_bytes);
+    let custom = Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes: 256 * MIB,
+            concurrency: 1,
+            cache_bytes: 4096,
+            batch_steps: 1,
+            network_requests: 1,
+        }),
+    };
+    let baseline = Snapshot::derive(custom.clone(), hardware(), 4 * 1024 * MIB).unwrap();
+    let explicit =
+        Snapshot::derive_with_demand(custom, hardware(), 4 * 1024 * MIB, demand).unwrap();
+    assert_eq!(baseline.budget, explicit.budget);
+}
+
+#[test]
 fn live_memory_targets_reject_new_over_budget_leases_without_revoking_existing_work() {
     const TEST: &str = "resources::adaptive::tests::live_memory_targets_reject_new_over_budget_leases_without_revoking_existing_work";
     if std::env::var_os("NAOME_LIVE_MEMORY_TEST").is_none() {

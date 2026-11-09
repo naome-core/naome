@@ -110,6 +110,15 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub fn derive(selection: Selection, observed: Observed, capacity: u64) -> Result<Self, String> {
+        Self::derive_with_demand(selection, observed, capacity, 0)
+    }
+
+    fn derive_with_demand(
+        selection: Selection,
+        observed: Observed,
+        capacity: u64,
+        native_memory_demand: u64,
+    ) -> Result<Self, String> {
         selection.validate()?;
         if observed.memory_total == 0 || observed.memory_limit == 0 || observed.cpu_millis == 0 {
             return Err("hardware observation is incomplete".into());
@@ -141,7 +150,8 @@ impl Snapshot {
             Profile::Dynamic => observed
                 .process_rss
                 .saturating_add(super::CHECKER_RESERVE as u64)
-                .saturating_add(worker_bytes.saturating_mul(slots as u64)),
+                .saturating_add(worker_bytes.saturating_mul(slots as u64))
+                .saturating_add(native_memory_demand),
             Profile::Heavy => observed.memory_limit,
             Profile::Custom => {
                 selection

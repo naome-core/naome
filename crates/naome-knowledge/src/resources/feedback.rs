@@ -32,6 +32,7 @@ pub struct Statistics {
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub queued_jobs: u64,
+    pub native_memory_demand: u64,
     pub running_jobs: u64,
     pub descendant_rss: u64,
     pub pending_requests: u64,
@@ -68,6 +69,7 @@ static DESCENDANTS: AtomicU64 = AtomicU64::new(0);
 static PENDING: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
 static EMPTY_FINDING: AtomicU64 = AtomicU64::new(0);
+static NATIVE_MEMORY_DEMAND: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn record(kind: Kind, units: usize, elapsed: Duration) {
     let counter = match kind {
@@ -84,7 +86,8 @@ pub(crate) fn record(kind: Kind, units: usize, elapsed: Duration) {
 pub(crate) fn cache(hit: bool) {
     (if hit { &HITS } else { &MISSES }).fetch_add(1, Ordering::Relaxed);
 }
-pub(crate) fn jobs(queued: [usize; 4], running: [usize; 4]) {
+pub(crate) fn jobs(queued: [usize; 4], running: [usize; 4], native_memory_demand: u64) {
+    NATIVE_MEMORY_DEMAND.store(native_memory_demand, Ordering::Relaxed);
     let mut providers = PROVIDERS.lock().unwrap_or_else(|error| error.into_inner());
     for role in Role::ALL {
         let entry = providers.get_mut(role);
@@ -152,6 +155,7 @@ pub fn statistics() -> Statistics {
         queued_jobs: Role::ALL.iter().fold(0u64, |count, role| {
             count.saturating_add(providers.get(*role).queued)
         }),
+        native_memory_demand: NATIVE_MEMORY_DEMAND.load(Ordering::Relaxed),
         running_jobs: Role::ALL.iter().fold(0u64, |count, role| {
             count.saturating_add(providers.get(*role).running)
         }),
