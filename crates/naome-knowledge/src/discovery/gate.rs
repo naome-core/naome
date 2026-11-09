@@ -18,7 +18,7 @@ use std::{
 
 pub(crate) struct Gate(pub SharedBook);
 
-fn denied(error: String) -> ConnectionDenied {
+fn denied(error: crate::Error) -> ConnectionDenied {
     ConnectionDenied::new(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
         error,
@@ -36,10 +36,10 @@ impl NetworkBehaviour for Gate {
         _: &[Multiaddr],
         _: Endpoint,
     ) -> Result<Vec<Multiaddr>, ConnectionDenied> {
-        let peer = peer.ok_or_else(|| denied("routing requires a target peer ID".into()))?;
+        let peer = peer.ok_or_else(|| denied(crate::InputFault::RouteTargetRequired.into()))?;
         let book = self.0.lock();
         if !book.automatic && !book.contacts.contains_key(&peer) {
-            return Err(denied("static peer policy".into()));
+            return Err(denied(crate::InputFault::ContactStaticPolicy.into()));
         }
         Ok(Vec::new())
     }
@@ -106,5 +106,25 @@ impl NetworkBehaviour for Gate {
         if let FromSwarm::ConnectionClosed(event) = event {
             self.0.lock().closed_connection(event.connection_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn denial_keeps_permission_semantics_and_typed_cause() {
+        let denied = denied(crate::InputFault::RouteEndpointInvalid.into());
+        let error = denied.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let cause = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<crate::Error>()
+            .unwrap();
+        assert_eq!(
+            *cause,
+            crate::Error::from(crate::InputFault::RouteEndpointInvalid)
+        );
     }
 }

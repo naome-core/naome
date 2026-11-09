@@ -110,9 +110,9 @@ pub(crate) fn routing_address(
     address: &Multiaddr,
     target: PeerId,
     relays: &BTreeSet<PeerId>,
-) -> Result<Multiaddr, String> {
+) -> Result<Multiaddr, crate::Error> {
     if address.len() > crate::resources::limits().address_bytes {
-        return Err("routing address byte limit".into());
+        return Err(crate::InputFault::RouteAddressBytes.into());
     }
     let parts: Vec<_> = address.iter().collect();
     let host_valid = match parts.first() {
@@ -128,7 +128,7 @@ pub(crate) fn routing_address(
         _ => false,
     };
     if !host_valid || !matches!(parts.get(1), Some(Protocol::Tcp(port)) if *port != 0) {
-        return Err("expected a nonzero routable TCP endpoint".into());
+        return Err(crate::InputFault::RouteEndpointInvalid.into());
     }
     match &parts[2..] {
         [] => Ok(address.clone()),
@@ -151,7 +151,7 @@ pub(crate) fn routing_address(
         {
             Ok(address.clone())
         }
-        _ => Err("invalid routing target or unconfigured relay".into()),
+        _ => Err(crate::InputFault::RouteTargetInvalid.into()),
     }
 }
 
@@ -177,7 +177,7 @@ pub(crate) struct Contact {
     pub retry_at: Instant,
 }
 
-fn contact_memory() -> Result<std::sync::Arc<crate::resources::MemoryLease>, String> {
+fn contact_memory() -> Result<std::sync::Arc<crate::resources::MemoryLease>, crate::Error> {
     let limits = crate::resources::limits();
     let bytes = limits
         .addresses_per_contact
@@ -185,12 +185,12 @@ fn contact_memory() -> Result<std::sync::Arc<crate::resources::MemoryLease>, Str
             limits
                 .address_bytes
                 .checked_add(128)
-                .ok_or("contact allocation overflow")?,
+                .ok_or(crate::InputFault::ContactAllocationOverflow)?,
         )
         .and_then(|n| n.checked_mul(2))
         .and_then(|n| n.checked_add(std::mem::size_of::<Contact>() + 512))
-        .ok_or("contact allocation overflow")?;
-    crate::resources::MemoryLease::acquire(bytes).map_err(String::from)
+        .ok_or(crate::InputFault::ContactAllocationOverflow)?;
+    crate::resources::MemoryLease::acquire(bytes)
 }
 
 pub(crate) struct Book {
@@ -224,17 +224,20 @@ impl Book {
         }
     }
 
-    pub fn admit(&mut self, peer: PeerId, now: Instant) -> Result<&mut Contact, String> {
+    pub fn admit(&mut self, peer: PeerId, now: Instant) -> Result<&mut Contact, crate::Error> {
         self.retired.retain(|_, until| *until > now);
         if self.retired.contains_key(&peer) {
-            return Err("retired contact backoff".into());
+            return Err(crate::InputFault::ContactRetired.into());
         }
         if peer == self.own {
-            return Err("self contact".into());
+            return Err(crate::InputFault::ContactSelf.into());
         }
         if !self.contacts.contains_key(&peer) {
-            if !self.automatic || self.contacts.len() >= crate::resources::limits().contacts {
-                return Err("contact capacity or static peer policy".into());
+            if !self.automatic {
+                return Err(crate::InputFault::ContactStaticPolicy.into());
+            }
+            if self.contacts.len() >= crate::resources::limits().contacts {
+                return Err(crate::InputFault::ContactCapacity.into());
             }
             self.contacts.insert(
                 peer,
@@ -257,7 +260,7 @@ impl Book {
         }
         let contact = self.contacts.get_mut(&peer).expect("admitted contact");
         if !contact.enabled {
-            return Err("contact disabled".into());
+            return Err(crate::InputFault::ContactDisabled.into());
         }
         Ok(contact)
     }
@@ -267,7 +270,7 @@ impl Book {
         peer: PeerId,
         address: &Multiaddr,
         now: Instant,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::Error> {
         let address = self.route(address, peer)?;
         if !self.allow_private_addresses
             && !address::public_address(&address)
@@ -276,17 +279,17 @@ impl Book {
                     || contact.pinned && contact.addresses.contains(&address)
             })
         {
-            return Err("untrusted private routing address".into());
+            return Err(crate::InputFault::ContactPrivateAddress.into());
         }
         // A peer's direct addresses must not undermine a relay-only dial policy.
         if self.relay_only && !self.relays.contains(&peer) && !is_relayed(&address) {
-            return Err("direct proof address disabled".into());
+            return Err(crate::InputFault::ContactDirectDisabled.into());
         }
         let contact = self.admit(peer, now)?;
         if !contact.addresses.contains(&address)
             && contact.addresses.len() >= crate::resources::limits().addresses_per_contact
         {
-            return Err("contact address capacity".into());
+            return Err(crate::InputFault::ContactAddressCapacity.into());
         }
         // Repeated untrusted hints must not keep an unreachable identity alive.
         Ok(contact.addresses.insert(address))
@@ -297,15 +300,14 @@ impl Book {
         peer: PeerId,
         address: &Multiaddr,
         infrastructure: bool,
-    ) -> Result<(), String> {
-        if peer == self.own
-            || self.contacts.len() >= crate::resources::limits().contacts
-                && !self.contacts.contains_key(&peer)
-        {
-            return Err("pinned contact capacity or self peer".into());
+    ) -> Result<(), crate::Error> {
+        if peer == self.own {
+            return Err(crate::InputFault::ContactSelf.into());
         }
-        if infrastructure {
-            self.relays.insert(peer);
+        if self.contacts.len() >= crate::resources::limits().contacts
+            && !self.contacts.contains_key(&peer)
+        {
+            return Err(crate::InputFault::ContactPinnedCapacity.into());
         }
         let address = routing_address(address, peer, &self.relays)?;
         let now = Instant::now();
@@ -330,15 +332,22 @@ impl Book {
         if contact.addresses.len() >= crate::resources::limits().addresses_per_contact
             && !contact.addresses.contains(&address)
         {
-            return Err("pinned contact address capacity".into());
+            return Err(crate::InputFault::ContactAddressCapacity.into());
         }
         contact.pinned = true;
         contact.infrastructure |= infrastructure;
         contact.addresses.insert(address);
+        if infrastructure {
+            self.relays.insert(peer);
+        }
         Ok(())
     }
 
-    pub fn accepts_endpoint(&mut self, peer: PeerId, address: &Multiaddr) -> Result<(), String> {
+    pub fn accepts_endpoint(
+        &mut self,
+        peer: PeerId,
+        address: &Multiaddr,
+    ) -> Result<(), crate::Error> {
         // Noise supplies the target identity. The inbound remote endpoint may
         // be an ephemeral TCP address, while the outbound endpoint is dialed.
         self.route(address, peer)?;
@@ -347,7 +356,7 @@ impl Book {
             && !self.relays.contains(&peer)
             && !is_relayed(address)
         {
-            return Err("direct proof connection disabled".into());
+            return Err(crate::InputFault::ContactInboundDirectDisabled.into());
         }
         if !self.internet || !self.automatic || self.contacts.contains_key(&peer) {
             self.admit(peer, Instant::now())?;
@@ -360,7 +369,7 @@ impl Book {
         peer: PeerId,
         local: &Multiaddr,
         remote: &Multiaddr,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if !is_relayed(local) {
             return self.accepts_endpoint(peer, remote);
         }
@@ -370,7 +379,7 @@ impl Book {
         // infrastructure and the same bounded contact admission as TCP.
         routing_address(local, self.own, &self.relays)?;
         if remote.iter().collect::<Vec<_>>() != [Protocol::P2p(peer)] {
-            return Err("invalid inbound circuit sender".into());
+            return Err(crate::InputFault::ContactInboundSender.into());
         }
         self.admit(peer, Instant::now())?;
         Ok(())

@@ -367,3 +367,22 @@ fn identify_parser_boundaries_do_not_depend_on_transport_work_capacity() {
         crate::resources::DEFAULT.identify_addresses
     );
 }
+
+#[test]
+fn invalid_pinned_relay_does_not_leave_partial_authority() {
+    let own = PeerId::random();
+    let relay = PeerId::random();
+    let mut book = Book::new(own, true, &Config::default());
+    let address: Multiaddr = "/ip4/0.0.0.0/tcp/1234".parse().unwrap();
+    assert_eq!(
+        book.pin(relay, &address, true).unwrap_err(),
+        crate::Error::from(crate::InputFault::RouteEndpointInvalid)
+    );
+    assert!(!book.relays.contains(&relay));
+    assert!(!book.contacts.contains_key(&relay));
+    assert_eq!(
+        book.pin(own, &address, true).unwrap_err(),
+        crate::Error::from(crate::InputFault::ContactSelf)
+    );
+    assert!(!book.relays.contains(&own));
+}

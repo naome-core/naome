@@ -180,7 +180,7 @@ impl Node {
                     .build(),
             ) {
                 emit(
-                    json!({"event":crate::outcome::NodeEvent::DialFailed, "peer":peer.to_string(), "stage":crate::outcome::DialStage::Request, "error":dial_failure(&error)}),
+                    json!({"event":crate::outcome::NodeEvent::DialFailed, "peer":peer.to_string(), "stage":crate::outcome::DialStage::Request, "error":dial_failure(&error), "cause":dial_cause(&error)}),
                 );
             }
         }

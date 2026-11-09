@@ -1193,6 +1193,16 @@ fn dial_failure(error: &libp2p::swarm::DialError) -> WireFailure {
     }
 }
 
+fn dial_cause(error: &libp2p::swarm::DialError) -> Option<&crate::Error> {
+    let libp2p::swarm::DialError::Denied { cause } = error else {
+        return None;
+    };
+    cause
+        .downcast_ref::<std::io::Error>()?
+        .get_ref()?
+        .downcast_ref::<crate::Error>()
+}
+
 fn admission_failure(cause: &libp2p::swarm::ConnectionDenied) -> WireFailure {
     cause
         .downcast_ref::<WireFailure>()
@@ -2229,7 +2239,7 @@ impl Node {
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
                 json!({"event":crate::outcome::NodeEvent::DialFailed,"peer":peer_id.map(|peer|peer.to_string()),
-                    "stage":crate::outcome::DialStage::Transport, "error":dial_failure(&error)}),
+                    "stage":crate::outcome::DialStage::Transport, "error":dial_failure(&error), "cause":dial_cause(&error)}),
             ),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,

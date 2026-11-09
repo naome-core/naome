@@ -1144,3 +1144,23 @@ fn checked_replay_preserves_failure_and_retry_classification() {
         crate::Error::ExecutionLimit
     );
 }
+
+#[test]
+fn denied_dial_retains_bounded_gate_cause() {
+    let cause = crate::Error::from(crate::InputFault::RouteEndpointInvalid);
+    let denied = libp2p::swarm::ConnectionDenied::new(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        cause.clone(),
+    ));
+    let error = libp2p::swarm::DialError::Denied { cause: denied };
+    assert_eq!(
+        dial_failure(&error),
+        crate::outcome::WireFailure::AdmissionDenied
+    );
+    assert_eq!(dial_cause(&error), Some(&cause));
+    let value = serde_json::json!({"cause": dial_cause(&error)});
+    assert_eq!(
+        value["cause"]["code"],
+        u32::from(crate::InputFault::RouteEndpointInvalid)
+    );
+}
