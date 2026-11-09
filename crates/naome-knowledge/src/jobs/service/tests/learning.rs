@@ -2009,6 +2009,18 @@ fn peer_queue_reports_invalid_ordinal_without_consuming_the_row() {
 
 #[test]
 fn catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen() {
+    // The fixture installs a process-wide resource snapshot.
+    const TEST: &str = "jobs::service::tests::learning::catalog_retry_uses_the_real_failed_receipt_and_survives_job_reopen";
+    if std::env::var_os("NAOME_CATALOG_RETRY_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_CATALOG_RETRY_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+
     use crate::frontier::{Frontier, evidence::Outcome};
     use crate::learning::Origin;
 
