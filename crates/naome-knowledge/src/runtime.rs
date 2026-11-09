@@ -37,11 +37,15 @@ static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
 struct Log {
     file: File,
     path: PathBuf,
-    error: Option<String>,
+    error: Option<crate::Error>,
+}
+
+fn log_io(operation: crate::StorageIoOperation, error: std::io::Error) -> crate::Error {
+    crate::error::storage_io_error(operation, error)
 }
 
 impl Log {
-    fn open(directory: &Path) -> Result<Self, String> {
+    fn open(directory: &Path) -> Result<Self, crate::Error> {
         let path = directory.join("node.log");
         cap_log(&path)?;
         cap_log(&directory.join("node.log.previous"))?;
@@ -53,16 +57,18 @@ impl Log {
         })
     }
 
-    fn write(&mut self, value: &serde_json::Value) -> Result<(), String> {
-        let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    fn write(&mut self, value: &serde_json::Value) -> Result<(), crate::Error> {
+        use crate::StorageIoOperation as Op;
+        let mut bytes =
+            serde_json::to_vec(value).map_err(|_| crate::InputFault::LogRecordEncoding)?;
         bytes.push(b'\n');
         if bytes.len() as u64 > crate::resources::limits().log_segment_bytes {
-            return Err("runtime event exceeds log capacity".into());
+            return Err(crate::InputFault::LogRecordCapacity.into());
         }
         if self
             .file
             .metadata()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| log_io(Op::InspectLog, error))?
             .len()
             + bytes.len() as u64
             > crate::resources::limits().log_segment_bytes
@@ -71,21 +77,26 @@ impl Log {
             let previous = self.path.with_file_name("node.log.previous");
             let source = open_log(&self.path)?;
             let mut target = open_log(&previous)?;
-            target.set_len(0).map_err(|error| error.to_string())?;
+            target
+                .set_len(0)
+                .map_err(|error| log_io(Op::TruncateLog, error))?;
             std::io::copy(
                 &mut source.take(crate::resources::limits().log_segment_bytes),
                 &mut target,
             )
-            .map_err(|error| error.to_string())?;
-            self.file.set_len(0).map_err(|error| error.to_string())?;
+            .map_err(|error| log_io(Op::CopyLog, error))?;
+            self.file
+                .set_len(0)
+                .map_err(|error| log_io(Op::TruncateLog, error))?;
         }
         self.file
             .write_all(&bytes)
-            .map_err(|error| error.to_string())
+            .map_err(|error| log_io(Op::WriteLog, error))
     }
 }
 
-fn open_log(path: &Path) -> Result<File, String> {
+fn open_log(path: &Path) -> Result<File, crate::Error> {
+    use crate::StorageIoOperation as Op;
     let file = OpenOptions::new()
         .read(true)
         .create(true)
@@ -93,27 +104,30 @@ fn open_log(path: &Path) -> Result<File, String> {
         .mode(0o600)
         .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
         .open(path)
-        .map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
+        .map_err(|error| log_io(Op::OpenLog, error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| log_io(Op::InspectLog, error))?;
     if !metadata.is_file() || metadata.nlink() != 1 {
-        return Err("runtime log must be one owned regular file".into());
+        return Err(crate::InputFault::LogFileInvalid.into());
     }
     Ok(file)
 }
 
-fn cap_log(path: &Path) -> Result<(), String> {
+fn cap_log(path: &Path) -> Result<(), crate::Error> {
+    use crate::StorageIoOperation as Op;
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-        Ok(metadata) if !metadata.is_file() => {
-            return Err("runtime log path must be a regular file".into());
-        }
+        Err(error) => return Err(log_io(Op::InspectLog, error)),
+        Ok(metadata) if !metadata.is_file() => return Err(crate::InputFault::LogPathInvalid.into()),
         Ok(_) => {}
     }
     let mut file = open_log(path)?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| log_io(Op::InspectLog, error))?;
     if !metadata.is_file() {
-        return Err("runtime log must be a regular file".into());
+        return Err(crate::InputFault::LogFileInvalid.into());
     }
     if metadata.len() <= crate::resources::limits().log_segment_bytes {
         return Ok(());
@@ -121,23 +135,24 @@ fn cap_log(path: &Path) -> Result<(), String> {
     file.seek(SeekFrom::End(
         -(crate::resources::limits().log_segment_bytes as i64),
     ))
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| log_io(Op::SeekLog, error))?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(crate::resources::limits().log_segment_bytes)
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| log_io(Op::ReadLog, error))?;
     let retained = bytes
         .iter()
         .position(|byte| *byte == b'\n')
         .map(|offset| &bytes[offset + 1..])
         .unwrap_or(&[]);
-    file.set_len(0).map_err(|error| error.to_string())?;
+    file.set_len(0)
+        .map_err(|error| log_io(Op::TruncateLog, error))?;
     file.seek(SeekFrom::Start(0))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| log_io(Op::SeekLog, error))?;
     file.write_all(retained)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| error.to_string())
+        .map_err(|error| log_io(Op::WriteLog, error))?;
+    file.sync_all().map_err(|error| log_io(Op::SyncLog, error))
 }
 
 pub(crate) fn emit_log(value: &serde_json::Value) -> bool {
@@ -155,7 +170,7 @@ pub(crate) fn emit_log(value: &serde_json::Value) -> bool {
     true
 }
 
-pub(crate) fn log_error() -> Option<String> {
+pub(crate) fn log_error() -> Option<crate::Error> {
     LOG.get()
         .and_then(|log| log.lock().expect("runtime log owner").error.clone())
 }
@@ -1249,8 +1264,13 @@ pub async fn execute() -> Result<(), crate::Error> {
         let nonce = std::env::var(DAEMON_NONCE).map_err(|_| Failure::DaemonSetup)?;
         let startup = Startup::arm(&nonce).map_err(|_| Failure::DaemonSetup)?;
         let directory = fs::canonicalize(directory).map_err(|_| Failure::Directory)?;
-        LOG.set(Mutex::new(Log::open(&directory).map_err(|_| Failure::Log)?))
-            .map_err(|_| Failure::Log)?;
+        LOG.set(Mutex::new(Log::open(&directory).map_err(|cause| {
+            crate::Error::RuntimeContext {
+                code: Failure::Log,
+                cause: Box::new(cause),
+            }
+        })?))
+        .map_err(|_| Failure::Log)?;
         let (config, intervals) = configuration(&directory).map_err(|_| Failure::DaemonSetup)?;
         return network::run_autonomous(config, intervals, startup).await;
     }

@@ -328,8 +328,15 @@ fn failed_log_falls_back_to_a_structured_fatal_error_on_stderr() {
         );
         let oversized = serde_json::json!({"detail": "x".repeat(crate::resources::limits().log_segment_bytes as usize)});
         assert!(emit_log(&oversized));
-        assert!(log_error().is_some());
-        report_error(&crate::Error::Runtime(crate::RuntimeFailure::Log));
+        let cause = log_error().unwrap();
+        assert_eq!(
+            cause,
+            crate::Error::from(crate::InputFault::LogRecordCapacity)
+        );
+        report_error(&crate::Error::RuntimeContext {
+            code: crate::RuntimeFailure::Log,
+            cause: Box::new(cause),
+        });
         return;
     }
     let output = Command::new(std::env::current_exe().unwrap())
@@ -351,6 +358,10 @@ fn failed_log_falls_back_to_a_structured_fatal_error_on_stderr() {
         event["error"]["code"],
         u32::from(crate::RuntimeFailure::Log)
     );
+    assert_eq!(
+        event["error"]["cause"]["code"],
+        u32::from(crate::InputFault::LogRecordCapacity)
+    );
 }
 
 #[test]
@@ -368,9 +379,9 @@ fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events()
         log.write(&serde_json::json!({"event":crate::outcome::NodeEvent::Bounded,"detail":"x".repeat(900*1024)}))
             .unwrap();
     }
-    assert!(
-        log.write(&serde_json::json!({"detail":"x".repeat(crate::resources::limits().log_segment_bytes as usize)}))
-            .is_err()
+    assert_eq!(
+        log.write(&serde_json::json!({"detail":"x".repeat(crate::resources::limits().log_segment_bytes as usize)})).unwrap_err(),
+        crate::Error::from(crate::InputFault::LogRecordCapacity),
     );
     for name in ["node.log", "node.log.previous"] {
         let path = directory.0.join(name);

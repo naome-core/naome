@@ -934,8 +934,8 @@ where
         if let Some(error) = node.graph.storage_error() {
             return Err(error);
         }
-        if crate::runtime::log_error().is_some() {
-            return Err(crate::RuntimeFailure::Log.into());
+        if let Some(cause) = crate::runtime::log_error() {
+            return Err(crate::Error::RuntimeContext { code: crate::RuntimeFailure::Log, cause: Box::new(cause) });
         }
     }
     Ok(())
