@@ -227,6 +227,12 @@ impl From<naome_storage::UncertainCommit> for DurabilityFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelDigestMismatch {
+    pub expected: [u8; 32],
+    pub actual: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     MemoryOverload {
         requested: usize,
@@ -312,6 +318,7 @@ pub enum Error {
         cause: Box<Error>,
     },
     Research(crate::ResearchFailure),
+    ModelDigestMismatch(Box<ModelDigestMismatch>),
     ResearchMismatch {
         code: crate::ResearchFailure,
         expected: u64,
@@ -388,6 +395,9 @@ impl Error {
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
+            Self::ModelDigestMismatch(_) => {
+                return crate::ResearchFailure::ModelDigestMismatch.into();
+            }
             Self::ResearchMismatch { code, .. } | Self::ResearchIndex { code, .. } => {
                 return (*code).into();
             }
@@ -1524,6 +1534,18 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationActionLabel => {
                     "preservation prefix action lacks a checked label"
                 }
+                crate::ResearchFailure::ModelChunkMissing => {
+                    "native model checkpoint chunk missing"
+                }
+                crate::ResearchFailure::ModelChunkLength => {
+                    "native model checkpoint length differs"
+                }
+                crate::ResearchFailure::ModelDigestMismatch => {
+                    "native model checkpoint content differs"
+                }
+                crate::ResearchFailure::ModelReceiptMissing => {
+                    "native model checkpoint lacks an owned artifact receipt"
+                }
                 crate::ResearchFailure::MetaUpdateExperienceMissing => {
                     "meta update lacks real trial experience"
                 }
@@ -1861,6 +1883,7 @@ impl fmt::Display for Error {
                     "offered theorem formula missing"
                 }
             }),
+            Self::ModelDigestMismatch(_) => f.write_str("native model checkpoint content differs"),
             Self::ResearchMismatch {
                 code,
                 expected,
@@ -2110,6 +2133,10 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
+        if let Self::ModelDigestMismatch(details) = cause {
+            value.serialize_entry("expected_digest", &details.expected)?;
+            value.serialize_entry("actual_digest", &details.actual)?;
+        }
         if let Self::ResearchMismatch {
             expected, actual, ..
         } = cause

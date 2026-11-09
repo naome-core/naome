@@ -853,6 +853,18 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
         .disk
         .verify_models(owner.journal.records[&id].native.as_ref().unwrap())
         .unwrap();
+    let forged_length = crate::learning::Blob {
+        sha256: blob.sha256.clone(),
+        bytes: blob.bytes + 1,
+    };
+    assert_eq!(
+        owner.disk.verify_blob(&forged_length).unwrap_err(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::ModelChunkLength,
+            expected: forged_length.bytes as u64,
+            actual: blob.bytes as u64,
+        }
+    );
     owner.save().unwrap();
     assert_eq!(
         owner
@@ -1812,4 +1824,54 @@ fn solve_handoff_rechecks_a_certificate_that_cites_a_checked_program() {
         })
         .collect();
     assert_eq!(cited, [*mixed_id.as_bytes(), *pairing_id.as_bytes()].into());
+}
+
+#[test]
+fn model_verification_reports_missing_and_corrupted_chunk_without_caching() {
+    let (_directory, mut owner) = native();
+    let blob = crate::learning::Blob::of(b"good");
+    assert_eq!(
+        owner.disk.verify_blob(&blob).unwrap_err(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::ModelChunkMissing,
+            index: 0,
+        }
+    );
+    owner
+        .disk
+        .save_with(
+            &mut owner.journal,
+            vec![crate::checkpoint::Update::Put {
+                kind: "model",
+                key: blob.key(0),
+                payload: b"evil".to_vec(),
+            }],
+        )
+        .unwrap();
+    let error = owner.disk.verify_blob(&blob).unwrap_err();
+    let actual = crate::learning::Blob::of(b"evil");
+    assert_eq!(
+        error,
+        crate::Error::ModelDigestMismatch(Box::new(crate::ModelDigestMismatch {
+            expected: crate::object::id_bytes(&blob.sha256).unwrap(),
+            actual: crate::object::id_bytes(&actual.sha256).unwrap(),
+        }))
+    );
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::ModelDigestMismatch)
+    );
+    assert_eq!(
+        value["expected_digest"],
+        serde_json::json!(crate::object::id_bytes(&blob.sha256).unwrap())
+    );
+    assert_eq!(
+        value["actual_digest"],
+        serde_json::json!(crate::object::id_bytes(&actual.sha256).unwrap())
+    );
+    assert!(
+        owner.disk.verify_blob(&blob).is_err(),
+        "corrupted data must not enter the verification cache"
+    );
 }

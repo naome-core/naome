@@ -126,7 +126,7 @@ pub(super) struct Disk {
     workers: [usize; 4],
     checkpoint: crate::checkpoint::Checkpoint,
     learning_hash: String,
-    verified_models: std::collections::BTreeSet<String>,
+    verified_models: std::collections::BTreeSet<crate::learning::Blob>,
 }
 
 impl Disk {

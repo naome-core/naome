@@ -32,7 +32,9 @@ pub use outcome::{
     StorageIoOperation, WorkerFailure,
 };
 mod frontier;
-pub use error::{CertificateFormatError, DurabilityFailure, Error, FormatFailure};
+pub use error::{
+    CertificateFormatError, DurabilityFailure, Error, FormatFailure, ModelDigestMismatch,
+};
 mod graph;
 mod index_storage;
 mod intake;

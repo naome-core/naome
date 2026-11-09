@@ -399,9 +399,12 @@ impl Disk {
         }
         Ok(output)
     }
-    pub(super) fn verify_blob(&mut self, blob: &crate::learning::Blob) -> Result<(), String> {
+    pub(in crate::jobs) fn verify_blob(
+        &mut self,
+        blob: &crate::learning::Blob,
+    ) -> Result<(), crate::Error> {
         blob.validate()?;
-        if self.verified_models.contains(&blob.sha256) {
+        if self.verified_models.contains(blob) {
             return Ok(());
         }
         let mut digest = Sha256::new();
@@ -413,25 +416,37 @@ impl Disk {
                     &blob.key(index),
                     crate::resources::limits().native_model_chunk_bytes,
                 )?
-                .ok_or("native model checkpoint chunk missing")?;
-            if bytes.len() != blob.chunk_len(index)? {
-                return Err("native model checkpoint length differs".into());
+                .ok_or(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::ModelChunkMissing,
+                    index,
+                })?;
+            let expected = blob.chunk_len(index)?;
+            if bytes.len() != expected {
+                return Err(crate::Error::ResearchMismatch {
+                    code: crate::ResearchFailure::ModelChunkLength,
+                    expected: expected as u64,
+                    actual: bytes.len() as u64,
+                });
             }
             digest.update(&bytes);
         }
-        if crate::hex(&digest.finalize()) != blob.sha256 {
-            return Err("native model checkpoint content differs".into());
+        let actual: [u8; 32] = digest.finalize().into();
+        let expected = crate::object::id_bytes(&blob.sha256)?;
+        if actual != expected {
+            return Err(crate::Error::ModelDigestMismatch(Box::new(
+                crate::ModelDigestMismatch { expected, actual },
+            )));
         }
         if self.verified_models.len() >= 64 {
             self.verified_models.pop_first();
         }
-        self.verified_models.insert(blob.sha256.clone());
+        self.verified_models.insert(blob.clone());
         Ok(())
     }
     pub(in crate::jobs) fn verify_models(
         &mut self,
         native: &crate::learning::Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         for blob in native.blobs() {
             let inherited = native.base.blobs().any(|known| known == blob)
                 || native.history.as_ref().is_some_and(|receipt| {
@@ -446,7 +461,7 @@ impl Disk {
                     *unit <= native.progress.as_ref().map_or(0, |p| p.unit) && known == blob
                 })
             {
-                return Err("native model checkpoint lacks an owned artifact receipt".into());
+                return Err(crate::ResearchFailure::ModelReceiptMissing.into());
             }
             self.verify_blob(blob)?;
         }
@@ -553,7 +568,7 @@ impl Disk {
                     key: blob.key(index),
                 });
             }
-            self.verified_models.remove(&hash);
+            self.verified_models.retain(|known| known.sha256 != hash);
         }
         self.save_with(journal, updates)
     }

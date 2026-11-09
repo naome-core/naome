@@ -903,6 +903,7 @@ codes! {
         ModelCheckpointBinding = 478, MetaCheckpointBinding = 479, MetaCheckpointShape = 480, MetaTransferIncomplete = 481, MetaPromotionBinding = 482, MetaTrialDimensions = 483, MetaMemoryCapacity = 484, MetaTrialDuplicate = 485, MetaSelectionValues = 486, MetaPlanObjective = 487, MetaMemoryPhase = 488, TransferCoverageInvalid = 489, TransferSequence = 490,
         AbilityProfileCapacity = 491, AbilityUtilityBinding = 492, AbilityCheckpointBinding = 493, FinderUtilityCapacity = 494, FinderUtilityIdentity = 495, FinderExampleEligibility = 496, FinderProofIdentity = 497, UtilityGradientInvalid = 498, UtilityReferenceCapacity = 499,
         MetaUpdateExperienceMissing = 500, MetaOptimizationNonFinite = 501, MetaOptimizerCounterOverflow = 502, MetaWeightWidth = 503, MetaOptimizerWidth = 504, MetaOptimizerCounter = 505, MetaWeightValue = 506, MetaOptimizerValue = 507, MetaSecondMoment = 508, MetaExperienceBinding = 509,
+        ModelChunkMissing = 510, ModelChunkLength = 511, ModelDigestMismatch = 512, ModelReceiptMissing = 513,
     }
 
 }
