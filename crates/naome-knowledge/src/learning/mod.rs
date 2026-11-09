@@ -1139,6 +1139,7 @@ fn program_generation(
         terminal: experience::TerminalEvidence::CertifiedCandidate { proof_id, refuted },
     })
 }
+#[cfg(test)]
 fn solve_with_report(
     source: &str,
     model: &mut model::Runtime,

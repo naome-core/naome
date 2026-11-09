@@ -54,3 +54,20 @@ fn incomplete_or_duplicate_observations_cannot_qualify() {
         .is_err()
     );
 }
+
+#[test]
+fn transfer_preserves_invalid_question_failure() {
+    let state = crate::learning::State::fresh();
+    let mut engine = crate::learning::Engine::default();
+    let mut io = crate::learning::tests::MemoryStore::default();
+    let actual = evaluate("invalid", &state, &state.model, &mut engine, &mut io, 1)
+        .err()
+        .unwrap();
+    let expected = crate::Error::from(
+        naome_checker::question::ResearchQuestion::from_hex("invalid").unwrap_err(),
+    );
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}

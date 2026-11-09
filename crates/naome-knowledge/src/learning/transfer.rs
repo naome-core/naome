@@ -91,11 +91,11 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
     engine: &mut super::Engine,
     io: &mut I,
     job: u64,
-) -> Result<Evaluation, String> {
+) -> Result<Evaluation, crate::Error> {
     let mut solve = |checkpoint: &super::Checkpoint| {
         let start = std::time::Instant::now();
-        let generation = engine.with(checkpoint, io, |runtime| {
-            super::solve_with_report(
+        let generation = engine.with_error(checkpoint, io, |runtime| {
+            super::solve_with_report_typed(
                 source,
                 runtime,
                 32,
@@ -107,7 +107,7 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
                 },
             )
         })?;
-        Ok::<_, String>(Outcome {
+        Ok::<_, crate::Error>(Outcome {
             solved: generation.solution.is_some(),
             terminal: generation.terminal,
             #[cfg(all(test, feature = "developer-tools"))]

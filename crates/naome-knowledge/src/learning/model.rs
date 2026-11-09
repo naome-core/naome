@@ -818,6 +818,7 @@ impl Engine {
         }
         self.cache.push((c, r));
     }
+    #[cfg(test)]
     pub fn with<I: ArtifactIo + ?Sized, T>(
         &mut self,
         c: &Checkpoint,
