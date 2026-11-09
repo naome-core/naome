@@ -87,13 +87,24 @@ impl CheckedStorage {
                     // Preserve the actual native close refusal and its handle.
                     // open() refuses the quarantined slot, and cleanup must not
                     // be reported complete merely because close was attempted.
-                    let message = format!("checked admission close unresolved: {error}");
+                    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+                    let failure = crate::Error::CheckedIndexCloseSql {
+                        reason,
+                        sqlite_code,
+                    };
+                    let first_refusal = slot.1.is_none();
                     slot.0 = Some(connection);
-                    slot.1 = Some(message.clone());
-                    self.halt
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .get_or_insert_with(|| crate::Error::CorruptStorage(message));
+                    slot.1 = Some(failure.clone());
+                    if first_refusal {
+                        let mut halt = self.halt.lock().unwrap_or_else(|error| error.into_inner());
+                        *halt = Some(match halt.take() {
+                            Some(primary) => crate::Error::StorageCombined {
+                                primary: Box::new(primary),
+                                cleanup: Box::new(failure),
+                            },
+                            None => failure,
+                        });
+                    }
                 }
             }
         }

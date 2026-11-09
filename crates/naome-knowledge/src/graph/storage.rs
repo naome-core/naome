@@ -83,15 +83,15 @@ pub(super) struct CheckedStorage {
 
 // A fatal disposable-index phase can close its connection while snapshots
 // retain the generation. Every production SQL access checks this slot.
-struct IndexConnection(Option<Connection>, Option<String>);
+struct IndexConnection(Option<Connection>, Option<crate::Error>);
 impl IndexConnection {
-    fn open(&self) -> Result<&Connection, String> {
+    fn open(&self) -> Result<&Connection, crate::Error> {
         if let Some(error) = &self.1 {
-            return Err(format!("checked index close unresolved: {error}"));
+            return Err(error.clone());
         }
         self.0
             .as_ref()
-            .ok_or_else(|| "checked index connection closed".into())
+            .ok_or(crate::InputFault::CheckedIndexClosed.into())
     }
 }
 /// The one source-generation write boundary. Every successful immutable write

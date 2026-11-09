@@ -562,3 +562,72 @@ fn prepared_batch_staleness_deadline_and_last_snapshot_generation_lifetime_survi
     assert!(weak.upgrade().is_none());
     assert!(!path.exists());
 }
+
+#[test]
+fn sqlite_close_refusal_quarantines_the_exact_handle_and_keeps_numeric_cause() {
+    const TEST: &str = "graph::storage::admission::tests::sqlite_close_refusal_quarantines_the_exact_handle_and_keeps_numeric_cause";
+    if std::env::var_os("NAOME_TEST_INDEX_CLOSE_REFUSAL").is_none() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_TEST_INDEX_CLOSE_REFUSAL", &directory.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let directory = std::env::var_os("NAOME_TEST_INDEX_CLOSE_REFUSAL").unwrap();
+    let graph = Graph::open(std::path::Path::new(&directory)).unwrap();
+    let storage = &graph.checked_storage;
+    {
+        let slot = storage.connection.lock().unwrap();
+        let connection = slot.open().unwrap();
+        // Deliberately retain a native statement to make sqlite3_close refuse.
+        // This isolated subprocess releases the statement at process exit.
+        let statement = connection.prepare("SELECT 1").unwrap();
+        std::mem::forget(statement);
+    }
+    let primary = crate::Error::from(crate::InputFault::CheckedInventoryMismatch).fatal_storage();
+    *storage.halt.lock().unwrap() = Some(primary.clone());
+    storage.close_admission_connection();
+    let combined = graph.storage_error().unwrap();
+    let cleanup = match &combined {
+        crate::Error::StorageCombined {
+            primary: actual,
+            cleanup,
+        } => {
+            assert_eq!(**actual, primary);
+            assert!(matches!(**cleanup, crate::Error::CheckedIndexCloseSql {
+                reason: crate::SqlFault::Engine, sqlite_code: Some(code)
+            } if code.get() == rusqlite::ffi::SQLITE_BUSY));
+            (**cleanup).clone()
+        }
+        other => panic!("expected both failures, got {other:?}"),
+    };
+    let encoded = serde_json::to_value(&combined).unwrap();
+    assert_eq!(
+        encoded["code"],
+        u32::from(crate::outcome::OperationCode::StorageCombined)
+    );
+    assert_eq!(
+        encoded["cleanup"]["code"],
+        u32::from(crate::outcome::OperationCode::CheckedIndexCloseSql)
+    );
+    assert_eq!(
+        encoded["cleanup"]["sqlite_code"],
+        rusqlite::ffi::SQLITE_BUSY
+    );
+    storage.close_admission_connection();
+    assert_eq!(graph.storage_error(), Some(combined));
+    let slot = storage.connection.lock().unwrap();
+    assert!(slot.0.is_some());
+    assert_eq!(slot.open().err(), Some(cleanup));
+    // Avoid dropping a connection with an intentionally outstanding statement;
+    // process exit closes the isolated test's descriptors and memory.
+    std::process::exit(0);
+}

@@ -324,6 +324,10 @@ pub enum Error {
         reason: crate::SqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
+    CheckedIndexCloseSql {
+        reason: crate::SqlFault,
+        sqlite_code: Option<NonZeroI32>,
+    },
     Io {
         kind: crate::IoFaultKind,
         os_code: Option<NonZeroI32>,
@@ -368,6 +372,10 @@ pub enum Error {
     },
     Worker(crate::WorkerFailure),
     ResearchCombined {
+        primary: Box<Error>,
+        cleanup: Box<Error>,
+    },
+    StorageCombined {
         primary: Box<Error>,
         cleanup: Box<Error>,
     },
@@ -426,6 +434,7 @@ impl Error {
             Self::ProgramSql { .. } => OperationCode::ProgramSql,
             Self::CatalogSql { .. } => OperationCode::CatalogSql,
             Self::BacklogSql { .. } => OperationCode::BacklogSql,
+            Self::CheckedIndexCloseSql { .. } => OperationCode::CheckedIndexCloseSql,
             Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Io { .. } => OperationCode::Io,
             Self::Runtime(failure) => return (*failure).into(),
@@ -449,6 +458,7 @@ impl Error {
             Self::ResearchCombined { .. } => {
                 return crate::ResearchFailure::MultipleFailures.into();
             }
+            Self::StorageCombined { .. } => OperationCode::StorageCombined,
             Self::Startup { code, .. } => return (*code).into(),
         };
         code.into()
@@ -518,12 +528,14 @@ impl Error {
                     | Self::ProgramSql { .. }
                     | Self::CatalogSql { .. }
                     | Self::BacklogSql { .. }
+                    | Self::CheckedIndexCloseSql { .. }
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
                     | Self::RuntimeContext { .. }
                     | Self::ResearchSlot { .. }
                     | Self::ResearchCombined { .. }
+                    | Self::StorageCombined { .. }
                     | Self::Startup { .. }
             )
             || matches!(
@@ -786,6 +798,7 @@ impl fmt::Display for Error {
                 InputFault::CatalogProgramInputHash => "staged program input hash differs",
                 InputFault::CatalogProgramStreamSuffix => "staged program stream suffix differs",
                 InputFault::CatalogProgramStreamRoot => "staged program stream root differs",
+                InputFault::CheckedIndexClosed => "checked index connection closed",
                 InputFault::CatalogProgramPrefixSummary => "staged program prefix summary differs",
                 InputFault::CatalogFileChanged => "proof catalog file changed outside its owned connection",
                 InputFault::CatalogPageLimit => "catalog page limit outside supported bounds",
@@ -862,6 +875,9 @@ impl fmt::Display for Error {
                 f,
                 "backlog SQLite failure {} ({sqlite_code:?})",
                 u32::from(*reason)
+            ),
+            Self::CheckedIndexCloseSql { reason, sqlite_code } => write!(
+                f, "checked index close failure {} ({sqlite_code:?})", u32::from(*reason)
             ),
             Self::CheckpointSql {
                 reason,
@@ -2334,7 +2350,7 @@ impl fmt::Display for Error {
             Self::CompositionReplay { work, maximum } => {
                 write!(f, "composition replay differs at work {work}/{maximum}")
             }
-            Self::ResearchCombined { primary, cleanup } => {
+            Self::ResearchCombined { primary, cleanup } | Self::StorageCombined { primary, cleanup } => {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
             }
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
@@ -2355,7 +2371,9 @@ impl StdError for Error {
             Self::RuntimeContext { cause, .. } => Some(cause),
             Self::ResearchContext { cause, .. } => Some(cause),
             Self::ResearchSlot { cause, .. } => Some(cause),
-            Self::ResearchCombined { primary, .. } => Some(primary),
+            Self::ResearchCombined { primary, .. } | Self::StorageCombined { primary, .. } => {
+                Some(primary)
+            }
             Self::DiagnosticInspection(error) => Some(error),
             _ => None,
         }
@@ -2546,7 +2564,9 @@ impl serde::Serialize for Error {
             value.serialize_entry("index", index)?;
             value.serialize_entry("cause", cause)?;
         }
-        if let Self::ResearchCombined { primary, cleanup } = self {
+        if let Self::ResearchCombined { primary, cleanup }
+        | Self::StorageCombined { primary, cleanup } = self
+        {
             value.serialize_entry("primary", primary)?;
             value.serialize_entry("cleanup", cleanup)?;
         }
@@ -2688,6 +2708,10 @@ impl serde::Serialize for Error {
             sqlite_code,
         }
         | Self::BacklogSql {
+            reason,
+            sqlite_code,
+        }
+        | Self::CheckedIndexCloseSql {
             reason,
             sqlite_code,
         } = cause
