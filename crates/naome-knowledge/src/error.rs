@@ -1412,6 +1412,11 @@ impl fmt::Display for Error {
                     "scope program target binding differs"
                 }
                 crate::ResearchFailure::CandidateDefinitionIndex => "definition selection index",
+                crate::ResearchFailure::PeerProgramFrameWidth => "peer program frame width",
+                crate::ResearchFailure::PeerProgramFrameTruncated => "peer program frame truncated",
+                crate::ResearchFailure::PeerProgramCommandCapacity => {
+                    "peer program replay command capacity"
+                }
                 crate::ResearchFailure::CompositionDeductionIdentity => {
                     "temporary deduction identity differs"
                 }

@@ -52,13 +52,13 @@ fn frame(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn take<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], String> {
+fn take<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], crate::Error> {
     let (width, rest) = input
         .split_first_chunk::<4>()
-        .ok_or("peer program frame width")?;
+        .ok_or(crate::ResearchFailure::PeerProgramFrameWidth)?;
     let (bytes, rest) = rest
         .split_at_checked(u32::from_le_bytes(*width) as usize)
-        .ok_or("peer program frame truncated")?;
+        .ok_or(crate::ResearchFailure::PeerProgramFrameTruncated)?;
     *input = rest;
     Ok(bytes)
 }
@@ -104,13 +104,13 @@ impl ContextStorage for ReplayStorage {
     }
 }
 
-fn read_commands(manifest: &Manifest, tail: &mut &[u8]) -> Result<Vec<Command>, String> {
+fn read_commands(manifest: &Manifest, tail: &mut &[u8]) -> Result<Vec<Command>, crate::Error> {
     if manifest.commands == 0 || manifest.commands > crate::resources::limits().closure_steps as u64
     {
-        return Err("peer program replay command capacity".into());
+        return Err(crate::ResearchFailure::PeerProgramCommandCapacity.into());
     }
     (0..manifest.commands)
-        .map(|_| decode_command(take(tail)?).map_err(Into::into))
+        .map(|_| decode_command(take(tail)?).map_err(crate::Error::from))
         .collect()
 }
 
@@ -307,7 +307,7 @@ impl Packet {
         Ok(())
     }
 
-    pub(crate) fn commands(&self) -> Result<Vec<Command>, String> {
+    pub(crate) fn commands(&self) -> Result<Vec<Command>, crate::Error> {
         read_commands(&self.manifest, &mut self.decoded()?.as_slice())
     }
 
@@ -346,12 +346,12 @@ impl Packet {
         Ok(replay)
     }
 
-    fn decoded(&self) -> Result<Vec<u8>, String> {
+    fn decoded(&self) -> Result<Vec<u8>, crate::Error> {
         self.validate_width()?;
         let (width, compressed) = self
             .bytes
             .split_first_chunk::<4>()
-            .ok_or("peer program frame width")?;
+            .ok_or(crate::ResearchFailure::PeerProgramFrameWidth)?;
         let width = u32::from_le_bytes(*width) as usize;
         if width > crate::resources::limits().closure_bytes {
             return Err("peer program decoded capacity".into());
@@ -840,6 +840,35 @@ fn graphs(
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
+
+    #[test]
+    fn command_frames_preserve_codec_and_truncation_failures() {
+        let manifest = Manifest {
+            commands: 1,
+            input_bytes: 1,
+            program_hash: [0; 32],
+            stream_root: [0; 32],
+            conclusion: [0; 32],
+            statement: [0; 32],
+        };
+        let malformed = [1, 0, 0, 0, 255];
+        let packet = Packet {
+            manifest: manifest.clone(),
+            bytes: lz4_flex::block::compress_prepend_size(&malformed),
+        };
+        let expected = crate::Error::from(decode_command(&[255]).unwrap_err());
+        assert_eq!(packet.commands().unwrap_err(), expected);
+        assert!(matches!(expected, crate::Error::ProgramCodec(_)));
+
+        let packet = Packet {
+            manifest,
+            bytes: lz4_flex::block::compress_prepend_size(&[2, 0, 0, 0, 255]),
+        };
+        assert_eq!(
+            packet.commands().unwrap_err(),
+            crate::ResearchFailure::PeerProgramFrameTruncated.into()
+        );
+    }
 
     #[test]
     fn invalid_program_capacity_has_registered_code() {

@@ -882,6 +882,7 @@ codes! {
         CompositionDeductionSourceMissing = 343, CompositionDeductionIdentity = 344,
         CandidateStatementWidth = 345, CandidateCertificateWidth = 346,
         CandidateCertificateIdentity = 347, CandidateScopeTarget = 348, CandidateDefinitionIndex = 349,
+        PeerProgramFrameWidth = 350, PeerProgramFrameTruncated = 351, PeerProgramCommandCapacity = 352,
     }
 
 }
