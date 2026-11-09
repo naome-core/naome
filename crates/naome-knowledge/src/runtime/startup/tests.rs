@@ -181,3 +181,30 @@ fn abort_report_preserves_output_failure() {
         crate::Error::from(std::io::Error::from_raw_os_error(nix::libc::EPIPE))
     );
 }
+
+#[test]
+fn handoff_deadline_errors_preserve_their_cause() {
+    let expired = Handoff {
+        input: std::io::stdin(),
+        active_ns: 0,
+        cleanup_ns: 0,
+    };
+    assert_eq!(
+        expired.remaining(),
+        Err(crate::InputFault::HandoffDeadline.into())
+    );
+    let overflow = Handoff {
+        input: std::io::stdin(),
+        active_ns: u64::MAX,
+        cleanup_ns: u64::MAX,
+    };
+    assert_eq!(
+        overflow.abort_deadline(),
+        Err(crate::InputFault::HandoffEndpointOverflow.into())
+    );
+    let cause = crate::Error::from(crate::InputFault::HandoffDeadline);
+    let error = handoff_launch(cause.clone());
+    assert!(
+        matches!(error, crate::Error::Startup { code: crate::StartupFailure::Launch, reaped: false, cause: Some(actual) } if *actual == cause)
+    );
+}

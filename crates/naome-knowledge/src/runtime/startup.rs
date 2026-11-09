@@ -33,16 +33,16 @@ pub(super) fn native_ns() -> Result<u64, String> {
     checked_native_ns().map_err(|error| error.to_string())
 }
 
-fn nonblocking(input: &std::io::Stdin) -> Result<(), String> {
-    let flags =
-        nix::fcntl::fcntl(input, nix::fcntl::FcntlArg::F_GETFL).map_err(|e| e.to_string())?;
+fn nonblocking(input: &std::io::Stdin) -> Result<(), crate::Error> {
+    let flags = nix::fcntl::fcntl(input, nix::fcntl::FcntlArg::F_GETFL)
+        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     nix::fcntl::fcntl(
         input,
         nix::fcntl::FcntlArg::F_SETFL(
             nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
         ),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
     Ok(())
 }
 
@@ -53,25 +53,26 @@ pub(super) struct Handoff {
 }
 
 impl Handoff {
-    pub fn open() -> Result<Self, String> {
+    pub fn open() -> Result<Self, crate::Error> {
         let parse = |name| {
             std::env::var(name)
-                .map_err(|_| "missing startup owner endpoint")?
+                .map_err(|_| crate::InputFault::HandoffEndpointMissing)?
                 .parse::<u64>()
-                .map_err(|_| "invalid startup owner endpoint")
+                .map_err(|_| crate::InputFault::HandoffEndpointInvalid)
         };
         let active_ns = parse(HANDOFF_ACTIVE)?;
         let cleanup_ns = parse(HANDOFF_CLEANUP)?;
         if active_ns.checked_add(10_000_000_000) != Some(cleanup_ns) {
-            return Err("startup owner must retain original ten-second cleanup".into());
+            return Err(crate::InputFault::HandoffCleanupWindow.into());
         }
         let input = std::io::stdin();
-        let metadata = nix::sys::stat::fstat(&input).map_err(|e| e.to_string())?;
+        let metadata = nix::sys::stat::fstat(&input)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
         if nix::sys::stat::SFlag::from_bits_truncate(metadata.st_mode)
             & nix::sys::stat::SFlag::S_IFMT
             != nix::sys::stat::SFlag::S_IFIFO
         {
-            return Err("startup owner requires its inherited stdin pipe".into());
+            return Err(crate::InputFault::HandoffPipeRequired.into());
         }
         nonblocking(&input)?;
         let mut owner = Self {
@@ -81,41 +82,41 @@ impl Handoff {
         };
         let left = owner.remaining()?;
         if left > Duration::from_secs(180) {
-            return Err("startup owner active interval exceeds original allowance".into());
+            return Err(crate::InputFault::HandoffActiveWindow.into());
         }
         owner.before_offer()?;
         Ok(owner)
     }
 
-    fn remaining(&self) -> Result<Duration, String> {
+    fn remaining(&self) -> Result<Duration, crate::Error> {
         self.active_ns
-            .checked_sub(native_ns()?)
+            .checked_sub(checked_native_ns()?)
             .filter(|n| *n > 0)
             .map(Duration::from_nanos)
-            .ok_or_else(|| "original startup owner deadline".into())
+            .ok_or_else(|| crate::InputFault::HandoffDeadline.into())
     }
 
-    pub fn deadline(&self) -> Result<tokio::time::Instant, String> {
+    pub fn deadline(&self) -> Result<tokio::time::Instant, crate::Error> {
         Ok(tokio::time::Instant::now() + self.remaining()?)
     }
 
-    pub fn abort_deadline(&self) -> Result<Instant, String> {
+    pub fn abort_deadline(&self) -> Result<Instant, crate::Error> {
         // The original leaf stage, never a fresh cleanup allowance.
         let end = self
             .active_ns
             .checked_add(600_000_000)
-            .ok_or("startup owner endpoint overflow")?;
+            .ok_or(crate::InputFault::HandoffEndpointOverflow)?;
         Ok(Instant::now()
-            + Duration::from_nanos(end.saturating_sub(native_ns()?))
+            + Duration::from_nanos(end.saturating_sub(checked_native_ns()?))
                 .min(Duration::from_millis(500)))
     }
 
-    pub fn before_offer(&mut self) -> Result<(), String> {
+    pub fn before_offer(&mut self) -> Result<(), crate::Error> {
         self.remaining()?;
         let mut byte = [0u8; 1];
         match self.input.read(&mut byte) {
-            Ok(0) => Err("startup owner lifeline closed before handoff".into()),
-            Ok(_) => Err("startup owner acknowledged before original Child offer".into()),
+            Ok(0) => Err(crate::InputFault::HandoffLifelineClosed.into()),
+            Ok(_) => Err(crate::InputFault::HandoffPrematureAck.into()),
             Err(e)
                 if matches!(
                     e.kind(),
@@ -124,11 +125,11 @@ impl Handoff {
             {
                 Ok(())
             }
-            Err(e) => Err(format!("startup owner lifeline: {e}")),
+            Err(e) => Err(e.into()),
         }
     }
 
-    pub async fn wait_for_loss(&mut self) -> Result<(), String> {
+    pub async fn wait_for_loss(&mut self) -> Result<(), crate::Error> {
         loop {
             self.before_offer()?;
             tokio::time::sleep(crate::resources::limits().custody_poll_interval).await;
@@ -153,33 +154,34 @@ impl Handoff {
         write_abort_report(&mut output, &value)
     }
 
-    pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), crate::StartupFailure> {
+    pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), crate::Error> {
         use crate::StartupFailure;
-        self.before_offer().map_err(|_| StartupFailure::Launch)?;
+        self.before_offer().map_err(handoff_launch)?;
         let offer = serde_json::json!({"kind":crate::outcome::CustodyFrame::ChildCustody,
             "pid":pid,"token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns});
         // This first frame precedes the daemon ACK. The actual Child has not
         // been polled/reaped in this mode and its PID cannot be reused here.
-        writeln!(std::io::stdout().lock(), "{offer}").map_err(|_| StartupFailure::Launch)?;
+        writeln!(std::io::stdout().lock(), "{offer}")
+            .map_err(|error| handoff_launch(error.into()))?;
         let expected = format!("owned {token}\n").into_bytes();
         let mut frame = Vec::with_capacity(MAX_FRAME);
         loop {
-            let left = self.remaining().map_err(|_| StartupFailure::Launch)?;
+            let left = self.remaining().map_err(handoff_launch)?;
             let mut byte = [0u8; 1];
             match self.input.read(&mut byte) {
                 Ok(0) => {
-                    return Err(StartupFailure::LifelineClosed);
+                    return Err(StartupFailure::LifelineClosed.into());
                 }
                 Ok(_) => {
                     frame.push(byte[0]);
                     if frame.len() > MAX_FRAME {
-                        return Err(StartupFailure::FrameLimit);
+                        return Err(StartupFailure::FrameLimit.into());
                     }
                     if byte[0] == b'\n' {
                         if frame != expected {
-                            return Err(StartupFailure::InstanceMismatch);
+                            return Err(StartupFailure::InstanceMismatch.into());
                         }
-                        self.remaining().map_err(|_| StartupFailure::Launch)?;
+                        self.remaining().map_err(handoff_launch)?;
                         return Ok(());
                     }
                 }
@@ -188,9 +190,17 @@ impl Handoff {
                         .await
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return Err(StartupFailure::Launch),
+                Err(error) => return Err(handoff_launch(error.into())),
             }
         }
+    }
+}
+
+fn handoff_launch(cause: crate::Error) -> crate::Error {
+    crate::Error::Startup {
+        code: crate::StartupFailure::Launch,
+        reaped: false,
+        cause: Some(Box::new(cause)),
     }
 }
 

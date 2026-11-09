@@ -939,7 +939,7 @@ async fn start_with_handoff(
             // so a slow readiness exchange cannot delay owned EOF cancellation.
             tokio::select! {
                 value = startup::wait(directory, &nonce, deadline, || Ok(None)) => value?,
-                lost = owner.wait_for_loss() => { lost?; return Err("startup owner lost".into()); }
+                lost = owner.wait_for_loss() => { lost?; return Err(crate::InputFault::HandoffLifelineClosed.into()); }
             }
         } else {
             startup::wait(directory, &nonce, deadline, || {
@@ -1360,7 +1360,12 @@ pub async fn execute() -> Result<(), crate::Error> {
         "start" if startup_handoff => {
             start_with_handoff(
                 &directory,
-                Some(startup::Handoff::open().map_err(|_| Failure::Start)?),
+                Some(
+                    startup::Handoff::open().map_err(|cause| crate::Error::RuntimeContext {
+                        code: Failure::Start,
+                        cause: Box::new(cause),
+                    })?,
+                ),
             )
             .await?
         }
