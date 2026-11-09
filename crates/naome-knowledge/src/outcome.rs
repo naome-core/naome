@@ -922,7 +922,7 @@ codes! {
         SequenceEmpty = 607, SequenceShape = 608, SequenceCapacity = 609, SequencePredecessor = 610, SequenceDepth = 611, SequenceSelectedAction = 612, SequenceMemoryMissing = 613, SequenceOutputMissing = 614, PreservationStepsOverflow = 615, PreservationIdentityMismatch = 616,
         ModelReclamationIdentity = 617, LearningReceiptMismatch = 618, LearningResultMissing = 619, LearningResultIncomplete = 620, LearningSourceRole = 621, LearningProgramIdentity = 622, LearningOwnerMissing = 623, TheoremIdentityMismatch = 624, AcknowledgementUnknown = 625, AcknowledgementNotTerminal = 626,
         JournalHoldAccountMissing = 627, JournalActiveBytesOverflow = 628, JobInputEncoding = 629, JobReservationOverflow = 630, JobResultReservationOverflow = 631, JobHorizonOverflow = 632, QueuedJobMissing = 633, CompletionJobMissing = 634,
-        SlotLaneInvalid = 635, SlotParentMissing = 636, SlotIdentityMismatch = 637, SlotWorkersActive = 638,
+        SlotLaneInvalid = 635, SlotParentMissing = 636, SlotIdentityMismatch = 637, SlotWorkersActive = 638, IndexedRequestMissing = 639, IndexedRequestMismatch = 640,
     }
 
 }

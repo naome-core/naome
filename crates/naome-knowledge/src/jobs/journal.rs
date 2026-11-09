@@ -501,15 +501,15 @@ impl Disk {
             );
         }
     }
-    fn retire_acknowledged_candidates(&self) -> Result<(), String> {
+    fn retire_acknowledged_candidates(&self) -> Result<(), crate::Error> {
         let root = self.node_directory().join(".program-work");
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(error.into()),
         };
         for entry in entries {
-            let entry = entry.map_err(|e| e.to_string())?;
+            let entry = entry?;
             let name = entry.file_name();
             let Some(job) = name
                 .to_str()
@@ -703,7 +703,7 @@ impl Disk {
         input: &Input,
         binding: &Binding,
         settings: RoleSettings,
-    ) -> Result<Option<Record>, String> {
+    ) -> Result<Option<Record>, crate::Error> {
         let key = super::request_key(input, binding, settings);
         let Some(id) = self.checkpoint.get::<u64>("request", &key, 64)? else {
             return Ok(None);
@@ -711,14 +711,20 @@ impl Disk {
         let record = self
             .checkpoint
             .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
-            .ok_or("indexed research request is missing")?;
+            .ok_or(crate::Error::ResearchJob {
+                code: crate::ResearchFailure::IndexedRequestMissing,
+                job: id,
+            })?;
         if record.id != id
             || record.input != *input
             || record.binding != *binding
             || record.settings != settings
             || record.acknowledged
         {
-            return Err("research request identity index differs".into());
+            return Err(crate::Error::ResearchJob {
+                code: crate::ResearchFailure::IndexedRequestMismatch,
+                job: id,
+            });
         }
         Ok(Some(record))
     }

@@ -346,6 +346,10 @@ pub enum Error {
         code: crate::ResearchFailure,
         index: usize,
     },
+    ResearchJob {
+        code: crate::ResearchFailure,
+        job: u64,
+    },
     CompositionReplay {
         work: usize,
         maximum: usize,
@@ -418,7 +422,9 @@ impl Error {
             Self::ModelDigestMismatch(_) => {
                 return crate::ResearchFailure::ModelDigestMismatch.into();
             }
-            Self::ResearchMismatch { code, .. } | Self::ResearchIndex { code, .. } => {
+            Self::ResearchMismatch { code, .. }
+            | Self::ResearchIndex { code, .. }
+            | Self::ResearchJob { code, .. } => {
                 return (*code).into();
             }
             Self::CompositionReplay { .. } => {
@@ -1702,6 +1708,8 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::SlotParentMissing => "research slot parent absent",
                 crate::ResearchFailure::SlotIdentityMismatch => "research physical slot identity differs",
                 crate::ResearchFailure::SlotWorkersActive => "provider slot reconfiguration requires every previous physical worker to drain",
+                crate::ResearchFailure::IndexedRequestMissing => "indexed research request is missing",
+                crate::ResearchFailure::IndexedRequestMismatch => "research request identity index differs",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
@@ -2066,6 +2074,7 @@ impl fmt::Display for Error {
             Self::ResearchIndex { code, index } => {
                 write!(f, "research failure {} at {index}", u32::from(*code))
             }
+            Self::ResearchJob { code, job } => write!(f, "research failure {} for job {job}", u32::from(*code)),
             Self::CompositionReplay { work, maximum } => {
                 write!(f, "composition replay differs at work {work}/{maximum}")
             }
@@ -2334,6 +2343,9 @@ impl serde::Serialize for Error {
         }
         if let Self::ResearchIndex { index, .. } = cause {
             value.serialize_entry("index", index)?;
+        }
+        if let Self::ResearchJob { job, .. } = cause {
+            value.serialize_entry("job", job)?;
         }
         if let Self::CompositionReplay { work, maximum } = cause {
             value.serialize_entry("work", work)?;

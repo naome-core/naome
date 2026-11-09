@@ -1078,3 +1078,32 @@ fn reconciliation_clock_rollback_retains_its_fatal_code() {
     );
     assert!(error.fatal());
 }
+
+#[test]
+fn request_index_rejects_missing_and_mismatched_jobs_with_identity() {
+    let (_directory, mut owner) = fixture(4);
+    let _first = submit(&mut owner, 1);
+    let _second = submit(&mut owner, 2);
+    let first = owner.journal.records.get(&1).unwrap().clone();
+    let key = super::super::request_key(&first.input, &first.binding, first.settings);
+    for (indexed, code) in [
+        (999, crate::ResearchFailure::IndexedRequestMissing),
+        (2, crate::ResearchFailure::IndexedRequestMismatch),
+    ] {
+        owner
+            .disk
+            .save_with(
+                &mut owner.journal,
+                vec![crate::checkpoint::Update::put("request", &key, &indexed).unwrap()],
+            )
+            .unwrap();
+        let error = owner
+            .disk
+            .request(&first.input, &first.binding, first.settings)
+            .unwrap_err();
+        assert_eq!(error, crate::Error::ResearchJob { code, job: indexed });
+        let encoded = serde_json::to_value(error).unwrap();
+        assert_eq!(encoded["code"], u32::from(code));
+        assert_eq!(encoded["job"], indexed);
+    }
+}
