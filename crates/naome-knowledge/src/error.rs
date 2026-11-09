@@ -264,6 +264,7 @@ pub enum Error {
     LearningEvidence(EvidenceFailure),
     LearningGraph(crate::LearningGraphFailure),
     ProgramCodec(naome_proof::program::CodecFailure),
+    ProgramProjection(naome_proof::program::ProjectionFailure),
     ProgramInput(naome_checker::program::ProgramFault),
     Formula(naome_foundation::FormulaCodecError),
     QuestionInput(Box<naome_proof::QuestionError>),
@@ -350,6 +351,7 @@ impl Error {
             Self::LearningEvidence(failure) => return failure.code().into(),
             Self::LearningGraph(failure) => return (*failure).into(),
             Self::ProgramCodec(_) => OperationCode::ProgramCodec,
+            Self::ProgramProjection(_) => OperationCode::ProgramProjection,
             Self::ProgramInput(_) => OperationCode::ProgramInput,
             Self::Formula(_) => OperationCode::Formula,
             Self::QuestionInput(_) => OperationCode::QuestionInput,
@@ -417,7 +419,8 @@ impl Error {
             error @ (Self::Proof(_)
             | Self::CertificateFormat(_)
             | Self::CertificateConstruction(_)
-            | Self::ProgramCodec(_))
+            | Self::ProgramCodec(_)
+            | Self::ProgramProjection(_))
                 if !error.retryable() =>
             {
                 Self::Stored(Box::new(error))
@@ -612,6 +615,7 @@ impl fmt::Display for Error {
             Self::LearningEvidence(error) => error.fmt(f),
             Self::LearningGraph(error) => error.fmt(f),
             Self::ProgramCodec(error) => error.fmt(f),
+            Self::ProgramProjection(error) => error.fmt(f),
             Self::ProgramInput(error) => error.fmt(f),
             Self::Formula(error) => error.fmt(f),
             Self::QuestionInput(error) => error.fmt(f),
@@ -1397,6 +1401,17 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::CompositionDeductionSourceMissing => {
                     "temporary deduction original source missing"
                 }
+                crate::ResearchFailure::CandidateStatementWidth => "native program statement width",
+                crate::ResearchFailure::CandidateCertificateWidth => {
+                    "native program certificate width"
+                }
+                crate::ResearchFailure::CandidateCertificateIdentity => {
+                    "native program candidate certificate identity differs"
+                }
+                crate::ResearchFailure::CandidateScopeTarget => {
+                    "scope program target binding differs"
+                }
+                crate::ResearchFailure::CandidateDefinitionIndex => "definition selection index",
                 crate::ResearchFailure::CompositionDeductionIdentity => {
                     "temporary deduction identity differs"
                 }
@@ -1644,6 +1659,9 @@ impl serde::Serialize for Error {
             }
         }
         if let Self::ProgramCodec(reason) = cause {
+            value.serialize_entry("reason", &(*reason as u8))?;
+        }
+        if let Self::ProgramProjection(reason) = cause {
             value.serialize_entry("reason", &(*reason as u8))?;
         }
         if let Self::ProgramInput(reason) = cause {
@@ -1913,3 +1931,9 @@ impl From<naome_checker::ArtifactStateError> for Error {
 
 #[cfg(test)]
 mod tests;
+
+impl From<naome_proof::program::ProjectionFailure> for Error {
+    fn from(error: naome_proof::program::ProjectionFailure) -> Self {
+        Self::ProgramProjection(error)
+    }
+}

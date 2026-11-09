@@ -15,6 +15,33 @@ pub const CODEC_ID: &str = "naome:artifact-codec";
 pub use naome_checker::CHECKER_ID;
 pub const GRAPH_POLICY_ID: &str = "naome:knowledge:artifacts";
 
+pub(crate) fn decode_payload(bytes: &[u8]) -> Result<ArtifactPayload, crate::Error> {
+    use naome_proof::ArtifactPayloadError;
+    let format = |reason| {
+        crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
+            input_digest: naome_checker::diagnostics::Digest::of(bytes),
+            reason,
+        }))
+    };
+    ArtifactPayload::from_canonical_bytes(bytes).map_err(|error| match error {
+        ArtifactPayloadError::Proof(error) => certificate_error(&bytes[1..], error),
+        ArtifactPayloadError::Definition(error) => definition_error(&bytes[1..], error),
+        ArtifactPayloadError::InputTooLong { actual, maximum } => {
+            format(crate::FormatFailure::Limit {
+                resource: crate::FormatResource::Bytes,
+                actual: Some(actual as u64),
+                maximum: maximum as u64,
+            })
+        }
+        ArtifactPayloadError::UnexpectedEnd => format(crate::FormatFailure::UnexpectedEnd),
+        ArtifactPayloadError::UnknownTag(tag) => format(crate::FormatFailure::UnknownTag {
+            domain: crate::FormatTagClass::ArtifactPayload,
+            tag,
+        }),
+        _ => format(crate::FormatFailure::Unsupported),
+    })
+}
+
 pub(crate) fn program_manifest(
     bytes: &[u8],
 ) -> Result<Option<naome_proof::program::Manifest>, crate::Error> {

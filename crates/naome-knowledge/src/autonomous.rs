@@ -288,8 +288,7 @@ impl Autonomous {
             let jobs::Input::Solve { question } = &record.input else {
                 return true;
             };
-            let candidate = crate::learning::program::Candidate::artifact(solution, question)
-                .map_err(crate::Error::from);
+            let candidate = crate::learning::program::Candidate::artifact(solution, question);
             match candidate.and_then(|root| graph.contains(root).map(|yes| (root, yes))) {
                 Ok((root, true)) => return self.accepted_learning(record.id, root),
                 Ok(_) => {}

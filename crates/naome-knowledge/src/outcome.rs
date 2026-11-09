@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31,
     }
 
     pub enum InputFault in 7 {
@@ -880,6 +880,8 @@ codes! {
         CompositionTraceCapacity = 339, CompositionInputBinding = 340,
         CompositionCheckedInputMissing = 341, CompositionReplayMismatch = 342,
         CompositionDeductionSourceMissing = 343, CompositionDeductionIdentity = 344,
+        CandidateStatementWidth = 345, CandidateCertificateWidth = 346,
+        CandidateCertificateIdentity = 347, CandidateScopeTarget = 348, CandidateDefinitionIndex = 349,
     }
 
 }
