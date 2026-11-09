@@ -1158,15 +1158,13 @@ pub(crate) fn emit(value: Value) {
 }
 
 pub(crate) fn shutdown_signal()
--> Result<impl std::future::Future<Output = Result<(), String>>, String> {
+-> Result<impl std::future::Future<Output = Result<(), crate::Error>>, crate::Error> {
     #[cfg(unix)]
     {
         let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .map_err(|error| error.to_string())?;
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut interrupt =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                .map_err(|error| error.to_string())?;
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         Ok(async move {
             tokio::select! {
                 _ = interrupt.recv() => Ok(()),
@@ -1175,11 +1173,7 @@ pub(crate) fn shutdown_signal()
         })
     }
     #[cfg(not(unix))]
-    Ok(async {
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|error| error.to_string())
-    })
+    Ok(async { tokio::signal::ctrl_c().await.map_err(crate::Error::from) })
 }
 
 fn dial_failure(error: &libp2p::swarm::DialError) -> WireFailure {

@@ -124,7 +124,10 @@ fn rate_limiter() -> Box<dyn relay::RateLimiter> {
 
 pub async fn run(path: &Path) -> Result<(), crate::Error> {
     use crate::{InputFault, InputLimit, RuntimeFailure};
-    let shutdown = network::shutdown_signal().map_err(|_| RuntimeFailure::RelaySignal)?;
+    let shutdown = network::shutdown_signal().map_err(|cause| crate::Error::RuntimeContext {
+        code: RuntimeFailure::RelaySignal,
+        cause: Box::new(cause),
+    })?;
     tokio::pin!(shutdown);
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
@@ -302,7 +305,7 @@ pub async fn run(path: &Path) -> Result<(), crate::Error> {
                 }).collect();
                 for peer in unidentified { let _ = swarm.disconnect_peer_id(peer); }
             },
-            signal = &mut shutdown => { signal.map_err(|_| RuntimeFailure::RelaySignal)?; break; }
+            signal = &mut shutdown => { signal.map_err(|cause| crate::Error::RuntimeContext { code: RuntimeFailure::RelaySignal, cause: Box::new(cause) })?; break; }
         }
     }
     network::emit(
