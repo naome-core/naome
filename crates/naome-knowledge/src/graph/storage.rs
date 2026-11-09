@@ -150,7 +150,7 @@ impl WriteRoute {
 }
 
 impl CheckedStorage {
-    pub(super) fn adapt_cache(&self) -> Result<(), String> {
+    pub(super) fn adapt_cache(&self) -> Result<(), crate::Error> {
         let budget = crate::resources::adaptive::cache(usize::MAX);
         if self.live_cache_budget.load(Ordering::Acquire) == budget {
             return Ok(());
@@ -159,21 +159,21 @@ impl CheckedStorage {
             let mut cache = self
                 .cache
                 .lock()
-                .map_err(|_| "checked cache lock poisoned")?;
+                .map_err(|_| crate::InputFault::CheckedCacheLockPoisoned)?;
             let limit = crate::resources::adaptive::cache(
                 crate::resources::active_limits().checked_cache_bytes,
             );
             cache.trim(limit);
             if cache.charged > limit {
                 self.flush_buffered(&mut cache, false)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
                 cache.trim(limit);
             }
         }
         let connection = self
             .connection
             .lock()
-            .map_err(|_| "checked index lock poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedIndexLockPoisoned)?;
         connection
             .open()?
             .pragma_update(
@@ -185,9 +185,15 @@ impl CheckedStorage {
                     ) / 1024)
                         .max(1),
                 )
-                .map_err(|e| e.to_string())?,
+                .map_err(|_| crate::InputFault::CheckedCacheSizeWidth)?,
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+                crate::Error::CheckedIndexSql {
+                    reason,
+                    sqlite_code,
+                }
+            })?;
         self.live_cache_budget.store(budget, Ordering::Release);
         Ok(())
     }

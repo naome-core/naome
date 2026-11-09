@@ -831,6 +831,7 @@ impl fmt::Display for Error {
                 InputFault::CheckedSourceGate => "checked admission source gate",
                 InputFault::CheckedMirrorGate => "checked admission mirror gate",
                 InputFault::CheckedStartupPageUnavailable => "startup page already buffered or closed",
+                InputFault::CheckedCacheSizeWidth => "checked index cache size width",
                 InputFault::CheckedIndexClosed => "checked index connection closed",
                 InputFault::CatalogProgramPrefixSummary => "staged program prefix summary differs",
                 InputFault::CatalogFileChanged => "proof catalog file changed outside its owned connection",

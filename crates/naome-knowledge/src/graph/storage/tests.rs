@@ -857,3 +857,19 @@ fn startup_prune_requires_a_finished_page_and_leaves_runtime_successors_unchange
     assert!(graph.storage_error().is_some());
     // The failed owner is discarded; journal_mode=OFF is never rolled back for reuse.
 }
+
+#[test]
+fn poisoned_cache_resize_halts_owner_with_typed_cause() {
+    let graph = Graph::default();
+    let storage = &graph.checked_storage;
+    let budget = crate::resources::adaptive::cache(usize::MAX);
+    storage.live_cache_budget.store(!budget, Ordering::Release);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = storage.cache.lock().unwrap();
+        panic!("injected cache lock poison");
+    }));
+    let error = graph.cold(storage.adapt_cache()).unwrap_err();
+    let expected = crate::Error::from(crate::InputFault::CheckedCacheLockPoisoned).fatal_storage();
+    assert_eq!(error, expected);
+    assert_eq!(graph.storage_error(), Some(expected));
+}
