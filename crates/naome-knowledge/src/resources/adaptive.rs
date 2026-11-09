@@ -109,10 +109,14 @@ pub struct Snapshot {
     pub pid: u32,
 }
 impl Snapshot {
-    pub fn derive(selection: Selection, observed: Observed, capacity: u64) -> Result<Self, String> {
+    pub fn derive(
+        selection: Selection,
+        observed: Observed,
+        capacity: u64,
+    ) -> Result<Self, crate::Error> {
         selection.validate()?;
         if observed.memory_total == 0 || observed.memory_limit == 0 || observed.cpu_millis == 0 {
-            return Err("hardware observation is incomplete".into());
+            return Err(crate::InputFault::ObservationIncomplete.into());
         }
         let heavy = selection.profile == Profile::Heavy;
         let light = selection.profile == Profile::Light;
@@ -233,14 +237,14 @@ impl Snapshot {
         })
     }
 }
-fn now_ms() -> Result<u64, String> {
+fn now_ms() -> Result<u64, crate::Error> {
     u64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| crate::InputFault::ObservationClock)?
             .as_millis(),
     )
-    .map_err(|e| e.to_string())
+    .map_err(|_| crate::InputFault::ObservationClockWidth.into())
 }
 struct Live {
     snapshot: Snapshot,
@@ -381,7 +385,7 @@ pub fn load(directory: &Path) -> Result<Selection, crate::Error> {
     selection.validate()?;
     Ok(selection)
 }
-pub fn sample(directory: &Path) -> Result<Observed, String> {
+pub fn sample(directory: &Path) -> Result<Observed, crate::Error> {
     observation::sample(directory)
 }
 

@@ -23,7 +23,7 @@ impl Governor {
         sample: observation::Sample,
         capacity: u64,
         now: Instant,
-    ) -> Result<Snapshot, String> {
+    ) -> Result<Snapshot, crate::Error> {
         self.update(
             selection,
             sample.observed,
@@ -42,7 +42,7 @@ impl Governor {
         statistics: Statistics,
         pressure: Pressure,
         now: Instant,
-    ) -> Result<Snapshot, String> {
+    ) -> Result<Snapshot, crate::Error> {
         let mut next = Snapshot::derive(selection, observed, capacity)?;
         let quantum = super::super::limits().transport_busy_grace;
         if let Some((before_time, before, previous)) = &self.previous {

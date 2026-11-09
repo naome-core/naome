@@ -22,11 +22,11 @@ pub(crate) struct Sample {
     pub(super) pressure: Pressure,
 }
 
-pub(super) fn sample(directory: &Path) -> Result<Observed, String> {
+pub(super) fn sample(directory: &Path) -> Result<Observed, crate::Error> {
     sample_node(directory).map(|sample| sample.observed)
 }
 
-pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
+pub(crate) fn sample_node(directory: &Path) -> Result<Sample, crate::Error> {
     use nix::sys::time::TimeValLike;
     // Sampling must not initialize the immutable capacity before calibration.
     let allowance = super::super::LIMITS
@@ -45,10 +45,10 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
     )?;
     super::super::feedback::descendants(rss.saturating_sub(own_rss));
     let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-        .map_err(|error| error.to_string())?;
+        .map_err(observation_errno)?;
     let children = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_CHILDREN)
-        .map_err(|error| error.to_string())?;
-    let peak = u64::try_from(usage.max_rss()).map_err(|error| error.to_string())?;
+        .map_err(observation_errno)?;
+    let peak = u64::try_from(usage.max_rss()).map_err(|_| crate::InputFault::ObservationNumeric)?;
     #[cfg(target_os = "linux")]
     let peak = peak.saturating_mul(1024);
     let mut observed = Observed {
@@ -64,12 +64,9 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
                     .num_milliseconds()
                     .saturating_add(children.system_time().num_milliseconds()),
             )
-            .map_err(|error| error.to_string())?,
+            .map_err(|_| crate::InputFault::ObservationNumeric)?,
         ),
-        cpu_millis: std::thread::available_parallelism()
-            .map_err(|error| error.to_string())?
-            .get() as u64
-            * 1000,
+        cpu_millis: std::thread::available_parallelism()?.get() as u64 * 1000,
         load_millis: load,
         disk_available: 0,
     };
@@ -77,8 +74,7 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
         nix::sys::resource::Resource::RLIMIT_AS,
         nix::sys::resource::Resource::RLIMIT_DATA,
     ] {
-        let (limit, _) =
-            nix::sys::resource::getrlimit(resource).map_err(|error| error.to_string())?;
+        let (limit, _) = nix::sys::resource::getrlimit(resource).map_err(observation_errno)?;
         if limit != nix::sys::resource::RLIM_INFINITY {
             observed.memory_limit = observed.memory_limit.min(limit);
         }
@@ -114,7 +110,7 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
         .ok()
         .and_then(|value| mac_memory(&value));
     }
-    let stats = nix::sys::statvfs::statvfs(directory).map_err(|error| error.to_string())?;
+    let stats = nix::sys::statvfs::statvfs(directory).map_err(observation_errno)?;
     observed.disk_available = (u128::from(stats.blocks_available())
         * u128::from(stats.fragment_size()))
     .min(u128::from(u64::MAX)) as u64;
@@ -122,24 +118,18 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn read_optional(path: &Path) -> Result<Option<String>, String> {
-    match read_bounded(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn read_bounded(path: &Path) -> Result<String, std::io::Error> {
+fn read_optional(path: &Path) -> Result<Option<String>, crate::Error> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     let mut text = String::new();
-    fs::File::open(path)?
-        .take(65537)
-        .read_to_string(&mut text)?;
+    file.take(65537).read_to_string(&mut text)?;
     if text.len() > 65536 {
-        return Err(std::io::Error::other("hardware observation capacity"));
+        return Err(crate::InputFault::ObservationCapacity.into());
     }
-    Ok(text)
+    Ok(Some(text))
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -164,43 +154,51 @@ fn mac_memory(value: &str) -> Option<bool> {
     }
 }
 
-fn process_tree(text: &str, root: u32) -> Result<(u64, u64, u64), String> {
+fn process_tree(text: &str, root: u32) -> Result<(u64, u64, u64), crate::Error> {
     let mut processes = BTreeMap::new();
     let mut children = BTreeMap::<u32, Vec<u32>>::new();
     for line in text.lines() {
         let mut fields = line.split_whitespace();
-        let mut next = || fields.next().ok_or("incomplete process observation");
+        let mut next = || {
+            fields
+                .next()
+                .ok_or(crate::InputFault::ObservationProcessFormat)
+        };
         let pid = next()?
             .parse::<u32>()
-            .map_err(|_| "process identity width")?;
-        let parent = next()?.parse::<u32>().map_err(|_| "process parent width")?;
+            .map_err(|_| crate::InputFault::ObservationProcessFormat)?;
+        let parent = next()?
+            .parse::<u32>()
+            .map_err(|_| crate::InputFault::ObservationProcessFormat)?;
         let rss = next()?
             .parse::<u64>()
-            .map_err(|_| "process resident width")?
+            .map_err(|_| crate::InputFault::ObservationProcessFormat)?
             .checked_mul(1024)
-            .ok_or("process resident overflow")?;
+            .ok_or(crate::InputFault::ObservationProcessOverflow)?;
         let cpu = cpu_time(next()?)?;
         if processes.insert(pid, (rss, cpu)).is_some() {
-            return Err("duplicate process observation".into());
+            return Err(crate::InputFault::ObservationProcessDuplicate.into());
         }
         children.entry(parent).or_default().push(pid);
     }
     let own = processes
         .get(&root)
-        .ok_or("node process observation absent")?
+        .ok_or(crate::InputFault::ObservationProcessMissing)?
         .0;
     let mut queue = VecDeque::from([root]);
     let mut seen = BTreeSet::new();
     let (mut rss, mut cpu) = (0u64, 0u64);
     while let Some(pid) = queue.pop_front() {
         if !seen.insert(pid) {
-            return Err("cyclic process observation".into());
+            return Err(crate::InputFault::ObservationProcessCycle.into());
         }
         let (resident, time) = processes[&pid];
         rss = rss
             .checked_add(resident)
-            .ok_or("process tree resident overflow")?;
-        cpu = cpu.checked_add(time).ok_or("process tree CPU overflow")?;
+            .ok_or(crate::InputFault::ObservationProcessOverflow)?;
+        cpu = cpu
+            .checked_add(time)
+            .ok_or(crate::InputFault::ObservationProcessOverflow)?;
         if let Some(descendants) = children.get(&pid) {
             queue.extend(descendants);
         }
@@ -208,30 +206,32 @@ fn process_tree(text: &str, root: u32) -> Result<(u64, u64, u64), String> {
     Ok((rss, cpu, own))
 }
 
-fn cpu_time(value: &str) -> Result<u64, String> {
+fn cpu_time(value: &str) -> Result<u64, crate::Error> {
     let (days, time) = value
         .split_once('-')
         .map_or(Ok((0u64, value)), |(days, time)| {
             days.parse::<u64>()
                 .map(|days| (days, time))
-                .map_err(|_| "process CPU day width")
+                .map_err(|_| crate::InputFault::ObservationProcessFormat)
         })?;
     let fields = time.split(':').collect::<Vec<_>>();
     let (hours, minutes, seconds) = match fields.as_slice() {
         [minutes, seconds] => ("0", *minutes, *seconds),
         [hours, minutes, seconds] => (*hours, *minutes, *seconds),
-        _ => return Err("process CPU format".into()),
+        _ => return Err(crate::InputFault::ObservationProcessFormat.into()),
     };
-    let hours = hours.parse::<u64>().map_err(|_| "process CPU hour width")?;
+    let hours = hours
+        .parse::<u64>()
+        .map_err(|_| crate::InputFault::ObservationProcessFormat)?;
     let minutes = minutes
         .parse::<u64>()
-        .map_err(|_| "process CPU minute width")?;
+        .map_err(|_| crate::InputFault::ObservationProcessFormat)?;
     let seconds = seconds
         .parse::<f64>()
-        .map_err(|_| "process CPU second width")?;
+        .map_err(|_| crate::InputFault::ObservationProcessFormat)?;
     if !seconds.is_finite() || !(0.0..60.0).contains(&seconds) || fields.len() == 3 && minutes >= 60
     {
-        return Err("process CPU format".into());
+        return Err(crate::InputFault::ObservationProcessFormat.into());
     }
     days.checked_mul(24)
         .and_then(|value| value.checked_add(hours))
@@ -239,37 +239,35 @@ fn cpu_time(value: &str) -> Result<u64, String> {
         .and_then(|value| value.checked_add(minutes))
         .and_then(|value| value.checked_mul(60_000))
         .and_then(|value| value.checked_add((seconds * 1000.0) as u64))
-        .ok_or_else(|| "process CPU overflow".into())
+        .ok_or_else(|| crate::InputFault::ObservationProcessOverflow.into())
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn read_small(path: &Path) -> Result<String, String> {
+fn read_small(path: &Path) -> Result<String, crate::Error> {
     let mut text = String::new();
-    fs::File::open(path)
-        .and_then(|f| f.take(65537).read_to_string(&mut text))
-        .map_err(|e| e.to_string())?;
+    fs::File::open(path).and_then(|f| f.take(65537).read_to_string(&mut text))?;
     if text.len() > 65536 {
-        return Err("hardware observation capacity".into());
+        return Err(crate::InputFault::ObservationCapacity.into());
     }
     Ok(text)
 }
 #[cfg(target_os = "linux")]
-fn platform_sample(_deadline: Instant) -> Result<(u64, u64, u64, u64), String> {
+fn platform_sample(_deadline: Instant) -> Result<(u64, u64, u64, u64), crate::Error> {
     let memory = read_small(Path::new("/proc/meminfo"))?;
-    let field = |text: &str, name: &str| -> Result<u64, String> {
+    let field = |text: &str, name: &str| -> Result<u64, crate::Error> {
         text.lines()
             .find_map(|l| l.strip_prefix(name))
             .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
             .and_then(|v| v.checked_mul(1024))
-            .ok_or_else(|| format!("missing {name}"))
+            .ok_or(crate::InputFault::ObservationPlatformField.into())
     };
     let status = read_small(Path::new("/proc/self/status"))?;
     let load = read_small(Path::new("/proc/loadavg"))?
         .split_whitespace()
         .next()
-        .ok_or("missing load")?
+        .ok_or(crate::InputFault::ObservationPlatformField)?
         .parse::<f64>()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| crate::InputFault::ObservationNumeric)?;
     Ok((
         field(&memory, "MemTotal:")?,
         field(&memory, "MemAvailable:")?,
@@ -278,12 +276,12 @@ fn platform_sample(_deadline: Instant) -> Result<(u64, u64, u64, u64), String> {
     ))
 }
 #[cfg(target_os = "macos")]
-fn platform_sample(deadline: Instant) -> Result<(u64, u64, u64, u64), String> {
+fn platform_sample(deadline: Instant) -> Result<(u64, u64, u64, u64), crate::Error> {
     let command = |path: &str, args: &[&str]| probe::run(path, args, 65536, deadline);
     let total = command("/usr/sbin/sysctl", &["-n", "hw.memsize"])?
         .trim()
         .parse::<u64>()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| crate::InputFault::ObservationNumeric)?;
     let vm = command("/usr/bin/vm_stat", &[])?;
     let page = vm
         .lines()
@@ -291,27 +289,27 @@ fn platform_sample(deadline: Instant) -> Result<(u64, u64, u64, u64), String> {
         .and_then(|s| s.split("page size of ").nth(1))
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse::<u64>().ok())
-        .ok_or("missing VM page size")?;
+        .ok_or(crate::InputFault::ObservationPlatformField)?;
     let mut available = 0u64;
     for name in ["Pages free:", "Pages inactive:", "Pages speculative:"] {
         let pages = vm
             .lines()
             .find_map(|l| l.strip_prefix(name))
             .and_then(|s| s.trim().trim_end_matches('.').parse::<u64>().ok())
-            .ok_or("missing VM pages")?;
+            .ok_or(crate::InputFault::ObservationPlatformField)?;
         available = available.saturating_add(pages.saturating_mul(page));
     }
     let load = command("/usr/sbin/sysctl", &["-n", "vm.loadavg"])?;
     let load = load
         .split_whitespace()
         .nth(1)
-        .ok_or("missing system load")?
+        .ok_or(crate::InputFault::ObservationPlatformField)?
         .parse::<f64>()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| crate::InputFault::ObservationNumeric)?;
     Ok((total, available, 0, (load * 1000.0) as u64))
 }
 #[cfg(target_os = "linux")]
-fn cgroups(observed: &mut Observed) -> Result<(), String> {
+fn cgroups(observed: &mut Observed) -> Result<(), crate::Error> {
     let membership = read_small(Path::new("/proc/self/cgroup"))?;
     apply_cgroups(observed, Path::new("/sys/fs/cgroup"), &membership)
 }
@@ -320,20 +318,20 @@ pub(super) fn apply_cgroups(
     observed: &mut Observed,
     root: &Path,
     membership: &str,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     // Walk every ancestor: a container's effective ceiling may be imposed by
     // its parent, even when its own file says `max`.
     for line in membership.lines() {
         let fields: Vec<_> = line.splitn(3, ':').collect();
         if fields.len() != 3 {
-            return Err("invalid cgroup membership".into());
+            return Err(crate::InputFault::ObservationCgroupMembership.into());
         }
         let relative = Path::new(fields[2].trim_start_matches('/'));
         if relative
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
         {
-            return Err("invalid cgroup path".into());
+            return Err(crate::InputFault::ObservationCgroupPath.into());
         }
         let (base, v2) = if fields[1].is_empty() {
             (root.to_path_buf(), true)
@@ -361,7 +359,10 @@ pub(super) fn apply_cgroups(
             if limit_path.exists() {
                 let text = read_small(&limit_path)?;
                 if text.trim() != "max" {
-                    let limit = text.trim().parse::<u64>().map_err(|e| e.to_string())?;
+                    let limit = text
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| crate::InputFault::ObservationNumeric)?;
                     let used = read_small(&path.join(if v2 {
                         "memory.current"
                     } else {
@@ -369,7 +370,7 @@ pub(super) fn apply_cgroups(
                     }))?
                     .trim()
                     .parse::<u64>()
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|_| crate::InputFault::ObservationNumeric)?;
                     observed.memory_limit = observed.memory_limit.min(limit);
                     observed.memory_available =
                         observed.memory_available.min(limit.saturating_sub(used));
@@ -381,10 +382,14 @@ pub(super) fn apply_cgroups(
                 if let (Some(quota), Some(period)) = (parts.next(), parts.next())
                     && quota != "max"
                 {
-                    let quota = quota.parse::<u64>().map_err(|e| e.to_string())?;
-                    let period = period.parse::<u64>().map_err(|e| e.to_string())?;
+                    let quota = quota
+                        .parse::<u64>()
+                        .map_err(|_| crate::InputFault::ObservationNumeric)?;
+                    let period = period
+                        .parse::<u64>()
+                        .map_err(|_| crate::InputFault::ObservationNumeric)?;
                     if period == 0 || quota == 0 {
-                        return Err("invalid cgroup CPU quota".into());
+                        return Err(crate::InputFault::ObservationCgroupQuota.into());
                     }
                     observed.cpu_millis = observed
                         .cpu_millis
@@ -395,13 +400,16 @@ pub(super) fn apply_cgroups(
             if !v2 && path.join("cpu.cfs_quota_us").exists() {
                 let quota = read_small(&path.join("cpu.cfs_quota_us"))?;
                 if quota.trim() != "-1" {
-                    let quota = quota.trim().parse::<u64>().map_err(|e| e.to_string())?;
+                    let quota = quota
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| crate::InputFault::ObservationNumeric)?;
                     let period = read_small(&path.join("cpu.cfs_period_us"))?
                         .trim()
                         .parse::<u64>()
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|_| crate::InputFault::ObservationNumeric)?;
                     if quota == 0 || period == 0 {
-                        return Err("invalid cgroup CPU quota".into());
+                        return Err(crate::InputFault::ObservationCgroupQuota.into());
                     }
                     observed.cpu_millis = observed
                         .cpu_millis
@@ -418,6 +426,10 @@ pub(super) fn apply_cgroups(
         }
     }
     Ok(())
+}
+
+fn observation_errno(error: nix::errno::Errno) -> std::io::Error {
+    std::io::Error::from_raw_os_error(error as i32)
 }
 
 #[cfg(test)]

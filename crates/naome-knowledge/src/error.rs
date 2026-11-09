@@ -296,6 +296,7 @@ pub enum Error {
         line: usize,
         column: usize,
     },
+    ObservationUnavailable(Box<Error>),
     ProofCommandInput {
         reason: crate::ProofCommandFault,
         appended: u64,
@@ -447,6 +448,7 @@ impl Error {
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::ConfigDecode { .. } => OperationCode::ConfigDecode,
             Self::ProofCommandInput { .. } => OperationCode::ProofCommandInput,
+            Self::ObservationUnavailable(_) => OperationCode::ObservationUnavailable,
             Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
             Self::ResourceValidation { .. } => OperationCode::ResourceValidation,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
@@ -492,7 +494,8 @@ impl Error {
             .is_some_and(|d| matches!(d.failure, naome_checker::diagnostics::Failure::ContextLimit))
             || matches!(
                 self,
-                Self::MemoryOverload { .. }
+                Self::ObservationUnavailable(_)
+                    | Self::MemoryOverload { .. }
                     | Self::DiskOverload { .. }
                     | Self::ExecutionLimit
                     | Self::StaleAuthority
@@ -853,6 +856,20 @@ impl fmt::Display for Error {
                 InputFault::CheckedPruneReclaimIncomplete => "startup checked storage reclaim is incomplete",
                 InputFault::CheckedIndexFileType => "checked index is not a regular file",
                 InputFault::CheckedIndexFileLinks => "checked index has linked aliases",
+                InputFault::ObservationNumeric => "hardware observation numeric value invalid",
+                InputFault::ObservationCapacity => "hardware observation capacity",
+                InputFault::ObservationProcessFormat => "process observation format invalid",
+                InputFault::ObservationProcessOverflow => "process observation overflow",
+                InputFault::ObservationProcessDuplicate => "duplicate process observation",
+                InputFault::ObservationProcessMissing => "node process observation absent",
+                InputFault::ObservationProcessCycle => "cyclic process observation",
+                InputFault::ObservationPlatformField => "platform observation field missing or invalid",
+                InputFault::ObservationCgroupMembership => "invalid cgroup membership",
+                InputFault::ObservationCgroupPath => "invalid cgroup path",
+                InputFault::ObservationCgroupQuota => "invalid cgroup CPU quota",
+                InputFault::ObservationIncomplete => "hardware observation incomplete",
+                InputFault::ObservationClock => "hardware observation clock before epoch",
+                InputFault::ObservationClockWidth => "hardware observation clock width",
                 InputFault::ProbeCustodyPoisoned => "hardware probe custody unavailable",
                 InputFault::ProbeCustodyUnconfirmed => "hardware probe custody unconfirmed",
                 InputFault::ProbeCleanupPending => "previous hardware probe cleanup pending",
@@ -1008,6 +1025,7 @@ impl fmt::Display for Error {
                 "resource profile decode failure {} at {line}:{column}",
                 u32::from(*reason)
             ),
+            Self::ObservationUnavailable(cause) => write!(f, "hardware observation unavailable: {cause}"),
             Self::ProofCommandInput { reason, appended } => write!(f, "proof command failure {} after {appended} appended records", u32::from(*reason)),
             Self::ConfigDecode { reason, line, column } => write!(f, "configuration decode failure {} at {line}:{column}", u32::from(*reason)),
             Self::CheckpointDecode {
@@ -2470,7 +2488,7 @@ impl fmt::Display for Error {
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::Stored(error) => Some(error),
+            Self::Stored(error) | Self::ObservationUnavailable(error) => Some(error),
             Self::RuntimeContext { cause, .. } => Some(cause),
             Self::ResearchContext { cause, .. } | Self::StorageContext { cause, .. } => Some(cause),
             Self::ResearchSlot { cause, .. } => Some(cause),
@@ -2665,6 +2683,9 @@ impl serde::Serialize for Error {
         value.serialize_entry("code", &self.code())?;
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
+        if let Self::ObservationUnavailable(cause) = self {
+            value.serialize_entry("cause", cause)?;
+        }
         if let Self::RuntimeContext { cause, .. } = self {
             value.serialize_entry("cause", cause)?;
         }

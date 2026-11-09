@@ -6,20 +6,20 @@ use std::time::Instant;
 #[derive(Debug)]
 pub(crate) enum ObservationError {
     Settings(crate::Error),
-    Unavailable(String),
+    Unavailable(crate::Error),
 }
 impl std::fmt::Display for ObservationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Settings(error) => error.fmt(f),
-            Self::Unavailable(message) => f.write_str(message),
+            Self::Unavailable(error) => error.fmt(f),
         }
     }
 }
 impl From<ObservationError> for crate::Error {
     fn from(error: ObservationError) -> Self {
         match error {
-            ObservationError::Unavailable(_) => Self::ExecutionLimit,
+            ObservationError::Unavailable(cause) => Self::ObservationUnavailable(Box::new(cause)),
             ObservationError::Settings(error) => error,
         }
     }
@@ -29,6 +29,7 @@ pub(crate) struct Observer {
     snapshot: Option<Snapshot>,
     next: Instant,
     governor: Governor,
+    failure_reported: bool,
 }
 impl Default for Observer {
     fn default() -> Self {
@@ -36,6 +37,7 @@ impl Default for Observer {
             snapshot: None,
             next: Instant::now(),
             governor: Governor::default(),
+            failure_reported: false,
         }
     }
 }
@@ -62,7 +64,7 @@ impl Observer {
         &mut self,
         now: Instant,
         selection: impl FnOnce() -> Result<Selection, crate::Error>,
-        sample: impl FnOnce() -> Result<observation::Sample, String>,
+        sample: impl FnOnce() -> Result<observation::Sample, crate::Error>,
     ) -> Result<Option<&Snapshot>, ObservationError> {
         if !self.due(now) {
             return Ok(None);
@@ -78,13 +80,21 @@ impl Observer {
             )
         });
         let (snapshot, valid) = match observed {
-            Ok(snapshot) => (snapshot, true),
-            Err(error) => (
-                self.governor
-                    .unavailable(selection)
-                    .ok_or(ObservationError::Unavailable(error))?,
-                false,
-            ),
+            Ok(snapshot) => {
+                self.failure_reported = false;
+                (snapshot, true)
+            }
+            Err(error) => {
+                let snapshot = match self.governor.unavailable(selection) {
+                    Some(snapshot) => snapshot,
+                    None => return Err(ObservationError::Unavailable(error)),
+                };
+                if !self.failure_reported {
+                    crate::runtime::emit_log(&failure_event(&error));
+                    self.failure_reported = true;
+                }
+                (snapshot, false)
+            }
         };
         let elapsed = started.elapsed();
         self.governor.sampled(elapsed);
@@ -99,6 +109,13 @@ impl Observer {
         self.snapshot = Some(snapshot);
         Ok(self.snapshot.as_ref())
     }
+}
+
+fn failure_event(error: &crate::Error) -> serde_json::Value {
+    serde_json::json!({
+        "event": crate::outcome::NodeEvent::ResourceObservationFailure,
+        "error": error,
+    })
 }
 
 #[cfg(test)]
