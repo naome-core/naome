@@ -758,6 +758,9 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::TraceSkippedAttempt => {
                     "search observation skipped an attempted action"
                 }
+                crate::ResearchFailure::SearchFreshVariableExhausted => {
+                    "fresh variable space exhausted"
+                }
                 crate::ResearchFailure::TraceSerialization => "search trace serialization failed",
                 crate::ResearchFailure::FrontierSerialization => "open branch serialization failed",
                 crate::ResearchFailure::ExperienceTerminalCandidate => {

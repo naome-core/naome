@@ -105,15 +105,15 @@ struct Prepared {
     double: usize,
 }
 
-fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, String> {
+fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, crate::Error> {
     let used: BTreeSet<_> = formulas.flat_map(|f| f.free_variables()).collect();
     (0..=u32::MAX)
         .map(FreeVariable::new)
         .find(|v| !used.contains(v))
-        .ok_or("fresh variable space".into())
+        .ok_or_else(|| crate::ResearchFailure::SearchFreshVariableExhausted.into())
 }
 
-fn prepare(target: &Formula) -> Result<Prepared, String> {
+fn prepare(target: &Formula) -> Result<Prepared, crate::Error> {
     let mut body = target.clone();
     let mut double = 0;
     while let Some(inner) = body.view().negated().and_then(|f| f.negated()) {
