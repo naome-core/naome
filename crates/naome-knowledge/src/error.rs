@@ -917,6 +917,8 @@ impl fmt::Display for Error {
                 InputFault::StartupHandoffExisting => "startup handoff requires a new daemon",
                 InputFault::StartupLifelineMissing => "startup parent lifeline missing",
                 InputFault::ResourceSnapshotEncoding => "effective resource snapshot encoding failed",
+                InputFault::DependencyAlreadyComplete => "already completed dependency member",
+                InputFault::DependencyDuplicate => "duplicate dependency member",
                 InputFault::LearningPrerequisiteCycle => "checked prerequisite cycle",
                 InputFault::LearningPrerequisiteBytes => "prerequisite closure byte overflow",
                 InputFault::LearningPrerequisitePacketWidth => "prerequisite packet width",

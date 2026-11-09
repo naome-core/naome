@@ -33,3 +33,21 @@ fn unknown_syntax_and_cycles_never_become_ready() {
     assert_eq!(plan.next(None), None);
     assert!(!plan.complete());
 }
+
+#[test]
+fn repeated_or_completed_dependency_cannot_change_readiness() {
+    let id = ArtifactId::from_bytes([1; 32]);
+    let mut dependencies = Dependencies::default();
+    dependencies.add(id, &BTreeSet::new()).unwrap();
+    assert_eq!(
+        dependencies.add(id, &BTreeSet::new()),
+        Err(crate::InputFault::DependencyDuplicate.into())
+    );
+    assert_eq!(dependencies.next(None), Some(id));
+    dependencies.finish(id);
+    assert_eq!(
+        dependencies.add(id, &BTreeSet::new()),
+        Err(crate::InputFault::DependencyAlreadyComplete.into())
+    );
+    assert!(dependencies.complete());
+}

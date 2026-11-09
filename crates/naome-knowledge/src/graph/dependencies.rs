@@ -36,9 +36,9 @@ impl Dependencies {
         let count = self
             .pending
             .get_mut(&id)
-            .ok_or("already completed dependency member")?;
+            .ok_or(crate::InputFault::DependencyAlreadyComplete)?;
         if count.is_some() {
-            return Err("duplicate dependency member".into());
+            return Err(crate::InputFault::DependencyDuplicate.into());
         }
         let mut missing = 0;
         for dependency in dependencies {
