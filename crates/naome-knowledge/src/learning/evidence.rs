@@ -16,6 +16,8 @@ pub enum EvidenceLimit {
     ObjectBytes = 4,
     ClosureObjects = 5,
     LemmaCount = 6,
+    ClosureBytes = 7,
+    ClosureSteps = 8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,7 +308,7 @@ pub fn context(bytes: &[u8]) -> Result<naome_checker::ArtifactState, crate::Erro
                 .map_err(|e| crate::object::certificate_error(b, e))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    proof::lemma_context(&evidence.definitions, &lemmas).map_err(Into::into)
+    proof::lemma_context(&evidence.definitions, &lemmas)
 }
 pub fn steps(bytes: &[u8]) -> Result<usize, crate::Error> {
     let evidence = decode(bytes)?;
