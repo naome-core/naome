@@ -563,14 +563,17 @@ impl Disk {
         journal
             .remember_holds()
             .map_err(crate::Error::fatal_storage)?;
-        if journal
+        let encoded = journal
             .encoded_active_len()
-            .map_err(crate::Error::fatal_storage)?
-            > crate::resources::limits().active_job_bytes
-        {
-            return Err(crate::Error::CorruptStorage(
-                "active journal byte capacity".into(),
-            ));
+            .map_err(crate::Error::fatal_storage)?;
+        let budget = crate::resources::limits().active_job_bytes;
+        if encoded > budget {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::JournalActiveCapacity,
+                expected: budget as u64,
+                actual: encoded as u64,
+            }
+            .fatal_storage());
         }
         let mut updates = journal
             .records

@@ -282,7 +282,7 @@ impl Owner {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
                     Some(Command::TheoremVerified{ordinal,theorem})=>{
-                        if ordinal==0 {return Err("theorem learning ordinal is zero".into());}
+                        if ordinal==0 {return Err(crate::ResearchFailure::TheoremOrdinalZero.into());}
                         if let Some(learning)=self.journal.learning.as_mut(){
                             let remembered=learning.remember_theorem(theorem)?;
                             learning.peer_cursor=learning.peer_cursor.max(ordinal);
@@ -291,7 +291,7 @@ impl Owner {
                         }
                     },
                     Some(Command::DefinitionVerified{ordinal,definition})=>{
-                        if ordinal==0 {return Err("definition learning ordinal is zero".into());}
+                        if ordinal==0 {return Err(crate::ResearchFailure::DefinitionOrdinalZero.into());}
                         if let Some(learning)=self.journal.learning.as_mut(){
                             let address=definition.address()?;
                             let remembered=learning.remember_definition(definition)?;
@@ -303,7 +303,7 @@ impl Owner {
                     Some(Command::PeerCursor(ordinal))=>{if let Some(learning)=self.journal.learning.as_mut(){learning.peer_cursor=learning.peer_cursor.max(ordinal);self.save()?;}},
                     Some(Command::PeerVerified(admission))=>{if self.settings.native_proof_learning {self.disk.enqueue_peer(&mut self.journal,admission)?;}},
                     Some(Command::Accepted{id,root})=>{
-                        if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err("pending owned learning receipt differs".into());}
+                        if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::PendingLearningReceiptMismatch, job:id });}
                     },
                     Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
                     Some(Command::Submit(input,binding,required,prerequisites,reply))=>self.submit_after(input,binding,required,prerequisites,reply)?,
@@ -319,9 +319,9 @@ impl Owner {
                         if id!=0 {
                             let Some(record)=self.journal.records.get_mut(&id) else {
                                 if id<self.journal.next_id {continue;}
-                                return Err("unknown research acknowledgement".into());
+                                return Err(crate::ResearchFailure::AcknowledgementUnknown.into());
                             };
-                            if !record.state.terminal() { return Err("acknowledged research job is still running".into()); }
+                            if !record.state.terminal() { return Err(crate::ResearchFailure::AcknowledgementNotTerminal.into()); }
                             record.acknowledged=true;
                             self.compact();
                             self.save()?;
@@ -364,10 +364,10 @@ impl Owner {
                                 Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
                             }
                         },
-                        process::Event::History{id,unit,request,reply}=>{if self.history_io.insert(id,PendingHistory{unit,request,reply}).is_some(){return Err("duplicate pending history read".into());}},
-                        process::Event::Model{id,unit,blob,range,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,range,bytes,reply}).is_some() {return Err("duplicate pending native model IO".into());}},
+                        process::Event::History{id,unit,request,reply}=>{if self.history_io.insert(id,PendingHistory{unit,request,reply}).is_some(){return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::DuplicateHistoryRead, job:id });}},
+                        process::Event::Model{id,unit,blob,range,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,range,bytes,reply}).is_some() {return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::DuplicateModelIo, job:id });}},
                         process::Event::Learning{id,unit,progress,reply}=>{
-                            if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err("duplicate pending local checkpoint".into());}
+                            if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err(crate::Error::ResearchJob { code: crate::ResearchFailure::DuplicateLearningCheckpoint, job:id });}
                         },
                         process::Event::Progress{id,checkpoint,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
@@ -986,9 +986,9 @@ impl Owner {
             .remember_holds()
             .map_err(crate::Error::fatal_storage)?;
         if !self.compact_bytes(0).map_err(crate::Error::fatal_storage)? {
-            return Err(crate::Error::CorruptStorage(
-                "research reserved result byte capacity".into(),
-            ));
+            return Err(
+                crate::Error::from(crate::ResearchFailure::JournalReservedCapacity).fatal_storage(),
+            );
         }
         self.journal
             .validate_delta(self.settings)
@@ -1124,11 +1124,15 @@ impl Owner {
                 let _ = reply.send(completion);
                 return Ok(());
             }
-            return Err("nonterminal research job is absent from its resident working set".into());
+            return Err(crate::Error::ResearchJob {
+                code: crate::ResearchFailure::ResidentJobMissing,
+                job: record.id,
+            });
         }
         if let Err(_error) = crate::resources::require_disk_space(
             self.disk.directory(),
-            u64::try_from(output_reservation(&input)).map_err(|_| "job disk reservation width")?,
+            u64::try_from(output_reservation(&input))
+                .map_err(|_| crate::ResearchFailure::DiskReservationWidth)?,
         ) {
             reject(reply, binding, AdmissionFailure::DiskReservation);
             return Ok(());

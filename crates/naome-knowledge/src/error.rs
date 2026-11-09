@@ -1734,6 +1734,16 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::RecoveryHeldJobMissing => "held research job is missing",
                 crate::ResearchFailure::RecoveryHeldAccountMismatch => "held research account identity differs",
                 crate::ResearchFailure::RecoveryArchiveAllowance => "research archived allowance differs",
+                crate::ResearchFailure::TheoremOrdinalZero => "theorem learning ordinal is zero",
+                crate::ResearchFailure::DefinitionOrdinalZero => "definition learning ordinal is zero",
+                crate::ResearchFailure::PendingLearningReceiptMismatch => "pending owned learning receipt differs",
+                crate::ResearchFailure::DuplicateHistoryRead => "duplicate pending history read",
+                crate::ResearchFailure::DuplicateModelIo => "duplicate pending native model IO",
+                crate::ResearchFailure::DuplicateLearningCheckpoint => "duplicate pending local checkpoint",
+                crate::ResearchFailure::ResidentJobMissing => "nonterminal research job is absent from its resident working set",
+                crate::ResearchFailure::JournalActiveCapacity => "active journal byte capacity",
+                crate::ResearchFailure::JournalReservedCapacity => "research reserved result byte capacity",
+                crate::ResearchFailure::DiskReservationWidth => "job disk reservation width",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

@@ -1146,3 +1146,31 @@ fn recovery_preserves_clock_and_program_row_causes() {
         u32::from(crate::ResearchFailure::RecoveryProgramJobMissing)
     );
 }
+
+#[tokio::test]
+async fn owner_rejects_zero_theorem_ordinal_with_machine_code() {
+    let (_directory, mut owner) = fixture(4);
+    let (commands, receive_commands) = mpsc::channel(2);
+    let (_halt, receive_halt) = oneshot::channel();
+    let (events, _receive_events) = mpsc::channel(2);
+    let (_progress, receive_progress) = mpsc::channel(2);
+    commands
+        .send(Command::TheoremVerified {
+            ordinal: 0,
+            theorem: crate::learning::knowledge::Entry { packet: Vec::new() },
+        })
+        .await
+        .unwrap();
+    let error = owner
+        .drive(receive_commands, receive_halt, events, receive_progress)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::TheoremOrdinalZero)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::TheoremOrdinalZero)
+    );
+}
