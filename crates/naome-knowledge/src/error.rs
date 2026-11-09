@@ -823,6 +823,25 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ScopeProgramOperands => "scope program operands differ",
                 crate::ResearchFailure::ScopeOperandOrder => "scope operand is not an earlier fact",
                 crate::ResearchFailure::ScopeResultOrder => "scope result is not an earlier fact",
+                crate::ResearchFailure::PeerReplayCapacity => "peer certificate replay capacity",
+                crate::ResearchFailure::PeerClosureCapacity => "native DAG replay closure capacity",
+                crate::ResearchFailure::PeerConclusion => "peer certificate conclusion differs",
+                crate::ResearchFailure::PeerWorkCapacity => "native DAG replay work capacity",
+                crate::ResearchFailure::PeerReconstructionIdentity => {
+                    "peer DAG reconstruction identity differs"
+                }
+                crate::ResearchFailure::PeerStepCapacity => "peer DAG replay step capacity",
+                crate::ResearchFailure::PeerImplicationIndex => "peer implication index",
+                crate::ResearchFailure::PeerImplicationShape => "peer MP implication",
+                crate::ResearchFailure::PeerPremiseIndex => "peer premise index",
+                crate::ResearchFailure::PeerPremiseMismatch => "peer MP premise differs",
+                crate::ResearchFailure::PeerGraphOverflow => "peer graph work overflow",
+                crate::ResearchFailure::PeerGraphCapacity => "peer graph work capacity",
+                crate::ResearchFailure::PeerGeneralizationIndex => "peer generalization index",
+                crate::ResearchFailure::PeerCitationMissing => "peer cited proof missing",
+                crate::ResearchFailure::PeerCitationFormulaMissing => {
+                    "peer cited statement missing"
+                }
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }

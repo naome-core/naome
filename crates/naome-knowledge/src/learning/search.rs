@@ -1241,7 +1241,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), crat
         return Ok((term, graphs));
     }
     if let Tree::Certificate(bytes) = tree {
-        return super::peer::compile(target, bytes).map_err(Into::into);
+        return super::peer::compile(target, bytes);
     }
     if let Tree::Axiom(index) = tree {
         let axiom = *AXIOMS

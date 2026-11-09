@@ -211,40 +211,44 @@ pub fn definitions(bytes: &[u8]) -> Result<Vec<super::definitions::Entry>, Strin
 pub fn step_count(bytes: &[u8]) -> usize {
     super::evidence::steps(bytes).unwrap_or(0)
 }
-pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), String> {
+pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), crate::Error> {
     if bytes.len() > 8 * 1024 {
-        return Err("peer certificate replay capacity".into());
+        return Err(crate::ResearchFailure::PeerReplayCapacity.into());
     }
     compile_dag(target, bytes)
 }
-pub(super) fn compile_dag(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), String> {
+pub(super) fn compile_dag(
+    target: &Formula,
+    bytes: &[u8],
+) -> Result<(Term, Vec<Graph>), crate::Error> {
     let evidence = super::evidence::decode(bytes)?;
     if super::evidence::steps(bytes)? + evidence.definitions.len()
         > crate::resources::limits().closure_steps
     {
-        return Err("native DAG replay closure capacity".into());
+        return Err(crate::ResearchFailure::PeerClosureCapacity.into());
     }
     let definitions = evidence.definitions;
     let lemmas = evidence
         .lemmas
         .iter()
-        .map(|b| ProofCertificate::from_canonical_bytes(b).map_err(|e| e.to_string()))
+        .map(|b| {
+            ProofCertificate::from_canonical_bytes(b)
+                .map_err(|e| crate::object::certificate_error(b, e))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let context = proof::lemma_context(&definitions, &lemmas)?;
     let certificate = evidence.certificate;
-    let certificate =
-        ProofCertificate::from_canonical_bytes(&certificate).map_err(|e| e.to_string())?;
-    let checked = crate::learning::proof::check(certificate, &context)
-        .map_err(|e| format!("peer certificate unsupported: {e}"))?;
+    let certificate = ProofCertificate::from_canonical_bytes(&certificate)
+        .map_err(|e| crate::object::certificate_error(&certificate, e))?;
+    let checked = crate::learning::proof::check(certificate, &context)?;
     if checked.conclusion() != target {
-        return Err("peer certificate conclusion differs".into());
+        return Err(crate::ResearchFailure::PeerConclusion.into());
     }
     let mut graphs = Vec::new();
     let mut earlier = Vec::new();
     for lemma in &lemmas {
         let context = proof::lemma_context(&definitions, &earlier)?;
-        let checked =
-            crate::learning::proof::check(lemma.clone(), &context).map_err(|e| e.to_string())?;
+        let checked = crate::learning::proof::check(lemma.clone(), &context)?;
         graphs.extend(replay_steps(
             checked.normal_form().certificate().steps(),
             checked.conclusion(),
@@ -262,7 +266,7 @@ pub(super) fn compile_dag(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<G
     if graphs.iter().map(Graph::work_bytes).sum::<usize>()
         > super::MODEL_REQUIREMENTS.work_bytes / 16
     {
-        return Err("native DAG replay work capacity".into());
+        return Err(crate::ResearchFailure::PeerWorkCapacity.into());
     }
     let term = Term::Native {
         lemmas,
@@ -272,7 +276,7 @@ pub(super) fn compile_dag(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<G
     };
     let verified = proof::verify(&term, target)?;
     if verified.native_id != checked.proof_id() {
-        return Err("peer DAG reconstruction identity differs".into());
+        return Err(crate::ResearchFailure::PeerReconstructionIdentity.into());
     }
     Ok((term, graphs))
 }
@@ -281,15 +285,15 @@ fn replay_steps(
     target: &Formula,
     context: &naome_checker::ArtifactState,
     lemmas: &[ProofCertificate],
-) -> Result<Vec<Graph>, String> {
+) -> Result<Vec<Graph>, crate::Error> {
     if steps.len() > crate::resources::limits().closure_steps.min(16_384) {
-        return Err("peer DAG replay step capacity".into());
+        return Err(crate::ResearchFailure::PeerStepCapacity.into());
     }
     let mut formulas: Vec<Formula> = Vec::new();
     let mut graphs = Vec::new();
     let mut graph_bytes = 0usize;
     let mut prefix = Sha256::new();
-    prefix.update(target.encode_canonical().map_err(|e| e.to_string())?);
+    prefix.update(target.encode_canonical()?);
     let goal_parts = super::knowledge::fragments(target);
     for step in steps {
         let formula = match step {
@@ -299,13 +303,20 @@ fn replay_steps(
             } => {
                 let a = *premise as usize;
                 let b = *implication as usize;
-                let implication = formulas.get(b).ok_or("peer implication index")?;
+                let implication = formulas
+                    .get(b)
+                    .ok_or(crate::ResearchFailure::PeerImplicationIndex)?;
                 let (antecedent, consequent) = implication
                     .view()
                     .implication_parts()
-                    .ok_or("peer MP implication")?;
-                if formulas.get(a).ok_or("peer premise index")?.view() != antecedent {
-                    return Err("peer MP premise differs".into());
+                    .ok_or(crate::ResearchFailure::PeerImplicationShape)?;
+                if formulas
+                    .get(a)
+                    .ok_or(crate::ResearchFailure::PeerPremiseIndex)?
+                    .view()
+                    != antecedent
+                {
+                    return Err(crate::ResearchFailure::PeerPremiseMismatch.into());
                 }
                 let conclusion = consequent.to_owned();
                 let first = formulas.len().saturating_sub(32);
@@ -323,9 +334,9 @@ fn replay_steps(
                     graph.binding = crate::hex(&prefix.clone().finalize());
                     graph_bytes = graph_bytes
                         .checked_add(graph.work_bytes())
-                        .ok_or("peer graph work overflow")?;
+                        .ok_or(crate::ResearchFailure::PeerGraphOverflow)?;
                     if graph_bytes > super::MODEL_REQUIREMENTS.work_bytes / 16 {
-                        return Err("peer graph work capacity".into());
+                        return Err(crate::ResearchFailure::PeerGraphCapacity.into());
                     }
                     graphs.push(graph);
                 }
@@ -335,15 +346,14 @@ fn replay_steps(
                 *variable,
                 formulas
                     .get(*premise as usize)
-                    .ok_or("peer generalization index")?
+                    .ok_or(crate::ResearchFailure::PeerGeneralizationIndex)?
                     .clone(),
             ),
             ProofStep::ProofReference { proof_id } => {
                 let mut available = Vec::new();
                 let mut selected = None;
                 for lemma in lemmas {
-                    let known = crate::learning::proof::check(lemma.clone(), context)
-                        .map_err(|e| e.to_string())?;
+                    let known = crate::learning::proof::check(lemma.clone(), context)?;
                     if known.conclusion() == target {
                         continue;
                     }
@@ -381,18 +391,16 @@ fn replay_steps(
                 }
                 use naome_checker::ContextView;
                 let header = context
-                    .proof_header(*proof_id)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("peer cited proof missing")?;
+                    .proof_header(*proof_id)?
+                    .ok_or(crate::ResearchFailure::PeerCitationMissing)?;
                 context
-                    .proof_formula(header, crate::resources::limits().closure_bytes)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("peer cited statement missing")?
+                    .proof_formula(header, crate::resources::limits().closure_bytes)?
+                    .ok_or(crate::ResearchFailure::PeerCitationFormulaMissing)?
                     .into_owned()
             }
             _ => Kernel::with_context(step.clone(), context)?.formula(),
         };
-        let encoded = formula.encode_canonical().map_err(|e| e.to_string())?;
+        let encoded = formula.encode_canonical()?;
         prefix.update((encoded.len() as u64).to_le_bytes());
         prefix.update(encoded);
         formulas.push(formula);
@@ -406,7 +414,7 @@ fn checked_mp<'a>(
     goal_parts: &std::collections::BTreeSet<Vec<u8>>,
     facts: impl Iterator<Item = (usize, &'a Formula, Rule)>,
     observed: (usize, usize),
-) -> Result<Option<Graph>, String> {
+) -> Result<Option<Graph>, crate::Error> {
     let facts = facts.collect::<Vec<_>>();
     if !facts.iter().any(|fact| fact.0 == observed.0)
         || !facts.iter().any(|fact| fact.0 == observed.1)
@@ -516,6 +524,19 @@ pub fn matches_artifact(proof_id: &str, artifact: &str, bytes: &[u8]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn peer_certificate_replay_capacity_has_registered_failure() {
+        let target = Formula::equal(
+            naome_foundation::FreeVariable::new(0),
+            naome_foundation::FreeVariable::new(0),
+        );
+        let error = compile(&target, &vec![0; 8193]).err().unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::ResearchFailure::PeerReplayCapacity)
+        );
+    }
+
     #[test]
     fn native_dag_edges_are_extracted_without_goal_search_and_remain_bound_to_the_artifact() {
         let solution = super::super::tests::own_solution();
