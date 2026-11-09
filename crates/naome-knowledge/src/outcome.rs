@@ -418,7 +418,7 @@ codes! {
         QuestionRegistryCompatibility = 59,
         QuestionMarkerWrite = 60,
         StopReleaseUnconfirmed = 61,
-        NetworkGossipConfig = 62, NetworkGossipBehaviour = 63, NetworkGossipSubscribe = 64, NetworkTransport = 65, NetworkRelayTransport = 66, NetworkBehaviour = 67, NetworkListener = 68, DiscoveryMdns = 69,
+        NetworkGossipConfig = 62, NetworkGossipBehaviour = 63, NetworkGossipSubscribe = 64, NetworkTransport = 65, NetworkRelayTransport = 66, NetworkBehaviour = 67, NetworkListener = 68, DiscoveryMdns = 69, StartupAbortReport = 70,
     }
 
     pub enum StartupFailure in 13 {

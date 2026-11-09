@@ -983,7 +983,10 @@ async fn start_with_handoff(
                         }
                         owner
                             .report_abort(child.id(), &nonce, &report)
-                            .map_err(|_| crate::InputFault::StartupAbortReport)?;
+                            .map_err(|cause| crate::Error::RuntimeContext {
+                                code: crate::RuntimeFailure::StartupAbortReport,
+                                cause: Box::new(cause),
+                            })?;
                         if report.complete {
                             Ok::<(), crate::Error>(())
                         } else {

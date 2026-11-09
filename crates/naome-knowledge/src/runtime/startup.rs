@@ -19,14 +19,18 @@ pub(super) const HANDOFF_ACTIVE: &str = "NAOME_STARTUP_HANDOFF_ACTIVE_NS";
 pub(super) const HANDOFF_CLEANUP: &str = "NAOME_STARTUP_HANDOFF_CLEANUP_NS";
 pub(super) const CUSTODY_ACTIVE: &str = "NAOME_STARTUP_CUSTODY_ACTIVE_NS";
 
-pub(super) fn native_ns() -> Result<u64, String> {
-    let now =
-        nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_err(|e| e.to_string())?;
+fn checked_native_ns() -> Result<u64, crate::Error> {
+    let now = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+        .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
     u64::try_from(now.tv_sec())
         .ok()
         .and_then(|s| s.checked_mul(1_000_000_000))
         .and_then(|s| s.checked_add(u64::try_from(now.tv_nsec()).ok()?))
-        .ok_or_else(|| "invalid native startup clock".into())
+        .ok_or_else(|| crate::InputFault::ObservationClockWidth.into())
+}
+
+pub(super) fn native_ns() -> Result<u64, String> {
+    checked_native_ns().map_err(|error| error.to_string())
 }
 
 fn nonblocking(input: &std::io::Stdin) -> Result<(), String> {
@@ -136,8 +140,8 @@ impl Handoff {
         pid: u32,
         token: &str,
         report: &super::AbortReport,
-    ) -> Result<(), String> {
-        let observed_ns = native_ns()?;
+    ) -> Result<(), crate::Error> {
+        let observed_ns = checked_native_ns()?;
         let timely = self
             .active_ns
             .checked_add(700_000_000)
@@ -146,8 +150,7 @@ impl Handoff {
             "token":token,"active_ns":self.active_ns,"cleanup_ns":self.cleanup_ns,
             "observed_ns":observed_ns,"timely":timely,"report":report});
         let mut output = std::io::stdout().lock();
-        writeln!(output, "{value}").map_err(|e| e.to_string())?;
-        output.flush().map_err(|e| e.to_string())
+        write_abort_report(&mut output, &value)
     }
 
     pub async fn transfer(&mut self, pid: u32, token: &str) -> Result<(), crate::StartupFailure> {
@@ -189,6 +192,15 @@ impl Handoff {
             }
         }
     }
+}
+
+fn write_abort_report(
+    output: &mut impl Write,
+    value: &serde_json::Value,
+) -> Result<(), crate::Error> {
+    writeln!(output, "{value}")?;
+    output.flush()?;
+    Ok(())
 }
 
 /// This flag is raised only by the checked daemon's actual listener readiness.

@@ -163,3 +163,21 @@ fn reaped_startup_preserves_original_abort_code() {
         assert_eq!(value["reaped"], true);
     }
 }
+
+#[test]
+fn abort_report_preserves_output_failure() {
+    struct Broken;
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(nix::libc::EPIPE))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let error = write_abort_report(&mut Broken, &serde_json::json!({"kind": 1})).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(std::io::Error::from_raw_os_error(nix::libc::EPIPE))
+    );
+}
