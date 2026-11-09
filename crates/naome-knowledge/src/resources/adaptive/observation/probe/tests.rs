@@ -18,9 +18,8 @@ fn native_probe_bounds_output_and_time_then_reaps_before_reuse() {
     }
     let now = Instant::now();
     assert!(
-        run("/bin/sleep", &["10"], 64, now + Duration::from_millis(20))
-            .unwrap_err()
-            .contains("deadline")
+        run("/bin/sleep", &["10"], 64, now + Duration::from_millis(20)).unwrap_err()
+            == crate::Error::from(crate::InputFault::ProbeDeadline)
     );
     assert!(now.elapsed() < Duration::from_secs(1));
     confirm_reuse();
@@ -32,13 +31,12 @@ fn native_probe_bounds_output_and_time_then_reaps_before_reuse() {
             Instant::now() + Duration::from_secs(1)
         )
         .unwrap_err()
-        .contains("capacity")
+            == crate::Error::from(crate::InputFault::ProbeCapacity)
     );
     confirm_reuse();
     assert!(
-        run("/bin/echo", &["unused"], 64, Instant::now())
-            .unwrap_err()
-            .contains("deadline")
+        run("/bin/echo", &["unused"], 64, Instant::now()).unwrap_err()
+            == crate::Error::from(crate::InputFault::ProbeDeadline)
     );
 }
 
@@ -50,7 +48,10 @@ fn confirm_reuse() {
                 assert_eq!(output, "ready\n");
                 break;
             }
-            Err(error) if error.contains("cleanup pending") && Instant::now() < deadline => {
+            Err(error)
+                if error == crate::Error::from(crate::InputFault::ProbeCleanupPending)
+                    && Instant::now() < deadline =>
+            {
                 std::thread::yield_now()
             }
             other => panic!("probe did not recover: {other:?}"),
