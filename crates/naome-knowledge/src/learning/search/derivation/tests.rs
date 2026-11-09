@@ -511,3 +511,16 @@ fn matched_observed_inputs_report_active_and_masked_auxiliary_labels() {
     assert_eq!(rich.masked_auxiliary_slots, 0);
     assert!(rich.active_auxiliary_slots > 0 && rich.cost_targets > 0);
 }
+
+#[test]
+fn observed_target_requires_an_exact_question_binding() {
+    let question = ResearchQuestion::from_hex("02040001000000000100000000").unwrap();
+    let trace: trace::Trace = serde_json::from_value(serde_json::json!({
+        "target": "wrong", "root": null, "events": [], "attempts": 0, "omitted": 0
+    }))
+    .unwrap();
+    assert_eq!(
+        observed_target(&trace, &question),
+        Err(crate::InputFault::ObservedTargetMismatch.into())
+    );
+}

@@ -457,12 +457,12 @@ fn observed_target<'a>(
     trace: &trace::Trace,
     question: &'a naome_checker::question::ResearchQuestion,
 ) -> Result<&'a Formula, crate::Error> {
-    [question.proved_target(), question.refuted_target()]
-        .into_iter()
-        .find(|target| {
-            encode(target).is_ok_and(|encoded| super::super::digest(&encoded) == trace.target)
-        })
-        .ok_or_else(|| "contextual proof observation target differs".into())
+    for target in [question.proved_target(), question.refuted_target()] {
+        if super::super::digest(&encode(target)?) == trace.target {
+            return Ok(target);
+        }
+    }
+    Err(crate::InputFault::ObservedTargetMismatch.into())
 }
 
 /// Closed branches may yield checked conditional proofs even when their root

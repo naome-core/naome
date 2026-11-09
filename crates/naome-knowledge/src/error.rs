@@ -917,6 +917,7 @@ impl fmt::Display for Error {
                 InputFault::StartupHandoffExisting => "startup handoff requires a new daemon",
                 InputFault::StartupLifelineMissing => "startup parent lifeline missing",
                 InputFault::ResourceSnapshotEncoding => "effective resource snapshot encoding failed",
+                InputFault::ObservedTargetMismatch => "contextual proof observation target differs",
                 InputFault::QuestionSelectionStale => "stale or declined question selection",
                 InputFault::QuestionFreshCheckFailed => "question no longer passes fresh formal checks",
                 InputFault::QuestionNoveltyMissing => "missing fresh node-local novelty",
