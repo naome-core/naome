@@ -1480,3 +1480,19 @@ fn selection_result_codes_distinguish_decisions_from_unavailable_results() {
         assert_eq!(assessment.code(), code);
     }
 }
+
+#[test]
+fn question_index_ownership_failure_preserves_fatal_cause() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let _owner = crate::index_storage::IndexStorage::open(&directory.0, "questions").unwrap();
+    let mut local = Managed::new(None);
+    let error = local.attach_persistence(&directory.0, &graph).unwrap_err();
+    assert!(error.fatal());
+    assert!(matches!(error, crate::Error::RuntimeContext {
+        code: crate::RuntimeFailure::QuestionStorage,
+        cause,
+    } if *cause == crate::Error::from(crate::InputFault::DisposableIndexOwned)));
+    assert!(local.persistence.is_none());
+    assert!(local.index_storage.is_none());
+}

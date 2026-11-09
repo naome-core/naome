@@ -9,11 +9,9 @@ fn only_the_last_generation_releases_ownership_despite_an_inherited_descriptor()
     let inherited = storage._lease.0.file().try_clone().unwrap();
     let successor = storage.successor().unwrap();
     drop(storage);
-    assert!(
-        IndexStorage::open(&directory.0, "questions")
-            .err()
-            .unwrap()
-            .contains("already owned")
+    assert_eq!(
+        IndexStorage::open(&directory.0, "questions").err().unwrap(),
+        crate::Error::from(crate::InputFault::DisposableIndexOwned),
     );
     successor.write([1; 32], b"still owned").unwrap();
     drop(successor);

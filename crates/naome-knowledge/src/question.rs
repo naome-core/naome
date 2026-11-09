@@ -477,8 +477,13 @@ where
         }
         let persistence = persistence::Persistence::open(directory, self.policy)
             .map_err(crate::Error::fatal_storage)?;
-        let storage = crate::index_storage::IndexStorage::open(directory, "questions")
-            .map_err(|_| crate::RuntimeFailure::QuestionStorage)?;
+        let storage =
+            crate::index_storage::IndexStorage::open(directory, "questions").map_err(|cause| {
+                crate::Error::RuntimeContext {
+                    code: crate::RuntimeFailure::QuestionStorage,
+                    cause: Box::new(cause),
+                }
+            })?;
         self.registry = QuestionRegistry::with_storage(storage.clone());
         persistence.replay(graph.checked_context(), |entry, question| {
             let registered = RegisteredQuestion::from_research_question(&question)
@@ -520,10 +525,10 @@ where
             let bytes = storage
                 .allocated_bytes()?
                 .checked_mul(2)
-                .ok_or("registry compaction disk overflow")?;
+                .ok_or(crate::InputFault::RegistryCompactionSize)?;
             let disk = match crate::resources::DiskLease::acquire(
                 storage.directory(),
-                u64::try_from(bytes).map_err(|_| "registry disk width")?,
+                u64::try_from(bytes).map_err(|_| crate::InputFault::RegistryCompactionWidth)?,
             ) {
                 Ok(disk) => disk,
                 Err(error) if error.retryable() => return Ok(()),
@@ -537,11 +542,7 @@ where
                 cursor: None,
                 _disk: disk,
             };
-            copy.cursor = Some(
-                self.registry
-                    .begin_copy(copy.target.clone())
-                    .map_err(|e| e.to_string())?,
-            );
+            copy.cursor = Some(self.registry.begin_copy(copy.target.clone())?);
             self.compaction = Some(copy);
         }
         if let Some(mut copy) = self.compaction.take() {
@@ -569,8 +570,7 @@ where
                     .cursor
                     .take()
                     .expect("complete registry copy")
-                    .finish(&self.registry)
-                    .map_err(|e| e.to_string())?;
+                    .finish(&self.registry)?;
                 let live = copy.target.allocated_bytes()?;
                 self.next_compaction =
                     live.saturating_mul(2).max(live.saturating_add(
