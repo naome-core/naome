@@ -762,9 +762,7 @@ impl Engine {
                 if state.preparation == super::Preparation::ReferenceTargeted && !pool.is_empty() {
                     let preparation = std::time::Instant::now();
                     self.with_error(&state.model, io, |runtime| {
-                        Ok(pool.reference_focus(&state.feedback, |g| {
-                            runtime.scores_graph(g).map_err(Into::into)
-                        })?)
+                        pool.reference_focus(&state.feedback, |g| runtime.scores_graph(g))
                     })?;
                     self.cost.preparation_micros = micros(preparation);
                 }
@@ -790,9 +788,7 @@ impl Engine {
         if current_focus && !pool.is_empty() {
             let preparation = std::time::Instant::now();
             self.with_error(c, io, |runtime| {
-                Ok(pool.focus(&state.feedback, |g| {
-                    runtime.scores_graph(g).map_err(Into::into)
-                })?)
+                pool.focus(&state.feedback, |g| runtime.scores_graph(g))
             })?;
             self.cost.preparation_micros = micros(preparation);
         } else if !phase.focused {

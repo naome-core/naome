@@ -415,8 +415,8 @@ impl Pool {
     pub fn focus(
         &mut self,
         feedback: &crate::training::ability::Feedback,
-        mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, String>,
-    ) -> Result<(), String> {
+        mut scores: impl FnMut(&Graph) -> Result<Vec<f32>, crate::Error>,
+    ) -> Result<(), crate::Error> {
         #[cfg(test)]
         {
             self.reference = false;
@@ -425,7 +425,7 @@ impl Pool {
         for graph in &self.graphs {
             let scores = scores(graph)?;
             if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
-                return Err("preparation prediction shape or value differs".into());
+                return Err(crate::ResearchFailure::PoolPredictionInvalid.into());
             }
             let maximum = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let exp = scores
@@ -452,8 +452,8 @@ impl Pool {
     pub fn reference_focus(
         &mut self,
         feedback: &crate::training::ability::Feedback,
-        scores: impl FnMut(&Graph) -> Result<Vec<f32>, String>,
-    ) -> Result<(), String> {
+        scores: impl FnMut(&Graph) -> Result<Vec<f32>, crate::Error>,
+    ) -> Result<(), crate::Error> {
         reference::focus(self, feedback, scores)
     }
     /// Origins, families, proofs and successful rule types keep the same cyclic

@@ -23,7 +23,7 @@ impl Pool {
     pub(in crate::learning) fn preservation_batch(
         &self,
         cursor: &mut u64,
-    ) -> Result<References<'_>, String> {
+    ) -> Result<References<'_>, crate::Error> {
         let seeds = self.batch(cursor);
         let mut samples = Vec::with_capacity(16);
         let mut sources = Vec::with_capacity(16);
@@ -56,12 +56,12 @@ impl Pool {
                     let step = &source.steps[index];
                     let Some((parent, child)) = step.parent else {
                         if !step.branch.is_empty() {
-                            return Err("preservation prefix root branch differs".into());
+                            return Err(crate::ResearchFailure::PreservationRootBranch.into());
                         }
                         break;
                     };
                     if parent >= index {
-                        return Err("preservation prefix predecessor differs".into());
+                        return Err(crate::ResearchFailure::PreservationPredecessor.into());
                     }
                     let previous = &source.steps[parent];
                     if child >= previous.children
@@ -69,7 +69,7 @@ impl Pool {
                         || step.branch[..previous.branch.len()] != previous.branch
                         || step.branch.last() != Some(&child)
                     {
-                        return Err("preservation prefix crosses a checked branch".into());
+                        return Err(crate::ResearchFailure::PreservationBranchBinding.into());
                     }
                     window.push(parent);
                 }
@@ -80,7 +80,7 @@ impl Pool {
                         .get(&step.graph.key())
                         .map_or(&step.graph, |index| &self.graphs[*index]);
                     if !graph.successes.contains(&step.graph.expert) {
-                        return Err("preservation prefix action lacks a checked label".into());
+                        return Err(crate::ResearchFailure::PreservationActionLabel.into());
                     }
                     samples.push(Sample {
                         graph,

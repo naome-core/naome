@@ -1505,6 +1505,21 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::PreservationRootBranch => {
+                    "preservation prefix root branch differs"
+                }
+                crate::ResearchFailure::PreservationPredecessor => {
+                    "preservation prefix predecessor differs"
+                }
+                crate::ResearchFailure::PreservationBranchBinding => {
+                    "preservation prefix crosses a checked branch"
+                }
+                crate::ResearchFailure::PreservationActionLabel => {
+                    "preservation prefix action lacks a checked label"
+                }
+                crate::ResearchFailure::PoolPredictionInvalid => {
+                    "preparation prediction shape or value differs"
+                }
                 crate::ResearchFailure::PoolHindsightSourceCapacity => {
                     "native hindsight source capacity"
                 }

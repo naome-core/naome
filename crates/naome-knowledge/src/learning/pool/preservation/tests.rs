@@ -131,6 +131,11 @@ fn reference_prefixes_require_complete_sources_and_reject_corrupt_ancestry() {
                 _ => step.branch.push(0),
             }
         }
-        assert!((0..16).any(|cursor| pool.preservation_batch(&mut { cursor }).is_err()));
+        let expected = if corruption == 0 {
+            crate::ResearchFailure::PreservationPredecessor
+        } else {
+            crate::ResearchFailure::PreservationBranchBinding
+        };
+        assert!((0..16).any(|cursor| matches!(pool.preservation_batch(&mut { cursor }), Err(crate::Error::Research(code)) if code == expected)));
     }
 }
