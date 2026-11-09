@@ -139,7 +139,10 @@ fn native_identity_corruption_cannot_supply_a_coverage_profile() {
     Profile::of(&own).unwrap();
     own.proof_id = "f2".repeat(32);
     let before = proof::checking_work().calls;
-    assert!(Profile::of(&own).is_err());
+    assert_eq!(
+        Profile::of(&own).unwrap_err(),
+        crate::ResearchFailure::CoverageProofIdentity.into()
+    );
     assert!(proof::checking_work().calls > before);
 }
 
@@ -156,4 +159,37 @@ fn coverage_filter_keeps_exact_bits_and_rejects_an_unbounded_decode() {
             .to_string()
             .contains("capacity")
     );
+}
+
+#[test]
+fn coverage_graph_failure_keeps_the_missing_index() {
+    let graph = Graph {
+        binding: String::new(),
+        nodes: vec![],
+        goal: 0,
+        context: vec![],
+        candidates: vec![],
+        expert: 0,
+        successes: vec![],
+    };
+    let error = structure(&graph, &[17]).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::CoverageIndex {
+            code: crate::ResearchFailure::CoverageGraphReference,
+            index: 17
+        }
+    );
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        value["code"],
+        u32::from(crate::ResearchFailure::CoverageGraphReference)
+    );
+    assert_eq!(value["index"], 17);
+    let stored = serde_json::to_value(error.fatal_storage()).unwrap();
+    assert_eq!(
+        stored["cause_code"],
+        u32::from(crate::ResearchFailure::CoverageGraphReference)
+    );
+    assert_eq!(stored["index"], 17);
 }

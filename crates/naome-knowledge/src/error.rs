@@ -312,6 +312,10 @@ pub enum Error {
         cause: Box<Error>,
     },
     Research(crate::ResearchFailure),
+    CoverageIndex {
+        code: crate::ResearchFailure,
+        index: usize,
+    },
     CompositionReplay {
         work: usize,
         maximum: usize,
@@ -379,6 +383,7 @@ impl Error {
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
+            Self::CoverageIndex { code, .. } => return (*code).into(),
             Self::CompositionReplay { .. } => {
                 return crate::ResearchFailure::CompositionReplayMismatch.into();
             }
@@ -1500,6 +1505,22 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::CoverageFilterInvalid => {
+                    "replay coverage filter capacity or occupancy"
+                }
+                crate::ResearchFailure::CoverageProgramIdentity => {
+                    "replay coverage program identity differs"
+                }
+                crate::ResearchFailure::CoverageProofIdentity => {
+                    "replay coverage proof identity differs"
+                }
+                crate::ResearchFailure::CoverageDependencyOrder => {
+                    "coverage dependency order differs"
+                }
+                crate::ResearchFailure::CoverageActionMissing => "coverage action missing",
+                crate::ResearchFailure::CoverageGraphReference => {
+                    "coverage graph reference missing"
+                }
                 crate::ResearchFailure::ReplaySnapshotMissing => "owned replay snapshot missing",
                 crate::ResearchFailure::ReplaySnapshotBinding => {
                     "owned replay snapshot binding differs"
@@ -1722,6 +1743,9 @@ impl fmt::Display for Error {
                     "offered theorem formula missing"
                 }
             }),
+            Self::CoverageIndex { code, index } => {
+                write!(f, "coverage failure {} at {index}", u32::from(*code))
+            }
             Self::CompositionReplay { work, maximum } => {
                 write!(f, "composition replay differs at work {work}/{maximum}")
             }
@@ -1925,10 +1949,6 @@ impl serde::Serialize for Error {
         value.serialize_entry("code", &self.code())?;
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
-        if let Self::CompositionReplay { work, maximum } = self {
-            value.serialize_entry("work", work)?;
-            value.serialize_entry("maximum", maximum)?;
-        }
         if let Self::RuntimeContext { cause, .. } = self {
             value.serialize_entry("cause", cause)?;
         }
@@ -1963,6 +1983,13 @@ impl serde::Serialize for Error {
             }
             _ => self,
         };
+        if let Self::CoverageIndex { index, .. } = cause {
+            value.serialize_entry("index", index)?;
+        }
+        if let Self::CompositionReplay { work, maximum } = cause {
+            value.serialize_entry("work", work)?;
+            value.serialize_entry("maximum", maximum)?;
+        }
         if let Self::CertificateConstruction(reason) = cause {
             value.serialize_entry("format_reason", reason)?;
         }

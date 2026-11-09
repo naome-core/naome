@@ -897,6 +897,7 @@ codes! {
         JournalConfiguration = 423, JournalSequence = 424, JournalUnitsOverflow = 425, JournalTimeOverflow = 426, JournalAllowance = 427, JournalTrainingRole = 428, JournalLearningEpoch = 429, JournalFrontierRole = 430, JournalResolvedFrontier = 431, JournalHistoryJob = 432, JournalMetaJob = 433, JournalProviderRole = 434, JournalProviderMissing = 435, JournalHorizonOverflow = 436, JournalRecordBinding = 437, JournalProgramCheckpoint = 438, JournalAccountMissing = 439, JournalAccountBinding = 440, JournalFinderCursor = 441, JournalAccountCorrupt = 442,
         RoleHistoryFormat = 443, OutputFrontierRole = 444, OutputFrontierResolved = 445, OutputTypeCapacity = 446,
         ReplaySnapshotMissing = 447, ReplaySnapshotBinding = 448, ReplayCoverageBinding = 449, ReplayTrainingSplit = 450, ReplayProgramBinding = 451, ReplayProofBinding = 452,
+        CoverageFilterInvalid = 453, CoverageProgramIdentity = 454, CoverageProofIdentity = 455, CoverageDependencyOrder = 456, CoverageActionMissing = 457, CoverageGraphReference = 458,
     }
 
 }
