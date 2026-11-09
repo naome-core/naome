@@ -296,6 +296,10 @@ pub enum Error {
         line: usize,
         column: usize,
     },
+    ProofCommandInput {
+        reason: crate::ProofCommandFault,
+        appended: u64,
+    },
     ConfigDecode {
         reason: crate::JsonFault,
         line: usize,
@@ -442,6 +446,7 @@ impl Error {
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::ConfigDecode { .. } => OperationCode::ConfigDecode,
+            Self::ProofCommandInput { .. } => OperationCode::ProofCommandInput,
             Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
             Self::ResourceValidation { .. } => OperationCode::ResourceValidation,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
@@ -990,6 +995,7 @@ impl fmt::Display for Error {
                 "resource profile decode failure {} at {line}:{column}",
                 u32::from(*reason)
             ),
+            Self::ProofCommandInput { reason, appended } => write!(f, "proof command failure {} after {appended} appended records", u32::from(*reason)),
             Self::ConfigDecode { reason, line, column } => write!(f, "configuration decode failure {} at {line}:{column}", u32::from(*reason)),
             Self::CheckpointDecode {
                 reason,
@@ -2838,6 +2844,10 @@ impl serde::Serialize for Error {
             if let Some(maximum) = maximum {
                 value.serialize_entry("maximum", maximum)?;
             }
+        }
+        if let Self::ProofCommandInput { reason, appended } = cause {
+            value.serialize_entry("reason", reason)?;
+            value.serialize_entry("appended", appended)?;
         }
         if let Self::ResourceProfileDecode {
             reason,

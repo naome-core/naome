@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32, ProgramSql = 33, Io = 34, MissingRequiredTheorem = 35, CatalogSql = 36, BacklogSql = 37, CheckedIndexCloseSql = 38, StorageCombined = 39, CheckedIndexSql = 40, ConfigDecode = 41,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32, ProgramSql = 33, Io = 34, MissingRequiredTheorem = 35, CatalogSql = 36, BacklogSql = 37, CheckedIndexCloseSql = 38, StorageCombined = 39, CheckedIndexSql = 40, ConfigDecode = 41, ProofCommandInput = 42,
     }
 
     pub enum InputFault in 7 {
@@ -759,6 +759,8 @@ codes! {
     #[derive(Default)]
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
     pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13, CurrentDirectory = 14, ResolveResourceProfile = 15, InspectDiskVolume = 16, InspectDiskSpace = 17, AcquireDirectoryLock = 18, RemoveOwnedFile = 19, InspectResearchDirectory = 20, CreateResearchDirectory = 21, SyncResearchParent = 22 }
+
+    pub enum ProofCommandFault in 81 { RecordBytes = 1, JsonIo = 2, JsonSyntax = 3, JsonData = 4, JsonEof = 5 }
 
     /// Element storage classes reported by the model backend.
     pub enum TensorElementType in 80 {

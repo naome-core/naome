@@ -27,9 +27,9 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
 }
 pub use outcome::{
     CompressionFailure, DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault,
-    InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ResearchFailure,
-    ResourceValidationReason, RuntimeFailure, SchemaFailure, SqlFault, StartupFailure,
-    StorageIoOperation, TensorElementType, WorkerFailure,
+    InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ProofCommandFault,
+    ResearchFailure, ResourceValidationReason, RuntimeFailure, SchemaFailure, SqlFault,
+    StartupFailure, StorageIoOperation, TensorElementType, WorkerFailure,
 };
 mod frontier;
 pub use error::{

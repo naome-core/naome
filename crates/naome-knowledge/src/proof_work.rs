@@ -193,7 +193,10 @@ impl Work {
             }
             if bytes > RECORD_BYTES {
                 self.append_group(&pending)?;
-                return Err("proof command byte capacity; split construction into records".into());
+                return Err(crate::Error::ProofCommandInput {
+                    reason: crate::ProofCommandFault::RecordBytes,
+                    appended: count + pending.len() as u64,
+                });
             }
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
@@ -202,11 +205,16 @@ impl Work {
                 Ok(command) => command,
                 Err(e) => {
                     self.append_group(&pending)?;
-                    return Err(format!(
-                        "proof command after {} appended records: {e}",
-                        count + pending.len() as u64
-                    )
-                    .into());
+                    let reason = match crate::error::json_fault(&e) {
+                        crate::JsonFault::Io => crate::ProofCommandFault::JsonIo,
+                        crate::JsonFault::Syntax => crate::ProofCommandFault::JsonSyntax,
+                        crate::JsonFault::Data => crate::ProofCommandFault::JsonData,
+                        crate::JsonFault::Eof => crate::ProofCommandFault::JsonEof,
+                    };
+                    return Err(crate::Error::ProofCommandInput {
+                        reason,
+                        appended: count + pending.len() as u64,
+                    });
                 }
             };
             pending.push(command);
