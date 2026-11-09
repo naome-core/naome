@@ -212,8 +212,8 @@ impl Progress {
         source: &str,
         candidate: &Checkpoint,
         result: &transfer::Evaluation,
-    ) -> Result<(), String> {
-        let target = ResearchQuestion::from_hex(source).map_err(|e| e.to_string())?;
+    ) -> Result<(), crate::Error> {
+        let target = ResearchQuestion::from_hex(source)?;
         self.development_before.observe(
             &target,
             32,
@@ -970,7 +970,7 @@ impl Job {
                 p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
             }
             if let Some(question) = question {
-                let q = ResearchQuestion::from_hex(question).map_err(|e| e.to_string())?;
+                let q = ResearchQuestion::from_hex(question)?;
                 if curriculum::reserved(&crate::hex(q.resolution_id())) {
                     p.terminal = experience::TerminalEvidence::NoSearch(
                         experience::NoSearch::ReservedQuestion,
@@ -1155,7 +1155,7 @@ fn solve_with_report_typed(
     job: u64,
     context: SolveContext<'_>,
 ) -> Result<Generation, crate::Error> {
-    let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+    let question = ResearchQuestion::from_hex(source)?;
     let definitions = context
         .prerequisites
         .map(|inputs| inputs.definitions(context.definitions, context.required))
@@ -1306,8 +1306,7 @@ fn solve_with_report_typed(
                                 target,
                                 proof,
                                 &entries[*selected],
-                            )
-                            .map_err(|error| error.to_string())?
+                            )?
                         {
                             cost.definition_references = operands
                                 .iter()
@@ -1408,7 +1407,7 @@ fn search_question_report(
     budget: usize,
     context: &SolveContext<'_>,
 ) -> Result<Generation, crate::Error> {
-    let question = ResearchQuestion::from_hex(source).map_err(|error| error.to_string())?;
+    let question = ResearchQuestion::from_hex(source)?;
     search_compiled_question(&question, ranker, budget, context)
 }
 

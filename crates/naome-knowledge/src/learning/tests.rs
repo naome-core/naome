@@ -1937,3 +1937,23 @@ fn state_mutation_preserves_causes_and_rejects_overflow_atomically() {
     );
     assert_eq!(digest(&state), before);
 }
+
+#[test]
+fn invalid_search_question_preserves_decoder_failure() {
+    let source = "invalid";
+    let expected = crate::Error::from(ResearchQuestion::from_hex(source).unwrap_err());
+    let actual =
+        search_question_report(source, &mut UniversalChoice(0), 1, &SolveContext::default())
+            .err()
+            .unwrap();
+    assert_eq!(actual, expected);
+    let mut engine = Engine::default();
+    let mut io = MemoryStore::default();
+    let actual = engine
+        .with_error(&model::Checkpoint::fresh(), &mut io, |runtime| {
+            solve_with_report_typed(source, runtime, 1, 1, SolveContext::default())
+        })
+        .err()
+        .unwrap();
+    assert_eq!(actual, expected);
+}
