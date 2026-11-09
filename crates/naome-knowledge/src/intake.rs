@@ -145,7 +145,7 @@ impl Intake {
             && root.closure.has_programs()
         {
             if root.description.statement != statement || root.description.question != question {
-                return Err("refreshed parent metadata differs".into());
+                return Err(crate::InputFault::IntakeParentMetadataMismatch.into());
             }
             root.description.transfer = TransferGrant::new(peer, id, grant);
             return Ok(OfferStatus::MetadataRefreshed);
@@ -158,7 +158,7 @@ impl Intake {
             if waiting.description.statement != statement
                 || waiting.description.question != question
             {
-                return Err("refreshed metadata differs from the original obligation".into());
+                return Err(crate::InputFault::IntakeMetadataMismatch.into());
             }
             if let managed::Phase::Refresh { ready, .. } = &mut waiting.phase {
                 *ready = true;
@@ -188,7 +188,7 @@ impl Intake {
             return Ok(OfferStatus::Declined);
         }
         if self.queue.len() >= crate::resources::active_limits().queued_metadata {
-            return Err("description queue capacity".into());
+            return Err(crate::InputLimit::IntakeDescriptionCapacity.into());
         }
         self.queue.push_back(Description {
             transfer: TransferGrant::new(peer, id, grant),
@@ -294,12 +294,15 @@ impl Intake {
                     && root.description.transfer.root() == root_id
                     && !root.description.transfer.live(Instant::now())
             }) {
-                return Err("expired proof fetch grant".into());
+                return Err(crate::InputFault::IntakeProofGrantExpired.into());
             }
             if !self.authorizes(peer, root_id, expected) {
-                return Err("unrequested proof payload".into());
+                return Err(crate::InputFault::IntakeProofUnrequested.into());
             }
-            let root = self.active.as_mut().ok_or("unrequested proof payload")?;
+            let root = self
+                .active
+                .as_mut()
+                .ok_or(crate::InputFault::IntakeProofUnrequested)?;
             let candidate = root.closure.certificate_payload(
                 expected,
                 object,
@@ -536,7 +539,7 @@ impl Intake {
         let operation = (|| -> Result<Option<Vec<ArtifactId>>, crate::Error> {
             if !root.description.transfer.live(now) {
                 if !root.closure.has_programs() {
-                    return Err("root intake deadline".into());
+                    return Err(crate::InputFault::IntakeRootDeadline.into());
                 } else {
                     return Ok(None);
                 }

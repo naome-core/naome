@@ -1044,3 +1044,28 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
 
 mod retry;
 mod staging;
+
+#[test]
+fn malformed_artifact_header_has_a_machine_readable_cause() {
+    let mut envelope = Envelope {
+        compatibility: String::new(),
+        artifact_id: String::new(),
+        statement_id: None,
+        obligation_proof: None,
+        payload: String::new(),
+    };
+    assert_eq!(
+        certificate::resources(&envelope),
+        Err(crate::InputFault::IntakeArtifactHeader.into())
+    );
+    envelope.payload = "00".into();
+    assert_eq!(
+        certificate::resources(&envelope),
+        Err(crate::InputFault::IntakeCertificateHeader.into())
+    );
+    envelope.payload = "ff".into();
+    assert_eq!(
+        certificate::resources(&envelope),
+        Err(crate::InputFault::IntakePayloadTag.into())
+    );
+}

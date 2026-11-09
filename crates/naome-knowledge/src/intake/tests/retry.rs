@@ -350,9 +350,7 @@ async fn sealed_selection_cannot_publish_through_a_different_root_grant() {
     assert_eq!(
         root.selection
             .publish(&mut graph, &mut questions, &wrong, *batch),
-        Err(crate::Error::InvalidInput(
-            "publication root differs from selection".into()
-        ))
+        Err(crate::InputFault::SelectionRootMismatch.into())
     );
     assert_eq!(graph.content_root(), before);
     assert_eq!(graph.accepted_count(), 0);

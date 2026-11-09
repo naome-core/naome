@@ -56,24 +56,30 @@ pub(in crate::intake) fn resources(object: &Envelope) -> Result<(usize, usize), 
             crate::InputLimit::StagedCertificateByteCapacity,
         ));
     }
-    let tag = object.payload.get(..2).ok_or("truncated artifact header")?;
+    let tag = object
+        .payload
+        .get(..2)
+        .ok_or(crate::InputFault::IntakeArtifactHeader)?;
     let steps = match tag {
         "00" => {
             let header = crate::unhex(
                 object
                     .payload
                     .get(2..10)
-                    .ok_or("truncated certificate header")?,
+                    .ok_or(crate::InputFault::IntakeCertificateHeader)?,
             )?;
-            let steps =
-                u32::from_be_bytes(header.try_into().map_err(|_| "certificate header")?) as usize;
+            let steps = u32::from_be_bytes(
+                header
+                    .try_into()
+                    .map_err(|_| crate::InputFault::IntakeCertificateHeaderWidth)?,
+            ) as usize;
             if steps == 0 {
                 return Err(Error::InputLimit(crate::InputLimit::EmptyCertificate));
             }
             steps
         }
         "01" => 1,
-        _ => return Err("unknown artifact payload".into()),
+        _ => return Err(crate::InputFault::IntakePayloadTag.into()),
     };
     Ok((object.payload.len() / 2, steps))
 }

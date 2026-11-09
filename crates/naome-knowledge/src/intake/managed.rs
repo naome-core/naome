@@ -86,10 +86,10 @@ impl Intake {
         let now = Instant::now();
         let id = waiting.description.transfer.root();
         if graph.contains(id)? {
-            return Err("received answer makes pending metadata obsolete".into());
+            return Err(crate::InputFault::IntakeMetadataObsolete.into());
         }
         if now >= waiting.until {
-            return Err("research decision horizon expired".into());
+            return Err(crate::InputFault::IntakeDecisionDeadline.into());
         }
         match &mut waiting.phase {
             Phase::Initial => {
@@ -127,7 +127,7 @@ impl Intake {
                 }
                 if self.active.is_none() && *ready {
                     if !waiting.description.transfer.live(now) {
-                        return Err("refreshed metadata lease expired".into());
+                        return Err(crate::InputFault::IntakeMetadataLeaseExpired.into());
                     }
                     return Ok(WaitingStep::Activate);
                 }
@@ -216,7 +216,7 @@ impl Intake {
         let result = (|| -> Result<ActiveStep, crate::Error> {
             if !root.description.transfer.live(now) {
                 if !root.closure.has_programs() {
-                    return Err("short proof grant expired".into());
+                    return Err(crate::InputFault::IntakeShortGrantExpired.into());
                 }
                 return Ok(ActiveStep::Waiting);
             }
