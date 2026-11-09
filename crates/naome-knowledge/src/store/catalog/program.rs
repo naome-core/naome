@@ -15,10 +15,12 @@ fn sql_error(error: rusqlite::Error) -> crate::Error {
 }
 
 fn ordinal(value: u64) -> Result<i64, crate::Error> {
-    i64::try_from(value).map_err(|_| "physical program address exhausted".into())
+    i64::try_from(value)
+        .map_err(|_| crate::Error::from(crate::InputFault::CatalogProgramAddressExhausted))
 }
 fn positive(value: i64) -> Result<u64, crate::Error> {
-    u64::try_from(value).map_err(|_| "negative program address".into())
+    u64::try_from(value)
+        .map_err(|_| crate::Error::from(crate::InputFault::CatalogProgramAddressNegative))
 }
 fn manifest_bytes(manifest: &Manifest) -> Result<Vec<u8>, crate::Error> {
     ordinal(manifest.commands)?;
@@ -35,10 +37,10 @@ fn progress(connection: &Connection, manifest: &Manifest) -> Result<Progress, cr
     type Row = (Vec<u8>, i64, i64, Vec<u8>, Vec<u8>);
     let row:Option<Row>=connection.query_row("SELECT substr(manifest,1,2049),received,input_bytes,substr(hash,1,33),substr(remaining,1,33) FROM programs WHERE id=?1",[manifest.artifact_id().as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(sql_error)?;
     let Some((bytes, commands, input_bytes, hash, remaining)) = row else {
-        return Err("program staging missing".into());
+        return Err(crate::InputFault::CatalogProgramStagingMissing.into());
     };
     if bytes != manifest_bytes(manifest)? {
-        return Err("program manifest changed".into());
+        return Err(crate::InputFault::CatalogProgramManifestChanged.into());
     }
     let value = Progress {
         commands: positive(commands)?,
@@ -47,7 +49,7 @@ fn progress(connection: &Connection, manifest: &Manifest) -> Result<Progress, cr
         remaining: key(remaining)?,
     };
     if value.commands > manifest.commands || value.input_bytes > manifest.input_bytes {
-        return Err("program prefix exceeds manifest".into());
+        return Err(crate::InputFault::CatalogProgramPrefixExceeds.into());
     }
     Ok(value)
 }
@@ -107,7 +109,7 @@ impl Catalog {
             .map(|bytes| {
                 let manifest = decode_manifest(&bytes)?;
                 if manifest.artifact_id() != id {
-                    return Err("program address differs".into());
+                    return Err(crate::InputFault::CatalogProgramAddressMismatch.into());
                 }
                 Ok(manifest)
             })
@@ -173,7 +175,7 @@ impl Catalog {
         self.require_validated_version(&self.connection)?;
         let value = progress(&self.connection, manifest)?;
         if start > value.commands {
-            return Err("program cursor exceeds received prefix".into());
+            return Err(crate::InputFault::CatalogProgramCursorBeyondPrefix.into());
         }
         let previous = if start == 0 {
             [0; 32]
@@ -238,7 +240,7 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
         let bytes: Vec<u8> = row.get(1).map_err(sql_error)?;
         let manifest = decode_manifest(&bytes)?;
         if manifest.artifact_id().as_bytes() != &id {
-            return Err("staged program identity differs".into());
+            return Err(crate::InputFault::CatalogProgramIdentityMismatch.into());
         }
         let expected = progress(connection, &manifest)?;
         let mut records=connection.prepare_cached("SELECT position,substr(command,1,4097),substr(hash,1,33) FROM program_input WHERE id=?1 ORDER BY position").map_err(sql_error)?;
@@ -254,7 +256,7 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
             let bytes: Vec<u8> = record.get(1).map_err(sql_error)?;
             let hash = key(record.get(2).map_err(sql_error)?)?;
             if positive(position)? != observed.commands || bytes.len() > RECORD_BYTES {
-                return Err("staged program input order or width differs".into());
+                return Err(crate::InputFault::CatalogProgramInputOrdering.into());
             }
             decode_command(&bytes)?;
             let mut prefix = Prefix {
@@ -267,7 +269,7 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
             observed.input_bytes = prefix.input_bytes;
             observed.hash = prefix.hash;
             if observed.hash != hash {
-                return Err("staged program input hash differs".into());
+                return Err(crate::InputFault::CatalogProgramInputHash.into());
             }
         }
         let mut reverse=connection.prepare_cached("SELECT substr(command,1,4097),substr(suffix,1,33) FROM program_input WHERE id=?1 ORDER BY position DESC").map_err(sql_error)?;
@@ -278,18 +280,51 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
             let stored = key(row.get(1).map_err(sql_error)?)?;
             suffix = naome_proof::program::stream_hash(&bytes, suffix);
             if suffix != stored {
-                return Err("staged program stream suffix differs".into());
+                return Err(crate::InputFault::CatalogProgramStreamSuffix.into());
             }
         }
         if suffix != manifest.stream_root {
-            return Err("staged program stream root differs".into());
+            return Err(crate::InputFault::CatalogProgramStreamRoot.into());
         }
         if observed != expected {
-            return Err("staged program prefix summary differs".into());
+            return Err(crate::InputFault::CatalogProgramPrefixSummary.into());
         }
         if observed.commands == manifest.commands {
             require_complete(connection, &manifest)?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn missing_staged_program_and_invalid_addresses_have_distinct_causes() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE programs (id BLOB, manifest BLOB, received INTEGER, input_bytes INTEGER, hash BLOB, remaining BLOB)").unwrap();
+        let manifest = Manifest {
+            commands: 1,
+            input_bytes: 0,
+            program_hash: [0; 32],
+            stream_root: [0; 32],
+            conclusion: [0; 32],
+            statement: [0; 32],
+        };
+        assert!(matches!(
+            progress(&db, &manifest),
+            Err(crate::Error::InputFault(
+                crate::InputFault::CatalogProgramStagingMissing
+            ))
+        ));
+        assert_eq!(
+            ordinal(u64::MAX).unwrap_err(),
+            crate::Error::from(crate::InputFault::CatalogProgramAddressExhausted)
+        );
+        assert_eq!(
+            positive(-1).unwrap_err(),
+            crate::Error::from(crate::InputFault::CatalogProgramAddressNegative)
+        );
+    }
 }
