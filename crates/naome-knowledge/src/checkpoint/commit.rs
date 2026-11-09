@@ -123,7 +123,7 @@ pub(super) fn write_error(error: rusqlite::Error) -> crate::Error {
     {
         crate::Error::ExecutionLimit
     } else {
-        crate::Error::CorruptStorage(sql(error))
+        sql_error(error).fatal_storage()
     }
 }
 

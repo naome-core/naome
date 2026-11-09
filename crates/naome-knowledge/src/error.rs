@@ -320,6 +320,10 @@ pub enum Error {
         reason: crate::SqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
+    BacklogSql {
+        reason: crate::SqlFault,
+        sqlite_code: Option<NonZeroI32>,
+    },
     Io {
         kind: crate::IoFaultKind,
         os_code: Option<NonZeroI32>,
@@ -421,6 +425,7 @@ impl Error {
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
             Self::ProgramSql { .. } => OperationCode::ProgramSql,
             Self::CatalogSql { .. } => OperationCode::CatalogSql,
+            Self::BacklogSql { .. } => OperationCode::BacklogSql,
             Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Io { .. } => OperationCode::Io,
             Self::Runtime(failure) => return (*failure).into(),
@@ -512,6 +517,7 @@ impl Error {
                     | Self::CorruptStorage(_)
                     | Self::ProgramSql { .. }
                     | Self::CatalogSql { .. }
+                    | Self::BacklogSql { .. }
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
@@ -734,6 +740,11 @@ impl fmt::Display for Error {
             Self::CatalogSql { reason, sqlite_code } => write!(
                 f,
                 "catalog SQLite failure {} ({sqlite_code:?})",
+                u32::from(*reason)
+            ),
+            Self::BacklogSql { reason, sqlite_code } => write!(
+                f,
+                "backlog SQLite failure {} ({sqlite_code:?})",
                 u32::from(*reason)
             ),
             Self::CheckpointSql {
@@ -2557,6 +2568,10 @@ impl serde::Serialize for Error {
             sqlite_code,
         }
         | Self::CatalogSql {
+            reason,
+            sqlite_code,
+        }
+        | Self::BacklogSql {
             reason,
             sqlite_code,
         } = cause

@@ -589,9 +589,6 @@ fn sql_error(error: rusqlite::Error) -> crate::Error {
         sqlite_code,
     }
 }
-fn sql(error: rusqlite::Error) -> String {
-    format!("transactional checkpoint: {error}")
-}
 
 #[cfg(test)]
 pub(crate) mod tests;

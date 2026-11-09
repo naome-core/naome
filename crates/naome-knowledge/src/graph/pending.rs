@@ -393,5 +393,39 @@ fn decode(bytes: &[u8]) -> Result<Candidate, crate::Error> {
 }
 
 fn sql(error: rusqlite::Error) -> crate::Error {
-    crate::Error::CorruptStorage(format!("proof backlog index: {error}"))
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
+    crate::Error::BacklogSql {
+        reason,
+        sqlite_code,
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn backlog_sql_error_keeps_numeric_cause_and_is_fatal() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+            .unwrap();
+        let source = db.execute("INSERT INTO t VALUES (1)", []).unwrap_err();
+        let (reason, sqlite_code) = crate::error::sqlite_fault(&source);
+        let failure = sql(source);
+        assert!(failure.fatal());
+        assert!(!failure.retryable());
+        assert_eq!(
+            failure,
+            crate::Error::BacklogSql {
+                reason,
+                sqlite_code
+            }
+        );
+        let value = serde_json::to_value(failure).unwrap();
+        assert_eq!(
+            value["code"],
+            u32::from(crate::outcome::OperationCode::BacklogSql)
+        );
+        assert_eq!(value["sqlite_code"], sqlite_code.unwrap().get());
+    }
 }

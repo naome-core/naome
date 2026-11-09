@@ -161,3 +161,28 @@ fn an_unconfirmed_rollback_never_becomes_a_known_rejection() {
     assert_eq!(checkpoint.header::<u64>().unwrap(), 1);
     assert_eq!(checkpoint.get::<u64>("record", "one", 32).unwrap(), Some(1));
 }
+
+#[test]
+fn fatal_write_error_preserves_sqlite_cause_and_remains_nonretryable() {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+        .unwrap();
+    let source = db.execute("INSERT INTO t VALUES (1)", []).unwrap_err();
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&source);
+    let failure = write_error(source);
+    assert!(failure.fatal());
+    assert!(!failure.retryable());
+    assert_eq!(
+        failure,
+        crate::Error::Stored(Box::new(crate::Error::CheckpointSql {
+            reason,
+            sqlite_code
+        }))
+    );
+    let value = serde_json::to_value(failure).unwrap();
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::outcome::OperationCode::CheckpointSql)
+    );
+    assert_eq!(value["sqlite_code"], sqlite_code.unwrap().get());
+}
