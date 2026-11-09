@@ -292,6 +292,8 @@ fn backend_failure(code: crate::ResearchFailure, detail: Option<String>) -> crat
     crate::Error::External(Box::new(crate::ExternalFailure {
         code,
         detail_digest: detail.map(|value| Sha256::digest(value.as_bytes()).into()),
+        expected_type: None,
+        actual_type: None,
     }))
 }
 fn pack_failure(error: burn_pack::Error) -> crate::Error {
@@ -319,6 +321,29 @@ fn record_failure(error: burn::store::RecordError) -> crate::Error {
     };
     backend_failure(code, Some(detail))
 }
+fn tensor_element_type(value: burn::tensor::DType) -> crate::TensorElementType {
+    use crate::TensorElementType as T;
+    use burn::tensor::{BoolStore, DType};
+    match value {
+        DType::F64 => T::F64,
+        DType::F32 => T::F32,
+        DType::Flex32 => T::Flex32,
+        DType::F16 => T::F16,
+        DType::BF16 => T::Bf16,
+        DType::I64 => T::I64,
+        DType::I32 => T::I32,
+        DType::I16 => T::I16,
+        DType::I8 => T::I8,
+        DType::U64 => T::U64,
+        DType::U32 => T::U32,
+        DType::U16 => T::U16,
+        DType::U8 => T::U8,
+        DType::Bool(BoolStore::Native) => T::BoolNative,
+        DType::Bool(BoolStore::U8) => T::BoolU8,
+        DType::Bool(BoolStore::U32) => T::BoolU32,
+        DType::QFloat(_) => T::Quantized,
+    }
+}
 fn tensor_data_failure(error: burn::tensor::DataError) -> crate::Error {
     use crate::ResearchFailure as F;
     use burn::tensor::DataError as E;
@@ -329,6 +354,11 @@ fn tensor_data_failure(error: burn::tensor::DataError) -> crate::Error {
             actual: actual as u64,
         };
     }
+    let types = match &error {
+        E::DTypeMismatch { expected, actual } => Some((*expected, *actual)),
+        E::UnsupportedConversion { from, to } => Some((*from, *to)),
+        _ => None,
+    };
     let code = match &error {
         E::StorageAccess(_) => F::TensorStorageAccess,
         E::InvalidRepresentation(_) => F::TensorInvalidRepresentation,
@@ -337,7 +367,12 @@ fn tensor_data_failure(error: burn::tensor::DataError) -> crate::Error {
         E::InvalidByteLength { .. } => F::TensorByteLengthInvalid,
         E::ElementCountMismatch { .. } => unreachable!(),
     };
-    backend_failure(code, Some(error.to_string()))
+    let mut failure = backend_failure(code, Some(error.to_string()));
+    if let (Some((expected, actual)), crate::Error::External(details)) = (types, &mut failure) {
+        details.expected_type = Some(tensor_element_type(expected));
+        details.actual_type = Some(tensor_element_type(actual));
+    }
+    failure
 }
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, crate::Error> {
     let reader = burn_pack::Reader::from_bytes(bytes).map_err(pack_failure)?;

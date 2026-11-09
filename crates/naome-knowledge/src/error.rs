@@ -239,6 +239,10 @@ pub struct ExternalFailure {
     pub code: crate::ResearchFailure,
     /// SHA-256 of upstream detail, if available. Guessable details can be inferred.
     pub detail_digest: Option<[u8; 32]>,
+    /// Expected or source tensor element class, when the backend reports it.
+    pub expected_type: Option<crate::TensorElementType>,
+    /// Actual or destination tensor element class, when the backend reports it.
+    pub actual_type: Option<crate::TensorElementType>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2284,6 +2288,14 @@ impl serde::Serialize for Error {
             && let Some(digest) = details.detail_digest
         {
             value.serialize_entry("detail_digest", &digest)?;
+        }
+        if let Self::External(details) = cause {
+            if let Some(expected) = details.expected_type {
+                value.serialize_entry("expected_type", &expected)?;
+            }
+            if let Some(actual) = details.actual_type {
+                value.serialize_entry("actual_type", &actual)?;
+            }
         }
         if let Self::ModelDigestMismatch(details) = cause {
             value.serialize_entry("expected_digest", &details.expected)?;

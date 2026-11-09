@@ -497,6 +497,15 @@ fn training_loss_and_tensor_data_failures_keep_machine_causes() {
         error.code(),
         u32::from(crate::ResearchFailure::TensorDtypeMismatch)
     );
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["expected_type"],
+        u32::from(crate::TensorElementType::F32)
+    );
+    assert_eq!(
+        json["actual_type"],
+        u32::from(crate::TensorElementType::I64)
+    );
     assert_eq!(
         serde_json::to_value(error).unwrap()["detail_digest"]
             .as_array()

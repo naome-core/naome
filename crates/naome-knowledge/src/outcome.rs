@@ -759,6 +759,14 @@ codes! {
     pub enum AdaptiveProfile in 76 { #[default] Dynamic = 1, Heavy = 2, Light = 3, Custom = 4 }
     pub enum StorageIoOperation in 75 { CreateStage = 1, ResolveParent = 2, SyncStage = 3, Publish = 4, SyncParent = 5, InspectOwnedFile = 6, OpenInput = 7, InspectInput = 8, ReadInput = 9, CreateMarker = 10, WriteMarker = 11, SyncMarker = 12, SyncMarkerParent = 13, CurrentDirectory = 14, ResolveResourceProfile = 15, InspectDiskVolume = 16, InspectDiskSpace = 17 }
 
+    /// Element storage classes reported by the model backend.
+    pub enum TensorElementType in 80 {
+        F64 = 1, F32 = 2, Flex32 = 3, F16 = 4, Bf16 = 5,
+        I64 = 6, I32 = 7, I16 = 8, I8 = 9,
+        U64 = 10, U32 = 11, U16 = 12, U8 = 13,
+        BoolNative = 14, BoolU8 = 15, BoolU32 = 16, Quantized = 17,
+    }
+
     pub enum ResearchFailure in 36 {
         ClockBeforeEpoch = 1, ClockOverflow = 2, ClockRollback = 3,
         ElapsedOverflow = 4, AccountingRecordMissing = 5,

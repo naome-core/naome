@@ -29,7 +29,7 @@ pub use outcome::{
     CompressionFailure, DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault,
     InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ResearchFailure,
     ResourceValidationReason, RuntimeFailure, SchemaFailure, SqlFault, StartupFailure,
-    StorageIoOperation, WorkerFailure,
+    StorageIoOperation, TensorElementType, WorkerFailure,
 };
 mod frontier;
 pub use error::{
