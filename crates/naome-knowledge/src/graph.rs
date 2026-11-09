@@ -357,7 +357,7 @@ impl Graph {
                     graph.count = graph
                         .count
                         .checked_add(1)
-                        .ok_or("accepted count overflow")?;
+                        .ok_or(crate::InputFault::AcceptedCountOverflow)?;
                     after = ordinal;
                     continue;
                 }
@@ -390,7 +390,7 @@ impl Graph {
                 graph.count = graph
                     .count
                     .checked_add(1)
-                    .ok_or("accepted count overflow")?;
+                    .ok_or(crate::InputFault::AcceptedCountOverflow)?;
                 after = ordinal;
             }
             graph.cold(graph.checked_storage.finish_startup_page(&graph.context))?;
@@ -1004,7 +1004,9 @@ impl Graph {
             self.fixed_summary(),
             None,
             crate::corpus::root(
-                self.count.checked_add(1).ok_or("accepted count overflow")?,
+                self.count
+                    .checked_add(1)
+                    .ok_or(crate::InputFault::AcceptedCountOverflow)?,
                 batch.context.artifact_set_fingerprint(),
             )?,
             self.commit_guard.as_ref(),

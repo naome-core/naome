@@ -331,7 +331,7 @@ impl Graph {
             crate::corpus::root(
                 self.count
                     .checked_add(batch.entries.len())
-                    .ok_or("accepted count overflow")?,
+                    .ok_or(crate::InputFault::AcceptedCountOverflow)?,
                 batch.context.artifact_set_fingerprint(),
             )?,
             guard.as_ref(),
