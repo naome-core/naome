@@ -2654,12 +2654,10 @@ impl Node {
                     metadata,
                 },
             ) => {
-                let result = if root != *expected_root.as_bytes()
-                    || metadata.manifest.artifact_id() != id
-                {
-                    Err(crate::Error::InvalidInput(
-                        "cited program description scope mismatch".into(),
-                    ))
+                let result = if root != *expected_root.as_bytes() {
+                    Err(crate::InputFault::ProgramDescriptionRoot.into())
+                } else if metadata.manifest.artifact_id() != id {
+                    Err(crate::InputFault::ProgramDescriptionId.into())
                 } else {
                     self.intake
                         .enqueue_program_helper(peer, expected_root, metadata, &self.graph)
@@ -2672,10 +2670,8 @@ impl Node {
             (Flight::Program { read, .. }, Body::ProgramData { root, id, chunk }) => {
                 let expected_root = read.root;
                 let expected_id = read.id;
-                let result = if !read.matches_reply(root, id, &chunk) {
-                    Err(crate::Error::InvalidInput(
-                        "program response scope mismatch".into(),
-                    ))
+                let result = if let Err(error) = read.check_reply(root, id, &chunk) {
+                    Err(error.into())
                 } else {
                     self.intake.program_payload(
                         peer,

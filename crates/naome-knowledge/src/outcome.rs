@@ -201,6 +201,8 @@ codes! {
         ResearchCompatibility = 63, CooperativeRole = 64, EmptyTrainingEpoch = 65,
         PeerIdentitySyntax = 67, PeerIdentityEncoding = 68,
         RequiredTheorems = 69, PrerequisiteRoots = 70,
+        ProgramReplyRoot = 71, ProgramReplyId = 72, ProgramReplyStart = 73,
+        ProgramReplyEmpty = 74, ProgramReplyLimit = 75, ProgramDescriptionRoot = 76, ProgramDescriptionId = 77,
     }
 
     pub enum InputLimit in 8 {

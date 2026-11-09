@@ -597,6 +597,13 @@ impl fmt::Display for Error {
                 InputFault::PeerIdentityEncoding => "peer identity encoding",
                 InputFault::RequiredTheorems => "required theorem role or capacity",
                 InputFault::PrerequisiteRoots => "temporary prerequisites lack required roots",
+                InputFault::ProgramReplyRoot => "program reply root mismatch",
+                InputFault::ProgramReplyId => "program reply identity mismatch",
+                InputFault::ProgramReplyStart => "program reply start mismatch",
+                InputFault::ProgramReplyEmpty => "program reply is empty",
+                InputFault::ProgramReplyLimit => "program reply exceeds requested limit",
+                InputFault::ProgramDescriptionRoot => "program description root mismatch",
+                InputFault::ProgramDescriptionId => "program description identity mismatch",
                 InputFault::ResourceObservationDirectory => {
                     "resource observation directory is unavailable"
                 }
