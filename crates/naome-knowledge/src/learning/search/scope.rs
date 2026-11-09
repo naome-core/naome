@@ -259,7 +259,10 @@ impl Scope {
 
 /// Establish applicability from the exact local premises, without a model or
 /// a proof of the target. The checker still validates any generated program.
-pub(in crate::learning) fn lemma_closes(target: &Formula, lemma: &Formula) -> Result<bool, String> {
+pub(in crate::learning) fn lemma_closes(
+    target: &Formula,
+    lemma: &Formula,
+) -> Result<bool, crate::Error> {
     if target == lemma {
         return Ok(true);
     }
@@ -411,9 +414,9 @@ fn search_scope(
 pub(super) fn compile(
     target: &Formula,
     actions: &[ScopedAction],
-) -> Result<(Term, Vec<Graph>), String> {
+) -> Result<(Term, Vec<Graph>), crate::Error> {
     let (scope, graphs) = decision_graphs(
-        Scope::open(target)?.ok_or("scope trace target differs")?,
+        Scope::open(target)?.ok_or(crate::ResearchFailure::ScopeTraceTarget)?,
         target,
         actions,
     )?;
@@ -429,15 +432,13 @@ fn decision_graphs(
     scope: Scope,
     target: &Formula,
     actions: &[ScopedAction],
-) -> Result<(Scope, Vec<Graph>), String> {
+) -> Result<(Scope, Vec<Graph>), crate::Error> {
     if actions.is_empty() || actions.len() > ACTIONS {
-        return Err("scope trace action capacity".into());
+        return Err(crate::ResearchFailure::ScopeTraceCapacity.into());
     }
     let mut facts = scope.assumptions.clone();
     let mut graphs = Vec::new();
-    let target_bytes = target
-        .encode_canonical()
-        .map_err(|error| error.to_string())?;
+    let target_bytes = target.encode_canonical().map_err(crate::Error::from)?;
     for (offset, action) in actions.iter().enumerate() {
         let mut offered = scope.offers(&facts);
         let selected = if let Some(index) = offered.iter().position(|(choice, _)| choice == action)
@@ -448,7 +449,7 @@ fn decision_graphs(
             // search policy would prune it. These are local labels only.
             let result = scope
                 .apply(&facts, action)
-                .ok_or("scope replay operand differs")?;
+                .ok_or(crate::ResearchFailure::ScopeReplayOperand)?;
             offered.truncate(15);
             offered.push((action.clone(), result));
             offered.len() - 1
@@ -469,7 +470,7 @@ fn decision_graphs(
         facts.push(offered[selected].1.clone());
     }
     if facts.last() != Some(&scope.goal) {
-        return Err("scope trace conclusion differs".into());
+        return Err(crate::ResearchFailure::ScopeConclusion.into());
     }
     Ok((scope, graphs))
 }
@@ -478,7 +479,7 @@ pub(crate) fn program_graphs(
     target: &Formula,
     records: &[Command],
     context: &dyn naome_checker::ContextView,
-) -> Result<Vec<Graph>, String> {
+) -> Result<Vec<Graph>, crate::Error> {
     let Some(actions) = records.iter().find_map(|record| match record {
         Command::Deduce { actions, .. } => Some(actions),
         _ => None,
@@ -500,17 +501,20 @@ pub(crate) fn program_graphs(
     let (Some(reference), None) = (references.next(), references.next()) else {
         return Ok(Vec::new());
     };
-    let Some(header) = context.proof_header(reference).map_err(|e| e.to_string())? else {
-        return Err("scope replay citation missing".into());
+    let Some(header) = context
+        .proof_header(reference)
+        .map_err(crate::Error::from)?
+    else {
+        return Err(crate::ResearchFailure::ScopeCitationMissing.into());
     };
     if header.canonical_length() > naome_checker::question::QUESTION_BYTES {
         return Ok(Vec::new());
     }
     let Some(formula) = context
         .proof_formula(header, header.canonical_length())
-        .map_err(|e| e.to_string())?
+        .map_err(crate::Error::from)?
     else {
-        return Err("scope replay citation formula missing".into());
+        return Err(crate::ResearchFailure::ScopeCitationFormulaMissing.into());
     };
     if let Some(scope) = Scope::open_with(target, Some(formula.as_ref()))?
         && scope.program(actions, &[reference]).as_deref() == Some(records)
@@ -523,17 +527,20 @@ pub(crate) fn program_graphs(
 pub(crate) fn verified(
     target: &[u8],
     actions: &[ScopedAction],
-) -> Result<super::super::proof::Verified, String> {
-    let target = Formula::decode_canonical(target).map_err(|error| error.to_string())?;
+) -> Result<super::super::proof::Verified, crate::Error> {
+    let target = Formula::decode_canonical(target).map_err(crate::Error::from)?;
     let (term, _) = compile(&target, actions)?;
-    super::super::proof::verify(&term, &target)
+    super::super::proof::verify(&term, &target).map_err(Into::into)
 }
 
-pub(crate) fn commands(target: &Formula, actions: &[ScopedAction]) -> Result<Vec<Command>, String> {
-    let scope = Scope::open(target)?.ok_or("scope program target differs")?;
+pub(crate) fn commands(
+    target: &Formula,
+    actions: &[ScopedAction],
+) -> Result<Vec<Command>, crate::Error> {
+    let scope = Scope::open(target)?.ok_or(crate::ResearchFailure::ScopeProgramTarget)?;
     scope
         .program(actions, &[])
-        .ok_or_else(|| "scope program operands differ".into())
+        .ok_or_else(|| crate::ResearchFailure::ScopeProgramOperands.into())
 }
 
 /// Rebuild the selected local actions as ordinary inference for training.
@@ -541,7 +548,7 @@ pub(crate) fn deduce(
     assumptions: &[Formula],
     actions: &[ScopedAction],
     result: u32,
-) -> Result<Term, String> {
+) -> Result<Term, crate::Error> {
     let mut names = Names::default();
     let locals = assumptions
         .iter()
@@ -557,7 +564,7 @@ pub(crate) fn deduce(
             facts
                 .get(handle as usize)
                 .cloned()
-                .ok_or("scope operand is not an earlier fact".to_owned())
+                .ok_or(crate::ResearchFailure::ScopeOperandOrder)
         };
         let term = match action {
             ScopedAction::Instantiate {
@@ -581,7 +588,7 @@ pub(crate) fn deduce(
     let mut term = facts
         .get(result as usize)
         .cloned()
-        .ok_or("scope result is not an earlier fact")?;
+        .ok_or(crate::ResearchFailure::ScopeResultOrder)?;
     for (id, assumption) in locals.into_iter().rev() {
         term = Term::Lambda(id, assumption.formula(), Box::new(term));
     }

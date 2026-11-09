@@ -1152,7 +1152,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), crat
         if target.encode_canonical().map_err(crate::Error::from)? != *encoded {
             return Err(crate::ResearchFailure::ReplayScopedTarget.into());
         }
-        return scope::compile(target, actions).map_err(Into::into);
+        return scope::compile(target, actions);
     }
     if let Tree::Knowledge {
         entries,

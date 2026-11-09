@@ -80,3 +80,12 @@ fn scoped_search_preserves_ranker_resource_failure() {
         })
     ));
 }
+
+#[test]
+fn invalid_scoped_result_has_registered_failure() {
+    let error = deduce(&[], &[], 0).err().unwrap();
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::ScopeResultOrder)
+    );
+}

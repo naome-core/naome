@@ -156,7 +156,7 @@ pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, St
     Ok(ids)
 }
 /// Whether the checked lemma supplies an exact local action for this goal.
-pub(crate) fn directly_applies(target: &Formula, lemma: &Formula) -> Result<bool, String> {
+pub(crate) fn directly_applies(target: &Formula, lemma: &Formula) -> Result<bool, crate::Error> {
     super::search::scope::lemma_closes(target, lemma)
 }
 

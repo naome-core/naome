@@ -811,6 +811,18 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ReplayAxiomTarget => "axiom target differs",
                 crate::ResearchFailure::ReplayAssumptionWrapper => "assumption wrapper",
                 crate::ResearchFailure::ReplayCompiledTarget => "compiled native target mismatch",
+                crate::ResearchFailure::ScopeTraceTarget => "scope trace target differs",
+                crate::ResearchFailure::ScopeTraceCapacity => "scope trace action capacity",
+                crate::ResearchFailure::ScopeReplayOperand => "scope replay operand differs",
+                crate::ResearchFailure::ScopeConclusion => "scope trace conclusion differs",
+                crate::ResearchFailure::ScopeCitationMissing => "scope replay citation missing",
+                crate::ResearchFailure::ScopeCitationFormulaMissing => {
+                    "scope replay citation formula missing"
+                }
+                crate::ResearchFailure::ScopeProgramTarget => "scope program target differs",
+                crate::ResearchFailure::ScopeProgramOperands => "scope program operands differ",
+                crate::ResearchFailure::ScopeOperandOrder => "scope operand is not an earlier fact",
+                crate::ResearchFailure::ScopeResultOrder => "scope result is not an earlier fact",
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }
