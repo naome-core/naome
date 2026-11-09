@@ -67,7 +67,15 @@ fn candidate_retirement_preserves_replacement_foreign_files_and_live_custody() {
     drop(connection);
     let expected = fs::read(&foreign).unwrap();
     fs::rename(&foreign, &path).unwrap();
-    assert!(retire_candidate(&directory.0, 1).is_err());
+    let error = retire_candidate(&directory.0, 1).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::CandidateFormat)
+    );
+    assert_eq!(
+        serde_json::to_value(&error).unwrap()["code"],
+        u32::from(crate::InputFault::CandidateFormat)
+    );
     assert_eq!(fs::read(&path).unwrap(), expected);
     fs::rename(&path, &foreign).unwrap();
     symlink(&foreign, &path).unwrap();
