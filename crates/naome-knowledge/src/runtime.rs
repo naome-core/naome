@@ -218,13 +218,13 @@ struct IdentityReceipt {
     peer_id: String,
 }
 
-fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String> {
+fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, crate::Error> {
     crate::storage::read_owned(&directory.join("identity.json"), 1024)?
         .map(|bytes| {
             let receipt: IdentityReceipt =
-                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+                serde_json::from_slice(&bytes).map_err(crate::error::record_decode)?;
             if receipt.version != 1 {
-                return Err("unsupported node identity receipt version".into());
+                return Err(crate::InputFault::IdentityReceiptVersion.into());
             }
             Ok(receipt)
         })
@@ -314,16 +314,18 @@ fn endpoint(directory: &Path) -> Result<Option<Endpoint>, crate::Error> {
     Ok(Some(endpoint))
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), crate::Error> {
+    use crate::StorageIoOperation as Op;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(path)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| crate::error::storage_io_error(Op::CreateRuntimeFile, error))?;
     file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| error.to_string())
+        .map_err(|error| crate::error::storage_io_error(Op::WriteRuntimeFile, error))?;
+    file.sync_all()
+        .map_err(|error| crate::error::storage_io_error(Op::SyncRuntimeFile, error))
 }
 
 impl Control {
@@ -710,7 +712,7 @@ async fn operation_lock(directory: &Path) -> Result<crate::storage::LockFile, St
     }
 }
 
-fn initialize(directory: &Path) -> Result<(), String> {
+fn initialize(directory: &Path) -> Result<(), crate::Error> {
     let key_path = directory.join("identity.key");
     let receipt_path = directory.join("identity.json");
     let previously_started = directory.join("node.log").exists()
@@ -718,33 +720,38 @@ fn initialize(directory: &Path) -> Result<(), String> {
         || directory.join("control.json").exists();
     if !key_path.exists() {
         if receipt_path.exists() || previously_started {
-            return Err("existing node identity is missing; refusing to replace it".into());
+            return Err(crate::InputFault::IdentityKeyMissing.into());
         }
         let key = identity::Keypair::generate_ed25519();
         write_new(
             &key_path,
             &key.to_protobuf_encoding()
-                .map_err(|error| error.to_string())?,
+                .map_err(|_| crate::InputFault::IdentityKeyEncode)?,
         )?;
     }
     let key =
         identity::Keypair::from_protobuf_encoding(&crate::store::read_bounded(&key_path, 1024)?)
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| crate::InputFault::IdentityKeyDecode)?;
     let peer_id = key.public().to_peer_id().to_string();
     let receipt = identity_receipt(directory)?;
     if receipt
         .as_ref()
         .is_some_and(|receipt| receipt.peer_id != peer_id)
     {
-        return Err("existing node identity does not match its initialized identity".into());
+        return Err(crate::InputFault::IdentityReceiptMismatch.into());
     }
     if receipt.is_none() && previously_started {
-        return Err("existing node identity receipt is missing".into());
+        return Err(crate::InputFault::IdentityReceiptMissing.into());
     }
     if receipt.is_none() {
         let incoming = directory.join(".identity-receipt-incoming");
         if crate::storage::read_owned(&incoming, 1024)?.is_some() {
-            fs::remove_file(&incoming).map_err(|error| error.to_string())?;
+            fs::remove_file(&incoming).map_err(|error| {
+                crate::error::storage_io_error(
+                    crate::StorageIoOperation::RemoveIdentityStage,
+                    error,
+                )
+            })?;
         }
         write_new(
             &incoming,
@@ -752,12 +759,19 @@ fn initialize(directory: &Path) -> Result<(), String> {
                 version: 1,
                 peer_id,
             })
-            .map_err(|error| error.to_string())?,
+            .map_err(|_| crate::InputFault::IdentityReceiptEncode)?,
         )?;
-        fs::rename(&incoming, &receipt_path).map_err(|error| error.to_string())?;
+        fs::rename(&incoming, &receipt_path).map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::PublishIdentityReceipt, error)
+        })?;
         File::open(directory)
             .and_then(|file| file.sync_all())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                crate::error::storage_io_error(
+                    crate::StorageIoOperation::SyncIdentityDirectory,
+                    error,
+                )
+            })?;
     }
     let config = directory.join("config.json");
     if !config.exists() {
@@ -767,12 +781,14 @@ fn initialize(directory: &Path) -> Result<(), String> {
                 &serde_json::json!({"directory":directory,"listen":"/ip4/0.0.0.0/tcp/0","peers":[],
             "discovery":network::DiscoveryConfig::default(),"runtime":Intervals::default()}),
             )
-            .map_err(|error| error.to_string())?,
+            .map_err(|_| crate::InputFault::RuntimeConfigEncode)?,
         )?;
     }
     File::open(directory)
         .and_then(|file| file.sync_all())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            crate::error::storage_io_error(crate::StorageIoOperation::SyncIdentityDirectory, error)
+        })?;
     Ok(())
 }
 

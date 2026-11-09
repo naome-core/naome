@@ -301,6 +301,11 @@ pub enum Error {
         reason: crate::ProofCommandFault,
         appended: u64,
     },
+    RecordDecode {
+        reason: crate::JsonFault,
+        line: usize,
+        column: usize,
+    },
     ConfigDecode {
         reason: crate::JsonFault,
         line: usize,
@@ -447,6 +452,7 @@ impl Error {
             Self::DefinitionCheck(_) => OperationCode::DefinitionCheck,
             Self::CheckpointDecode { .. } => OperationCode::CheckpointDecode,
             Self::ConfigDecode { .. } => OperationCode::ConfigDecode,
+            Self::RecordDecode { .. } => OperationCode::RecordDecode,
             Self::ProofCommandInput { .. } => OperationCode::ProofCommandInput,
             Self::ObservationUnavailable(_) => OperationCode::ObservationUnavailable,
             Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
@@ -520,6 +526,7 @@ impl Error {
             | Self::DefinitionCheck(_)
             | Self::CheckpointDecode { .. }
             | Self::ConfigDecode { .. }
+            | Self::RecordDecode { .. }
             | Self::ResourceProfileDecode { .. }
             | Self::ResourceValidation { .. }
             | Self::CheckpointSql { .. }
@@ -856,6 +863,14 @@ impl fmt::Display for Error {
                 InputFault::CheckedPruneReclaimIncomplete => "startup checked storage reclaim is incomplete",
                 InputFault::CheckedIndexFileType => "checked index is not a regular file",
                 InputFault::CheckedIndexFileLinks => "checked index has linked aliases",
+                InputFault::IdentityKeyMissing => "existing node identity is missing",
+                InputFault::IdentityKeyEncode => "node identity encoding failed",
+                InputFault::IdentityKeyDecode => "node identity decoding failed",
+                InputFault::IdentityReceiptVersion => "unsupported node identity receipt version",
+                InputFault::IdentityReceiptMismatch => "node identity receipt mismatch",
+                InputFault::IdentityReceiptMissing => "node identity receipt missing",
+                InputFault::IdentityReceiptEncode => "node identity receipt encoding failed",
+                InputFault::RuntimeConfigEncode => "runtime configuration encoding failed",
                 InputFault::RuntimeIntervalsWidth => "runtime intervals must be representable",
                 InputFault::RuntimeConfigObject => "node configuration must be an object",
                 InputFault::RuntimeConfigDirectory => "configuration directory must be a path",
@@ -1042,6 +1057,7 @@ impl fmt::Display for Error {
             ),
             Self::ObservationUnavailable(cause) => write!(f, "hardware observation unavailable: {cause}"),
             Self::ProofCommandInput { reason, appended } => write!(f, "proof command failure {} after {appended} appended records", u32::from(*reason)),
+            Self::RecordDecode { reason, line, column } => write!(f, "record decode failure {} at {line}:{column}", u32::from(*reason)),
             Self::ConfigDecode { reason, line, column } => write!(f, "configuration decode failure {} at {line}:{column}", u32::from(*reason)),
             Self::CheckpointDecode {
                 reason,
@@ -2571,6 +2587,14 @@ impl From<EvidenceFailure> for Error {
     }
 }
 
+pub(crate) fn record_decode(error: serde_json::Error) -> Error {
+    Error::RecordDecode {
+        reason: json_fault(&error),
+        line: error.line(),
+        column: error.column(),
+    }
+}
+
 pub(crate) fn config_decode(error: serde_json::Error) -> Error {
     Error::ConfigDecode {
         reason: json_fault(&error),
@@ -2914,6 +2938,11 @@ impl serde::Serialize for Error {
             column,
         }
         | Self::ConfigDecode {
+            reason,
+            line,
+            column,
+        }
+        | Self::RecordDecode {
             reason,
             line,
             column,

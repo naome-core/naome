@@ -422,10 +422,9 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
     let key = fs::read(directory.0.join("identity.key")).unwrap();
     let receipt = fs::read(directory.0.join("identity.json")).unwrap();
     fs::remove_file(directory.0.join("identity.key")).unwrap();
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("refusing to replace")
+    assert_eq!(
+        initialize(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::IdentityKeyMissing)
     );
     assert!(!directory.0.join("identity.key").exists());
     assert_eq!(
@@ -443,13 +442,17 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
         .to_protobuf_encoding()
         .unwrap();
     fs::write(directory.0.join("identity.key"), other).unwrap();
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("does not match")
+    assert_eq!(
+        initialize(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::IdentityReceiptMismatch)
     );
     fs::write(directory.0.join("identity.key"), b"invalid").unwrap();
-    assert!(initialize(&directory.0).is_err());
+    let error = initialize(&directory.0).unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::InputFault::IdentityKeyDecode)
+    );
+    assert!(!serde_json::to_string(&error).unwrap().contains("invalid"));
     fs::write(directory.0.join("identity.key"), &key).unwrap();
     initialize(&directory.0).unwrap();
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
@@ -473,15 +476,17 @@ fn identity_receipt_corruption_or_loss_never_changes_an_established_key() {
         br#"{"version":1,"peer_id":42}"#,
     ] {
         fs::write(&receipt_path, invalid).unwrap();
-        assert!(initialize(&directory.0).is_err());
+        assert!(matches!(
+            initialize(&directory.0),
+            Err(crate::Error::RecordDecode { .. })
+        ));
         assert_eq!(fs::read(&receipt_path).unwrap(), invalid);
         assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
     }
     fs::remove_file(&receipt_path).unwrap();
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("receipt is missing")
+    assert_eq!(
+        initialize(&directory.0).unwrap_err(),
+        crate::Error::from(crate::InputFault::IdentityReceiptMissing)
     );
     assert!(!receipt_path.exists());
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
