@@ -444,14 +444,10 @@ pub fn choose(
 
 pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, crate::Error> {
     if let super::search::Tree::Scoped { target, actions } = tree {
-        return Ok(super::knowledge::helpers(&super::search::scope::verified(
-            target, actions,
-        )?)?);
+        return super::knowledge::helpers(&super::search::scope::verified(target, actions)?);
     }
     if matches!(tree, super::search::Tree::Knowledge { .. }) {
-        return Ok(super::knowledge::helpers(&super::knowledge::verified(
-            tree,
-        )?)?);
+        return super::knowledge::helpers(&super::knowledge::verified(tree)?);
     }
     if let super::search::Tree::Constructed { packet: bytes, .. }
     | super::search::Tree::Composed { packet: bytes, .. }

@@ -927,6 +927,7 @@ codes! {
         TheoremOrdinalZero = 665, DefinitionOrdinalZero = 666, PendingLearningReceiptMismatch = 667, DuplicateHistoryRead = 668, DuplicateModelIo = 669, DuplicateLearningCheckpoint = 670, ResidentJobMissing = 671, JournalActiveCapacity = 672, JournalReservedCapacity = 673, DiskReservationWidth = 674,
         ProviderInvocationRequired = 675, ProviderPipeCapacity = 676, ProviderStartDecoding = 677, ProviderStartInvalid = 678, ProviderWorkerInputMissing = 679, ProviderWorkerOutputMissing = 680, ProviderStopped = 681, DescendantSignalEnded = 682, DescendantOwnerPanic = 683, ProviderRoleMismatch = 684, ProviderUnknown = 685, MockProgramUnit = 686,
         ProviderPidOverflow = 687, ProviderTermSignal = 688, ProviderKillSignal = 689, ProviderChildKill = 690, ProviderWaitFailed = 691, ProviderReapDeadline = 692, ProviderGroupProbe = 693, ProviderGroupUnconfirmed = 694,
+        TheoremDuplicate = 695, RequiredTheoremCapacity = 696, TheoremStepOverflow = 697, TheoremAvailabilityMismatch = 698, ConstructionAvailabilityMismatch = 699, DefinitionSnapshotMismatch = 700,
     }
 
 }

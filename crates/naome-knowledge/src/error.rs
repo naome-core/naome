@@ -1769,6 +1769,12 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ProviderReapDeadline => "provider child reaping deadline",
                 crate::ResearchFailure::ProviderGroupProbe => "provider group observation failed",
                 crate::ResearchFailure::ProviderGroupUnconfirmed => "provider group termination is unconfirmed",
+                crate::ResearchFailure::TheoremDuplicate => "duplicate theorem snapshot",
+                crate::ResearchFailure::RequiredTheoremCapacity => "required theorem capacity",
+                crate::ResearchFailure::TheoremStepOverflow => "theorem step count overflow",
+                crate::ResearchFailure::TheoremAvailabilityMismatch => "theorem availability differs from owner snapshot",
+                crate::ResearchFailure::ConstructionAvailabilityMismatch => "construction availability differs from owner snapshot",
+                crate::ResearchFailure::DefinitionSnapshotMismatch => "definition availability differs from owner snapshot",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

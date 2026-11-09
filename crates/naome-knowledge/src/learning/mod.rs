@@ -1605,7 +1605,7 @@ fn search_compiled_question(
                     );
                     break;
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             };
             retrieved += selected.len();
             dependency_steps += steps;
