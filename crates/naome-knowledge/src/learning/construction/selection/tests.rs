@@ -54,3 +54,52 @@ fn a_conjunction_uses_both_checked_sources_within_three_constructor_steps() {
     let dependencies = graph.direct_dependencies(root).unwrap();
     assert!(ids.iter().all(|id| dependencies.contains(id)));
 }
+
+#[test]
+fn invalid_construction_rankings_keep_count_and_value_failures() {
+    struct Bad(bool);
+    impl Ranker for Bad {
+        fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+            Ok(if self.0 {
+                vec![0.0, f32::NAN]
+            } else {
+                vec![0.0]
+            })
+        }
+    }
+    let target = Formula::equal(FreeVariable::new(0), FreeVariable::new(0));
+    let offers = vec![
+        Offer {
+            context: vec![
+                c::axiom(ProofStep::ZfcAxiom(naome_foundation::ZfcAxiom::Pairing)).unwrap(),
+            ],
+            schema_only: false,
+            group: 0,
+            priority: 0,
+        },
+        Offer {
+            context: vec![
+                c::axiom(ProofStep::ZfcAxiom(naome_foundation::ZfcAxiom::Foundation)).unwrap(),
+            ],
+            schema_only: false,
+            group: 1,
+            priority: 0,
+        },
+    ];
+    assert!(Graph::encode(&features(&target, &offers, 0)).is_ok());
+    assert_eq!(
+        order(&target, &offers, &mut Bad(false)).unwrap_err(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::ConstructionScoreCount,
+            expected: 2,
+            actual: 1,
+        }
+    );
+    assert_eq!(
+        order(&target, &offers, &mut Bad(true)).unwrap_err(),
+        crate::Error::ResearchIndex {
+            code: crate::ResearchFailure::ConstructionScoreNonFinite,
+            index: 1,
+        }
+    );
+}

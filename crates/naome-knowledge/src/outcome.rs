@@ -928,6 +928,7 @@ codes! {
         ProviderInvocationRequired = 675, ProviderPipeCapacity = 676, ProviderStartDecoding = 677, ProviderStartInvalid = 678, ProviderWorkerInputMissing = 679, ProviderWorkerOutputMissing = 680, ProviderStopped = 681, DescendantSignalEnded = 682, DescendantOwnerPanic = 683, ProviderRoleMismatch = 684, ProviderUnknown = 685, MockProgramUnit = 686,
         ProviderPidOverflow = 687, ProviderTermSignal = 688, ProviderKillSignal = 689, ProviderChildKill = 690, ProviderWaitFailed = 691, ProviderReapDeadline = 692, ProviderGroupProbe = 693, ProviderGroupUnconfirmed = 694,
         TheoremDuplicate = 695, RequiredTheoremCapacity = 696, TheoremStepOverflow = 697, TheoremAvailabilityMismatch = 698, ConstructionAvailabilityMismatch = 699, DefinitionSnapshotMismatch = 700,
+        ConstructionScoreCount = 701, ConstructionScoreNonFinite = 702, ConstructionSourceNotClosed = 703, ConstructionSelectionIndex = 704, ConstructionMeaningMismatch = 705, ConstructionRootMissing = 706, ConstructionHelperForward = 707, ConstructionHelperWidth = 708, ConstructionRecipeEmpty = 709, ConstructionRecipeRootMismatch = 710,
     }
 
 }

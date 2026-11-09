@@ -1775,6 +1775,16 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::TheoremAvailabilityMismatch => "theorem availability differs from owner snapshot",
                 crate::ResearchFailure::ConstructionAvailabilityMismatch => "construction availability differs from owner snapshot",
                 crate::ResearchFailure::DefinitionSnapshotMismatch => "definition availability differs from owner snapshot",
+                crate::ResearchFailure::ConstructionScoreCount => "construction plan score count differs",
+                crate::ResearchFailure::ConstructionScoreNonFinite => "construction plan score is non-finite",
+                crate::ResearchFailure::ConstructionSourceNotClosed => "construction plan source is not closed",
+                crate::ResearchFailure::ConstructionSelectionIndex => "construction plan index invalid",
+                crate::ResearchFailure::ConstructionMeaningMismatch => "construction meaning rewrite changed the claim",
+                crate::ResearchFailure::ConstructionRootMissing => "missing construction root",
+                crate::ResearchFailure::ConstructionHelperForward => "native helper forward operand",
+                crate::ResearchFailure::ConstructionHelperWidth => "native helper operand width",
+                crate::ResearchFailure::ConstructionRecipeEmpty => "empty native helper recipe",
+                crate::ResearchFailure::ConstructionRecipeRootMismatch => "native helper root differs",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
