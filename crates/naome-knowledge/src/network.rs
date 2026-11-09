@@ -1508,15 +1508,19 @@ impl Node {
             match value
                 .get("command")
                 .and_then(Value::as_str)
-                .ok_or("command missing")?
+                .ok_or(crate::InputFault::CommandMissing)?
             {
                 "status" => {
                     let after = value
                         .get("after")
                         .filter(|after| !after.is_null())
                         .map(|after| {
-                            id_bytes(after.as_str().ok_or("after must be a proof ID")?)
-                                .map(ArtifactId::from_bytes)
+                            id_bytes(
+                                after
+                                    .as_str()
+                                    .ok_or(crate::InputFault::CommandAfterInvalid)?,
+                            )
+                            .map(ArtifactId::from_bytes)
                         })
                         .transpose()?;
                     let status_page = crate::resources::active_limits().status_page;
@@ -1540,7 +1544,7 @@ impl Node {
                     let source = value
                         .get("artifact")
                         .and_then(Value::as_str)
-                        .ok_or("artifact missing")?;
+                        .ok_or(crate::InputFault::CommandArtifactMissing)?;
                     let (object, ingestion) = self.graph.produce(source)?;
                     let id = ingestion.id;
                     let result = self.ingested(ingestion, crate::outcome::EventSource::Producer)?;
@@ -1554,55 +1558,68 @@ impl Node {
                 }
                 "ingest" => {
                     let object = serde_json::from_value(
-                        value.get("object").cloned().ok_or("object missing")?,
+                        value
+                            .get("object")
+                            .cloned()
+                            .ok_or(crate::InputFault::CommandObjectMissing)?,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::error::record_decode)?;
                     self.ingest(object, crate::outcome::EventSource::Local)
                 }
                 "object" => Ok(
-                    json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
+                    json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or(crate::InputFault::CommandIdMissing)?)?}),
                 ),
                 "test_check" => {
                     if !self.test_controls {
-                        return Err("test controls disabled".into());
+                        return Err(crate::InputFault::CommandTestDisabled.into());
                     }
                     Ok(
-                        json!({"object":self.graph.author(value.get("artifact").and_then(Value::as_str).ok_or("artifact missing")?)?}),
+                        json!({"object":self.graph.author(value.get("artifact").and_then(Value::as_str).ok_or(crate::InputFault::CommandArtifactMissing)?)?}),
                     )
                 }
                 "test_descriptor" => {
                     if !self.test_controls {
-                        return Err("test controls disabled".into());
+                        return Err(crate::InputFault::CommandTestDisabled.into());
                     }
                     let metadata: Metadata = serde_json::from_value(
-                        value.get("metadata").cloned().ok_or("metadata missing")?,
+                        value
+                            .get("metadata")
+                            .cloned()
+                            .ok_or(crate::InputFault::CommandMetadataMissing)?,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::error::record_decode)?;
                     let (id, _, _) = metadata.compile(self.graph.checked_context())?;
                     if self.test_objects.len() >= crate::resources::limits().developer_objects
                         && !self.test_objects.contains_key(&id)
                     {
-                        return Err("test object capacity".into());
+                        return Err(crate::InputFault::CommandTestCapacity.into());
                     }
                     self.test_objects.insert(id, (metadata, None));
                     Ok(json!({"installed":true}))
                 }
                 "describe" => Ok(
-                    json!({"metadata":self.graph.describe(ArtifactId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
+                    json!({"metadata":self.graph.describe(ArtifactId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or(crate::InputFault::CommandIdMissing)?)?))?}),
                 ),
                 "links" => {
                     if self.discovery.book.lock().automatic {
-                        return Err("links requires static discovery mode".into());
+                        return Err(crate::InputFault::CommandStaticDiscovery.into());
                     }
-                    let peers: Vec<String> =
-                        serde_json::from_value(value.get("peers").cloned().ok_or("peers missing")?)
-                            .map_err(|error| error.to_string())?;
+                    let peers: Vec<String> = serde_json::from_value(
+                        value
+                            .get("peers")
+                            .cloned()
+                            .ok_or(crate::InputFault::CommandPeersMissing)?,
+                    )
+                    .map_err(crate::error::record_decode)?;
                     let desired: BTreeSet<PeerId> = peers
                         .into_iter()
-                        .map(|id| id.parse().map_err(|error| format!("peer: {error}")))
+                        .map(|id| {
+                            id.parse()
+                                .map_err(|_| crate::InputFault::CommandPeerInvalid)
+                        })
                         .collect::<Result<_, _>>()?;
                     if !desired.iter().all(|id| self.configured.contains_key(id)) {
-                        return Err("unconfigured peer".into());
+                        return Err(crate::InputFault::CommandPeerUnconfigured.into());
                     }
                     for peer in self.configured.keys() {
                         if desired.contains(peer) {
@@ -1638,10 +1655,10 @@ impl Node {
                         value
                             .get("id")
                             .and_then(Value::as_str)
-                            .ok_or("id missing")?,
+                            .ok_or(crate::InputFault::CommandIdMissing)?,
                     )?);
                     if !self.graph.contains(id)? {
-                        return Err("only accepted artifacts can be announced".into());
+                        return Err(crate::InputFault::CommandAnnounceUnaccepted.into());
                     }
                     let mut bytes = crate::compatibility().to_vec();
                     bytes.extend_from_slice(id.as_bytes());
@@ -1662,11 +1679,11 @@ impl Node {
                     let peer: PeerId = value
                         .get("peer")
                         .and_then(Value::as_str)
-                        .ok_or("peer missing")?
+                        .ok_or(crate::InputFault::CommandPeerMissing)?
                         .parse()
-                        .map_err(|error| format!("peer: {error}"))?;
+                        .map_err(|_| crate::InputFault::CommandPeerInvalid)?;
                     if !self.enabled.contains(&peer) || !self.swarm.is_connected(&peer) {
-                        return Err("peer not connected and enabled".into());
+                        return Err(crate::InputFault::CommandPeerDisabled.into());
                     }
                     if self.flight_count(peer) >= crate::resources::limits().flights_per_peer {
                         return Err(crate::Error::ExecutionLimit);
@@ -1677,22 +1694,25 @@ impl Node {
                     }
                     let metadata = if value["command"] == "test_offer" {
                         if !self.test_controls {
-                            return Err("test controls disabled".into());
+                            return Err(crate::InputFault::CommandTestDisabled.into());
                         }
                         let metadata: Metadata = serde_json::from_value(
-                            value.get("metadata").cloned().ok_or("metadata missing")?,
+                            value
+                                .get("metadata")
+                                .cloned()
+                                .ok_or(crate::InputFault::CommandMetadataMissing)?,
                         )
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::error::record_decode)?;
                         if let Some(object) = value.get("object") {
                             if self.test_objects.len()
                                 >= crate::resources::limits().developer_objects
                             {
-                                return Err("test object capacity".into());
+                                return Err(crate::InputFault::CommandTestCapacity.into());
                             }
                             let object: Envelope = serde_json::from_value(object.clone())
-                                .map_err(|error| error.to_string())?;
+                                .map_err(crate::error::record_decode)?;
                             if object.payload.len() > 2 * crate::resources::limits().proof_bytes {
-                                return Err("test proof byte limit".into());
+                                return Err(crate::InputFault::CommandTestProofLimit.into());
                             }
                             self.test_objects.insert(
                                 ArtifactId::from_bytes(id_bytes(&metadata.artifact_id)?),
@@ -1705,19 +1725,22 @@ impl Node {
                             value
                                 .get("id")
                                 .and_then(Value::as_str)
-                                .ok_or("id missing")?,
+                                .ok_or(crate::InputFault::CommandIdMissing)?,
                         )?);
                         self.graph
                             .describe(id)?
-                            .ok_or("object not supported for question exchange")?
+                            .ok_or(crate::InputFault::CommandExchangeUnsupported)?
                     };
                     let mut frame = Frame::new(Body::Offer { metadata });
                     if let Some(compat) = value.get("test_compatibility") {
                         if !self.test_controls {
-                            return Err("test controls disabled".into());
+                            return Err(crate::InputFault::CommandTestDisabled.into());
                         }
-                        frame.message.compatibility =
-                            id_bytes(compat.as_str().ok_or("compatibility string")?)?;
+                        frame.message.compatibility = id_bytes(
+                            compat
+                                .as_str()
+                                .ok_or(crate::InputFault::CommandCompatibilityType)?,
+                        )?;
                     }
                     let id = self
                         .swarm
@@ -1735,7 +1758,7 @@ impl Node {
                     Ok(json!({"sent":true}))
                 }
                 "stop" => Ok(json!({"stopping":true})),
-                _ => Err("unknown command".into()),
+                _ => Err(crate::InputFault::CommandUnknown.into()),
             }
         })();
         match result {
@@ -2813,7 +2836,7 @@ impl Node {
                 },
             ) => {
                 let result = if root != *expected_root.as_bytes() {
-                    Err("response root mismatch".into())
+                    Err(crate::InputFault::ResponseRootMismatch.into())
                 } else {
                     self.intake.payload_with_question(
                         peer,

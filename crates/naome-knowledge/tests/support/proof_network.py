@@ -774,6 +774,11 @@ class Driver:
                 reservations[index].close()
                 producer_source = source(index + 1, padding=64000)
                 node.start([producer_source])
+                if index == 0:
+                    response = node._command_once(
+                        "unknown-command", min(self.deadline, time.monotonic() + 10), {}
+                    )
+                    assert response["error"]["code"] == 0x0007_0280
                 node.command("links", peers=[])
             assert len({node.identity for node in self.nodes}) == 4
             assert len({node.process.pid for node in self.nodes}) == 4

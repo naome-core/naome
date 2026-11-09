@@ -214,7 +214,7 @@ struct Native {
 impl Provider for Native {
     fn next(&self, checkpoint: u32) -> Result<Option<u32>, Failure> {
         let units = contract(&self.record)
-            .ok_or("native provider contract")?
+            .ok_or(crate::WorkerFailure::NativeContractMissing)?
             .units;
         Ok((checkpoint < units).then_some(checkpoint + 1))
     }
@@ -228,7 +228,7 @@ impl Provider for Native {
             .record
             .native
             .as_mut()
-            .ok_or("native model snapshot missing")?;
+            .ok_or(crate::WorkerFailure::NativeSnapshotMissing)?;
         job.execute(
             unit,
             if matches!(self.record.input, Input::Peer { .. }) {
@@ -250,7 +250,7 @@ impl Provider for Native {
             let p = job
                 .progress
                 .as_mut()
-                .ok_or("peer extraction progress missing")?;
+                .ok_or(crate::WorkerFailure::PeerProgressMissing)?;
             match crate::learning::peer::extract_source(question, artifact, evidence) {
                 Ok(solution) => {
                     p.cost = Some((*solution.cost).clone());
@@ -266,7 +266,12 @@ impl Provider for Native {
                 }
             }
         }
-        owner.learning(unit, job.progress.clone().ok_or("native progress missing")?)?;
+        owner.learning(
+            unit,
+            job.progress
+                .clone()
+                .ok_or(crate::WorkerFailure::NativeProgressMissing)?,
+        )?;
         Ok(())
     }
     fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
@@ -274,17 +279,20 @@ impl Provider for Native {
             .record
             .native
             .as_ref()
-            .ok_or("native model snapshot missing")?;
+            .ok_or(crate::WorkerFailure::NativeSnapshotMissing)?;
         Ok(match &self.record.input {
             Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
-                let p = job.progress.as_ref().ok_or("native final state missing")?;
+                let p = job
+                    .progress
+                    .as_ref()
+                    .ok_or(crate::WorkerFailure::NativeFinalMissing)?;
                 Output::Native {
                     solution: p.result.clone(),
                     frontier: p.frontier.clone(),
                     terminal: p.terminal.clone().into(),
                 }
             }
-            _ => return Err("native provider role differs".into()),
+            _ => return Err(crate::WorkerFailure::NativeRoleMismatch.into()),
         })
     }
 }
@@ -386,7 +394,7 @@ impl Provider for Mock {
                                 naome_checker::question::ResearchQuestion::from_hex(&bytes).ok()
                             })
                             .find(|other| other.resolution_id() != compiled.resolution_id())
-                            .ok_or("mock alternate target absent")?
+                            .ok_or(crate::WorkerFailure::MockTargetMissing)?
                     } else {
                         compiled
                     };
@@ -400,7 +408,7 @@ impl Provider for Mock {
                     .unwrap_or(Output::NoCandidate)
             }
             Input::Peer { .. } | Input::Train { .. } => {
-                return Err("native learning jobs require the native provider".into());
+                return Err(crate::WorkerFailure::NativeProviderRequired.into());
             }
             Input::Select { question, .. } => {
                 naome_checker::question::ResearchQuestion::source_requires_definitions(question)

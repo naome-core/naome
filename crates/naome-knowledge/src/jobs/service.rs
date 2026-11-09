@@ -826,7 +826,7 @@ impl Owner {
                 .journal
                 .records
                 .get_mut(&id)
-                .ok_or("unknown provider completion")?;
+                .ok_or(crate::InputFault::ProviderCompletionUnknown)?;
             record.state = State::InDoubt;
             record.acknowledged = false;
             record.result = None;
@@ -846,7 +846,7 @@ impl Owner {
             .journal
             .records
             .get(&id)
-            .ok_or("unknown provider completion")?;
+            .ok_or(crate::InputFault::ProviderCompletionUnknown)?;
         let peer = matches!(record.input, Input::Peer { .. });
         let proposed = if record.state.terminal() {
             record.result.as_ref()
@@ -868,7 +868,7 @@ impl Owner {
             .journal
             .records
             .get_mut(&id)
-            .ok_or("unknown provider completion")?;
+            .ok_or(crate::InputFault::ProviderCompletionUnknown)?;
         if !record.state.terminal() {
             record.state = if expired {
                 State::Expired
@@ -1205,7 +1205,7 @@ impl Owner {
             }
             self.journal.next_cursor = cursor
                 .checked_add(1)
-                .ok_or("research finding cursor exhausted")?;
+                .ok_or(crate::InputFault::FindingCursorExhausted)?;
         } else if let Some(account) = original_account {
             if account.held.is_some() {
                 reject_state(
@@ -1244,7 +1244,9 @@ impl Owner {
             );
         }
         let id = self.journal.next_id;
-        self.journal.next_id = id.checked_add(1).ok_or("research job identity exhausted")?;
+        self.journal.next_id = id
+            .checked_add(1)
+            .ok_or(crate::InputFault::ResearchJobIdExhausted)?;
         self.journal.records.insert(
             id,
             Record {

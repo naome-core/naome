@@ -189,3 +189,15 @@ fn supervisor_failure_survives_provider_drive() {
         matches!(result, Err(Failure::Coded(code)) if u32::from(code) == u32::from(crate::outcome::WorkerFailure::GrantIdentity))
     );
 }
+
+#[test]
+fn mock_provider_rejects_native_jobs_with_a_registered_code() {
+    let mut provider = Mock {
+        input: Input::Train { epoch: 1 },
+        work: MockWork::default(),
+    };
+    let failure = provider.result(&mut Grants::default()).unwrap_err();
+    assert!(
+        matches!(failure, Failure::Coded(code) if u32::from(code) == u32::from(crate::WorkerFailure::NativeProviderRequired))
+    );
+}
