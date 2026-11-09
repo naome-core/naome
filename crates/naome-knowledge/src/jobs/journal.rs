@@ -199,21 +199,23 @@ impl Disk {
             "program",
             naome_proof::program::CHUNK_BYTES,
             |key, bytes| {
-                let (id, unit) = key.split_once(':').ok_or("invalid provider program key")?;
+                let (id, unit) = key
+                    .split_once(':')
+                    .ok_or(crate::ResearchFailure::RecoveryProgramKey)?;
                 let id = id
                     .parse::<u64>()
-                    .map_err(|_| "invalid provider program job")?;
+                    .map_err(|_| crate::ResearchFailure::RecoveryProgramJobSyntax)?;
                 let unit = unit
                     .parse::<u32>()
-                    .map_err(|_| "invalid provider program unit")?;
+                    .map_err(|_| crate::ResearchFailure::RecoveryProgramUnitSyntax)?;
                 if key != format!("{id}:{unit}") || unit == 0 {
-                    return Err("noncanonical provider program key".into());
+                    return Err(crate::ResearchFailure::RecoveryProgramKeyCanonical.into());
                 }
                 let record = checkpoint
                     .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
-                    .ok_or("provider program job missing")?;
+                    .ok_or(crate::ResearchFailure::RecoveryProgramJobMissing)?;
                 if unit > record.reserved_units || !matches!(record.input, Input::Solve { .. }) {
-                    return Err("provider program reservation missing".into());
+                    return Err(crate::ResearchFailure::RecoveryProgramReservation.into());
                 }
                 naome_proof::program::decode_records(bytes)
                     .map(|_| ())
@@ -229,7 +231,7 @@ impl Disk {
         if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.configuration).is_err()
         {
-            return Err("unsupported research journal configuration or header".into());
+            return Err(crate::ResearchFailure::RecoveryHeaderInvalid.into());
         }
         let resident = header
             .resident_records
@@ -237,7 +239,7 @@ impl Disk {
             .copied()
             .collect::<BTreeSet<_>>();
         if resident.len() != header.resident_records.len() {
-            return Err("research resident record index differs".into());
+            return Err(crate::ResearchFailure::RecoveryResidentIndex.into());
         }
         let old_workers = header.workers;
         if old_workers
@@ -245,7 +247,7 @@ impl Disk {
             .try_fold(0usize, |n, w| n.checked_add(*w))
             != Some(header.slots.len())
         {
-            return Err("research physical slot allocation differs".into());
+            return Err(crate::ResearchFailure::RecoverySlotAllocation.into());
         }
         let mut journal = Journal::from_header(header);
         journal.learning = checkpoint
@@ -254,7 +256,7 @@ impl Disk {
                 "current",
                 crate::resources::limits().closure_bytes,
             )?
-            .ok_or("local learning state missing")?;
+            .ok_or(crate::ResearchFailure::RecoveryLearningMissing)?;
         learning::validate_rows(&checkpoint, journal.learning.as_ref())?;
         let persisted_learning_hash = crate::learning::digest(&journal.learning);
         if settings.native_proof_learning && journal.learning.is_none() {
@@ -268,70 +270,82 @@ impl Disk {
         let mut terminal_residents = Vec::new();
         let mut observed_residents = 0usize;
         let mut unacknowledged = 0usize;
-        checkpoint.scan(
-            "record",
-            crate::checkpoint::MAX_ROW,
-            |key, bytes| {
-                let record: Record = crate::checkpoint::decode(bytes)?;
-                if record.id.to_string() != key
-                    || checkpoint.get::<u64>("history", &format!("{:020}", record.id), 32)?
-                        != Some(record.id)
+        checkpoint.scan("record", crate::checkpoint::MAX_ROW, |key, bytes| {
+            let record: Record = crate::checkpoint::decode(bytes)?;
+            if record.id.to_string() != key
+                || checkpoint.get::<u64>("history", &format!("{:020}", record.id), 32)?
+                    != Some(record.id)
+            {
+                return Err(crate::ResearchFailure::RecoveryRecordRowIdentity.into());
+            }
+            let account = if matches!(record.input, Input::Find { .. }) {
+                None
+            } else {
+                checkpoint.get::<Account>("account", &record.input.account_key(), 8192)?
+            };
+            validate_record(
+                record.id,
+                &record,
+                settings,
+                journal.observed_ms,
+                journal.next_id,
+                journal.next_cursor,
+                account.as_ref(),
+            )?;
+            if !record.acknowledged {
+                unacknowledged = unacknowledged
+                    .checked_add(1)
+                    .ok_or(crate::ResearchFailure::RecoveryRequestCountOverflow)?;
+                if checkpoint.get::<u64>(
+                    "request",
+                    &super::request_key(&record.input, &record.binding, record.settings),
+                    64,
+                )? != Some(record.id)
                 {
-                    return Err("research record row identity differs".into());
+                    return Err(crate::ResearchFailure::RecoveryRequestBinding.into());
                 }
-                let account = if matches!(record.input, Input::Find { .. }) {
-                    None
+            }
+            if resident.contains(&record.id) {
+                observed_residents += 1;
+                let charge = bytes
+                    .len()
+                    .checked_add(key.len() + 128)
+                    .and_then(|bytes| {
+                        bytes.checked_add(if matches!(record.input, Input::Find { .. }) {
+                            0
+                        } else {
+                            8192
+                        })
+                    })
+                    .ok_or(crate::ResearchFailure::RecoveryResidentBytesOverflow)?;
+                if record.state.terminal() {
+                    terminal_residents.push((record.id, charge));
                 } else {
-                    checkpoint.get::<Account>("account", &record.input.account_key(), 8192)?
-                };
-                validate_record(
-                    record.id,
-                    &record,
-                    settings,
-                    journal.observed_ms,
-                    journal.next_id,
-                    journal.next_cursor,
-                    account.as_ref(),
-                )?;
-                if !record.acknowledged {
-                    unacknowledged = unacknowledged
-                        .checked_add(1)
-                        .ok_or("research request count overflow")?;
-                    if checkpoint.get::<u64>(
-                        "request",
-                        &super::request_key(&record.input, &record.binding, record.settings),
-                        64,
-                    )? != Some(record.id)
-                    {
-                        return Err("research unacknowledged request index differs".into());
+                    let total = resident_bytes
+                        .checked_add(charge)
+                        .ok_or(crate::ResearchFailure::RecoveryResidentBytesOverflow)?;
+                    let budget = crate::resources::limits().active_job_bytes;
+                    if total > budget {
+                        return Err(crate::Error::MemoryOverload {
+                            requested: charge,
+                            charged: resident_bytes,
+                            budget,
+                        });
                     }
+                    resident_bytes = total;
+                    journal.records.insert(record.id, record);
                 }
-                if resident.contains(&record.id) {
-                    observed_residents += 1;
-                    let charge = bytes.len().checked_add(key.len() + 128)
-                        .and_then(|bytes| bytes.checked_add(if matches!(record.input, Input::Find { .. }) { 0 } else { 8192 }))
-                        .ok_or("research resident memory overflow")?;
-                    if record.state.terminal() {
-                        terminal_residents.push((record.id, charge));
-                    } else {
-                        resident_bytes = resident_bytes.checked_add(charge).ok_or("research resident memory overflow")?;
-                        if resident_bytes > crate::resources::limits().active_job_bytes {
-                            return Err("resource overload: retained active research obligations exceed installed capacity".into());
-                        }
-                        journal.records.insert(record.id, record);
-                    }
-                }
-                Ok(())
-            },
-        )?;
+            }
+            Ok(())
+        })?;
         if checkpoint.count("history")? != checkpoint.count("record")? {
-            return Err("research history index cardinality differs".into());
+            return Err(crate::ResearchFailure::RecoveryHistoryCardinality.into());
         }
         if checkpoint.count("request")? != unacknowledged {
-            return Err("research request index cardinality differs".into());
+            return Err(crate::ResearchFailure::RecoveryRequestCardinality.into());
         }
         if resident.len() != observed_residents {
-            return Err("research resident record is missing".into());
+            return Err(crate::ResearchFailure::RecoveryResidentMissing.into());
         }
         // Completed results are immutable history. Keep only the part that fits
         // the new working set; recovery scans still visit every archived row.
@@ -343,14 +357,14 @@ impl Disk {
             {
                 let record = checkpoint
                     .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
-                    .ok_or("research resident record disappeared")?;
+                    .ok_or(crate::ResearchFailure::RecoveryResidentDisappeared)?;
                 resident_bytes += charge;
                 journal.records.insert(id, record);
             } else {
                 journal.retired_jobs = journal
                     .retired_jobs
                     .checked_add(1)
-                    .ok_or("research retired count overflow")?;
+                    .ok_or(crate::ResearchFailure::RecoveryRetiredCountOverflow)?;
             }
         }
         let needed = journal
@@ -366,16 +380,16 @@ impl Disk {
             validate_account(key, &account, settings)?;
             units = units
                 .checked_add(u64::from(account.reserved_units))
-                .ok_or("research archive unit overflow")?;
+                .ok_or(crate::ResearchFailure::RecoveryArchiveUnitsOverflow)?;
             spent = spent
                 .checked_add(account.spent_ms)
-                .ok_or("research archive time overflow")?;
+                .ok_or(crate::ResearchFailure::RecoveryArchiveTimeOverflow)?;
             if let Some(id) = account.held {
                 let held = checkpoint
                     .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
-                    .ok_or("held research job is missing")?;
+                    .ok_or(crate::ResearchFailure::RecoveryHeldJobMissing)?;
                 if held.state != State::InDoubt || held.input.account_key() != key {
-                    return Err("held research account identity differs".into());
+                    return Err(crate::ResearchFailure::RecoveryHeldAccountMismatch.into());
                 }
             }
             if needed.contains(key) {
@@ -384,7 +398,7 @@ impl Disk {
             Ok(())
         })?;
         if units > journal.total_reserved_units || spent > journal.total_spent_ms {
-            return Err("research archived allowance differs".into());
+            return Err(crate::ResearchFailure::RecoveryArchiveAllowance.into());
         }
         let now = wall_ms()?;
         journal.validate(settings)?;
@@ -419,9 +433,7 @@ impl Disk {
             journal.slots = install_slots(&root)?;
         }
         if now < journal.observed_ms {
-            return Err(
-                "research clock moved backwards; original budgets require reconciliation".into(),
-            );
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         // Deterministic mock state is resumable. Charge downtime conservatively;
         // neither a process PID nor a prior provider response grants authority.
@@ -429,7 +441,7 @@ impl Disk {
             if !record.state.terminal() && record.state != State::InDoubt {
                 let elapsed = now
                     .checked_sub(record.accounted_ms)
-                    .ok_or("research clock rollback")?;
+                    .ok_or(crate::ResearchFailure::ClockRollback)?;
                 record.spent_ms = record.spent_ms.saturating_add(elapsed);
                 journal.total_spent_ms = journal.total_spent_ms.saturating_add(elapsed);
                 if let Some(account) = journal.accounts.get_mut(&record.input.account_key()) {

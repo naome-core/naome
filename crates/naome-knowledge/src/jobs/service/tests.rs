@@ -1107,3 +1107,42 @@ fn request_index_rejects_missing_and_mismatched_jobs_with_identity() {
         assert_eq!(encoded["job"], indexed);
     }
 }
+
+#[test]
+fn recovery_preserves_clock_and_program_row_causes() {
+    let (directory, mut owner) = fixture(4);
+    let settings = owner.settings;
+    owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
+    owner.disk.save(&mut owner.journal).unwrap();
+    drop(owner);
+    let error = Disk::open(&directory.0, settings, 0).err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert!(error.fatal());
+
+    let (directory, mut owner) = fixture(4);
+    let settings = owner.settings;
+    owner
+        .disk
+        .save_with(
+            &mut owner.journal,
+            vec![crate::checkpoint::Update::Put {
+                kind: "program",
+                key: "123:1".into(),
+                payload: vec![0],
+            }],
+        )
+        .unwrap();
+    drop(owner);
+    let error = Disk::open(&directory.0, settings, 0).err().unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::RecoveryProgramJobMissing)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["code"],
+        u32::from(crate::ResearchFailure::RecoveryProgramJobMissing)
+    );
+}
