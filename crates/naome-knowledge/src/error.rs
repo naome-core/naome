@@ -917,6 +917,7 @@ impl fmt::Display for Error {
                 InputFault::StartupHandoffExisting => "startup handoff requires a new daemon",
                 InputFault::StartupLifelineMissing => "startup parent lifeline missing",
                 InputFault::ResourceSnapshotEncoding => "effective resource snapshot encoding failed",
+                InputFault::FinderOperandStatementWidth => "checked Finder operand statement width",
                 InputFault::TransferGrantBinding => "transfer peer or root differs",
                 InputFault::IntakeParentMetadataMismatch => "refreshed parent metadata differs",
                 InputFault::IntakeMetadataMismatch => "refreshed metadata differs from the original obligation",
