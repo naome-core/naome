@@ -1660,6 +1660,14 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::TrainingLossCount => "training loss requires exactly one value",
                 crate::ResearchFailure::TrainingLossNonFinite => "training loss is non-finite",
                 crate::ResearchFailure::TrainingPoolEmpty => "training requires own accepted proof decisions",
+                crate::ResearchFailure::SequenceEmpty => "native sequence is empty",
+                crate::ResearchFailure::SequenceShape => "native sequence batch shape differs",
+                crate::ResearchFailure::SequenceCapacity => "native sequence batch capacity exceeded",
+                crate::ResearchFailure::SequencePredecessor => "native sequence predecessor differs",
+                crate::ResearchFailure::SequenceDepth => "native sequence depth exceeds limit",
+                crate::ResearchFailure::SequenceSelectedAction => "native sequence selected action differs",
+                crate::ResearchFailure::SequenceMemoryMissing => "native sequence memory predecessor missing",
+                crate::ResearchFailure::SequenceOutputMissing => "native sequence output missing",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

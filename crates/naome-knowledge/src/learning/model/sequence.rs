@@ -7,7 +7,7 @@ impl Runtime {
         &mut self,
         pool: &Pool,
         cursor: &mut u64,
-    ) -> Result<(Batch, Tensor<2>), String> {
+    ) -> Result<(Batch, Tensor<2>), crate::Error> {
         let contextual = self.recurrence == Recurrence::Carry && {
             #[cfg(test)]
             {
@@ -49,22 +49,48 @@ impl Runtime {
         &self,
         batch: &Batch,
         sample: &[super::super::pool::Sample<'_>],
-    ) -> Result<Tensor<2>, String> {
-        if sample.len() != batch.goal.dims()[0] || sample.len() > 16 {
-            return Err("native sequence batch shape differs".into());
+    ) -> Result<Tensor<2>, crate::Error> {
+        if sample.is_empty() {
+            return Err(crate::ResearchFailure::SequenceEmpty.into());
+        }
+        if sample.len() > 16 {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::SequenceCapacity,
+                expected: 16,
+                actual: sample.len() as u64,
+            });
+        }
+        if sample.len() != batch.goal.dims()[0] {
+            return Err(crate::Error::ResearchMismatch {
+                code: crate::ResearchFailure::SequenceShape,
+                expected: batch.goal.dims()[0] as u64,
+                actual: sample.len() as u64,
+            });
         }
         let mut depths = Vec::with_capacity(sample.len());
         for (index, member) in sample.iter().enumerate() {
             let depth = if let Some(parent) = member.parent {
                 if parent >= index {
-                    return Err("native sequence predecessor differs".into());
+                    return Err(crate::Error::ResearchIndex {
+                        code: crate::ResearchFailure::SequencePredecessor,
+                        index,
+                    });
                 }
                 depths[parent] + 1
             } else {
                 0
             };
-            if depth >= 4 || member.selected >= member.graph.candidates.len() {
-                return Err("native sequence depth or selected action differs".into());
+            if depth >= 4 {
+                return Err(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::SequenceDepth,
+                    index,
+                });
+            }
+            if member.selected >= member.graph.candidates.len() {
+                return Err(crate::Error::ResearchIndex {
+                    code: crate::ResearchFailure::SequenceSelectedAction,
+                    index,
+                });
             }
             depths.push(depth);
         }
@@ -97,14 +123,15 @@ impl Runtime {
                         if self.recurrence == Recurrence::Carry
                             && let Some(parent) = sample[*i].parent
                         {
-                            memories[parent].clone().ok_or_else(|| {
-                                "native sequence memory predecessor missing".to_string()
+                            memories[parent].clone().ok_or(crate::Error::ResearchIndex {
+                                code: crate::ResearchFailure::SequenceMemoryMissing,
+                                index: parent,
                             })
                         } else {
                             Ok(Tensor::zeros([1, policy::WIDTH], &self.device))
                         }
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
+                    .collect::<Result<Vec<_>, crate::Error>>()?;
                 Some(Tensor::cat(states, 0))
             };
             let (logits, successors) = self.policy.readout(encoded.select(selected), initial);
@@ -129,7 +156,7 @@ impl Runtime {
             scores
                 .into_iter()
                 .collect::<Option<Vec<_>>>()
-                .ok_or("native sequence output missing")?,
+                .ok_or(crate::ResearchFailure::SequenceOutputMissing)?,
             0,
         ))
     }

@@ -911,6 +911,7 @@ codes! {
         BackendPackHeader = 579, BackendPackMagic = 580, BackendPackVersion = 581, BackendPackMetadataWrite = 582, BackendPackMetadataRead = 583, BackendPackIo = 584, BackendPackTensorMissing = 585, BackendPackTensorSize = 586, BackendPackValidation = 587, BackendPackExists = 588, BackendRecordIo = 589, BackendRecordValidation = 590,
         PreservationStepsMissing = 591, PreservationStepsInvalid = 592, PreservationStepsExceeded = 593, PreservationUnknownField = 594, PreservationParameterMismatch = 595, PreservationValueInvalid = 596, PreservationIncomplete = 597,
         TensorStorageAccess = 598, TensorInvalidRepresentation = 599, TensorDtypeMismatch = 600, TensorUnsupportedConversion = 601, TensorElementCountMismatch = 602, TensorByteLengthInvalid = 603, TrainingLossCount = 604, TrainingLossNonFinite = 605, TrainingPoolEmpty = 606,
+        SequenceEmpty = 607, SequenceShape = 608, SequenceCapacity = 609, SequencePredecessor = 610, SequenceDepth = 611, SequenceSelectedAction = 612, SequenceMemoryMissing = 613, SequenceOutputMissing = 614,
     }
 
 }
