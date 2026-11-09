@@ -1821,6 +1821,9 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::FinderCurriculumCapacity => "finder curriculum capacity differs",
                 crate::ResearchFailure::FinderCurriculumCounts => "finder curriculum counters differ",
                 crate::ResearchFailure::FinderRehearsalInvalid => "finder rehearsal identity or labels differ",
+                crate::ResearchFailure::PeerSealMissing => "peer program seal missing",
+                crate::ResearchFailure::PeerOperandWidth => "peer program operand width",
+                crate::ResearchFailure::PeerOperandOrder => "peer program operand order differs",
                 crate::ResearchFailure::FinderCursorOverflow => "finder replay cursor overflow",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"

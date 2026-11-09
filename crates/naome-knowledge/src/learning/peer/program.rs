@@ -545,20 +545,20 @@ fn operand_mp(
     target: &Formula,
     recent: &VecDeque<(usize, Formula, Rule)>,
     observed: (usize, usize),
-) -> Result<Option<Graph>, String> {
-    let lookup = |position| -> Result<Option<Formula>, String> {
+) -> Result<Option<Graph>, crate::Error> {
+    let lookup = |position| -> Result<Option<Formula>, crate::Error> {
         if let Some((_, formula, _)) = recent.iter().find(|(index, _, _)| *index == position) {
             return Ok(Some(formula.clone()));
         }
         engine
             .proved_formula(position as u64)
-            .map_err(|error| error.to_string())
+            .map_err(crate::Error::from)
     };
     let (Some(premise), Some(implication)) = (lookup(observed.0)?, lookup(observed.1)?) else {
         return Ok(None);
     };
     let Some((_, consequence)) = implication.view().implication_parts() else {
-        return Err("checked peer implication operand differs".into());
+        return Err(crate::ResearchFailure::PeerImplicationShape.into());
     };
     let alternative = recent.iter().rev().find_map(|(index, formula, rule)| {
         let (antecedent, candidate) = formula.view().implication_parts()?;
@@ -645,23 +645,24 @@ fn graphs(
     target: &Formula,
     commands: &[Command],
     context: &dyn ContextView,
-) -> Result<Decisions, String> {
+) -> Result<Decisions, crate::Error> {
     let goal_parts = crate::learning::knowledge::fragments(target);
     let mut used = vec![false; commands.len()];
     let mut pending = vec![
         commands
             .len()
             .checked_sub(1)
-            .ok_or("peer program seal missing")?,
+            .ok_or(crate::ResearchFailure::PeerSealMissing)?,
     ];
     while let Some(position) = pending.pop() {
         if std::mem::replace(&mut used[position], true) {
             continue;
         }
         for input in commands[position].operands() {
-            let index = usize::try_from(input).map_err(|_| "peer program operand width")?;
+            let index =
+                usize::try_from(input).map_err(|_| crate::ResearchFailure::PeerOperandWidth)?;
             if index >= position {
-                return Err("peer program operand order differs".into());
+                return Err(crate::ResearchFailure::PeerOperandOrder.into());
             }
             pending.push(index);
         }
@@ -684,15 +685,15 @@ fn graphs(
     for id in ids.into_iter().take(16) {
         let header = context
             .proof_header(id)
-            .map_err(|error| error.to_string())?
-            .ok_or("checked peer program citation missing")?;
+            .map_err(crate::Error::from)?
+            .ok_or(crate::ResearchFailure::PeerCitationMissing)?;
         if header.canonical_length() > crate::resources::limits().proof_bytes {
             continue;
         }
         let formula = context
             .proof_formula(header, header.canonical_length())
-            .map_err(|error| error.to_string())?
-            .ok_or("checked peer program citation formula missing")?
+            .map_err(crate::Error::from)?
+            .ok_or(crate::ResearchFailure::PeerCitationFormulaMissing)?
             .into_owned();
         if &formula != target {
             available.push((id, formula));
@@ -755,9 +756,9 @@ fn graphs(
                     graph.binding = crate::learning::digest(&(position, cited.as_bytes()));
                     bytes = bytes
                         .checked_add(graph.work_bytes())
-                        .ok_or("peer program graph work overflow")?;
+                        .ok_or(crate::ResearchFailure::PeerGraphOverflow)?;
                     if bytes > MODEL_REQUIREMENTS.work_bytes / 16 {
-                        return Err("peer program graph work capacity".into());
+                        return Err(crate::ResearchFailure::PeerGraphCapacity.into());
                     }
                     graphs.push(graph);
                 }
@@ -786,7 +787,7 @@ fn graphs(
                 graph.binding = crate::learning::digest(&(position, operands));
                 bytes = bytes
                     .checked_add(graph.work_bytes())
-                    .ok_or("peer program graph work overflow")?;
+                    .ok_or(crate::ResearchFailure::PeerGraphOverflow)?;
                 if bytes > MODEL_REQUIREMENTS.work_bytes / 16 {
                     break;
                 }
@@ -795,7 +796,7 @@ fn graphs(
         }
         if let Some(formula) = engine
             .proved_formula(position as u64)
-            .map_err(|error| error.to_string())?
+            .map_err(crate::Error::from)?
         {
             if recent.len() == 32 {
                 recent.pop_front();
