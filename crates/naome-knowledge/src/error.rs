@@ -1651,6 +1651,15 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PreservationParameterMismatch => "EMA parameter path, type, shape or identity differs",
                 crate::ResearchFailure::PreservationValueInvalid => "non-finite or unbounded preservation memory",
                 crate::ResearchFailure::PreservationIncomplete => "incomplete preservation memory",
+                crate::ResearchFailure::TensorStorageAccess => "tensor storage access failed",
+                crate::ResearchFailure::TensorInvalidRepresentation => "tensor data representation invalid",
+                crate::ResearchFailure::TensorDtypeMismatch => "tensor data type differs",
+                crate::ResearchFailure::TensorUnsupportedConversion => "tensor data conversion unsupported",
+                crate::ResearchFailure::TensorElementCountMismatch => "tensor element count differs",
+                crate::ResearchFailure::TensorByteLengthInvalid => "tensor byte length invalid",
+                crate::ResearchFailure::TrainingLossCount => "training loss requires exactly one value",
+                crate::ResearchFailure::TrainingLossNonFinite => "training loss is non-finite",
+                crate::ResearchFailure::TrainingPoolEmpty => "training requires own accepted proof decisions",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

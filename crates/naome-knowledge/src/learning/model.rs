@@ -319,6 +319,26 @@ fn record_failure(error: burn::store::RecordError) -> crate::Error {
     };
     backend_failure(code, Some(detail))
 }
+fn tensor_data_failure(error: burn::tensor::DataError) -> crate::Error {
+    use crate::ResearchFailure as F;
+    use burn::tensor::DataError as E;
+    if let E::ElementCountMismatch { expected, actual } = error {
+        return crate::Error::ResearchMismatch {
+            code: F::TensorElementCountMismatch,
+            expected: expected as u64,
+            actual: actual as u64,
+        };
+    }
+    let code = match &error {
+        E::StorageAccess(_) => F::TensorStorageAccess,
+        E::InvalidRepresentation(_) => F::TensorInvalidRepresentation,
+        E::DTypeMismatch { .. } => F::TensorDtypeMismatch,
+        E::UnsupportedConversion { .. } => F::TensorUnsupportedConversion,
+        E::InvalidByteLength { .. } => F::TensorByteLengthInvalid,
+        E::ElementCountMismatch { .. } => unreachable!(),
+    };
+    backend_failure(code, Some(error.to_string()))
+}
 fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, crate::Error> {
     let reader = burn_pack::Reader::from_bytes(bytes).map_err(pack_failure)?;
     let metadata = reader.metadata().clone();
@@ -469,14 +489,14 @@ impl Runtime {
     }
     #[cfg(test)]
     fn train(&mut self, graphs: &Pool, rng: &mut u64, updates: u64) -> Result<(f32, f32), String> {
-        self.train_using(
+        Ok(self.train_using(
             graphs,
             rng,
             updates,
             super::meta::Plan::balanced().phase(0),
             None,
             preservation::Mode::default(),
-        )
+        )?)
     }
     fn train_using(
         &mut self,
@@ -486,9 +506,9 @@ impl Runtime {
         phase: super::meta::Phase,
         preservation_pool: Option<(&Pool, u64)>,
         preservation_mode: preservation::Mode,
-    ) -> Result<(f32, f32), String> {
+    ) -> Result<(f32, f32), crate::Error> {
         if graphs.is_empty() {
-            return Err("training requires own accepted proof decisions".into());
+            return Err(crate::ResearchFailure::TrainingPoolEmpty.into());
         }
         self.formulas.get_mut().clear();
         if self.readout_only {
@@ -572,17 +592,23 @@ fn checked_marginal(logits: Tensor<2>, batch: &Batch) -> Tensor<1> {
         .log()
         .mean()
 }
-fn loss_value(loss: &Tensor<1>) -> Result<f32, String> {
-    let value = loss
-        .clone()
-        .into_data()
-        .try_to_vec::<f32>()
-        .map_err(|e| e.to_string())?[0];
+fn loss_value(loss: &Tensor<1>) -> Result<f32, crate::Error> {
+    let data = loss.clone().into_data();
+    let values = data.as_slice::<f32>().map_err(tensor_data_failure)?;
+    if values.len() != 1 {
+        return Err(crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::TrainingLossCount,
+            expected: 1,
+            actual: values.len() as u64,
+        });
+    }
+    let value = values[0];
     if !value.is_finite() {
-        return Err("non-finite native training loss".into());
+        return Err(crate::ResearchFailure::TrainingLossNonFinite.into());
     }
     Ok(value)
 }
+
 impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
         self.scores_graph(&Graph::encode(d)?)

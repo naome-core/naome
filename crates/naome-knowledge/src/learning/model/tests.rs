@@ -456,3 +456,52 @@ fn model_backend_errors_have_categories_and_bounded_detail() {
     assert_eq!(json["detail_digest"].as_array().unwrap().len(), 32);
     assert!(!json.to_string().contains("private tensor path"));
 }
+
+#[test]
+fn training_loss_and_tensor_data_failures_keep_machine_causes() {
+    let device = Device::flex().autodiff();
+    let two = Tensor::<1>::from_data(
+        burn::tensor::TensorData::new(vec![1.0f32, 2.0], [2]),
+        &device,
+    );
+    assert_eq!(
+        loss_value(&two).unwrap_err(),
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::TrainingLossCount,
+            expected: 1,
+            actual: 2,
+        }
+    );
+    let nan = Tensor::<1>::from_data(burn::tensor::TensorData::new(vec![f32::NAN], [1]), &device);
+    assert_eq!(
+        loss_value(&nan).unwrap_err(),
+        crate::Error::from(crate::ResearchFailure::TrainingLossNonFinite)
+    );
+    let error = tensor_data_failure(burn::tensor::DataError::ElementCountMismatch {
+        expected: 3,
+        actual: 2,
+    });
+    assert_eq!(
+        error,
+        crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::TensorElementCountMismatch,
+            expected: 3,
+            actual: 2
+        }
+    );
+    let error = tensor_data_failure(burn::tensor::DataError::DTypeMismatch {
+        expected: burn::tensor::DType::F32,
+        actual: burn::tensor::DType::I64,
+    });
+    assert_eq!(
+        error.code(),
+        u32::from(crate::ResearchFailure::TensorDtypeMismatch)
+    );
+    assert_eq!(
+        serde_json::to_value(error).unwrap()["detail_digest"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32
+    );
+}
