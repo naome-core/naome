@@ -29,10 +29,6 @@ fn checked_native_ns() -> Result<u64, crate::Error> {
         .ok_or_else(|| crate::InputFault::ObservationClockWidth.into())
 }
 
-pub(super) fn native_ns() -> Result<u64, String> {
-    checked_native_ns().map_err(|error| error.to_string())
-}
-
 fn nonblocking(input: &std::io::Stdin) -> Result<(), crate::Error> {
     let flags = nix::fcntl::fcntl(input, nix::fcntl::FcntlArg::F_GETFL)
         .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
@@ -221,37 +217,43 @@ pub(crate) struct Startup {
 }
 
 impl Startup {
-    pub(super) fn arm(token: &str) -> Result<Self, String> {
+    pub(super) fn arm(token: &str) -> Result<Self, crate::Error> {
         let pid = nix::unistd::getpid();
         if nix::unistd::getpgrp() != pid
-            || nix::unistd::getsid(None).map_err(|e| e.to_string())? != pid
+            || nix::unistd::getsid(None).map_err(|e| std::io::Error::from_raw_os_error(e as i32))?
+                != pid
         {
-            return Err("startup lifeline requires its own detached session".into());
+            return Err(crate::InputFault::StartupSession.into());
         }
-        if token.len() != 64 || crate::unhex(token)?.len() != 32 {
-            return Err("invalid startup instance nonce".into());
+        if token.len() != 64
+            || crate::unhex(token)
+                .map_err(|_| crate::InputFault::StartupNonce)?
+                .len()
+                != 32
+        {
+            return Err(crate::InputFault::StartupNonce.into());
         }
         let input = std::io::stdin();
-        let flags =
-            nix::fcntl::fcntl(&input, nix::fcntl::FcntlArg::F_GETFL).map_err(|e| e.to_string())?;
+        let flags = nix::fcntl::fcntl(&input, nix::fcntl::FcntlArg::F_GETFL)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
         nix::fcntl::fcntl(
             &input,
             nix::fcntl::FcntlArg::F_SETFL(
                 nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
             ),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
         let custody_active = match std::env::var(CUSTODY_ACTIVE) {
             Ok(value) => Some(
                 value
                     .parse::<u64>()
-                    .map_err(|_| "invalid daemon custody endpoint")?,
+                    .map_err(|_| crate::InputFault::StartupCustodyEndpoint)?,
             ),
             Err(std::env::VarError::NotPresent) => None,
-            Err(_) => return Err("invalid daemon custody endpoint encoding".into()),
+            Err(_) => return Err(crate::InputFault::StartupCustodyEncoding.into()),
         };
-        if custody_active.is_some_and(|end| native_ns().map_or(true, |now| now >= end)) {
-            return Err("original daemon custody endpoint expired before arming".into());
+        if custody_active.is_some_and(|end| checked_native_ns().map_or(true, |now| now >= end)) {
+            return Err(crate::InputFault::StartupCustodyExpired.into());
         }
         let deadline = Instant::now() + crate::resources::limits().startup_timeout;
         let ready = Arc::new(AtomicBool::new(false));
@@ -272,11 +274,10 @@ impl Startup {
                     );
                     std::process::exit(125);
                 }
-            })
-            .map_err(|e| format!("startup lifeline thread: {e}"))?;
+            })?;
         begin
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| "startup begin frame unavailable")?;
+            .map_err(|_| crate::InputFault::StartupBeginUnavailable)?;
         Ok(Self {
             ready,
             instance_sha256,
@@ -352,28 +353,30 @@ fn observe(
     deadline: Instant,
     custody_active: Option<u64>,
     started: mpsc::SyncSender<()>,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let mut begun = false;
     let mut frame = Vec::with_capacity(MAX_FRAME);
     loop {
         if Instant::now() >= deadline
-            || custody_active.is_some_and(|end| native_ns().map_or(true, |now| now >= end))
+            || custody_active.is_some_and(|end| checked_native_ns().map_or(true, |now| now >= end))
         {
-            return Err("startup lifeline deadline".into());
+            return Err(crate::InputFault::StartupLifelineDeadline.into());
         }
         let mut byte = [0u8; 1];
         match input.read(&mut byte) {
-            Ok(0) => return Err("startup parent lifeline closed".into()),
+            Ok(0) => return Err(crate::InputFault::StartupParentClosed.into()),
             Ok(_) => {
                 frame.push(byte[0]);
                 if frame.len() > MAX_FRAME {
-                    return Err("startup lifeline frame limit".into());
+                    return Err(crate::InputFault::StartupFrameLimit.into());
                 }
                 if byte[0] != b'\n' {
                     continue;
                 }
                 if !begun && frame == begin(token) {
-                    started.send(()).map_err(|_| "startup owner unavailable")?;
+                    started
+                        .send(())
+                        .map_err(|_| crate::InputFault::StartupOwnerUnavailable)?;
                     begun = true;
                     frame.clear();
                 } else if begun && frame == acknowledge(token) && ready.load(Ordering::Acquire) {
@@ -382,7 +385,7 @@ fn observe(
                     // may ordinary detached operation outlive the launcher.
                     return Ok(());
                 } else {
-                    return Err("startup lifeline instance or readiness mismatch".into());
+                    return Err(crate::InputFault::StartupFrameMismatch.into());
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -393,7 +396,7 @@ fn observe(
                 );
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return Err("startup parent lifeline unreadable".into()),
+            Err(error) => return Err(error.into()),
         }
     }
 }

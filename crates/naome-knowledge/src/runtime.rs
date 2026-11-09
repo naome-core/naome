@@ -1307,9 +1307,15 @@ pub async fn execute() -> Result<(), crate::Error> {
         if command != "start" || startup_handoff {
             return Err(Failure::DaemonSetup.into());
         }
-        nix::unistd::setsid().map_err(|_| Failure::DaemonSetup)?;
+        nix::unistd::setsid().map_err(|error| crate::Error::RuntimeContext {
+            code: Failure::DaemonSetup,
+            cause: Box::new(std::io::Error::from_raw_os_error(error as i32).into()),
+        })?;
         let nonce = std::env::var(DAEMON_NONCE).map_err(|_| Failure::DaemonSetup)?;
-        let startup = Startup::arm(&nonce).map_err(|_| Failure::DaemonSetup)?;
+        let startup = Startup::arm(&nonce).map_err(|cause| crate::Error::RuntimeContext {
+            code: Failure::DaemonSetup,
+            cause: Box::new(cause),
+        })?;
         let directory = fs::canonicalize(directory).map_err(|_| Failure::Directory)?;
         LOG.set(Mutex::new(Log::open(&directory).map_err(|cause| {
             crate::Error::RuntimeContext {

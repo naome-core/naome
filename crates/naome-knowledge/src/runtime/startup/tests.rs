@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Cursor;
 
-fn check(bytes: Vec<u8>, ready: bool, expired: bool) -> Result<(), String> {
+fn check(bytes: Vec<u8>, ready: bool, expired: bool) -> Result<(), crate::Error> {
     let (send, receive) = mpsc::sync_channel(1);
     let token = "ab".repeat(32);
     let deadline = Instant::now()
@@ -206,5 +206,21 @@ fn handoff_deadline_errors_preserve_their_cause() {
     let error = handoff_launch(cause.clone());
     assert!(
         matches!(error, crate::Error::Startup { code: crate::StartupFailure::Launch, reaped: false, cause: Some(actual) } if *actual == cause)
+    );
+}
+
+#[test]
+fn startup_lifeline_rejections_keep_machine_causes() {
+    assert_eq!(
+        check(Vec::new(), false, false),
+        Err(crate::InputFault::StartupParentClosed.into())
+    );
+    assert_eq!(
+        check(vec![b'x'; MAX_FRAME + 1], false, false),
+        Err(crate::InputFault::StartupFrameLimit.into())
+    );
+    assert_eq!(
+        check(b"incorrect\n".to_vec(), false, false),
+        Err(crate::InputFault::StartupFrameMismatch.into())
     );
 }
