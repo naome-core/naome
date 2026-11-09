@@ -114,6 +114,7 @@ diagnostic_codes! {
         TrailingBytes = 0x0028_0008 { remaining: usize },
         DefinitionArgumentLimit = 0x0028_0009 { actual: usize },
         UnexpandedDefinition = 0x0028_000a { definition_id: Digest },
+        GraphDanglingBinder = 0x0028_000c { index: u64, binder_depth: u32 },
     }
     units {
         UnexpectedEnd = 0x0028_0004,
@@ -186,6 +187,22 @@ impl From<&DefinedFormulaCodecError> for FormulaFailure {
                 Self::TrailingBytes { remaining }
             }
             DefinedFormulaCodecError::Primitive(ref error) => Self::from(error),
+            DefinedFormulaCodecError::Graph(ref error) => match *error {
+                naome_foundation::graph::MaterializationError::DepthLimit { maximum } => {
+                    Self::DepthLimit { maximum }
+                }
+                naome_foundation::graph::MaterializationError::NodeLimit { maximum } => {
+                    Self::NodeLimit { maximum }
+                }
+                naome_foundation::graph::MaterializationError::DanglingBinder {
+                    index,
+                    binder_depth,
+                } => Self::GraphDanglingBinder {
+                    index,
+                    binder_depth,
+                },
+                naome_foundation::graph::MaterializationError::Read(never) => match never {},
+            },
             _ => Self::Unsupported,
         }
     }

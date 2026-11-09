@@ -5,6 +5,46 @@
 use super::{Formula, FormulaView, Node as Tree, Variable as TreeVariable};
 use std::{collections::HashMap, hash::Hash, sync::Arc};
 
+/// Failure to materialize a formula graph, including errors from its reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MaterializationError<E> {
+    /// The graph exceeds the maximum nesting depth.
+    DepthLimit { maximum: u32 },
+    /// The expanded graph exceeds the maximum number of nodes.
+    NodeLimit { maximum: usize },
+    /// A bound variable has no corresponding enclosing binder.
+    DanglingBinder { index: u64, binder_depth: u32 },
+    /// The graph reader rejected a node.
+    Read(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for MaterializationError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DepthLimit { maximum } => {
+                write!(f, "formula graph exceeds depth limit {maximum}")
+            }
+            Self::NodeLimit { maximum } => write!(f, "formula graph exceeds node limit {maximum}"),
+            Self::DanglingBinder {
+                index,
+                binder_depth,
+            } => write!(
+                f,
+                "formula graph bound variable {index} is invalid at depth {binder_depth}"
+            ),
+            Self::Read(error) => write!(f, "formula graph read failed: {error}"),
+        }
+    }
+}
+impl<E: std::error::Error + 'static> std::error::Error for MaterializationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Variable {
     Free(u32),
@@ -133,20 +173,29 @@ impl<I: Copy> Node<I> {
 impl Formula {
     /// Materializes a bounded primitive graph with its exact relative binders.
     /// The reader owns the graph and checks its reference identities.
-    pub fn from_graph<I: Copy + Eq + Hash>(
+    pub fn from_graph<I: Copy + Eq + Hash, E>(
         root: I,
-        mut read: impl FnMut(I) -> Result<Node<I>, String>,
-    ) -> Result<Self, String> {
+        mut read: impl FnMut(I) -> Result<Node<I>, E>,
+    ) -> Result<Self, MaterializationError<E>> {
         struct Materializer<I, R> {
             read: R,
             shared: HashMap<(I, u32, u32), (Arc<Tree>, usize)>,
             remaining: usize,
         }
-        impl<I: Copy + Eq + Hash, R: FnMut(I) -> Result<Node<I>, String>> Materializer<I, R> {
-            fn visit(&mut self, handle: I, depth: u32, binders: u32) -> Result<Arc<Tree>, String> {
-                let capacity = || "materialized formula graph capacity".to_owned();
+        impl<I: Copy + Eq + Hash, E, R: FnMut(I) -> Result<Node<I>, E>> Materializer<I, R> {
+            fn visit(
+                &mut self,
+                handle: I,
+                depth: u32,
+                binders: u32,
+            ) -> Result<Arc<Tree>, MaterializationError<E>> {
+                let capacity = || MaterializationError::NodeLimit {
+                    maximum: super::canonical::FORMULA_MAX_NODES,
+                };
                 if depth >= super::canonical::FORMULA_MAX_DEPTH {
-                    return Err(capacity());
+                    return Err(MaterializationError::DepthLimit {
+                        maximum: super::canonical::FORMULA_MAX_DEPTH,
+                    });
                 }
                 let key = (handle, depth, binders);
                 if let Some((tree, nodes)) = self.shared.get(&key) {
@@ -160,9 +209,12 @@ impl Formula {
                     Variable::Bound(index) if index < u64::from(binders) => {
                         Ok(TreeVariable::Bound(index as u32))
                     }
-                    Variable::Bound(_) => Err("formula graph has a dangling binder".to_owned()),
+                    Variable::Bound(index) => Err(MaterializationError::DanglingBinder {
+                        index,
+                        binder_depth: binders,
+                    }),
                 };
-                let node = (self.read)(handle)?;
+                let node = (self.read)(handle).map_err(MaterializationError::Read)?;
                 let tree = Arc::new(match node {
                     Node::Equal(left, right) => Tree::Equal(variable(left)?, variable(right)?),
                     Node::Member(left, right) => Tree::Member(variable(left)?, variable(right)?),
@@ -292,5 +344,55 @@ impl<'a> FormulaView<'a> {
             Tree::Implies(a, b) => Node::Implies(Self(a), Self(b)),
             Tree::ForAll(a) => Node::ForAll(Self(a)),
         }
+    }
+}
+
+#[cfg(test)]
+mod materialization_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_reader_failure_and_invalid_binder() {
+        let read = Formula::from_graph(0u32, |_| Err::<Node<u32>, _>(17u8));
+        assert_eq!(read.unwrap_err(), MaterializationError::Read(17));
+        let dangling = Formula::from_graph(0u32, |_| {
+            Ok::<_, std::convert::Infallible>(Node::Equal(
+                Variable::Bound(u64::MAX),
+                Variable::Free(0),
+            ))
+        });
+        assert_eq!(
+            dangling.unwrap_err(),
+            MaterializationError::DanglingBinder {
+                index: u64::MAX,
+                binder_depth: 0
+            }
+        );
+    }
+
+    #[test]
+    fn distinguishes_depth_and_expanded_node_limits() {
+        let depth = Formula::from_graph(0u32, |i| {
+            Ok::<_, std::convert::Infallible>(Node::Not(i + 1))
+        });
+        assert_eq!(
+            depth.unwrap_err(),
+            MaterializationError::DepthLimit {
+                maximum: super::super::canonical::FORMULA_MAX_DEPTH
+            }
+        );
+        let nodes = Formula::from_graph(0u32, |i| {
+            Ok::<_, std::convert::Infallible>(if i < 30 {
+                Node::Implies(i + 1, i + 1)
+            } else {
+                Node::Equal(Variable::Free(0), Variable::Free(0))
+            })
+        });
+        assert_eq!(
+            nodes.unwrap_err(),
+            MaterializationError::NodeLimit {
+                maximum: super::super::canonical::FORMULA_MAX_NODES
+            }
+        );
     }
 }

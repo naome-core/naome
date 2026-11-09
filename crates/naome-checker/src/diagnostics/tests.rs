@@ -668,3 +668,25 @@ fn inspection_and_formula_values_preserve_numeric_types_and_witnesses() {
     assert_eq!(value["right"]["identifier"], 2);
     assert!(value.get("kind").is_none());
 }
+
+#[test]
+fn graph_materialization_preserves_machine_readable_cause() {
+    use naome_foundation::graph::MaterializationError;
+    use naome_proof::DefinedFormulaCodecError;
+    let error = DefinedFormulaCodecError::Graph(MaterializationError::DanglingBinder {
+        index: u64::MAX,
+        binder_depth: 2,
+    });
+    assert_eq!(
+        FormulaFailure::from(&error),
+        FormulaFailure::GraphDanglingBinder {
+            index: u64::MAX,
+            binder_depth: 2
+        }
+    );
+    let limit = DefinedFormulaCodecError::Graph(MaterializationError::NodeLimit { maximum: 42 });
+    assert_eq!(
+        FormulaFailure::from(&limit),
+        FormulaFailure::NodeLimit { maximum: 42 }
+    );
+}

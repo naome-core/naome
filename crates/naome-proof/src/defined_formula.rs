@@ -343,9 +343,12 @@ impl DefinedFormula {
             budget: ExpansionBudget::new(maximum_nodes),
         };
         let root = expansion.node(&self.0, None, 0, 0)?;
-        let formula = Formula::from_graph(root, |position| Ok(expansion.graph[position])).map_err(
-            |error| DefinitionExpansionError::Formula(DefinedFormulaCodecError::Graph(error)),
-        )?;
+        let formula = Formula::from_graph(root, |position| {
+            Ok::<_, std::convert::Infallible>(expansion.graph[position])
+        })
+        .map_err(|error| {
+            DefinitionExpansionError::Formula(DefinedFormulaCodecError::Graph(error))
+        })?;
         Ok((formula, expansion.budget.used))
     }
 
@@ -1196,7 +1199,7 @@ pub enum DefinedFormulaCodecError {
     /// Conversion to or from the primitive Foundation codec failed.
     Primitive(FormulaCodecError),
     /// Materialization of a bounded primitive formula graph failed.
-    Graph(String),
+    Graph(naome_foundation::graph::MaterializationError<std::convert::Infallible>),
 }
 
 impl fmt::Display for DefinedFormulaCodecError {
@@ -1246,6 +1249,7 @@ impl Error for DefinedFormulaCodecError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Primitive(source) => Some(source),
+            Self::Graph(source) => Some(source),
             _ => None,
         }
     }
