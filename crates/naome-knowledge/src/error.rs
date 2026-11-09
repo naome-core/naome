@@ -1684,6 +1684,14 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::TheoremIdentityMismatch => "accepted theorem identity differs",
                 crate::ResearchFailure::AcknowledgementUnknown => "unknown research acknowledgement",
                 crate::ResearchFailure::AcknowledgementNotTerminal => "acknowledged research job is still running or held",
+                crate::ResearchFailure::JournalHoldAccountMissing => "uncertain job original account missing",
+                crate::ResearchFailure::JournalActiveBytesOverflow => "active journal byte overflow",
+                crate::ResearchFailure::JobInputEncoding => "research job input encoding failed",
+                crate::ResearchFailure::JobReservationOverflow => "research byte reservation overflow",
+                crate::ResearchFailure::JobResultReservationOverflow => "research result reservation overflow",
+                crate::ResearchFailure::JobHorizonOverflow => "research horizon overflow",
+                crate::ResearchFailure::QueuedJobMissing => "queued research job absent",
+                crate::ResearchFailure::CompletionJobMissing => "completion research identity absent",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

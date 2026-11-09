@@ -1043,3 +1043,23 @@ fn narrower_new_job_defaults_preserve_original_budget_accounts_and_retry_allowan
     assert_eq!(retry.reserved_units, 1);
     assert_eq!(owner.journal.total_reserved_units, 1);
 }
+
+#[test]
+fn reservation_size_overflow_refuses_admission_without_panicking() {
+    let (_directory, mut owner) = fixture(4);
+    let encoded = owner.journal.encoded_active_len().unwrap();
+    assert!(!owner.compact_bytes(usize::MAX - encoded).unwrap());
+    assert!(owner.journal.records.is_empty());
+}
+
+#[test]
+fn reconciliation_clock_rollback_retains_its_fatal_code() {
+    let (_directory, mut owner) = fixture(4);
+    owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
+    let error = owner.reconcile().unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::ClockRollback)
+    );
+    assert!(error.fatal());
+}

@@ -88,8 +88,7 @@ impl Service {
                     *report.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure.clone());
                 }
                 let _ = receipt.send(result);
-            })
-            .map_err(|e| e.to_string())?;
+            })?;
         Ok((
             Self {
                 thread: Some(thread),
@@ -468,7 +467,11 @@ impl Owner {
         }
         Ok(())
     }
-    fn submit_internal(&mut self, input: Input, binding: Binding) -> Result<Option<u64>, String> {
+    fn submit_internal(
+        &mut self,
+        input: Input,
+        binding: Binding,
+    ) -> Result<Option<u64>, crate::Error> {
         let (reply, mut receive) = oneshot::channel();
         self.submit(input.clone(), binding.clone(), reply)?;
         if let Ok(completion) = receive.try_recv()
@@ -836,7 +839,7 @@ impl Owner {
             let retained = self.retain_uncertainty();
             return combine_outcomes(
                 Err(crate::ResearchFailure::EffectsUnconfirmed.into()),
-                combine_outcomes(accounting, retained.map_err(crate::Error::from)),
+                combine_outcomes(accounting, retained),
             );
         }
         let record = self
@@ -981,11 +984,8 @@ impl Owner {
         self.journal.observed_ms = now;
         self.journal
             .remember_holds()
-            .map_err(crate::Error::CorruptStorage)?;
-        if !self
-            .compact_bytes(0)
-            .map_err(crate::Error::CorruptStorage)?
-        {
+            .map_err(crate::Error::fatal_storage)?;
+        if !self.compact_bytes(0).map_err(crate::Error::fatal_storage)? {
             return Err(crate::Error::CorruptStorage(
                 "research reserved result byte capacity".into(),
             ));
@@ -998,7 +998,7 @@ impl Owner {
         Ok(())
     }
 
-    fn retain_uncertainty(&mut self) -> Result<(), String> {
+    fn retain_uncertainty(&mut self) -> Result<(), crate::Error> {
         // Preserve the clock already used for accounting without consulting a
         // rolled-back wall clock. This persistence path only retains a hold.
         self.journal.observed_ms = self.journal.observed_ms.max(
@@ -1011,7 +1011,7 @@ impl Owner {
         );
         self.journal.remember_holds()?;
         self.journal.validate_delta(self.settings)?;
-        self.disk.save(&mut self.journal).map_err(String::from)
+        self.disk.save(&mut self.journal)
     }
 
     fn submit(
@@ -1158,11 +1158,12 @@ impl Owner {
         };
         self.compact();
         let input_bytes = serde_json::to_vec(&(&input, &binding, settings, &native))
-            .map_err(|e| e.to_string())?
+            .map_err(|_| crate::ResearchFailure::JobInputEncoding)?
             .len();
-        let reservation = output_reservation(&input)
-            .checked_add(input_bytes + 4096)
-            .ok_or("research byte reservation overflow")?;
+        let reservation = input_bytes
+            .checked_add(4096)
+            .and_then(|bytes| output_reservation(&input).checked_add(bytes))
+            .ok_or(crate::ResearchFailure::JobReservationOverflow)?;
         if !self.compact_bytes(reservation)? {
             reject(reply, binding, AdmissionFailure::ResultReservation);
             return Ok(());
@@ -1185,12 +1186,12 @@ impl Owner {
         }
         let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err("research clock rollback".into());
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         let mut created_ms = now;
         let mut expires_ms = now
             .checked_add(settings.limits.horizon_ms)
-            .ok_or("research horizon overflow")?;
+            .ok_or(crate::ResearchFailure::JobHorizonOverflow)?;
         let mut spent_ms = 0;
         let mut reserved_units = 0;
         if let Input::Find { cursor, .. } = input {
@@ -1341,7 +1342,7 @@ impl Owner {
         Ok(Reservation::Granted)
     }
 
-    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
+    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), crate::Error> {
         let mut queued = [0; 4];
         let mut running = [0; 4];
         for record in self.journal.records.values() {
@@ -1397,7 +1398,7 @@ impl Owner {
                     ) {
                         Ok(lease) => Some(lease),
                         Err(error) if error.retryable() => continue,
-                        Err(error) => return Err(error.to_string()),
+                        Err(error) => return Err(error),
                     }
                 } else {
                     None
@@ -1411,7 +1412,7 @@ impl Owner {
                     .journal
                     .records
                     .get_mut(&id)
-                    .ok_or("queued research job absent")?;
+                    .ok_or(crate::ResearchFailure::QueuedJobMissing)?;
                 let allowance =
                     record.allowance(self.journal.accounts.get(&record.input.account_key()), now);
                 let finalizing = super::provider::complete(record, record.checkpoint)
@@ -1459,10 +1460,10 @@ impl Owner {
         Ok(())
     }
 
-    fn reconcile(&mut self) -> Result<(), String> {
+    fn reconcile(&mut self) -> Result<(), crate::Error> {
         let now = wall_ms()?;
         if now < self.journal.observed_ms {
-            return Err("research clock rollback".into());
+            return Err(crate::ResearchFailure::ClockRollback.into());
         }
         let ids = self
             .journal
@@ -1521,7 +1522,7 @@ impl Owner {
         Ok(())
     }
 
-    fn deliver(&mut self, id: u64) -> Result<(), String> {
+    fn deliver(&mut self, id: u64) -> Result<(), crate::Error> {
         let record = &self.journal.records[&id];
         if !record.state.terminal() {
             return Ok(());
@@ -1570,7 +1571,7 @@ impl Owner {
         }
     }
 
-    fn compact_bytes(&mut self, additional: usize) -> Result<bool, String> {
+    fn compact_bytes(&mut self, additional: usize) -> Result<bool, crate::Error> {
         self.compact();
         let future = self
             .journal
@@ -1580,12 +1581,13 @@ impl Owner {
             .try_fold(additional, |sum, r| {
                 sum.checked_add(output_reservation(&r.input))
             })
-            .ok_or("research result reservation overflow")?;
+            .ok_or(crate::ResearchFailure::JobResultReservationOverflow)?;
         loop {
             let encoded = self.journal.encoded_active_len()?;
             if encoded
                 .checked_add(future)
-                .is_some_and(|bytes| bytes + 256 <= crate::resources::limits().active_job_bytes)
+                .and_then(|bytes| bytes.checked_add(256))
+                .is_some_and(|bytes| bytes <= crate::resources::limits().active_job_bytes)
             {
                 return Ok(true);
             }
@@ -1666,8 +1668,7 @@ impl Owner {
                     let exhausted = match allowance_expired(&self.journal, id) {
                         Ok(expired) => expired,
                         Err(error) => {
-                            failure =
-                                Some(append_failure(failure.take(), crate::Error::from(error)));
+                            failure = Some(append_failure(failure.take(), error));
                             true
                         }
                     };
@@ -1696,7 +1697,7 @@ impl Owner {
                 .any(|record| record.state == State::InDoubt)
                 && let Err(error) = self.retain_uncertainty()
             {
-                failure = Some(append_failure(failure.take(), crate::Error::from(error)));
+                failure = Some(append_failure(failure.take(), error));
             }
         }
         failure.map_or(Ok(()), Err)
@@ -1757,11 +1758,11 @@ fn check_peer_completion(record: &Record, output: Option<&Output>) -> Result<(),
     Ok(())
 }
 
-fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
+fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, crate::Error> {
     let record = journal
         .records
         .get(&id)
-        .ok_or("completion research identity absent")?;
+        .ok_or(crate::ResearchFailure::CompletionJobMissing)?;
     Ok(record
         .allowance(
             journal.accounts.get(&record.input.account_key()),
@@ -1779,7 +1780,7 @@ fn append_failure(previous: Option<crate::Error>, next: crate::Error) -> crate::
     }
 }
 
-fn completion(record: &Record) -> Result<Completion, String> {
+fn completion(record: &Record) -> Result<Completion, crate::Error> {
     Ok(Completion {
         experience: crate::learning::experience::ExperienceSummary::from_record(record)?,
         model_checkpoint: record.native.as_ref().map(|job| job.model_checkpoint()),

@@ -87,7 +87,7 @@ impl Journal {
             accounts: super::tracked::TrackedMap::new(),
         }
     }
-    pub(super) fn remember_holds(&mut self) -> Result<(), String> {
+    pub(super) fn remember_holds(&mut self) -> Result<(), crate::Error> {
         for record in self
             .records
             .values()
@@ -97,7 +97,7 @@ impl Journal {
             let previous = self
                 .accounts
                 .get(&key)
-                .ok_or("uncertain job original account missing")?
+                .ok_or(crate::ResearchFailure::JournalHoldAccountMissing)?
                 .held;
             let held = Some(previous.map_or(record.id, |old| old.min(record.id)));
             if previous != held {
@@ -106,7 +106,7 @@ impl Journal {
         }
         Ok(())
     }
-    pub(super) fn encoded_active_len(&mut self) -> Result<usize, String> {
+    pub(super) fn encoded_active_len(&mut self) -> Result<usize, crate::Error> {
         let learning = match &self.learning {
             Some(state) => crate::checkpoint::encode(state)?.len(),
             None => 0,
@@ -116,7 +116,7 @@ impl Journal {
             .checked_add(self.accounts.encoded_len()?)
             .and_then(|bytes| bytes.checked_add(learning))
             .and_then(|bytes| bytes.checked_add(4096))
-            .ok_or("active journal byte overflow".into())
+            .ok_or(crate::ResearchFailure::JournalActiveBytesOverflow.into())
     }
 }
 
@@ -538,10 +538,10 @@ impl Disk {
         }
         journal
             .remember_holds()
-            .map_err(crate::Error::CorruptStorage)?;
+            .map_err(crate::Error::fatal_storage)?;
         if journal
             .encoded_active_len()
-            .map_err(crate::Error::CorruptStorage)?
+            .map_err(crate::Error::fatal_storage)?
             > crate::resources::limits().active_job_bytes
         {
             return Err(crate::Error::CorruptStorage(

@@ -921,6 +921,7 @@ codes! {
         TensorStorageAccess = 598, TensorInvalidRepresentation = 599, TensorDtypeMismatch = 600, TensorUnsupportedConversion = 601, TensorElementCountMismatch = 602, TensorByteLengthInvalid = 603, TrainingLossCount = 604, TrainingLossNonFinite = 605, TrainingPoolEmpty = 606,
         SequenceEmpty = 607, SequenceShape = 608, SequenceCapacity = 609, SequencePredecessor = 610, SequenceDepth = 611, SequenceSelectedAction = 612, SequenceMemoryMissing = 613, SequenceOutputMissing = 614, PreservationStepsOverflow = 615, PreservationIdentityMismatch = 616,
         ModelReclamationIdentity = 617, LearningReceiptMismatch = 618, LearningResultMissing = 619, LearningResultIncomplete = 620, LearningSourceRole = 621, LearningProgramIdentity = 622, LearningOwnerMissing = 623, TheoremIdentityMismatch = 624, AcknowledgementUnknown = 625, AcknowledgementNotTerminal = 626,
+        JournalHoldAccountMissing = 627, JournalActiveBytesOverflow = 628, JobInputEncoding = 629, JobReservationOverflow = 630, JobResultReservationOverflow = 631, JobHorizonOverflow = 632, QueuedJobMissing = 633, CompletionJobMissing = 634,
     }
 
 }

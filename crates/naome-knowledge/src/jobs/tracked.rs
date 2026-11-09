@@ -61,7 +61,7 @@ impl<K: Ord + Clone, V> TrackedMap<K, V> {
     }
 }
 impl<K: Ord + Clone + ToString, V: Serialize> TrackedMap<K, V> {
-    pub(super) fn updates(&self, kind: &'static str) -> Result<Vec<Update>, String> {
+    pub(super) fn updates(&self, kind: &'static str) -> Result<Vec<Update>, crate::Error> {
         let mut updates = Vec::with_capacity(self.dirty.len() + self.removed.len());
         for key in &self.dirty {
             updates.push(Update::put(kind, key.to_string(), &self.entries[key])?);
@@ -74,7 +74,7 @@ impl<K: Ord + Clone + ToString, V: Serialize> TrackedMap<K, V> {
         }
         Ok(updates)
     }
-    pub(super) fn encoded_len(&mut self) -> Result<usize, String> {
+    pub(super) fn encoded_len(&mut self) -> Result<usize, crate::Error> {
         for key in &self.dirty {
             self.lengths.insert(
                 key.clone(),
@@ -84,7 +84,7 @@ impl<K: Ord + Clone + ToString, V: Serialize> TrackedMap<K, V> {
         // Deserialized/new entries are dirty until their first successful save.
         self.lengths.values().try_fold(0usize, |sum, length| {
             sum.checked_add(*length)
-                .ok_or("active journal byte overflow".into())
+                .ok_or(crate::ResearchFailure::JournalActiveBytesOverflow.into())
         })
     }
 }
