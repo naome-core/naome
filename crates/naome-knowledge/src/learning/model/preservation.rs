@@ -73,21 +73,21 @@ impl Preservation {
         proposed: Policy,
         gradient: &GradientsParams,
         mode: Mode,
-    ) -> Result<Policy, String> {
+    ) -> Result<Policy, crate::Error> {
         #[cfg(test)]
         if matches!(mode, Mode::Unmasked) {
             return Ok(proposed);
         }
-        self.steps = self
+        let steps = self
             .steps
             .checked_add(1)
-            .ok_or("preservation steps overflow")?;
+            .ok_or(crate::ResearchFailure::PreservationStepsOverflow)?;
         let mut update = Apply {
             before: Values::of(before),
             previous: Values::of(&self.ema),
             next: Values::default(),
             gradient,
-            steps: self.steps,
+            steps,
             mode,
             error: None,
         };
@@ -103,6 +103,7 @@ impl Preservation {
             }
         }
         self.ema = self.ema.clone().map(&mut Restore(update.next));
+        self.steps = steps;
         Ok(policy)
     }
 
@@ -263,14 +264,14 @@ struct Apply<'a> {
     gradient: &'a GradientsParams,
     steps: u64,
     mode: Mode,
-    error: Option<String>,
+    error: Option<crate::Error>,
 }
 impl ModuleMapper for Apply<'_> {
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
         let id = param.id;
         let (Some(before), Some(previous)) = (self.before.0.remove(id), self.previous.0.remove(id))
         else {
-            self.error = Some("preservation parameter identity differs".into());
+            self.error = Some(crate::ResearchFailure::PreservationIdentityMismatch.into());
             return param;
         };
         param.map(|proposed| {

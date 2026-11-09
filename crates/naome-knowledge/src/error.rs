@@ -1668,6 +1668,8 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::SequenceSelectedAction => "native sequence selected action differs",
                 crate::ResearchFailure::SequenceMemoryMissing => "native sequence memory predecessor missing",
                 crate::ResearchFailure::SequenceOutputMissing => "native sequence output missing",
+                crate::ResearchFailure::PreservationStepsOverflow => "preservation steps overflow",
+                crate::ResearchFailure::PreservationIdentityMismatch => "preservation parameter identity differs",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }

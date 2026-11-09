@@ -326,3 +326,47 @@ fn current_optimizer_memory_rejects_missing_steps_and_nonfinite_ema() {
         assert_eq!(error.code(), u32::from(code), "{corruption}: {error}");
     }
 }
+
+#[test]
+fn rejected_preservation_proposal_does_not_advance_memory() {
+    struct ChangeIds(u64);
+    impl ModuleMapper for ChangeIds {
+        fn map_float<const D: usize>(&mut self, mut param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+            self.0 -= 1;
+            param.id = self.0.into();
+            param
+        }
+    }
+    let mut io = MemoryStore::default();
+    let runtime = Runtime::load(&Checkpoint::fresh(), &mut io).unwrap();
+    let before = runtime.policy;
+    let mut preservation = Preservation::fresh(&before);
+    let initial = values_by_name(&preservation);
+    let proposed = before.clone().map(&mut ChangeIds(u64::MAX));
+    let error = preservation
+        .apply(&before, proposed, &GradientsParams::new(), Mode::Smoothed)
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::PreservationIdentityMismatch)
+    );
+    assert_eq!(preservation.steps, 0);
+    assert_eq!(values_by_name(&preservation), initial);
+    preservation.steps = u64::MAX;
+    let error = preservation
+        .apply(
+            &before,
+            before.clone(),
+            &GradientsParams::new(),
+            Mode::Smoothed,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::PreservationStepsOverflow)
+    );
+    assert_eq!(preservation.steps, u64::MAX);
+    assert_eq!(values_by_name(&preservation), initial);
+}
