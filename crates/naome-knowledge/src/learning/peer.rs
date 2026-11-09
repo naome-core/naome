@@ -501,7 +501,7 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
             generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
             ..super::GenerationCost::default()
         }),
-        source: proof::source(&verified)?,
+        source: proof::source(&verified),
         proof_id: crate::hex(verified.native_id.as_bytes()),
         refuted: false,
         tree: Tree::Certificate(bytes.to_vec()),
@@ -634,7 +634,7 @@ mod tests {
         };
         let (_, _, checked) =
             super::super::search::core::checked(q.proved_target(), &tree).unwrap();
-        let source = proof::source(&checked).unwrap();
+        let source = proof::source(&checked);
         let helpers = super::super::definitions::helpers(&tree).unwrap();
         let mut graph = crate::Graph::default();
         let (root, batch) = graph.prepare_generated(&source, &helpers, &q).unwrap();

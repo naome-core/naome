@@ -1408,7 +1408,7 @@ mod witness_tests {
         let found = solve(q.proved_target(), &mut Ordered, 128).unwrap();
         let tree = found.tree.expect("existential witness transport");
         let (_, _, checked) = core::checked(q.proved_target(), &tree).unwrap();
-        let source = super::super::proof::source(&checked).unwrap();
+        let source = super::super::proof::source(&checked);
         assert_eq!(
             crate::learning::proof::check_artifact(&source, &naome_checker::ArtifactState::new())
                 .unwrap()

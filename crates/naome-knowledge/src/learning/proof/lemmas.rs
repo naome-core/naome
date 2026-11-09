@@ -97,7 +97,7 @@ pub fn sources(
         };
         // Source rendering preserves explicit citations; the owning caller
         // compiles these in the same checked topological order.
-        output.push(source(&verified)?);
+        output.push(source(&verified));
         context.register_proof(checked)?;
     }
     Ok(output)

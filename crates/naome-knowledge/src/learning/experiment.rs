@@ -300,7 +300,7 @@ fn train_seed(
                 let term = search::compile(target, tree).unwrap().0;
                 let verified = proof::verify(&term, target).unwrap();
                 assert_eq!(crate::hex(verified.native_id.as_bytes()), e.proof_id);
-                serde_json::json!({"example":e,"source":proof::source(&verified).unwrap(),"helpers":definitions::helpers(tree).unwrap()})
+                serde_json::json!({"example":e,"source":proof::source(&verified),"helpers":definitions::helpers(tree).unwrap()})
             })
             .collect::<Vec<_>>();
         write(

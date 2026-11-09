@@ -1273,7 +1273,7 @@ fn solve_with_report_typed(
             match search::core::checked(target, &tree) {
                 Ok((tree, _, checked)) => {
                     cost.definition_check_steps = checked.certificate.steps().len();
-                    let source = proof::source(&checked)?;
+                    let source = proof::source(&checked);
                     let helpers = definitions::helpers(&tree)?;
                     if source.len() + helpers.iter().map(String::len).sum::<usize>()
                         <= 2 * crate::resources::limits().closure_bytes
@@ -1756,7 +1756,7 @@ fn search_compiled_question(
             };
             match Ok::<_, String>(verified).and_then(|verified| {
                 Ok((
-                    proof::source(&verified)?,
+                    proof::source(&verified),
                     crate::hex(verified.native_id.as_bytes()),
                     verified.payload_bytes,
                     verified

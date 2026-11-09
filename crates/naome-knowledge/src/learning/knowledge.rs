@@ -635,7 +635,7 @@ mod tests {
                 .any(|c| proof::check(c.clone(), &context).unwrap().proof_id() == lemma.native_id)
         );
         let solution = super::super::Solution {
-            source: proof::source(&extended).unwrap(),
+            source: proof::source(&extended),
             helpers: super::super::definitions::helpers(&wrapped).unwrap(),
             proof_id: crate::hex(extended.native_id.as_bytes()),
             refuted: false,
@@ -646,7 +646,7 @@ mod tests {
             crate::hex(solution.checked().unwrap().proof_id().as_bytes()),
             solution.proof_id
         );
-        let source = proof::source(&checked).unwrap();
+        let source = proof::source(&checked);
         let helpers = super::super::definitions::helpers(&tree).unwrap();
         let mut graph = crate::Graph::default();
         let (root, batch) = graph.prepare_generated(&source, &helpers, &q).unwrap();

@@ -611,7 +611,7 @@ mod tests {
             serde_json::to_value(error).unwrap()["code"],
             u32::from(crate::ResearchFailure::ProofReferenceReplacement)
         );
-        let source = proof::source(&checked).unwrap();
+        let source = proof::source(&checked);
         let helper_sources = helpers(&wrapped).unwrap();
         let directory = crate::checkpoint::tests::Directory::new();
         let mut graph = crate::Graph::open(&directory.0).unwrap();
@@ -648,7 +648,7 @@ mod tests {
             proof: Box::new(tree),
         };
         let (_, _, checked) = search::core::checked(q2.proved_target(), &tree).unwrap();
-        let source = proof::source(&checked).unwrap();
+        let source = proof::source(&checked);
         let (root, batch) = graph
             .prepare_generated(&source, &helpers(&tree).unwrap(), &q2)
             .unwrap();

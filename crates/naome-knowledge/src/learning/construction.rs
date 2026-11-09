@@ -418,7 +418,7 @@ mod tests {
             proof.certificate.steps().len(),
             proof.payload_bytes
         );
-        let source = proof::source(&proof).unwrap();
+        let source = proof::source(&proof);
         let compiled =
             crate::learning::proof::check_artifact(&source, &naome_checker::ArtifactState::new())
                 .unwrap();
@@ -477,7 +477,7 @@ mod tests {
             proof.native_id
         );
         let helpers = evidence::helpers(&packet).unwrap();
-        let source = proof::source(&proof).unwrap();
+        let source = proof::source(&proof);
         let size = (source.len() + helpers.iter().map(String::len).sum::<usize>()) / 2;
         eprintln!(
             "Nat closure objects={} source_bytes={size} packet_bytes={}",

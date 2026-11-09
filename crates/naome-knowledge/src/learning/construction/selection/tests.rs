@@ -40,7 +40,7 @@ fn a_conjunction_uses_both_checked_sources_within_three_constructor_steps() {
     assert_eq!(work, 3);
     let proof = proof
         .expect("both closed prerequisites must compose without searching their derivations again");
-    let source = super::super::super::proof::source(&proof).unwrap();
+    let source = super::super::super::proof::source(&proof);
     let packet = super::super::super::evidence::pack(&proof).unwrap();
     let helpers = super::super::super::evidence::helpers(&packet).unwrap();
     let (root, batch) = graph.prepare_generated(&source, &helpers, &goal).unwrap();

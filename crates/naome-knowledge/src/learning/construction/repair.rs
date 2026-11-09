@@ -112,7 +112,7 @@ pub(super) fn portable_packet(
         Some(&original.target),
     )?;
     let packet = evidence::pack(&verified)?;
-    let source = proof::source(&verified)?;
+    let source = proof::source(&verified);
     let helpers = evidence::helpers(&packet)?;
     if source.len() > 2 * limits.proof_bytes
         || helpers.len() >= limits.closure_objects
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(remaining, after_repair);
 
         let solution = Solution {
-            source: proof::source(&verified).unwrap(),
+            source: proof::source(&verified),
             helpers: evidence::helpers(&packet).unwrap(),
             proof_id: crate::hex(verified.native_id.as_bytes()),
             cost: Box::default(),

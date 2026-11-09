@@ -542,8 +542,8 @@ fn lower_recipe(
     })
 }
 
-pub fn source(proof: &Verified) -> Result<String, String> {
-    Ok(artifact(&proof.certificate))
+pub fn source(proof: &Verified) -> String {
+    artifact(&proof.certificate)
 }
 
 pub(super) fn artifact(certificate: &ProofCertificate) -> String {

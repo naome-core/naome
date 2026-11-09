@@ -155,7 +155,7 @@ mod tests {
                 .is_none(),
             "one available plan has no ambiguous selection label"
         );
-        let text = proof::source(&found).unwrap();
+        let text = proof::source(&found);
         assert_eq!(
             crate::learning::proof::check_artifact(&text, &context)
                 .unwrap()
