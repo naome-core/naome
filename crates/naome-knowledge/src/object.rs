@@ -50,10 +50,10 @@ pub(crate) fn program_manifest(
     }
     let body = bytes
         .strip_prefix(MANIFEST_MAGIC)
-        .ok_or("unknown program payload format")?;
+        .ok_or(crate::InputFault::ObjectProgramFormat)?;
     let manifest = naome_proof::program::Manifest::from_canonical_bytes(body)?;
     if manifest.commands > i64::MAX as u64 || manifest.input_bytes > i64::MAX as u64 {
-        return Err("invalid canonical program manifest".into());
+        return Err(crate::InputFault::ObjectProgramManifest.into());
     }
     Ok(Some(manifest))
 }
@@ -64,25 +64,25 @@ pub(crate) fn record_content_id(
 ) -> Result<ArtifactId, crate::Error> {
     if let Some(manifest) = program_manifest(bytes)? {
         if Some(manifest.statement_id()) != statement {
-            return Err("program statement binding differs".into());
+            return Err(crate::InputFault::ObjectProgramStatement.into());
         }
         return Ok(manifest.artifact_id());
     }
     match bytes.split_first() {
         Some((&ArtifactPayload::PROOF_TAG, payload)) => Ok(content_id(
-            statement.ok_or("proof statement missing")?,
+            statement.ok_or(crate::InputFault::ObjectProofStatementMissing)?,
             payload,
         )),
         Some((&ArtifactPayload::DEFINITION_TAG, payload)) => {
             if statement.is_some() {
-                return Err("definition has a statement claim".into());
+                return Err(crate::InputFault::ObjectDefinitionStatement.into());
             }
             Ok(DefinitionCertificate::from_canonical_bytes(payload)
                 .map_err(|error| definition_error(payload, error))?
                 .definition_id()
                 .into())
         }
-        _ => Err("unknown artifact payload".into()),
+        _ => Err(crate::InputFault::ObjectPayloadTag.into()),
     }
 }
 
@@ -339,7 +339,7 @@ impl CheckedArtifact {
     pub(crate) fn proof(&self) -> Result<&naome_checker::CheckedProof, crate::Error> {
         match self {
             Self::Proof(proof) => Ok(proof),
-            Self::Definition(_) => Err("selected question root must be a proof".into()),
+            Self::Definition(_) => Err(crate::InputFault::ObjectQuestionRoot.into()),
         }
     }
     pub(crate) fn register(
@@ -375,7 +375,9 @@ impl CheckedArtifact {
                             .map_err(crate::Error::from)?
                             .map(|header| header.proof_id())
                             .ok_or_else(|| {
-                                crate::Error::from("definition obligation witness missing")
+                                crate::Error::from(
+                                    crate::InputFault::ObjectObligationWitnessMissing,
+                                )
                             })
                     })
                     .transpose()?;
@@ -383,9 +385,11 @@ impl CheckedArtifact {
                 let length = certificate
                     .len()
                     .checked_add(1)
-                    .ok_or("artifact byte overflow")?;
+                    .ok_or(crate::InputFault::ObjectBytesOverflow)?;
                 let memory = crate::resources::MemoryLease::acquire(
-                    length.checked_mul(4).ok_or("artifact memory overflow")?,
+                    length
+                        .checked_mul(4)
+                        .ok_or(crate::InputFault::ObjectMemoryOverflow)?,
                 )?;
                 let mut bytes = Vec::with_capacity(length);
                 bytes.push(ArtifactPayload::DEFINITION_TAG);
@@ -431,7 +435,7 @@ impl BinaryArtifact {
                 || self.obligation.is_some()
                 || !self.dependencies.is_empty())
         {
-            return Err("canonical program identity differs".into());
+            return Err(crate::InputFault::ObjectProgramIdentity.into());
         }
         Ok(manifest)
     }
@@ -442,13 +446,14 @@ impl BinaryArtifact {
         match self.bytes.split_first() {
             Some((&ArtifactPayload::PROOF_TAG, payload)) => Ok(Some(
                 ProofId::of_canonical_certificate(
-                    self.statement.ok_or("proof statement missing")?,
+                    self.statement
+                        .ok_or(crate::InputFault::ObjectProofStatementMissing)?,
                     payload,
                 )
-                .ok_or("proof identity width")?,
+                .ok_or(crate::InputFault::ObjectProofIdentityWidth)?,
             )),
             Some((&ArtifactPayload::DEFINITION_TAG, _)) => Ok(None),
-            _ => Err("unknown artifact payload".into()),
+            _ => Err(crate::InputFault::ObjectPayloadTag.into()),
         }
     }
     pub(crate) fn from_checked(proof: &naome_checker::CheckedProof) -> Result<Self, crate::Error> {
@@ -464,7 +469,7 @@ impl BinaryArtifact {
             bytes
                 .len()
                 .checked_mul(4)
-                .ok_or("artifact memory overflow")?,
+                .ok_or(crate::InputFault::ObjectMemoryOverflow)?,
         )?;
         Ok(Self {
             id: proof.artifact_id(),
@@ -511,7 +516,7 @@ impl BinaryArtifact {
             self.bytes
                 .len()
                 .checked_mul(64)
-                .ok_or("artifact memory overflow")?,
+                .ok_or(crate::InputFault::ObjectMemoryOverflow)?,
         )?;
         let candidate = prepare_candidate(
             self.id,
@@ -522,7 +527,7 @@ impl BinaryArtifact {
             memory,
         )?;
         if candidate.dependencies != self.dependencies {
-            return Err("artifact dependency metadata differs".into());
+            return Err(crate::InputFault::ObjectDependencyMetadata.into());
         }
         Ok(candidate)
     }
@@ -559,13 +564,13 @@ fn prepare_candidate(
     let payload = match bytes.split_first() {
         Some((&ArtifactPayload::PROOF_TAG, payload)) => {
             if obligation.is_some() {
-                return Err("proof has definition obligation metadata".into());
+                return Err(crate::InputFault::ObjectProofObligation.into());
             }
             let certificate = ProofCertificate::from_canonical_bytes(payload)
                 .map_err(|error| certificate_error(payload, error))?;
             let normal = certificate.into_unchecked_normal_form();
             if normal.canonical_bytes() != payload {
-                return Err("non-normal proof bytes".into());
+                return Err(crate::InputFault::ObjectProofNoncanonical.into());
             }
             CandidatePayload::Proof(normal)
         }
@@ -577,26 +582,26 @@ fn prepare_candidate(
                 naome_proof::DefinitionKind::Function { .. }
             ) != obligation.is_some()
             {
-                return Err("definition obligation witness binding differs".into());
+                return Err(crate::InputFault::ObjectObligationBinding.into());
             }
             CandidatePayload::Definition(definition)
         }
-        _ => return Err("unknown artifact payload".into()),
+        _ => return Err(crate::InputFault::ObjectPayloadTag.into()),
     };
     let reconstructed = match &payload {
         CandidatePayload::Proof(normal) => content_id(
-            statement.ok_or("proof statement missing")?,
+            statement.ok_or(crate::InputFault::ObjectProofStatementMissing)?,
             normal.canonical_bytes(),
         ),
         CandidatePayload::Definition(definition) => {
             if statement.is_some() {
-                return Err("definition has a statement claim".into());
+                return Err(crate::InputFault::ObjectDefinitionStatement.into());
             }
             definition.definition_id().into()
         }
     };
     if reconstructed != id {
-        return Err("claimed artifact ID mismatch".into());
+        return Err(crate::InputFault::ObjectArtifactIdMismatch.into());
     }
     let dependencies = match &payload {
         CandidatePayload::Proof(normal) => {
@@ -644,7 +649,7 @@ fn dependencies_with_limit(
         ));
     }
     if dependencies.contains(&id) {
-        return Err("dependency cycle".into());
+        return Err(crate::InputFault::ObjectDependencyCycle.into());
     }
     Ok(dependencies)
 }
@@ -685,14 +690,14 @@ impl Envelope {
             ));
         }
         let _memory = crate::resources::MemoryLease::acquire(self.payload.len())?;
-        let manifest =
-            program_manifest(&unhex(&self.payload)?)?.ok_or("program manifest missing")?;
+        let manifest = program_manifest(&unhex(&self.payload)?)?
+            .ok_or(crate::InputFault::ObjectManifestMissing)?;
         if self.artifact_id != hex(manifest.artifact_id().as_bytes())
             || self.statement_id.as_deref()
                 != Some(hex(manifest.statement_id().as_bytes()).as_str())
             || self.obligation_proof.is_some()
         {
-            return Err("program identity binding differs".into());
+            return Err(crate::InputFault::ObjectProgramBinding.into());
         }
         Ok(Some(manifest))
     }
@@ -740,7 +745,7 @@ impl Envelope {
             self.payload
                 .len()
                 .checked_mul(32)
-                .ok_or("artifact memory overflow")?,
+                .ok_or(crate::InputFault::ObjectMemoryOverflow)?,
         )?;
         let bytes = unhex(&self.payload)?;
         prepare_candidate(

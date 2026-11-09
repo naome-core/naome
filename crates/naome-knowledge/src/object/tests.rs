@@ -129,3 +129,19 @@ fn fixed_identity_decoder_checks_width_and_canonical_hex() {
         crate::Error::InputFault(crate::InputFault::HexWidth)
     );
 }
+
+#[test]
+fn artifact_binding_and_payload_errors_have_machine_causes() {
+    assert_eq!(
+        record_content_id(None, &[ArtifactPayload::PROOF_TAG]),
+        Err(crate::InputFault::ObjectProofStatementMissing.into())
+    );
+    assert_eq!(
+        record_content_id(None, &[0x7f]),
+        Err(crate::InputFault::ObjectPayloadTag.into())
+    );
+    assert_eq!(
+        program_manifest(&[0xff]),
+        Err(crate::InputFault::ObjectProgramFormat.into())
+    );
+}
