@@ -39,7 +39,10 @@ fn changed_provenance_never_inherits_a_verified_neighbour() {
     let mut changed = example.clone();
     changed.proof_id = "f1".repeat(32);
     let checked = proof::checking_work().calls;
-    assert!(validate_example(&changed).is_err());
+    assert_eq!(
+        validate_example(&changed).unwrap_err(),
+        crate::ResearchFailure::LearningProofProvenance.into()
+    );
     assert!(proof::checking_work().calls > checked);
     let checked = proof::checking_work().calls;
     validate_example(&example).unwrap();
@@ -58,4 +61,23 @@ fn a_new_worker_rechecks_witnesses_in_its_own_empty_cache() {
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn state_validation_keeps_capacity_and_nested_example_failures() {
+    let mut state = State::fresh();
+    state.trained = 1;
+    assert_eq!(
+        state.validate().unwrap_err(),
+        crate::ResearchFailure::LearningStateCapacity.into()
+    );
+
+    let mut state = State::fresh();
+    let mut example = crate::learning::tests::own_example();
+    example.job = 0;
+    state.replay.push(example);
+    assert_eq!(
+        state.validate().unwrap_err(),
+        crate::ResearchFailure::LearningExampleOwner.into()
+    );
 }

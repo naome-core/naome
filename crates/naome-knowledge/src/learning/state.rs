@@ -3,7 +3,7 @@ use super::*;
 // This process-local cache contains only exact inputs already checked by the
 // unchanged native kernel. It is never serialized; reopening rechecks all data.
 std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::VecDeque<String>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) }; }
-pub(super) fn validate_example(e: &Example) -> Result<(), String> {
+pub(super) fn validate_example(e: &Example) -> Result<(), crate::Error> {
     let key = digest(e);
     if VERIFIED.with(|known| {
         let mut known = known.borrow_mut();
@@ -17,18 +17,20 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
         return Ok(());
     }
     if e.job == 0 {
-        return Err("learning example lacks an owned job".into());
+        return Err(crate::ResearchFailure::LearningExampleOwner.into());
     }
-    let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
+    let q = ResearchQuestion::from_hex(&e.question)?;
     if curriculum::owned::case(&e.question).is_none() {
-        return Err("learning example outside eligible dependency split".into());
+        return Err(crate::ResearchFailure::LearningExampleEligibility.into());
     }
     crate::object::id_bytes(&e.proof_id)?;
     if let Origin::Peer { artifact, peer } = &e.origin {
         crate::object::id_bytes(artifact)?;
-        let parsed: libp2p::PeerId = peer.parse().map_err(|_| "peer replay origin syntax")?;
+        let parsed: libp2p::PeerId = peer
+            .parse()
+            .map_err(|_| crate::InputFault::PeerIdentitySyntax)?;
         if parsed.to_string() != *peer {
-            return Err("peer replay origin encoding".into());
+            return Err(crate::InputFault::PeerIdentityEncoding.into());
         }
     }
     if let search::Tree::Stored {
@@ -46,7 +48,7 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
         {
             Ok(())
         } else {
-            Err("peer replay pointer differs".into())
+            Err(crate::ResearchFailure::LearningReplayPointer.into())
         };
     }
     let target = if e.refuted {
@@ -60,13 +62,13 @@ pub(super) fn validate_example(e: &Example) -> Result<(), String> {
             || e.proof_id != crate::hex(packet.manifest.proof_id().as_bytes())
             || packet.target()? != target
         {
-            return Err("learning program provenance differs".into());
+            return Err(crate::ResearchFailure::LearningProgramProvenance.into());
         }
     } else {
         let (term, _) = search::compile(&target, &e.tree)?;
         let verified = proof::verify(&term, &target)?;
         if crate::hex(verified.native_id.as_bytes()) != e.proof_id {
-            return Err("learning proof provenance differs".into());
+            return Err(crate::ResearchFailure::LearningProofProvenance.into());
         }
     }
     VERIFIED.with(|known| {
@@ -84,13 +86,13 @@ mod verification_tests;
 pub(super) fn proof_steps(
     target: &naome_foundation::Formula,
     tree: &search::Tree,
-) -> Result<usize, String> {
+) -> Result<usize, crate::Error> {
     if let search::Tree::Stored { steps, .. } = tree {
         return Ok(*steps);
     }
     if let search::Tree::Program(packet) = tree {
         if &packet.target()? != target {
-            return Err("checked program target differs".into());
+            return Err(crate::ResearchFailure::LearningProgramTarget.into());
         }
         return Ok(packet.manifest.commands as usize);
     }
@@ -164,7 +166,7 @@ impl State {
             meta: meta::State::fresh(),
         }
     }
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         self.model.validate()?;
         self.meta.validate()?;
         self.history_cursor.validate()?;
@@ -176,7 +178,7 @@ impl State {
                 .iter()
                 .any(|e| e.address().is_ok_and(|a| crate::hex(a.as_bytes()) == *id))
         }) {
-            return Err("definition utility lacks a checked meaning".into());
+            return Err(crate::ResearchFailure::LearningDefinitionUtility.into());
         }
         if self.anchors.len() > 4
             || self.replay.len() > REPLAY
@@ -185,28 +187,28 @@ impl State {
             || self.attempted > self.epoch
             || self.local_examples.checked_add(self.peer_examples) != Some(self.accepted)
             || self.training_trace_bytes() > REPLAY * 8 * 1024
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
+            || crate::checkpoint::encode(self)?.len()
                 > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
         {
-            return Err("local learning state capacity or sequence".into());
+            return Err(crate::ResearchFailure::LearningStateCapacity.into());
         }
         let mut strategies = BTreeMap::new();
         for e in self.replay.iter().chain(&self.anchors) {
             validate_example(e)?;
         }
         for e in &self.replay {
-            let q = ResearchQuestion::from_hex(&e.question).map_err(|e| e.to_string())?;
+            let q = ResearchQuestion::from_hex(&e.question)?;
             let count = strategies
                 .entry(crate::hex(q.resolution_id()))
                 .or_insert(0usize);
             *count += 1;
             if *count > 2 {
-                return Err("question replay strategy capacity".into());
+                return Err(crate::ResearchFailure::LearningReplayStrategyCapacity.into());
             }
         }
         self.feedback.validate()?;
         if self.feedback.checkpoint != digest(&self.model) {
-            return Err("learning feedback model differs".into());
+            return Err(crate::ResearchFailure::LearningFeedbackModel.into());
         }
         Ok(())
     }
@@ -507,7 +509,7 @@ impl State {
             }
             self.remove_replay()?;
         }
-        self.validate()
+        self.validate().map_err(Into::into)
     }
     pub(super) fn remove_replay(&mut self) -> Result<(), String> {
         let losses = coverage::losses(&self.replay, &self.anchors)?;

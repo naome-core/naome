@@ -1500,6 +1500,30 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::LearningExampleOwner => {
+                    "learning example lacks an owned job"
+                }
+                crate::ResearchFailure::LearningExampleEligibility => {
+                    "learning example outside eligible dependency split"
+                }
+                crate::ResearchFailure::LearningReplayPointer => "peer replay pointer differs",
+                crate::ResearchFailure::LearningProgramProvenance => {
+                    "learning program provenance differs"
+                }
+                crate::ResearchFailure::LearningProofProvenance => {
+                    "learning proof provenance differs"
+                }
+                crate::ResearchFailure::LearningProgramTarget => "checked program target differs",
+                crate::ResearchFailure::LearningDefinitionUtility => {
+                    "definition utility lacks a checked meaning"
+                }
+                crate::ResearchFailure::LearningStateCapacity => {
+                    "local learning state capacity or sequence"
+                }
+                crate::ResearchFailure::LearningReplayStrategyCapacity => {
+                    "question replay strategy capacity"
+                }
+                crate::ResearchFailure::LearningFeedbackModel => "learning feedback model differs",
                 crate::ResearchFailure::JobPrerequisiteRole => {
                     "temporary prerequisites lack a solving role"
                 }
