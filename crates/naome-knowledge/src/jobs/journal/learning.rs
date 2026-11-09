@@ -488,7 +488,7 @@ impl Disk {
         updates: &mut Vec<crate::checkpoint::Update>,
         owner: &str,
         mut refs: Vec<crate::learning::Blob>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         refs.sort();
         refs.dedup();
         let old = self
@@ -546,7 +546,7 @@ impl Disk {
         let blob: crate::learning::Blob = crate::checkpoint::decode(&payload)?;
         blob.validate()?;
         if blob.sha256 != hash {
-            return Err("native model reclamation identity differs".into());
+            return Err(crate::ResearchFailure::ModelReclamationIdentity.into());
         }
         let uses = self
             .checkpoint
@@ -574,7 +574,7 @@ impl Disk {
         journal: &mut Journal,
         id: u64,
         root: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         crate::object::id_bytes(root)?;
         if let Some(previous) = self
             .checkpoint
@@ -583,7 +583,7 @@ impl Disk {
             return if previous == root {
                 Ok(())
             } else {
-                Err("owned learning receipt differs".into())
+                Err(crate::ResearchFailure::LearningReceiptMismatch.into())
             };
         }
         let mut record = journal
@@ -593,9 +593,9 @@ impl Disk {
             .or(self
                 .checkpoint
                 .get("record", &id.to_string(), crate::checkpoint::MAX_ROW)?)
-            .ok_or("owned learning result missing")?;
+            .ok_or(crate::ResearchFailure::LearningResultMissing)?;
         if record.state != State::Complete {
-            return Err("learning result is not complete".into());
+            return Err(crate::ResearchFailure::LearningResultIncomplete.into());
         }
         let Some(Output::Native {
             solution: Some(solution),
@@ -606,13 +606,12 @@ impl Disk {
             return Ok(());
         };
         let Input::Solve { question } = &record.input else {
-            return Err("learning source role differs".into());
+            return Err(crate::ResearchFailure::LearningSourceRole.into());
         };
-        let target = naome_checker::question::ResearchQuestion::from_hex(question)
-            .map_err(|error| error.to_string())?;
+        let target = naome_checker::question::ResearchQuestion::from_hex(question)?;
         let program = crate::learning::program::Candidate::from_solution(solution, &target)?;
         if crate::hex(program.manifest.artifact_id().as_bytes()) != root {
-            return Err("accepted native program identity differs".into());
+            return Err(crate::ResearchFailure::LearningProgramIdentity.into());
         }
         solution.check_target(&target)?;
         let example = crate::learning::Example {
@@ -626,21 +625,15 @@ impl Disk {
         let mut learning = journal
             .learning
             .clone()
-            .ok_or("native learning owner state absent")?;
-        let key = crate::hex(
-            naome_checker::question::ResearchQuestion::from_hex(question)
-                .map_err(|e| e.to_string())?
-                .resolution_id(),
-        );
+            .ok_or(crate::ResearchFailure::LearningOwnerMissing)?;
+        let key = crate::hex(target.resolution_id());
         let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
         let unseen = self
             .checkpoint
             .get::<u64>("replay_seen", &solution.proof_id, 64)?
             .is_none();
         let sampled = unseen && learning.consider(example, unique)?;
-        let question = naome_checker::question::ResearchQuestion::from_hex(question)
-            .map_err(|e| e.to_string())?;
-        if let Some(theorem) = solution.theorem(&question)? {
+        if let Some(theorem) = solution.theorem(&target)? {
             learning.remember_theorem(theorem)?;
         }
         learning.compact()?;

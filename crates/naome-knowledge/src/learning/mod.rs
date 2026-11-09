@@ -289,7 +289,10 @@ pub(crate) struct Solution {
 impl Solution {
     /// The local acceptance receipt publishes this bounded hint atomically
     /// with replay; the canonical graph remains the mathematical owner.
-    pub fn theorem(&self, question: &ResearchQuestion) -> Result<Option<knowledge::Entry>, String> {
+    pub fn theorem(
+        &self,
+        question: &ResearchQuestion,
+    ) -> Result<Option<knowledge::Entry>, crate::Error> {
         if matches!(self.tree, search::Tree::Program(_)) {
             return Ok(None);
         }
@@ -300,7 +303,7 @@ impl Solution {
         };
         let (_, _, verified) = search::core::checked(target, &self.tree)?;
         if crate::hex(verified.native_id.as_bytes()) != self.proof_id {
-            return Err("accepted theorem identity differs".into());
+            return Err(crate::ResearchFailure::TheoremIdentityMismatch.into());
         }
         let packet = evidence::pack(&verified)?;
         Ok((packet.len() <= knowledge::BYTES).then_some(knowledge::Entry { packet }))

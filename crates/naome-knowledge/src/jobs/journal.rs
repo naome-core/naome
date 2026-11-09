@@ -710,7 +710,7 @@ impl Disk {
         }
         Ok(Some(record))
     }
-    pub(super) fn acknowledge(&mut self, journal: &Journal, id: u64) -> Result<(), String> {
+    pub(super) fn acknowledge(&mut self, journal: &Journal, id: u64) -> Result<(), crate::Error> {
         let Some(mut record) =
             self.checkpoint
                 .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
@@ -718,10 +718,10 @@ impl Disk {
             if id < journal.next_id {
                 return Ok(());
             }
-            return Err("unknown research acknowledgement".into());
+            return Err(crate::ResearchFailure::AcknowledgementUnknown.into());
         };
         if !record.state.terminal() {
-            return Err("acknowledged research job is still running or held".into());
+            return Err(crate::ResearchFailure::AcknowledgementNotTerminal.into());
         }
         record.acknowledged = true;
         let key = super::request_key(&record.input, &record.binding, record.settings);

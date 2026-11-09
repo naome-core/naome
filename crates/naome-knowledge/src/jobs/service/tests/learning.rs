@@ -256,12 +256,15 @@ fn accepted(owner: &mut Owner) -> u64 {
         0,
         "a provider result is not accepted training data"
     );
-    assert!(
-        owner
-            .disk
-            .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
-            .is_err()
+    let error = owner
+        .disk
+        .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::LearningProgramIdentity)
     );
+    assert_eq!(learning(owner)["accepted"], 0);
     let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
     let mut graph = crate::Graph::default();
     let program = crate::learning::program::Candidate::from_solution(&solution, &q).unwrap();
@@ -342,6 +345,15 @@ fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
         .disk
         .accept_learning(&mut owner.journal, id, &root)
         .unwrap();
+    assert_eq!(learning(&owner), before);
+    let error = owner
+        .disk
+        .accept_learning(&mut owner.journal, id, &"ff".repeat(32))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        crate::Error::from(crate::ResearchFailure::LearningReceiptMismatch)
+    );
     assert_eq!(learning(&owner), before);
     let settings = owner.settings;
     drop(owner);

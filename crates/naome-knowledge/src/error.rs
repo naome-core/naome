@@ -1670,6 +1670,16 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::SequenceOutputMissing => "native sequence output missing",
                 crate::ResearchFailure::PreservationStepsOverflow => "preservation steps overflow",
                 crate::ResearchFailure::PreservationIdentityMismatch => "preservation parameter identity differs",
+                crate::ResearchFailure::ModelReclamationIdentity => "native model reclamation identity differs",
+                crate::ResearchFailure::LearningReceiptMismatch => "owned learning receipt differs",
+                crate::ResearchFailure::LearningResultMissing => "owned learning result missing",
+                crate::ResearchFailure::LearningResultIncomplete => "learning result is not complete",
+                crate::ResearchFailure::LearningSourceRole => "learning source role differs",
+                crate::ResearchFailure::LearningProgramIdentity => "accepted native program identity differs",
+                crate::ResearchFailure::LearningOwnerMissing => "native learning owner state absent",
+                crate::ResearchFailure::TheoremIdentityMismatch => "accepted theorem identity differs",
+                crate::ResearchFailure::AcknowledgementUnknown => "unknown research acknowledgement",
+                crate::ResearchFailure::AcknowledgementNotTerminal => "acknowledged research job is still running or held",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
