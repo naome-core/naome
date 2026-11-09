@@ -240,3 +240,27 @@ fn definition_checker_preserves_obligation_identity_and_storage_fatality() {
     assert_eq!(stored["statement"], value["statement"]);
     assert_eq!(stored["fatal"], true);
 }
+
+#[test]
+fn program_sql_failure_preserves_extended_code_and_resource_classification() {
+    let source = naome_checker::program::Error::Storage(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE),
+        Some("private SQL detail".into()),
+    ));
+    let error = Error::from(source);
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::ProgramSql));
+    assert_eq!(value["reason"], u32::from(crate::SqlFault::Engine));
+    assert_eq!(
+        value["sqlite_code"],
+        rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    );
+    assert_eq!(value["fatal"], true);
+    assert!(!value.to_string().contains("private SQL detail"));
+
+    let busy = naome_checker::program::Error::Storage(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        None,
+    ));
+    assert_eq!(Error::from(busy), Error::ExecutionLimit);
+}

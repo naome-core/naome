@@ -289,7 +289,11 @@ pub enum Error {
         column: usize,
     },
     CheckpointSql {
-        reason: crate::CheckpointSqlFault,
+        reason: crate::SqlFault,
+        sqlite_code: Option<NonZeroI32>,
+    },
+    ProgramSql {
+        reason: crate::SqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
     StorageIo {
@@ -363,6 +367,7 @@ impl Error {
             Self::ResourceProfileDecode { .. } => OperationCode::ResourceProfileDecode,
             Self::ResourceValidation { .. } => OperationCode::ResourceValidation,
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
+            Self::ProgramSql { .. } => OperationCode::ProgramSql,
             Self::StorageIo { .. } => OperationCode::StorageIo,
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
@@ -438,6 +443,7 @@ impl Error {
                 self,
                 Self::Stored(_)
                     | Self::CorruptStorage(_)
+                    | Self::ProgramSql { .. }
                     | Self::CheckedContext(_)
                     | Self::UncertainDurability(_)
                     | Self::Runtime(_)
@@ -634,6 +640,14 @@ impl fmt::Display for Error {
                 "storage IO failure {}:{} ({os_code:?})",
                 u32::from(*operation),
                 u32::from(*kind)
+            ),
+            Self::ProgramSql {
+                reason,
+                sqlite_code,
+            } => write!(
+                f,
+                "program SQLite failure {} ({sqlite_code:?})",
+                u32::from(*reason)
             ),
             Self::CheckpointSql {
                 reason,
@@ -1542,6 +1556,16 @@ pub(crate) fn json_fault(error: &serde_json::Error) -> crate::JsonFault {
     }
 }
 
+pub(crate) fn sqlite_fault(error: &rusqlite::Error) -> (crate::SqlFault, Option<NonZeroI32>) {
+    let reason = match error {
+        rusqlite::Error::SqliteFailure(..) => crate::SqlFault::Engine,
+        rusqlite::Error::QueryReturnedNoRows => crate::SqlFault::MissingRow,
+        rusqlite::Error::InvalidColumnType(..) => crate::SqlFault::ColumnType,
+        _ => crate::SqlFault::Other,
+    };
+    (reason, naome_storage::sqlite_code(error))
+}
+
 pub(crate) fn storage_io_error(
     operation: crate::StorageIoOperation,
     error: std::io::Error,
@@ -1587,7 +1611,11 @@ impl From<naome_checker::program::Error> for Error {
             naome_checker::program::Error::Formula(error) => Self::Formula(error),
             naome_checker::program::Error::Codec(error) => error.into(),
             naome_checker::program::Error::Storage(error) => {
-                Self::CorruptStorage(error.to_string())
+                let (reason, sqlite_code) = sqlite_fault(&error);
+                Self::ProgramSql {
+                    reason,
+                    sqlite_code,
+                }
             }
             naome_checker::program::Error::Context(error) => error.into(),
         }
@@ -1732,6 +1760,10 @@ impl serde::Serialize for Error {
             }
         }
         if let Self::CheckpointSql {
+            reason,
+            sqlite_code,
+        }
+        | Self::ProgramSql {
             reason,
             sqlite_code,
         } = cause

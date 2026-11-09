@@ -583,15 +583,10 @@ fn sync_parent(path: &Path) -> Result<(), crate::Error> {
     .map_err(|error| crate::error::storage_io_error(crate::StorageIoOperation::SyncParent, error))
 }
 fn sql_error(error: rusqlite::Error) -> crate::Error {
-    let reason = match &error {
-        rusqlite::Error::SqliteFailure(..) => crate::CheckpointSqlFault::Engine,
-        rusqlite::Error::QueryReturnedNoRows => crate::CheckpointSqlFault::MissingRow,
-        rusqlite::Error::InvalidColumnType(..) => crate::CheckpointSqlFault::ColumnType,
-        _ => crate::CheckpointSqlFault::Other,
-    };
+    let (reason, sqlite_code) = crate::error::sqlite_fault(&error);
     crate::Error::CheckpointSql {
         reason,
-        sqlite_code: naome_storage::sqlite_code(&error),
+        sqlite_code,
     }
 }
 fn sql(error: rusqlite::Error) -> String {

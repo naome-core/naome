@@ -433,10 +433,7 @@ fn checkpoint_sql_read_failure_retains_native_code_and_fails_closed() {
         value["cause_code"],
         u32::from(crate::outcome::OperationCode::CheckpointSql)
     );
-    assert_eq!(
-        value["reason"],
-        u32::from(crate::CheckpointSqlFault::Engine)
-    );
+    assert_eq!(value["reason"], u32::from(crate::SqlFault::Engine));
     assert_eq!(value["sqlite_code"], rusqlite::ffi::SQLITE_ERROR);
 }
 

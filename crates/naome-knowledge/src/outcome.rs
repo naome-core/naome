@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32, ProgramSql = 33,
     }
 
     pub enum InputFault in 7 {
@@ -740,7 +740,7 @@ codes! {
     pub(crate) enum RelayClientEvent in 71 { ReservationAccepted = 1, OutboundCircuit = 2, InboundCircuit = 3 }
     pub(crate) enum DefinitionCheckReason in 72 { Expansion = 1, CanonicalBody = 2, Certificate = 3, UnknownObligation = 4, ObligationMismatch = 5, ObligationFormula = 6, Unsupported = 7 }
     pub enum JsonFault in 73 { Io = 1, Syntax = 2, Data = 3, Eof = 4 }
-    pub enum CheckpointSqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
+    pub enum SqlFault in 74 { Engine = 1, MissingRow = 2, ColumnType = 3, Other = 4 }
     pub enum SchemaFailure in 79 { RoleCollision = 1, ParameterRoleCollision = 2, DuplicateParameter = 3, ForbiddenPredicateVariable = 4, UndeclaredPredicateVariable = 5 }
     pub enum ResourceValidationReason in 78 {
         ProfileVersion = 1, MemoryBudget = 2, ScalingOverflow = 3, FieldWidth = 4,

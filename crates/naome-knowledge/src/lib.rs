@@ -26,10 +26,10 @@ pub fn outcome_codes() -> impl Iterator<Item = (&'static str, &'static str, u32)
         .chain(naome_checker::diagnostics::outcome_codes())
 }
 pub use outcome::{
-    CheckpointSqlFault, CompressionFailure, DurabilityCode, FormatResource, FormatTagClass,
-    IngestStatus, InputFault, InputLimit, IoFaultKind, JsonFault, LearningGraphFailure,
-    PauseReason, ResearchFailure, ResourceValidationReason, RuntimeFailure, SchemaFailure,
-    StartupFailure, StorageIoOperation, WorkerFailure,
+    CompressionFailure, DurabilityCode, FormatResource, FormatTagClass, IngestStatus, InputFault,
+    InputLimit, IoFaultKind, JsonFault, LearningGraphFailure, PauseReason, ResearchFailure,
+    ResourceValidationReason, RuntimeFailure, SchemaFailure, SqlFault, StartupFailure,
+    StorageIoOperation, WorkerFailure,
 };
 mod frontier;
 pub use error::{CertificateFormatError, DurabilityFailure, Error, FormatFailure};
