@@ -136,7 +136,7 @@ codes! {
         CheckpointSql = 23,
         StorageIo = 24,
         ResourceProfileDecode = 25,
-        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32, ProgramSql = 33,
+        ResourceValidation = 26, CertificateConstruction = 27, DefinedFormula = 28, DefinitionExpansion = 29, Schema = 30, ProgramProjection = 31, Compression = 32, ProgramSql = 33, Io = 34,
     }
 
     pub enum InputFault in 7 {
@@ -731,7 +731,7 @@ codes! {
 
     pub(crate) enum RelayEventKind in 64 { ReservationAccepted = 1, ReservationDenied = 2, ReservationClosed = 3, ReservationTimedOut = 4, CircuitDenied = 5, CircuitAccepted = 6, CircuitClosed = 7 }
     pub(crate) enum RelayStatus in 65 { Ok = 1, ReservationRefused = 2, ResourceLimitExceeded = 3, PermissionDenied = 4, ConnectionFailed = 5, NoReservation = 6, MalformedMessage = 7, UnexpectedMessage = 8 }
-    pub enum IoFaultKind in 66 { NotFound = 1, PermissionDenied = 2, ConnectionRefused = 3, ConnectionReset = 4, ConnectionAborted = 5, NotConnected = 6, BrokenPipe = 7, TimedOut = 8, Interrupted = 9, UnexpectedEof = 10, Other = 11 }
+    pub enum IoFaultKind in 66 { NotFound = 1, PermissionDenied = 2, ConnectionRefused = 3, ConnectionReset = 4, ConnectionAborted = 5, NotConnected = 6, BrokenPipe = 7, TimedOut = 8, Interrupted = 9, UnexpectedEof = 10, Other = 11, AlreadyExists = 12, InvalidInput = 13, InvalidData = 14, AddrInUse = 15, AddrNotAvailable = 16, WriteZero = 17, Unsupported = 18, NotADirectory = 19, IsADirectory = 20, DirectoryNotEmpty = 21, ReadOnlyFilesystem = 22 }
     pub(crate) enum ServiceRole in 67 { Relay = 1 }
 
     pub(crate) enum ConnectionEndpoint in 68 { Dialer = 1, Listener = 2 }
@@ -971,6 +971,17 @@ pub(crate) fn io_fault_kind(error: &std::io::Error) -> crate::outcome::IoFaultKi
         ErrorKind::TimedOut => Code::TimedOut,
         ErrorKind::Interrupted => Code::Interrupted,
         ErrorKind::UnexpectedEof => Code::UnexpectedEof,
+        ErrorKind::AlreadyExists => Code::AlreadyExists,
+        ErrorKind::InvalidInput => Code::InvalidInput,
+        ErrorKind::InvalidData => Code::InvalidData,
+        ErrorKind::AddrInUse => Code::AddrInUse,
+        ErrorKind::AddrNotAvailable => Code::AddrNotAvailable,
+        ErrorKind::WriteZero => Code::WriteZero,
+        ErrorKind::Unsupported => Code::Unsupported,
+        ErrorKind::NotADirectory => Code::NotADirectory,
+        ErrorKind::IsADirectory => Code::IsADirectory,
+        ErrorKind::DirectoryNotEmpty => Code::DirectoryNotEmpty,
+        ErrorKind::ReadOnlyFilesystem => Code::ReadOnlyFilesystem,
         _ => Code::Other,
     }
 }

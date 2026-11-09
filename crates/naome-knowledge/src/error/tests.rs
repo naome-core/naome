@@ -264,3 +264,27 @@ fn program_sql_failure_preserves_extended_code_and_resource_classification() {
     ));
     assert_eq!(Error::from(busy), Error::ExecutionLimit);
 }
+
+#[test]
+fn generic_io_failure_is_numeric_and_preserves_storage_severity() {
+    let error = Error::from(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "private input detail",
+    ));
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["code"], u32::from(OperationCode::Io));
+    assert_eq!(value["kind"], u32::from(crate::IoFaultKind::InvalidData));
+    assert_eq!(value["fatal"], false);
+    assert!(!value.to_string().contains("private input detail"));
+    let stored = serde_json::to_value(error.storage()).unwrap();
+    assert_eq!(stored["fatal"], true);
+    assert_eq!(stored["kind"], u32::from(crate::IoFaultKind::InvalidData));
+
+    let native = serde_json::to_value(Error::from(std::io::Error::from_raw_os_error(2))).unwrap();
+    assert_eq!(native["kind"], u32::from(crate::IoFaultKind::NotFound));
+    assert_eq!(native["os_code"], 2);
+    assert_eq!(
+        Error::from(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+        Error::ExecutionLimit
+    );
+}

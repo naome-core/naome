@@ -296,6 +296,10 @@ pub enum Error {
         reason: crate::SqlFault,
         sqlite_code: Option<NonZeroI32>,
     },
+    Io {
+        kind: crate::IoFaultKind,
+        os_code: Option<NonZeroI32>,
+    },
     StorageIo {
         operation: crate::StorageIoOperation,
         kind: crate::IoFaultKind,
@@ -369,6 +373,7 @@ impl Error {
             Self::CheckpointSql { .. } => OperationCode::CheckpointSql,
             Self::ProgramSql { .. } => OperationCode::ProgramSql,
             Self::StorageIo { .. } => OperationCode::StorageIo,
+            Self::Io { .. } => OperationCode::Io,
             Self::Runtime(failure) => return (*failure).into(),
             Self::RuntimeContext { code, .. } => return (*code).into(),
             Self::Research(failure) => return (*failure).into(),
@@ -418,6 +423,7 @@ impl Error {
             | Self::ResourceValidation { .. }
             | Self::CheckpointSql { .. }
             | Self::StorageIo { .. }
+            | Self::Io { .. }
             | Self::ProgramInput(_)
             | Self::Formula(_)
             | Self::DefinedFormula(_)
@@ -631,6 +637,9 @@ impl fmt::Display for Error {
             Self::QuestionInput(error) => error.fmt(f),
             Self::QuestionRegistration(reason) => write!(f, "question registration: {reason:?}"),
             Self::DefinitionCheck(reason) => write!(f, "definition check: {reason}"),
+            Self::Io { kind, os_code } => {
+                write!(f, "IO failure {} ({os_code:?})", u32::from(*kind))
+            }
             Self::StorageIo {
                 operation,
                 kind,
@@ -1590,7 +1599,10 @@ impl From<std::io::Error> for Error {
         ) {
             Self::ExecutionLimit
         } else {
-            Self::InvalidInput(error.to_string())
+            Self::Io {
+                kind: crate::outcome::io_fault_kind(&error),
+                os_code: error.raw_os_error().and_then(NonZeroI32::new),
+            }
         }
     }
 }
@@ -1746,6 +1758,12 @@ impl serde::Serialize for Error {
         }
         if let Self::QuestionRegistration(reason) = cause {
             value.serialize_entry("reason", &reason.code())?;
+        }
+        if let Self::Io { kind, os_code } = cause {
+            value.serialize_entry("kind", kind)?;
+            if let Some(code) = os_code {
+                value.serialize_entry("os_code", code)?;
+            }
         }
         if let Self::StorageIo {
             operation,
