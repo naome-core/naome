@@ -163,6 +163,11 @@ pub(super) struct Evidence {
     solver: String,
     native: bool,
 }
+pub(super) struct EvidencePage {
+    pub(super) records: Vec<(String, Record)>,
+    _overflow: Option<Arc<crate::resources::MemoryLease>>,
+}
+
 impl Evidence {
     pub(super) fn open(
         directory: &Path,
@@ -279,18 +284,11 @@ impl Evidence {
     ) -> Result<(), crate::Error> {
         let mut after = None;
         loop {
-            let page = self.checkpoint.page(
-                "question",
-                after.as_deref(),
-                16,
-                crate::resources::active_limits().question_cache_bytes,
-            )?;
-            if page.is_empty() {
+            let page = self.page(after.as_deref())?;
+            if page.records.is_empty() {
                 return Ok(());
             }
-            for (key, bytes) in page {
-                let mut record: Record = crate::checkpoint::decode(&bytes)?;
-                record.validate(&key, self.header.observations)?;
+            for (key, mut record) in page.records {
                 if record.solver == self.solver && visit(&record)? && record.verified.is_none() {
                     record.verified = record.prepared.clone();
                     record.verified_job = record.last_job;
@@ -313,21 +311,51 @@ impl Evidence {
         }
         Ok(record)
     }
-    pub(super) fn page(&self, after: Option<&str>) -> Result<Vec<(String, Record)>, crate::Error> {
-        self.checkpoint
-            .page(
-                "question",
-                after,
-                16,
-                crate::resources::active_limits().question_cache_bytes,
-            )?
+    pub(super) fn page(&self, after: Option<&str>) -> Result<EvidencePage, crate::Error> {
+        self.page_with_budget(
+            after,
+            crate::resources::active_limits().question_cache_bytes,
+        )
+    }
+
+    fn page_with_budget(
+        &self,
+        after: Option<&str>,
+        bytes: usize,
+    ) -> Result<EvidencePage, crate::Error> {
+        // A profile change may make a formerly admitted record larger than
+        // the bulk page. Keep the bulk budget and lease one canonical record
+        // through decoding and replay. The key and row overhead are bounded.
+        const SINGLE_RECORD_PAGE: usize = MAX_RECORD + 256;
+        let (rows, overflow) = match self.checkpoint.page("question", after, 16, bytes) {
+            Ok(rows) => (rows, None),
+            Err(crate::Error::InputFault(
+                crate::InputFault::CheckpointRecordReadLimit
+                | crate::InputFault::CheckpointPageMemoryLimit,
+            )) if bytes < SINGLE_RECORD_PAGE => {
+                let lease = crate::resources::MemoryLease::acquire(4 * SINGLE_RECORD_PAGE)?;
+                let rows = self
+                    .checkpoint
+                    .page("question", after, 1, SINGLE_RECORD_PAGE)?;
+                (rows, Some(lease))
+            }
+            Err(error) => return Err(error),
+        };
+        let records = rows
             .into_iter()
             .map(|(key, bytes)| {
+                if bytes.len() > MAX_RECORD {
+                    return Err(crate::InputFault::CheckpointRecordReadLimit.into());
+                }
                 let record: Record = crate::checkpoint::decode(&bytes)?;
                 record.validate(&key, self.header.observations)?;
                 Ok((key, record))
             })
-            .collect()
+            .collect::<Result<_, crate::Error>>()?;
+        Ok(EvidencePage {
+            records,
+            _overflow: overflow,
+        })
     }
     pub(super) fn selected(&mut self, random: u64) -> Result<(), crate::Error> {
         self.select(random, None)
@@ -887,6 +915,54 @@ mod validation_tests {
         assert_eq!(
             serde_json::to_value(error).unwrap()["code"],
             u32::from(crate::ResearchFailure::EvidenceIdentity)
+        );
+    }
+
+    #[test]
+    fn an_admitted_record_larger_than_the_replay_page_survives_reopen() {
+        let directory = crate::checkpoint::tests::Directory::new();
+        let settings = jobs::Settings::default();
+        let mut evidence = Evidence::open(&directory.0, 1, settings).unwrap();
+        let mut expected = Vec::new();
+        for index in 0..2 {
+            let question =
+                ResearchQuestion::from_hex(&crate::mocks::create_question(index)).unwrap();
+            let completion = jobs::Completion {
+                experience: None,
+                model_checkpoint: None,
+                id: index + 1,
+                binding: jobs::Binding::new([1; 32], [2; 32]),
+                spent_ms: 7,
+                reserved_units: 2,
+                state: jobs::State::Complete,
+                result: Ok(jobs::Output::NoCandidate),
+            };
+            evidence
+                .attempted(&question, [0; 32], &completion, Outcome::NoCandidate)
+                .unwrap();
+            let record = evidence.get(&question).unwrap().unwrap();
+            assert!(crate::checkpoint::encode(&record).unwrap().len() > 256);
+            expected.push((record_key(&record.solver, &question), record.last_job));
+        }
+        expected.sort_unstable();
+        drop(evidence);
+
+        let evidence = Evidence::open(&directory.0, 1, settings).unwrap();
+        let mut after = None;
+        for (key, job) in expected {
+            let page = evidence.page_with_budget(after.as_deref(), 256).unwrap();
+            assert!(page._overflow.is_some());
+            assert_eq!(page.records.len(), 1);
+            assert_eq!(page.records[0].0, key);
+            assert_eq!(page.records[0].1.last_job, job);
+            after = Some(key);
+        }
+        assert!(
+            evidence
+                .page_with_budget(after.as_deref(), 256)
+                .unwrap()
+                .records
+                .is_empty()
         );
     }
 }

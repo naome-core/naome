@@ -200,10 +200,10 @@ impl Frontier {
             let mut after = None;
             loop {
                 let page = local.evidence.page(after.as_deref())?;
-                if page.is_empty() {
+                if page.records.is_empty() {
                     break;
                 }
-                for (key, record) in page {
+                for (key, record) in page.records {
                     if let Some(root) = &record.verified
                         && record.solver == local.solver_contract
                     {
