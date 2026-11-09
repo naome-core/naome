@@ -81,7 +81,7 @@ pub(in crate::learning) fn scoped_operands(
     target: &Formula,
     tree: &super::super::search::Tree,
     selected: &super::super::definitions::Entry,
-) -> Result<Option<ScopedOperands>, String> {
+) -> Result<Option<ScopedOperands>, crate::Error> {
     let super::super::search::Tree::Composed { packet, inputs, .. } = tree else {
         return Ok(None);
     };
@@ -340,4 +340,31 @@ pub(crate) fn construct_term(
     }
     let term = search.prove(target, &context)?;
     Ok((term, deduction_work + search.work))
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use naome_foundation::FreeVariable;
+
+    #[test]
+    fn scoped_operands_preserves_malformed_evidence_diagnostic() {
+        let atom = Formula::member(FreeVariable::new(0), FreeVariable::new(1));
+        let target = Formula::negate(Formula::implies(atom.clone(), Formula::negate(atom)));
+        let tree = super::super::super::search::Tree::Composed {
+            packet: Vec::new(),
+            inputs: Vec::new(),
+            work: 1,
+        };
+        let entry = super::super::super::definitions::Entry {
+            certificate: Vec::new(),
+            obligation: None,
+        };
+        assert!(matches!(
+            scoped_operands(&target, &tree, &entry),
+            Err(crate::Error::LearningEvidence(
+                crate::learning::evidence::Failure::Framing
+            ))
+        ));
+    }
 }

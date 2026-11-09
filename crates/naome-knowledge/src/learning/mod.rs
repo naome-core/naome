@@ -1303,7 +1303,8 @@ fn solve_with_report_typed(
                                 target,
                                 proof,
                                 &entries[*selected],
-                            )?
+                            )
+                            .map_err(|error| error.to_string())?
                         {
                             cost.definition_references = operands
                                 .iter()
@@ -1754,103 +1755,93 @@ fn search_compiled_question(
                     continue;
                 }
             };
-            match Ok::<_, String>(verified).and_then(|verified| {
-                Ok((
-                    proof::source(&verified),
-                    crate::hex(verified.native_id.as_bytes()),
-                    verified.payload_bytes,
-                    verified
-                        .certificate
-                        .steps()
+            let (source, proof_id, payload_bytes, references, check_steps) = (
+                proof::source(&verified),
+                crate::hex(verified.native_id.as_bytes()),
+                verified.payload_bytes,
+                verified
+                    .certificate
+                    .steps()
+                    .iter()
+                    .chain(verified.lemmas.iter().flat_map(|c| c.steps().iter()))
+                    .map(|step| step.definition_references().len())
+                    .sum::<usize>(),
+                verified.certificate.steps().len()
+                    + verified
+                        .lemmas
                         .iter()
-                        .chain(verified.lemmas.iter().flat_map(|c| c.steps().iter()))
-                        .map(|step| step.definition_references().len())
-                        .sum::<usize>(),
-                    verified.certificate.steps().len()
-                        + verified
-                            .lemmas
-                            .iter()
-                            .map(|c| c.steps().len())
-                            .sum::<usize>()
-                        + verified.definitions.len(),
-                ))
-            }) {
-                Ok((source, proof_id, payload_bytes, references, check_steps))
-                    if source.len() <= 2 * crate::resources::limits().proof_bytes
-                        && payload_bytes
-                            <= crate::resources::limits()
-                                .proof_bytes
-                                .min(crate::resources::limits().closure_bytes) =>
+                        .map(|c| c.steps().len())
+                        .sum::<usize>()
+                    + verified.definitions.len(),
+            );
+            if source.len() <= 2 * crate::resources::limits().proof_bytes
+                && payload_bytes
+                    <= crate::resources::limits()
+                        .proof_bytes
+                        .min(crate::resources::limits().closure_bytes)
+            {
+                let helpers = definitions::helpers(&tree)?;
+                if helpers.len() >= crate::resources::limits().closure_objects
+                    || helpers
+                        .iter()
+                        .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
+                    || source.len() + helpers.iter().map(String::len).sum::<usize>()
+                        > 2 * crate::resources::limits().closure_bytes
                 {
-                    let helpers = definitions::helpers(&tree)?;
-                    if helpers.len() >= crate::resources::limits().closure_objects
-                        || helpers
-                            .iter()
-                            .any(|s| s.len() > 2 * crate::resources::limits().proof_bytes)
-                        || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                            > 2 * crate::resources::limits().closure_bytes
-                    {
-                        failure = GenerationOutcome::CertificateClosureLimit;
-                        terminal = experience::TerminalEvidence::Unsupported(
-                            experience::Capacity::Certificate,
-                        );
-                        continue;
-                    }
-                    let unique_states = search::compile(&target, &tree)?
-                        .1
-                        .iter()
-                        .map(graph::Graph::key)
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len();
-                    let work = proof::checking_work();
-                    let measured = GenerationCost {
-                        checker_calls: work.calls.saturating_sub(checking.calls),
-                        submitted_checker_steps: work.steps.saturating_sub(checking.steps),
-                        retrieved_lemmas: retrieved,
-                        retrieval_micros,
-                        dependency_check_steps: dependency_steps,
-                        definition_candidates: definitions::selected(&tree)?.len(),
-                        definition_references: references,
-                        definition_check_steps: if references > 0 { check_steps } else { 0 },
-                        certificate_failures,
-                        search_expansions: budget - remaining,
-                        original_steps: cost.original_steps,
-                        useful_steps: cost.useful_steps,
-                        core_work: cost.replay_work,
-                        unique_states,
-                        generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
-                            as u64,
-                        ..GenerationCost::default()
-                    };
-                    return Ok(Generation {
-                        executions,
-                        terminal: experience::TerminalEvidence::CertifiedCandidate {
-                            proof_id: proof_id.clone(),
-                            refuted,
-                        },
-                        solution: Some(Solution {
-                            helpers,
-                            cost: Box::new(measured.clone()),
-                            source,
-                            proof_id,
-                            refuted,
-                            tree,
-                        }),
-                        diagnostic: GenerationOutcome::CertifiedCertificate,
-                        cost: measured,
-                        frontier: None,
-                    });
-                }
-                Ok(_) => {
-                    failure = GenerationOutcome::CertificateLimit;
+                    failure = GenerationOutcome::CertificateClosureLimit;
                     terminal = experience::TerminalEvidence::Unsupported(
                         experience::Capacity::Certificate,
                     );
+                    continue;
                 }
-                Err(_) => {
-                    failure = GenerationOutcome::CertificateFailed;
-                    terminal = experience::TerminalEvidence::TechnicalFailure;
-                }
+                let unique_states = search::compile(&target, &tree)?
+                    .1
+                    .iter()
+                    .map(graph::Graph::key)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+                let work = proof::checking_work();
+                let measured = GenerationCost {
+                    checker_calls: work.calls.saturating_sub(checking.calls),
+                    submitted_checker_steps: work.steps.saturating_sub(checking.steps),
+                    retrieved_lemmas: retrieved,
+                    retrieval_micros,
+                    dependency_check_steps: dependency_steps,
+                    definition_candidates: definitions::selected(&tree)?.len(),
+                    definition_references: references,
+                    definition_check_steps: if references > 0 { check_steps } else { 0 },
+                    certificate_failures,
+                    search_expansions: budget - remaining,
+                    original_steps: cost.original_steps,
+                    useful_steps: cost.useful_steps,
+                    core_work: cost.replay_work,
+                    unique_states,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                };
+                return Ok(Generation {
+                    executions,
+                    terminal: experience::TerminalEvidence::CertifiedCandidate {
+                        proof_id: proof_id.clone(),
+                        refuted,
+                    },
+                    solution: Some(Solution {
+                        helpers,
+                        cost: Box::new(measured.clone()),
+                        source,
+                        proof_id,
+                        refuted,
+                        tree,
+                    }),
+                    diagnostic: GenerationOutcome::CertifiedCertificate,
+                    cost: measured,
+                    frontier: None,
+                });
+            } else {
+                failure = GenerationOutcome::CertificateLimit;
+                terminal =
+                    experience::TerminalEvidence::Unsupported(experience::Capacity::Certificate);
             }
         } else {
             if let Some(reason) = found.failure {

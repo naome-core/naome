@@ -86,7 +86,8 @@ impl Candidate {
                 ..
             } => {
                 let definition = entries.get(*selected).ok_or("definition selection index")?;
-                match super::construction::composition::scoped_operands(target, proof, definition)?
+                match super::construction::composition::scoped_operands(target, proof, definition)
+                    .map_err(|error| error.to_string())?
                 {
                     Some(operands) => {
                         native_scope = true;
