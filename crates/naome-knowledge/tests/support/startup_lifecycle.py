@@ -402,6 +402,8 @@ def handoff_abort_case(trial, node, name, active_ns):
     error = fatal["error"]
     assert error["code"] == control_request["expected_primary_abort"] and error["reaped"] is True, (
         "abort primary error does not prove the named control", fatal)
+    assert isinstance(error.get("cause"), dict) and error["cause"]["code"] == error["code"], (
+        "abort primary cause missing", fatal)
     control_request["causal_primary_abort"] = error
     assert time.clock_gettime_ns(time.CLOCK_MONOTONIC) <= custodian_end, "original custodian endpoint expired before case completion"
     record.update(result=FixtureResult.PASS, abort_elapsed_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC) - started,

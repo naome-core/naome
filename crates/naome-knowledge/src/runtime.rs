@@ -947,7 +947,7 @@ async fn start_with_handoff(
             }
         } else {
             startup::wait(directory, &nonce, deadline, || {
-                child.try_wait().map_err(|e| e.to_string())
+                child.try_wait().map_err(crate::Error::from)
             })
             .await?
         };
@@ -976,31 +976,49 @@ async fn start_with_handoff(
         Err(error) => {
             let cleanup = match &handoff {
                 Some(owner) => {
-                    let until = owner.abort_deadline();
-                    let clock_failed = until.is_err();
-                    let until = until.unwrap_or_else(|_| Instant::now());
-                    let mut report =
-                        abort_owned_handoff(&mut child, until, inherited_session).await?;
-                    if clock_failed {
-                        report.errors.push(crate::outcome::AbortFailure::Clock);
-                        report.complete = false;
+                    async {
+                        let until = owner.abort_deadline();
+                        let clock_failed = until.is_err();
+                        let until = until.unwrap_or_else(|_| Instant::now());
+                        let mut report =
+                            abort_owned_handoff(&mut child, until, inherited_session).await?;
+                        if clock_failed {
+                            report.errors.push(crate::outcome::AbortFailure::Clock);
+                            report.complete = false;
+                        }
+                        owner
+                            .report_abort(child.id(), &nonce, &report)
+                            .map_err(|_| crate::InputFault::StartupAbortReport)?;
+                        if report.complete {
+                            Ok::<(), crate::Error>(())
+                        } else {
+                            Err(crate::InputFault::StartupReapUnconfirmed.into())
+                        }
                     }
-                    owner.report_abort(child.id(), &nonce, &report)?;
-                    if report.complete {
-                        Ok(())
-                    } else {
-                        Err("owned startup abort incomplete".into())
-                    }
+                    .await
                 }
                 None => abort_start(&mut child).await,
             };
-            cleanup.map_err(|_| crate::RuntimeFailure::Cleanup)?;
-            let code = match error {
-                crate::Error::Startup { code, .. } => code,
-                _ => crate::StartupFailure::Launch,
-            };
-            Err(crate::Error::Startup { code, reaped: true })
+            if let Err(cleanup) = cleanup {
+                return Err(crate::Error::StartupCleanup {
+                    primary: Box::new(error),
+                    cleanup: Box::new(cleanup),
+                });
+            }
+            Err(startup_reaped(error))
         }
+    }
+}
+
+fn startup_reaped(cause: crate::Error) -> crate::Error {
+    let code = match &cause {
+        crate::Error::Startup { code, .. } => *code,
+        _ => crate::StartupFailure::Launch,
+    };
+    crate::Error::Startup {
+        code,
+        reaped: true,
+        cause: Some(Box::new(cause)),
     }
 }
 
@@ -1020,7 +1038,7 @@ async fn abort_owned_handoff(
     child: &mut Child,
     deadline: Instant,
     inherited: Option<(nix::unistd::Pid, nix::unistd::Pid)>,
-) -> Result<AbortReport, String> {
+) -> Result<AbortReport, crate::Error> {
     use crate::outcome::{AbortFailure, AbortReaper, AbortSession};
     use nix::sys::{
         signal::{Signal, kill, killpg},
@@ -1030,7 +1048,7 @@ async fn abort_owned_handoff(
     // interpreting a pre-setsid snapshot; a successful SIGSTOP alone is not proof.
     drop(child.stdin.take());
     let pid = nix::unistd::Pid::from_raw(
-        i32::try_from(child.id()).map_err(|_| "invalid original handoff Child PID")?,
+        i32::try_from(child.id()).map_err(|_| crate::InputFault::StartupPidInvalid)?,
     );
     let mut errors = Vec::new();
     if kill(pid, Signal::SIGSTOP).is_err() {
@@ -1154,19 +1172,19 @@ async fn abort_owned_handoff(
     })
 }
 
-async fn abort_start(child: &mut Child) -> Result<(), String> {
+async fn abort_start(child: &mut Child) -> Result<(), crate::Error> {
     // EOF reaches the independent reader even while Graph::open is synchronous.
     drop(child.stdin.take());
     let deadline = Instant::now() + crate::resources::limits().lifecycle_abort_timeout;
     let fallback = Instant::now() + crate::resources::limits().supervisor_cleanup_timeout;
     let mut signalled = false;
     loop {
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+        if child.try_wait()?.is_some() {
             return Ok(());
         }
         if !signalled && Instant::now() >= fallback {
             let pid = nix::unistd::Pid::from_raw(
-                i32::try_from(child.id()).map_err(|_| "invalid owned startup PID")?,
+                i32::try_from(child.id()).map_err(|_| crate::InputFault::StartupPidInvalid)?,
             );
             // The still-unreaped direct Child is the launch authority. Group
             // fallback additionally requires its actual current self-session.
@@ -1174,16 +1192,14 @@ async fn abort_start(child: &mut Child) -> Result<(), String> {
                 && nix::unistd::getsid(Some(pid)).ok() == Some(pid)
             {
                 nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL)
-                    .map_err(|e| format!("owned startup group cleanup: {e}"))?;
+                    .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
             } else {
-                child
-                    .kill()
-                    .map_err(|e| format!("owned startup child cleanup: {e}"))?;
+                child.kill()?;
             }
             signalled = true;
         }
         if Instant::now() >= deadline {
-            return Err("owned startup exit and reap remain unconfirmed".into());
+            return Err(crate::InputFault::StartupReapUnconfirmed.into());
         }
         tokio::time::sleep(crate::resources::limits().cleanup_poll_interval).await;
     }

@@ -122,8 +122,44 @@ async fn startup_expiry_and_wrong_instance_never_reset_the_original_deadline() {
         .await
         .unwrap()
         .unwrap_err()
-        .contains("startup deadline")
+            == crate::Error::from(crate::InputFault::StartupDeadline)
     );
     assert!(tokio::time::Instant::now() >= deadline);
     assert!(tokio::time::Instant::now() - started < Duration::from_millis(100));
+}
+
+#[test]
+fn startup_cleanup_retains_both_causes_as_machine_outcomes() {
+    let error = crate::Error::StartupCleanup {
+        primary: Box::new(crate::Error::from(crate::InputFault::StartupDeadline)),
+        cleanup: Box::new(crate::Error::from(
+            crate::InputFault::StartupReapUnconfirmed,
+        )),
+    };
+    assert!(error.fatal());
+    let value = serde_json::to_value(error).unwrap();
+    assert_eq!(value["code"], u32::from(crate::RuntimeFailure::Cleanup));
+    assert_eq!(
+        value["primary"]["code"],
+        u32::from(crate::InputFault::StartupDeadline)
+    );
+    assert_eq!(
+        value["cleanup"]["code"],
+        u32::from(crate::InputFault::StartupReapUnconfirmed)
+    );
+}
+
+#[test]
+fn reaped_startup_preserves_original_abort_code() {
+    for code in [
+        crate::StartupFailure::LifelineClosed,
+        crate::StartupFailure::InstanceMismatch,
+        crate::StartupFailure::Cancelled,
+    ] {
+        let error = super::super::startup_reaped(code.into());
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], u32::from(code));
+        assert_eq!(value["cause"]["code"], u32::from(code));
+        assert_eq!(value["reaped"], true);
+    }
 }

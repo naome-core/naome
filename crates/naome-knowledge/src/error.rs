@@ -405,6 +405,15 @@ pub enum Error {
     Startup {
         code: crate::StartupFailure,
         reaped: bool,
+        cause: Option<Box<Error>>,
+    },
+    StartupCleanup {
+        primary: Box<Error>,
+        cleanup: Box<Error>,
+    },
+    StartupChildExit {
+        exit_code: Option<i32>,
+        signal: Option<i32>,
     },
 }
 impl Error {
@@ -489,6 +498,8 @@ impl Error {
             }
             Self::StorageCombined { .. } => OperationCode::StorageCombined,
             Self::Startup { code, .. } => return (*code).into(),
+            Self::StartupCleanup { .. } => return crate::RuntimeFailure::Cleanup.into(),
+            Self::StartupChildExit { .. } => OperationCode::StartupChildExit,
         };
         code.into()
     }
@@ -571,6 +582,7 @@ impl Error {
                     | Self::ResearchCombined { .. }
                     | Self::StorageCombined { .. }
                     | Self::Startup { .. }
+                    | Self::StartupCleanup { .. }
             )
             || matches!(
                 self,
@@ -863,6 +875,11 @@ impl fmt::Display for Error {
                 InputFault::CheckedPruneReclaimIncomplete => "startup checked storage reclaim is incomplete",
                 InputFault::CheckedIndexFileType => "checked index is not a regular file",
                 InputFault::CheckedIndexFileLinks => "checked index has linked aliases",
+                InputFault::StartupAbortReport => "startup abort report failed",
+                InputFault::StartupDeadline => "node startup deadline",
+                InputFault::StartupAcknowledgementDeadline => "node startup acknowledgement deadline",
+                InputFault::StartupPidInvalid => "invalid owned startup process identity",
+                InputFault::StartupReapUnconfirmed => "owned startup exit and reap remain unconfirmed",
                 InputFault::ControlNonceMissing => "internal launch nonce missing",
                 InputFault::ControlNonceInvalid => "invalid internal launch nonce",
                 InputFault::ControlSocketPath => "local control path is not a socket",
@@ -2512,6 +2529,8 @@ impl fmt::Display for Error {
                 write!(f, "cleanup failed: {cleanup}; primary failure: {primary}")
             }
             Self::Startup { code, .. } => write!(f, "startup failure {}", u32::from(*code)),
+            Self::StartupCleanup { primary, cleanup } => write!(f, "startup failed: {primary}; cleanup failed: {cleanup}"),
+            Self::StartupChildExit { exit_code, signal } => write!(f, "startup child exited ({exit_code:?}, {signal:?})"),
             Self::UncertainDurability(failure) => {
                 write!(f, "storage halted: {}", u32::from(failure.code))
             }
@@ -2526,6 +2545,10 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Stored(error) | Self::ObservationUnavailable(error) => Some(error),
+            Self::Startup {
+                cause: Some(error), ..
+            } => Some(error),
+            Self::StartupCleanup { primary, .. } => Some(primary),
             Self::RuntimeContext { cause, .. } => Some(cause),
             Self::ResearchContext { cause, .. } | Self::StorageContext { cause, .. } => Some(cause),
             Self::ResearchSlot { cause, .. } => Some(cause),
@@ -2548,6 +2571,7 @@ impl From<crate::StartupFailure> for Error {
         Self::Startup {
             code,
             reaped: false,
+            cause: None,
         }
     }
 }
@@ -2728,6 +2752,24 @@ impl serde::Serialize for Error {
         value.serialize_entry("code", &self.code())?;
         value.serialize_entry("retryable", &self.retryable())?;
         value.serialize_entry("fatal", &self.fatal())?;
+        if let Self::Startup {
+            cause: Some(cause), ..
+        } = self
+        {
+            value.serialize_entry("cause", cause)?;
+        }
+        if let Self::StartupCleanup { primary, cleanup } = self {
+            value.serialize_entry("primary", primary)?;
+            value.serialize_entry("cleanup", cleanup)?;
+        }
+        if let Self::StartupChildExit { exit_code, signal } = self {
+            if let Some(code) = exit_code {
+                value.serialize_entry("exit_code", code)?;
+            }
+            if let Some(signal) = signal {
+                value.serialize_entry("signal", signal)?;
+            }
+        }
         if let Self::ObservationUnavailable(cause) = self {
             value.serialize_entry("cause", cause)?;
         }

@@ -287,29 +287,30 @@ pub(super) async fn wait(
     directory: &Path,
     token: &str,
     deadline: tokio::time::Instant,
-    mut exited: impl FnMut() -> Result<Option<ExitStatus>, String>,
-) -> Result<super::Status, String> {
+    mut exited: impl FnMut() -> Result<Option<ExitStatus>, crate::Error>,
+) -> Result<super::Status, crate::Error> {
     loop {
         if let Some(exit) = exited()? {
-            return Err(format!(
-                "node failed to start ({exit}); inspect {}",
-                directory.join("node.log").display()
-            ));
+            use std::os::unix::process::ExitStatusExt;
+            return Err(crate::Error::StartupChildExit {
+                exit_code: exit.code(),
+                signal: exit.signal(),
+            });
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err("node startup deadline".into());
+            return Err(crate::InputFault::StartupDeadline.into());
         }
         let response = tokio::time::timeout_at(
             deadline,
             super::request(directory, super::Operation::Status, Some(token)),
         )
         .await
-        .map_err(|_| "node startup deadline")??;
+        .map_err(|_| crate::InputFault::StartupDeadline)??;
         if let Some(status) = response
             && status.running
         {
             if tokio::time::Instant::now() >= deadline {
-                return Err("node startup deadline before acknowledgement".into());
+                return Err(crate::InputFault::StartupAcknowledgementDeadline.into());
             }
             return Ok(status);
         }
