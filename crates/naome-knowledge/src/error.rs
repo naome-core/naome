@@ -257,6 +257,10 @@ pub enum Error {
     ExecutionLimit,
     InputLimit(InputLimit),
     InputFault(InputFault),
+    ArtifactState {
+        code: InputFault,
+        identity: Option<[u8; 32]>,
+    },
     QuestionLimit(naome_proof::QuestionLimit),
     StaleAuthority,
     Deadline,
@@ -433,7 +437,9 @@ impl Error {
             Self::DiskOverload { .. } => OperationCode::DiskOverload,
             Self::ExecutionLimit => OperationCode::ExecutionLimit,
             Self::InputLimit(limit) => return (*limit).into(),
-            Self::InputFault(fault) => return (*fault).into(),
+            Self::InputFault(fault) | Self::ArtifactState { code: fault, .. } => {
+                return (*fault).into();
+            }
             Self::QuestionLimit(_) => OperationCode::QuestionLimit,
             Self::StaleAuthority => OperationCode::StaleAuthority,
             Self::Deadline => OperationCode::Deadline,
@@ -533,6 +539,7 @@ impl Error {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
             error @ (Self::InputFault(_)
+            | Self::ArtifactState { .. }
             | Self::MissingRequiredTheorem(_)
             | Self::QuestionLimit(_)
             | Self::QuestionInput(_)
@@ -641,6 +648,7 @@ impl fmt::Display for Error {
             ),
             Self::ExecutionLimit => f.write_str("operation execution resources exhausted"),
             Self::InputLimit(limit) => f.write_str(limit.label()),
+            Self::ArtifactState { code, .. } => Self::InputFault(*code).fmt(f),
             Self::InputFault(fault) => f.write_str(match fault {
                 InputFault::DescriptionAddressMismatch => "description proof address differs",
                 InputFault::ArtifactCompatibilityMismatch => "compatibility mismatch",
@@ -917,6 +925,17 @@ impl fmt::Display for Error {
                 InputFault::StartupHandoffExisting => "startup handoff requires a new daemon",
                 InputFault::StartupLifelineMissing => "startup parent lifeline missing",
                 InputFault::ResourceSnapshotEncoding => "effective resource snapshot encoding failed",
+                InputFault::StateDuplicateProof => "checked proof already registered",
+                InputFault::StateDuplicateDerivation => "checked derivation already registered",
+                InputFault::StateProofCollision => "proof identity collision",
+                InputFault::StateDerivationCollision => "derivation identity collision",
+                InputFault::StateStatementCollision => "statement identity collision",
+                InputFault::StateDuplicateDefinition => "checked definition already registered",
+                InputFault::StateDefinitionCollision => "definition identity collision",
+                InputFault::StateProofDependencyMissing => "proof dependency missing",
+                InputFault::StateDefinitionDependencyMissing => "definition dependency missing",
+                InputFault::StateDefinitionObligationMissing => "definition obligation missing",
+                InputFault::StateOther => "other checked artifact state failure",
                 InputFault::ObservedTargetMismatch => "contextual proof observation target differs",
                 InputFault::QuestionSelectionStale => "stale or declined question selection",
                 InputFault::QuestionFreshCheckFailed => "question no longer passes fresh formal checks",
@@ -3165,6 +3184,13 @@ impl serde::Serialize for Error {
             value.serialize_entry("expected_digest", &details.expected)?;
             value.serialize_entry("actual_digest", &details.actual)?;
         }
+        if let Self::ArtifactState {
+            identity: Some(identity),
+            ..
+        } = cause
+        {
+            value.serialize_entry("identity", identity)?;
+        }
         if let Self::ResearchMismatch {
             expected, actual, ..
         } = cause
@@ -3507,10 +3533,50 @@ impl From<naome_proof::QuestionError> for Error {
 }
 impl From<naome_checker::ArtifactStateError> for Error {
     fn from(error: naome_checker::ArtifactStateError) -> Self {
-        match error {
-            naome_checker::ArtifactStateError::Context(error) => error.into(),
-            other => Self::InvalidInput(other.to_string()),
-        }
+        use naome_checker::ArtifactStateError as S;
+        let (code, identity) = match error {
+            S::Context(error) => return error.into(),
+            S::DuplicateProof { proof_id } => {
+                (InputFault::StateDuplicateProof, Some(*proof_id.as_bytes()))
+            }
+            S::DuplicateDerivation { derivation_id } => (
+                InputFault::StateDuplicateDerivation,
+                Some(*derivation_id.as_bytes()),
+            ),
+            S::ProofIdentityCollision { proof_id } => {
+                (InputFault::StateProofCollision, Some(*proof_id.as_bytes()))
+            }
+            S::DerivationIdentityCollision { derivation_id } => (
+                InputFault::StateDerivationCollision,
+                Some(*derivation_id.as_bytes()),
+            ),
+            S::StatementIdentityCollision { statement_id } => (
+                InputFault::StateStatementCollision,
+                Some(*statement_id.as_bytes()),
+            ),
+            S::DuplicateDefinition { definition_id } => (
+                InputFault::StateDuplicateDefinition,
+                Some(*definition_id.as_bytes()),
+            ),
+            S::DefinitionIdentityCollision { definition_id } => (
+                InputFault::StateDefinitionCollision,
+                Some(*definition_id.as_bytes()),
+            ),
+            S::MissingProofDependency { proof_id } => (
+                InputFault::StateProofDependencyMissing,
+                Some(*proof_id.as_bytes()),
+            ),
+            S::MissingDefinitionDependency { definition_id } => (
+                InputFault::StateDefinitionDependencyMissing,
+                Some(*definition_id.as_bytes()),
+            ),
+            S::MissingDefinitionObligation { statement_id } => (
+                InputFault::StateDefinitionObligationMissing,
+                Some(*statement_id.as_bytes()),
+            ),
+            _ => (InputFault::StateOther, None),
+        };
+        Self::ArtifactState { code, identity }
     }
 }
 

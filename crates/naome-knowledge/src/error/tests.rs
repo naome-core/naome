@@ -288,3 +288,25 @@ fn generic_io_failure_is_numeric_and_preserves_storage_severity() {
         Error::ExecutionLimit
     );
 }
+
+#[test]
+fn checked_artifact_state_failure_preserves_kind_and_identity() {
+    let identity = [7; 32];
+    let error = crate::Error::from(naome_checker::ArtifactStateError::MissingProofDependency {
+        proof_id: naome_proof::ProofId::from_bytes(identity),
+    });
+    assert_eq!(
+        error.code(),
+        u32::from(crate::InputFault::StateProofDependencyMissing)
+    );
+    let value = serde_json::to_value(&error).unwrap();
+    assert_eq!(value["identity"], serde_json::json!(identity));
+    let stored = error.storage();
+    assert!(stored.fatal());
+    let value = serde_json::to_value(stored).unwrap();
+    assert_eq!(
+        value["cause_code"],
+        u32::from(crate::InputFault::StateProofDependencyMissing)
+    );
+    assert_eq!(value["identity"], serde_json::json!(identity));
+}
