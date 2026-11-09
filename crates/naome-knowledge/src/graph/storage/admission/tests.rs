@@ -396,6 +396,7 @@ fn begin_insert_commit_epoch_and_poison_failures_close_both_indexes_without_cano
             Fault::TargetBegin => Some(crate::InputFault::CheckedMirrorBegin),
             Fault::SourceCommit => Some(crate::InputFault::CheckedSourceCommit),
             Fault::TargetCommit => Some(crate::InputFault::CheckedMirrorCommit),
+            Fault::Epoch => Some(crate::InputFault::CheckedSourceGate),
             _ => None,
         };
         if let Some(expected) = expected {

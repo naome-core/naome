@@ -112,17 +112,17 @@ impl WriteRoute {
         &mut self,
         source: &CheckedStorage,
         target: Arc<CheckedStorage>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, crate::Error> {
         if self.mirror.is_some() || std::ptr::eq(source, target.as_ref()) {
-            return Err("checked copy mirror already attached or cyclic".into());
+            return Err(crate::InputFault::CheckedCopyMirrorAttached.into());
         }
         if target.write_gate()?.mirror.is_some() {
-            return Err("checked copy target already mirrors another generation".into());
+            return Err(crate::InputFault::CheckedCopyTargetMirrors.into());
         }
         let epoch = self
             .epoch
             .checked_add(1)
-            .ok_or("checked copy epoch overflow")?;
+            .ok_or(crate::InputFault::CheckedCopyEpochOverflow)?;
         self.epoch = epoch;
         self.mirror = Some(target);
         Ok(epoch)
@@ -140,9 +140,9 @@ impl WriteRoute {
         &mut self,
         epoch: u64,
         target: &Arc<CheckedStorage>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if !self.matches(epoch, target) {
-            return Err("checked copy source epoch or target changed".into());
+            return Err(crate::InputFault::CheckedCopyRouteChanged.into());
         }
         self.mirror = None;
         Ok(())
@@ -199,23 +199,23 @@ impl CheckedStorage {
         WRITE_TEST_DELAY.with(|slot| *slot.borrow_mut() = Some((started, release)));
     }
 
-    pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, String> {
+    pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, crate::Error> {
         let mut route = self
             .write_gate
             .lock()
-            .map_err(|_| "checked write gate poisoned")?;
+            .map_err(|_| crate::InputFault::CheckedWriteGatePoisoned)?;
         let owner = std::thread::current().id();
         while route.phase_owner.is_some_and(|active| active != owner) {
             self.require_live()?;
             route = self
                 .write_ready
                 .wait(route)
-                .map_err(|_| "checked write gate poisoned")?;
+                .map_err(|_| crate::InputFault::CheckedWriteGatePoisoned)?;
         }
         Ok(route)
     }
 
-    pub(super) fn copy_epoch(&self) -> Result<u64, String> {
+    pub(super) fn copy_epoch(&self) -> Result<u64, crate::Error> {
         Ok(self.write_gate()?.epoch())
     }
 

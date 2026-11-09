@@ -449,7 +449,12 @@ fn copy_read_mirror_and_real_sql_commit_failures_halt_without_handoff() {
         }
         let error = graph.test_compaction_step(1).unwrap_err();
         if failure == 2 {
-            assert!(error.contains("FOREIGN KEY"), "{error}");
+            assert!(matches!(
+                error,
+                crate::Error::CheckedIndexSql { reason: crate::SqlFault::Engine, sqlite_code: Some(code) }
+                    if code.get() == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
+            ));
+            assert_eq!(graph.storage_error(), Some(error));
         }
         assert!(graph.compaction.is_none());
         assert!(graph.storage_error().is_some());
