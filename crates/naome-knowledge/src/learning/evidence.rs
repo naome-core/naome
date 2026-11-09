@@ -257,31 +257,34 @@ pub fn pack(proof: &proof::Verified) -> Result<Vec<u8>, Failure> {
     let _ = decode(&packed)?;
     Ok(packed)
 }
-pub fn checked(bytes: &[u8]) -> Result<proof::Verified, String> {
+pub fn checked(bytes: &[u8]) -> Result<proof::Verified, crate::Error> {
     let evidence = decode(bytes)?;
-    let certificate =
-        ProofCertificate::from_canonical_bytes(&evidence.certificate).map_err(|e| e.to_string())?;
+    let certificate = ProofCertificate::from_canonical_bytes(&evidence.certificate)
+        .map_err(|e| crate::object::certificate_error(&evidence.certificate, e))?;
     let lemmas = evidence
         .lemmas
         .iter()
-        .map(|b| ProofCertificate::from_canonical_bytes(b).map_err(|e| e.to_string()))
+        .map(|b| {
+            ProofCertificate::from_canonical_bytes(b)
+                .map_err(|e| crate::object::certificate_error(b, e))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let work = certificate.steps().len()
         + lemmas.iter().map(|c| c.steps().len()).sum::<usize>()
         + evidence.definitions.len();
     if work > crate::resources::limits().closure_steps {
-        return Err("construction checker work capacity".into());
+        return Err(crate::ResearchFailure::EvidenceCheckerCapacity.into());
     }
     let checked = proof::verify_native(certificate, evidence.definitions, lemmas, None)?;
     if pack(&checked)? != bytes {
-        return Err("construction evidence canonical binding".into());
+        return Err(crate::ResearchFailure::EvidenceCanonicalBinding.into());
     }
     Ok(checked)
 }
-pub fn compile(target: &Formula, bytes: &[u8]) -> Result<Term, String> {
+pub fn compile(target: &Formula, bytes: &[u8]) -> Result<Term, crate::Error> {
     let checked = checked(bytes)?;
     if checked.target != *target {
-        return Err("construction evidence target differs".into());
+        return Err(crate::ResearchFailure::EvidenceTargetBinding.into());
     }
     Ok(Term::Native {
         certificate: checked.certificate,
@@ -290,23 +293,26 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<Term, String> {
         target: checked.target,
     })
 }
-pub fn selected(bytes: &[u8]) -> Result<Vec<definitions::Entry>, String> {
+pub fn selected(bytes: &[u8]) -> Result<Vec<definitions::Entry>, crate::Error> {
     Ok(decode(bytes)?.definitions)
 }
-pub fn context(bytes: &[u8]) -> Result<naome_checker::ArtifactState, String> {
+pub fn context(bytes: &[u8]) -> Result<naome_checker::ArtifactState, crate::Error> {
     let evidence = decode(bytes)?;
     let lemmas = evidence
         .lemmas
         .iter()
-        .map(|b| ProofCertificate::from_canonical_bytes(b).map_err(|e| e.to_string()))
+        .map(|b| {
+            ProofCertificate::from_canonical_bytes(b)
+                .map_err(|e| crate::object::certificate_error(b, e))
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    proof::lemma_context(&evidence.definitions, &lemmas)
+    proof::lemma_context(&evidence.definitions, &lemmas).map_err(Into::into)
 }
-pub fn steps(bytes: &[u8]) -> Result<usize, String> {
+pub fn steps(bytes: &[u8]) -> Result<usize, crate::Error> {
     let evidence = decode(bytes)?;
     Ok(
         ProofCertificate::from_canonical_bytes(&evidence.certificate)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| crate::object::certificate_error(&evidence.certificate, e))?
             .steps()
             .len()
             + evidence
@@ -315,14 +321,14 @@ pub fn steps(bytes: &[u8]) -> Result<usize, String> {
                 .map(|b| {
                     ProofCertificate::from_canonical_bytes(b)
                         .map(|c| c.steps().len())
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| crate::object::certificate_error(b, e))
                 })
                 .collect::<Result<Vec<_>, _>>()?
                 .iter()
                 .sum::<usize>(),
     )
 }
-pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, String> {
+pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, crate::Error> {
     let verified = checked(bytes)?;
     let mut sources = Vec::new();
     super::definitions::append_artifacts(&verified.definitions, &mut sources)?;
@@ -337,6 +343,15 @@ pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn malformed_evidence_keeps_its_framing_code() {
+        let error = checked(&[]).err().unwrap();
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["code"],
+            u32::from(crate::outcome::EvidenceCode::Framing)
+        );
+    }
+
     #[test]
     fn packing_a_checked_non_normal_source_produces_the_unique_replay_packet() {
         let certificate = ProofCertificate::new(vec![

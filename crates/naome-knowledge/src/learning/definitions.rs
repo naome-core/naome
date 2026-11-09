@@ -445,7 +445,7 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, crate::Error> 
     | super::search::Tree::Composed { packet: bytes, .. }
     | super::search::Tree::Certificate(bytes) = tree
     {
-        return Ok(super::evidence::helpers(bytes)?);
+        return super::evidence::helpers(bytes);
     }
     let super::search::Tree::Definitions {
         entries,
@@ -467,7 +467,7 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, crate::Error> 
     Ok(sources)
 }
 
-pub fn selected(tree: &super::search::Tree) -> Result<Vec<Entry>, String> {
+pub fn selected(tree: &super::search::Tree) -> Result<Vec<Entry>, crate::Error> {
     match tree {
         super::search::Tree::Knowledge { .. } => Ok(super::knowledge::verified(tree)?.definitions),
         super::search::Tree::Constructed { packet, .. }
@@ -479,7 +479,9 @@ pub fn selected(tree: &super::search::Tree) -> Result<Vec<Entry>, String> {
             ..
         } => {
             let mut selected_entries = selected(proof)?;
-            let entry = entries.get(*index).ok_or("definition selection index")?;
+            let entry = entries
+                .get(*index)
+                .ok_or(crate::ResearchFailure::DefinitionSelectionIndex)?;
             if !selected_entries.contains(entry) {
                 selected_entries.push(entry.clone());
             }

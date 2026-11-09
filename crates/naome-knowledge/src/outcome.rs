@@ -870,6 +870,7 @@ codes! {
         ScopeTraceTarget = 241, ScopeTraceCapacity = 242, ScopeReplayOperand = 243, ScopeConclusion = 244, ScopeCitationMissing = 245, ScopeCitationFormulaMissing = 246, ScopeProgramTarget = 247, ScopeProgramOperands = 248, ScopeOperandOrder = 249, ScopeResultOrder = 250,
         PeerReplayCapacity = 251, PeerClosureCapacity = 252, PeerConclusion = 253, PeerWorkCapacity = 254, PeerReconstructionIdentity = 255, PeerStepCapacity = 256, PeerImplicationIndex = 257, PeerImplicationShape = 258, PeerPremiseIndex = 259, PeerPremiseMismatch = 260, PeerGraphOverflow = 261, PeerGraphCapacity = 262, PeerGeneralizationIndex = 263, PeerCitationMissing = 264, PeerCitationFormulaMissing = 265,
         PeerProgramArtifact = 266, PeerProgramInference = 267, PeerProgramBinding = 268, PeerDagBinding = 269, PeerDagInference = 270, PeerArtifactIdentity = 271,
+        EvidenceCheckerCapacity = 272, EvidenceCanonicalBinding = 273, EvidenceTargetBinding = 274,
     }
 
 }

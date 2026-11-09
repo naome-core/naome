@@ -858,6 +858,15 @@ impl fmt::Display for Error {
                     "peer DAG has no supported ambiguous inference"
                 }
                 crate::ResearchFailure::PeerArtifactIdentity => "peer artifact identity differs",
+                crate::ResearchFailure::EvidenceCheckerCapacity => {
+                    "construction checker work capacity"
+                }
+                crate::ResearchFailure::EvidenceCanonicalBinding => {
+                    "construction evidence canonical binding"
+                }
+                crate::ResearchFailure::EvidenceTargetBinding => {
+                    "construction evidence target differs"
+                }
                 crate::ResearchFailure::SearchFreshVariableExhausted => {
                     "fresh variable space exhausted"
                 }

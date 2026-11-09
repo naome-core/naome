@@ -205,7 +205,7 @@ pub fn pack_closure(
     }
     Ok(packed)
 }
-pub fn definitions(bytes: &[u8]) -> Result<Vec<super::definitions::Entry>, String> {
+pub fn definitions(bytes: &[u8]) -> Result<Vec<super::definitions::Entry>, crate::Error> {
     super::evidence::selected(bytes)
 }
 pub fn step_count(bytes: &[u8]) -> usize {
