@@ -114,7 +114,7 @@ pub struct Settings {
 impl RoleSettings {
     /// Historical allowances are validated against the current value format,
     /// never against defaults for newly admitted obligations.
-    fn validate_history(self) -> Result<(), String> {
+    fn validate_history(self) -> Result<(), crate::Error> {
         if self.limits.horizon_ms == 0
             || self.limits.work_units == 0
             || self.mock.proof_padding_bytes > naome_proof::CERTIFICATE_MAX_BYTES
@@ -131,7 +131,7 @@ impl RoleSettings {
                     .is_none()
             })
         {
-            return Err("research historical role value exceeds its format".into());
+            return Err(crate::ResearchFailure::RoleHistoryFormat.into());
         }
         Ok(())
     }
@@ -369,7 +369,7 @@ pub(crate) enum Output {
 }
 
 impl Output {
-    fn validate(&self, input: &Input) -> Result<(), String> {
+    fn validate(&self, input: &Input) -> Result<(), crate::Error> {
         self.validate_with_limits(
             input,
             crate::resources::limits().proof_bytes,
@@ -377,7 +377,7 @@ impl Output {
             crate::resources::limits().closure_bytes,
         )
     }
-    fn validate_retained(&self, input: &Input) -> Result<(), String> {
+    fn validate_retained(&self, input: &Input) -> Result<(), crate::Error> {
         self.validate_with_limits(
             input,
             naome_proof::CERTIFICATE_MAX_BYTES,
@@ -391,7 +391,7 @@ impl Output {
         artifact_bytes: usize,
         objects: usize,
         bytes: usize,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         match (self, input) {
             (
                 Self::Native {
@@ -406,20 +406,19 @@ impl Output {
                     && s.helpers
                         .iter()
                         .all(|source| source.len() <= 2 * artifact_bytes)
-            }) && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
+            }) && crate::checkpoint::encode(self)?.len() <= bytes =>
             {
                 terminal.validate(solution.as_ref())?;
                 if let Some(report) = frontier {
                     let Input::Solve { question } = input else {
-                        return Err("open branches outside solve".into());
+                        return Err(crate::ResearchFailure::OutputFrontierRole.into());
                     };
                     if solution.is_some() {
-                        return Err("resolved output contains open branches".into());
+                        return Err(crate::ResearchFailure::OutputFrontierResolved.into());
                     }
-                    report.validate(
-                        &naome_checker::question::ResearchQuestion::from_hex(question)
-                            .map_err(|e| e.to_string())?,
-                    )?;
+                    report.validate(&naome_checker::question::ResearchQuestion::from_hex(
+                        question,
+                    )?)?;
                 }
                 Ok(())
             }
@@ -441,7 +440,7 @@ impl Output {
             (Self::Program { units }, Input::Solve { .. }) if *units > 0 => Ok(()),
             (Self::NoCandidate, Input::Solve { .. })
             | (Self::Selected(_), Input::Select { .. }) => Ok(()),
-            _ => Err("provider result type or capacity differs".into()),
+            _ => Err(crate::ResearchFailure::OutputTypeCapacity.into()),
         }
     }
 }

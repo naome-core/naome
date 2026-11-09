@@ -183,10 +183,18 @@ fn selected_finding_question_binds_the_returned_question() {
         question: supplied.clone(),
     };
     assert!(Output::Question(supplied).validate(&input).is_ok());
-    assert!(
+    assert_eq!(
         Output::Question("040101000000000100000000".into())
             .validate(&input)
-            .is_err()
+            .unwrap_err(),
+        crate::ResearchFailure::OutputTypeCapacity.into()
+    );
+    let error = Output::Question("040101000000000100000000".into())
+        .validate(&input)
+        .unwrap_err();
+    assert_eq!(
+        u32::from(crate::outcome::JobFailureCode::from_owner(&error)),
+        u32::from(crate::ResearchFailure::OutputTypeCapacity)
     );
 }
 
@@ -339,5 +347,15 @@ fn oversized_peer_certificate_keeps_its_capacity_code() {
     assert_eq!(
         serde_json::to_value(error).unwrap()["code"],
         u32::from(crate::InputLimit::PeerCertificateCapacity)
+    );
+}
+
+#[test]
+fn historical_role_format_has_a_numeric_cause() {
+    let mut role = RoleSettings::default();
+    role.limits.work_units = 0;
+    assert_eq!(
+        role.validate_history().unwrap_err(),
+        crate::ResearchFailure::RoleHistoryFormat.into()
     );
 }

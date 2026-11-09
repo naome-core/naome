@@ -602,7 +602,7 @@ async fn run_owned(
                 {
                     output
                         .validate(&record.input)
-                        .map_err(|_| WorkerFailure::ResultInvalid)?;
+                        .map_err(|error| JobFailureCode::from_owner(&error))?;
                     if let Output::Program { units } = &output
                         && *units != checkpoint
                     {

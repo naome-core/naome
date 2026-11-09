@@ -1500,6 +1500,16 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerProgramConclusionCapacity => {
                     "peer replay formula capacity"
                 }
+                crate::ResearchFailure::RoleHistoryFormat => {
+                    "research historical role value exceeds its format"
+                }
+                crate::ResearchFailure::OutputFrontierRole => "open branches outside solve",
+                crate::ResearchFailure::OutputFrontierResolved => {
+                    "resolved output contains open branches"
+                }
+                crate::ResearchFailure::OutputTypeCapacity => {
+                    "provider result type or capacity differs"
+                }
                 crate::ResearchFailure::JournalConfiguration => {
                     "research journal compatibility, configuration or capacity differs"
                 }
