@@ -115,6 +115,7 @@ fn definition_application_round_trips_inside_a_proof_formula() {
     let certificate = ProofCertificate::new(vec![step.clone()]).unwrap();
 
     let encoded = certificate.to_canonical_bytes();
+    assert_eq!(step.encoded_length().unwrap(), encoded.len() - 4);
 
     // step count | simplification tag | antecedent length | defined-relation tag
     assert_eq!(
