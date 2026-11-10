@@ -48,7 +48,8 @@ pub(super) fn normalize_with_variables(
                     .take()
                     .expect("an exiting proof step has not been consumed");
                 let step = normalize_step(step, &normalized_indices, &mut variables);
-                let mut key = Vec::new();
+                // Modus ponens and generalization encode a tag and two u32 fields.
+                let mut key = Vec::with_capacity(9);
                 codec::encode_step(&step, &mut key)
                     .expect("a certificate step remains canonically encodable");
 
