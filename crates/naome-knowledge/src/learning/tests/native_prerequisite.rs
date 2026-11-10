@@ -1101,7 +1101,7 @@ fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source
         .expect("a checked universal yields a novel witness question without a supplied goal");
 
     drop(finder);
-    let mut finder = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let finder = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     let (required, inputs) = finder.solving_inputs(&graph, &question, &[]).unwrap();
     assert!(required.is_empty());
     assert!(inputs.has_offer());
