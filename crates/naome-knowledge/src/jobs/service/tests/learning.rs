@@ -2349,6 +2349,9 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
             .search_expansions,
         5
     );
+    let before_reuse = frontier.learning_snapshot()["research_policy"]["observations"]
+        .as_u64()
+        .unwrap();
     let (root, _) = publish(&mut frontier, &mut graph, &goal, &retry);
     assert_eq!(
         graph.learning_proof_dependencies(root).unwrap().as_ref(),
@@ -2358,6 +2361,11 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     assert_eq!(
         frontier.learning_snapshot()["research_effects"]["reused"],
         1
+    );
+    assert_eq!(
+        frontier.learning_snapshot()["research_policy"]["observations"],
+        before_reuse + 2,
+        "the checked consumer and the producer's delayed reuse each contribute one observation"
     );
     drop(frontier);
     drop(graph);

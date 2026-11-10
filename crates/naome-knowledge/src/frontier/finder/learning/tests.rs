@@ -437,3 +437,45 @@ fn overflowing_replay_cursor_preserves_pending_and_model() {
     assert_eq!(serde_json::to_value(&learning).unwrap(), before_learning);
     assert_eq!(model, before_model);
 }
+
+#[test]
+fn one_family_can_rehearse_current_outcomes_and_late_checked_support() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let earlier = membership_conjunction(1);
+    let success = membership_conjunction(2);
+    let miss = membership_conjunction(3);
+    let family = Descriptor::of(&earlier).features.family;
+    assert_eq!(family, Descriptor::of(&success).features.family);
+    assert_eq!(family, Descriptor::of(&miss).features.family);
+    learning
+        .remember(&mut model, &earlier, Some(&checkpoint()), true, 1, 1)
+        .unwrap();
+
+    let current = "22".repeat(32);
+    learning.bind(&current);
+    learning.support(&mut model, &earlier).unwrap();
+    learning
+        .remember(&mut model, &success, Some(&current), true, 1, 2)
+        .unwrap();
+    learning
+        .remember(&mut model, &miss, Some(&current), false, 2, 3)
+        .unwrap();
+
+    let mut recovered: Learning =
+        serde_json::from_slice(&serde_json::to_vec(&learning).unwrap()).unwrap();
+    recovered.validate().unwrap();
+    let before = model.rehearsals;
+    let choices = recovered.rehearsal_indices();
+    let resolutions = choices
+        .iter()
+        .map(|&index| recovered.samples[index].offer.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        resolutions,
+        [earlier, success, miss].map(|q| *q.resolution_id()).into()
+    );
+    recovered.rehearse(&mut model).unwrap();
+    assert_eq!(model.rehearsals - before, 3);
+    assert_eq!(model.updates, 0, "rehearsal does not count as new evidence");
+}

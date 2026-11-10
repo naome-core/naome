@@ -498,7 +498,7 @@ fn finder_uses_only_the_shorter_checked_universal_route() {
         .unwrap();
 }
 
-fn publish(
+fn stage_publication(
     frontier: &mut Frontier,
     graph: &mut crate::Graph,
     question: &ResearchQuestion,
@@ -530,6 +530,17 @@ fn publish(
         .attempted(question, graph, &completion, evidence::Outcome::Candidate)
         .unwrap();
     frontier.prepared(question, job, root).unwrap();
+    root
+}
+
+fn publish(
+    frontier: &mut Frontier,
+    graph: &mut crate::Graph,
+    question: &ResearchQuestion,
+    generation: Generation,
+    job: u64,
+) -> naome_proof::ArtifactId {
+    let root = stage_publication(frontier, graph, question, generation, job);
     frontier.verified(question, graph, job, root).unwrap();
     root
 }
@@ -1060,4 +1071,172 @@ pub(crate) fn publish_catalog_solution(
     };
     register_program(graph, program);
     program.manifest.artifact_id()
+}
+
+#[test]
+fn recurrent_checked_citations_restore_a_route_from_the_same_catalogue() {
+    const TEST: &str = "learning::tests::native_prerequisite::recurrent_checked_citations_restore_a_route_from_the_same_catalogue";
+    if std::env::var_os("NAOME_RECALL_MATCHED_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_RECALL_MATCHED_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    use crate::checkpoint::tests::Directory;
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let seed = 6021;
+    let (x, y) = (FreeVariable::new(0), FreeVariable::new(1));
+    let (_, _, base) = donor(21);
+    let source = base.target().unwrap();
+    let source_id = base.manifest.proof_id();
+    let source_question = ResearchQuestion::from_formula(source.clone()).unwrap();
+    assert!(
+        State::eligible(&source_question.to_hex()),
+        "eligible recall source"
+    );
+    let instance = source.open_outer_universal(x).unwrap();
+    let question = |assumption| {
+        ResearchQuestion::from_formula(proof::close(Formula::implies(assumption, instance.clone())))
+            .unwrap()
+    };
+    let seed_goals = [
+        question(Formula::member(x, y)),
+        question(Formula::member(x, x)),
+    ];
+    let probes = [
+        question(Formula::equal(x, y)),
+        question(Formula::member(y, x)),
+    ];
+    let unrelated = ResearchQuestion::from_formula(proof::close(Formula::implies(
+        Formula::equal(x, y),
+        donor(38)
+            .2
+            .target()
+            .unwrap()
+            .open_outer_universal(y)
+            .unwrap(),
+    )))
+    .unwrap();
+    for q in seed_goals.iter().chain(&probes) {
+        assert!(State::eligible(&q.to_hex()));
+        assert!(knowledge::directly_applies(q.proved_target(), &source).unwrap());
+
+        assert_eq!(
+            crate::structure::Features::of(q).family,
+            crate::structure::Features::of(&probes[0]).family,
+        );
+    }
+
+    let mut catalogues = Vec::new();
+    let mut results = Vec::new();
+    for recall in [false, true] {
+        let directory = Directory::new();
+        let mut graph = crate::Graph::open(&directory.0).unwrap();
+        register_program(&mut graph, &base);
+        let mut finder = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+        if !recall {
+            finder.disable_structural_recall();
+        }
+        for (index, q) in seed_goals.iter().enumerate() {
+            let (required, selected) = finder.solving_inputs(&graph, q, &[]).unwrap();
+            assert!(required.is_empty());
+            assert_eq!(selected.has_offer(), recall);
+            // Keep the checked starting catalogue for the post-restart probes
+            // identical even when the control cannot retrieve the source.
+            let inputs = if recall {
+                selected
+            } else {
+                graph
+                    .offered_solving_inputs(source_id, &[])
+                    .unwrap()
+                    .unwrap()
+            };
+            let found = solve(q, &[], &inputs, seed, 12).unwrap();
+            let job = index as u64 + 1;
+            let root = stage_publication(&mut finder, &mut graph, q, found, job);
+            assert_eq!(
+                graph.learning_proof_dependencies(root).unwrap().as_ref(),
+                &[base.manifest.artifact_id()],
+            );
+            if index == 0 {
+                finder.verified(q, &graph, job, root).unwrap();
+                // Redelivery is not another encounter.
+                finder.verified(q, &graph, job, root).unwrap();
+                let (_, inputs) = finder.solving_inputs(&graph, &probes[0], &[]).unwrap();
+                assert_eq!(
+                    inputs.has_offer(),
+                    recall,
+                    "one checked use can supply an applicable offer",
+                );
+            } else {
+                // The checker committed the proof; the resolution transaction
+                // committed, but its acknowledgement did not reach Finder.
+                crate::checkpoint::fail_after_commit();
+                assert!(finder.verified(q, &graph, job, root).is_err());
+            }
+        }
+        let before = graph.content_root();
+        drop(finder);
+        assert_eq!(graph.content_root(), before);
+        catalogues.push(before);
+        let mut finder = Frontier::open(&directory.0, &graph, seed, settings).unwrap();
+        if !recall {
+            finder.disable_structural_recall();
+        }
+        let (_, unrelated_inputs) = finder.solving_inputs(&graph, &unrelated, &[]).unwrap();
+        assert!(
+            !unrelated_inputs.has_offer(),
+            "family alone must not offer an inapplicable proof"
+        );
+        let mut trials = Vec::new();
+        let mut admission =
+            crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
+        for q in &probes {
+            let decision = admission.assess(&graph, q);
+            assert!(
+                decision.passed(),
+                "probe must remain open: {:?}",
+                decision.reason
+            );
+            let (required, inputs) = finder.solving_inputs(&graph, q, &[]).unwrap();
+            let result = solve(q, &required, &inputs, seed, 8).unwrap();
+            let mut cited = false;
+            if let Some(solution) = &result.solution {
+                solution.check_target(q).unwrap();
+                if let search::Tree::Program(program) = &solution.tree {
+                    cited = peer::contributing_proofs(&program.commands().unwrap())
+                        .unwrap()
+                        .contains(&source_id);
+                }
+            }
+            let expansions = result.cost.search_expansions;
+            assert!(expansions <= 8);
+            trials.push((result.solution.is_some(), cited, expansions));
+            eprintln!(
+                "{recall:?} offered={} trial={:?}",
+                inputs.has_offer(),
+                trials.last()
+            );
+        }
+        results.push(trials);
+    }
+    assert_eq!(catalogues[0], catalogues[1]);
+    assert!(results[1].iter().all(|&(solved, cited, _)| solved && cited));
+    assert!(
+        results[0]
+            .iter()
+            .any(|&(solved, cited, _)| !solved || !cited)
+    );
 }
