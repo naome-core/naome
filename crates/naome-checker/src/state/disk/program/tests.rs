@@ -4,6 +4,37 @@ use crate::{DiskCopyBudget, check_normal_form_with_state};
 use naome_proof::{ProofCertificate, ProofStep};
 
 #[test]
+fn program_node_reads_reject_canonical_bytes_under_the_wrong_address() {
+    use naome_foundation::graph::{Node, Properties, Variable};
+    use naome_proof::program::{graph_node_bytes, graph_node_hash};
+
+    let storage = Arc::new(MemoryStorage::default());
+    let mut map = DiskMap::new(storage.clone());
+    let node = Node::Equal(Variable::Free(0), Variable::Free(1));
+    let properties = Properties {
+        has_free_variables: true,
+        required_binders: 0,
+    };
+    let bytes = graph_node_bytes(node, properties);
+    let address = graph_node_hash(node, properties);
+    let mut wrong_address = address;
+    wrong_address[0] ^= 1;
+    assert!(map.insert(address, &bytes).unwrap());
+    assert!(map.insert(wrong_address, &bytes).unwrap());
+    let nodes = ProgramNodes(map);
+
+    assert_eq!(
+        crate::context::ProgramNodes::read(&nodes, address).unwrap(),
+        (node, properties)
+    );
+    assert!(matches!(
+        crate::context::ProgramNodes::read(&nodes, wrong_address),
+        Err(ContextError::Corrupt)
+    ));
+    assert_eq!(*storage.failures.lock().unwrap(), [ContextError::Corrupt]);
+}
+
+#[test]
 fn small_program_facts_share_checked_membership_and_resolve_certificate_references() {
     let proof = checked_program(false);
     let state = DiskArtifactState::new(Arc::new(MemoryStorage::default()));
