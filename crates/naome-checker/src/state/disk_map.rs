@@ -86,16 +86,35 @@ impl DiskMap {
         self.write_value(key, value, true).map(|_| ())
     }
 
-    pub(crate) fn entries(&self) -> Entries {
+    pub(crate) fn entries(
+        &self,
+    ) -> impl Iterator<Item = Result<([u8; 32], Vec<u8>), ContextError>> + use<> {
         self.entries_after(None)
     }
-    pub(crate) fn entries_after(&self, after: Option<[u8; 32]>) -> Entries {
-        Entries {
+    pub(crate) fn entries_after(
+        &self,
+        after: Option<[u8; 32]>,
+    ) -> impl Iterator<Item = Result<([u8; 32], Vec<u8>), ContextError>> + use<> {
+        self.map_entries_after(after, |key, value| Ok((key, value.to_vec())))
+    }
+
+    pub(crate) fn map_entries_after<T, F>(
+        &self,
+        after: Option<[u8; 32]>,
+        mut project: F,
+    ) -> impl Iterator<Item = Result<T, ContextError>> + use<T, F>
+    where
+        F: FnMut([u8; 32], &[u8]) -> Result<T, ContextError>,
+    {
+        let cursor = LeafCursor {
             storage: self.storage(),
             pending: self.root.into_iter().map(Pending::root).collect(),
             previous_key: after,
             after,
-        }
+        };
+        cursor.map(move |entry| {
+            entry.and_then(|(key, bytes)| project(key, &bytes[LEAF_HEADER_BYTES..]))
+        })
     }
 
     pub(crate) fn walk(&self) -> Walk {
@@ -373,14 +392,14 @@ impl Walk {
 
 /// Completion is decided only by the checker's exhausted traversal stack.
 /// A failed read yields one error and terminates this failed traversal.
-pub(crate) struct Entries {
+struct LeafCursor {
     storage: Arc<dyn ContextStorage>,
     pending: Vec<Pending>,
     previous_key: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
 }
 
-impl Iterator for Entries {
+impl Iterator for LeafCursor {
     type Item = Result<([u8; 32], Vec<u8>), ContextError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -395,7 +414,7 @@ impl Iterator for Entries {
             let result = (|| {
                 let bytes = read_node(self.storage.as_ref(), pending)?;
                 match decode_node(&bytes, pending)? {
-                    Node::Leaf { key, value } => {
+                    Node::Leaf { key, .. } => {
                         if self.after.is_some_and(|after| key <= after) {
                             return Ok(None);
                         }
@@ -403,7 +422,7 @@ impl Iterator for Entries {
                             return Err(ContextError::Corrupt);
                         }
                         self.previous_key = Some(key);
-                        Ok(Some((key, value.to_vec())))
+                        Ok(Some((key, bytes)))
                     }
                     Node::Branch { bit, left, right } => {
                         self.pending.push(pending.child(right, bit)?);
