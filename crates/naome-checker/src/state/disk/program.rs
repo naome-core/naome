@@ -110,7 +110,7 @@ impl DiskArtifactState {
                     .insert(*statement.as_bytes(), &candidate)
                     .map_err(context)?;
                 if let Some(formula) = formula {
-                    for (kind, target) in projections(proof, formula) {
+                    for (kind, target) in projections(formula) {
                         let index = self.index_mut(kind);
                         let root = index.get(target.as_bytes()).map_err(context)?;
                         let mut bucket = DiskMap::from_root(
