@@ -53,7 +53,6 @@ pub const PARAMETERS: usize = READOUT_PARAMETERS
 pub(super) const READOUT_PARAMETERS: usize = 384_961;
 pub const TRAINING_UNITS: u32 = 25;
 pub const UPDATES_PER_UNIT: u64 = 10;
-const COLD_REPLAY_SLOTS: usize = 4;
 
 pub struct Binding {
     pub formula: Formula,
@@ -579,33 +578,39 @@ impl Runtime {
         for update in 0..updates {
             let before = *rng;
             let mut sample = graphs.sequence_batch(rng);
-            let ordinary_slots = if let Some((pool, cursor, _)) = &mut cold_replay {
+            let inserted_reference = if let Some((pool, cursor, _)) = &mut cold_replay {
                 let started = std::time::Instant::now();
-                let references = pool.batch(cursor);
-                let references = &references[..COLD_REPLAY_SLOTS];
-                let start = sample.len() - references.len();
-                for (slot, graph) in sample[start..].iter_mut().zip(references) {
-                    *slot = Sample {
+                let (reference, inserted) = if let Some(existing) = sample
+                    .iter()
+                    .find(|entry| !entry.auxiliary && pool.contains_replay_graph(entry.graph))
+                {
+                    (existing.graph, None)
+                } else {
+                    // The final slot has no dependents in the observed window.
+                    let index = sample.len() - 1;
+                    let graph = pool.batch(cursor)[0];
+                    sample[index] = Sample {
                         graph,
                         selected: graph.expert,
                         parent: None,
                         auxiliary: false,
                     };
-                }
+                    (graph, Some(index))
+                };
                 if self.observe_batches() {
-                    self.measurements.record_references(references);
+                    self.measurements.record_references(&[reference]);
                 }
                 self.preservation_micros = self.preservation_micros.saturating_add(micros(started));
-                start
+                inserted
             } else {
-                sample.len()
+                None
             };
             self.sampled_sequence_edges += sample.iter().filter(|s| s.parent.is_some()).count();
             let inputs = sample
                 .iter()
                 .enumerate()
                 .map(|(index, s)| {
-                    if index >= ordinary_slots {
+                    if inserted_reference == Some(index) {
                         s.graph.clone()
                     } else {
                         graphs.target_graph(s.graph, self.rich_targets)

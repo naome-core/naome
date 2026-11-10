@@ -169,10 +169,26 @@ fn fresh_parent_rehearses_own_checked_replay_in_the_first_batch_and_after_reload
     let cost = &engine.cost;
     assert!(cost.preservation_states > 0);
     assert_eq!(cost.measurements.slots, 16 * UPDATES_PER_UNIT as usize);
-    assert_eq!(
-        cost.measurements.reference_slots,
-        super::super::COLD_REPLAY_SLOTS * UPDATES_PER_UNIT as usize
-    );
+    assert_eq!(cost.measurements.reference_slots, UPDATES_PER_UNIT as usize);
+    let mut control = Engine {
+        preservation_mode: Mode::Unmasked,
+        ..Engine::default()
+    };
+    let mut control_cursor = 0;
+    let unchanged = control
+        .train_replay_using(
+            &state.model,
+            &state,
+            (&[], &[]),
+            &mut control_cursor,
+            phase,
+            &mut io,
+        )
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(first, unchanged, "an existing checked menu keeps its slot");
+    assert_eq!(cursor, control_cursor);
     assert_eq!(
         Runtime::load(&first, &mut io).unwrap().preservation.steps,
         0,
@@ -198,6 +214,43 @@ fn fresh_parent_rehearses_own_checked_replay_in_the_first_batch_and_after_reload
         .0;
     assert_eq!(resumed, continuous);
     assert_eq!(resumed_cursor, cursor);
+}
+
+#[test]
+fn cold_rehearsal_fills_one_slot_when_the_checked_menu_is_absent() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let references = state.preservation_pool(&[], &Pool::default()).unwrap();
+    let mut other = references.graphs()[0].clone();
+    other.binding.push_str("-ordinary");
+    let ordinary = Pool::from_graphs(&[other]);
+    let mut io = MemoryStore::default();
+    let mut runtime = Runtime::load(&state.model, &mut io).unwrap();
+    runtime
+        .train_using(
+            &ordinary,
+            &mut 0,
+            1,
+            learning::meta::Plan::balanced().phase(0),
+            Some((&references, 0, true)),
+            Mode::Smoothed,
+        )
+        .unwrap();
+    assert_eq!(runtime.measurements.slots, 16);
+    assert_eq!(runtime.measurements.reference_slots, 1);
+    let input = runtime.measurements.input_digest.clone();
+    let mut control = Runtime::load(&state.model, &mut io).unwrap();
+    control
+        .train_using(
+            &ordinary,
+            &mut 0,
+            1,
+            learning::meta::Plan::balanced().phase(0),
+            None,
+            Mode::Unmasked,
+        )
+        .unwrap();
+    assert_ne!(input, control.measurements.input_digest);
 }
 
 #[test]

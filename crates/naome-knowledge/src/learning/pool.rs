@@ -390,6 +390,11 @@ impl Pool {
     pub fn is_empty(&self) -> bool {
         self.graphs.is_empty()
     }
+    pub(super) fn contains_replay_graph(&self, graph: &Graph) -> bool {
+        self.keys
+            .get(&graph.key())
+            .is_some_and(|index| self.graphs[*index].successes == graph.successes)
+    }
     /// Reference material shares the original pool allowance; it does not
     /// create a second memory reservation beside the training pool.
     pub(super) fn remaining(&self) -> Self {
