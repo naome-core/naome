@@ -939,7 +939,7 @@ impl Owner {
                     && let Some(progress) = &native.progress
                 {
                     crate::network::emit(
-                        serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification}),
+                        serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification,"assessment":progress.assessment}),
                     );
                 }
             }

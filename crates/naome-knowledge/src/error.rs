@@ -2753,9 +2753,6 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ProgressFirstUnit => {
                     "learning checkpoint lacks its first unit"
                 }
-                crate::ResearchFailure::ProgressTransferLoss => {
-                    "learning checkpoint loses an incumbent transfer success"
-                }
                 crate::ResearchFailure::LearningFixedSnapshotCapacity => {
                     "fixed learning snapshot exceeds working byte capacity"
                 }
@@ -2856,9 +2853,6 @@ impl fmt::Display for Error {
                 }
                 crate::ResearchFailure::JobCompositionBinding => {
                     "composition differs from requested prerequisites"
-                }
-                crate::ResearchFailure::JobModelQualification => {
-                    "native model changed before successful qualification"
                 }
                 crate::ResearchFailure::JobSamplingContinuation => {
                     "native sampling continuation differs"

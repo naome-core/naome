@@ -23,6 +23,7 @@ fn learned_state() -> (State, MemoryStore, meta::Engine) {
         protected_loss: false,
         anchor_loss: false,
         transfer: crate::learning::transfer::Summary::default(),
+        assessment: None,
         lower_cpu_micros: 18_000_000,
         lower_wall_micros: 20_000_000,
     };

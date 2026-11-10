@@ -235,6 +235,7 @@ fn meta_update_preserves_the_reloaded_selection_instead_of_recomputing_base_cont
         protected_loss: false,
         anchor_loss: false,
         transfer: transfer::Summary::default(),
+        assessment: None,
         lower_cpu_micros: 1,
         lower_wall_micros: 1,
     };

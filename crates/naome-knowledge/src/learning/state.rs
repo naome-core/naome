@@ -419,7 +419,13 @@ impl State {
             || self.trained != native.base.trained
             || self.meta.model != native.base.meta.model
             || self.meta.draw != native.base.meta.draw
-            || !native.preserves_incumbent_transfer(p)
+            || !native.promotion_bound(p)
+        {
+            return false;
+        }
+        if p.assessment.is_some_and(|assessment| assessment.accepts())
+            && digest(&(&self.knowledge, &self.definitions))
+                != digest(&(&native.base.knowledge, &native.base.definitions))
         {
             return false;
         }

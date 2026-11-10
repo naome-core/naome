@@ -4,6 +4,7 @@
 use super::analysis::{BINDINGS, Descriptor};
 use crate::structure::SIGNALS;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, VecDeque};
 
 const CONTEXT: usize = 12;
@@ -133,17 +134,48 @@ impl Transition {
             && self.decision.horizon_ms == other.decision.horizon_ms
             && self.decision.checked_inputs == other.decision.checked_inputs
     }
+
+    fn block(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(self.solver);
+        hash.update(self.decision.knowledge);
+        hash.update(self.search_limit.to_le_bytes());
+        hash.update(self.decision.work_units.to_le_bytes());
+        hash.update(self.decision.horizon_ms.to_le_bytes());
+        hash.update([u8::from(self.decision.checked_inputs)]);
+        hash.finalize().into()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Preference {
+    block: [u8; 32],
+    checked_resolution: [u8; 32],
+    exhausted_resolution: [u8; 32],
     checked: Projection,
     exhausted: Projection,
+    reused: bool,
 }
 impl Preference {
     fn margin(&self, weights: &Weights) -> f32 {
         project(weights, &self.checked) - project(weights, &self.exhausted)
+    }
+
+    fn same_inputs(&self, other: &Self) -> bool {
+        self.block == other.block
+            && self.checked_resolution == other.checked_resolution
+            && self.exhausted_resolution == other.exhausted_resolution
+            && self.checked == other.checked
+            && self.exhausted == other.exhausted
+    }
+
+    fn value(&self, weights: &Weights) -> i64 {
+        let order = self
+            .margin(weights)
+            .partial_cmp(&0.)
+            .expect("finite policy");
+        crate::research_value::measured_selection(order, self.reused)
     }
 }
 
@@ -158,6 +190,7 @@ pub(in crate::frontier) struct Policy {
     validation_pairs: usize,
     qualified_through: u64,
     protected: Vec<Preference>,
+    assessment: Option<crate::research_value::Assessment>,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -170,6 +203,7 @@ impl Default for Policy {
             validation_pairs: 0,
             qualified_through: 0,
             protected: Vec::new(),
+            assessment: None,
         }
     }
 }
@@ -181,6 +215,9 @@ impl Policy {
     }
 
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(assessment) = self.assessment {
+            assessment.validate()?;
+        }
         let mut groups = [[0; 2]; 2];
         let mut resolutions = BTreeSet::new();
         for row in &self.transitions {
@@ -199,12 +236,16 @@ impl Policy {
             || self.promotions > self.checked_at / CHECK_EVERY
             || self.validation_pairs > PER_GROUP * PER_GROUP
             || (self.promotions == 0) != (self.qualified_through == 0)
+            || (self.promotions > 0) != self.assessment.is_some_and(|a| a.accepts())
             || self.promotions == 0 && self.weights != ([0.; SIGNALS], [0.; SUMMARY])
             || self.protected.len() > PROTECTED
-            || self
-                .protected
-                .iter()
-                .any(|pair| pair.margin(&self.weights) <= 0.)
+            || self.protected.iter().enumerate().any(|(i, pair)| {
+                pair.checked == pair.exhausted
+                    || pair.checked_resolution == pair.exhausted_resolution
+                    || self.protected[..i]
+                        .iter()
+                        .any(|other| pair.same_inputs(other))
+            })
             || self
                 .weights
                 .0
@@ -230,6 +271,7 @@ impl Policy {
             "observations":self.observations, "checked_at":self.checked_at,
             "promotions":self.promotions, "validation_pairs":self.validation_pairs,
             "qualified_through":self.qualified_through, "protected_pairs":self.protected.len(),
+            "assessment":self.assessment,
         })
     }
 
@@ -303,6 +345,14 @@ impl Policy {
             job: experience.job,
             outcome,
         };
+        if outcome == Outcome::Reused {
+            let block = row.block();
+            for pair in &mut self.protected {
+                if pair.block == block && pair.checked_resolution == row.decision.resolution {
+                    pair.reused = true;
+                }
+            }
+        }
         let group = row.group();
         let mut group_rows = self
             .transitions
@@ -349,14 +399,7 @@ impl Policy {
     fn qualify(&mut self) {
         let training = self.pairs(false);
         let validation = self.pairs(true);
-        let enough_distinct = |checked| {
-            let ids = validation
-                .iter()
-                .map(|(good, bad)| if checked { good.job } else { bad.job })
-                .collect::<BTreeSet<_>>();
-            ids.len() >= 2
-        };
-        if training.len() < 4 || !enough_distinct(true) || !enough_distinct(false) {
+        if training.is_empty() || validation.is_empty() {
             return;
         }
         let mut candidate = self.weights;
@@ -388,41 +431,58 @@ impl Policy {
                     .clamp(-2., 2.);
             }
         }
-        if self
-            .protected
-            .iter()
-            .any(|pair| pair.margin(&candidate) <= 0.)
-        {
-            return;
-        }
+        let mut used = BTreeSet::new();
+        let mut evaluated = self.protected.clone();
         let mut latest_gain = self.qualified_through;
         let mut new_protected = Vec::new();
+        let mut matched = 0;
         for (good, bad) in &validation {
+            if used.contains(&good.job) || used.contains(&bad.job) {
+                continue;
+            }
+            used.extend([good.job, bad.job]);
+            matched += 1;
             let pair = Preference {
+                block: good.block(),
+                checked_resolution: good.decision.resolution,
+                exhausted_resolution: bad.decision.resolution,
                 checked: good.decision.features,
                 exhausted: bad.decision.features,
+                reused: good.outcome == Outcome::Reused,
             };
             let before = pair.margin(&self.weights);
             let after = pair.margin(&candidate);
-            if after < 0. && before >= 0. || after <= 0. && before > 0. {
-                return;
+            if let Some(prior) = evaluated.iter_mut().find(|p| pair.same_inputs(p)) {
+                prior.reused |= pair.reused;
+            } else {
+                evaluated.push(pair.clone());
             }
             if after > 0. && before <= 0. {
                 latest_gain = latest_gain.max(good.job.max(bad.job));
                 if self.protected.len() + new_protected.len() < PROTECTED
-                    && !self.protected.contains(&pair)
-                    && !new_protected.contains(&pair)
+                    && !self.protected.iter().any(|p| pair.same_inputs(p))
+                    && !new_protected.iter().any(|p| pair.same_inputs(p))
                 {
                     new_protected.push(pair);
                 }
             }
         }
-        if latest_gain > self.qualified_through {
-            self.validation_pairs = validation.len();
+        let mut comparison = crate::research_value::Comparison::default();
+        for pair in &evaluated {
+            comparison.record(
+                pair.block,
+                pair.value(&self.weights),
+                pair.value(&candidate),
+            );
+        }
+        let assessment = comparison.assess();
+        if latest_gain > self.qualified_through && assessment.accepts() {
+            self.validation_pairs = matched;
             self.weights = candidate;
             self.promotions += 1;
             self.qualified_through = latest_gain;
             self.protected.extend(new_protected);
+            self.assessment = Some(assessment);
         }
     }
 }

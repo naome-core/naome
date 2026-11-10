@@ -211,6 +211,8 @@ pub(crate) struct Progress {
     development_regression: bool,
     original_score: [u32; 2],
     transfer: transfer::Summary,
+    evaluation: transfer::Evidence,
+    pub assessment: Option<crate::research_value::Assessment>,
     development_before: crate::training::ability::Profile,
     development_after: crate::training::ability::Profile,
     regressions: [u16; crate::training::ability::SKILLS],
@@ -376,8 +378,38 @@ impl Job {
                 .map_or(&self.base.model, |p| &p.model),
         )
     }
-    fn preserves_incumbent_transfer(&self, progress: &Progress) -> bool {
-        progress.promotions <= self.base.promotions || progress.transfer.accepts()
+    fn promotion_bound(&self, progress: &Progress) -> bool {
+        let evaluated =
+            self.training && progress.unit == self.units() && progress.first_loss.is_some();
+        if evaluated != progress.assessment.is_some() {
+            return false;
+        }
+        if let Some(assessment) = progress.assessment {
+            if !progress.transfer.complete()
+                || progress.evaluation.assessment(&self.base).ok() != Some(assessment)
+            {
+                return false;
+            }
+        } else if progress.rejections != self.base.rejections
+            || matches!(
+                progress.qualification,
+                Qualification::Promoted | Qualification::InsufficientResearchValue
+            )
+        {
+            return false;
+            if assessment.accepts() {
+                return progress.promotions == self.base.promotions.saturating_add(1)
+                    && progress.rejections == self.base.rejections
+                    && progress.qualification == Qualification::Promoted
+                    && progress.model != self.base.model;
+            }
+            if progress.qualification != Qualification::InsufficientResearchValue
+                || progress.rejections != self.base.rejections.saturating_add(1)
+            {
+                return false;
+            }
+        }
+        progress.promotions == self.base.promotions && progress.model == self.base.model
     }
 
     /// Bind worker reports to the plan and candidate already retained by this
@@ -405,12 +437,20 @@ impl Job {
                 || next.wall_micros < previous.wall_micros
                 || next.meta_cpu_micros < previous.meta_cpu_micros
                 || next.meta_wall_micros < previous.meta_wall_micros
+                || !next.evaluation.extends(&previous.evaluation)
                 || previous.transfer.observed & next.transfer.observed != previous.transfer.observed
                 || (previous.transfer.before ^ next.transfer.before) & previous.transfer.observed
                     != 0
                 || (previous.transfer.after ^ next.transfer.after) & previous.transfer.observed != 0
             {
                 return Err(crate::ResearchFailure::ProgressContinuationMismatch.into());
+            }
+            if next
+                .assessment
+                .is_some_and(|assessment| assessment.accepts())
+                && previous.candidate.as_ref() != Some(&next.model)
+            {
+                return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             if let Some(update) = &next.meta_update
                 && (update.experience.candidate_model != previous.candidate.as_ref().map(digest)
@@ -425,9 +465,6 @@ impl Job {
             }
         } else if next.unit != 1 {
             return Err(crate::ResearchFailure::ProgressFirstUnit.into());
-        }
-        if !self.preserves_incumbent_transfer(&next) {
-            return Err(crate::ResearchFailure::ProgressTransferLoss.into());
         }
         let previous = self.progress.replace(next);
         if let Err(error) = self.validate() {
@@ -654,6 +691,7 @@ impl Job {
                     || update.experience.protected_loss != p.development_regression
                     || update.experience.anchor_loss != p.anchor_regression
                     || update.experience.transfer != p.transfer
+                    || update.experience.assessment != p.assessment
                     || update.experience.lower_cpu_micros > p.cpu_micros
                     || update.experience.lower_wall_micros > p.wall_micros
                     || !update.first_loss.is_finite()
@@ -676,12 +714,7 @@ impl Job {
             }
 
             p.model.validate()?;
-            if p.promotions > self.base.promotions
-                && (p.candidate_score <= p.incumbent_score
-                    || p.anchor_regression
-                    || p.development_regression
-                    || !p.transfer.supports_recorded_promotion())
-            {
+            if !self.promotion_bound(p) {
                 return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             p.transfer.validate()?;
@@ -692,6 +725,20 @@ impl Job {
             );
             if p.first_loss.is_some() && p.transfer.observed != expected_transfer {
                 return Err(crate::ResearchFailure::JobTransferCoverage.into());
+            }
+            let paired_cases = if p.first_loss.is_some() {
+                (p.unit.saturating_sub(model::TRAINING_UNITS) as usize)
+                    .min(curriculum::DEVELOPMENT + self.base.anchors.len())
+            } else {
+                0
+            };
+            let summary = p.evaluation.validate(paired_cases, p.transfer)?;
+            if summary.overall != [p.incumbent_score, p.candidate_score]
+                || summary.original != p.original_score
+                || summary.protected_loss != p.development_regression
+                || summary.anchor_loss != p.anchor_regression
+            {
+                return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             p.development_before.validate()?;
             p.development_after.validate()?;
@@ -718,16 +765,6 @@ impl Job {
                     self.prerequisites.has_definitions(),
                     &self.required,
                 )?;
-            }
-            if p.unit < self.units()
-                && (p.model != self.base.model
-                    || p.promotions != self.base.promotions
-                    || p.rejections != self.base.rejections)
-                || p.unit == self.units()
-                    && p.promotions == self.base.promotions
-                    && p.model != self.base.model
-            {
-                return Err(crate::ResearchFailure::JobModelQualification.into());
             }
             if p.rng < self.base.draws
                 || p.rng.saturating_sub(self.base.draws)
@@ -798,6 +835,8 @@ impl Job {
             development_regression: false,
             original_score: [0, 0],
             transfer: transfer::Summary::default(),
+            evaluation: transfer::Evidence::default(),
+            assessment: None,
             development_before: crate::training::ability::Profile::new(digest(&self.base.model)),
             development_after: crate::training::ability::Profile::new(digest(&self.base.model)),
             regressions: [0; crate::training::ability::SKILLS],
@@ -926,6 +965,7 @@ impl Job {
                 if let Some(source) = source {
                     let result =
                         transfer::evaluate(&source, &self.base, &candidate, engine, io, job)?;
+                    p.evaluation.record(false, &result);
                     let (before, after) = (result.before.solved, result.after.solved);
                     if index < curriculum::DEVELOPMENT {
                         p.observe_qualification(&source, &candidate, &result)?;
@@ -945,35 +985,28 @@ impl Job {
                         transfer::evaluate(&case.source, &self.base, &candidate, engine, io, job)?;
                     p.transfer
                         .record(index, result.before.solved, result.after.solved)?;
+                    p.evaluation.record(true, &result);
                     p.observe_qualification(&case.source, &candidate, &result)?;
                 }
             }
         } else {
             let candidate_model = p.candidate.as_ref().map(digest);
             if let Some(candidate) = p.candidate.take() {
-                if p.candidate_score > p.incumbent_score
-                    && !p.anchor_regression
-                    && !p.development_regression
-                    && p.transfer.accepts()
-                {
+                let assessment = p.evaluation.assessment(&self.base)?;
+                p.assessment = Some(assessment);
+                if assessment.accepts() {
                     p.model = candidate;
-                    p.promotions += 1;
+                    p.promotions = p
+                        .promotions
+                        .checked_add(1)
+                        .ok_or(crate::ResearchFailure::JobQualificationSequence)?;
                     p.qualification = Qualification::Promoted;
                 } else {
-                    p.rejections += 1;
-                    p.qualification = if p.development_regression {
-                        Qualification::DevelopmentRegression
-                    } else if p.anchor_regression {
-                        Qualification::AnchorRegression
-                    } else if p.candidate_score <= p.incumbent_score {
-                        Qualification::NoDevelopmentGain
-                    } else if !p.transfer.complete() {
-                        Qualification::IncompleteTransfer
-                    } else if p.transfer.loss() > 0. {
-                        Qualification::TransferRegression
-                    } else {
-                        Qualification::NoTransferGain
-                    };
+                    p.rejections = p
+                        .rejections
+                        .checked_add(1)
+                        .ok_or(crate::ResearchFailure::JobQualificationSequence)?;
+                    p.qualification = Qualification::InsufficientResearchValue;
                 }
             }
             if self.units() > 1 && self.base.preparation == Preparation::Meta {
@@ -994,6 +1027,7 @@ impl Job {
                     protected_loss: p.development_regression,
                     anchor_loss: p.anchor_regression,
                     transfer: p.transfer,
+                    assessment: p.assessment,
                     lower_cpu_micros: p.cpu_micros.saturating_sub(p.meta_cpu_micros),
                     lower_wall_micros: p.wall_micros.saturating_sub(p.meta_wall_micros),
                 };

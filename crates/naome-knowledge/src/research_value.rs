@@ -1,6 +1,7 @@
 //! Shared forecasts for local research. Effects are estimates of future checked
 //! progress. The checker, job owner and model qualification gate retain authority.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 const SCALE: u64 = 1_000;
 const ACTIONS: usize = 4;
@@ -185,9 +186,122 @@ impl Forecast {
     }
 
     pub fn value(self) -> i64 {
-        let retained =
-            i64::from(self.immediate) + i64::from(self.next) / 2 + i64::from(self.following) / 4;
-        retained * SCALE as i64 / (SCALE as i64 + i64::from(self.cost)) - i64::from(self.risk)
+        value(
+            self.immediate,
+            self.next,
+            self.following,
+            self.risk,
+            self.cost,
+        )
+    }
+}
+
+fn value(immediate: u16, next: u16, following: u16, risk: u16, cost: u16) -> i64 {
+    let retained = i64::from(immediate) + i64::from(next) / 2 + i64::from(following) / 4;
+    retained * SCALE as i64 / (SCALE as i64 + i64::from(cost)) - i64::from(risk)
+}
+
+/// Realized proof progress at the common paid allowance. Each arm sees the
+/// same knowledge, so credit comes from what the arm actually checks.
+pub(crate) fn measured_proof(checked: bool, paid: u64, allowance: u64) -> i64 {
+    let cost = ratio(paid, allowance.max(1));
+    value(u16::from(checked) * SCALE as u16, 0, 0, 0, cost as u16)
+}
+
+/// Credit a checked selection and, when observed, its verified contribution
+/// to a later proof. The scale is shared with other paired observations.
+pub(crate) fn measured_selection(order: std::cmp::Ordering, reused: bool) -> i64 {
+    let chance = match order {
+        std::cmp::Ordering::Greater => SCALE as u16,
+        std::cmp::Ordering::Equal => SCALE as u16 / 2,
+        std::cmp::Ordering::Less => 0,
+    };
+    let next = if reused { chance } else { 0 };
+    value(chance, next, 0, 0, 0) * 2 / 3
+}
+
+/// Compare attributable value on independent blocks. Related variants share
+/// one vote, and the positive balance must survive omitting its strongest
+/// block. A loss contributes its measured cost without vetoing other gains.
+#[derive(Default)]
+pub(crate) struct Comparison {
+    blocks: BTreeMap<[u8; 32], (i64, u32)>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Assessment {
+    pub blocks: u32,
+    pub gains: u32,
+    pub losses: u32,
+    pub mean: i32,
+    pub without_best: i32,
+}
+
+impl Assessment {
+    pub fn accepts(self) -> bool {
+        self.blocks > 1 && self.without_best > 0
+    }
+
+    pub fn validate(self) -> Result<(), crate::Error> {
+        if self.gains.saturating_add(self.losses) > self.blocks
+            || i64::from(self.mean).abs() > SCALE as i64
+            || i64::from(self.without_best).abs() > SCALE as i64
+            || self.blocks < 2 && self.without_best != 0
+            || self.blocks == 0 && self.mean != 0
+            || self.blocks > 1 && self.without_best > self.mean
+        {
+            return Err(crate::ResearchFailure::ResearchValueInvalid.into());
+        }
+        Ok(())
+    }
+
+    /// Keep the lower measured advantage across work and CPU accounting.
+    /// Timing may expose an expensive result, while timing alone cannot
+    /// establish a benefit that the paid-work comparison did not observe.
+    pub fn with_resource_bound(mut self, measured: Self) -> Self {
+        self.mean = self.mean.min(measured.mean);
+        self.without_best = self.without_best.min(measured.without_best);
+        self
+    }
+}
+
+impl Comparison {
+    pub fn record(&mut self, block: [u8; 32], incumbent: i64, candidate: i64) {
+        let (delta, count) = self.blocks.entry(block).or_default();
+        *delta += candidate - incumbent;
+        *count += 1;
+    }
+
+    pub fn assess(&self) -> Assessment {
+        let blocks = self.blocks.len() as u32;
+        let mut deltas = self
+            .blocks
+            .values()
+            .map(|(sum, count)| sum / i64::from(*count));
+        let Some(first) = deltas.next() else {
+            return Assessment::default();
+        };
+        let (mut sum, mut best) = (first, first);
+        let mut gains = u32::from(first > 0);
+        let mut losses = u32::from(first < 0);
+        for delta in deltas {
+            sum += delta;
+            best = best.max(delta);
+            gains += u32::from(delta > 0);
+            losses += u32::from(delta < 0);
+        }
+        Assessment {
+            blocks,
+            gains,
+            losses,
+            mean: (sum / i64::from(blocks)) as i32,
+            without_best: if blocks > 1 {
+                ((sum - best) / i64::from(blocks - 1)) as i32
+            } else {
+                0
+            },
+        }
     }
 }
 
@@ -308,6 +422,39 @@ impl Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_assessment_requires_replicated_value_and_balances_losses() {
+        let failed = measured_proof(false, 32, 32);
+        let checked = measured_proof(true, 32, 32);
+        let mut comparison = Comparison::default();
+        for _ in 0..8 {
+            comparison.record([1; 32], failed, checked);
+        }
+        assert!(!comparison.assess().accepts());
+        comparison.record([2; 32], checked, failed);
+        comparison.record([3; 32], failed, checked);
+        assert!(!comparison.assess().accepts());
+        comparison.record([4; 32], failed, checked);
+        let assessment = comparison.assess();
+        assert!(assessment.accepts());
+        assert!(assessment.validate().is_ok());
+        assert_eq!(
+            (assessment.blocks, assessment.gains, assessment.losses),
+            (4, 3, 1)
+        );
+    }
+
+    #[test]
+    fn recurring_paid_savings_contribute_to_system_value() {
+        let before = measured_proof(true, 32, 32);
+        let after = measured_proof(true, 12, 32);
+        let mut comparison = Comparison::default();
+        comparison.record([1; 32], before, after);
+        comparison.record([2; 32], before, after);
+        assert!(comparison.assess().accepts());
+        assert!(after > before);
+    }
 
     fn frame() -> Frame {
         Frame {

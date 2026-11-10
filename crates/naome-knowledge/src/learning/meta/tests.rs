@@ -62,6 +62,13 @@ fn experience(context: u16, plan: Plan, before: u16, after: u16) -> Experience {
             after: super::super::transfer::Summary::prefix(after as usize / 5),
             observed: super::super::transfer::Summary::prefix(super::super::transfer::CASES),
         },
+        assessment: Some(crate::research_value::Assessment {
+            blocks: 3,
+            gains: if after > before { 3 } else { 0 },
+            losses: if before > after { 3 } else { 0 },
+            mean: (i32::from(after) - i32::from(before)) * 6,
+            without_best: (i32::from(after) - i32::from(before)) * 6,
+        }),
         lower_cpu_micros: 18_000_000,
         lower_wall_micros: 20_000_000,
     }
@@ -240,30 +247,26 @@ fn meta_checkpoint_update_restores_and_scores_the_following_generated_plan() {
 }
 
 #[test]
-fn improving_development_proxy_does_not_replace_transfer_targets() {
+fn meta_targets_use_the_common_assessment_and_keep_outcomes_out_of_features() {
     let mut e = experience(500, Plan::targeted(), 45, 49);
-    e.transfer = super::super::transfer::Summary {
-        before: 3,
-        after: 12,
-        observed: super::super::transfer::Summary::prefix(super::super::transfer::CASES),
-    };
-    assert_eq!(e.targets()[0], 0.);
-    assert!(e.targets()[1] > 0.);
-    assert!(!e.transfer.accepts());
-    let input = e.features();
-    e.transfer.after = 7;
-    e.selected_model = e.source_model.clone();
-    e.after = e.before;
+    let original = e.targets();
+    let features = e.features();
+    e.after = 43;
+    e.protected_loss = true;
+    e.anchor_loss = true;
+    e.transfer.after = 1;
+    assert_eq!(e.targets(), original);
+    e.assessment = Some(crate::research_value::Assessment {
+        blocks: 5,
+        gains: 3,
+        losses: 1,
+        mean: 190,
+        without_best: 120,
+    });
     e.validate().unwrap();
-    assert_eq!(input, e.features());
-    assert!(e.targets()[0] > 0.);
-    assert_eq!(e.targets()[1], 0.);
-
-    e.transfer.before = 1;
-    e.transfer.after = 6;
-    e.validate().unwrap();
-    assert_eq!(e.targets()[0], 0.);
-    assert!(e.targets()[1] > 0.);
+    assert_eq!(e.features(), features);
+    assert_eq!(e.targets()[0], 0.19);
+    assert_eq!(e.targets()[1], 0.07);
 }
 
 #[test]
