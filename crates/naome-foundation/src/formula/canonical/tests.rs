@@ -285,6 +285,36 @@ fn borrowed_spine_ranges_preserve_every_original_canonical_suffix() {
 }
 
 #[test]
+fn implication_projection_enforces_the_canonical_depth_and_node_limits() {
+    let x = FreeVariable::new(0);
+    let atom = Formula::equal(x, x);
+    let mut spine = atom.clone();
+    for _ in 1..FORMULA_MAX_DEPTH {
+        spine = Formula::implies(atom.clone(), spine);
+    }
+    assert!(spine.canonical_implication().is_ok());
+    let too_deep = Formula::implies(atom.clone(), spine);
+    assert_eq!(
+        too_deep.canonical_implication().err(),
+        Some(FormulaCodecError::DepthLimitExceeded {
+            maximum: FORMULA_MAX_DEPTH,
+        })
+    );
+
+    let mut wide = atom.clone();
+    for _ in 0..15 {
+        wide = Formula::implies(wide.clone(), wide);
+    }
+    let too_many_nodes = Formula::implies(wide, atom);
+    assert_eq!(
+        too_many_nodes.canonical_implication().err(),
+        Some(FormulaCodecError::NodeLimitExceeded {
+            maximum: FORMULA_MAX_NODES,
+        })
+    );
+}
+
+#[test]
 fn implication_projection_retains_linear_buffer_capacity_for_growing_spines() {
     let x = FreeVariable::new(0);
     for count in [16, 32, 64, 128] {

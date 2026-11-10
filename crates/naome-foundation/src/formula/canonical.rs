@@ -39,12 +39,11 @@ const BOUND_VARIABLE: u8 = 0x01;
 /// retain the original canonical bytes; hashing them keeps existing identities.
 pub struct CanonicalImplication {
     bytes: Vec<u8>,
-    antecedent_end: usize,
     consequents: Vec<usize>,
 }
 impl CanonicalImplication {
     pub fn antecedent(&self) -> &[u8] {
-        &self.bytes[1..self.antecedent_end]
+        &self.bytes[1..self.consequents[0]]
     }
     pub fn consequents(&self) -> impl Iterator<Item = &[u8]> {
         self.consequents.iter().map(|start| &self.bytes[*start..])
@@ -71,27 +70,23 @@ impl Formula {
         let Node::Implies(_, _) = &self.0 else {
             return Ok(None);
         };
-        let bytes = self.encode_canonical()?;
-        fn width(node: &Node) -> usize {
-            match node {
-                Node::Equal(..) | Node::Member(..) => 11,
-                Node::Not(body) | Node::ForAll(body) => 1 + width(body),
-                Node::Implies(left, right) => 1 + width(left) + width(right),
-            }
-        }
+        let mut bytes = Vec::new();
+        let mut nodes = NodeBudget::new(FORMULA_MAX_NODES);
+        let mut variables = FreeVariableEncoding::Preserve;
         let mut current = &self.0;
-        let mut offset = 0;
+        let mut depth = 0;
         let mut consequents = Vec::new();
         while let Node::Implies(left, right) = current {
-            offset += 1 + width(left);
-            consequents.push(offset);
+            check_depth(depth)?;
+            nodes.charge()?;
+            bytes.push(IMPLIES);
+            depth += 1;
+            encode_node(left, depth, &mut nodes, &mut variables, &mut bytes)?;
+            consequents.push(bytes.len());
             current = right;
         }
-        Ok(Some(CanonicalImplication {
-            antecedent_end: consequents[0],
-            bytes,
-            consequents,
-        }))
+        encode_node(current, depth, &mut nodes, &mut variables, &mut bytes)?;
+        Ok(Some(CanonicalImplication { bytes, consequents }))
     }
 
     /// Encodes this formula using the canonical Proof Certificate format.
