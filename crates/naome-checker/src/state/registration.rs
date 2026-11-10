@@ -34,15 +34,13 @@ pub(super) fn validate(
                 proof_id: *proof_id,
             });
         }
-        for definition_id in step.definition_references() {
-            if state
+        step.try_for_each_definition_reference(|definition_id| {
+            state
                 .definition_kind(definition_id)
                 .map_err(access)?
-                .is_none()
-            {
-                return Err(ArtifactStateError::MissingDefinitionDependency { definition_id });
-            }
-        }
+                .ok_or(ArtifactStateError::MissingDefinitionDependency { definition_id })?;
+            Ok(())
+        })?;
     }
     if let Some(statement) = state
         .derivation_statement(proof.derivation_id)

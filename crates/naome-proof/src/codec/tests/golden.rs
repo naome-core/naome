@@ -119,6 +119,15 @@ fn definition_references_keep_field_and_prefix_order() {
     assert!(step.has_definition_references());
     assert_eq!(step.definition_references(), [first, second, first]);
     assert_eq!(step.definition_reference_count(), 3);
+    let mut visited = Vec::new();
+    assert_eq!(
+        step.try_for_each_definition_reference(|id| {
+            visited.push(id);
+            if id == second { Err(id) } else { Ok(()) }
+        }),
+        Err(second)
+    );
+    assert_eq!(visited, [first, second]);
     let primitive = ProofStep::VacuousUniversal {
         formula: ProofFormula::from_defined(DefinedFormula::equal(variable, variable)).unwrap(),
     };

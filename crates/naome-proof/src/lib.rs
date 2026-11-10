@@ -431,6 +431,19 @@ impl ProofStep {
         count
     }
 
+    /// Visits definition references in canonical field-prefix order until an error.
+    pub fn try_for_each_definition_reference<E>(
+        &self,
+        mut visit: impl FnMut(DefinitionId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut result = Ok(());
+        self.visit_formulas(|formula| {
+            result = formula.try_for_each_definition_reference(&mut visit);
+            result.is_err()
+        });
+        result
+    }
+
     // Visit in field order and stop when a visitor returns true.
     fn visit_formulas(&self, mut visit: impl FnMut(&ProofFormula) -> bool) -> bool {
         match self {
