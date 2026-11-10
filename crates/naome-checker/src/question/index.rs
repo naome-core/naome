@@ -112,8 +112,9 @@ pub(crate) fn projections(formula: &Formula) -> Vec<(BucketKind, StatementId)> {
 
 fn insert(index: &mut Buckets, key: StatementId, statement: StatementId) {
     let mut bucket = index.get(&key).cloned().unwrap_or_default();
-    bucket.insert(statement, ());
-    index.set(key, bucket);
+    if bucket.insert(statement, ()) {
+        index.set(key, bucket);
+    }
 }
 
 fn entries(bucket: Option<&Statements>) -> impl Iterator<Item = StatementId> + '_ {
