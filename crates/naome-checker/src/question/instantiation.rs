@@ -49,24 +49,19 @@ fn open(
     excluded: &BTreeSet<FreeVariable>,
     maximum: usize,
 ) -> Option<(Formula, Vec<FreeVariable>)> {
+    let maximum = maximum.min(MAX_INSTANTIATIONS);
     let mut current = formula.clone();
     let mut variables = Vec::new();
     let mut identifier = u32::MAX;
-    for _ in 0..maximum.min(MAX_INSTANTIATIONS) {
-        while excluded.contains(&FreeVariable::new(identifier))
-            || current
-                .free_variables()
-                .contains(&FreeVariable::new(identifier))
-        {
-            identifier = identifier.checked_sub(1).expect("bounded variable set");
-        }
+    while variables.len() < maximum && current.has_outer_universal() {
         let variable = FreeVariable::new(identifier);
-        let Some(body) = current.open_outer_universal(variable) else {
-            break;
-        };
-        variables.push(variable);
-        current = body;
-        identifier = identifier.checked_sub(1).expect("bounded binders");
+        if !excluded.contains(&variable)
+            && let Some(body) = current.open_outer_universal(variable)
+        {
+            variables.push(variable);
+            current = body;
+        }
+        identifier = identifier.checked_sub(1).expect("bounded variable set");
     }
     (!variables.is_empty()).then_some((current, variables))
 }

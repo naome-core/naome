@@ -244,6 +244,12 @@ impl Formula {
         !has_matching_free_variable(&self.0, &|_| true)
     }
 
+    /// Returns whether the outermost formula node is a universal binder.
+    #[must_use]
+    pub const fn has_outer_universal(&self) -> bool {
+        matches!(&self.0, Node::ForAll(_))
+    }
+
     /// Opens the outer universal binder using a fresh free variable.
     ///
     /// This is a structural projection, not an inference rule. A consumer must
