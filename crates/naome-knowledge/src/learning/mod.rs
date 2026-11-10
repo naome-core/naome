@@ -390,13 +390,6 @@ impl Job {
             {
                 return false;
             }
-        } else if progress.rejections != self.base.rejections
-            || matches!(
-                progress.qualification,
-                Qualification::Promoted | Qualification::InsufficientResearchValue
-            )
-        {
-            return false;
             if assessment.accepts() {
                 return progress.promotions == self.base.promotions.saturating_add(1)
                     && progress.rejections == self.base.rejections
@@ -408,6 +401,13 @@ impl Job {
             {
                 return false;
             }
+        } else if progress.rejections != self.base.rejections
+            || matches!(
+                progress.qualification,
+                Qualification::Promoted | Qualification::InsufficientResearchValue
+            )
+        {
+            return false;
         }
         progress.promotions == self.base.promotions && progress.model == self.base.model
     }
