@@ -6,10 +6,27 @@ use naome_proof::program::{Chunk, ChunkReader, Manifest, Prefix, encode_command,
 const BLOCK_RECORDS: usize = 16;
 // Encoded scopes may expand into vectors of actions and premises. Account for
 // decoded commands, re-encoding, prefix preparation and vector growth.
-const CHUNK_WORK_BYTES: usize = naome_proof::program::CHUNK_BYTES
-    * (4 * std::mem::size_of::<naome_proof::program::ScopedAction>() + 32)
-    + naome_proof::program::CHUNK_RECORDS
-        * (3 * std::mem::size_of::<naome_proof::program::Command>() + 128);
+const CHUNK_BUFFER_BYTES: usize = 4 * naome_proof::program::CHUNK_BYTES;
+
+fn chunk_work_bytes(bytes: usize, records: usize) -> Result<usize, crate::Error> {
+    bytes
+        .checked_mul(4 * std::mem::size_of::<naome_proof::program::ScopedAction>() + 32)
+        .and_then(|n| {
+            records
+                .checked_mul(3 * std::mem::size_of::<naome_proof::program::Command>() + 128)
+                .and_then(|records| n.checked_add(records))
+        })
+        .ok_or_else(|| crate::InputFault::CatalogProofMemoryOverflow.into())
+}
+
+fn stored_chunk_work(length: i64) -> Result<usize, crate::Error> {
+    let length =
+        usize::try_from(length).map_err(|_| crate::InputFault::CatalogProgramInputOrdering)?;
+    if length == 0 || length > naome_proof::program::CHUNK_BYTES + 74 {
+        return Err(crate::InputFault::CatalogProgramInputOrdering.into());
+    }
+    chunk_work_bytes(length, BLOCK_RECORDS)
+}
 #[cfg(test)]
 thread_local! { static MANIFEST_READS: Cell<usize> = const { Cell::new(0) }; }
 #[cfg(test)]
@@ -130,7 +147,12 @@ impl Catalog {
         manifest: &Manifest,
         chunk: &Chunk,
     ) -> Result<Progress, crate::Error> {
-        let _memory = crate::resources::MemoryLease::acquire(CHUNK_WORK_BYTES)?;
+        let _buffer = crate::resources::MemoryLease::acquire(CHUNK_BUFFER_BYTES)?;
+        let encoded_length = chunk.canonical_bytes()?.len();
+        let _memory = crate::resources::MemoryLease::acquire(chunk_work_bytes(
+            encoded_length,
+            chunk.records.len(),
+        )?)?;
         self.replay_summary.set(None);
         let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
         let result = (|| {
@@ -200,7 +222,7 @@ impl Catalog {
         records: usize,
         maximum: usize,
     ) -> Result<Chunk, crate::Error> {
-        let _memory = crate::resources::MemoryLease::acquire(CHUNK_WORK_BYTES)?;
+        let _buffer = crate::resources::MemoryLease::acquire(CHUNK_BUFFER_BYTES)?;
         self.require_validated_version(&self.connection)?;
         let value = progress(&self.connection, manifest)?;
         if start > value.commands {
@@ -224,7 +246,7 @@ impl Catalog {
             .map_err(sql_error)?;
         let first = first.ok_or(crate::InputFault::CatalogProgramInputOrdering)?;
         let mut statement = self.connection.prepare_cached(
-            "SELECT position,input_before,substr(chunk,1,32843),substr(digest,1,33) FROM program_input WHERE id=?1 AND position>=?2 ORDER BY position"
+            "SELECT position,input_before,length(chunk),substr(chunk,1,32843),substr(digest,1,33) FROM program_input WHERE id=?1 AND position>=?2 ORDER BY position"
         ).map_err(sql_error)?;
         let mut rows = statement
             .query(params![manifest.artifact_id().as_bytes().as_slice(), first])
@@ -232,11 +254,16 @@ impl Catalog {
         let mut reader: Option<ChunkReader> = None;
         let mut expected_position = positive(first)?;
         let mut previous_end: Option<Progress> = None;
+        let mut block_leases = Vec::new();
         while let Some(row) = rows.next().map_err(sql_error)? {
             let position = positive(row.get(0).map_err(sql_error)?)?;
             let input_before = positive(row.get(1).map_err(sql_error)?)?;
-            let bytes: Vec<u8> = row.get(2).map_err(sql_error)?;
-            let digest = key(row.get(3).map_err(sql_error)?)?;
+            let length: i64 = row.get(2).map_err(sql_error)?;
+            block_leases.push(crate::resources::MemoryLease::acquire(stored_chunk_work(
+                length,
+            )?)?);
+            let bytes: Vec<u8> = row.get(3).map_err(sql_error)?;
+            let digest = key(row.get(4).map_err(sql_error)?)?;
             let chunk = decode_chunk(
                 manifest.artifact_id(),
                 position,
@@ -357,7 +384,7 @@ fn decode_chunk(
     if chunk_digest(id, position, input_before, bytes) != digest {
         return Err(crate::InputFault::CatalogProgramInputHash.into());
     }
-    let chunk = Chunk::from_canonical_bytes(bytes)?;
+    let chunk = Chunk::from_canonical_bytes_with_record_limit(bytes, BLOCK_RECORDS)?;
     if chunk.canonical_bytes()? != bytes {
         return Err(crate::InputFault::CatalogProgramInputOrdering.into());
     }
@@ -366,7 +393,6 @@ fn decode_chunk(
 
 /// Validate every staged transition without restoring mathematical trust.
 pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Error> {
-    let _memory = crate::resources::MemoryLease::acquire(CHUNK_WORK_BYTES)?;
     let mut programs = connection
         .prepare("SELECT substr(id,1,33),substr(manifest,1,2049) FROM programs ORDER BY id")
         .map_err(sql_error)?;
@@ -384,13 +410,16 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
             hash: [0; 32],
             remaining: manifest.stream_root,
         };
-        let mut chunks = connection.prepare_cached("SELECT position,input_before,substr(chunk,1,32843),substr(digest,1,33) FROM program_input WHERE id=?1 ORDER BY position").map_err(sql_error)?;
+        let _buffer = crate::resources::MemoryLease::acquire(CHUNK_BUFFER_BYTES)?;
+        let mut chunks = connection.prepare_cached("SELECT position,input_before,length(chunk),substr(chunk,1,32843),substr(digest,1,33) FROM program_input WHERE id=?1 ORDER BY position").map_err(sql_error)?;
         let mut input = chunks.query([id.as_slice()]).map_err(sql_error)?;
         while let Some(row) = input.next().map_err(sql_error)? {
             let position = positive(row.get(0).map_err(sql_error)?)?;
             let input_before = positive(row.get(1).map_err(sql_error)?)?;
-            let bytes: Vec<u8> = row.get(2).map_err(sql_error)?;
-            let digest = key(row.get(3).map_err(sql_error)?)?;
+            let length: i64 = row.get(2).map_err(sql_error)?;
+            let _memory = crate::resources::MemoryLease::acquire(stored_chunk_work(length)?)?;
+            let bytes: Vec<u8> = row.get(3).map_err(sql_error)?;
+            let digest = key(row.get(4).map_err(sql_error)?)?;
             let chunk = decode_chunk(
                 manifest.artifact_id(),
                 position,

@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn stored_block_rejects_more_than_the_storage_record_limit() {
+    let id = ArtifactId::from_bytes([3; 32]);
+    let chunk = Chunk {
+        start: 0,
+        previous: [0; 32],
+        next: [0; 32],
+        records: vec![
+            naome_proof::program::Command::Equal { left: 0, right: 0 };
+            BLOCK_RECORDS + 1
+        ],
+    };
+    let bytes = chunk.canonical_bytes().unwrap();
+    let digest = chunk_digest(id, 0, 0, &bytes);
+    assert!(decode_chunk(id, 0, 0, &bytes, digest).is_err());
+}
+
+#[test]
 fn failed_rollback_reports_uncertain_program_durability() {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
     let mut db = Connection::open_in_memory().unwrap();

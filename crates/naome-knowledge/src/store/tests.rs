@@ -638,6 +638,30 @@ fn large_fixture(seed: u32) -> Envelope {
 }
 
 #[test]
+fn compressed_payload_retains_identity_and_bytes_after_restart() {
+    let directory = Directory::new();
+    let object = large_fixture(0);
+    let mut graph = Graph::open(&directory.0).unwrap();
+    graph.ingest(object.clone(), Instant::now()).unwrap();
+    drop(graph);
+    let database = rusqlite::Connection::open(directory.0.join(DATABASE_FILE)).unwrap();
+    let encoded: Vec<u8> = database
+        .query_row(
+            "SELECT payload FROM artifacts WHERE id=?1",
+            [crate::unhex(&object.artifact_id).unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(encoded.first(), Some(&1));
+    drop(database);
+    let reopened = Graph::open(&directory.0).unwrap();
+    let restored = reopened.get(&object.artifact_id).unwrap().unwrap();
+    assert_eq!(restored.payload, object.payload);
+    assert_eq!(restored.artifact_id, object.artifact_id);
+    assert_eq!(restored.statement_id, object.statement_id);
+}
+
+#[test]
 fn graph_keeps_the_supported_thread_transfer_and_shared_read_traits() {
     fn require<T: Send + Sync>() {}
     require::<Graph>();
