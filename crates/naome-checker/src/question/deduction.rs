@@ -473,11 +473,12 @@ fn add_clause(
     clauses: &mut Vec<Clause>,
     work: &mut Work,
 ) -> Result<(), Failure> {
-    let length = formula.encode_canonical().map_err(|_| LIMIT)?.len();
-    let projection = formula
-        .canonical_implication()
-        .map_err(|_| LIMIT)?
-        .ok_or(INVALID)?;
+    let Some(projection) = formula.canonical_implication().map_err(|_| LIMIT)? else {
+        // Preserve the codec error for an oversized non-implication.
+        formula.encode_canonical().map_err(|_| LIMIT)?;
+        return Err(INVALID);
+    };
+    let length = projection.as_bytes().len();
     let mut lengths = projection.consequents().map(<[u8]>::len);
     let mut current = formula.view();
     let mut current_length = length;
