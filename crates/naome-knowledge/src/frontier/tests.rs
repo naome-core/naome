@@ -343,12 +343,12 @@ fn received_knowledge_changes_coverage_without_claiming_local_ability() {
     assert!(frontier.coverage.iter().any(|n| *n > 0));
     assert_eq!(frontier.successes, [0; SIGNALS]);
     let common = frontier
-        .weight(&question(0), &graph, jobs::RoleSettings::default())
+        .weight(&question(0), &graph, jobs::RoleSettings::default(), None)
         .unwrap();
     let rare = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(
         frontier
-            .weight(&rare, &graph, jobs::RoleSettings::default())
+            .weight(&rare, &graph, jobs::RoleSettings::default(), None)
             .unwrap()
             > common
     );
@@ -372,13 +372,17 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
     .unwrap();
     let mut feedback = crate::learning::State::fresh().feedback();
     frontier.feedback(Some(feedback.clone()));
-    let before = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    let before = frontier
+        .weight(&hard, &graph, settings.solving, None)
+        .unwrap();
     for _ in 0..64 {
         feedback.development.observe(&easy, 32, Some(true), 1_000);
     }
     feedback.revision += 1;
     frontier.feedback(Some(feedback.clone()));
-    let after = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    let after = frontier
+        .weight(&hard, &graph, settings.solving, None)
+        .unwrap();
     assert_ne!(before, after);
     let candidates = [&easy, &hard];
     let index = frontier
@@ -412,13 +416,75 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
 }
 
 #[test]
+fn common_value_changes_a_matched_frontier_decision() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..jobs::Settings::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
+    frontier.feedback(Some(crate::learning::State::fresh().feedback()));
+    frontier.refresh(&graph, |_| true).unwrap();
+    let candidates = (0..8).map(question).collect::<Vec<_>>();
+    let frame = frontier.research_frame(&graph, 0).unwrap();
+    let mut control = Vec::new();
+    let mut treatment = Vec::new();
+    for candidate in &candidates {
+        let family = frontier
+            .analyses
+            .get(candidate)
+            .unwrap()
+            .descriptor
+            .features
+            .family;
+        control.push((
+            family,
+            frontier
+                .weight(candidate, &graph, settings.solving, None)
+                .unwrap(),
+        ));
+        treatment.push((
+            family,
+            frontier
+                .weight(candidate, &graph, settings.solving, Some(&frame))
+                .unwrap(),
+        ));
+    }
+    assert!(
+        control
+            .iter()
+            .zip(&treatment)
+            .any(|(base, value)| { base.1 * treatment[0].1 != value.1 * control[0].1 })
+    );
+    let (seed, before, after) = (1..=512)
+        .find_map(|seed| {
+            let a = crate::sampling::choose(&mut Random::new(seed), &control, false);
+            let b = crate::sampling::choose(&mut Random::new(seed), &treatment, false);
+            (a != b).then_some((seed, a, b))
+        })
+        .expect("the same random draw must distinguish the two weightings");
+    frontier.random = Random::new(seed);
+    let references = candidates.iter().collect::<Vec<_>>();
+    assert_eq!(
+        frontier
+            .choose(&references, &graph, settings.solving, false)
+            .unwrap(),
+        Some(after),
+    );
+    eprintln!(
+        "matched research value draw {seed}: {before} -> {after}; control={control:?}; treatment={treatment:?}"
+    );
+}
+
+#[test]
 fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     let directory = Directory::new();
     let graph = Graph::default();
     let mut frontier = Frontier::open(&directory.0, &graph, 5, jobs::Settings::default()).unwrap();
     let target = question(0);
     let cost = frontier
-        .weight(&target, &graph, jobs::RoleSettings::default())
+        .weight(&target, &graph, jobs::RoleSettings::default(), None)
         .unwrap();
     let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
     frontier
@@ -429,7 +495,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     assert!(record.verified.is_none());
     assert!(
         frontier
-            .weight(&target, &graph, jobs::RoleSettings::default())
+            .weight(&target, &graph, jobs::RoleSettings::default(), None)
             .unwrap()
             < cost
     );

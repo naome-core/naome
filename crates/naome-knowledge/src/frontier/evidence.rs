@@ -38,6 +38,7 @@ struct Header {
     model: finder::Model,
     learning: finder::Learning,
     policy: finder::research::Policy,
+    effects: crate::research_value::Effects,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +52,9 @@ struct Support {
     first_unresolved_at: u64,
     lemma_at: u64,
     goal_at: u64,
+    first_reuse: bool,
+    continuation: bool,
+    forecast: Option<crate::research_value::Forecast>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +70,10 @@ pub(super) struct Record {
     pub model_checkpoint: Option<String>,
     pub experience: Option<crate::learning::experience::ExperienceSummary>,
     decision: Option<ResearchDecision>,
+    value_observed: Option<String>,
+    contributed: bool,
+    used_own_proof: bool,
+    continued: bool,
     pub solver: String,
     pub knowledge: String,
     pub last_draw: u64,
@@ -127,6 +135,9 @@ impl Record {
     fn validate(&self, key: &str, observations: u64) -> Result<(), crate::Error> {
         let question = ResearchQuestion::from_hex(&self.question).map_err(crate::Error::from)?;
         experience::record(&question, self)?;
+        if let Some(checkpoint) = &self.value_observed {
+            crate::object::id_bytes(checkpoint)?;
+        }
         if let Some(decision) = &self.decision {
             decision.validate()?;
             if &decision.resolution != question.resolution_id() || self.experience.is_none() {
@@ -174,6 +185,9 @@ impl Record {
             || self.verified.is_some() != (self.verified_job > 0)
             || (self.first_unresolved_job > 0) != (self.first_unresolved_at > 0)
             || self.verified.is_some() != (self.verified_at > 0)
+            || self.verified.is_none()
+                && (self.contributed || self.used_own_proof || self.continued)
+            || self.continued && (!self.contributed || !self.used_own_proof)
             || self.first_unresolved_at > observations
             || self.verified_at > observations
             || self.last_attempt_at > observations
@@ -230,6 +244,7 @@ impl Evidence {
                     model: finder::Model::fresh(),
                     learning: finder::Learning::fresh(solver.clone()),
                     policy: finder::research::Policy::default(),
+                    effects: Default::default(),
                 },
                 vec![],
             )?
@@ -242,6 +257,7 @@ impl Evidence {
         header.model.validate()?;
         header.learning.validate()?;
         header.policy.validate()?;
+        header.effects.validate()?;
         if header.observations < header.model.updates
             || header.learning.utility_current() && header.model.utility_observations == 0
         {
@@ -252,6 +268,7 @@ impl Evidence {
             header.model = finder::Model::fresh();
             header.learning = finder::Learning::fresh(solver.clone());
             header.policy = finder::research::Policy::default();
+            header.effects = Default::default();
         }
         checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
@@ -266,6 +283,9 @@ impl Evidence {
     }
     pub(super) fn model(&self) -> &finder::Model {
         &self.header.model
+    }
+    pub(super) fn effects(&self) -> &crate::research_value::Effects {
+        &self.header.effects
     }
     pub(super) fn policy(&self) -> &finder::research::Policy {
         &self.header.policy
@@ -303,9 +323,11 @@ impl Evidence {
         feedback: &crate::training::ability::Feedback,
     ) -> Result<(), crate::Error> {
         let mut next = self.header.clone();
+        let rebound = next.effects.bind(&feedback.checkpoint);
         if next.learning.feedback(&mut next.model, feedback, |score| {
             self.utility_source(graph, score)
-        })? {
+        })? || rebound
+        {
             next.learning.validate()?;
             self.commit(&next, vec![])?;
             self.header = next;
@@ -486,6 +508,7 @@ impl Evidence {
     ) -> Result<(), crate::Error> {
         let mut header = self.header.clone();
         let mut record = record.clone();
+        let mut effect = None;
         if let Some(observation) = observation {
             header.observations = header
                 .observations
@@ -508,6 +531,19 @@ impl Evidence {
             {
                 if let (Some(decision), Some(experience)) = (&record.decision, &record.experience) {
                     header.policy.observe(decision, experience, resolved)?;
+                    if let Some(forecast) = decision.forecast
+                        && record.value_observed.as_ref() != Some(&experience.checkpoint)
+                        && header.effects.observe(
+                            forecast,
+                            &decision.resolution,
+                            &experience.checkpoint,
+                            resolved,
+                            millis,
+                        )
+                    {
+                        record.value_observed = Some(experience.checkpoint.clone());
+                        effect = Some((forecast, resolved, millis));
+                    }
                 }
                 header
                     .learning
@@ -538,6 +574,13 @@ impl Evidence {
         }
         self.commit(&header, updates)?;
         self.header = header;
+        if let Some((forecast, checked, spent_ms)) = effect {
+            crate::network::emit(serde_json::json!({
+                "event":crate::outcome::NodeEvent::ResearchValueObserved, "job":record.last_job,
+                "resolution_id":crate::hex(question.resolution_id()), "forecast":forecast,
+                "checked":checked, "spent_ms":spent_ms,
+            }));
+        }
         Ok(())
     }
     pub(super) fn attempted(
@@ -560,6 +603,10 @@ impl Evidence {
             model_checkpoint: None,
             experience: None,
             decision: None,
+            value_observed: None,
+            contributed: false,
+            used_own_proof: false,
+            continued: false,
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
             last_draw: 0,
@@ -883,7 +930,7 @@ impl Evidence {
         &mut self,
         goal: &ResearchQuestion,
         actual_goal: &ResearchQuestion,
-        consumer: &Record,
+        consumer: &mut Record,
         root: ArtifactId,
         dependency: ArtifactId,
         mut checked: impl FnMut(&ResearchQuestion) -> Result<Option<ResearchQuestion>, crate::Error>,
@@ -921,6 +968,9 @@ impl Evidence {
             .get::<Support>("support", &receipt_key, 4096)?
         {
             crate::object::id_bytes(&receipt.goal)?;
+            if let Some(forecast) = receipt.forecast {
+                forecast.validate()?;
+            }
             if receipt.lemma != lemma
                 || receipt.resolution != resolution
                 || (receipt.first_unresolved_job == 0) != (receipt.first_unresolved_at == 0)
@@ -954,6 +1004,24 @@ impl Evidence {
                 .checked_add(1)
                 .ok_or(crate::ResearchFailure::EvidenceSupportOverflow)?;
         }
+        let forecast = decision.and_then(|(decision, experience)| {
+            decision
+                .forecast
+                .map(|forecast| (forecast, experience.checkpoint.as_str()))
+        });
+        let first_reuse = !producer.contributed;
+        let continuation = producer.used_own_proof && !producer.continued;
+        header.effects.reuse(forecast, first_reuse, continuation);
+        let forecast = forecast.map(|(forecast, _)| forecast);
+        producer.contributed = true;
+        producer.continued |= continuation;
+        let consumer_update = if consumer.used_own_proof {
+            None
+        } else {
+            let mut updated = consumer.clone();
+            updated.used_own_proof = true;
+            Some(updated)
+        };
         let receipt = Support {
             lemma,
             goal: crate::hex(root.as_bytes()),
@@ -964,15 +1032,33 @@ impl Evidence {
             first_unresolved_at: consumer.first_unresolved_at,
             lemma_at: producer.verified_at,
             goal_at: consumer.verified_at,
+            first_reuse,
+            continuation,
+            forecast,
         };
-        self.commit(
-            &header,
-            vec![
-                Update::put("question", key, &producer)?,
-                Update::put("support", receipt_key, &receipt)?,
-            ],
-        )?;
+        let mut updates = vec![
+            Update::put("question", key, &producer)?,
+            Update::put("support", receipt_key, &receipt)?,
+        ];
+        if let Some(updated) = &consumer_update {
+            updates.push(Update::put(
+                "question",
+                record_key(&self.solver, goal),
+                updated,
+            )?);
+        }
+        self.commit(&header, updates)?;
         self.header = header;
+        if let Some(updated) = consumer_update {
+            *consumer = updated;
+        }
+        if first_reuse || continuation {
+            crate::network::emit(serde_json::json!({
+                "event":crate::outcome::NodeEvent::ResearchValueObserved, "job":receipt.goal_job,
+                "forecast":forecast, "producer":receipt.lemma, "consumer":receipt.goal,
+                "first_reuse":first_reuse, "continuation":continuation,
+            }));
+        }
         Ok(delayed.then_some(question))
     }
 }

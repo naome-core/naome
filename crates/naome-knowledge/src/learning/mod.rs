@@ -266,6 +266,7 @@ pub(crate) struct Job {
     pub history: Option<history::Receipt>,
     pub evidence: Vec<Evidence>,
     pub training: bool,
+    pub research: Option<crate::research_value::Frame>,
     pub required: Vec<String>,
     pub prerequisites: Prerequisites,
     pub base_hash: String,
@@ -496,6 +497,15 @@ impl Job {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(frame) = &self.research {
+            frame.validate()?;
+            if !self.training
+                || frame.solver != self.base.feedback_stamp().0
+                || frame.solver_revision > self.base.feedback_stamp().1
+            {
+                return Err(crate::ResearchFailure::ResearchValueInvalid.into());
+            }
+        }
         if digest(&self.base) != self.base_hash {
             return Err(crate::ResearchFailure::JobParentSnapshot.into());
         }
@@ -820,7 +830,10 @@ impl Job {
         if self.units() > 1 && unit == 1 {
             let wall = std::time::Instant::now();
             let cpu = meta::cpu_micros()?;
-            let selection = engine.meta.select(training_state, io)?;
+            let selection =
+                engine
+                    .meta
+                    .select_with_research(training_state, self.research.as_ref(), io)?;
             p.plan = Some(selection);
             p.meta_cpu_micros += meta::cpu_micros()?.saturating_sub(cpu);
             p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;

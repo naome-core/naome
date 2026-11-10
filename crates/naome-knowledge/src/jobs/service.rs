@@ -67,9 +67,11 @@ impl Service {
                 .as_ref()
                 .map(crate::learning::State::feedback),
         ));
+        let research = Arc::new(Mutex::new(None));
         let client = Client {
             sender,
             feedback: feedback.clone(),
+            research: research.clone(),
         };
         let (halt, stop) = oneshot::channel();
         let (receipt, stopped) = oneshot::channel();
@@ -87,6 +89,7 @@ impl Service {
                         mpsc::channel(crate::resources::active_limits().provider_events);
                     let mut owner = Owner::new(disk, journal, settings, computation);
                     owner.feedback = feedback;
+                    owner.research = research;
                     runtime.block_on(owner.run(receiver, stop, events, progress))
                 })();
                 if let Err(failure) = &result {
@@ -182,6 +185,8 @@ struct PendingLearning {
 }
 struct Owner {
     feedback: Arc<Mutex<Option<crate::training::ability::Feedback>>>,
+    research: Arc<Mutex<Option<crate::research_value::Frame>>>,
+    yielded_research: Option<u64>,
     computation: Arc<crate::resources::Computation>,
     disk: Disk,
     journal: Journal,
@@ -223,6 +228,8 @@ impl Owner {
         ));
         let mut owner = Self {
             feedback,
+            research: Arc::new(Mutex::new(None)),
+            yielded_research: None,
             computation,
             disk,
             journal,
@@ -393,7 +400,8 @@ impl Owner {
                                 self.save()?;
                                 if checkpoint==1 && let Some(n)=self.journal.records[&id].native.as_ref()
                                     && let Some(selection)=n.progress.as_ref().and_then(|p|p.plan.as_ref()) {
-                                    crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaPlan,"job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection}));
+                                    let forecast=n.research.as_ref().map(|frame|frame.training(selection.prediction));
+                                    crate::network::emit(serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaPlan,"job":id,"meta_updates":n.base.meta_updates(),"lower_model":n.base.feedback_stamp().0,"selection":selection,"research_forecast":forecast}));
                                 }
                                 if native {self.disk.collect_models(&mut self.journal)}else{Ok(())}
                             })();
@@ -969,6 +977,19 @@ impl Owner {
             crate::network::emit(
                 serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaUpdated,"job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
             );
+            if let Some(frame) = self.journal.records[&id]
+                .native
+                .as_ref()
+                .and_then(|n| n.research.as_ref())
+                && let Some(selection) = &progress.plan
+            {
+                let forecast = frame.training(selection.prediction);
+                crate::network::emit(serde_json::json!({
+                    "event":crate::outcome::NodeEvent::ResearchValueObserved,"job":id,
+                    "forecast":forecast,"observed":update.experience.targets(),
+                    "qualified":update.experience.selected_model != update.experience.source_model,
+                }));
+            }
         }
         self.running.remove(&id);
         self.clocks.remove(&id);
@@ -1186,6 +1207,15 @@ impl Owner {
             job.required = required;
             job.prerequisites = prerequisites;
             if job.training {
+                job.research = self
+                    .research
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .filter(|frame| {
+                        frame.solver == job.base.feedback_stamp().0
+                            && frame.solver_revision <= job.base.feedback_stamp().1
+                    });
                 job.request_history(self.journal.next_id);
                 job.evidence = self.disk.replay_evidence(&job.base)?;
             }
@@ -1409,6 +1439,52 @@ impl Owner {
         (queued, running, demand)
     }
 
+    fn queued_value(record: &Record) -> Option<crate::research_value::Forecast> {
+        if let Some(decision) = &record.binding.research {
+            return decision.forecast;
+        }
+        if !matches!(record.input, Input::Train { .. }) {
+            return None;
+        }
+        let native = record.native.as_ref()?;
+        let frame = native.research.as_ref()?;
+        if let Some(selection) = native.progress.as_ref().and_then(|p| p.plan.as_ref()) {
+            return Some(frame.training(selection.prediction));
+        }
+        native.base.training_value(frame)
+    }
+
+    fn prefer_research(&mut self, ready: &mut [u64]) -> Option<u64> {
+        let [first, second, ..] = ready else {
+            return None;
+        };
+        let a = &self.journal.records[first];
+        let b = &self.journal.records[second];
+        // A running lineage is never displaced. An unstarted oldest job may
+        // yield once, even when another candidate arrives before the next slot.
+        if self.yielded_research == Some(a.id)
+            || a.reserved_units != 0
+            || b.reserved_units != 0
+            || !matches!(
+                (&a.input, &b.input),
+                (Input::Train { .. }, Input::Solve { .. })
+                    | (Input::Solve { .. }, Input::Train { .. })
+            )
+        {
+            return None;
+        }
+        let (Some(a_value), Some(b_value)) = (Self::queued_value(a), Self::queued_value(b)) else {
+            return None;
+        };
+        if b_value.value() > a_value.value() {
+            let yielded = a.id;
+            ready.swap(0, 1);
+            Some(yielded)
+        } else {
+            None
+        }
+    }
+
     fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), crate::Error> {
         let (queued, running, demand) = self.scheduling_feedback();
         crate::resources::feedback::jobs(queued, running, demand);
@@ -1425,7 +1501,8 @@ impl Owner {
             if active >= lanes()[lane] || available == 0 {
                 continue;
             }
-            let ready = self
+            let limit = (lanes()[lane] - active).min(available);
+            let mut ready = self
                 .journal
                 .records
                 .values()
@@ -1438,9 +1515,15 @@ impl Owner {
                             .is_some_and(|w| w.iter().any(|w| !w.is_closed()))
                 })
                 .map(|r| r.id)
-                .take((lanes()[lane] - active).min(available))
+                .take(if self.settings.native_proof_learning {
+                    limit.max(2)
+                } else {
+                    limit
+                })
                 .collect::<Vec<_>>();
-            for id in ready {
+            let yielded = self.prefer_research(&mut ready);
+            let favored = ready.first().copied();
+            for id in ready.into_iter().take(limit) {
                 let Some(computation) = self.computation.try_enter() else {
                     break;
                 };
@@ -1483,6 +1566,22 @@ impl Owner {
                 record.state = State::Running;
                 let source = record.clone();
                 self.save()?;
+                if self.yielded_research == Some(id) {
+                    self.yielded_research = None;
+                } else if favored == Some(id) && yielded.is_some() {
+                    self.yielded_research = yielded;
+                }
+                if let Some(forecast) = Self::queued_value(&source) {
+                    let decision = source.binding.research.as_ref();
+                    crate::network::emit(serde_json::json!({
+                        "event":crate::outcome::NodeEvent::ResearchValueDecision,"job":id,
+                        "forecast":forecast,"value":forecast.value(),
+                        "resolution_id":decision.map(|d| crate::hex(&d.resolution)),
+                        "knowledge":decision.map(|d| crate::hex(&d.knowledge)),
+                        "goal":decision.and_then(|d| d.goal).map(|id| crate::hex(&id)),
+                        "yielded":if favored == Some(id) { yielded } else { None },
+                    }));
+                }
                 let (cancel, receiver) = oneshot::channel();
                 let events = events.clone();
                 self.running.insert(

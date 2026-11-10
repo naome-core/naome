@@ -39,6 +39,7 @@ pub(crate) struct Decision {
     pub finder_draw: u64,
     pub finder_updates: u64,
     pub checked_inputs: bool,
+    pub forecast: Option<crate::research_value::Forecast>,
     pub work_units: u32,
     pub horizon_ms: u64,
     features: Projection,
@@ -71,12 +72,29 @@ impl Decision {
             finder_draw: draw.0,
             finder_updates: draw.1,
             checked_inputs: false,
+            forecast: None,
             work_units: limits.work_units,
             horizon_ms: limits.horizon_ms,
             features,
         }
     }
+    pub(crate) fn action(&self) -> crate::research_value::Action {
+        use crate::research_value::Action;
+        if self.checked_inputs {
+            Action::Reuse
+        } else if self.goal.is_some() {
+            Action::Solve
+        } else {
+            Action::Explore
+        }
+    }
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(forecast) = self.forecast {
+            forecast.validate()?;
+            if forecast.action != self.action() {
+                return Err(crate::ResearchFailure::ResearchValueInvalid.into());
+            }
+        }
         if self.work_units == 0 || self.horizon_ms == 0 {
             return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
         }
@@ -197,6 +215,10 @@ impl Policy {
             return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
         }
         Ok(())
+    }
+
+    pub fn promotions(&self) -> u64 {
+        self.promotions
     }
 
     pub fn active(&self) -> bool {

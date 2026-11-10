@@ -399,6 +399,8 @@ impl Autonomous {
             && let Some(frontier) = &mut self.frontier
         {
             frontier.feedback(self.client.feedback());
+            self.client
+                .research_frame(frontier.research_frame(graph, self.unanswered.len()));
         }
         while let Some(publication) = self.evidence_publications.pop_front() {
             let result = self
@@ -1516,13 +1518,11 @@ impl Autonomous {
                             &question,
                             graph,
                             self.intervals.jobs.solving.limits,
+                            !required.is_empty()
+                                || !prerequisites.is_empty()
+                                || binding.catalog.is_some(),
                         ) {
-                            Ok(mut context) => {
-                                context.checked_inputs = !required.is_empty()
-                                    || !prerequisites.is_empty()
-                                    || binding.catalog.is_some();
-                                binding.research = Some(Box::new(context));
-                            }
+                            Ok(context) => binding.research = Some(Box::new(context)),
                             Err(error) if error.fatal() => {
                                 self.error = Some(error);
                                 self.retain(question);

@@ -142,7 +142,7 @@ fn observed_budget_receipt_is_durable_idempotent_and_keeps_its_original_context(
         Some(crate::learning::tests::stalled_frontier(&goal)),
     );
     let decision = finder
-        .research_decision(&goal, &graph, settings().solving.limits)
+        .research_decision(&goal, &graph, settings().solving.limits, false)
         .unwrap();
     completion.binding.research = Some(Box::new(decision.clone()));
     let summary = completion.experience.as_mut().unwrap();

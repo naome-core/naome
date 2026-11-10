@@ -35,6 +35,7 @@ pub(crate) enum Treatment {
     Full,
 }
 
+use crate::research_value::{Action as ResearchAction, Forecast, Frame, quantize};
 use crate::structure::{Features, SCALE, SIGNALS};
 
 pub(crate) use crate::sampling::Random;
@@ -94,6 +95,7 @@ impl Frontier {
         serde_json::json!({
             "model":self.evidence.model(), "curriculum":self.evidence.learning(),
             "research_policy":self.evidence.policy().status(),
+            "research_effects":self.evidence.effects(),
         })
     }
     #[cfg(test)]
@@ -834,11 +836,54 @@ impl Frontier {
         }
         Ok(false)
     }
+    pub(crate) fn research_frame(&self, graph: &Graph, backlog: usize) -> Option<Frame> {
+        let feedback = self.feedback.as_ref()?;
+        let model = self.evidence.model();
+        let limits = crate::resources::active_limits();
+        let mut effects = self.evidence.effects().clone();
+        effects.bind(&feedback.checkpoint);
+        Some(Frame {
+            knowledge: graph.content_root(),
+            solver: feedback.checkpoint.clone(),
+            solver_revision: feedback.revision,
+            catalogue: graph.accepted_count() as u64,
+            open_goals: self.goals.len() as u8,
+            backlog: backlog.min(u8::MAX as usize) as u8,
+            finder_updates: model.updates,
+            finder_rehearsals: model.rehearsals,
+            finder_utility: model.utility_observations,
+            finder_promotions: self.evidence.policy().promotions(),
+            draws: self.evidence.draws(),
+            solving_slots: limits.solving_jobs.min(u8::MAX as usize) as u8,
+            memory_bytes: crate::resources::adaptive::current()
+                .map_or(crate::resources::limits().memory_bytes as u64, |s| {
+                    s.budget.memory_bytes
+                }),
+            paid_work_units: self.research_limits.work_units,
+            horizon_ms: self.research_limits.horizon_ms,
+            effects,
+        })
+    }
+
+    fn research_forecast(
+        &self,
+        graph: &Graph,
+        action: ResearchAction,
+        predictions: [f32; 3],
+        overlap: u64,
+    ) -> Option<Forecast> {
+        Some(
+            self.research_frame(graph, 0)?
+                .question(action, predictions, overlap),
+        )
+    }
+
     pub(crate) fn research_decision(
         &mut self,
         question: &ResearchQuestion,
         graph: &Graph,
         limits: jobs::Limits,
+        checked_inputs: bool,
     ) -> Result<ResearchDecision, crate::Error> {
         let analysis = self.analyses.get(question)?;
         let hint = self.previous(question)?;
@@ -876,7 +921,7 @@ impl Frontier {
             solver_priority,
             (crate::resources::active_limits().solving_jobs.min(8) as u8) * 31,
         ];
-        Ok(ResearchDecision::new(
+        let mut decision = ResearchDecision::new(
             *question.resolution_id(),
             graph.content_root(),
             goal,
@@ -884,13 +929,18 @@ impl Frontier {
             summary,
             (observations, model.updates),
             limits,
-        ))
+        );
+        decision.checked_inputs = checked_inputs;
+        decision.forecast =
+            self.research_forecast(graph, decision.action(), [solvable, cost, useful], overlap);
+        Ok(decision)
     }
     fn weight(
         &mut self,
         question: &ResearchQuestion,
         graph: &Graph,
         settings: jobs::RoleSettings,
+        research: Option<&Frame>,
     ) -> Result<u64, crate::Error> {
         let analysis = self.analyses.get(question)?;
         let features = &analysis.descriptor.features;
@@ -983,8 +1033,34 @@ impl Frontier {
             // Prioritize helpers that can relieve work across multiple goals.
             weight = weight.saturating_mul(1 + relevance.min(8) * 4);
             weight = weight.saturating_mul(1 + saved_work.min(32));
+            let action = if self.lemmas.has_support(analysis.lookup_keys()) {
+                ResearchAction::Reuse
+            } else if relevance > 0
+                || self
+                    .goals
+                    .iter()
+                    .any(|g| g.resolution_id() == question.resolution_id())
+            {
+                ResearchAction::Solve
+            } else {
+                ResearchAction::Explore
+            };
+            if let Some(frame) = research {
+                let forecast = frame.question(
+                    action,
+                    self.evidence.model().predictions_from(&analysis.descriptor),
+                    relevance,
+                );
+                let factor = 768 + (forecast.value().clamp(0, 1_000) / 2) as u64;
+                weight = weight.saturating_mul(factor) / 1024;
+            }
             if self.evidence.policy().active() {
-                let state = self.research_decision(question, graph, settings.limits)?;
+                let state = self.research_decision(
+                    question,
+                    graph,
+                    settings.limits,
+                    action == ResearchAction::Reuse,
+                )?;
                 weight = weight.saturating_mul(self.evidence.policy().multiplier(&state)) / 1024;
             }
             if !analysis.meaningful() {
@@ -1035,13 +1111,14 @@ impl Frontier {
             )?;
             return Ok(Some(index));
         }
+        let research = self.research_frame(graph, 0);
         let weighted = indices
             .iter()
             .map(|index| {
                 let question = candidates[*index];
                 Ok((
                     self.analyses.get(question)?.descriptor.features.family,
-                    self.weight(question, graph, settings)?,
+                    self.weight(question, graph, settings, research.as_ref())?,
                 ))
             })
             .collect::<Result<Vec<_>, crate::Error>>()?;
@@ -1160,7 +1237,7 @@ impl Frontier {
             self.learning_event(question, before, true);
         }
         if self.native
-            && let Some(consumer) = self.evidence.support_consumer(question, job, root)?
+            && let Some(mut consumer) = self.evidence.support_consumer(question, job, root)?
         {
             let actual_goal = graph
                 .describe(root)?
@@ -1170,7 +1247,7 @@ impl Frontier {
                 if let Some(lemma) = self.evidence.support(
                     question,
                     &actual_goal,
-                    &consumer,
+                    &mut consumer,
                     root,
                     dependency,
                     |lemma| {

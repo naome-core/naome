@@ -159,6 +159,7 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("pool.rs"));
     hash.update(include_str!("pool/preservation.rs"));
     hash.update(include_str!("meta.rs"));
+    hash.update(include_str!("../research_value.rs"));
     hash.update(include_str!("transfer.rs"));
     hash.update(include_str!("meta/model.rs"));
     hash.update(include_str!("meta/plan.rs"));

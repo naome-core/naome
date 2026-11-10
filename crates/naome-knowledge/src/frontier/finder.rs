@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, VecDeque};
 mod model;
 pub(super) use model::Model;
 mod analysis;
-pub(super) use analysis::Cache;
+pub(super) use analysis::{Cache, Descriptor};
 mod learning;
 pub(crate) mod research;
 pub(super) use learning::{Learning, Recipe};
