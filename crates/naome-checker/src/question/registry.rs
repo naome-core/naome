@@ -85,8 +85,8 @@ impl QuestionRegistry {
             return Ok(());
         }
         let statement = statement_id(&bytes);
-        let equivalence =
-            super::equivalence::key(entry.formula).map_err(|_| RejectionReason::InvalidRegistry)?;
+        let equivalence = super::equivalence::key(entry.formula, Some(&bytes))
+            .map_err(|_| RejectionReason::InvalidRegistry)?;
         let mut bucket = self.statements.get(&statement).cloned().unwrap_or_default();
         if let Some((record, ())) = bucket.entries().next()
             && self.records.get(record) != Some(entry.formula)

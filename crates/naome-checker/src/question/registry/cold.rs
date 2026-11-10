@@ -117,7 +117,7 @@ impl DiskRegistry {
                 return Err(ContextError::Corrupt);
             }
             let statement = statement_id(bytes);
-            let equivalence = super::super::equivalence::key(entry.formula)?;
+            let equivalence = super::super::equivalence::key(entry.formula, Some(bytes))?;
             let mut bucket = self.bucket(statement)?;
             if let Some(first) = bucket.entries().next() {
                 let (record, _) = first?;

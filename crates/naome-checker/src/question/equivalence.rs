@@ -3,6 +3,7 @@
 use super::*;
 use deduction::{Failure, INVALID, LIMIT, Plan};
 use naome_foundation::{FreeVariable, Logic};
+use std::borrow::Cow;
 
 mod certificate;
 
@@ -141,17 +142,23 @@ fn swapped(a: Formula, b: Formula, negative: bool) -> Formula {
 
 /// The complete derived registry bucket for outer vacuity and the single
 /// root exchange `(A -> not(B)) <-> (B -> not(A))`, including its negation.
-pub(super) fn key(formula: &Formula) -> Result<StatementId, ContextError> {
-    let core = unwrapped(formula)
-        .last()
-        .expect("initial equivalence level");
-    let mut bytes = core.encode_canonical().map_err(|_| ContextError::Limit)?;
-    if let Some((a, b, negative)) = parts(&core) {
+/// When available, `source_bytes` is the canonical encoding of `formula`.
+pub(super) fn key(
+    formula: &Formula,
+    source_bytes: Option<&[u8]>,
+) -> Result<StatementId, ContextError> {
+    let opened = unwrapped(formula).skip(1).last();
+    let core = opened.as_ref().unwrap_or(formula);
+    let mut bytes = match source_bytes.filter(|_| opened.is_none()) {
+        Some(bytes) => Cow::Borrowed(bytes),
+        None => Cow::Owned(core.encode_canonical().map_err(|_| ContextError::Limit)?),
+    };
+    if let Some((a, b, negative)) = parts(core) {
         let alternate = swapped(a, b, negative)
             .encode_canonical()
             .map_err(|_| ContextError::Limit)?;
-        if alternate < bytes {
-            bytes = alternate;
+        if alternate.as_slice() < bytes.as_ref() {
+            bytes = Cow::Owned(alternate);
         }
     }
     let mut hash = Sha256::new();
@@ -187,7 +194,7 @@ pub(super) fn assess(
         return Ok(None);
     }
     reserve_key(question.formula, work)?;
-    let key = key(question.formula).map_err(context_failure)?;
+    let key = key(question.formula, None).map_err(context_failure)?;
     work.index()?;
     for record in snapshot
         .questions
