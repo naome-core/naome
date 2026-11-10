@@ -35,6 +35,10 @@ const FOR_ALL: u8 = 0x04;
 const FREE_VARIABLE: u8 = 0x00;
 const BOUND_VARIABLE: u8 = 0x01;
 
+// Room for an 11-byte atom and a 23-byte implication, rounded to buffer growth sizes.
+const INITIAL_FORMULA_CAPACITY: usize = 16;
+const INITIAL_IMPLICATION_CAPACITY: usize = 32;
+
 /// One encoding shared by all outer implication-spine projections. Each suffix
 /// borrows bytes from that encoding.
 pub struct CanonicalImplication {
@@ -60,7 +64,7 @@ impl CanonicalImplication {
 
 impl FormulaView<'_> {
     pub fn encode_canonical(self) -> Result<Vec<u8>, FormulaCodecError> {
-        let mut output = Vec::new();
+        let mut output = Vec::with_capacity(INITIAL_FORMULA_CAPACITY);
         encode_node(
             self.0,
             0,
@@ -93,7 +97,7 @@ impl Formula {
         let Node::Implies(left, right) = &self.0 else {
             return Ok(None);
         };
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(INITIAL_IMPLICATION_CAPACITY);
         let mut nodes = NodeBudget::new(FORMULA_MAX_NODES);
         nodes.charge()?;
         bytes.push(IMPLIES);
@@ -227,7 +231,7 @@ impl Formula {
         maximum_nodes: usize,
         mut variables: impl FnMut(FreeVariable) -> u32,
     ) -> Result<(Vec<u8>, usize), FormulaCodecError> {
-        let mut output = Vec::new();
+        let mut output = Vec::with_capacity(INITIAL_FORMULA_CAPACITY);
         let mut nodes = NodeBudget::new(maximum_nodes);
         encode_node(&self.0, 0, &mut nodes, &mut variables, &mut output)?;
         Ok((output, nodes.used()))
