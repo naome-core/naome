@@ -98,6 +98,24 @@ fn specialization_charges_each_attempt_through_the_last_suffix() {
 }
 
 #[test]
+fn opening_a_prefix_skips_free_and_excluded_identifiers() {
+    let outer = FreeVariable::new(1);
+    let inner = FreeVariable::new(2);
+    let free = FreeVariable::new(u32::MAX - 1);
+    let excluded = BTreeSet::from([FreeVariable::new(u32::MAX), FreeVariable::new(u32::MAX - 3)]);
+    let body = Formula::implies(Formula::member(outer, free), Formula::equal(inner, free));
+    let source = Formula::for_all(outer, Formula::for_all(inner, body));
+    let first = FreeVariable::new(u32::MAX - 2);
+    let second = FreeVariable::new(u32::MAX - 4);
+    let expected = Formula::implies(Formula::member(first, free), Formula::equal(second, free));
+
+    assert_eq!(
+        open(&source, &excluded, 2),
+        Some((expected, vec![first, second]))
+    );
+}
+
+#[test]
 fn an_open_local_rule_keeps_its_outer_variables_fixed() {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
