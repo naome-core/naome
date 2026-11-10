@@ -73,6 +73,13 @@ def run(trial):
         node.write_config()
         node.start()
         node.stop()
+    # Startup and control must remain available with a small work target,
+    # even when ordinary computation is paused by observed process memory.
+    pressure(donor, True)
+    donor.start()
+    assert trial.call(donor, "status")["running"]
+    donor.stop()
+    pressure(donor, False)
     donor.config["runtime"]["question_interval_ms"] = 100
     for node in trial.nodes:
         node.write_config()
