@@ -368,6 +368,7 @@ fn strict_node_codec_and_value_limit_preserve_existing_root() {
     assert_eq!(map.fingerprint(), [0; 32]);
     assert_eq!(map.entries().next(), None);
     map.insert([0; 32], &vec![7; MAX_VALUE_BYTES]).unwrap();
+    assert_eq!(map.get(&[0; 32]), Ok(Some(vec![7; MAX_VALUE_BYTES])));
     let before = map.root();
     assert_eq!(
         map.set([0; 32], &vec![8; MAX_VALUE_BYTES + 1]),
@@ -397,6 +398,11 @@ fn strict_node_codec_and_value_limit_preserve_existing_root() {
             Err(ContextError::Corrupt)
         );
     }
+    let empty_key = bit_key(0);
+    assert_eq!(map.get(&empty_key), Ok(None));
+    assert!(map.insert(empty_key, &[]).unwrap());
+    assert_eq!(map.get(&empty_key), Ok(Some(Vec::new())));
+    assert_eq!(map.contains_key(&empty_key), Ok(true));
 }
 #[test]
 fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {

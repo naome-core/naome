@@ -48,16 +48,20 @@ impl DiskMap {
     }
 
     pub(crate) fn get(&self, key: &[u8; 32]) -> Result<Option<Vec<u8>>, ContextError> {
-        let mut lookup = self.lookup(*key);
+        self.finish_lookup(*key)?.into_value()
+    }
+
+    fn finish_lookup(&self, key: [u8; 32]) -> Result<Lookup, ContextError> {
+        let mut lookup = self.lookup(key);
         while self.advance_lookup(&mut lookup)?.is_some() {}
-        lookup.into_value()
+        Ok(lookup)
     }
 
     pub(crate) fn lookup(&self, key: [u8; 32]) -> Lookup {
         Lookup {
             pending: self.root.map(Pending::root),
             key,
-            value: None,
+            leaf: None,
             failed: false,
         }
     }
@@ -70,7 +74,7 @@ impl DiskMap {
     }
 
     pub(crate) fn contains_key(&self, key: &[u8; 32]) -> Result<bool, ContextError> {
-        self.get(key).map(|value| value.is_some())
+        self.finish_lookup(*key)?.found()
     }
 
     /// An existing key keeps both its value and the complete root unchanged.
@@ -231,22 +235,27 @@ impl DiskMap {
 pub(crate) struct Lookup {
     pending: Option<Pending>,
     key: [u8; 32],
-    value: Option<Vec<u8>>,
+    // The complete authenticated leaf buffer, retained only for a hit.
+    leaf: Option<Vec<u8>>,
     failed: bool,
 }
 impl Lookup {
     pub(crate) fn complete(&self) -> bool {
         !self.failed && self.pending.is_none()
     }
-    pub(crate) fn value(&self) -> Result<Option<&[u8]>, ContextError> {
+    pub(crate) fn found(&self) -> Result<bool, ContextError> {
         if !self.complete() {
             return Err(ContextError::Corrupt);
         }
-        Ok(self.value.as_deref())
+        Ok(self.leaf.is_some())
     }
     fn into_value(self) -> Result<Option<Vec<u8>>, ContextError> {
-        self.value()?;
-        Ok(self.value)
+        self.found()?;
+        Ok(self.leaf.map(|mut bytes| {
+            bytes.copy_within(LEAF_HEADER_BYTES.., 0);
+            bytes.truncate(bytes.len() - LEAF_HEADER_BYTES);
+            bytes
+        }))
     }
     fn step(&mut self, storage: &dyn ContextStorage) -> Result<Option<usize>, ContextError> {
         if self.failed {
@@ -257,14 +266,15 @@ impl Lookup {
         };
         let result = (|| {
             let bytes = read_node(storage, pending)?;
+            let byte_count = bytes.len();
             match decode_node(&bytes, pending)? {
-                Node::Leaf { key, value } => self.value = (key == self.key).then(|| value.to_vec()),
+                Node::Leaf { key, .. } => self.leaf = (key == self.key).then_some(bytes),
                 Node::Branch { bit, left, right } => {
                     let child = if key_bit(&self.key, bit) { right } else { left };
                     self.pending = Some(pending.child(child, bit)?);
                 }
             }
-            Ok(Some(bytes.len()))
+            Ok(Some(byte_count))
         })();
         if let Err(error) = &result {
             self.failed = true;
