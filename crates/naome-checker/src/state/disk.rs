@@ -216,13 +216,11 @@ impl DiskArtifactState {
             .storage()
             .write(address, bytes)
             .map_err(ArtifactStateError::Context)?;
-        let mut record = address.to_vec();
-        record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        let record = encode_record_with_u64(&address, bytes.len() as u64);
         next.definitions
             .insert(*definition.definition_id().as_bytes(), &record)
             .map_err(ArtifactStateError::Context)?;
-        let mut identity = vec![1];
-        identity.extend_from_slice(definition.definition_id().as_bytes());
+        let identity = encode_artifact_record(1, definition.definition_id().as_bytes());
         next.artifacts
             .insert(
                 *ArtifactId::from_definition_id(definition.definition_id()).as_bytes(),
@@ -345,8 +343,7 @@ impl DiskArtifactState {
             .storage()
             .write(address, &bytes)
             .map_err(ArtifactStateError::Context)?;
-        let mut statement_record = address.to_vec();
-        statement_record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        let statement_record = encode_record_with_u64(&address, bytes.len() as u64);
         next.register_fact(
             proof.proof_id,
             proof.derivation_id,
@@ -634,6 +631,20 @@ fn definition_record(record: &[u8]) -> Result<([u8; 32], usize), ContextError> {
     }
     Ok((address, length))
 }
+fn encode_record_with_u64(prefix: &[u8; 32], value: u64) -> [u8; 40] {
+    let mut record = [0; 40];
+    record[..32].copy_from_slice(prefix);
+    record[32..].copy_from_slice(&value.to_be_bytes());
+    record
+}
+
+fn encode_artifact_record(kind: u8, id: &[u8; 32]) -> [u8; 33] {
+    let mut record = [0; 33];
+    record[0] = kind;
+    record[1..].copy_from_slice(id);
+    record
+}
+
 fn artifact_proof_id(id: ArtifactId, record: &[u8]) -> Result<Option<ProofId>, ContextError> {
     if record.len() != 33 {
         return Err(ContextError::Corrupt);
@@ -695,16 +706,12 @@ fn formula_address(bytes: &[u8]) -> [u8; 32] {
     hash.update(bytes);
     hash.finalize().into()
 }
-fn encode_root(root: Option<Root>) -> Vec<u8> {
-    match root {
-        None => vec![0],
-        Some(root) => {
-            let mut bytes = vec![1];
-            bytes.extend_from_slice(&root.address);
-            bytes.extend_from_slice(&root.fingerprint);
-            bytes
-        }
-    }
+fn encode_root(root: Root) -> [u8; 65] {
+    let mut bytes = [0; 65];
+    bytes[0] = 1;
+    bytes[1..33].copy_from_slice(&root.address);
+    bytes[33..].copy_from_slice(&root.fingerprint);
+    bytes
 }
 fn decode_root(bytes: Option<&[u8]>) -> Result<Option<Root>, ContextError> {
     match bytes {

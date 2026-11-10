@@ -79,13 +79,11 @@ impl DiskArtifactState {
         self.derivations
             .insert(*derivation.as_bytes(), statement.as_bytes())
             .map_err(context)?;
-        let mut proof_record = derivation.as_bytes().to_vec();
-        proof_record.extend_from_slice(&(depth as u64).to_be_bytes());
+        let proof_record = encode_record_with_u64(derivation.as_bytes(), depth as u64);
         self.proofs
             .insert(*proof.as_bytes(), &proof_record)
             .map_err(context)?;
-        let mut identity = vec![0];
-        identity.extend_from_slice(proof.as_bytes());
+        let identity = encode_artifact_record(0, proof.as_bytes());
         self.artifacts
             .insert(*ArtifactId::from_proof_id(proof).as_bytes(), &identity)
             .map_err(context)?;
@@ -118,8 +116,9 @@ impl DiskArtifactState {
                             decode_root(root.as_deref()).map_err(context)?,
                         );
                         if bucket.insert(*statement.as_bytes(), &[]).map_err(context)? {
+                            let root = bucket.root().ok_or(context(ContextError::Corrupt))?;
                             index
-                                .set(*target.as_bytes(), &encode_root(bucket.root()))
+                                .set(*target.as_bytes(), &encode_root(root))
                                 .map_err(context)?;
                         }
                     }
@@ -248,8 +247,7 @@ impl ProgramRegistration {
                 return Ok(());
             }
         }
-        let mut record = Vec::with_capacity(40);
-        if let Some(formula) = proof.conclusion() {
+        let record = if let Some(formula) = proof.conclusion() {
             let bytes = formula
                 .encode_canonical()
                 .map_err(|_| ArtifactStateError::Context(ContextError::Corrupt))?;
@@ -259,8 +257,7 @@ impl ProgramRegistration {
                 .storage()
                 .write(address, &bytes)
                 .map_err(ArtifactStateError::Context)?;
-            record.extend_from_slice(&address);
-            record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+            encode_record_with_u64(&address, bytes.len() as u64)
         } else {
             if !self
                 .next
@@ -270,9 +267,8 @@ impl ProgramRegistration {
             {
                 return Err(ArtifactStateError::Context(ContextError::Corrupt));
             }
-            record.extend_from_slice(&self.manifest.conclusion);
-            record.extend_from_slice(&0u64.to_be_bytes());
-        }
+            encode_record_with_u64(&self.manifest.conclusion, 0)
+        };
         let manifest_bytes = self
             .manifest
             .canonical_bytes()
