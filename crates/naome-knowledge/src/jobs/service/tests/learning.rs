@@ -904,20 +904,20 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
     assert_eq!(owner.journal.records[&id].reserved_units, reserved);
 }
 #[test]
-fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_restart() {
+fn model_chunk_groups_commit_atomically_and_charge_every_original_chunk_after_restart() {
     let (directory, mut owner) = native();
     accepted(&mut owner);
     let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
-    let bytes = vec![37; crate::resources::limits().native_model_chunk_bytes + 17];
+    let bytes = vec![37; crate::resources::limits().native_model_chunk_bytes * 2 + 17];
     let blob = crate::learning::Blob::of(&bytes);
     let original = serde_json::to_value(owner.journal.records[&id].native.as_ref()).unwrap();
     crate::checkpoint::fail_next_commit();
     assert!(
         owner
             .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0..2, Some(bytes.clone()))
+            .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
             .unwrap_err()
             .retryable()
     );
@@ -925,26 +925,30 @@ fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_res
         serde_json::to_value(owner.journal.records[&id].native.as_ref()).unwrap(),
         original
     );
-    assert!(
-        owner
-            .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
-            .is_err()
+    let oversized = crate::learning::Blob::of(&vec![
+        0;
+        3 * crate::resources::limits()
+            .native_model_chunk_bytes
+            + 1
+    ]);
+    assert_eq!(
+        oversized.range_len(&(0..4)).unwrap_err(),
+        crate::Error::from(crate::ResearchFailure::ModelChunkRange)
     );
     owner
         .disk
-        .model_io(&mut owner.journal, id, 1, &blob, 0..2, Some(bytes.clone()))
+        .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
         .unwrap();
     let saved = owner.journal.records[&id].native.as_ref().unwrap();
     assert_eq!(saved.io_bytes, bytes.len());
-    assert_eq!(saved.io_operations, 2);
+    assert_eq!(saved.io_operations, 3);
     assert_eq!(saved.written.len(), 1);
     let settings = owner.settings;
     drop(owner);
     let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     let saved = journal.records[&id].native.as_ref().unwrap();
     assert_eq!(saved.io_bytes, bytes.len());
-    assert_eq!(saved.io_operations, 2);
+    assert_eq!(saved.io_operations, 3);
     let connection = rusqlite::Connection::open(directory.0.join("research/jobs.sqlite3")).unwrap();
     let parts = connection
         .prepare("SELECT payload FROM entries WHERE kind='model' ORDER BY key")
@@ -953,7 +957,7 @@ fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_res
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(parts.len(), 2);
+    assert_eq!(parts.len(), 3);
     assert_eq!(parts.concat(), bytes);
 }
 

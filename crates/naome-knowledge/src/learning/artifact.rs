@@ -2,6 +2,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ops::Range;
+
+pub(crate) const CHUNKS_PER_TRANSFER: usize = 3;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Blob {
@@ -39,16 +41,19 @@ impl Blob {
     pub fn key(&self, index: usize) -> String {
         format!("{}:{index:06}", self.sha256)
     }
-    /// At most two existing chunks share one durable IO acknowledgement. The
-    /// chunk identities, individual lengths and lifetime charges stay exact.
+    /// Group durable IO acknowledgements within the existing wire bound.
+    /// Chunks retain their individual identities, lengths and lifetime charges.
     pub fn ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         (0..self.chunks())
-            .step_by(2)
-            .map(|start| start..(start + 2).min(self.chunks()))
+            .step_by(CHUNKS_PER_TRANSFER)
+            .map(|start| start..(start + CHUNKS_PER_TRANSFER).min(self.chunks()))
     }
     pub fn range_len(&self, range: &Range<usize>) -> Result<usize, crate::Error> {
         self.validate()?;
-        if range.start >= range.end || range.end - range.start > 2 || range.end > self.chunks() {
+        if range.start >= range.end
+            || range.end - range.start > CHUNKS_PER_TRANSFER
+            || range.end > self.chunks()
+        {
             return Err(crate::ResearchFailure::ModelChunkRange.into());
         }
         range.clone().map(|index| self.chunk_len(index)).sum()
