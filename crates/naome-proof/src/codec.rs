@@ -9,14 +9,20 @@ use crate::{
     proof_formula::ProofFormulaCodecError, validate_step_references,
 };
 
-pub(super) fn encode_steps(steps: &[ProofStep]) -> Result<Vec<u8>, ProofCertificateError> {
-    let mut output = Vec::with_capacity(4 + steps.len());
+pub(super) fn encode_steps(
+    steps: &[ProofStep],
+    encoded_length: usize,
+) -> Result<Vec<u8>, ProofCertificateError> {
+    let mut output = Vec::with_capacity(encoded_length);
     encode_steps_into(steps, &mut output)?;
+    debug_assert_eq!(output.len(), encoded_length);
     Ok(output)
 }
 
-pub(super) fn validate_steps_encoding(steps: &[ProofStep]) -> Result<(), ProofCertificateError> {
-    encode_steps_into(steps, &mut LengthSink::default())
+pub(super) fn checked_steps_length(steps: &[ProofStep]) -> Result<usize, ProofCertificateError> {
+    let mut output = LengthSink::default();
+    encode_steps_into(steps, &mut output)?;
+    Ok(output.len())
 }
 
 pub(super) fn steps_match_encoding(steps: &[ProofStep], expected: &[u8]) -> bool {
@@ -72,7 +78,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<ProofCertificate, ProofCertificateE
         });
     }
 
-    Ok(ProofCertificate { steps })
+    Ok(ProofCertificate {
+        steps,
+        encoded_length: bytes.len(),
+    })
 }
 
 pub(super) fn encode_step(

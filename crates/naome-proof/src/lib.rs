@@ -77,6 +77,8 @@ const PROOF_REFERENCE: u8 = 0x30;
 #[must_use]
 pub struct ProofCertificate {
     steps: Vec<ProofStep>,
+    // The exact length established by validation, decoding, or normalization.
+    encoded_length: usize,
 }
 
 impl ProofCertificate {
@@ -88,8 +90,11 @@ impl ProofCertificate {
     /// strictly to earlier steps.
     pub fn new(steps: Vec<ProofStep>) -> Result<Self, ProofCertificateError> {
         validate_steps(&steps)?;
-        codec::validate_steps_encoding(&steps)?;
-        Ok(Self { steps })
+        let encoded_length = codec::checked_steps_length(&steps)?;
+        Ok(Self {
+            steps,
+            encoded_length,
+        })
     }
 
     /// Returns the proof steps in their encoded execution order.
@@ -101,7 +106,7 @@ impl ProofCertificate {
     /// Encodes this certificate in the canonical wire format.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
-        codec::encode_steps(&self.steps)
+        codec::encode_steps(&self.steps, self.encoded_length)
             .expect("ProofCertificate construction guarantees canonical encodability")
     }
 

@@ -16,6 +16,7 @@ pub(super) fn normalize_with_variables(
     let mut source = certificate.steps.into_iter().map(Some).collect::<Vec<_>>();
     let mut normalized_indices = vec![UNNORMALIZED_STEP; source.len()];
     let mut normalized_steps = Vec::new();
+    let mut encoded_length = size_of::<u32>();
     let mut interned_steps = BTreeMap::new();
     let mut variables = VariableNormalizer::default();
     let mut traversal = vec![Visit::Enter(source.len() - 1)];
@@ -56,6 +57,7 @@ pub(super) fn normalize_with_variables(
                     Entry::Vacant(entry) => {
                         let index = u32::try_from(normalized_steps.len())
                             .expect("the source certificate bounds normalized step indices");
+                        encoded_length += entry.key().len();
                         entry.insert(index);
                         normalized_steps.push(step);
                         index
@@ -71,6 +73,7 @@ pub(super) fn normalize_with_variables(
     (
         ProofCertificate {
             steps: normalized_steps,
+            encoded_length,
         },
         variables.normalized,
     )
