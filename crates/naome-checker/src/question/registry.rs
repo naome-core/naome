@@ -165,9 +165,12 @@ impl QuestionRegistry {
             .map_err(|_| ContextError::Limit)?
             .0;
         let mut records = self.records_for(statement_id(&bytes))?;
-        match records.next() {
-            Some(record) => Ok(self.get(&record?)?.as_deref() == Some(formula)),
-            None => Ok(false),
+        let Some(record) = records.next().transpose()? else {
+            return Ok(false);
+        };
+        match &self.cold {
+            Some(cold) => cold.matches_formula(&record, formula, &bytes),
+            None => Ok(self.records.get(&record) == Some(formula)),
         }
     }
 }

@@ -32,47 +32,69 @@ impl DiskRegistry {
     }
     pub(super) fn get(&self, record: &Identity) -> Result<Option<Cow<'_, Formula>>, ContextError> {
         self.report((|| {
-            let Some(metadata) = self.records.get(record)? else {
+            let Some(bytes) = self.formula_bytes(record)? else {
                 return Ok(None);
             };
-            if metadata.len() != 72 {
-                return Err(ContextError::Corrupt);
-            }
-            let statement = StatementId::from_bytes(
-                metadata[..32]
-                    .try_into()
-                    .map_err(|_| ContextError::Corrupt)?,
-            );
-            let address = metadata[32..64]
-                .try_into()
-                .map_err(|_| ContextError::Corrupt)?;
-            let length = usize::try_from(u64::from_be_bytes(
-                metadata[64..]
-                    .try_into()
-                    .map_err(|_| ContextError::Corrupt)?,
-            ))
-            .map_err(|_| ContextError::Corrupt)?;
-            if length > naome_foundation::FORMULA_MAX_BYTES {
-                return Err(ContextError::Corrupt);
-            }
-            let bytes = self.records.storage().read(address, length)?;
-            if bytes.len() != length
-                || formula_address(&bytes) != address
-                || statement_id(&bytes) != statement
-            {
-                return Err(ContextError::Corrupt);
-            }
-            let formula = Formula::decode_canonical_with_node_limit(
-                &bytes,
-                AssessmentLimits::MAXIMUM.formula_nodes,
-            )
-            .map_err(|_| ContextError::Corrupt)?
-            .0;
-            if !formula.is_closed() {
-                return Err(ContextError::Corrupt);
-            }
-            Ok(Some(Cow::Owned(formula)))
+            Ok(Some(Cow::Owned(decode_formula(&bytes)?)))
         })())
+    }
+    pub(super) fn matches_formula(
+        &self,
+        record: &Identity,
+        formula: &Formula,
+        canonical: &[u8],
+    ) -> Result<bool, ContextError> {
+        self.report((|| {
+            let Some(bytes) = self.formula_bytes(record)? else {
+                return Ok(false);
+            };
+            if bytes != canonical {
+                return Ok(decode_formula(&bytes)? == *formula);
+            }
+            // Encoding bounds the traversal. The graph fold checks binder scope
+            // as well as closure, including formulas projected from inner views.
+            let properties = formula.fold_graph(|node| {
+                node.properties(node.children())
+                    .ok_or(ContextError::Corrupt)
+            })?;
+            if !properties.closed() {
+                return Err(ContextError::Corrupt);
+            }
+            Ok(true)
+        })())
+    }
+    fn formula_bytes(&self, record: &Identity) -> Result<Option<Vec<u8>>, ContextError> {
+        let Some(metadata) = self.records.get(record)? else {
+            return Ok(None);
+        };
+        if metadata.len() != 72 {
+            return Err(ContextError::Corrupt);
+        }
+        let statement = StatementId::from_bytes(
+            metadata[..32]
+                .try_into()
+                .map_err(|_| ContextError::Corrupt)?,
+        );
+        let address = metadata[32..64]
+            .try_into()
+            .map_err(|_| ContextError::Corrupt)?;
+        let length = usize::try_from(u64::from_be_bytes(
+            metadata[64..]
+                .try_into()
+                .map_err(|_| ContextError::Corrupt)?,
+        ))
+        .map_err(|_| ContextError::Corrupt)?;
+        if length > naome_foundation::FORMULA_MAX_BYTES {
+            return Err(ContextError::Corrupt);
+        }
+        let bytes = self.records.storage().read(address, length)?;
+        if bytes.len() != length
+            || formula_address(&bytes) != address
+            || statement_id(&bytes) != statement
+        {
+            return Err(ContextError::Corrupt);
+        }
+        Ok(Some(bytes))
     }
     fn bucket(&self, statement: StatementId) -> Result<DiskMap, ContextError> {
         let value = self.statements.get(statement.as_bytes())?;
@@ -121,7 +143,7 @@ impl DiskRegistry {
             let mut bucket = self.bucket(statement)?;
             if let Some(first) = bucket.entries().next() {
                 let (record, _) = first?;
-                if self.get(&record)?.as_deref() != Some(entry.formula) {
+                if !self.matches_formula(&record, entry.formula, bytes)? {
                     return Err(ContextError::Corrupt);
                 }
             }
@@ -148,6 +170,16 @@ impl DiskRegistry {
         *self = self.report(result)?;
         Ok(())
     }
+}
+
+fn decode_formula(bytes: &[u8]) -> Result<Formula, ContextError> {
+    let (formula, _) =
+        Formula::decode_canonical_with_node_limit(bytes, AssessmentLimits::MAXIMUM.formula_nodes)
+            .map_err(|_| ContextError::Corrupt)?;
+    if !formula.is_closed() {
+        return Err(ContextError::Corrupt);
+    }
+    Ok(formula)
 }
 
 fn encode_root(root: Root) -> [u8; 64] {

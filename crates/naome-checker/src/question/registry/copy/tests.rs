@@ -60,6 +60,76 @@ fn registry() -> (QuestionRegistry, Arc<Storage>, QuestionRegistry) {
 }
 
 #[test]
+fn duplicate_cold_record_preserves_registry_and_storage() {
+    let (mut disk, storage, _) = registry();
+    let identity = disk.identity();
+    let bytes = storage.bytes.lock().unwrap().clone();
+    let other = ZfcAxiom::Union.formula();
+    let entry = RegisteredQuestion::new([1; 32], &other).unwrap();
+    assert_eq!(
+        disk.insert(entry),
+        Err(crate::question::RejectionReason::InvalidRegistry)
+    );
+    assert_eq!(disk.identity(), identity);
+    assert_eq!(*storage.bytes.lock().unwrap(), bytes);
+    assert!(storage.failures.lock().unwrap().is_empty());
+}
+
+#[test]
+fn cold_formula_membership_authenticates_the_matching_bytes() {
+    let (disk, storage, _) = registry();
+    let formula = ZfcAxiom::Pairing.formula();
+    assert_eq!(disk.contains(&formula), Ok(true));
+    assert_eq!(disk.contains(&ZfcAxiom::Infinity.formula()), Ok(false));
+
+    let address = cold::formula_address(&formula.encode_canonical().unwrap());
+    storage.bytes.lock().unwrap().get_mut(&address).unwrap()[0] ^= 1;
+    assert_eq!(disk.contains(&formula), Err(ContextError::Corrupt));
+    assert_eq!(*storage.failures.lock().unwrap(), [ContextError::Corrupt]);
+}
+
+#[test]
+fn cold_formula_matching_rejects_authenticated_invalid_formulas() {
+    use naome_foundation::{FreeVariable, graph::Node};
+
+    let variable = FreeVariable::new(0);
+    let quantified = Formula::for_all(variable, Formula::equal(variable, variable));
+    let Node::ForAll(body) = quantified.view().graph_node() else {
+        panic!("expected a quantifier");
+    };
+    let dangling = body.to_owned();
+    let open = Formula::equal(variable, variable);
+    let valid = ZfcAxiom::Pairing.formula();
+    for formula in [dangling, open] {
+        let storage = Arc::new(Storage::default());
+        let mut cold = cold::DiskRegistry::new(storage.clone());
+        let bytes = formula.encode_canonical().unwrap();
+        let address = cold::formula_address(&bytes);
+        storage.write(address, &bytes).unwrap();
+        let mut metadata = [0; 72];
+        metadata[..32].copy_from_slice(statement_id(&bytes).as_bytes());
+        metadata[32..64].copy_from_slice(&address);
+        metadata[64..].copy_from_slice(&(bytes.len() as u64).to_be_bytes());
+        let record = [9; 32];
+        cold.records.insert(record, &metadata).unwrap();
+
+        assert_eq!(cold.get(&record), Err(ContextError::Corrupt));
+        assert_eq!(
+            cold.matches_formula(&record, &formula, &bytes),
+            Err(ContextError::Corrupt)
+        );
+        assert_eq!(
+            cold.matches_formula(&record, &valid, &valid.encode_canonical().unwrap()),
+            Err(ContextError::Corrupt)
+        );
+        assert_eq!(
+            *storage.failures.lock().unwrap(),
+            vec![ContextError::Corrupt; 3]
+        );
+    }
+}
+
+#[test]
 fn registry_copy_accounts_every_read_and_survives_loss_of_source_storage() {
     for budget in [
         DiskCopyBudget {
