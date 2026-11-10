@@ -35,6 +35,9 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
     let mut variables = Vec::new();
     for identifier in 0..super::instantiation::MAX_INSTANTIATIONS {
         work.formula(length, 4)?;
+        if !current.has_outer_universal() {
+            break;
+        }
         let variable = fresh(&current, identifier as u32);
         let Some(body) = current.open_outer_universal(variable) else {
             break;
@@ -42,7 +45,11 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
         variables.push(variable);
         current = body;
     }
-    let current_length = current.encode_canonical().map_err(|_| LIMIT)?.len();
+    let current_length = if variables.is_empty() {
+        length
+    } else {
+        current.encode_canonical().map_err(|_| LIMIT)?.len()
+    };
     let root = if let Some((left, right)) = current.view().equality_variables()
         && left == right
     {
@@ -54,8 +61,8 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
     } else if let Some((left, right)) = current.view().implication_parts()
         && left == right
     {
-        identity(&mut plan, left.to_owned(), work)?
-    } else if let Some(step) = axiom_instance(&current, work)? {
+        identity(&mut plan, left.to_owned(), current_length, work)?
+    } else if let Some(step) = axiom_instance(&current, current_length, work)? {
         plan.axiom(step, current_length, work)?
     } else {
         return Ok(None);
@@ -75,7 +82,12 @@ fn fresh(formula: &Formula, start: u32) -> FreeVariable {
         .expect("a bounded formula cannot exhaust u32 variables")
 }
 
-fn identity(plan: &mut Plan, formula: Formula, work: &mut Work) -> Result<u32, Failure> {
+fn identity(
+    plan: &mut Plan,
+    formula: Formula,
+    conclusion_length: usize,
+    work: &mut Work,
+) -> Result<u32, Failure> {
     let implies_self = Formula::implies(formula.clone(), formula.clone());
     let first = Logic::simplification(formula.clone(), implies_self.clone());
     let second = Logic::simplification(formula.clone(), formula.clone());
@@ -87,7 +99,6 @@ fn identity(plan: &mut Plan, formula: Formula, work: &mut Work) -> Result<u32, F
             .map(|bytes| bytes.len())
             .map_err(|_| LIMIT)
     };
-    let conclusion_length = length(&implies_self)?;
     let a = plan.axiom(
         ProofStep::Simplification {
             antecedent: formula.clone().into(),
@@ -117,7 +128,11 @@ fn identity(plan: &mut Plan, formula: Formula, work: &mut Work) -> Result<u32, F
     plan.modus_ponens(b, d, conclusion_length, work)
 }
 
-fn axiom_instance(formula: &Formula, work: &mut Work) -> Result<Option<ProofStep>, Failure> {
+fn axiom_instance(
+    formula: &Formula,
+    length: usize,
+    work: &mut Work,
+) -> Result<Option<ProofStep>, Failure> {
     let Some((left, right)) = formula.view().implication_parts() else {
         return Ok(None);
     };
@@ -170,7 +185,6 @@ fn axiom_instance(formula: &Formula, work: &mut Work) -> Result<Option<ProofStep
         }));
     }
     if let Some(body) = left.to_owned().open_outer_universal(variable) {
-        let length = formula.encode_canonical().map_err(|_| LIMIT)?.len();
         let mut replacements = formula.free_variables();
         replacements.insert(variable);
         for replacement in replacements {
