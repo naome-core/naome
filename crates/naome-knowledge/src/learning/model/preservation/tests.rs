@@ -147,6 +147,60 @@ fn preservation_sources_are_rechecked_local_training_proofs_only() {
 }
 
 #[test]
+fn fresh_parent_rehearses_own_checked_replay_in_the_first_batch_and_after_reload() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    state.anchors.clear();
+    let phase = learning::meta::Plan::balanced().phase(0);
+    let mut io = MemoryStore::default();
+    let mut engine = Engine::default();
+    let mut cursor = 0;
+    let (first, _, _) = engine
+        .train_replay_using(
+            &state.model,
+            &state,
+            (&[], &[]),
+            &mut cursor,
+            phase,
+            &mut io,
+        )
+        .unwrap()
+        .unwrap();
+    let cost = &engine.cost;
+    assert!(cost.preservation_states > 0);
+    assert_eq!(cost.measurements.slots, 16 * UPDATES_PER_UNIT as usize);
+    assert_eq!(
+        cost.measurements.reference_slots,
+        super::super::COLD_REPLAY_SLOTS * UPDATES_PER_UNIT as usize
+    );
+    assert_eq!(
+        Runtime::load(&first, &mut io).unwrap().preservation.steps,
+        0,
+        "cold rehearsal updates ordinary Adam without an attenuation mask"
+    );
+    let mut resumed_cursor = cursor;
+    let continuous = engine
+        .train_replay_using(&first, &state, (&[], &[]), &mut cursor, phase, &mut io)
+        .unwrap()
+        .unwrap()
+        .0;
+    let resumed = Engine::default()
+        .train_replay_using(
+            &first,
+            &state,
+            (&[], &[]),
+            &mut resumed_cursor,
+            phase,
+            &mut io,
+        )
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(resumed, continuous);
+    assert_eq!(resumed_cursor, cursor);
+}
+
+#[test]
 fn checkpoint_boundary_restores_adam_mask_and_cursor_without_mutating_parent() {
     let own = own_example();
     let mut state = State::fresh();

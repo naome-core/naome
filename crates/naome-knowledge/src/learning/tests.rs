@@ -5,6 +5,14 @@ fn fixed_state() -> State {
 }
 use super::*;
 
+/// Native qualification fixtures share the process work reservation.
+pub(super) fn qualification_fixture() -> std::sync::MutexGuard<'static, ()> {
+    static RESERVATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RESERVATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 struct UniversalChoice(usize);
 impl model::Ranker for UniversalChoice {
     fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
@@ -483,6 +491,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
 }
 #[test]
 fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
+    let _reservation = qualification_fixture();
     struct Interrupted {
         store: MemoryStore,
         writes: usize,
@@ -578,6 +587,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
 }
 #[test]
 fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuation() {
+    let _reservation = qualification_fixture();
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut io = MemoryStore::default();

@@ -261,6 +261,7 @@ fn meta_update_preserves_the_reloaded_selection_instead_of_recomputing_base_cont
 #[cfg(feature = "system-tests")]
 #[test]
 fn final_meta_update_keeps_the_selected_history_context_across_restart() {
+    let _reservation = crate::learning::tests::qualification_fixture();
     let started = std::time::Instant::now();
     let (mut job, page, receipt) = fixture();
     assert_eq!(job.base.preparation, Preparation::Meta);
