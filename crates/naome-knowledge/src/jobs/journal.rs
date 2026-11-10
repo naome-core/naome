@@ -732,7 +732,7 @@ impl Disk {
             })?;
         if record.id != id
             || record.input != *input
-            || record.binding != *binding
+            || !record.binding.same_request(binding)
             || record.settings != settings
             || record.acknowledged
         {
@@ -1081,6 +1081,13 @@ fn validate_record(
     }
     r.binding.validate_role(&r.input)?;
     r.settings.validate_history()?;
+    if let Some(decision) = &r.binding.research
+        && (r.native.is_none()
+            || decision.work_units != r.settings.limits.work_units
+            || decision.horizon_ms != r.settings.limits.horizon_ms)
+    {
+        return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
+    }
     if id != r.id
         || id >= next_id
         || !super::provider::valid_checkpoint(r)

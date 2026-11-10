@@ -252,7 +252,9 @@ fn improving_development_proxy_does_not_replace_transfer_targets() {
     assert!(!e.transfer.accepts());
     let input = e.features();
     e.transfer.after = 7;
-    e.selected_model = e.candidate_model.clone().unwrap();
+    e.selected_model = e.source_model.clone();
+    e.after = e.before;
+    e.validate().unwrap();
     assert_eq!(input, e.features());
     assert!(e.targets()[0] > 0.);
     assert_eq!(e.targets()[1], 0.);

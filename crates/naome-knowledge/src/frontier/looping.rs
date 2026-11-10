@@ -309,10 +309,18 @@ impl Frontier {
                 };
                 let applies =
                     crate::learning::knowledge::directly_applies(target, formula.as_ref())?;
-                candidates.push((!applies, proof));
+                let reused = self.evidence.policy().active()
+                    && ResearchQuestion::from_formula(formula.as_ref().clone()).is_ok_and(
+                        |lemma| {
+                            self.evidence
+                                .policy()
+                                .demonstrated_reuse(lemma.resolution_id())
+                        },
+                    );
+                candidates.push((!applies, !reused, proof));
             }
-            candidates.sort_by_key(|&(indirect, _)| indirect);
-            for (_, proof) in candidates {
+            candidates.sort_by_key(|&(indirect, unobserved, _)| (indirect, unobserved));
+            for (_, _, proof) in candidates {
                 if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
                     return Ok((Vec::new(), inputs));
                 }
@@ -408,14 +416,22 @@ impl Frontier {
                 sources.push(goal.clone());
             }
         }
+        sources.retain(|goal| !children.contains(goal.resolution_id()));
+        if self.evidence.policy().active() && sources.len() > 1 {
+            let mut ranked = Vec::with_capacity(sources.len());
+            for goal in sources {
+                let decision = self.research_decision(&goal, graph, self.research_limits)?;
+                ranked.push((self.evidence.policy().multiplier(&decision), goal));
+            }
+            ranked.sort_by_key(|(weight, _)| std::cmp::Reverse(*weight));
+            sources = ranked.into_iter().map(|(_, goal)| goal).collect();
+        }
         for goal in sources {
-            if !children.contains(goal.resolution_id()) {
-                let work = self.loop_work(&goal, graph, &mut available)?;
-                // Exhaustion parks an optional focus without deleting its
-                // evidence, spending a trial or replenishing plan membership.
-                if work.ready {
-                    return Ok(Some((goal, work)));
-                }
+            let work = self.loop_work(&goal, graph, &mut available)?;
+            // Exhaustion parks an optional focus without deleting its
+            // evidence, spending a trial or replenishing plan membership.
+            if work.ready {
+                return Ok(Some((goal, work)));
             }
         }
         Ok(None)

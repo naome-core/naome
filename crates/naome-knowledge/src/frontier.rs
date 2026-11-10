@@ -10,6 +10,7 @@ use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
 mod finder;
+pub(crate) use finder::research::Decision as ResearchDecision;
 mod lemma_index;
 mod looping;
 use evidence::{Evidence, Outcome};
@@ -45,13 +46,16 @@ struct AttemptHint {
     unverified_attempts: u64,
     verified: bool,
     last_attempt_at: u64,
+    spent_ms: u64,
+    checkpoint_attempts: u64,
+    checkpoint: Option<[u8; 32]>,
 }
 
 pub(crate) struct Frontier {
     evidence: Evidence,
     native: bool,
     feedback: Option<crate::training::ability::Feedback>,
-    solver_contract: String,
+    research_limits: jobs::Limits,
     // Bounded scheduling hints. Durable writes evict the affected entry;
     // selection still crosses the generation-checked checkpoint before work.
     recent: VecDeque<([u8; 32], Option<AttemptHint>)>,
@@ -87,7 +91,10 @@ impl Frontier {
     }
     #[cfg(test)]
     pub(crate) fn learning_snapshot(&self) -> serde_json::Value {
-        serde_json::json!({"model":self.evidence.model(),"curriculum":self.evidence.learning()})
+        serde_json::json!({
+            "model":self.evidence.model(), "curriculum":self.evidence.learning(),
+            "research_policy":self.evidence.policy().status(),
+        })
     }
     #[cfg(test)]
     pub(crate) fn initial_parameters(&mut self, seed: u64) -> Result<(), crate::Error> {
@@ -109,12 +116,13 @@ impl Frontier {
         settings: jobs::Settings,
     ) -> Result<Self, crate::Error> {
         let evidence = Evidence::open(directory, seed, settings)?;
+        let solver_contract = jobs::solver_identity(settings);
         let random = Random::new(evidence.random());
         let mut local = Self {
             evidence,
             native: settings.native_proof_learning,
             feedback: None,
-            solver_contract: jobs::solver_identity(settings),
+            research_limits: settings.solving.limits,
             recent: VecDeque::new(),
             analyses: finder::Cache::default(),
             recipes: VecDeque::new(),
@@ -148,7 +156,8 @@ impl Frontier {
                         0
                     })
                     .saturating_add(finder::Model::memory_bytes())
-                    .saturating_add(finder::Learning::reservation()),
+                    .saturating_add(finder::Learning::reservation())
+                    .saturating_add(finder::research::Policy::reservation()),
             )?,
         };
         // A durable success flag alone cannot restore demonstrated ability.
@@ -205,7 +214,7 @@ impl Frontier {
                 }
                 for (key, record) in page.records {
                     if let Some(root) = &record.verified
-                        && record.solver == local.solver_contract
+                        && record.solver == solver_contract
                     {
                         let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
                         let question = ResearchQuestion::from_hex(&record.question)
@@ -256,16 +265,6 @@ impl Frontier {
     pub(crate) fn feedback(&mut self, feedback: Option<crate::training::ability::Feedback>) {
         if !self.native {
             return;
-        }
-        if let Some(current) = &feedback
-            && self
-                .feedback
-                .as_ref()
-                .is_none_or(|p| p.checkpoint != current.checkpoint)
-        {
-            let solver = crate::learning::digest(&(&self.solver_contract, &current.checkpoint));
-            self.evidence.bind_solver(solver);
-            self.recent.clear();
         }
         self.feedback = feedback;
     }
@@ -504,7 +503,7 @@ impl Frontier {
         self.analyses.trim();
         crate::resources::require_work_admission()?;
         if let Some(feedback) = &self.feedback {
-            self.evidence.feedback(feedback)?;
+            self.evidence.feedback(graph, feedback)?;
         }
         self.proposals.retain(|question| eligible(question));
         let root = graph.content_root();
@@ -777,6 +776,13 @@ impl Frontier {
                     unverified_attempts: record.unverified_attempts(),
                     verified: record.verified.is_some(),
                     last_attempt_at: record.last_attempt_at,
+                    spent_ms: record.spent_ms,
+                    checkpoint_attempts: record.checkpoint_attempts,
+                    checkpoint: record
+                        .model_checkpoint
+                        .as_deref()
+                        .map(crate::object::id_bytes)
+                        .transpose()?,
                 })
             })
             .transpose()?;
@@ -798,9 +804,15 @@ impl Frontier {
         let Some(record) = self.previous(question)? else {
             return Ok(true);
         };
+        let checkpoint = self
+            .feedback
+            .as_ref()
+            .map(|f| crate::object::id_bytes(&f.checkpoint))
+            .transpose()?;
         if record.verified
+            || checkpoint.is_some() && record.checkpoint != checkpoint
             || self.evidence.draws().saturating_sub(record.last_draw)
-                >= 1u64 << record.unverified_attempts.min(8)
+                >= 1u64 << record.checkpoint_attempts.min(8)
         {
             return Ok(true);
         }
@@ -821,6 +833,56 @@ impl Frontier {
             }
         }
         Ok(false)
+    }
+    pub(crate) fn research_decision(
+        &mut self,
+        question: &ResearchQuestion,
+        graph: &Graph,
+        limits: jobs::Limits,
+    ) -> Result<ResearchDecision, crate::Error> {
+        let analysis = self.analyses.get(question)?;
+        let hint = self.previous(question)?;
+        let mut goal = None;
+        let mut overlap = 0;
+        let mut affected = 0u64;
+        for open in &self.goals {
+            let other = self.analyses.get(open)?;
+            let relevance = analysis.relevance(&other);
+            let is_goal = open.resolution_id() == question.resolution_id();
+            if is_goal || goal != Some(*question.resolution_id()) && relevance > overlap {
+                goal = Some(*open.resolution_id());
+                overlap = relevance;
+            }
+            affected += u64::from(!is_goal && relevance > 0);
+        }
+        let model = self.evidence.model();
+        let [solvable, cost, useful] = model.predictions_from(&analysis.descriptor);
+        let observations = self.evidence.draws();
+        let summary = [
+            (solvable * 255.) as u8,
+            (cost * 255.) as u8,
+            (useful * 255.) as u8,
+            overlap.min(16) as u8 * 15,
+            affected.min(16) as u8 * 15,
+            u8::from(self.lemmas.has_support(analysis.lookup_keys())) * 255,
+            hint.map_or(0, |record| record.unverified_attempts.min(8) as u8 * 31),
+            hint.map_or(0, |record| (record.spent_ms / 1_000).min(255) as u8),
+            (graph.accepted_count().checked_ilog2().unwrap_or(0).min(16) as u8) * 15,
+            self.goals.len().min(16) as u8 * 15,
+            self.feedback
+                .as_ref()
+                .map_or(128, |f| (f.priority(question, 128) / 16).min(255) as u8),
+            (crate::resources::active_limits().solving_jobs.min(8) as u8) * 31,
+        ];
+        Ok(ResearchDecision::new(
+            *question.resolution_id(),
+            graph.content_root(),
+            goal,
+            &analysis.descriptor,
+            summary,
+            (observations, model.updates),
+            limits,
+        ))
     }
     fn weight(
         &mut self,
@@ -919,6 +981,10 @@ impl Frontier {
             // Prioritize helpers that can relieve work across multiple goals.
             weight = weight.saturating_mul(1 + relevance.min(8) * 4);
             weight = weight.saturating_mul(1 + saved_work.min(32));
+            if self.evidence.policy().active() {
+                let state = self.research_decision(question, graph, settings.limits)?;
+                weight = weight.saturating_mul(self.evidence.policy().multiplier(&state)) / 1024;
+            }
             if !analysis.meaningful() {
                 weight /= 64;
             }
@@ -940,7 +1006,7 @@ impl Frontier {
             return Ok(None);
         }
         if let Some(feedback) = &self.feedback {
-            self.evidence.feedback(feedback)?;
+            self.evidence.feedback(graph, feedback)?;
         }
         self.analyses.trim();
         let mut indices = Vec::with_capacity(candidates.len());
@@ -1004,7 +1070,8 @@ impl Frontier {
             crate::network::emit(serde_json::json!({
                 "event":crate::outcome::NodeEvent::FinderSelected, "resolution_id":crate::hex(candidates[index].resolution_id()),
                 "question":candidates[index].to_hex(), "model_updates":self.evidence.model().updates,
-                "model_weight":model_weight, "candidates":candidates.len()
+                "model_weight":model_weight, "candidates":candidates.len(),
+                "research_policy":self.evidence.policy().status()
             }));
         }
         Ok(Some(index))
@@ -1135,6 +1202,7 @@ impl Frontier {
                 "event":crate::outcome::NodeEvent::FinderLearned, "resolution_id":crate::hex(question.resolution_id()),
                 "outcome":if resolved { crate::outcome::FinderLearningOutcome::CheckedResolution } else { crate::outcome::FinderLearningOutcome::UnresolvedSearch },
                 "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
+                "research_policy":self.evidence.policy().status(),
                 "supports":model.supports,"rehearsals":model.rehearsals,"utility_observations":model.utility_observations,
                 "model_weight":model.weight(question)
             }));

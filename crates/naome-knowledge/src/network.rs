@@ -774,6 +774,7 @@ where
     let outcome:Result<(),crate::Error>=worker::while_polled(owner_busy, async {
     loop {
         if let Some(resources)=&mut resources {resources.refresh()?;}
+        questions.flush_acknowledgements();
         let period = crate::resources::active_limits().tick_interval;
         if tick.period() != period { tick = tokio::time::interval(period); tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
         let work = node.computation.try_enter();

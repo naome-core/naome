@@ -61,12 +61,18 @@ struct Sample {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct UtilityReceipt {
+    digest: String,
+    applied: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::frontier) struct Learning {
     #[cfg(test)]
     #[serde(skip)]
     pub treatment: crate::frontier::Treatment,
     checkpoint: String,
-    utility_receipt: String,
+    utility_receipt: Option<UtilityReceipt>,
     progress_receipt: String,
     cells: Vec<Cell>,
     pending: VecDeque<Offer>,
@@ -82,7 +88,7 @@ impl Learning {
             #[cfg(test)]
             treatment: crate::frontier::Treatment::Full,
             checkpoint,
-            utility_receipt: String::new(),
+            utility_receipt: None,
             progress_receipt: String::new(),
             cells: vec![Cell::default(); CELLS],
             pending: VecDeque::new(),
@@ -152,8 +158,8 @@ impl Learning {
     }
     pub fn validate(&self) -> Result<(), crate::Error> {
         crate::object::id_bytes(&self.checkpoint)?;
-        if !self.utility_receipt.is_empty() {
-            crate::object::id_bytes(&self.utility_receipt)?;
+        if let Some(receipt) = &self.utility_receipt {
+            crate::object::id_bytes(&receipt.digest)?;
         }
         if self.cells.len() != CELLS || self.pending.len() > MEMORY || self.samples.len() > MEMORY {
             return Err(crate::ResearchFailure::FinderCurriculumCapacity.into());
@@ -195,6 +201,7 @@ impl Learning {
     pub fn bind(&mut self, checkpoint: &str) {
         if self.checkpoint != checkpoint {
             self.checkpoint = checkpoint.to_owned();
+            self.utility_receipt = None;
             // Completion, cost and gradient alignment belong to this exact
             // solver. Checked downstream support and replay survive.
             for cell in &mut self.cells {
@@ -467,6 +474,9 @@ impl Learning {
         &mut self,
         model: &mut Model,
         snapshot: &crate::learning::finder::Utility,
+        mut checked_source: impl FnMut(
+            &crate::learning::finder::Score,
+        ) -> Result<Option<ResearchQuestion>, crate::Error>,
     ) -> Result<bool, crate::Error> {
         #[cfg(test)]
         if matches!(
@@ -482,20 +492,27 @@ impl Learning {
         if snapshot.checkpoint != self.checkpoint {
             return Ok(false);
         }
-        let receipt = crate::learning::digest(snapshot);
-        if receipt == self.utility_receipt {
+        let digest = crate::learning::digest(snapshot);
+        if self
+            .utility_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.digest == digest)
+        {
             return Ok(false);
         }
+        let observations = model.utility_observations;
         for score in &snapshot.scores {
+            let Some(question) = checked_source(score)? else {
+                continue;
+            };
+            let value = ((f32::from(score.alignment) / 32767.) * f32::from(score.novelty) / 65535.
+                + 1.)
+                / 2.;
             if let Some(sample) = self
                 .samples
                 .iter_mut()
                 .find(|s| crate::hex(&s.offer.id) == score.resolution)
             {
-                let value = ((f32::from(score.alignment) / 32767.) * f32::from(score.novelty)
-                    / 65535.
-                    + 1.)
-                    / 2.;
                 model.observe_utility(&sample.offer.descriptor, value)?;
                 sample.utility = Some(value);
                 sample.utility_checkpoint = self.checkpoint.clone();
@@ -504,9 +521,16 @@ impl Learning {
                     cell.utility_count = cell.utility_count.saturating_add(1);
                     cell.utility_sum = cell.utility_sum.saturating_add((value * 65535.) as u64);
                 }
+            } else {
+                // The checked observation can outlive the rehearsal sample.
+                // A missing offer supplies no recipe or completion label.
+                model.observe_utility(&Descriptor::of(&question), value)?;
             }
         }
-        self.utility_receipt = receipt;
+        self.utility_receipt = Some(UtilityReceipt {
+            digest,
+            applied: self.utility_current() || model.utility_observations > observations,
+        });
         self.rehearse(model)?;
         Ok(true)
     }
@@ -514,6 +538,9 @@ impl Learning {
         &mut self,
         model: &mut Model,
         feedback: &crate::training::ability::Feedback,
+        checked_source: impl FnMut(
+            &crate::learning::finder::Score,
+        ) -> Result<Option<ResearchQuestion>, crate::Error>,
     ) -> Result<bool, crate::Error> {
         feedback.validate()?;
         let changed = self.checkpoint != feedback.checkpoint;
@@ -535,15 +562,15 @@ impl Learning {
         }
         self.progress_receipt = progress;
         let utility_changed = if let Some(utility) = &feedback.utility {
-            self.utility(model, utility)?
+            self.utility(model, utility, checked_source)?
         } else {
             false
         };
         Ok(changed || progress_changed || utility_changed)
     }
     pub fn utility_current(&self) -> bool {
-        self.samples
-            .iter()
-            .any(|s| s.utility.is_some() && s.utility_checkpoint == self.checkpoint)
+        self.utility_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.applied)
     }
 }

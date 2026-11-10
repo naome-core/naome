@@ -1509,6 +1509,31 @@ impl Autonomous {
                             Err(_) => {}
                         }
                     }
+                    if self.intervals.jobs.native_proof_learning
+                        && let Some(frontier) = &mut self.frontier
+                    {
+                        match frontier.research_decision(
+                            &question,
+                            graph,
+                            self.intervals.jobs.solving.limits,
+                        ) {
+                            Ok(mut context) => {
+                                context.checked_inputs = !required.is_empty()
+                                    || !prerequisites.is_empty()
+                                    || binding.catalog.is_some();
+                                binding.research = Some(Box::new(context));
+                            }
+                            Err(error) if error.fatal() => {
+                                self.error = Some(error);
+                                self.retain(question);
+                                return accepted;
+                            }
+                            Err(_) => {
+                                self.retain(question);
+                                return accepted;
+                            }
+                        }
+                    }
                     if !required.is_empty()
                         || !question.dependencies().is_empty()
                         || binding.catalog.is_some()
@@ -1624,7 +1649,12 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let mut candidates = if let Some(pending) = &loop_candidates {
+                    let mut candidates = if self.intervals.jobs.native_proof_learning
+                        && self.formal_goal.is_none()
+                        && cursor.is_multiple_of(5)
+                    {
+                        frontier.candidate_page(cursor, &mut eligible)
+                    } else if let Some(pending) = &loop_candidates {
                         pending.clone()
                     } else if let Some(goal) = &loop_goal {
                         match frontier.helpers_needed(goal) {

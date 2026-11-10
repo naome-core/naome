@@ -135,17 +135,18 @@ impl Experience {
         features(&self.context, &self.plan)
     }
     fn targets(&self) -> [f32; 3] {
+        let retention_loss = if self.protected_loss || self.anchor_loss {
+            1.
+        } else {
+            self.transfer.loss()
+        };
         [
-            if self.selected_model == self.source_model || !self.transfer.accepts() {
+            if self.transfer.complete() && retention_loss == 0. {
+                self.transfer.gain().max(0.)
+            } else {
                 0.
-            } else {
-                self.transfer.gain()
             },
-            if self.protected_loss || self.anchor_loss {
-                1.
-            } else {
-                self.transfer.loss()
-            },
+            retention_loss,
             (self.lower_cpu_micros as f32 / 180_000_000.).min(2.),
         ]
     }

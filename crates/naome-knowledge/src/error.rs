@@ -2541,6 +2541,7 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerOperandWidth => "peer program operand width",
                 crate::ResearchFailure::PeerOperandOrder => "peer program operand order differs",
                 crate::ResearchFailure::FinderCursorOverflow => "finder replay cursor overflow",
+                crate::ResearchFailure::FinderDecisionInvalid => "finder research decision or policy state differs",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
