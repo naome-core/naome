@@ -10,9 +10,23 @@ from types import SimpleNamespace
 SUPPORT = pathlib.Path(__file__).resolve().parents[2] / "crates/naome-knowledge/tests/support"
 sys.path.insert(0, str(SUPPORT))
 from program_replication import AutonomousNode, program_rows
+from proof_network import decode_stored_payload, program_record_end
 
 
 class ProgramObservationTests(unittest.TestCase):
+    def test_packed_payload_decoding_is_bounded_and_exact(self):
+        self.assertEqual(decode_stored_payload(b"\x00abc", 3), b"abc")
+        self.assertEqual(decode_stored_payload(b"\x01\x1fa\x01\x00\xec", 256), b"a" * 256)
+        with self.assertRaises((AssertionError, IndexError)):
+            decode_stored_payload(b"\x01\x1fa\x00\x00\xec", 256)
+        with self.assertRaises((AssertionError, IndexError)):
+            decode_stored_payload(b"\x01\x1fa\x01\x00\xec", 255)
+
+    def test_binary_record_scanner_stops_at_each_command(self):
+        encoded = bytes([6, 0, 0, 6, 1, 1])
+        self.assertEqual(program_record_end(encoded, 0), 3)
+        self.assertEqual(program_record_end(encoded, 3), 6)
+
     def test_launch_observation_survives_rotation_and_rejects_stale_start(self):
         with tempfile.TemporaryDirectory() as directory:
             node = AutonomousNode.__new__(AutonomousNode)

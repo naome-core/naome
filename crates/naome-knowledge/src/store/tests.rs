@@ -231,7 +231,11 @@ fn binary_single_and_dependency_batch_preserve_exact_bytes_ids_root_and_membersh
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(payload, crate::unhex(&object.payload).unwrap());
+            let expected = crate::unhex(&object.payload).unwrap();
+            assert_eq!(
+                catalog::codec::decode(&payload, expected.len()).unwrap(),
+                expected
+            );
         }
         assert!(!directory.0.join("objects").exists());
         drop(graph);
@@ -567,9 +571,16 @@ fn genuine_sqlite_full_preserves_live_state_and_halts_admission() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     graph.test_database_full();
-    let object = large_fixture();
-    let before = graph.content_root();
-    graph.ingest(object, Instant::now()).unwrap_err();
+    let mut failure = None;
+    for seed in 0..64 {
+        let before = graph.content_root();
+        let ids = graph.ids();
+        if graph.ingest(large_fixture(seed), Instant::now()).is_err() {
+            failure = Some((before, ids));
+            break;
+        }
+    }
+    let (before, ids) = failure.expect("the capped database must fill");
     assert!(matches!(
         graph.storage_error(),
         Some(crate::Error::CatalogSql { reason: crate::SqlFault::Engine, sqlite_code: Some(code) })
@@ -577,18 +588,36 @@ fn genuine_sqlite_full_preserves_live_state_and_halts_admission() {
     ));
     assert_eq!(graph.content_root(), before);
     drop(graph);
-    assert!(Graph::open(&directory.0).unwrap().ids().is_empty());
+    assert_eq!(Graph::open(&directory.0).unwrap().ids(), ids);
 }
 
-fn large_fixture() -> Envelope {
-    let variable = naome_foundation::FreeVariable::new(0);
-    let mut pattern = naome_foundation::Formula::for_all(
-        variable,
-        naome_foundation::Formula::equal(variable, variable),
-    );
-    for _ in 0..9 {
-        pattern = naome_foundation::Formula::implies(pattern.clone(), pattern);
+fn large_fixture(seed: u32) -> Envelope {
+    let mut formulas: Vec<_> = (0..128)
+        .map(|i| {
+            let variable = naome_foundation::FreeVariable::new(0);
+            let atom = naome_foundation::Formula::for_all(
+                variable,
+                naome_foundation::Formula::equal(variable, variable),
+            );
+            let mut formula = atom.clone();
+            let value = (i * 613 + seed) % 128;
+            for bit in 0..7 {
+                formula = if value & (1 << bit) == 0 {
+                    naome_foundation::Formula::implies(formula, atom.clone())
+                } else {
+                    naome_foundation::Formula::implies(atom.clone(), formula)
+                };
+            }
+            formula
+        })
+        .collect();
+    while formulas.len() > 1 {
+        formulas = formulas
+            .chunks_exact(2)
+            .map(|pair| naome_foundation::Formula::implies(pair[0].clone(), pair[1].clone()))
+            .collect();
     }
+    let pattern = formulas.pop().unwrap();
     let checked = naome_checker::normalize_and_check(
         ProofCertificate::new(vec![ProofStep::Simplification {
             antecedent: pattern.clone().into(),

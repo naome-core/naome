@@ -64,6 +64,50 @@ def artifact_id(statement, payload):
     return hashlib.sha256(domain + identity).hexdigest()
 
 
+def decode_stored_payload(encoded, length):
+    assert 1 <= length <= 4_194_305 and 2 <= len(encoded) <= length + 1
+    mode, payload = encoded[0], encoded[1:]
+    if mode == 0:
+        assert len(payload) == length
+        return payload
+    assert mode == 1 and length >= 256 and len(payload) < length
+    output = bytearray()
+    offset = 0
+    while offset < len(payload):
+        token = payload[offset]
+        offset += 1
+        literals = token >> 4
+        if literals == 15:
+            while True:
+                extra = payload[offset]
+                offset += 1
+                literals += extra
+                if extra != 255:
+                    break
+        assert offset + literals <= len(payload) and len(output) + literals <= length
+        output.extend(payload[offset:offset + literals])
+        offset += literals
+        if offset == len(payload):
+            break
+        assert offset + 2 <= len(payload)
+        distance = int.from_bytes(payload[offset:offset + 2], "little")
+        offset += 2
+        assert 0 < distance <= len(output)
+        count = (token & 15) + 4
+        if token & 15 == 15:
+            while True:
+                extra = payload[offset]
+                offset += 1
+                count += extra
+                if extra != 255:
+                    break
+        assert len(output) + count <= length
+        for _ in range(count):
+            output.append(output[-distance])
+    assert offset == len(payload) and len(output) == length
+    return bytes(output)
+
+
 def citation_id(object):
     return proof_id(object["statement_id"], object["payload"][2:])
 
@@ -108,43 +152,43 @@ def program_manifest(data):
     return manifest
 
 
-def verify_program_record(data):
-    tag = data[0]
+def program_record_end(data, offset):
+    start = offset
+    tag = data[offset]
+    offset += 1
     if tag == 18:
-        verify_scope_record(data)
-        return
-    fields = {
-        0: "vv", 1: "vv", 2: "r", 3: "rr", 4: "r",
-        5: "ha", 6: "tt", 7: "tt", 8: "r", 9: "rr", 10: "tr",
-        11: "ttr", 12: "rr", 13: "rrr", 14: "rr", 15: "trr", 16: "r",
-        17: "ttr", 19: "rt", 20: "t", 21: "ttr",
-        22: "z", 23: "h", 24: "rttt", 25: "rttttt", 26: "rr",
-        27: "rt", 28: "r", 29: "r",
-    }[tag]
-    offset = 1
-    for field in fields:
-        if field == "h":
-            offset += 32
-        elif field == "z":
-            assert data[offset] <= 6
-            offset += 1
-        else:
-            value, offset = program_integer(data, offset)
-            if field == "t":
-                assert value < (1 << 32)
-            elif field == "v":
-                assert value & 1 or value >> 1 < (1 << 32)
-            elif field == "a":
-                assert value <= 256
-                for _ in range(value):
-                    argument, offset = program_integer(data, offset)
-                    assert argument < (1 << 32)
-    assert offset == len(data)
+        offset = program_scope_end(data, offset)
+    else:
+        fields = {
+            0: "vv", 1: "vv", 2: "r", 3: "rr", 4: "r",
+            5: "ha", 6: "tt", 7: "tt", 8: "r", 9: "rr", 10: "tr",
+            11: "ttr", 12: "rr", 13: "rrr", 14: "rr", 15: "trr", 16: "r",
+            17: "ttr", 19: "rt", 20: "t", 21: "ttr",
+            22: "z", 23: "h", 24: "rttt", 25: "rttttt", 26: "rr",
+            27: "rt", 28: "r", 29: "r",
+        }[tag]
+        for field in fields:
+            if field == "h":
+                offset += 32
+            elif field == "z":
+                assert data[offset] <= 6
+                offset += 1
+            else:
+                value, offset = program_integer(data, offset)
+                if field == "t":
+                    assert value < (1 << 32)
+                elif field == "v":
+                    assert value & 1 or value >> 1 < (1 << 32)
+                elif field == "a":
+                    assert value <= 256
+                    for _ in range(value):
+                        argument, offset = program_integer(data, offset)
+                        assert argument < (1 << 32)
+    assert start < offset <= len(data) and offset - start <= 4096
+    return offset
 
 
-def verify_scope_record(data):
-    offset = 1
-
+def program_scope_end(data, offset):
     def integer(maximum):
         nonlocal offset
         value, offset = program_integer(data, offset)
@@ -169,27 +213,43 @@ def verify_scope_record(data):
             assert tag == 1
             integer(earlier)
     integer(assumptions + actions - 1)
-    assert offset == len(data)
+    return offset
 
 
-def verify_program_input(catalog,manifest):
-    identity=bytes.fromhex(program_artifact_id(manifest))
-    saved=catalog.execute('SELECT manifest,received,input_bytes,hash,remaining FROM programs WHERE id=?',(identity,)).fetchone()
-    assert saved is not None and program_manifest(saved[0])==manifest
-    assert saved[1:]==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']),bytes(32))
-    previous=bytes(32);count=0;size=0
-    for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
-        assert position==count and 0<len(command)<=4096
-        verify_program_record(command)
-        previous=hashlib.sha256(b'naome:proof-program'+previous+len(command).to_bytes(8,'big')+command).digest()
-        assert chain==previous
-        count+=1;size+=len(command)
-    assert (count,size,previous)==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']))
-    remaining=bytes(32)
-    for command,suffix in catalog.execute('SELECT command,suffix FROM program_input WHERE id=? ORDER BY position DESC',(identity,)):
-        remaining=hashlib.sha256(b'naome:program-stream\0'+len(command).to_bytes(8,'big')+command+remaining).digest()
-        assert suffix==remaining
-    assert remaining==bytes(manifest['stream_root'])
+def verify_program_input(catalog, manifest):
+    identity = bytes.fromhex(program_artifact_id(manifest))
+    saved = catalog.execute('SELECT manifest,received,input_bytes,hash,remaining FROM programs WHERE id=?', (identity,)).fetchone()
+    assert saved is not None and program_manifest(saved[0]) == manifest
+    assert saved[1:] == (manifest['commands'], manifest['input_bytes'], bytes(manifest['program_hash']), bytes(32))
+    previous = bytes(32)
+    remaining = bytes(manifest['stream_root'])
+    count = size = 0
+    rows = catalog.execute('SELECT position,input_before,chunk,digest FROM program_input WHERE id=? ORDER BY position', (identity,))
+    for position, input_before, chunk, digest in rows:
+        assert position == count and input_before == size and 65 < len(chunk) <= 32842
+        expected = hashlib.sha256(b'naome:program-storage-chunk\0' + identity + position.to_bytes(8, 'big') + input_before.to_bytes(8, 'big') + chunk).digest()
+        assert digest == expected
+        start, offset = program_integer(chunk, 0)
+        assert start == position and chunk[offset:offset + 32] == previous
+        next_root = chunk[offset + 32:offset + 64]
+        offset += 64
+        assert len(next_root) == 32 and 0 < len(chunk) - offset <= 32768
+        encoded = []
+        while offset < len(chunk):
+            end = program_record_end(chunk, offset)
+            encoded.append(chunk[offset:end])
+            offset = end
+            assert len(encoded) <= 16
+        suffix = next_root
+        for command in reversed(encoded):
+            suffix = hashlib.sha256(b'naome:program-stream\0' + len(command).to_bytes(8, 'big') + command + suffix).digest()
+        assert suffix == remaining
+        for command in encoded:
+            previous = hashlib.sha256(b'naome:proof-program' + previous + len(command).to_bytes(8, 'big') + command).digest()
+            count += 1
+            size += len(command)
+        remaining = next_root
+    assert (count, size, previous, remaining) == (manifest['commands'], manifest['input_bytes'], bytes(manifest['program_hash']), bytes(32))
 
 
 def content_root(compatibility, ids):
@@ -354,7 +414,8 @@ def stored_objects(node):
         for id, statement, compatibility, payload, length, checksum, commit, ordinal, obligation in rows:
             assert len(id) == len(compatibility) == len(checksum) == len(commit) == 32
             assert compatibility == format_bytes[8:40]
-            assert 1 <= len(payload) == length <= 4_194_304 and hashlib.sha256(payload).digest() == checksum
+            payload = decode_stored_payload(payload, length)
+            assert hashlib.sha256(payload).digest() == checksum
             object = {"artifact_id": id.hex(), "statement_id": statement.hex() if statement is not None else None,
                 "obligation_proof": obligation.hex() if obligation is not None else None,
                 "compatibility": compatibility.hex(), "payload": payload.hex()}

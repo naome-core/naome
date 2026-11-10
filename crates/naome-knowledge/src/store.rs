@@ -701,11 +701,12 @@ pub(crate) fn corrupt_payload(directory: &Path, proof: &str) {
 #[cfg(test)]
 pub(crate) fn payload_bytes(directory: &Path, proof: &str) -> Vec<u8> {
     let database = rusqlite::Connection::open(directory.join(DATABASE_FILE)).unwrap();
-    database
+    let (encoded, length): (Vec<u8>, u32) = database
         .query_row(
-            "SELECT payload FROM artifacts WHERE id=?1",
+            "SELECT payload,payload_length FROM artifacts WHERE id=?1",
             rusqlite::params![crate::unhex(proof).unwrap()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .unwrap()
+        .unwrap();
+    catalog::codec::decode(&encoded, length as usize).unwrap()
 }

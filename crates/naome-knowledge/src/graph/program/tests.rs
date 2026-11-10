@@ -1,6 +1,7 @@
 use super::*;
 use crate::resources::adaptive::{self, Budget, Observed, Selection, Snapshot};
 use naome_proof::program::Command;
+mod storage;
 
 #[test]
 fn bounded_input_import_preserves_single_step_checking_and_pause() {
@@ -53,7 +54,8 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
     while !work.prepare_export(&budget).unwrap() {}
     let proof = work.into_checked().unwrap();
     let manifest = proof.proof().unwrap().manifest().clone();
-    let receiver = Graph::default();
+    let directory = crate::checkpoint::tests::Directory::new();
+    let receiver = Graph::open(&directory.0).unwrap();
     let store = receiver.ownership();
     store.start_program(&manifest).unwrap();
     let chunk = proof
@@ -62,7 +64,42 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
         .input_chunk(0, CHUNK_RECORDS, CHUNK_BYTES)
         .unwrap();
     assert_eq!(chunk.records.len(), commands.len());
-    store.append_program(&manifest, &chunk).unwrap();
+    let mut position = 0;
+    while position < manifest.commands {
+        let part = proof
+            .proof()
+            .unwrap()
+            .input_chunk(position, 64, CHUNK_BYTES)
+            .unwrap();
+        position = store.append_program(&manifest, &part).unwrap().commands;
+    }
+    for start in [
+        0,
+        1,
+        15,
+        16,
+        17,
+        63,
+        64,
+        65,
+        127,
+        128,
+        manifest.commands - 1,
+        manifest.commands,
+    ] {
+        for records in [1, 7, CHUNK_RECORDS] {
+            assert_eq!(
+                store
+                    .program_chunk(&manifest, start, records, CHUNK_BYTES)
+                    .unwrap(),
+                proof
+                    .proof()
+                    .unwrap()
+                    .input_chunk(start, records, CHUNK_BYTES)
+                    .unwrap(),
+            );
+        }
+    }
     let mut check = ProgramCheck::open(&receiver, manifest.clone()).unwrap();
 
     budget.batch_steps = 1;
@@ -132,6 +169,47 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
         .expect("single-step mathematical checking completes");
     assert_eq!(checked.proof().unwrap().manifest(), &manifest);
     assert!(!receiver.contains(manifest.artifact_id()).unwrap());
+    drop(checked);
+    drop(check);
+    drop(store);
+    drop(receiver);
+    let database =
+        rusqlite::Connection::open(directory.0.join(crate::store::DATABASE_FILE)).unwrap();
+    let original: Vec<u8> = database
+        .query_row(
+            "SELECT chunk FROM program_input WHERE position=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    database
+        .execute(
+            "UPDATE program_input SET chunk=zeroblob(length(chunk)) WHERE position=0",
+            [],
+        )
+        .unwrap();
+    drop(database);
+    assert!(matches!(
+        Graph::open(&directory.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CatalogProgramInputHash
+        ))
+    ));
+    let database =
+        rusqlite::Connection::open(directory.0.join(crate::store::DATABASE_FILE)).unwrap();
+    database
+        .execute(
+            "UPDATE program_input SET chunk=?1,input_before=input_before+1 WHERE position=0",
+            [&original],
+        )
+        .unwrap();
+    drop(database);
+    assert!(matches!(
+        Graph::open(&directory.0),
+        Err(crate::Error::InputFault(
+            crate::InputFault::CatalogProgramInputHash
+        ))
+    ));
 }
 
 #[test]
