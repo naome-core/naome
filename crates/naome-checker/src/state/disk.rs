@@ -151,12 +151,10 @@ impl DiskArtifactState {
         after: Option<ArtifactId>,
     ) -> impl Iterator<Item = Result<ArtifactId, ContextError>> {
         self.artifacts
-            .entries_after(after.map(|id| *id.as_bytes()))
-            .map(|entry| {
-                entry.and_then(|(id, value)| {
-                    artifact_proof_id(ArtifactId::from_bytes(id), &value)?;
-                    Ok(ArtifactId::from_bytes(id))
-                })
+            .map_entries_after(after.map(|id| *id.as_bytes()), |key, value| {
+                let id = ArtifactId::from_bytes(key);
+                artifact_proof_id(id, value)?;
+                Ok(id)
             })
     }
 
@@ -289,8 +287,9 @@ impl DiskArtifactState {
         after: Option<ProofId>,
     ) -> impl Iterator<Item = Result<ProofId, ContextError>> {
         self.proofs
-            .entries_after(after.map(|id| *id.as_bytes()))
-            .map(|entry| entry.map(|(id, _)| ProofId::from_bytes(id)))
+            .map_entries_after(after.map(|id| *id.as_bytes()), |id, _| {
+                Ok(ProofId::from_bytes(id))
+            })
     }
 
     /// Clone a live checked view into fresh byte storage, preserving its exact
