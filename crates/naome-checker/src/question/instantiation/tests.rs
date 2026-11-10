@@ -64,6 +64,40 @@ fn projections_preserve_the_full_pattern_and_each_implication_suffix() {
 }
 
 #[test]
+fn specialization_charges_each_attempt_through_the_last_suffix() {
+    let x = FreeVariable::new(1);
+    let y = FreeVariable::new(2);
+    let atom = Formula::equal(x, x);
+    let suffix = Formula::implies(atom.clone(), atom.clone());
+    let source = Formula::for_all(x, Formula::implies(atom, suffix));
+    let target = Formula::member(y, y);
+    let artifacts = crate::state::ArtifactState::new();
+    let proof = ProofId::from_bytes([0; 32]);
+    let byte_budget = source.encode_canonical().unwrap().len() * (24 + 3 * 8);
+    let budget = |operations, bytes| Work {
+        operations,
+        bytes,
+        certificate_steps: 0,
+        certificate_bytes: 0,
+    };
+
+    let mut exact = budget(4, byte_budget);
+    assert!(
+        specialize(proof, &source, &target, &artifacts, &mut exact)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!((exact.operations, exact.bytes), (0, 0));
+
+    for mut limited in [budget(3, byte_budget), budget(4, byte_budget - 1)] {
+        assert!(matches!(
+            specialize(proof, &source, &target, &artifacts, &mut limited),
+            Err(LIMIT)
+        ));
+    }
+}
+
+#[test]
 fn an_open_local_rule_keeps_its_outer_variables_fixed() {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
