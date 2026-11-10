@@ -251,7 +251,10 @@ impl Prerequisites {
         started: std::time::Instant,
     ) -> Result<(Option<Packet>, usize), crate::Error> {
         use naome_checker::ContextView;
-        use naome_proof::{ProofId, program::Command};
+        use naome_proof::{
+            ProofId,
+            program::{Command, Projection},
+        };
 
         let _work =
             crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
@@ -285,6 +288,23 @@ impl Prerequisites {
                     Command::Seal { proof: 0 },
                 ]),
                 1,
+            )
+        } else if maximum >= 2
+            && super::knowledge::universal_source(target).as_ref() == Some(formula.as_ref())
+        {
+            use super::{calculus, construction::logic, proof};
+            let variable = naome_foundation::FreeVariable::new(0);
+            let mut names = calculus::Names::default();
+            names.native_programs = true;
+            let instance = calculus::instantiate(
+                proof::Term::CheckedInput(id, formula.into_owned()),
+                variable,
+            )?;
+            let term = logic::exists_intro(target, variable, instance, &mut names)?;
+            let recipe = proof::recipe(&term, target)?;
+            (
+                Some(Projection::from_inference_steps(&recipe.steps)?.into_commands()),
+                2,
             )
         } else {
             super::search::scope::search_with_lemma(target, id, &formula, ranker, maximum, started)?

@@ -567,12 +567,19 @@ impl Frontier {
                 if self.native && !crate::learning::State::eligible(&question.to_hex()) {
                     continue;
                 }
+                let mut corollary = None;
                 if self.native
                     && let Some(header) = header
                     && let Some(proof) = graph.checked_context().artifact_proof_id(*id)?
                     && let Some(formula) = graph.checked_context().proof_formula(header, length)?
                 {
                     self.lemmas.insert(proof, length, formula.as_ref());
+                    corollary = crate::learning::knowledge::existential_consequence(&formula)
+                        .and_then(|target| ResearchQuestion::from_formula(target).ok())
+                        .filter(|goal| {
+                            finder::independent_goal(&question, goal)
+                                && crate::learning::State::eligible(&goal.to_hex())
+                        });
                 }
                 let features = Features::of(&question);
                 for (total, count) in self.building.iter_mut().zip(features.counts) {
@@ -583,6 +590,9 @@ impl Frontier {
                     self.knowledge.pop_front();
                 }
                 self.explore_parts(question.core().clone(), &mut eligible)?;
+                if let Some(corollary) = corollary {
+                    self.retain(corollary, &mut eligible);
+                }
             } else if let Some(definition) = definition
                 && let Some(certificate) =
                     graph.checked_context().definition_certificate(definition)?

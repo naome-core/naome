@@ -271,9 +271,8 @@ impl ProgramRegistration {
         };
         let manifest_bytes = self
             .manifest
-            .canonical_bytes()
+            .encoded_length()
             .map_err(|_| ArtifactStateError::Context(ContextError::Corrupt))?
-            .len()
             + naome_proof::program::MANIFEST_MAGIC.len();
         self.next.register_fact(
             self.manifest.proof_id(),
