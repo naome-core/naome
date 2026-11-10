@@ -1333,6 +1333,26 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
 }
 
 #[test]
+fn registry_compaction_defers_when_successor_reservation_is_unavailable() {
+    let graph = Graph::default();
+    let directory = Directory::new();
+    let mut local = Managed::new(None);
+    local.attach_persistence(&directory.0, &graph).unwrap();
+    let storage = local.index_storage.as_ref().unwrap().clone();
+    let reserved = storage.allocated_bytes().unwrap() * 2;
+    let available = u128::from(crate::resources::limits().disk_reserve_bytes) + reserved as u128;
+    local.next_compaction = 0;
+    crate::resources::with_disk_available(available, || {
+        local.maintain_registry().unwrap();
+        assert!(local.compaction.is_none());
+    });
+    local.maintain_registry().unwrap();
+    assert!(
+        local.compaction.is_some() || !Arc::ptr_eq(&storage, local.index_storage.as_ref().unwrap())
+    );
+}
+
+#[test]
 fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_snapshots() {
     let graph = Graph::default();
     let directory = Directory::new();
@@ -1358,6 +1378,10 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
     local.next_compaction = 0;
     local.maintain_registry().unwrap();
     assert!(local.compaction.is_some());
+    crate::resources::with_disk_available(0, || {
+        local.maintain_registry().unwrap();
+        assert!(local.compaction.is_none());
+    });
     let extra = question(&crate::checkpoint::tests::question_source(321));
     local
         .registry
@@ -1368,6 +1392,19 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
         .as_mut()
         .unwrap()
         .retain(&extra, persistence::Kind::Baseline, None)
+        .unwrap();
+    local.maintain_registry().unwrap();
+    assert!(local.compaction.is_some());
+    let during_copy = question(&crate::checkpoint::tests::question_source(322));
+    local
+        .registry
+        .insert(RegisteredQuestion::new(*during_copy.record_id(), during_copy.core()).unwrap())
+        .unwrap();
+    local
+        .persistence
+        .as_mut()
+        .unwrap()
+        .retain(&during_copy, persistence::Kind::Baseline, None)
         .unwrap();
     let complete_identity = local.registry.identity();
     for _ in 0..1000 {
@@ -1382,9 +1419,16 @@ fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_s
     assert!(target.allocated_bytes().unwrap() < allocated);
     assert_eq!(local.registry.identity(), complete_identity);
     assert!(local.registry.contains_record(extra.record_id()).unwrap());
+    assert!(
+        local
+            .registry
+            .contains_record(during_copy.record_id())
+            .unwrap()
+    );
     assert_eq!(snapshot.identity(), identity);
     assert_eq!(snapshot.len(), 320);
     assert!(!snapshot.contains_record(extra.record_id()).unwrap());
+    assert!(!snapshot.contains_record(during_copy.record_id()).unwrap());
     drop(snapshot);
     drop(source);
     drop(local);
