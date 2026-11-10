@@ -278,10 +278,19 @@ pub(crate) struct Job {
     pub io_bytes: usize,
     pub io_operations: usize,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TypedGenerationCost {
+    pub actions: usize,
+    pub model_decisions: usize,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerationCost {
     pub search_expansions: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_generation: Option<TypedGenerationCost>,
     pub checker_calls: u64,
     pub submitted_checker_steps: u64,
     pub retrieved_lemmas: usize,
@@ -1220,6 +1229,17 @@ fn solve_with_report_typed(
     job: u64,
     context: SolveContext<'_>,
 ) -> Result<Generation, crate::Error> {
+    solve_with_generation(source, model, budget, job, context, true)
+}
+
+fn solve_with_generation(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    context: SolveContext<'_>,
+    generate: bool,
+) -> Result<Generation, crate::Error> {
     let question = ResearchQuestion::from_hex(source)?;
     let definitions = context
         .prerequisites
@@ -1236,7 +1256,7 @@ fn solve_with_report_typed(
         seed: job.max(1),
         explore: budget >= 128,
     };
-    let mut lemma_work = 0;
+    let mut prior_work = 0;
     if budget != 0
         && context.native_programs
         && context.required.is_empty()
@@ -1244,7 +1264,7 @@ fn solve_with_report_typed(
     {
         let (packet, work) =
             inputs.search_native_lemma(question.proved_target(), &mut ranker, budget, started)?;
-        lemma_work = work;
+        prior_work = work;
         if let Some(packet) = packet {
             return program_generation(
                 packet,
@@ -1252,7 +1272,7 @@ fn solve_with_report_typed(
                 question.proved_target(),
                 false,
                 GenerationCost {
-                    search_expansions: lemma_work,
+                    search_expansions: prior_work,
                     retrieved_lemmas: 1,
                     generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
                         as u64,
@@ -1261,6 +1281,36 @@ fn solve_with_report_typed(
                 Vec::new(),
             );
         }
+    }
+    let mut typed_generation = None;
+    if generate && context.native_programs && context.required.is_empty() {
+        let (candidate, work) = search::scope::generation::attempt(
+            question.proved_target(),
+            ranker.model,
+            budget.saturating_sub(prior_work),
+            started,
+            &context,
+        )?;
+        if work.actions != 0 || work.model_decisions != 0 {
+            typed_generation = Some(work);
+        }
+        if let Some(candidate) = candidate {
+            return program_generation(
+                candidate.packet,
+                candidate.helpers,
+                question.proved_target(),
+                false,
+                GenerationCost {
+                    search_expansions: prior_work + work.actions,
+                    typed_generation,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                },
+                Vec::new(),
+            );
+        }
+        prior_work += work.actions;
     }
     let Generation {
         mut solution,
@@ -1272,12 +1322,17 @@ fn solve_with_report_typed(
     } = search_compiled_question(
         &question,
         &mut ranker,
-        budget.saturating_sub(lemma_work),
+        budget.saturating_sub(prior_work),
         &context,
+        Some(started),
     )?;
-    cost.search_expansions += lemma_work;
+    cost.search_expansions += prior_work;
+    cost.typed_generation = typed_generation;
+    if typed_generation.is_some() {
+        cost.generation_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    }
     if let Some(solution) = &mut solution {
-        solution.cost.search_expansions += lemma_work;
+        *solution.cost = cost.clone();
     }
     if let Some(solution) = &mut solution {
         if matches!(
@@ -1455,7 +1510,7 @@ fn search_question_report(
     context: &SolveContext<'_>,
 ) -> Result<Generation, crate::Error> {
     let question = ResearchQuestion::from_hex(source)?;
-    search_compiled_question(&question, ranker, budget, context)
+    search_compiled_question(&question, ranker, budget, context, None)
 }
 
 fn search_compiled_question(
@@ -1463,6 +1518,7 @@ fn search_compiled_question(
     ranker: &mut dyn model::Ranker,
     budget: usize,
     context: &SolveContext<'_>,
+    first_orientation_started: Option<std::time::Instant>,
 ) -> Result<Generation, crate::Error> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
@@ -1528,7 +1584,9 @@ fn search_compiled_question(
         } else {
             q.proved_target().clone()
         };
-        let orientation_started = std::time::Instant::now();
+        let orientation_started = first_orientation_started
+            .filter(|_| !refuted)
+            .unwrap_or_else(std::time::Instant::now);
         let retrieval_started = std::time::Instant::now();
         let (scoped, scoped_work) = if context.required.is_empty() {
             search::scope::search(&target, ranker, remaining, orientation_started)?

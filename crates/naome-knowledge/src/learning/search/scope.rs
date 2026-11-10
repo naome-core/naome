@@ -8,7 +8,9 @@ use naome_proof::{
 
 pub(crate) mod cut;
 mod demand;
+pub(in crate::learning) mod generation;
 
+const TIME_LIMIT: Duration = Duration::from_millis(2500);
 const ACTIONS: usize = 8;
 const FACTS: usize = 32;
 const OFFERS: usize = 16;
@@ -26,6 +28,19 @@ impl Scope {
     }
 
     fn open_with(target: &Formula, lemma: Option<&Formula>) -> Result<Option<Self>, crate::Error> {
+        let scope = Self::decompose(target, lemma)?;
+        Ok(scope.supports_standard_search().then_some(scope))
+    }
+
+    fn supports_standard_search(&self) -> bool {
+        self.assumptions.len() <= SCOPE_ASSUMPTIONS.min(FACTS)
+            && self
+                .assumptions
+                .iter()
+                .any(|f| matches!(f.view().graph_node(), FormulaNode::ForAll(_)))
+    }
+
+    fn decompose(target: &Formula, lemma: Option<&Formula>) -> Result<Self, crate::Error> {
         let mut goal = target.clone();
         let mut binders = Vec::new();
         loop {
@@ -47,19 +62,11 @@ impl Scope {
             assumptions.push(premise);
             goal = result;
         }
-        if assumptions.is_empty()
-            || assumptions.len() > SCOPE_ASSUMPTIONS.min(FACTS)
-            || !assumptions
-                .iter()
-                .any(|f| matches!(f.view().graph_node(), FormulaNode::ForAll(_)))
-        {
-            return Ok(None);
-        }
-        Ok(Some(Self {
+        Ok(Self {
             binders,
             assumptions,
             goal,
-        }))
+        })
     }
 
     fn offers(&self, facts: &[Formula]) -> (Vec<(ScopedAction, Formula)>, bool) {
@@ -89,31 +96,12 @@ impl Scope {
         references: &[naome_proof::ProofId],
     ) -> Option<Vec<Command>> {
         let used = used_facts(self.assumptions.len(), actions)?;
-        let mut positions: Vec<_> = (0..self.assumptions.len() as u32).collect();
-        let mut retained = Vec::new();
-        for (index, action) in actions.iter().enumerate() {
-            if !used[self.assumptions.len() + index] {
-                positions.push(0);
-                continue;
-            }
-            let operand = |index: u32| positions[index as usize];
-            retained.push(match action {
-                ScopedAction::Instantiate {
-                    universal,
-                    replacement,
-                    premises,
-                } => ScopedAction::Instantiate {
-                    universal: operand(*universal),
-                    replacement: *replacement,
-                    premises: premises.iter().copied().map(operand).collect(),
-                },
-                ScopedAction::Conjoin { left, right } => ScopedAction::Conjoin {
-                    left: operand(*left),
-                    right: operand(*right),
-                },
-            });
-            positions.push((self.assumptions.len() + retained.len() - 1) as u32);
-        }
+        let retained = retain_actions(
+            (0..self.assumptions.len() as u32).map(Some).collect(),
+            self.assumptions.len(),
+            actions,
+            &used,
+        )?;
         let assumptions = self
             .assumptions
             .iter()
@@ -379,6 +367,44 @@ pub(in crate::learning) fn search_with_lemma(
     Ok((commands, work))
 }
 
+/// Reindex the live part of a scope after dropping unused inputs and actions.
+fn retain_actions(
+    mut positions: Vec<Option<u32>>,
+    retained_inputs: usize,
+    actions: &[ScopedAction],
+    used: &[bool],
+) -> Option<Vec<ScopedAction>> {
+    let inputs = positions.len();
+    let mut retained = Vec::new();
+    for (index, action) in actions.iter().enumerate() {
+        if !used[inputs + index] {
+            positions.push(None);
+            continue;
+        }
+        let operand = |index: u32| positions.get(index as usize).copied().flatten();
+        retained.push(match action {
+            ScopedAction::Instantiate {
+                universal,
+                replacement,
+                premises,
+            } => ScopedAction::Instantiate {
+                universal: operand(*universal)?,
+                replacement: *replacement,
+                premises: premises
+                    .iter()
+                    .map(|&i| operand(i))
+                    .collect::<Option<_>>()?,
+            },
+            ScopedAction::Conjoin { left, right } => ScopedAction::Conjoin {
+                left: operand(*left)?,
+                right: operand(*right)?,
+            },
+        });
+        positions.push(Some((retained_inputs + retained.len() - 1) as u32));
+    }
+    Some(retained)
+}
+
 fn used_facts(assumptions: usize, actions: &[ScopedAction]) -> Option<Vec<bool>> {
     if actions.is_empty() {
         return None;
@@ -428,7 +454,7 @@ fn search_scope(
     let mut actions = Vec::new();
     let allowance = maximum.min(ACTIONS).min(FACTS - facts.len());
     for _ in 0..allowance {
-        if started.elapsed() >= Duration::from_millis(2500) {
+        if started.elapsed() >= TIME_LIMIT {
             break;
         }
         let (offered, compact) = scope.offers(&facts);
