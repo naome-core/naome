@@ -186,17 +186,28 @@ pub(super) fn specialize(
         return Ok(None);
     };
     let target_bytes = target.encode_canonical().map_err(|_| LIMIT)?;
-    let mut current = opened.view();
-    let assignments = loop {
+    let assignments = {
         work.formula(source_bytes.len(), 8)?;
-        let candidate = current.encode_canonical().map_err(|_| LIMIT)?;
-        if let Some(assignments) = match_variables(&candidate, &target_bytes, |_| true) {
-            break assignments;
-        }
-        let Some((_, consequent)) = current.implication_parts() else {
-            return Ok(None);
+        let implication = opened.canonical_implication().map_err(|_| LIMIT)?;
+        let encoded;
+        let mut candidate = match &implication {
+            Some(parts) => parts.as_bytes(),
+            None => {
+                encoded = opened.encode_canonical().map_err(|_| LIMIT)?;
+                encoded.as_slice()
+            }
         };
-        current = consequent;
+        let mut suffixes = implication.iter().flat_map(|parts| parts.consequents());
+        loop {
+            if let Some(assignments) = match_variables(candidate, &target_bytes, |_| true) {
+                break assignments;
+            }
+            let Some(suffix) = suffixes.next() else {
+                return Ok(None);
+            };
+            work.formula(source_bytes.len(), 8)?;
+            candidate = suffix;
+        }
     };
     let default = (0..)
         .map(FreeVariable::new)
