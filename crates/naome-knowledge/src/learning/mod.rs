@@ -1600,12 +1600,21 @@ fn search_compiled_question(
             )?;
             remaining = remaining.saturating_sub(work);
             if let Some(term) = term {
-                let recipe = proof::recipe(&term, &target)?;
-                if recipe.steps.iter().any(|step| {
-                    matches!(step,
+                let recipe = proof::recipe_within_capacity(&term, &target)?;
+                if recipe.is_none() {
+                    certificate_failures += 1;
+                    failure = GenerationOutcome::CertificateLimit;
+                    terminal.include(experience::TerminalEvidence::Unsupported(
+                        experience::Capacity::Certificate,
+                    ));
+                }
+                if let Some(recipe) = recipe
+                    && recipe.steps.iter().any(|step| {
+                        matches!(step,
                     naome_proof::ProofStep::ProofReference { proof_id }
                         if context.required.contains(&crate::hex(proof_id.as_bytes())))
-                }) {
+                    })
+                {
                     let candidate = construction::program_from_recipe(&target, recipe)?;
                     return program_generation(
                         candidate.packet,
@@ -1719,7 +1728,7 @@ fn search_compiled_question(
                 .as_micros()
                 .min(u128::from(u64::MAX)) as u64;
             if context.native_programs && context.required.is_empty() {
-                let (candidate, work) = construction::construct_program(
+                let (candidate, work, certificate_limited) = construction::construct_program(
                     &target,
                     remaining,
                     orientation_started,
@@ -1728,6 +1737,13 @@ fn search_compiled_question(
                     context.definitions,
                 )?;
                 remaining = remaining.saturating_sub(work);
+                if certificate_limited {
+                    certificate_failures += 1;
+                    failure = GenerationOutcome::CertificateLimit;
+                    terminal.include(experience::TerminalEvidence::Unsupported(
+                        experience::Capacity::Certificate,
+                    ));
+                }
                 if let Some(candidate) = candidate {
                     return program_generation(
                         candidate.packet,
@@ -1819,7 +1835,14 @@ fn search_compiled_question(
         if let Some(tree) = found.tree {
             if context.native_programs {
                 let (term, _) = search::compile(&target, &tree)?;
-                let mut recipe = proof::recipe(&term, &target)?;
+                let Some(mut recipe) = proof::recipe_within_capacity(&term, &target)? else {
+                    certificate_failures += 1;
+                    failure = GenerationOutcome::CertificateLimit;
+                    terminal.include(experience::TerminalEvidence::Unsupported(
+                        experience::Capacity::Certificate,
+                    ));
+                    continue;
+                };
                 for entry in definitions::construction_choices(&target, context.definitions)? {
                     if !recipe.definitions.contains(&entry) {
                         recipe.definitions.push(entry);
