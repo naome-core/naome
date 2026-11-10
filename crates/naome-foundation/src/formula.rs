@@ -252,12 +252,12 @@ impl Formula {
     /// A variable already free in this formula cannot be used for opening.
     #[must_use]
     pub fn open_outer_universal(&self, variable: FreeVariable) -> Option<Self> {
-        if self.free_variables().contains(&variable) {
-            return None;
-        }
         let Node::ForAll(body) = &self.0 else {
             return None;
         };
+        if has_matching_free_variable(body, &|candidate| candidate == variable) {
+            return None;
+        }
         let mut body = body.as_ref().clone();
         open_binder(&mut body, 0, variable);
         Some(Self(body))
