@@ -315,6 +315,24 @@ fn implication_projection_enforces_the_canonical_depth_and_node_limits() {
 }
 
 #[test]
+fn single_implication_exposes_one_suffix_without_allocating_offsets() {
+    let x = FreeVariable::new(0);
+    let left = Formula::equal(x, x);
+    let right = Formula::member(x, x);
+    let formula = Formula::implies(left.clone(), right.clone());
+    let projection = formula.canonical_implication().unwrap().unwrap();
+
+    assert_eq!(projection.antecedent(), left.encode_canonical().unwrap());
+    let mut consequents = projection.consequents();
+    assert_eq!(
+        consequents.next(),
+        Some(right.encode_canonical().unwrap().as_slice())
+    );
+    assert_eq!(consequents.next(), None);
+    assert_eq!(projection.later_consequents.capacity(), 0);
+}
+
+#[test]
 fn implication_projection_retains_linear_buffer_capacity_for_growing_spines() {
     let x = FreeVariable::new(0);
     for count in [16, 32, 64, 128] {
@@ -324,9 +342,9 @@ fn implication_projection_retains_linear_buffer_capacity_for_growing_spines() {
         }
         let projection = formula.canonical_implication().unwrap().unwrap();
         let retained = projection.bytes.capacity()
-            + projection.consequents.capacity() * std::mem::size_of::<usize>();
+            + (1 + projection.later_consequents.capacity()) * std::mem::size_of::<usize>();
         let repeated_bytes: usize = projection.consequents().map(<[u8]>::len).sum();
-        assert_eq!(projection.consequents.len(), count);
+        assert_eq!(projection.consequents().count(), count);
         assert_eq!(projection.bytes.len(), 12 * count + 11);
         assert!(retained <= 40 * count + 128);
         assert!(repeated_bytes > projection.bytes.len() * count / 3);
