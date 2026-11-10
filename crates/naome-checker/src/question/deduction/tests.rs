@@ -4,6 +4,8 @@ use crate::normalize_and_check_with_state;
 #[test]
 fn nonuniversal_instantiated_goal_keeps_its_binder_attempt_charge() {
     let target = Formula::negate(naome_foundation::ZfcAxiom::Pairing.formula());
+    let bytes = target.encode_canonical().unwrap();
+    let search_target = (&target, crate::statement_id(&bytes), bytes.len());
     let state = crate::ArtifactState::new();
     let budget = |operations| Work {
         operations,
@@ -12,17 +14,14 @@ fn nonuniversal_instantiated_goal_keeps_its_binder_attempt_charge() {
         certificate_bytes: 0,
     };
     let mut ordinary = budget(5);
-    super::search::Search::new(&target, &state, false, &mut ordinary).unwrap();
+    super::search::Search::new(search_target, &state, false, &mut ordinary).unwrap();
     let mut instantiated = budget(5);
-    super::search::Search::new(&target, &state, true, &mut instantiated).unwrap();
+    super::search::Search::new(search_target, &state, true, &mut instantiated).unwrap();
 
     assert_eq!(ordinary.operations - instantiated.operations, 1);
-    assert_eq!(
-        ordinary.bytes - instantiated.bytes,
-        4 * target.encode_canonical().unwrap().len()
-    );
+    assert_eq!(ordinary.bytes - instantiated.bytes, 4 * bytes.len());
     assert!(matches!(
-        super::search::Search::new(&target, &state, true, &mut budget(4)),
+        super::search::Search::new(search_target, &state, true, &mut budget(4)),
         Err(super::LIMIT)
     ));
 }
