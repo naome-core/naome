@@ -39,6 +39,7 @@ struct Header {
     learning: finder::Learning,
     policy: finder::research::Policy,
     effects: crate::research_value::Effects,
+    recall: super::recall::Memory,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +74,7 @@ pub(super) struct Record {
     value_observed: Option<String>,
     contributed: bool,
     used_own_proof: bool,
+    pub(super) recall_observed: bool,
     continued: bool,
     pub solver: String,
     pub knowledge: String,
@@ -186,7 +188,10 @@ impl Record {
             || (self.first_unresolved_job > 0) != (self.first_unresolved_at > 0)
             || self.verified.is_some() != (self.verified_at > 0)
             || self.verified.is_none()
-                && (self.contributed || self.used_own_proof || self.continued)
+                && (self.contributed
+                    || self.used_own_proof
+                    || self.continued
+                    || self.recall_observed)
             || self.continued && (!self.contributed || !self.used_own_proof)
             || self.first_unresolved_at > observations
             || self.verified_at > observations
@@ -245,6 +250,7 @@ impl Evidence {
                     learning: finder::Learning::fresh(solver.clone()),
                     policy: finder::research::Policy::default(),
                     effects: Default::default(),
+                    recall: Default::default(),
                 },
                 vec![],
             )?
@@ -258,6 +264,7 @@ impl Evidence {
         header.learning.validate()?;
         header.policy.validate()?;
         header.effects.validate()?;
+        header.recall.validate(header.observations)?;
         if header.observations < header.model.updates
             || header.learning.utility_current() && header.model.utility_observations == 0
         {
@@ -606,6 +613,7 @@ impl Evidence {
             value_observed: None,
             contributed: false,
             used_own_proof: false,
+            recall_observed: false,
             continued: false,
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
@@ -922,6 +930,43 @@ impl Evidence {
             consumer.last_job == job
                 && consumer.verified.as_deref() == Some(crate::hex(root.as_bytes()).as_str())
         }))
+    }
+
+    pub(super) fn recall(&self, context: u16) -> Vec<(naome_proof::ProofId, u8)> {
+        self.header.recall.offers(context, self.header.observations)
+    }
+
+    pub(super) fn recall_opportunity(&self, context: u16) -> u64 {
+        self.header
+            .recall
+            .opportunity(context, self.header.observations)
+    }
+
+    /// Store the association and its consumer receipt in one transaction.
+    /// Startup replays checked resolutions, including one committed just
+    /// before a crash; the receipt prevents duplicate reinforcement.
+    pub(super) fn remember_reuse(
+        &mut self,
+        goal: &ResearchQuestion,
+        actual_goal: &ResearchQuestion,
+        consumer: &mut Record,
+        root: ArtifactId,
+        proofs: &[naome_proof::ProofId],
+    ) -> Result<(), crate::Error> {
+        if proofs.is_empty() || consumer.recall_observed {
+            return Ok(());
+        }
+        let mut header = self.header.clone();
+        header
+            .recall
+            .observe(actual_goal, root, proofs, header.observations);
+        let mut updated = consumer.clone();
+        updated.recall_observed = true;
+        let update = Update::put("question", record_key(&self.solver, goal), &updated)?;
+        self.commit(&header, vec![update])?;
+        self.header = header;
+        *consumer = updated;
+        Ok(())
     }
 
     /// Attribute exact downstream reuse once. A dependency that appeared
