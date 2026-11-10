@@ -68,6 +68,23 @@ fn cloned_map_path_copies_only_the_changed_search_path() {
 }
 
 #[test]
+fn value_replacement_preserves_the_fingerprint_and_snapshot() {
+    let key = TestKey([0; 32]);
+    let sibling = TestKey([0x80; 32]);
+    let mut selected = PersistentMap::new();
+    assert!(selected.insert(key, 0));
+    assert!(selected.insert(sibling, 1));
+    let mut branch = selected.clone();
+
+    branch.set(key, 2);
+
+    assert_eq!(branch.fingerprint(), selected.fingerprint());
+    assert_eq!(branch.get(&key), Some(&2));
+    assert_eq!(selected.get(&key), Some(&0));
+    assert!(branch.shares_terminal_for_key_with(&selected, &sibling));
+}
+
+#[test]
 fn maximum_key_path_round_trips_and_remains_clone_isolated() {
     let zero = TestKey([0; 32]);
     let mut selected = PersistentMap::new();
