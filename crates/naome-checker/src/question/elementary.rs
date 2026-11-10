@@ -13,7 +13,7 @@ use super::{
 };
 
 pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Failure> {
-    let length = target.encode_canonical().map_err(|_| LIMIT)?.len();
+    let length = target.encoded_length().map_err(|_| LIMIT)?;
     work.formula(length, 64)?;
     let mut plan = Plan::new();
     for axiom in [
@@ -48,7 +48,7 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
     let current_length = if variables.is_empty() {
         length
     } else {
-        current.encode_canonical().map_err(|_| LIMIT)?.len()
+        current.encoded_length().map_err(|_| LIMIT)?
     };
     let root = if let Some((left, right)) = current.view().equality_variables()
         && left == right
@@ -93,12 +93,7 @@ fn identity(
     let second = Logic::simplification(formula.clone(), formula.clone());
     let frege = Logic::frege(formula.clone(), implies_self.clone(), formula.clone());
     let intermediate = Formula::implies(second.clone(), implies_self.clone());
-    let length = |formula: &Formula| {
-        formula
-            .encode_canonical()
-            .map(|bytes| bytes.len())
-            .map_err(|_| LIMIT)
-    };
+    let length = |formula: &Formula| formula.encoded_length().map_err(|_| LIMIT);
     let a = plan.axiom(
         ProofStep::Simplification {
             antecedent: formula.clone().into(),

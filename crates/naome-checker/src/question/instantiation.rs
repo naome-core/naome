@@ -217,7 +217,7 @@ pub(super) fn specialize(
         let body = current.open_outer_universal(variable).ok_or(INVALID)?;
         let replacement = assignments.get(&variable).copied().unwrap_or(default);
         let result = body.clone().substitute_free(variable, replacement);
-        let length = result.encode_canonical().map_err(|_| LIMIT)?.len();
+        let length = result.encoded_length().map_err(|_| LIMIT)?;
         let implication_length = current_length
             .checked_add(length)
             .and_then(|n| n.checked_add(1))

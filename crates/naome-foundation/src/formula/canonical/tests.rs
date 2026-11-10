@@ -209,9 +209,18 @@ fn codec_fails_closed_at_the_depth_limit() {
     let mut rejected = accepted.clone();
     rejected = Formula::negate(rejected);
 
-    assert!(accepted.encode_canonical().is_ok());
+    assert_eq!(
+        accepted.encoded_length(),
+        accepted.encode_canonical().map(|bytes| bytes.len())
+    );
     assert_eq!(
         rejected.encode_canonical(),
+        Err(FormulaCodecError::DepthLimitExceeded {
+            maximum: FORMULA_MAX_DEPTH,
+        })
+    );
+    assert_eq!(
+        rejected.encoded_length(),
         Err(FormulaCodecError::DepthLimitExceeded {
             maximum: FORMULA_MAX_DEPTH,
         })
@@ -255,8 +264,15 @@ fn codec_enforces_derived_node_and_byte_limits() {
         accepted.encode_canonical().unwrap().len(),
         FORMULA_MAX_BYTES
     );
+    assert_eq!(accepted.encoded_length(), Ok(FORMULA_MAX_BYTES));
     assert_eq!(
         rejected.encode_canonical(),
+        Err(FormulaCodecError::NodeLimitExceeded {
+            maximum: FORMULA_MAX_NODES,
+        })
+    );
+    assert_eq!(
+        rejected.encoded_length(),
         Err(FormulaCodecError::NodeLimitExceeded {
             maximum: FORMULA_MAX_NODES,
         })

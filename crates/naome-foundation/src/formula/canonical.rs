@@ -133,6 +133,19 @@ impl Formula {
             .map(|(bytes, _)| bytes)
     }
 
+    /// Measures the canonical byte length with the same codec limits.
+    pub fn encoded_length(&self) -> Result<usize, FormulaCodecError> {
+        let mut output = LengthSink(0);
+        encode_node(
+            &self.0,
+            0,
+            &mut NodeBudget::new(FORMULA_MAX_NODES),
+            &mut FreeVariable::identifier,
+            &mut output,
+        )?;
+        Ok(output.0)
+    }
+
     /// Encodes this formula within a caller-supplied node limit.
     ///
     /// The effective limit never exceeds [`FORMULA_MAX_NODES`]. The returned
@@ -238,12 +251,39 @@ impl Formula {
     }
 }
 
+trait ByteSink {
+    fn push(&mut self, byte: u8);
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+}
+
+impl ByteSink for Vec<u8> {
+    fn push(&mut self, byte: u8) {
+        Vec::push(self, byte);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+}
+
+struct LengthSink(usize);
+
+impl ByteSink for LengthSink {
+    fn push(&mut self, _byte: u8) {
+        self.0 += 1;
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.0 += bytes.len();
+    }
+}
+
 fn encode_node(
     node: &Node,
     depth: u32,
     nodes: &mut NodeBudget,
     variables: &mut impl FnMut(FreeVariable) -> u32,
-    output: &mut Vec<u8>,
+    output: &mut impl ByteSink,
 ) -> Result<(), FormulaCodecError> {
     check_depth(depth)?;
     nodes.charge()?;
@@ -280,7 +320,7 @@ fn encode_node(
 fn encode_variable(
     variable: Variable,
     variables: &mut impl FnMut(FreeVariable) -> u32,
-    output: &mut Vec<u8>,
+    output: &mut impl ByteSink,
 ) {
     let (tag, value) = match variable {
         Variable::Free(variable) => (FREE_VARIABLE, variables(variable)),
