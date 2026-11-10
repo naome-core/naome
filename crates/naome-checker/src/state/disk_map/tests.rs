@@ -332,6 +332,36 @@ fn authenticated_malformed_metadata_and_branch_order_are_rejected() {
 }
 
 #[test]
+fn ordered_branch_ranges_must_stay_on_their_side_of_the_split() {
+    let key = |last| {
+        let mut key = [0xf0; 32];
+        key[31] = last;
+        key
+    };
+    let child = |address, minimum, maximum| Child {
+        root: Root {
+            address: [address; 32],
+            fingerprint: [0; 32],
+        },
+        range: KeyRange {
+            minimum: key(minimum),
+            maximum: key(maximum),
+        },
+    };
+    let validate = |left_maximum, right_minimum| {
+        Node::Branch {
+            bit: 253,
+            left: child(1, 0, left_maximum),
+            right: child(2, right_minimum, 7),
+        }
+        .validate()
+    };
+    assert_eq!(validate(3, 4), Ok(()));
+    assert_eq!(validate(4, 5), Err(ContextError::Corrupt));
+    assert_eq!(validate(2, 3), Err(ContextError::Corrupt));
+}
+
+#[test]
 fn strict_node_codec_and_value_limit_preserve_existing_root() {
     let storage = Arc::new(MemoryStorage::default());
     let mut map = DiskMap::new(storage.clone());

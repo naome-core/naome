@@ -508,18 +508,15 @@ impl<'a> Node<'a> {
             Self::Branch { bit, left, right } => {
                 let left_range = left.range;
                 let right_range = right.range;
+                // The outer endpoints bound a single prefix at the split.
+                // The ordered inner endpoints must lie on their respective sides.
                 if left_range.minimum > left_range.maximum
                     || right_range.minimum > right_range.maximum
                     || left_range.maximum >= right_range.minimum
                     || left.root.address == right.root.address
                     || first_differing_bit(&left_range.minimum, &right_range.maximum) != Some(*bit)
-                    || !same_prefix(&left_range.minimum, &left_range.maximum, *bit)
-                    || !same_prefix(&left_range.minimum, &right_range.minimum, *bit)
-                    || !same_prefix(&right_range.minimum, &right_range.maximum, *bit)
-                    || key_bit(&left_range.minimum, *bit)
                     || key_bit(&left_range.maximum, *bit)
                     || !key_bit(&right_range.minimum, *bit)
-                    || !key_bit(&right_range.maximum, *bit)
                 {
                     return Err(ContextError::Corrupt);
                 }
@@ -652,10 +649,6 @@ fn first_differing_bit(left: &[u8; 32], right: &[u8; 32]) -> Option<u8> {
         }
     }
     None
-}
-
-fn same_prefix(left: &[u8; 32], right: &[u8; 32], bit: u8) -> bool {
-    first_differing_bit(left, right).is_none_or(|differing| differing >= bit)
 }
 
 fn key_bit(key: &[u8; 32], bit: u8) -> bool {
