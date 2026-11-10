@@ -106,8 +106,9 @@ impl<K: Key256, V> PersistentMap<K, V> {
     }
 
     /// Replaces only the path to this key, retaining immutable old handles.
-    /// Fingerprints bind keys only; callers must bind derived values through
-    /// their authoritative content-addressed input set.
+    /// Replacing a value reuses the existing key-only fingerprints. Callers
+    /// must bind derived values through their authoritative content-addressed
+    /// input set.
     pub(crate) fn set(&mut self, key: K, value: V) {
         if self.contains_key(&key) {
             self.root = Some(replace_at(
@@ -210,26 +211,34 @@ fn terminal_node<'a, K: Key256, V>(mut node: &'a Arc<Node<K, V>>, key: &K) -> &'
 }
 
 fn replace_at<K: Key256, V>(node: &Arc<Node<K, V>>, key: K, value: V) -> Arc<Node<K, V>> {
-    match node.as_ref() {
-        Node::Leaf { .. } => Arc::new(Node::leaf(key, value)),
+    let replacement = match node.as_ref() {
+        Node::Leaf {
+            key, fingerprint, ..
+        } => Node::Leaf {
+            key: *key,
+            value,
+            fingerprint: *fingerprint,
+        },
         Node::Branch {
-            bit, left, right, ..
+            bit,
+            left,
+            right,
+            fingerprint,
         } => {
-            if key_bit(key.as_key_bytes(), *bit) {
-                Arc::new(Node::branch(
-                    *bit,
-                    left.clone(),
-                    replace_at(right, key, value),
-                ))
+            let (left, right) = if key_bit(key.as_key_bytes(), *bit) {
+                (left.clone(), replace_at(right, key, value))
             } else {
-                Arc::new(Node::branch(
-                    *bit,
-                    replace_at(left, key, value),
-                    right.clone(),
-                ))
+                (replace_at(left, key, value), right.clone())
+            };
+            Node::Branch {
+                bit: *bit,
+                left,
+                right,
+                fingerprint: *fingerprint,
             }
         }
-    }
+    };
+    Arc::new(replacement)
 }
 
 fn insert_at<K: Key256, V>(
