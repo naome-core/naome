@@ -327,6 +327,7 @@ impl State {
             history: None,
             evidence: Vec::new(),
             training: false,
+            research: None,
             required: Vec::new(),
             prerequisites: Default::default(),
             base_hash: digest(self),
@@ -360,6 +361,12 @@ impl State {
     }
     pub(crate) fn search_budget(&self) -> u32 {
         if self.rejections % 3 == 2 { 256 } else { 128 }
+    }
+    pub(crate) fn training_value(
+        &self,
+        frame: &crate::research_value::Frame,
+    ) -> Option<crate::research_value::Forecast> {
+        self.meta.forecast(frame)
     }
     pub(crate) fn feedback_stamp(&self) -> (&str, u64) {
         (&self.feedback.checkpoint, self.feedback.revision)

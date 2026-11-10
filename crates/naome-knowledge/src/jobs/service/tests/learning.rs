@@ -1389,6 +1389,7 @@ fn optional_checked_lemma_reaches_the_native_job_without_becoming_required() {
     let client = Client {
         sender,
         feedback: Arc::default(),
+        research: Default::default(),
     };
     let _ticket = client
         .submit_after(
@@ -2212,6 +2213,21 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
         (root, solution.proof_id.clone())
     }
 
+    fn research_binding(
+        frontier: &mut Frontier,
+        graph: &crate::Graph,
+        question: &ResearchQuestion,
+        mut binding: Binding,
+        limits: Limits,
+    ) -> Binding {
+        let decision = frontier
+            .research_decision(question, graph, limits, binding.catalog.is_some())
+            .unwrap();
+        assert!(decision.forecast.is_some());
+        binding.research = Some(Box::new(decision));
+        binding
+    }
+
     crate::resources::tests::budget(false);
     let graph_dir = Directory::new();
     let frontier_dir = Directory::new();
@@ -2219,6 +2235,14 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     let (_jobs_dir, mut owner) = native();
     let settings = owner.settings;
     let mut frontier = Frontier::open(&frontier_dir.0, &graph, 937, settings).unwrap();
+    frontier.feedback(
+        owner
+            .journal
+            .learning
+            .as_ref()
+            .map(crate::learning::State::feedback),
+    );
+    frontier.refresh(&graph, |_| true).unwrap();
     let mut gate = crate::question::LocalQuestions::new(Some(|_| std::future::ready(Ok(true))));
     let [a, b, c, witness] = [0, 1, 2, 3].map(FreeVariable::new);
     let atoms = [
@@ -2279,7 +2303,14 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
         helper.to_hex().len() + 64 <= crate::resources::active_limits().question_cache_bytes / 2
     );
     drop(plan);
-    let result = submit(&mut owner, &helper, gate.formal_context(&graph).binding());
+    let binding = research_binding(
+        &mut frontier,
+        &graph,
+        &helper,
+        gate.formal_context(&graph).binding(),
+        settings.solving.limits,
+    );
+    let result = submit(&mut owner, &helper, binding);
     let (helper_id, proof) = publish(&mut frontier, &mut graph, &helper, &result);
     assert_eq!(frontier.support_updates(), 0);
 
@@ -2295,6 +2326,13 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     drop(planned);
     let mut binding = gate.formal_context(&graph).binding();
     binding.catalog = Some(catalog);
+    let binding = research_binding(
+        &mut frontier,
+        &graph,
+        &goal,
+        binding,
+        settings.solving.limits,
+    );
     let retry = submit(&mut owner, &goal, binding);
     assert_eq!(
         retry.experience.as_ref().unwrap().checkpoint,
@@ -2317,6 +2355,10 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
         &[helper_id]
     );
     assert_eq!(frontier.support_updates(), 1);
+    assert_eq!(
+        frontier.learning_snapshot()["research_effects"]["reused"],
+        1
+    );
     drop(frontier);
     drop(graph);
 

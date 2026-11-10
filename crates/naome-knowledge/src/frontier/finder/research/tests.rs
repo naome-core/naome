@@ -18,6 +18,7 @@ fn observation(
         finder_draw: job,
         finder_updates: 0,
         checked_inputs: false,
+        forecast: None,
         work_units: 128,
         horizon_ms: 3_000,
         features,
@@ -149,7 +150,7 @@ fn solver_ability_keeps_its_resolution_in_the_durable_context() {
     assert!(raw > 16 * 255 && raw < ability::PRIORITY_SCALE);
     frontier.feedback(Some(feedback));
     let decision = frontier
-        .research_decision(&question, &graph, settings.solving.limits)
+        .research_decision(&question, &graph, settings.solving.limits, false)
         .unwrap();
     let encoded = decision.features.context[2 + BINDINGS + 10];
     assert_eq!(u64::from(encoded), raw * 255 / ability::PRIORITY_SCALE);

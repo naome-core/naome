@@ -32,6 +32,7 @@ pub use outcome::{
     StartupFailure, StorageIoOperation, TensorElementType, WorkerFailure,
 };
 mod frontier;
+mod research_value;
 pub use error::{
     CertificateFormatError, DurabilityFailure, Error, ExternalFailure, FormatFailure,
     ModelDigestMismatch,

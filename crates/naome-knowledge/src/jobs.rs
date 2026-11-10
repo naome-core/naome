@@ -671,6 +671,7 @@ pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
     // Derived read-only mirror. The jobs journal remains the sole state owner.
     feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
+    research: std::sync::Arc<std::sync::Mutex<Option<crate::research_value::Frame>>>,
 }
 
 fn command_send_error<T>(error: mpsc::error::TrySendError<T>) -> crate::Error {
@@ -681,6 +682,10 @@ fn command_send_error<T>(error: mpsc::error::TrySendError<T>) -> crate::Error {
 }
 
 impl Client {
+    pub(crate) fn research_frame(&self, frame: Option<crate::research_value::Frame>) {
+        *self.research.lock().unwrap_or_else(|e| e.into_inner()) = frame;
+    }
+
     pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
         self.feedback
             .lock()

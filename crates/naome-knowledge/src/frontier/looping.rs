@@ -309,17 +309,25 @@ impl Frontier {
                 };
                 let applies =
                     crate::learning::knowledge::directly_applies(target, formula.as_ref())?;
-                let reused = self.evidence.policy().active()
-                    && ResearchQuestion::from_formula(formula.as_ref().clone()).is_ok_and(
-                        |lemma| {
-                            self.evidence
-                                .policy()
-                                .demonstrated_reuse(lemma.resolution_id())
-                        },
-                    );
-                candidates.push((!applies, !reused, proof));
+                let value = ResearchQuestion::from_formula(formula.as_ref().clone())
+                    .ok()
+                    .and_then(|lemma| {
+                        let reuse = self
+                            .evidence
+                            .policy()
+                            .demonstrated_reuse(lemma.resolution_id());
+                        let descriptor = finder::Descriptor::of(&lemma);
+                        self.research_forecast(
+                            graph,
+                            ResearchAction::Reuse,
+                            self.evidence.model().predictions_from(&descriptor),
+                            if reuse { 8 } else { 0 },
+                        )
+                    })
+                    .map_or(0, Forecast::value);
+                candidates.push((!applies, std::cmp::Reverse(value), proof));
             }
-            candidates.sort_by_key(|&(indirect, unobserved, _)| (indirect, unobserved));
+            candidates.sort_by_key(|&(indirect, value, _)| (indirect, value));
             for (_, _, proof) in candidates {
                 if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
                     return Ok((Vec::new(), inputs));
@@ -417,11 +425,13 @@ impl Frontier {
             }
         }
         sources.retain(|goal| !children.contains(goal.resolution_id()));
-        if self.evidence.policy().active() && sources.len() > 1 {
+        if self.native && sources.len() > 1 && self.feedback.is_some() {
             let mut ranked = Vec::with_capacity(sources.len());
             for goal in sources {
-                let decision = self.research_decision(&goal, graph, self.research_limits)?;
-                ranked.push((self.evidence.policy().multiplier(&decision), goal));
+                let decision = self.research_decision(&goal, graph, self.research_limits, false)?;
+                let value = decision.forecast.map_or(0, Forecast::value);
+                let preference = self.evidence.policy().multiplier(&decision) as i64;
+                ranked.push((value * preference, goal));
             }
             ranked.sort_by_key(|(weight, _)| std::cmp::Reverse(*weight));
             sources = ranked.into_iter().map(|(_, goal)| goal).collect();
@@ -558,6 +568,40 @@ impl Frontier {
             // A failed intake gate is a current scheduling constraint, never
             // a negative theorem label or a permanent loss of eligibility.
             node.available = node.checked.is_some() || available(&node.question);
+        }
+        if nodes.len() > 2
+            && let Some(frame) = self.research_frame(graph, 0)
+        {
+            let mut values = Vec::with_capacity(nodes.len());
+            values.push(0);
+            let parent = self.analyses.get(goal)?;
+            for node in nodes.iter().skip(1) {
+                let analysis = self.analyses.get(&node.question)?;
+                let [solvable, cost, useful] =
+                    self.evidence.model().predictions_from(&analysis.descriptor);
+                let action = if node.checked.is_some() {
+                    ResearchAction::Reuse
+                } else {
+                    ResearchAction::Solve
+                };
+                let opportunity = (quantize(useful) + analysis.relevance(&parent).min(8) * 125) / 2;
+                let prior = if node.checked.is_some() {
+                    1_000
+                } else {
+                    quantize(solvable)
+                };
+                let cost = node.record.as_ref().map_or(quantize(cost), |record| {
+                    quantize(((record.spent_ms as f32).ln_1p() / 16.).max(cost))
+                });
+                values.push(frame.forecast(action, prior, opportunity, 0, cost).value());
+            }
+            for node in &mut nodes {
+                node.children
+                    .sort_by_key(|&child| std::cmp::Reverse(values[child]));
+                node.cuts.sort_by_key(|members| {
+                    std::cmp::Reverse(members.iter().map(|&member| values[member]).min())
+                });
+            }
         }
         let choice = next(&nodes, 0, 0);
         let ready = !choice.pending.is_empty()
