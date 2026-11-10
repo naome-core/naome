@@ -588,7 +588,7 @@ fn load_node_sized(
     Ok((node, bytes.len()))
 }
 
-fn storage_address(bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn storage_address(bytes: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"naome:checked-map:storage:v1\0");
     hash.update(bytes);

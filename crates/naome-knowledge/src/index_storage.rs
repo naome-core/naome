@@ -16,7 +16,9 @@ use std::{
 };
 
 const MAGIC: &[u8; 16] = b"NAOME-INDEX\0\0\0\0\0";
-const SLOT_BYTES: u64 = 48;
+const SLOT_BYTES: u64 = 12;
+const SLOT_GROUP: u64 = 16;
+const RECORD_HEADER: u64 = 41;
 const FIRST_TABLE: u64 = 4096;
 const INITIAL_SLOTS: u64 = 64;
 const IO_RESERVE: u64 = 64 * 1024;
@@ -28,6 +30,12 @@ struct Segment {
     table: u64,
     capacity: u64,
     count: u64,
+}
+#[derive(Clone, Copy)]
+struct Location {
+    offset: u64,
+    length: u64,
+    authenticated: bool,
 }
 impl Segment {
     const EMPTY: Self = Self {
@@ -109,10 +117,9 @@ impl IndexStorage {
         ));
         let end = FIRST_TABLE + INITIAL_SLOTS * SLOT_BYTES;
         let memory = crate::resources::MemoryLease::acquire(4096)?;
-        let initial = end
-            .checked_add(reservation_overhead(root)?)
-            .ok_or(crate::InputFault::DisposableIndexSize)?;
-        let _disk = crate::resources::DiskLease::acquire(root, initial)?;
+        let _disk = crate::resources::DiskLease::acquire_with_filesystem_overhead(
+            root, end, IO_RESERVE, 4,
+        )?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -235,34 +242,131 @@ impl NativeIndex {
             .and_then(|v| table.checked_add(v))
             .ok_or(ContextError::Limit)
     }
+    // Keep each occupied run shorter than the lookup limit, even when an
+    // insertion would join two otherwise short runs.
+    fn needs_early_growth(
+        &self,
+        table: u64,
+        capacity: u64,
+        empty: u64,
+    ) -> Result<bool, ContextError> {
+        let mut occupied = 0u64;
+        let mut slots = [0u8; SLOT_GROUP as usize * SLOT_BYTES as usize];
+        for backwards in [false, true] {
+            let mut position = if backwards {
+                empty
+            } else {
+                (empty + 1) & (capacity - 1)
+            };
+            loop {
+                let (start, count) = if backwards {
+                    if position == 0 {
+                        position = capacity;
+                    }
+                    let count = SLOT_GROUP.min(position);
+                    (position - count, count)
+                } else {
+                    let count = SLOT_GROUP.min(capacity - position);
+                    (position, count)
+                };
+                let size = usize::try_from(count * SLOT_BYTES).map_err(|_| ContextError::Limit)?;
+                self.file
+                    .read_exact_at(&mut slots[..size], self.slot_offset(table, start)?)
+                    .map_err(system)?;
+                let mut found_empty = false;
+                for index in 0..count {
+                    let index = if backwards { count - 1 - index } else { index };
+                    let offset =
+                        usize::try_from(index * SLOT_BYTES).map_err(|_| ContextError::Limit)?;
+                    let slot = &slots[offset..offset + SLOT_BYTES as usize];
+                    if slot[4..].iter().all(|byte| *byte == 0) {
+                        if slot[..4].iter().any(|byte| *byte != 0) {
+                            return Err(ContextError::Corrupt);
+                        }
+                        found_empty = true;
+                        break;
+                    }
+                    occupied += 1;
+                    if occupied >= MAX_PROBES - 1 {
+                        return Ok(true);
+                    }
+                }
+                if found_empty {
+                    break;
+                }
+                position = if backwards {
+                    start
+                } else {
+                    (start + count) & (capacity - 1)
+                };
+            }
+        }
+        Ok(false)
+    }
     fn lookup(
         &self,
         table: u64,
         capacity: u64,
         address: &[u8; 32],
-    ) -> Result<(u64, Option<(u64, u64)>), ContextError> {
-        let mut bucket = self.hash.hash_one(address) & (capacity - 1);
-        let mut slot = [0u8; 48];
-        for _ in 0..capacity.min(MAX_PROBES) {
+    ) -> Result<(u64, Option<Location>), ContextError> {
+        let hash = self.hash.hash_one(address);
+        let fingerprint = (hash >> 32) as u32;
+        let mut bucket = hash & (capacity - 1);
+        let mut remaining = capacity.min(MAX_PROBES);
+        let mut slots = [0u8; SLOT_GROUP as usize * SLOT_BYTES as usize];
+        while remaining > 0 {
+            let count = remaining.min(SLOT_GROUP).min(capacity - bucket);
+            let size = usize::try_from(count * SLOT_BYTES).map_err(|_| ContextError::Limit)?;
             self.file
-                .read_exact_at(&mut slot, self.slot_offset(table, bucket)?)
+                .read_exact_at(&mut slots[..size], self.slot_offset(table, bucket)?)
                 .map_err(system)?;
-            let offset = u64::from_be_bytes(slot[32..40].try_into().expect("slot width"));
-            let length = u64::from_be_bytes(slot[40..48].try_into().expect("slot width"));
-            if offset == 0 {
-                if slot[..32].iter().any(|byte| *byte != 0) || length != 0 {
-                    return Err(ContextError::Corrupt);
+            for slot in slots[..size].chunks_exact(SLOT_BYTES as usize) {
+                let stored = u32::from_be_bytes(slot[..4].try_into().expect("slot width"));
+                let pointer = u64::from_be_bytes(slot[4..12].try_into().expect("slot width"));
+                if pointer == 0 {
+                    if stored != 0 {
+                        return Err(ContextError::Corrupt);
+                    }
+                    return Ok((bucket, None));
                 }
-                return Ok((bucket, None));
+                if stored == fingerprint {
+                    let offset = pointer - 1;
+                    if offset < FIRST_TABLE
+                        || offset
+                            .checked_add(RECORD_HEADER)
+                            .is_none_or(|end| end > self.end)
+                    {
+                        return Err(ContextError::Corrupt);
+                    }
+                    let mut header = [0u8; RECORD_HEADER as usize];
+                    self.file
+                        .read_exact_at(&mut header, offset)
+                        .map_err(system)?;
+                    if &header[..32] == address {
+                        let length =
+                            u64::from_be_bytes(header[32..40].try_into().expect("header width"));
+                        let authenticated = match header[40] {
+                            0 => false,
+                            1 => true,
+                            _ => return Err(ContextError::Corrupt),
+                        };
+                        return Ok((
+                            bucket,
+                            Some(Location {
+                                offset,
+                                length,
+                                authenticated,
+                            }),
+                        ));
+                    }
+                }
+                bucket = (bucket + 1) & (capacity - 1);
             }
-            if &slot[..32] == address {
-                return Ok((bucket, Some((offset - 1, length))));
-            }
-            bucket = (bucket + 1) & (capacity - 1);
+            remaining -= count;
         }
         Err(ContextError::Limit)
     }
-    fn find(&self, address: &[u8; 32]) -> Result<Option<(u64, u64)>, ContextError> {
+    fn find(&self, address: &[u8; 32]) -> Result<Option<Location>, ContextError> {
         for segment in self.segments[..self.segment_count].iter().rev() {
             let (_, found) = self.lookup(segment.table, segment.capacity, address)?;
             if found.is_some() {
@@ -276,13 +380,16 @@ impl NativeIndex {
         address: &[u8; 32],
         offset: u64,
         length: u64,
+        authenticated: bool,
         maximum: usize,
     ) -> Result<Vec<u8>, ContextError> {
         let length = usize::try_from(length).map_err(|_| ContextError::Limit)?;
         if length > maximum {
             return Err(ContextError::Limit);
         }
-        let record_length = length.checked_add(32).ok_or(ContextError::Limit)?;
+        let checksum = if authenticated { 0 } else { 32 };
+        let prefix = RECORD_HEADER as usize + checksum;
+        let record_length = length.checked_add(prefix).ok_or(ContextError::Limit)?;
         let record_end = offset
             .checked_add(u64::try_from(record_length).map_err(|_| ContextError::Limit)?)
             .ok_or(ContextError::Corrupt)?;
@@ -293,11 +400,22 @@ impl NativeIndex {
         self.file
             .read_exact_at(&mut record, offset)
             .map_err(system)?;
-        let expected = value_digest(address, &record[32..]);
-        if record[..32] != expected {
+        if &record[..32] != address
+            || u64::from_be_bytes(record[32..40].try_into().expect("header width"))
+                != u64::try_from(length).map_err(|_| ContextError::Limit)?
+            || record[40] != u8::from(authenticated)
+            || if checksum == 0 {
+                !naome_checker::question::authenticates_registry_storage(
+                    *address,
+                    &record[prefix..],
+                )
+            } else {
+                record[RECORD_HEADER as usize..prefix] != value_digest(address, &record[prefix..])
+            }
+        {
             return Err(ContextError::Corrupt);
         }
-        record.copy_within(32.., 0);
+        record.copy_within(prefix.., 0);
         record.truncate(length);
         Ok(record)
     }
@@ -331,37 +449,57 @@ impl ContextStorage for IndexStorage {
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
         let work = maximum
             .checked_mul(2)
-            .and_then(|n| n.checked_add(64))
+            .and_then(|n| n.checked_add(128))
             .ok_or(ContextError::Limit)?;
         let _memory =
             crate::resources::MemoryLease::acquire(work).map_err(|_| ContextError::Limit)?;
         let state = self.state.lock().map_err(|_| ContextError::Corrupt)?;
         let state = state.as_ref().ok_or(ContextError::Corrupt)?;
         self.live(state)?;
-        let (offset, length) = state.find(&address)?.ok_or(ContextError::Corrupt)?;
-        let bytes = state.read_value(&address, offset, length, maximum)?;
+        let location = state.find(&address)?.ok_or(ContextError::Corrupt)?;
+        let bytes = state.read_value(
+            &address,
+            location.offset,
+            location.length,
+            location.authenticated,
+            maximum,
+        )?;
         self.live(state)?;
         Ok(bytes)
     }
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
-        let memory = bytes.len().checked_add(64).ok_or(ContextError::Limit)?;
+        let memory = bytes.len().checked_add(128).ok_or(ContextError::Limit)?;
         let _memory =
             crate::resources::MemoryLease::acquire(memory).map_err(|_| ContextError::Limit)?;
         let mut guard = self.state.lock().map_err(|_| ContextError::Corrupt)?;
         let state = guard.as_mut().ok_or(ContextError::Corrupt)?;
         self.live(state)?;
         let existing = state.find(&address)?;
-        if let Some((offset, length)) = existing {
-            if u64::try_from(bytes.len()).ok() != Some(length) {
+        if let Some(location) = existing {
+            if u64::try_from(bytes.len()).ok() != Some(location.length) {
                 return Err(ContextError::Corrupt);
             }
-            if state.read_value(&address, offset, length, bytes.len())? != bytes {
+            if state.read_value(
+                &address,
+                location.offset,
+                location.length,
+                location.authenticated,
+                bytes.len(),
+            )? != bytes
+            {
                 return Err(ContextError::Corrupt);
             }
             self.live(state)?;
         } else {
             let active = state.segments[state.segment_count - 1];
-            let grow = active.count.checked_mul(2).ok_or(ContextError::Limit)? >= active.capacity;
+            let (bucket, found) = state.lookup(active.table, active.capacity, &address)?;
+            if found.is_some() {
+                return Err(ContextError::Corrupt);
+            }
+            let grow = active.count.checked_mul(5).ok_or(ContextError::Limit)?
+                >= active.capacity.checked_mul(4).ok_or(ContextError::Limit)?
+                || active.count >= MAX_PROBES - 1
+                    && state.needs_early_growth(active.table, active.capacity, bucket)?;
             let table_bytes = if grow {
                 active
                     .capacity
@@ -371,17 +509,22 @@ impl ContextStorage for IndexStorage {
             } else {
                 0
             };
+            let authenticated =
+                naome_checker::question::authenticates_registry_storage(address, bytes);
             let record_bytes = u64::try_from(bytes.len())
                 .map_err(|_| ContextError::Limit)?
-                .checked_add(32)
+                .checked_add(RECORD_HEADER + if authenticated { 0 } else { 32 })
                 .ok_or(ContextError::Limit)?;
-            let overhead = reservation_overhead(self.directory()).map_err(system)?;
             let reserve = table_bytes
                 .checked_add(record_bytes)
-                .and_then(|n| n.checked_add(overhead))
                 .ok_or(ContextError::Limit)?;
-            let _disk = crate::resources::DiskLease::acquire(self.directory(), reserve)
-                .map_err(disk_error)?;
+            let _disk = crate::resources::DiskLease::acquire_with_filesystem_overhead(
+                self.directory(),
+                reserve,
+                IO_RESERVE,
+                4,
+            )
+            .map_err(disk_error)?;
             let result = (|| {
                 if grow {
                     state.grow()?;
@@ -395,8 +538,19 @@ impl ContextStorage for IndexStorage {
                 let end = offset
                     .checked_add(record_bytes)
                     .ok_or(ContextError::Limit)?;
-                let mut record = Vec::with_capacity(bytes.len() + 32);
-                record.extend_from_slice(&value_digest(&address, bytes));
+                let mut record = Vec::with_capacity(
+                    usize::try_from(record_bytes).map_err(|_| ContextError::Limit)?,
+                );
+                record.extend_from_slice(&address);
+                record.extend_from_slice(
+                    &u64::try_from(bytes.len())
+                        .map_err(|_| ContextError::Limit)?
+                        .to_be_bytes(),
+                );
+                record.push(u8::from(authenticated));
+                if !authenticated {
+                    record.extend_from_slice(&value_digest(&address, bytes));
+                }
                 record.extend_from_slice(bytes);
                 state.file.write_all_at(&record, offset).map_err(system)?;
                 #[cfg(test)]
@@ -409,17 +563,13 @@ impl ContextStorage for IndexStorage {
                 {
                     std::process::exit(79);
                 }
-                let mut slot = [0u8; 48];
-                slot[..32].copy_from_slice(&address);
-                slot[32..40].copy_from_slice(
+                let mut slot = [0u8; SLOT_BYTES as usize];
+                slot[..4]
+                    .copy_from_slice(&((state.hash.hash_one(address) >> 32) as u32).to_be_bytes());
+                slot[4..12].copy_from_slice(
                     &offset
                         .checked_add(1)
                         .ok_or(ContextError::Limit)?
-                        .to_be_bytes(),
-                );
-                slot[40..48].copy_from_slice(
-                    &u64::try_from(bytes.len())
-                        .map_err(|_| ContextError::Limit)?
                         .to_be_bytes(),
                 );
                 state
@@ -504,15 +654,6 @@ fn system(error: io::Error) -> ContextError {
     ContextError::Storage(naome_proof::ContextStorageFailure::System(
         error.raw_os_error(),
     ))
-}
-fn reservation_overhead(path: &Path) -> io::Result<u64> {
-    let stats = nix::sys::statvfs::statvfs(path)
-        .map_err(|error| io::Error::from_raw_os_error(error as i32))?;
-    let block = stats.block_size().max(stats.fragment_size());
-    block
-        .checked_mul(4)
-        .map(|bytes| bytes.max(IO_RESERVE))
-        .ok_or_else(|| io::Error::other("index reservation overflow"))
 }
 fn disk_error(error: crate::Error) -> ContextError {
     match error {

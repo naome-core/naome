@@ -11,6 +11,13 @@ mod cold;
 mod copy;
 pub use copy::QuestionRegistryCopy;
 
+/// Check whether a registry record's address cryptographically binds its bytes.
+/// This checks storage integrity only; it does not validate a question or root.
+pub fn authenticates_registry_storage(address: [u8; 32], bytes: &[u8]) -> bool {
+    crate::state::disk_map::storage_address(bytes) == address
+        || cold::formula_address(bytes) == address
+}
+
 /// The receiver's entire local registry with incremental canonical indexes.
 /// Every record is checked at insertion; snapshots borrow the complete index
 /// and its cached content fingerprint without scanning or copying records.
