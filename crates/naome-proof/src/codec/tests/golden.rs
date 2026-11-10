@@ -103,6 +103,23 @@ fn every_step_variant_round_trips_canonically() {
 }
 
 #[test]
+fn definition_references_keep_field_and_prefix_order() {
+    let first = DefinitionId::from_bytes([1; DefinitionId::BYTE_LENGTH]);
+    let second = DefinitionId::from_bytes([2; DefinitionId::BYTE_LENGTH]);
+    let variable = FreeVariable::new(0);
+    let relation = |id| DefinedFormula::defined_relation(id, [variable]);
+    let step = ProofStep::Simplification {
+        antecedent: ProofFormula::from_defined(DefinedFormula::implies(
+            relation(first),
+            relation(second),
+        ))
+        .unwrap(),
+        consequent: ProofFormula::from_defined(relation(first)).unwrap(),
+    };
+    assert_eq!(step.definition_references(), [first, second, first]);
+}
+
+#[test]
 fn definition_application_round_trips_inside_a_proof_formula() {
     let definition_id = DefinitionId::from_bytes([0x7d; DefinitionId::BYTE_LENGTH]);
     let x = FreeVariable::new(1);
