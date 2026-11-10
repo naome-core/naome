@@ -117,10 +117,11 @@ impl DiskArtifactState {
                             index.storage(),
                             decode_root(root.as_deref()).map_err(context)?,
                         );
-                        bucket.insert(*statement.as_bytes(), &[]).map_err(context)?;
-                        index
-                            .set(*target.as_bytes(), &encode_root(bucket.root()))
-                            .map_err(context)?;
+                        if bucket.insert(*statement.as_bytes(), &[]).map_err(context)? {
+                            index
+                                .set(*target.as_bytes(), &encode_root(bucket.root()))
+                                .map_err(context)?;
+                        }
                     }
                 }
             }
