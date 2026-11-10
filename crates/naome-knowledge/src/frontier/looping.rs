@@ -322,10 +322,17 @@ impl Frontier {
                 if !applies && !recent.contains(&proof) {
                     continue;
                 }
-                let strength = learned
-                    .iter()
-                    .find(|(id, _)| *id == proof)
-                    .map_or(0, |&(_, strength)| strength);
+                let strength =
+                    learned
+                        .iter()
+                        .find(|(id, _)| *id == proof)
+                        .map_or(0, |&(_, strength)| {
+                            if applies || strength >= 2 {
+                                strength
+                            } else {
+                                0
+                            }
+                        });
                 let value = ResearchQuestion::from_formula(formula.as_ref().clone())
                     .ok()
                     .and_then(|lemma| {
@@ -349,6 +356,12 @@ impl Frontier {
                     proof,
                 ));
             }
+            if !candidates.iter().any(|&(indirect, ..)| !indirect)
+                && let Some(inputs) =
+                    self.first_checked_offer(graph, question, &recent, &learned)?
+            {
+                return Ok((Vec::new(), inputs));
+            }
             candidates.sort_by_key(|&(indirect, strength, value, _)| (indirect, strength, value));
             for (_, _, _, proof) in candidates.into_iter().take(4) {
                 if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
@@ -360,6 +373,82 @@ impl Frontier {
             .solving_inputs(planned, definitions)?
             .unwrap_or_default();
         Ok((planned.to_vec(), inputs))
+    }
+
+    /// Cold retrieval uses the checker's existing specialization index. It
+    /// can earn the first reuse receipt without a previous citation or a
+    /// literal fragment hit in the recent index.
+    fn first_checked_offer(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+        recent: &[naome_proof::ProofId],
+        learned: &[(naome_proof::ProofId, u8)],
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        use crate::learning::{State, knowledge};
+        use naome_checker::context::BucketKind;
+        use naome_checker::question::QUESTION_BYTES;
+
+        if !self.recall_enabled() || !State::eligible(&question.to_hex()) {
+            return Ok(None);
+        }
+        let Ok(_scratch) = crate::resources::MemoryLease::acquire(QUESTION_BYTES * 16) else {
+            return Ok(None);
+        };
+        let target = question.proved_target();
+        // The question target is closed. Open its prefix in binder order and
+        // look up the final consequent. This is only an index projection.
+        let mut goal = target.clone();
+        for binder in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
+            let Some(body) = goal.open_outer_universal(FreeVariable::new(binder as u32)) else {
+                break;
+            };
+            goal = body;
+        }
+        while let Some((_, consequent)) = goal.implication_parts() {
+            goal = consequent;
+        }
+        let keys = [
+            naome_proof::StatementId::of_canonical_formula(&goal.encode_canonical()?)
+                .ok_or(crate::InputFault::FinderOperandStatementWidth)?,
+            naome_checker::question::universal_pattern(&goal)?,
+        ];
+        let context = graph.checked_context();
+        for key in keys {
+            for statement in context.bucket(BucketKind::Instances, key)?.take(4) {
+                let statement = statement?;
+                let Some(header) = context.statement_header(statement)? else {
+                    continue;
+                };
+                let proof = header.proof_id();
+                let bytes = header.canonical_length();
+                if bytes > QUESTION_BYTES
+                    || recent.contains(&proof)
+                    || learned.iter().any(|&(id, _)| id == proof)
+                {
+                    continue;
+                }
+                let Some(formula) =
+                    context.statement_formula_from_header(statement, header, bytes)?
+                else {
+                    continue;
+                };
+                if !knowledge::directly_applies(target, &formula)? {
+                    continue;
+                }
+                let Ok(lemma) = ResearchQuestion::from_formula(formula.as_ref().clone()) else {
+                    continue;
+                };
+                if State::eligible(&lemma.to_hex())
+                    && finder::independent_goal(&lemma, question)
+                    && let Some(inputs) =
+                        graph.offered_solving_inputs(proof, question.dependencies())?
+                {
+                    return Ok(Some(inputs));
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn catalog_retry(
