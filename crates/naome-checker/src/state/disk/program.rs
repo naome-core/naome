@@ -161,9 +161,9 @@ impl ProgramRegistration {
                     })
                 })?;
             for dependency in &dependencies {
-                let header = self
+                let (header, depth) = self
                     .next
-                    .proof_header(dependency.proof)
+                    .proof_header_and_depth(dependency.proof)
                     .map_err(ArtifactStateError::Context)?
                     .ok_or(ArtifactStateError::MissingProofDependency {
                         proof_id: dependency.proof,
@@ -175,13 +175,6 @@ impl ProgramRegistration {
                         proof_id: dependency.proof,
                     });
                 }
-                let depth = self
-                    .next
-                    .proof_dependency_depth(dependency.proof)
-                    .map_err(ArtifactStateError::Context)?
-                    .ok_or(ArtifactStateError::MissingProofDependency {
-                        proof_id: dependency.proof,
-                    })?;
                 self.depth = self.depth.max(
                     depth
                         .checked_add(1)
