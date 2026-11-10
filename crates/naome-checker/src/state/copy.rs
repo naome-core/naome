@@ -115,7 +115,7 @@ impl<P: CopyPlan> AuthenticatedCopy<P> {
             match &mut self.follow {
                 Follow::Membership(map, lookup) => {
                     if lookup.complete() {
-                        if lookup.value()?.is_none() {
+                        if !lookup.found()? {
                             return Err(ContextError::Corrupt);
                         }
                         self.follow = Follow::None;
