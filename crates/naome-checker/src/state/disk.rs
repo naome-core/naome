@@ -10,7 +10,7 @@ use crate::{
 use naome_foundation::Formula;
 use naome_proof::{
     ArtifactId, DefinitionCertificate, DefinitionId, DefinitionResolution, DefinitionResolver,
-    DerivationId, ProofId, ProofStep, StatementId,
+    DerivationId, ProofId, StatementId,
 };
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc};
@@ -312,23 +312,11 @@ impl DiskArtifactState {
         &mut self,
         proof: CheckedProof,
     ) -> Result<Box<[u8]>, ArtifactStateError> {
-        self.validate_registration(&proof)?;
-        let mut next = self.clone();
-        let mut depth = 0usize;
-        for step in proof.normal_form.certificate().steps() {
-            if let ProofStep::ProofReference { proof_id } = step {
-                depth = depth.max(
-                    self.proof_dependency_depth(*proof_id)
-                        .map_err(ArtifactStateError::Context)?
-                        .ok_or(ArtifactStateError::MissingProofDependency {
-                            proof_id: *proof_id,
-                        })?,
-                );
-            }
-        }
-        let depth = depth
+        let depth = self
+            .validate_registration(&proof)?
             .checked_add(1)
             .ok_or(ArtifactStateError::Context(ContextError::Limit))?;
+        let mut next = self.clone();
         let bytes = proof
             .conclusion
             .encode_canonical()
@@ -359,8 +347,19 @@ impl DiskArtifactState {
         Ok(proof.normal_form.into_canonical_bytes())
     }
 
-    fn validate_registration(&self, proof: &CheckedProof) -> Result<(), ArtifactStateError> {
-        super::registration::validate(self, proof, true)
+    fn validate_registration(&self, proof: &CheckedProof) -> Result<usize, ArtifactStateError> {
+        let mut depth = Ok(0);
+        super::registration::validate(self, proof, true, |id| {
+            let Some(record) = self.proofs.get(id.as_bytes())? else {
+                return Ok(false);
+            };
+            // Keep the first depth error for after the registration checks.
+            if let Ok(maximum) = depth {
+                depth = proof_record(&record).map(|(_, cited_depth)| maximum.max(cited_depth));
+            }
+            Ok(true)
+        })?;
+        self.report(depth).map_err(ArtifactStateError::Context)
     }
     fn index(&self, kind: BucketKind) -> &DiskMap {
         match kind {
@@ -453,9 +452,6 @@ impl DiskArtifactState {
 }
 
 impl super::registration::RegistrationView for DiskArtifactState {
-    fn has_proof(&self, id: ProofId) -> Result<bool, ContextError> {
-        self.contains_proof(id)
-    }
     fn derivation_statement(&self, id: DerivationId) -> Result<Option<StatementId>, ContextError> {
         self.report(
             self.derivations
