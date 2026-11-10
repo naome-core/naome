@@ -857,6 +857,10 @@ impl Frontier {
         }
         let model = self.evidence.model();
         let [solvable, cost, useful] = model.predictions_from(&analysis.descriptor);
+        let scale = crate::training::ability::PRIORITY_SCALE;
+        let solver_priority = self.feedback.as_ref().map_or(0, |feedback| {
+            (feedback.priority(question, 128).min(scale) * 255 / scale) as u8
+        });
         let observations = self.evidence.draws();
         let summary = [
             (solvable * 255.) as u8,
@@ -869,9 +873,7 @@ impl Frontier {
             hint.map_or(0, |record| (record.spent_ms / 1_000).min(255) as u8),
             (graph.accepted_count().checked_ilog2().unwrap_or(0).min(16) as u8) * 15,
             self.goals.len().min(16) as u8 * 15,
-            self.feedback
-                .as_ref()
-                .map_or(128, |f| (f.priority(question, 128) / 16).min(255) as u8),
+            solver_priority,
             (crate::resources::active_limits().solving_jobs.min(8) as u8) * 31,
         ];
         Ok(ResearchDecision::new(

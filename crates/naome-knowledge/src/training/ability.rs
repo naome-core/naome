@@ -3,6 +3,7 @@
 use super::*;
 
 pub(crate) const SKILLS: usize = 6;
+pub(crate) const PRIORITY_SCALE: u64 = 1_000_000;
 const LEVELS: u32 = 4;
 const CELLS: usize = SKILLS * LEVELS as usize * 3;
 
@@ -221,7 +222,7 @@ impl Profile {
             value += (p * (1.0 - p) * (1.5 - p / 2.0) + uncertainty / 4.0) / (1.0 + cost.sqrt());
             count += 1;
         }
-        (value * 1_000_000.0 / f64::from(count.max(1))) as u64 + 1
+        (value * PRIORITY_SCALE as f64 / f64::from(count.max(1))) as u64 + 1
     }
     pub(crate) fn need(&self, skill: Skill, budget: u32) -> u64 {
         let (attempts, successes) = (0..LEVELS)

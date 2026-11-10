@@ -9,8 +9,8 @@ fn observation(
 ) -> (Decision, ExperienceSummary) {
     let mut resolution = [job as u8; 32];
     resolution[0] = u8::from(!held_out);
-    let mut features = [0; WIDTH];
-    features[1] = signal;
+    let mut features = Projection::default();
+    features.syntax[1] = signal;
     let decision = Decision {
         resolution,
         knowledge: [knowledge; 32],
@@ -104,4 +104,53 @@ fn real_reuse_upgrades_an_exact_earlier_job_without_replaying_the_label() {
     assert_eq!(policy.transitions[0].outcome, Outcome::Reused);
     assert_eq!(policy.observations, 2);
     policy.validate().unwrap();
+}
+
+#[test]
+fn captures_the_full_canonical_shape_and_the_context_at_the_draw() {
+    let question =
+        naome_checker::question::ResearchQuestion::from_hex("040001000000000100000000").unwrap();
+    let descriptor = Descriptor::of(&question);
+    let context = [19; CONTEXT];
+    let decision = Decision::new(
+        *question.resolution_id(),
+        [22; 32],
+        None,
+        &descriptor,
+        context,
+        (9, 3),
+        crate::jobs::Limits::default(),
+    );
+    assert!(decision.features.syntax[25] > 0);
+    assert_eq!(
+        decision.features.syntax,
+        descriptor.features.counts.map(magnitude)
+    );
+    assert_eq!(&decision.features.context[2 + BINDINGS..], &context);
+    assert_eq!(decision.features.values().count(), WIDTH);
+}
+
+#[test]
+fn solver_ability_keeps_its_resolution_in_the_durable_context() {
+    use crate::{Graph, checkpoint::tests::Directory, frontier::Frontier, jobs, training::ability};
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let question = naome_checker::question::ResearchQuestion::from_hex(
+        "04040302040301010000000001000000020101000000000100000001040301010000000001000000010101000000000100000002",
+    )
+    .unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
+    let feedback = crate::learning::State::fresh().feedback();
+    let raw = feedback.priority(&question, 128);
+    assert!(raw > 16 * 255 && raw < ability::PRIORITY_SCALE);
+    frontier.feedback(Some(feedback));
+    let decision = frontier
+        .research_decision(&question, &graph, settings.solving.limits)
+        .unwrap();
+    let encoded = decision.features.context[2 + BINDINGS + 10];
+    assert_eq!(u64::from(encoded), raw * 255 / ability::PRIORITY_SCALE);
 }

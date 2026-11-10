@@ -1,11 +1,31 @@
 //! A bounded, checked-outcome policy for choosing which formal work to try.
 //! The published checkpoint changes only on held-out comparisons under matched
 //! solver, catalogue and search allowances. Proof authority remains with the checker.
-use super::analysis::Descriptor;
+use super::analysis::{BINDINGS, Descriptor};
+use crate::structure::SIGNALS;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
-const WIDTH: usize = 32;
+const CONTEXT: usize = 12;
+const SUMMARY: usize = 2 + BINDINGS + CONTEXT;
+const WIDTH: usize = SIGNALS + SUMMARY;
+type Weights = ([f32; SIGNALS], [f32; SUMMARY]);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Projection {
+    syntax: [u8; SIGNALS],
+    context: [u8; SUMMARY],
+}
+impl Projection {
+    fn values(&self) -> impl Iterator<Item = u8> + '_ {
+        self.syntax.iter().chain(&self.context).copied()
+    }
+}
+
+fn magnitude(value: u16) -> u8 {
+    (f32::from(value).ln_1p() * 32.).min(255.) as u8
+}
 const PER_GROUP: usize = 12;
 const CHECK_EVERY: u64 = 8;
 const PROTECTED: usize = 12;
@@ -21,7 +41,7 @@ pub(crate) struct Decision {
     pub checked_inputs: bool,
     pub work_units: u32,
     pub horizon_ms: u64,
-    features: [u8; WIDTH],
+    features: Projection,
 }
 impl Decision {
     pub(in crate::frontier) fn new(
@@ -29,20 +49,21 @@ impl Decision {
         knowledge: [u8; 32],
         goal: Option<[u8; 32]>,
         descriptor: &Descriptor,
-        context: [u8; 12],
+        context: [u8; CONTEXT],
         draw: (u64, u64),
         limits: crate::jobs::Limits,
     ) -> Self {
-        let mut features = [0; WIDTH];
-        for (output, &input) in features[..12].iter_mut().zip(&descriptor.features.counts) {
-            *output = (f32::from(input).ln_1p() * 32.).min(255.) as u8;
-        }
-        features[12] = (f32::from(descriptor.features.nodes).ln_1p() * 32.).min(255.) as u8;
-        features[13] = (f32::from(descriptor.features.depth).ln_1p() * 32.).min(255.) as u8;
-        for (output, &input) in features[14..20].iter_mut().zip(&descriptor.bindings) {
+        let mut summary = [0; SUMMARY];
+        summary[0] = magnitude(descriptor.features.nodes);
+        summary[1] = magnitude(descriptor.features.depth);
+        for (output, input) in summary[2..2 + BINDINGS].iter_mut().zip(descriptor.bindings) {
             *output = (input * 128.).min(255.) as u8;
         }
-        features[20..].copy_from_slice(&context);
+        summary[2 + BINDINGS..].copy_from_slice(&context);
+        let features = Projection {
+            syntax: descriptor.features.counts.map(magnitude),
+            context: summary,
+        };
         Self {
             resolution,
             knowledge,
@@ -99,11 +120,11 @@ impl Transition {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Preference {
-    checked: [u8; WIDTH],
-    exhausted: [u8; WIDTH],
+    checked: Projection,
+    exhausted: Projection,
 }
 impl Preference {
-    fn margin(&self, weights: &[f32; WIDTH]) -> f32 {
+    fn margin(&self, weights: &Weights) -> f32 {
         project(weights, &self.checked) - project(weights, &self.exhausted)
     }
 }
@@ -111,7 +132,7 @@ impl Preference {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::frontier) struct Policy {
-    weights: [f32; WIDTH],
+    weights: Weights,
     transitions: VecDeque<Transition>,
     observations: u64,
     checked_at: u64,
@@ -123,7 +144,7 @@ pub(in crate::frontier) struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            weights: [0.; WIDTH],
+            weights: ([0.; SIGNALS], [0.; SUMMARY]),
             transitions: VecDeque::new(),
             observations: 0,
             checked_at: 0,
@@ -160,13 +181,18 @@ impl Policy {
             || self.promotions > self.checked_at / CHECK_EVERY
             || self.validation_pairs > PER_GROUP * PER_GROUP
             || (self.promotions == 0) != (self.qualified_through == 0)
-            || self.promotions == 0 && self.weights != [0.; WIDTH]
+            || self.promotions == 0 && self.weights != ([0.; SIGNALS], [0.; SUMMARY])
             || self.protected.len() > PROTECTED
             || self
                 .protected
                 .iter()
                 .any(|pair| pair.margin(&self.weights) <= 0.)
-            || self.weights.iter().any(|w| !w.is_finite() || w.abs() > 2.)
+            || self
+                .weights
+                .0
+                .iter()
+                .chain(&self.weights.1)
+                .any(|w| !w.is_finite() || w.abs() > 2.)
         {
             return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
         }
@@ -322,15 +348,20 @@ impl Policy {
                     1.
                 };
                 let step = credit / (1. + margin.clamp(-12., 12.).exp());
-                for ((value, &a), &b) in direction
+                for ((value, a), b) in direction
                     .iter_mut()
-                    .zip(&good.decision.features)
-                    .zip(&bad.decision.features)
+                    .zip(good.decision.features.values())
+                    .zip(bad.decision.features.values())
                 {
                     *value += step * (f32::from(a) - f32::from(b)) / 255.;
                 }
             }
-            for (weight, direction) in candidate.iter_mut().zip(direction) {
+            for (weight, direction) in candidate
+                .0
+                .iter_mut()
+                .chain(&mut candidate.1)
+                .zip(direction)
+            {
                 *weight = (*weight + 0.25 * (direction / training.len() as f32 - 0.01 * *weight))
                     .clamp(-2., 2.);
             }
@@ -374,15 +405,17 @@ impl Policy {
     }
 }
 
-fn project(weights: &[f32; WIDTH], features: &[u8; WIDTH]) -> f32 {
+fn project(weights: &Weights, features: &Projection) -> f32 {
     weights
+        .0
         .iter()
-        .zip(features)
-        .map(|(w, f)| w * f32::from(*f) / 255.)
+        .chain(&weights.1)
+        .zip(features.values())
+        .map(|(w, f)| w * f32::from(f) / 255.)
         .sum()
 }
 
-fn score(weights: &[f32; WIDTH], decision: &Decision) -> f32 {
+fn score(weights: &Weights, decision: &Decision) -> f32 {
     project(weights, &decision.features)
 }
 
