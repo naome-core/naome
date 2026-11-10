@@ -1034,7 +1034,7 @@ impl Owner {
     fn submit_after(
         &mut self,
         input: Input,
-        binding: Binding,
+        mut binding: Binding,
         required: Vec<String>,
         prerequisites: crate::learning::Prerequisites,
         reply: oneshot::Sender<Completion>,
@@ -1056,7 +1056,7 @@ impl Owner {
             (binding.catalog.is_some() || record.binding.catalog.is_some())
                 && record.input == input
                 && !record.acknowledged
-                && record.binding != binding
+                && !record.binding.same_request(&binding)
         }) {
             reject(reply, binding, AdmissionFailure::InFlightPrerequisites);
             return Ok(());
@@ -1097,6 +1097,12 @@ impl Owner {
             || self.settings.for_input(&input),
             |account| account.settings,
         );
+        if let Some(decision) = &mut binding.research {
+            // A retry can inherit an older finite account. Match outcomes by
+            // its actual allowance, independently of current scheduler limits.
+            decision.work_units = settings.limits.work_units;
+            decision.horizon_ms = settings.limits.horizon_ms;
+        }
         if self
             .journal
             .records
@@ -1117,7 +1123,7 @@ impl Owner {
             .values()
             .find(|r| {
                 r.input == input
-                    && r.binding == binding
+                    && r.binding.same_request(&binding)
                     && !r.acknowledged
                     && r.configuration == identity(&settings)
             })

@@ -8,6 +8,7 @@ pub(super) use model::Model;
 mod analysis;
 pub(super) use analysis::Cache;
 mod learning;
+pub(crate) mod research;
 pub(super) use learning::{Learning, Recipe};
 #[cfg(test)]
 pub(in crate::frontier) mod reference;

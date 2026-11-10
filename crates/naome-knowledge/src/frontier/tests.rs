@@ -370,7 +370,7 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
         "040403010100000001010000000003010100000000010000000102030101000000010100000000020101000000000100000001",
     )
     .unwrap();
-    let mut feedback = crate::training::ability::Feedback::fresh("11".repeat(32));
+    let mut feedback = crate::learning::State::fresh().feedback();
     frontier.feedback(Some(feedback.clone()));
     let before = frontier.weight(&hard, &graph, settings.solving).unwrap();
     for _ in 0..64 {
@@ -389,16 +389,20 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
     frontier
         .attempted(candidates[index], &graph, &result, Outcome::NoCandidate)
         .unwrap();
-    assert!(frontier.evidence.get(candidates[index]).unwrap().is_some());
+    assert!(!frontier.retry_ready(candidates[index], &graph).unwrap());
+    let old = frontier.evidence.get(candidates[index]).unwrap().unwrap();
+    assert_eq!(old.last_job, result.id);
     feedback.checkpoint = "22".repeat(32);
     feedback.attempts = crate::training::ability::Profile::new(feedback.checkpoint.clone());
     feedback.development = crate::training::ability::Profile::new(feedback.checkpoint.clone());
     frontier.feedback(Some(feedback));
-    assert!(frontier.recent.is_empty());
     assert!(
-        frontier.evidence.get(candidates[index]).unwrap().is_none(),
+        frontier.retry_ready(candidates[index], &graph).unwrap(),
         "old-model failures cannot cool down a new checkpoint"
     );
+    let retained = frontier.evidence.get(candidates[index]).unwrap().unwrap();
+    assert_eq!(retained.last_job, old.last_job);
+    assert_eq!(retained.model_checkpoint, old.model_checkpoint);
     frontier.refresh(&graph, |_| true).unwrap();
     assert_eq!(
         frontier.learning_snapshot()["curriculum"]["checkpoint"],

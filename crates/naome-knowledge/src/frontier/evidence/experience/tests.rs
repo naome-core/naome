@@ -135,12 +135,19 @@ fn observed_budget_receipt_is_durable_idempotent_and_keeps_its_original_context(
     let directory = Directory::new();
     let graph = Graph::default();
     let mut finder = Frontier::open(&directory.0, &graph, 41, settings()).unwrap();
-    let completion = observed(
+    let mut completion = observed(
         &goal,
         TerminalEvidence::Budget(Budget::Expansions),
         128,
         Some(crate::learning::tests::stalled_frontier(&goal)),
     );
+    let decision = finder
+        .research_decision(&goal, &graph, settings().solving.limits)
+        .unwrap();
+    completion.binding.research = Some(Box::new(decision.clone()));
+    let summary = completion.experience.as_mut().unwrap();
+    summary.request_binding = crate::learning::digest(&completion.binding);
+    reseal(summary);
     crate::checkpoint::fail_next_commit();
     assert!(
         finder
@@ -153,6 +160,8 @@ fn observed_budget_receipt_is_durable_idempotent_and_keeps_its_original_context(
         .unwrap();
     let learned = finder.learning_snapshot();
     assert_eq!(learned["model"]["unresolved"], 1);
+    assert_eq!(learned["research_policy"]["observations"], 1);
+    assert_eq!(learned["research_policy"]["promotions"], 0);
     assert!(finder.helpers_needed(&goal).unwrap());
     finder
         .attempted(&goal, &graph, &completion, Outcome::NoCandidate)
@@ -162,13 +171,9 @@ fn observed_budget_receipt_is_durable_idempotent_and_keeps_its_original_context(
     drop(finder);
     let finder = Frontier::open(&directory.0, &graph, 99, settings()).unwrap();
     assert_eq!(finder.learning_snapshot(), learned);
-    let restored = finder
-        .evidence
-        .get(&goal)
-        .unwrap()
-        .unwrap()
-        .experience
-        .unwrap();
+    let stored = finder.evidence.get(&goal).unwrap().unwrap();
+    assert_eq!(stored.decision, Some(decision));
+    let restored = stored.experience.unwrap();
     assert_eq!(restored.receipt, receipt.receipt);
     assert_eq!(restored.native_context, receipt.native_context);
     assert_eq!(restored.request_binding, receipt.request_binding);
