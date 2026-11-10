@@ -407,9 +407,21 @@ impl ProofStep {
     #[must_use]
     pub fn definition_references(&self) -> Vec<DefinitionId> {
         let mut references = Vec::new();
-        let mut extend = |formula: &ProofFormula| {
+        self.visit_formulas(|formula| {
             formula.append_definition_references(&mut references);
-        };
+            false
+        });
+        references
+    }
+
+    /// Returns whether any formula field contains a definition application.
+    #[must_use]
+    pub fn has_definition_references(&self) -> bool {
+        self.visit_formulas(|formula| formula.as_defined().is_some())
+    }
+
+    // Visit in field order and stop when a visitor returns true.
+    fn visit_formulas(&self, mut visit: impl FnMut(&ProofFormula) -> bool) -> bool {
         match self {
             Self::Simplification {
                 antecedent,
@@ -423,32 +435,24 @@ impl ProofStep {
                 antecedent,
                 consequent,
                 ..
-            } => {
-                extend(antecedent);
-                extend(consequent);
-            }
+            } => visit(antecedent) || visit(consequent),
             Self::Frege {
                 first,
                 second,
                 third,
-            } => {
-                extend(first);
-                extend(second);
-                extend(third);
-            }
-            Self::VacuousUniversal { formula } => extend(formula),
+            } => visit(first) || visit(second) || visit(third),
+            Self::VacuousUniversal { formula } => visit(formula),
             Self::UniversalInstantiation { body, .. } | Self::EqualitySubstitution { body, .. } => {
-                extend(body)
+                visit(body)
             }
-            Self::Separation(instance) => extend(&instance.predicate),
-            Self::Replacement(instance) => extend(&instance.predicate),
+            Self::Separation(instance) => visit(&instance.predicate),
+            Self::Replacement(instance) => visit(&instance.predicate),
             Self::EqualityReflexivity { .. }
             | Self::ZfcAxiom(_)
             | Self::ProofReference { .. }
             | Self::ModusPonens { .. }
-            | Self::Generalization { .. } => {}
+            | Self::Generalization { .. } => false,
         }
-        references
     }
 }
 
