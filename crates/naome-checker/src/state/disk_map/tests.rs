@@ -67,7 +67,7 @@ fn bit_key(bit: usize) -> [u8; 32] {
     key
 }
 
-fn restored_node(storage: Arc<MemoryStorage>, node: Node) -> DiskMap {
+fn restored_node(storage: Arc<MemoryStorage>, node: Node<'_>) -> DiskMap {
     let bytes = node.encode();
     let root = Root {
         address: storage_address(&bytes),
@@ -164,13 +164,13 @@ fn full_256_branch_path_is_bounded_and_retains_clone_isolation() {
     let mut leaves = 0;
     while let Some(visit) = walk.step().unwrap() {
         visited += 1;
-        leaves += if visit.entry.is_some() { 1 } else { 0 };
-        assert!(visit.bytes.len() <= MAX_NODE_BYTES);
+        leaves += if visit.entry().is_some() { 1 } else { 0 };
+        assert!(visit.bytes().len() <= MAX_NODE_BYTES);
         assert!(
             walk.pending.len() <= 257,
             "DFS memory follows depth, not corpus size"
         );
-        target.write(visit.address, &visit.bytes).unwrap();
+        target.write(visit.address, visit.bytes()).unwrap();
     }
     assert!(walk.complete());
     assert_eq!(
@@ -280,13 +280,13 @@ fn authenticated_malformed_metadata_and_branch_order_are_rejected() {
     let left = map
         .save_node(Node::Leaf {
             key: [0; 32],
-            value: vec![],
+            value: &[],
         })
         .unwrap();
     let right = map
         .save_node(Node::Leaf {
             key: bit_key(0),
-            value: vec![],
+            value: &[],
         })
         .unwrap();
     let invalid_split = restored_node(
@@ -346,7 +346,7 @@ fn strict_node_codec_and_value_limit_preserve_existing_root() {
     assert_eq!(map.root(), before);
     let original = Node::Leaf {
         key: [0; 32],
-        value: vec![1],
+        value: &[1],
     }
     .encode();
     let mut bad_version = original.clone();
@@ -381,14 +381,22 @@ fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {
     map.insert(last, b"last").unwrap();
     let target = Arc::new(MemoryStorage::default());
     let mut walk = map.walk();
+    let mut visited = Vec::new();
     while let Some(visit) = walk.step().unwrap() {
-        target.write(visit.address, &visit.bytes).unwrap();
+        if let Some((key, value)) = visit.entry() {
+            visited.push((key, value.to_vec()));
+        }
+        target.write(visit.address, visit.bytes()).unwrap();
     }
     let copied = DiskMap::from_root(target, map.root());
     assert_eq!(copied.root(), map.root());
     assert_eq!(
+        map.entries().collect::<Result<Vec<_>, _>>().unwrap(),
+        visited
+    );
+    assert_eq!(
         copied.entries().collect::<Result<Vec<_>, _>>().unwrap(),
-        map.entries().collect::<Result<Vec<_>, _>>().unwrap()
+        visited
     );
     source.bytes.lock().unwrap().remove(&first_address);
     assert_eq!(
