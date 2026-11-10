@@ -61,10 +61,21 @@ fn add_goal(
 ) -> Result<StatementId, Failure> {
     work.formula(upper_length, 8)?;
     let bytes = formula.encode_canonical().map_err(|_| LIMIT)?;
+    add_encoded_goal(formula, upper_length, &bytes, goals, pending, work)
+}
+
+fn add_encoded_goal(
+    formula: Formula,
+    upper_length: usize,
+    bytes: &[u8],
+    goals: &mut BTreeMap<StatementId, Goal>,
+    pending: &mut BTreeSet<StatementId>,
+    work: &mut Work,
+) -> Result<StatementId, Failure> {
     if bytes.len() > upper_length {
         return Err(INVALID);
     }
-    let id = statement_id(&bytes);
+    let id = statement_id(bytes);
     work.index()?;
     if let Some(existing) = goals.get(&id) {
         if existing.formula != formula {
