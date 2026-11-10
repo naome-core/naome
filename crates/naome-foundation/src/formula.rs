@@ -250,6 +250,18 @@ impl Formula {
         matches!(&self.0, Node::ForAll(_))
     }
 
+    /// Counts consecutive universal binders at the root.
+    #[must_use]
+    pub fn outer_universal_count(&self) -> usize {
+        let mut node = &self.0;
+        let mut count = 0;
+        while let Node::ForAll(body) = node {
+            count += 1;
+            node = body;
+        }
+        count
+    }
+
     /// Opens the outer universal binder using a fresh free variable.
     ///
     /// This is a structural projection, not an inference rule. A consumer must

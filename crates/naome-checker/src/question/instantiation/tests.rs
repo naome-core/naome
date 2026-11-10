@@ -105,6 +105,8 @@ fn opening_a_prefix_skips_free_and_excluded_identifiers() {
     let excluded = BTreeSet::from([FreeVariable::new(u32::MAX), FreeVariable::new(u32::MAX - 3)]);
     let body = Formula::implies(Formula::member(outer, free), Formula::equal(inner, free));
     let source = Formula::for_all(outer, Formula::for_all(inner, body));
+    assert_eq!(source.outer_universal_count(), 2);
+    assert_eq!(Formula::negate(source.clone()).outer_universal_count(), 0);
     let first = FreeVariable::new(u32::MAX - 2);
     let second = FreeVariable::new(u32::MAX - 4);
     let expected = Formula::implies(Formula::member(first, free), Formula::equal(second, free));
