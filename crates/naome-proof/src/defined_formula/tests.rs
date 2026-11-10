@@ -19,7 +19,14 @@ impl DefinitionResolver for OneDefinition {
 #[test]
 fn primitive_subset_is_byte_identical_and_definition_tag_is_exact() {
     let x = FreeVariable::new(7);
-    let primitive = Formula::for_all(x, Formula::equal(x, x));
+    let y = FreeVariable::new(8);
+    let primitive = Formula::for_all(
+        x,
+        Formula::for_all(
+            y,
+            Formula::implies(Formula::member(x, y), Formula::negate(Formula::equal(y, x))),
+        ),
+    );
     let defined = DefinedFormula::from_primitive(&primitive).unwrap();
     assert_eq!(
         defined.encode_canonical().unwrap(),
@@ -43,6 +50,23 @@ fn primitive_subset_is_byte_identical_and_definition_tag_is_exact() {
         Formula::decode_canonical(&expected),
         Err(FormulaCodecError::UnknownFormulaTag(DEFINED_RELATION))
     ));
+}
+
+#[test]
+fn primitive_conversion_preserves_the_canonical_depth_limit() {
+    let x = FreeVariable::new(0);
+    let mut too_deep = Formula::equal(x, x);
+    for _ in 0..FORMULA_MAX_DEPTH {
+        too_deep = Formula::negate(too_deep);
+    }
+    assert_eq!(
+        DefinedFormula::from_primitive(&too_deep),
+        Err(DefinedFormulaCodecError::Primitive(
+            FormulaCodecError::DepthLimitExceeded {
+                maximum: FORMULA_MAX_DEPTH,
+            }
+        ))
+    );
 }
 
 #[test]

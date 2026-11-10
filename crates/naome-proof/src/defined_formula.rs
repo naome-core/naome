@@ -6,7 +6,7 @@ use std::fmt;
 
 use naome_foundation::{
     FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula, FormulaCodecError,
-    FreeVariable,
+    FormulaView, FreeVariable,
     graph::{Node as PrimitiveNode, Variable as PrimitiveVariable},
 };
 
@@ -258,10 +258,27 @@ impl DefinedFormula {
 
     /// Converts one primitive Foundation formula without changing its bytes.
     pub fn from_primitive(formula: &Formula) -> Result<Self, DefinedFormulaCodecError> {
-        let bytes = formula
-            .encode_canonical()
+        formula
+            .encoded_length()
             .map_err(DefinedFormulaCodecError::Primitive)?;
-        Self::decode_canonical(&bytes)
+        fn copy_node(view: FormulaView<'_>) -> Node {
+            let variable = |value| match value {
+                PrimitiveVariable::Free(id) => Variable::Free(FreeVariable::new(id)),
+                PrimitiveVariable::Bound(index) => Variable::Bound(
+                    u32::try_from(index).expect("Foundation binder indices fit u32"),
+                ),
+            };
+            match view.graph_node() {
+                PrimitiveNode::Equal(left, right) => Node::Equal(variable(left), variable(right)),
+                PrimitiveNode::Member(left, right) => Node::Member(variable(left), variable(right)),
+                PrimitiveNode::Not(body) => Node::Not(Box::new(copy_node(body))),
+                PrimitiveNode::Implies(left, right) => {
+                    Node::Implies(Box::new(copy_node(left)), Box::new(copy_node(right)))
+                }
+                PrimitiveNode::ForAll(body) => Node::ForAll(Box::new(copy_node(body))),
+            }
+        }
+        Ok(Self(copy_node(formula.view())))
     }
 
     /// Converts this formula to Foundation syntax if every definition was eliminated.
