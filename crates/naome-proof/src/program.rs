@@ -12,6 +12,7 @@ pub const FORMAT: &str = "naome:proof-program";
 /// Current program-manifest framing, distinct from certificate payloads.
 pub const MANIFEST_MAGIC: &[u8] = b"\xffNAOP\0";
 const GRAPH_NODE_DOMAIN: &[u8] = b"naome:formula-graph\0";
+const GRAPH_NODE_MAX_BYTES: usize = GRAPH_NODE_DOMAIN.len() + 2 * 32 + 1 + 1 + 8;
 /// An individual command is small; splitting an input into commands never
 /// changes its mathematical meaning or imposes a total program byte limit.
 pub const RECORD_BYTES: usize = 4096;
@@ -105,35 +106,53 @@ pub fn stream_hash(bytes: &[u8], next: [u8; 32]) -> [u8; 32] {
 /// Stable constant-size formula-node encoding, including authenticated
 /// structural properties. A node's children are content addresses.
 pub fn graph_node_bytes(node: Node<[u8; 32]>, properties: Properties) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(128);
-    bytes.extend_from_slice(GRAPH_NODE_DOMAIN);
+    graph_node_encoding(node, properties, &mut [0; GRAPH_NODE_MAX_BYTES]).to_vec()
+}
+
+fn graph_node_encoding(
+    node: Node<[u8; 32]>,
+    properties: Properties,
+    bytes: &mut [u8; GRAPH_NODE_MAX_BYTES],
+) -> &[u8] {
+    let mut length = 0;
+    let mut append = |field: &[u8]| {
+        let end = length + field.len();
+        bytes[length..end].copy_from_slice(field);
+        length = end;
+    };
+    append(GRAPH_NODE_DOMAIN);
     for child in node.children().into_iter().flatten() {
-        bytes.extend_from_slice(&child);
+        append(&child);
     }
-    bytes.push(match node {
+    append(&[match node {
         Node::Equal(..) => 0,
         Node::Member(..) => 1,
         Node::Not(_) => 2,
         Node::Implies(..) => 3,
         Node::ForAll(_) => 4,
-    });
+    }]);
     if let Node::Equal(a, b) | Node::Member(a, b) = node {
         for variable in [a, b] {
             let (tag, value) = match variable {
                 Variable::Free(v) => (0, u64::from(v)),
                 Variable::Bound(v) => (1, v),
             };
-            bytes.push(tag);
-            bytes.extend_from_slice(&value.to_be_bytes());
+            append(&[tag]);
+            append(&value.to_be_bytes());
         }
     }
-    bytes.push(u8::from(properties.has_free_variables));
-    bytes.extend_from_slice(&properties.required_binders.to_be_bytes());
-    bytes
+    append(&[u8::from(properties.has_free_variables)]);
+    append(&properties.required_binders.to_be_bytes());
+    &bytes[..length]
 }
 
 pub fn graph_node_hash(node: Node<[u8; 32]>, properties: Properties) -> [u8; 32] {
-    Sha256::digest(graph_node_bytes(node, properties)).into()
+    Sha256::digest(graph_node_encoding(
+        node,
+        properties,
+        &mut [0; GRAPH_NODE_MAX_BYTES],
+    ))
+    .into()
 }
 
 pub fn formula_hash(formula: &Formula) -> [u8; 32] {
@@ -218,7 +237,7 @@ pub fn decode_graph_node(bytes: &[u8]) -> Result<(Node<[u8; 32]>, Properties), C
         has_free_variables,
         required_binders,
     };
-    if graph_node_bytes(node, properties) != bytes {
+    if graph_node_encoding(node, properties, &mut [0; GRAPH_NODE_MAX_BYTES]) != bytes {
         return Err(CodecFailure::GraphNoncanonical);
     }
     Ok((node, properties))
@@ -545,6 +564,30 @@ impl From<Axiom> for naome_foundation::ZfcAxiom {
 #[cfg(test)]
 mod graph_failure_tests {
     use super::*;
+
+    #[test]
+    fn implication_node_bytes_and_hash_match_the_wire_layout() {
+        let node = Node::Implies([1; 32], [2; 32]);
+        let properties = Properties {
+            has_free_variables: true,
+            required_binders: 3,
+        };
+        let expected = [
+            b"naome:formula-graph\0".as_slice(),
+            &[1; 32],
+            &[2; 32],
+            &[3, 1],
+            &3u64.to_be_bytes(),
+        ]
+        .concat();
+
+        assert_eq!(graph_node_bytes(node, properties), expected);
+        assert_eq!(
+            graph_node_hash(node, properties),
+            <[u8; 32]>::from(Sha256::digest(&expected))
+        );
+        assert_eq!(decode_graph_node(&expected), Ok((node, properties)));
+    }
 
     #[test]
     fn truncated_graph_domain_is_a_typed_failure() {
