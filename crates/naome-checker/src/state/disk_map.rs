@@ -145,14 +145,19 @@ impl DiskMap {
             }
         };
 
-        if old_key == key && (!replace || old_value == value) {
+        let replacing = old_key == key;
+        if replacing && (!replace || old_value == value) {
             return Ok(false);
         }
-        let mut changed = self.save_node(Node::Leaf {
-            key,
-            value: value.to_vec(),
-        })?;
-        let prefix_length = if old_key == key {
+        // The authenticated source path already verified these key-only fingerprints.
+        let mut changed = self.save_node_with_fingerprint(
+            Node::Leaf {
+                key,
+                value: value.to_vec(),
+            },
+            replacing.then_some(&terminal.root.fingerprint),
+        )?;
+        let prefix_length = if replacing {
             path.len()
         } else {
             let bit = first_differing_bit(&old_key, &key).ok_or(ContextError::Corrupt)?;
@@ -176,19 +181,30 @@ impl DiskMap {
             } else {
                 (changed, frame.right)
             };
-            changed = self.save_node(Node::Branch {
-                bit: frame.bit,
-                left,
-                right,
-            })?;
+            changed = self.save_node_with_fingerprint(
+                Node::Branch {
+                    bit: frame.bit,
+                    left,
+                    right,
+                },
+                replacing.then_some(&frame.source.root.fingerprint),
+            )?;
         }
         // A failed write can leave unreachable immutable nodes, never a
         // partially updated published root or a mutation of an old handle.
         self.root = Some(changed.root);
-        Ok(old_key != key)
+        Ok(!replacing)
     }
 
     fn save_node(&self, node: Node) -> Result<Child, ContextError> {
+        self.save_node_with_fingerprint(node, None)
+    }
+
+    fn save_node_with_fingerprint(
+        &self,
+        node: Node,
+        fingerprint: Option<&[u8; 32]>,
+    ) -> Result<Child, ContextError> {
         node.validate()?;
         let bytes = node.encode();
         if bytes.len() > MAX_NODE_BYTES {
@@ -196,7 +212,7 @@ impl DiskMap {
         }
         let root = Root {
             address: storage_address(&bytes),
-            fingerprint: node.fingerprint(),
+            fingerprint: fingerprint.copied().unwrap_or_else(|| node.fingerprint()),
         };
         self.storage.write(root.address, &bytes)?;
         Ok(Child {
