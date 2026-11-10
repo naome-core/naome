@@ -375,9 +375,8 @@ impl Frontier {
         Ok((planned.to_vec(), inputs))
     }
 
-    /// Cold retrieval uses the checker's existing specialization index. It
-    /// can earn the first reuse receipt without a previous citation or a
-    /// literal fragment hit in the recent index.
+    /// Cold retrieval looks up an exact witness source or uses the checker's
+    /// specialization index. Neither lookup requires a previous citation.
     fn first_checked_offer(
         &self,
         graph: &Graph,
@@ -396,6 +395,22 @@ impl Frontier {
             return Ok(None);
         };
         let target = question.proved_target();
+        let context = graph.checked_context();
+        // A witness question can recover its source even after the Finder's
+        // resident proposals have been evicted or the node has restarted.
+        if let Some(source) = knowledge::universal_source(target)
+            && let Some(statement) =
+                naome_proof::StatementId::of_canonical_formula(&source.encode_canonical()?)
+            && let Some(header) = context.statement_header(statement)?
+            && header.canonical_length() <= QUESTION_BYTES
+            && let Ok(lemma) = ResearchQuestion::from_formula(source)
+            && State::eligible(&lemma.to_hex())
+            && finder::independent_goal(&lemma, question)
+            && let Some(inputs) =
+                graph.offered_solving_inputs(header.proof_id(), question.dependencies())?
+        {
+            return Ok(Some(inputs));
+        }
         // The question target is closed. Open its prefix in binder order and
         // look up the final consequent. This is only an index projection.
         let mut goal = target.clone();
@@ -413,7 +428,6 @@ impl Frontier {
                 .ok_or(crate::InputFault::FinderOperandStatementWidth)?,
             naome_checker::question::universal_pattern(&goal)?,
         ];
-        let context = graph.checked_context();
         for key in keys {
             for statement in context.bucket(BucketKind::Instances, key)?.take(4) {
                 let statement = statement?;
