@@ -77,7 +77,7 @@ impl Projection {
 
     fn lower_steps(
         steps: &[ProofStep],
-        uses: &[usize],
+        uses: &[u8],
         sites: impl IntoIterator<Item = usize>,
         authored: &BTreeMap<DefinitionId, DefinedFormula>,
     ) -> Result<Self, ProjectionFailure> {
@@ -273,14 +273,16 @@ impl Projection {
     }
 }
 
-fn reference_counts(steps: &[ProofStep]) -> Result<Vec<usize>, ProjectionFailure> {
-    let mut uses = vec![0; steps.len()];
+fn reference_counts(steps: &[ProofStep]) -> Result<Vec<u8>, ProjectionFailure> {
+    // A fold needs exactly one use. Saturation keeps repeated uses repeated.
+    let mut uses = vec![0u8; steps.len()];
     for (position, step) in steps.iter().enumerate() {
         for reference in step.local_references().into_iter().flatten() {
             if reference as usize >= position {
                 return Err(ProjectionFailure::ForwardReference);
             }
-            uses[reference as usize] += 1;
+            let count = &mut uses[reference as usize];
+            *count = count.saturating_add(1);
         }
     }
     Ok(uses)
@@ -530,6 +532,36 @@ mod tests {
             Projection::from_inference_steps(&[]),
             Err(ProjectionFailure::EmptyRecipe)
         ));
+    }
+
+    #[test]
+    fn heavily_shared_instantiation_is_never_treated_as_single_use() {
+        use naome_foundation::Formula;
+
+        let variable = FreeVariable::new(0);
+        let mut steps = vec![
+            ProofStep::UniversalInstantiation {
+                variable,
+                replacement: variable,
+                body: Formula::equal(variable, variable).into(),
+            },
+            ProofStep::EqualityReflexivity { variable },
+        ];
+        steps.extend(std::iter::repeat_n(
+            ProofStep::ModusPonens {
+                premise: 1,
+                implication: 0,
+            },
+            257,
+        ));
+        let projection = Projection::from_inference_steps(&steps).unwrap();
+        assert!(matches!(projection.results()[0], StepResult::Result(_)));
+        assert!(
+            projection
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::Instantiate { .. }))
+        );
     }
 
     #[test]
