@@ -289,35 +289,38 @@ fn check_with_diagnostic_query(
             }
         }
 
-        let canonical = (precharged_length.is_none() || position == final_step)
+        let formula_error = |source| {
+            diagnostics::certificate::error(
+                CheckErrorKind::DerivedFormula {
+                    step: position,
+                    source,
+                },
+                certificate,
+                artifact_state,
+                &results,
+                Some(&formula),
+                query,
+                &work,
+            )
+        };
+        let measure_only =
+            position != final_step && matches!(identity_mode, IdentityMode::OmitDerivation);
+        let canonical = (position == final_step || (precharged_length.is_none() && !measure_only))
             .then(|| {
-                let canonical = match identity_mode {
+                match identity_mode {
                     IdentityMode::OmitDerivation => formula.encode_canonical(),
                     IdentityMode::Derive => formula.encode_free_variable_normalized(),
-                };
-                canonical.map_err(|source| {
-                    diagnostics::certificate::error(
-                        CheckErrorKind::DerivedFormula {
-                            step: position,
-                            source,
-                        },
-                        certificate,
-                        artifact_state,
-                        &results,
-                        Some(&formula),
-                        query,
-                        &work,
-                    )
-                })
+                }
+                .map_err(&formula_error)
             })
             .transpose()?;
         let canonical_length = match precharged_length {
             Some(length) => length,
             None => {
-                let length = canonical
-                    .as_ref()
-                    .expect("an uncharged formula was canonically encoded")
-                    .len();
+                let length = match &canonical {
+                    Some(bytes) => bytes.len(),
+                    None => formula.encoded_length().map_err(formula_error)?,
+                };
                 charge_formula_work(position, length, &work).map_err(|kind| {
                     diagnostics::certificate::error(
                         kind,
