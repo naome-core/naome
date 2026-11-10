@@ -42,6 +42,11 @@ pub struct CanonicalImplication {
     consequents: Vec<usize>,
 }
 impl CanonicalImplication {
+    /// Returns the canonical encoding of the complete implication.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     pub fn antecedent(&self) -> &[u8] {
         &self.bytes[1..self.consequents[0]]
     }

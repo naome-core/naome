@@ -30,16 +30,18 @@ pub(super) fn projections(formula: &Formula) -> Vec<StatementId> {
         return Vec::new();
     };
     let wildcard = opened.map_free_variables(|_| FreeVariable::new(0));
-    let mut result = vec![bytes_key(
-        &wildcard.encode_canonical().expect("checked universal body"),
-    )];
     if let Some(parts) = wildcard
         .canonical_implication()
-        .expect("checked implication")
+        .expect("checked universal body")
     {
-        result.extend(parts.consequents().map(bytes_key));
+        return std::iter::once(parts.as_bytes())
+            .chain(parts.consequents())
+            .map(bytes_key)
+            .collect();
     }
-    result
+    vec![bytes_key(
+        &wildcard.encode_canonical().expect("checked universal body"),
+    )]
 }
 
 fn open(
