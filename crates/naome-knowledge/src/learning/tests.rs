@@ -1276,6 +1276,22 @@ fn native_promotion_uses_paired_value_even_with_a_lost_case() {
     assert_eq!(p.assessment.unwrap().losses, 1);
     job.progress = Some(p.clone());
     job.validate().unwrap();
+    let mut changed = state.clone();
+    let example = own_example();
+    let question = ResearchQuestion::from_hex(&example.question).unwrap();
+    let target = question.proved_target();
+    let (term, _) = search::compile(target, &example.tree).unwrap();
+    let verified = proof::verify(&term, target).unwrap();
+    assert!(
+        changed
+            .remember_theorem(knowledge::Entry {
+                packet: evidence::pack(&verified).unwrap(),
+            })
+            .unwrap()
+    );
+    let changed_checkpoint = digest(&changed);
+    assert!(!changed.qualify(&job));
+    assert_eq!(digest(&changed), changed_checkpoint);
     assert!(state.qualify(&job));
     assert_eq!(state.model, p.model);
 }
