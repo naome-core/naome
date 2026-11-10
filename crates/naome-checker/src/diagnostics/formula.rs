@@ -359,7 +359,7 @@ pub fn inspect_formula_value(
 ) -> Result<FormulaFragment, InspectionError> {
     query.validate()?;
     formula
-        .encode_canonical()
+        .encoded_length()
         .map_err(|error| InspectionError::FormulaOutsideLimits {
             reason: super::FormulaFailure::from(&error),
         })?;
