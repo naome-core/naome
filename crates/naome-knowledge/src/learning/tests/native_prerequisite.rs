@@ -1074,6 +1074,50 @@ pub(crate) fn publish_catalog_solution(
 }
 
 #[test]
+fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source() {
+    use crate::checkpoint::tests::Directory;
+
+    let directory = Directory::new();
+    let mut graph = crate::Graph::open(&directory.0).unwrap();
+    let (_, _, lemma) = donor(21);
+    register_program(&mut graph, &lemma);
+    let x = FreeVariable::new(0);
+    let body = lemma.target().unwrap().open_outer_universal(x).unwrap();
+    let expected = ResearchQuestion::from_formula(Formula::exists(x, body)).unwrap();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut finder = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let mut owner =
+        crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
+    finder
+        .refresh(&graph, |q| owner.assess(&graph, q).passed())
+        .unwrap();
+    let question = finder
+        .candidate_page(0, |q| owner.assess(&graph, q).passed())
+        .into_iter()
+        .find(|q| q == &expected)
+        .expect("a checked universal yields a novel witness question without a supplied goal");
+
+    drop(finder);
+    let mut finder = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let (required, inputs) = finder.solving_inputs(&graph, &question, &[]).unwrap();
+    assert!(required.is_empty());
+    assert!(inputs.has_offer());
+    let result = solve(&question, &required, &inputs, 41, 2).unwrap();
+    assert_eq!(result.cost.search_expansions, 2);
+    let solution = result.solution.unwrap();
+    solution.check_target(&question).unwrap();
+    let root = publish_catalog_solution(&mut graph, &solution);
+    assert_eq!(
+        graph.learning_proof_dependencies(root).unwrap().as_ref(),
+        &[lemma.manifest.artifact_id()],
+    );
+    assert!(!owner.assess(&graph, &question).passed());
+}
+
+#[test]
 fn recurrent_checked_citations_restore_a_route_from_the_same_catalogue() {
     const TEST: &str = "learning::tests::native_prerequisite::recurrent_checked_citations_restore_a_route_from_the_same_catalogue";
     if std::env::var_os("NAOME_RECALL_MATCHED_TEST").is_none() {

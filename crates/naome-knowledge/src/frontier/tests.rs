@@ -1270,7 +1270,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     );
 }
 #[test]
-fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() {
+fn native_checked_theorems_supply_proper_relations_and_a_single_witness_projection() {
     let (graph, lemma, _, _, _) = helper_use_fixture();
     let directory = Directory::new();
     let settings = jobs::Settings {
@@ -1279,10 +1279,10 @@ fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() 
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
-    assert!(
-        frontier.proposals.is_empty(),
-        "closed proofs must not create unconditional weakenings"
-    );
+    let x = FreeVariable::new(0);
+    let body = lemma.proved_target().open_outer_universal(x).unwrap();
+    let witness = ResearchQuestion::from_formula(Formula::exists(x, body)).unwrap();
+    assert_eq!(frontier.proposals, [witness]);
     assert!(!frontier.predicates.is_empty());
     for relation in &frontier.predicates {
         assert_eq!(relation.free_variables().len(), 2);
