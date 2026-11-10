@@ -4,7 +4,7 @@
 //! [`Formula`]'s well-formedness invariant. The byte format belongs to the
 //! proof protocol, not to the abstract Foundation identity.
 
-use std::collections::{BTreeMap, HashMap, btree_map::Entry};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -35,15 +35,15 @@ const FOR_ALL: u8 = 0x04;
 const FREE_VARIABLE: u8 = 0x00;
 const BOUND_VARIABLE: u8 = 0x01;
 
-/// One encoding shared by all outer implication-spine projections. Suffixes
-/// retain the original canonical bytes; hashing them keeps existing identities.
+/// One encoding shared by all outer implication-spine projections. Each suffix
+/// borrows bytes from that encoding.
 pub struct CanonicalImplication {
     bytes: Vec<u8>,
     first_consequent: usize,
     later_consequents: Vec<usize>,
 }
 impl CanonicalImplication {
-    /// Returns the canonical encoding of the complete implication.
+    /// Returns the complete encoded implication.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -65,7 +65,7 @@ impl FormulaView<'_> {
             self.0,
             0,
             &mut NodeBudget::new(FORMULA_MAX_NODES),
-            &mut FreeVariableEncoding::Preserve,
+            &mut FreeVariable::identifier,
             &mut output,
         )?;
         Ok(output)
@@ -75,12 +75,26 @@ impl FormulaView<'_> {
 impl Formula {
     /// Encodes an implication once and exposes its borrowed canonical ranges.
     pub fn canonical_implication(&self) -> Result<Option<CanonicalImplication>, FormulaCodecError> {
+        self.encode_implication(FreeVariable::identifier)
+    }
+
+    /// Encodes an implication with every free variable written as identifier zero.
+    /// Bound variables retain their indices in the complete encoding and suffixes.
+    pub fn canonical_implication_pattern(
+        &self,
+    ) -> Result<Option<CanonicalImplication>, FormulaCodecError> {
+        self.encode_implication(|_| 0)
+    }
+
+    fn encode_implication(
+        &self,
+        mut variables: impl FnMut(FreeVariable) -> u32,
+    ) -> Result<Option<CanonicalImplication>, FormulaCodecError> {
         let Node::Implies(left, right) = &self.0 else {
             return Ok(None);
         };
         let mut bytes = Vec::new();
         let mut nodes = NodeBudget::new(FORMULA_MAX_NODES);
-        let mut variables = FreeVariableEncoding::Preserve;
         nodes.charge()?;
         bytes.push(IMPLIES);
         encode_node(left, 1, &mut nodes, &mut variables, &mut bytes)?;
@@ -124,7 +138,7 @@ impl Formula {
         &self,
         maximum_nodes: usize,
     ) -> Result<(Vec<u8>, usize), FormulaCodecError> {
-        self.encode_with_node_limit(maximum_nodes, FreeVariableEncoding::Preserve)
+        self.encode_with_node_limit(maximum_nodes, FreeVariable::identifier)
     }
 
     /// Encodes this formula after canonicalizing its free-variable identifiers.
@@ -134,14 +148,25 @@ impl Formula {
     /// unchanged. This representation is used for proof-fragment identities;
     /// it does not replace [`Self::encode_canonical`] on the certificate wire.
     pub fn encode_free_variable_normalized(&self) -> Result<Vec<u8>, FormulaCodecError> {
-        self.encode_with_node_limit(
-            FORMULA_MAX_NODES,
-            FreeVariableEncoding::Normalize {
-                identifiers: BTreeMap::new(),
-                next_identifier: 0,
-            },
-        )
+        let mut identifiers = BTreeMap::new();
+        let mut next_identifier = 0u32;
+        self.encode_with_node_limit(FORMULA_MAX_NODES, |variable| {
+            *identifiers.entry(variable).or_insert_with(|| {
+                let identifier = next_identifier;
+                next_identifier = next_identifier
+                    .checked_add(1)
+                    .expect("the node limit bounds distinct free variables");
+                identifier
+            })
+        })
         .map(|(bytes, _)| bytes)
+    }
+
+    /// Encodes a pattern with every free variable written as identifier zero.
+    /// Bound variables retain their De Bruijn indices.
+    pub fn encode_free_variable_pattern(&self) -> Result<Vec<u8>, FormulaCodecError> {
+        self.encode_with_node_limit(FORMULA_MAX_NODES, |_| 0)
+            .map(|(bytes, _)| bytes)
     }
 
     /// Decodes one complete canonical Proof Certificate formula.
@@ -200,7 +225,7 @@ impl Formula {
     fn encode_with_node_limit(
         &self,
         maximum_nodes: usize,
-        mut variables: FreeVariableEncoding,
+        mut variables: impl FnMut(FreeVariable) -> u32,
     ) -> Result<(Vec<u8>, usize), FormulaCodecError> {
         let mut output = Vec::new();
         let mut nodes = NodeBudget::new(maximum_nodes);
@@ -213,7 +238,7 @@ fn encode_node(
     node: &Node,
     depth: u32,
     nodes: &mut NodeBudget,
-    variables: &mut FreeVariableEncoding,
+    variables: &mut impl FnMut(FreeVariable) -> u32,
     output: &mut Vec<u8>,
 ) -> Result<(), FormulaCodecError> {
     check_depth(depth)?;
@@ -248,44 +273,18 @@ fn encode_node(
     Ok(())
 }
 
-fn encode_variable(variable: Variable, variables: &mut FreeVariableEncoding, output: &mut Vec<u8>) {
+fn encode_variable(
+    variable: Variable,
+    variables: &mut impl FnMut(FreeVariable) -> u32,
+    output: &mut Vec<u8>,
+) {
     let (tag, value) = match variable {
-        Variable::Free(variable) => (FREE_VARIABLE, variables.identifier(variable)),
+        Variable::Free(variable) => (FREE_VARIABLE, variables(variable)),
         Variable::Bound(index) => (BOUND_VARIABLE, index),
     };
 
     output.push(tag);
     output.extend_from_slice(&value.to_be_bytes());
-}
-
-enum FreeVariableEncoding {
-    Preserve,
-    Normalize {
-        identifiers: BTreeMap<FreeVariable, u32>,
-        next_identifier: u32,
-    },
-}
-
-impl FreeVariableEncoding {
-    fn identifier(&mut self, variable: FreeVariable) -> u32 {
-        match self {
-            Self::Preserve => variable.identifier(),
-            Self::Normalize {
-                identifiers,
-                next_identifier,
-            } => match identifiers.entry(variable) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    let identifier = *next_identifier;
-                    *next_identifier = next_identifier
-                        .checked_add(1)
-                        .expect("the node limit bounds distinct free variables");
-                    entry.insert(identifier);
-                    identifier
-                }
-            },
-        }
-    }
 }
 
 type Shared = HashMap<super::graph::Node<usize>, Arc<Node>>;

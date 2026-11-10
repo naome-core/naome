@@ -29,9 +29,8 @@ pub(super) fn projections(formula: &Formula) -> Vec<StatementId> {
     let Some((opened, _)) = open(formula, &BTreeSet::new(), MAX_INSTANTIATIONS) else {
         return Vec::new();
     };
-    let wildcard = opened.map_free_variables(|_| FreeVariable::new(0));
-    if let Some(parts) = wildcard
-        .canonical_implication()
+    if let Some(parts) = opened
+        .canonical_implication_pattern()
         .expect("checked universal body")
     {
         return std::iter::once(parts.as_bytes())
@@ -40,7 +39,9 @@ pub(super) fn projections(formula: &Formula) -> Vec<StatementId> {
             .collect();
     }
     vec![bytes_key(
-        &wildcard.encode_canonical().expect("checked universal body"),
+        &opened
+            .encode_free_variable_pattern()
+            .expect("checked universal body"),
     )]
 }
 
@@ -116,8 +117,7 @@ fn match_variables(
 pub fn universal_pattern(
     target: &Formula,
 ) -> Result<StatementId, naome_foundation::FormulaCodecError> {
-    let wildcard = target.clone().map_free_variables(|_| FreeVariable::new(0));
-    Ok(bytes_key(&wildcard.encode_canonical()?))
+    Ok(bytes_key(&target.encode_free_variable_pattern()?))
 }
 
 /// Return the free-variable operands that specialize a universal source to

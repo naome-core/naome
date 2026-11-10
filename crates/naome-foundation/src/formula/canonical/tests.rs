@@ -81,6 +81,34 @@ fn free_variable_normalization_leaves_bound_indices_unchanged() {
 }
 
 #[test]
+fn pattern_encoding_erases_free_identifiers_and_preserves_bound_variables_and_suffixes() {
+    let x = FreeVariable::new(1);
+    let y = FreeVariable::new(2);
+    let bound_body = Formula::for_all(x, Formula::member(y, x));
+    let tail = Formula::implies(Formula::equal(x, y), Formula::member(y, x));
+    let formula = Formula::implies(bound_body.clone(), tail);
+    let wildcard = |formula: Formula| formula.map_free_variables(|_| FreeVariable::new(0));
+    let expected = wildcard(formula.clone()).encode_canonical().unwrap();
+    let pattern = formula.canonical_implication_pattern().unwrap().unwrap();
+
+    assert_eq!(formula.encode_free_variable_pattern().unwrap(), expected);
+    assert_eq!(pattern.as_bytes(), expected);
+    assert_eq!(
+        pattern.antecedent(),
+        wildcard(bound_body).encode_canonical().unwrap()
+    );
+    let (_, first_suffix) = formula.implication_parts().unwrap();
+    let (_, last_suffix) = first_suffix.implication_parts().unwrap();
+    let first_suffix = wildcard(first_suffix).encode_canonical().unwrap();
+    let last_suffix = wildcard(last_suffix).encode_canonical().unwrap();
+    assert!(
+        pattern
+            .consequents()
+            .eq([first_suffix.as_slice(), last_suffix.as_slice()])
+    );
+}
+
+#[test]
 fn canonical_formula_round_trips_free_and_bound_variables() {
     let x = FreeVariable::new(1);
     let y = FreeVariable::new(2);
