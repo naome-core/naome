@@ -196,6 +196,7 @@ impl<'a> AssessmentQuestion<'a> {
     }
 }
 
+/// A registry record bound to a closed, codec-bounded formula.
 #[derive(Clone, Copy)]
 pub struct RegisteredQuestion<'a> {
     record: Identity,
