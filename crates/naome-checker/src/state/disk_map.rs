@@ -252,7 +252,8 @@ impl Lookup {
             return Ok(None);
         };
         let result = (|| {
-            let (node, bytes) = load_node_sized(storage, pending)?;
+            let (node, byte_count) =
+                load_node_with_bytes(storage, pending).map(|(node, bytes)| (node, bytes.len()))?;
             match node {
                 Node::Leaf { key, value } => self.value = (key == self.key).then_some(value),
                 Node::Branch { bit, left, right } => {
@@ -260,7 +261,7 @@ impl Lookup {
                     self.pending = Some(pending.child(child, bit)?);
                 }
             }
-            Ok(Some(bytes))
+            Ok(Some(byte_count))
         })();
         if let Err(error) = &result {
             self.failed = true;
@@ -316,8 +317,7 @@ impl Walk {
                     break pending;
                 }
             };
-            let node = load_node_inner(self.storage.as_ref(), pending)?;
-            let bytes = node.encode();
+            let (node, bytes) = load_node_with_bytes(self.storage.as_ref(), pending)?;
             let entry = match node {
                 Node::Leaf { key, value } => {
                     if self.previous_key.is_some_and(|previous| previous >= key) {
@@ -562,21 +562,17 @@ impl Node {
 }
 
 fn load_node(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
-    let result = load_node_inner(storage, pending);
+    let result = load_node_with_bytes(storage, pending).map(|(node, _)| node);
     if let Err(error) = &result {
         storage.record_failure(error);
     }
     result
 }
 
-fn load_node_inner(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
-    load_node_sized(storage, pending).map(|(node, _)| node)
-}
-
-fn load_node_sized(
+fn load_node_with_bytes(
     storage: &dyn ContextStorage,
     pending: Pending,
-) -> Result<(Node, usize), ContextError> {
+) -> Result<(Node, Vec<u8>), ContextError> {
     if pending.depth > 256 {
         return Err(ContextError::Corrupt);
     }
@@ -601,7 +597,7 @@ fn load_node_sized(
     {
         return Err(ContextError::Corrupt);
     }
-    Ok((node, bytes.len()))
+    Ok((node, bytes))
 }
 
 fn storage_address(bytes: &[u8]) -> [u8; 32] {
