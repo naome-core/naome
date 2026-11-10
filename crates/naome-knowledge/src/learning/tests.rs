@@ -5,6 +5,14 @@ fn fixed_state() -> State {
 }
 use super::*;
 
+/// Native qualification fixtures share the process work reservation.
+pub(super) fn qualification_fixture() -> std::sync::MutexGuard<'static, ()> {
+    static RESERVATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RESERVATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 struct UniversalChoice(usize);
 impl model::Ranker for UniversalChoice {
     fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
@@ -412,7 +420,16 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     previous.unit = job.units() - 1;
     previous.plan = Some(selection.clone());
     previous.candidate = Some(candidate.clone());
-    previous.transfer.observed = transfer::Summary::prefix(transfer::CASES);
+    previous.first_loss = Some(1.);
+    previous.last_loss = Some(0.5);
+    for _ in 0..curriculum::DEVELOPMENT + state.anchors.len() {
+        previous.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
+    }
+    for index in 0..transfer::CASES {
+        previous.evaluation.push(true, [false; 2], [32; 2], [1; 2]);
+        previous.transfer.record(index, false, false).unwrap();
+    }
+    let assessment = previous.evaluation.assessment(&state).unwrap();
     previous.cpu_micros = 10;
     previous.wall_micros = 20;
     previous.meta_cpu_micros = 1;
@@ -435,6 +452,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
                 protected_loss: false,
                 anchor_loss: false,
                 transfer: previous.transfer,
+                assessment: Some(assessment),
                 lower_cpu_micros: 9,
                 lower_wall_micros: 19,
             },
@@ -445,6 +463,8 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     progress.unit = job.units();
     progress.candidate = None;
     progress.rejections += 1;
+    progress.assessment = Some(assessment);
+    progress.qualification = Qualification::InsufficientResearchValue;
     progress.meta_update = Some(update);
     progress.cpu_micros = 13;
     progress.wall_micros = 23;
@@ -471,6 +491,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
 }
 #[test]
 fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
+    let _reservation = qualification_fixture();
     struct Interrupted {
         store: MemoryStore,
         writes: usize,
@@ -566,6 +587,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
 }
 #[test]
 fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuation() {
+    let _reservation = qualification_fixture();
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut io = MemoryStore::default();
@@ -574,7 +596,6 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     let incumbent = model::test_update(&state.model, &graphs, &mut 31, &mut io).unwrap();
     state.model = incumbent.clone();
     state.feedback = crate::training::ability::Feedback::fresh(digest(&state.model));
-    let development_parent = state.clone();
     let mut job = state.job();
     job.training = true;
     let (candidate, _, _) = engine
@@ -587,121 +608,57 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         .unwrap();
     assert_ne!(candidate.model, incumbent.model);
     assert_ne!(candidate.optimizer, incumbent.optimizer);
-    let candidate_for_development_regression = candidate.clone();
-    let candidate_for_transfer_regression = candidate.clone();
-    let mut finished = job.base.clone();
-    finished.trained = finished.accepted;
-    job.progress = Some(Progress {
-        frontier: None,
-        cost: None,
-        training_cost: model::TrainingCost::default(),
-        unit: job.units() - 1,
-        model: finished.model,
-        trained: finished.trained,
-        promotions: finished.promotions,
-        rejections: finished.rejections,
-        candidate: Some(candidate),
-        rng: 9,
-        first_loss: Some(1.),
-        last_loss: Some(0.1),
-        incumbent_score: 1,
-        candidate_score: 2,
-        anchor_regression: true,
-        development_regression: false,
-        original_score: [0, 0],
-        transfer: transfer::Summary::default(),
-        result: None,
-        qualification: Qualification::Pending,
-        ..finished_progress(&job.base)
-    });
+    let mut pending = finished_progress(&state);
+    pending.unit = job.units() - 1;
+    pending.candidate = Some(candidate.clone());
+    pending.first_loss = Some(1.);
+    pending.last_loss = Some(0.1);
+    pending.development_regression = true;
+    pending.incumbent_score = 1;
+    pending.original_score = [1, 0];
+    for index in 0..curriculum::DEVELOPMENT + state.anchors.len() {
+        pending
+            .evaluation
+            .push(false, [index == 0, false], [32; 2], [1; 2]);
+    }
+    for index in 0..transfer::CASES {
+        let checked = [index == 0, index == 1];
+        pending.evaluation.push(true, checked, [32; 2], [1; 2]);
+        pending
+            .transfer
+            .record(index, checked[0], checked[1])
+            .unwrap();
+    }
+    job.progress = Some(pending.clone());
     job.execute(job.units(), None, 42, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
         job.progress.as_ref().unwrap().qualification,
-        Qualification::AnchorRegression
+        Qualification::InsufficientResearchValue
     );
+    job.validate().unwrap();
+
+    let mut forged = job.progress.clone().unwrap();
+    forged.model = candidate;
+    forged.promotions += 1;
+    forged.rejections -= 1;
+    forged.qualification = Qualification::Promoted;
+    let mut worker = job.clone();
+    worker.progress = Some(pending);
+    assert!(worker.retain_progress(42, forged.clone()).is_err());
+    worker.progress = Some(forged);
+    assert!(!state.qualify(&worker));
+
     assert!(state.qualify(&job));
     assert_eq!(state.model, incumbent);
     let actual = model::test_update(&state.model, &graphs, &mut 59, &mut io).unwrap();
     let expected = model::test_update(&incumbent, &graphs, &mut 59, &mut io).unwrap();
     assert_eq!(
         actual, expected,
-        "the next real update must retain both model and Adam state"
+        "the next real update retains both model and Adam state"
     );
-    let mut alternate = development_parent;
-    let mut job = alternate.job();
-    job.training = true;
-    let mut progress = finished_progress(&alternate);
-    progress.unit = job.units() - 1;
-    progress.candidate = Some(candidate_for_development_regression);
-    progress.candidate_score = 20;
-    progress.incumbent_score = 12;
-    progress.original_score = [7, 6];
-    progress.development_regression = true;
-    job.progress = Some(progress);
-    job.execute(job.units(), None, 43, &mut engine, &mut io)
-        .unwrap();
-    assert_eq!(
-        job.progress.as_ref().unwrap().qualification,
-        Qualification::DevelopmentRegression
-    );
-    assert!(alternate.qualify(&job));
-    assert_eq!(alternate.model, incumbent);
-
-    let mut transfer_parent = job.base.clone();
-    let mut job = transfer_parent.job();
-    job.training = true;
-    let mut progress = finished_progress(&transfer_parent);
-    progress.unit = job.units() - 1;
-    progress.candidate = Some(candidate_for_transfer_regression.clone());
-    progress.candidate_score = 2;
-    progress.incumbent_score = 1;
-    progress.first_loss = Some(1.);
-    progress.last_loss = Some(0.9);
-    for index in 0..transfer::CASES {
-        progress
-            .transfer
-            .record(index, index == 0, index == 1 || index == 2)
-            .unwrap();
-    }
-    let pending = progress.clone();
-    job.progress = Some(progress);
-    job.execute(job.units(), None, 44, &mut engine, &mut io)
-        .unwrap();
-    assert_eq!(
-        job.progress.as_ref().unwrap().qualification,
-        Qualification::TransferRegression
-    );
-    job.validate().unwrap();
-
-    let mut invalid_promotion = job.clone();
-    let progress = invalid_promotion.progress.as_mut().unwrap();
-    progress.model = candidate_for_transfer_regression;
-    progress.promotions += 1;
-    progress.rejections -= 1;
-    progress.qualification = Qualification::Promoted;
-    progress.development_after = crate::training::ability::Profile::new(digest(&progress.model));
-    progress.finder = None;
-    let mut worker_job = job.clone();
-    worker_job.progress = Some(pending);
-    assert_eq!(
-        worker_job
-            .retain_progress(44, invalid_promotion.progress.clone().unwrap())
-            .unwrap_err(),
-        crate::ResearchFailure::ProgressTransferLoss.into()
-    );
-
-    let restored: Job =
-        serde_json::from_slice(&serde_json::to_vec(&invalid_promotion).unwrap()).unwrap();
-    restored.validate().unwrap();
-    assert!(!transfer_parent.qualify(&restored));
-    assert_eq!(transfer_parent.model, incumbent);
-
-    assert!(transfer_parent.qualify(&job));
-    assert_eq!(transfer_parent.model, incumbent);
-    assert!(!transfer_parent.qualify(&job));
-    assert_eq!(transfer_parent.model, incumbent);
 }
+
 fn finished_progress(state: &State) -> Progress {
     Progress {
         executions: Vec::new(),
@@ -732,6 +689,8 @@ fn finished_progress(state: &State) -> Progress {
         development_regression: false,
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
+        evaluation: transfer::Evidence::default(),
+        assessment: None,
         development_before: crate::training::ability::Profile::new(digest(&state.model)),
         development_after: crate::training::ability::Profile::new(digest(&state.model)),
         regressions: [0; crate::training::ability::SKILLS],
@@ -1029,10 +988,9 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
     );
     assert_eq!(digest(&state), before);
     job.progress.as_mut().unwrap().model.seed += 1;
-    assert!(
-        job.validate()
-            .unwrap_err()
-            .contains("before successful qualification")
+    assert_eq!(
+        job.validate().unwrap_err(),
+        crate::ResearchFailure::JobPromotionBinding.into()
     );
     assert!(
         !state.qualify(&job),
@@ -1275,11 +1233,8 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     progress.model.model = Some(Blob::of(&[1; 32]));
     progress.model.optimizer = Some(Blob::of(&[2; 32]));
     progress.promotions += 1;
-    progress.transfer = transfer::Summary {
-        before: 1,
-        after: 3,
-        observed: transfer::Summary::prefix(transfer::CASES),
-    };
+    evaluate_fixture(&job.base, &mut progress, 1, 0b01010100);
+    progress.qualification = Qualification::Promoted;
     progress.development_after.checkpoint = digest(&progress.model);
     let selected = progress.model.clone();
     let expanded = crate::checkpoint::encode(&selected).unwrap().len()
@@ -1295,28 +1250,62 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     assert!(state.replay.len() < job.base.replay.len());
 }
 
+fn evaluate_fixture(base: &State, progress: &mut Progress, before: u32, after: u32) {
+    progress.first_loss = Some(1.);
+    progress.last_loss = Some(0.5);
+    for _ in 0..curriculum::DEVELOPMENT + base.anchors.len() {
+        progress.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
+    }
+    for index in 0..transfer::CASES {
+        let checked = [before & (1 << index) != 0, after & (1 << index) != 0];
+        progress.evaluation.push(true, checked, [32; 2], [1; 2]);
+        progress
+            .transfer
+            .record(index, checked[0], checked[1])
+            .unwrap();
+    }
+    progress.assessment = Some(progress.evaluation.assessment(base).unwrap());
+}
+
 #[test]
-fn retained_promotion_cannot_trade_a_transfer_family_loss_for_aggregate_gain() {
+fn native_promotion_uses_paired_value_even_with_a_lost_case() {
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut job = state.job();
     job.training = true;
     let mut p = finished_progress(&state);
     p.unit = job.units();
+    p.model.updates = 250;
+    p.model.model = Some(Blob::of(&[1; 32]));
+    p.model.optimizer = Some(Blob::of(&[2; 32]));
     p.promotions = state.promotions + 1;
-    p.incumbent_score = 45;
-    p.candidate_score = 49;
-    p.transfer = transfer::Summary {
-        before: 1,
-        after: 12,
-        observed: transfer::Summary::prefix(transfer::CASES),
-    };
+    p.qualification = Qualification::Promoted;
+    p.development_after.checkpoint = digest(&p.model);
+    evaluate_fixture(&job.base, &mut p, 1, 0b01010100);
+    assert!(p.assessment.unwrap().accepts());
+    assert_eq!(p.assessment.unwrap().losses, 1);
     job.progress = Some(p.clone());
-    assert!(job.validate().is_err());
-    p.transfer.after = 3;
-    job.progress = Some(p);
     job.validate().unwrap();
+    let mut changed = state.clone();
+    let example = own_example();
+    let question = ResearchQuestion::from_hex(&example.question).unwrap();
+    let target = question.proved_target();
+    let (term, _) = search::compile(target, &example.tree).unwrap();
+    let verified = proof::verify(&term, target).unwrap();
+    assert!(
+        changed
+            .remember_theorem(knowledge::Entry {
+                packet: evidence::pack(&verified).unwrap(),
+            })
+            .unwrap()
+    );
+    let changed_checkpoint = digest(&changed);
+    assert!(!changed.qualify(&job));
+    assert_eq!(digest(&changed), changed_checkpoint);
+    assert!(state.qualify(&job));
+    assert_eq!(state.model, p.model);
 }
+
 #[test]
 fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     let mut state = fixed_state();
@@ -1328,10 +1317,14 @@ fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     p.first_loss = Some(1.);
     p.last_loss = Some(0.5);
     p.transfer.record(0, true, true).unwrap();
+    p.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
+    p.evaluation.push(true, [true; 2], [32; 2], [1; 2]);
     job.progress = Some(p.clone());
     let before = digest(&job);
     p.unit += 1;
     p.transfer.record(1, false, true).unwrap();
+    p.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
+    p.evaluation.push(true, [false, true], [32; 2], [1; 2]);
     let mut forged = p.clone();
     forged.transfer.before ^= 1;
     assert!(job.retain_progress(71, forged).is_err());

@@ -56,7 +56,13 @@ fn batch(policy: &mut Policy, start: u64, matched: bool, inverse_validation: boo
         } else {
             12
         };
-        let knowledge = if matched || checked { 1 } else { 2 };
+        let knowledge = if matched {
+            1 + u8::from(offset >= 6)
+        } else if checked {
+            1
+        } else {
+            2
+        };
         let (decision, receipt) = observation(start + offset, held_out, signal, knowledge);
         policy.observe(&decision, &receipt, checked).unwrap();
         if checked {
@@ -80,8 +86,8 @@ fn candidate_needs_matched_disjoint_validation_and_retains_previous_checkpoint()
     let mut accepted = Policy::default();
     batch(&mut accepted, 1, true, false);
     assert!(accepted.active());
-    assert_eq!(accepted.validation_pairs, 4);
-    assert_eq!(accepted.protected.len(), 1);
+    assert_eq!(accepted.validation_pairs, 2);
+    assert_eq!(accepted.protected.len(), 2);
     assert!(accepted.multiplier(&goal) > 1024);
 
     let weights = accepted.weights;

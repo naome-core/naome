@@ -930,18 +930,13 @@ impl Owner {
             record.acknowledged = true;
         }
         let uncertain = record.state == State::InDoubt;
+        let mut learning_applied = false;
         if record.state == State::Complete
             && let Some(learning) = self.journal.learning.as_mut()
         {
             if let Some(native) = &record.native {
                 native.validate()?;
-                if learning.qualify(native)
-                    && let Some(progress) = &native.progress
-                {
-                    crate::network::emit(
-                        serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification}),
-                    );
-                }
+                learning_applied = learning.qualify(native);
             }
             if let (
                 Input::Solve { question },
@@ -968,15 +963,23 @@ impl Owner {
         // Keep the completing job protected from terminal-history compaction
         // until its persisted outcome can be delivered, even if abandoned.
         self.save()?;
-        if let Some(progress) = self.journal.records[&id]
+        let progress = self.journal.records[&id]
             .native
             .as_ref()
-            .and_then(|n| n.progress.as_ref())
+            .and_then(|n| n.progress.as_ref());
+        if learning_applied && let Some(progress) = progress {
+            crate::network::emit(
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification,"assessment":progress.assessment}),
+            );
+        }
+        if let Some(progress) = progress
             && let Some(update) = &progress.meta_update
         {
-            crate::network::emit(
-                serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaUpdated,"job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
-            );
+            if learning_applied {
+                crate::network::emit(
+                    serde_json::json!({"event":crate::outcome::NodeEvent::NativeMetaUpdated,"job":id,"updates":update.model.updates,"before":update.experience.before,"after":update.experience.after,"lower_candidate":progress.qualification}),
+                );
+            }
             if let Some(frame) = self.journal.records[&id]
                 .native
                 .as_ref()
@@ -984,10 +987,12 @@ impl Owner {
                 && let Some(selection) = &progress.plan
             {
                 let forecast = frame.training(selection.prediction);
+                let qualified = update.experience.selected_model != update.experience.source_model;
                 crate::network::emit(serde_json::json!({
                     "event":crate::outcome::NodeEvent::ResearchValueObserved,"job":id,
                     "forecast":forecast,"observed":update.experience.targets(),
-                    "qualified":update.experience.selected_model != update.experience.source_model,
+                    "qualified":qualified,"learning_applied":learning_applied,
+                    "adopted":learning_applied && qualified,
                 }));
             }
         }

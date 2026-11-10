@@ -15,6 +15,7 @@ struct Packed(
     [bool; 2],
     [u64; 2],
     [u32; 3],
+    Option<([u32; 3], [i32; 2])>,
 );
 impl From<&Experience> for Packed {
     fn from(e: &Experience) -> Self {
@@ -35,6 +36,8 @@ impl From<&Experience> for Packed {
             [e.protected_loss, e.anchor_loss],
             [e.lower_cpu_micros, e.lower_wall_micros],
             [e.transfer.before, e.transfer.after, e.transfer.observed],
+            e.assessment
+                .map(|a| ([a.blocks, a.gains, a.losses], [a.mean, a.without_best])),
         )
     }
 }
@@ -70,6 +73,15 @@ impl TryFrom<Packed> for Experience {
                 after: p.10[1],
                 observed: p.10[2],
             },
+            assessment: p.11.map(|([blocks, gains, losses], [mean, without_best])| {
+                crate::research_value::Assessment {
+                    blocks,
+                    gains,
+                    losses,
+                    mean,
+                    without_best,
+                }
+            }),
         };
         experience.validate()?;
         Ok(experience)

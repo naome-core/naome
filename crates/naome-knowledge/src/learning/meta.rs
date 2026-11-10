@@ -95,6 +95,7 @@ pub struct Experience {
     pub protected_loss: bool,
     pub anchor_loss: bool,
     pub transfer: super::transfer::Summary,
+    pub assessment: Option<crate::research_value::Assessment>,
     /// Measured lower units through the last persisted qualification checkpoint.
     /// Final gate/meta CPU remains in Progress and whole-job totals. Freezing this
     /// target makes a partial paired write replay exactly, not a new experiment.
@@ -105,15 +106,20 @@ impl Experience {
     pub fn validate(&self) -> Result<(), crate::Error> {
         self.plan.validate()?;
         self.transfer.validate()?;
-        if self.candidate_model.is_some() != self.transfer.complete() {
+        if self.candidate_model.is_some() != self.transfer.complete()
+            || self.assessment.is_some() != self.candidate_model.is_some()
+        {
             return Err(crate::ResearchFailure::MetaTransferIncomplete.into());
         }
-        if self.selected_model != self.source_model
-            && (self.candidate_model.as_ref() != Some(&self.selected_model)
-                || self.after <= self.before
-                || self.protected_loss
-                || self.anchor_loss
-                || !self.transfer.supports_recorded_promotion())
+        if let Some(assessment) = self.assessment {
+            assessment.validate()?;
+        }
+        let selected = self.selected_model != self.source_model;
+        if selected
+            != self
+                .assessment
+                .is_some_and(|assessment| assessment.accepts())
+            || selected && self.candidate_model.as_ref() != Some(&self.selected_model)
         {
             return Err(crate::ResearchFailure::MetaPromotionBinding.into());
         }
@@ -135,18 +141,11 @@ impl Experience {
         features(&self.context, &self.plan)
     }
     pub(crate) fn targets(&self) -> [f32; 3] {
-        let retention_loss = if self.protected_loss || self.anchor_loss {
-            1.
-        } else {
-            self.transfer.loss()
-        };
+        let assessment = self.assessment.unwrap_or_default();
+        let expected = assessment.mean.max(0);
         [
-            if self.transfer.complete() && retention_loss == 0. {
-                self.transfer.gain().max(0.)
-            } else {
-                0.
-            },
-            retention_loss,
+            expected as f32 / 1_000.,
+            (expected - assessment.without_best).clamp(0, 1_000) as f32 / 1_000.,
             (self.lower_cpu_micros as f32 / 180_000_000.).min(2.),
         ]
     }

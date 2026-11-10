@@ -164,8 +164,9 @@ pub(super) fn construct_program(
     ranker: &mut dyn super::model::Ranker,
     known: &[super::knowledge::Entry],
     definitions: &[super::definitions::Entry],
-) -> Result<(Option<ProgramCandidate>, usize), crate::Error> {
+) -> Result<(Option<ProgramCandidate>, usize, bool), crate::Error> {
     let choices = super::definitions::construction_choices(target, definitions)?;
+    let mut certificate_limited = false;
     let (candidate, work, _) = construct_candidate(
         target,
         maximum,
@@ -177,7 +178,10 @@ pub(super) fn construct_program(
             native: true,
         },
         |term, offer, direct| {
-            let mut recipe = proof::recipe(term, target)?;
+            let Some(mut recipe) = proof::recipe_within_capacity(term, target)? else {
+                certificate_limited = true;
+                return Ok(None);
+            };
             if !direct && !selection::used_recipe(offer, &recipe)? {
                 return Ok(None);
             }
@@ -189,7 +193,7 @@ pub(super) fn construct_program(
             program_from_authored_recipe(target, recipe, definitions).map(Some)
         },
     )?;
-    Ok((candidate, work))
+    Ok((candidate, work, certificate_limited))
 }
 
 pub(super) fn program_from_recipe(

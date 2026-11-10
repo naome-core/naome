@@ -419,7 +419,13 @@ impl State {
             || self.trained != native.base.trained
             || self.meta.model != native.base.meta.model
             || self.meta.draw != native.base.meta.draw
-            || !native.preserves_incumbent_transfer(p)
+            || !native.promotion_bound(p)
+        {
+            return false;
+        }
+        if p.assessment.is_some_and(|assessment| assessment.accepts())
+            && digest(&(&self.knowledge, &self.definitions))
+                != digest(&(&native.base.knowledge, &native.base.definitions))
         {
             return false;
         }
@@ -580,17 +586,25 @@ impl State {
             pool::Pool::default(),
         )
     }
-    /// These anchors are ordinary eligible training proofs, never the separate
-    /// development, protected-sentinel, transfer or confirmation panels.
+    /// Use older local anchors first. A fresh parent can rehearse verified
+    /// local replay when it has yet to retain any local anchors.
     pub(super) fn preservation_pool(
         &self,
         evidence: &[Evidence],
         training: &pool::Pool,
     ) -> Result<pool::Pool, crate::Error> {
-        self.checked_pool(
-            self.anchors
+        let sources = if self.model.updates == 0
+            && !self
+                .anchors
                 .iter()
-                .filter(|e| matches!(e.origin, Origin::Local)),
+                .any(|e| matches!(e.origin, Origin::Local))
+        {
+            &self.replay
+        } else {
+            &self.anchors
+        };
+        self.checked_pool(
+            sources.iter().filter(|e| matches!(e.origin, Origin::Local)),
             evidence,
             training.remaining(),
         )

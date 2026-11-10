@@ -26,6 +26,8 @@ fn an_unstarted_job_and_closed_resource_gate_cannot_produce_an_audit() {
         development_regression: false,
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
+        evaluation: transfer::Evidence::default(),
+        assessment: None,
         development_before: crate::training::ability::Profile::new(digest(&state.model)),
         development_after: crate::training::ability::Profile::new(digest(&state.model)),
         regressions: [0; crate::training::ability::SKILLS],

@@ -1075,6 +1075,7 @@ pub(crate) fn publish_catalog_solution(
 
 #[test]
 fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source() {
+    let _reservation = qualification_fixture();
     use crate::checkpoint::tests::Directory;
 
     let directory = Directory::new();

@@ -20,7 +20,7 @@ use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},
     graph::Batch,
-    pool::Pool,
+    pool::{Pool, Sample},
 };
 use burn::{
     module::{Module, ModuleMapper, Param},
@@ -540,7 +540,7 @@ impl Runtime {
         rng: &mut u64,
         updates: u64,
         phase: super::meta::Phase,
-        preservation_pool: Option<(&Pool, u64)>,
+        preservation_pool: Option<(&Pool, u64, bool)>,
         preservation_mode: preservation::Mode,
     ) -> Result<(f32, f32), crate::Error> {
         if graphs.is_empty() {
@@ -560,9 +560,9 @@ impl Runtime {
             PARAMETERS
         };
         let preservation_started = std::time::Instant::now();
-        let preservation_gradient = if let Some((pool, mut cursor)) =
-            preservation_pool.filter(|(p, _)| preservation_mode.enabled() && !p.is_empty())
-        {
+        let reference = preservation_pool
+            .filter(|(pool, _, _)| preservation_mode.enabled() && !pool.is_empty());
+        let preservation_gradient = if let Some((pool, mut cursor, false)) = reference {
             // Separate, reproducible sampling: this never advances the training
             // cursor or consumes a development/transfer prediction as a label.
             let (batch, logits) = self.preservation_scores(pool, &mut cursor)?;
@@ -572,15 +572,50 @@ impl Runtime {
         } else {
             None
         };
+        let mut cold_replay = reference.filter(|(_, _, cold)| *cold);
         self.preservation_micros = micros(preservation_started);
         self.sampled_sequence_edges = 0;
         for update in 0..updates {
             let before = *rng;
-            let sample = graphs.sequence_batch(rng);
+            let mut sample = graphs.sequence_batch(rng);
+            let inserted_reference = if let Some((pool, cursor, _)) = &mut cold_replay {
+                let started = std::time::Instant::now();
+                let (reference, inserted) = if let Some(existing) = sample
+                    .iter()
+                    .find(|entry| !entry.auxiliary && pool.contains_replay_graph(entry.graph))
+                {
+                    (existing.graph, None)
+                } else {
+                    // The final slot has no dependents in the observed window.
+                    let index = sample.len() - 1;
+                    let graph = pool.batch(cursor)[0];
+                    sample[index] = Sample {
+                        graph,
+                        selected: graph.expert,
+                        parent: None,
+                        auxiliary: false,
+                    };
+                    (graph, Some(index))
+                };
+                if self.observe_batches() {
+                    self.measurements.record_references(&[reference]);
+                }
+                self.preservation_micros = self.preservation_micros.saturating_add(micros(started));
+                inserted
+            } else {
+                None
+            };
             self.sampled_sequence_edges += sample.iter().filter(|s| s.parent.is_some()).count();
             let inputs = sample
                 .iter()
-                .map(|s| graphs.target_graph(s.graph, self.rich_targets))
+                .enumerate()
+                .map(|(index, s)| {
+                    if inserted_reference == Some(index) {
+                        s.graph.clone()
+                    } else {
+                        graphs.target_graph(s.graph, self.rich_targets)
+                    }
+                })
                 .collect::<Vec<_>>();
             let batch = Batch::from_graphs(&inputs, &self.device)?;
             if self.observe_batches() {
@@ -854,6 +889,7 @@ impl Engine {
         self.cost = TrainingCost::default();
         let (evidence, observations) = material;
         let rich_targets = self.rich_targets();
+        let cold = state.model.updates == 0;
         let started = std::time::Instant::now();
         let key = super::digest(&(
             &state.model,
@@ -882,12 +918,17 @@ impl Engine {
                     })?;
                     self.cost.preparation_micros = micros(preparation);
                 }
-                let preservation_pool =
-                    if state.model.updates > 0 && self.preservation_mode().enabled() {
-                        state.preservation_pool(evidence, &pool)?
-                    } else {
-                        Pool::default()
-                    };
+                let preservation_pool = if self.preservation_mode().enabled() {
+                    match state.preservation_pool(evidence, &pool) {
+                        Err(crate::Error::Research(
+                            crate::ResearchFailure::PoolGraphWorkCapacity
+                            | crate::ResearchFailure::PoolDerivedWorkCapacity,
+                        )) if cold => Pool::default(),
+                        result => result?,
+                    }
+                } else {
+                    Pool::default()
+                };
                 (pool, preservation_pool)
             }
         };
@@ -925,8 +966,15 @@ impl Engine {
         let result = if pool.is_empty() {
             Ok(None)
         } else {
-            self.train_using(c, &pool, cursor, phase, Some(&preservation_pool), io)
-                .map(Some)
+            self.train_using(
+                c,
+                &pool,
+                cursor,
+                phase,
+                Some((&preservation_pool, cold)),
+                io,
+            )
+            .map(Some)
         };
         self.pool = Some((key, pool, preservation_pool));
         result
@@ -954,7 +1002,7 @@ impl Engine {
         graphs: &Pool,
         rng: &mut u64,
         phase: super::meta::Phase,
-        preservation_pool: Option<&Pool>,
+        preservation_pool: Option<(&Pool, bool)>,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), crate::Error> {
         let started = std::time::Instant::now();
@@ -962,8 +1010,14 @@ impl Engine {
         self.cost.load_micros = micros(started);
         let started = std::time::Instant::now();
         let mode = self.preservation_mode();
-        let preservation_pool =
-            preservation_pool.map(|p| (p, (c.updates / UPDATES_PER_UNIT).wrapping_mul(16)));
+        let preservation_pool = preservation_pool.map(|(pool, cold)| {
+            let offset = if cold {
+                c.updates
+            } else {
+                c.updates / UPDATES_PER_UNIT
+            };
+            (pool, offset.wrapping_mul(16), cold)
+        });
         let (first, last) = runtime.train_using(
             graphs,
             rng,
