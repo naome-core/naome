@@ -94,6 +94,13 @@ impl ProofFormula {
         }
     }
 
+    /// Counts definition references, including repeated applications.
+    #[must_use]
+    pub fn definition_reference_count(&self) -> usize {
+        self.as_defined()
+            .map_or(0, DefinedFormula::definition_reference_count)
+    }
+
     /// Borrows a primitive formula or expands only the definition-aware path.
     pub fn expand_with<'a, R: DefinitionResolver + ?Sized>(
         &'a self,

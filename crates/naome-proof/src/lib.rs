@@ -420,6 +420,17 @@ impl ProofStep {
         self.visit_formulas(|formula| formula.as_defined().is_some())
     }
 
+    /// Counts definition references across all formula fields, including repeats.
+    #[must_use]
+    pub fn definition_reference_count(&self) -> usize {
+        let mut count = 0;
+        self.visit_formulas(|formula| {
+            count += formula.definition_reference_count();
+            false
+        });
+        count
+    }
+
     // Visit in field order and stop when a visitor returns true.
     fn visit_formulas(&self, mut visit: impl FnMut(&ProofFormula) -> bool) -> bool {
         match self {

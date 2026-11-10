@@ -118,12 +118,12 @@ fn definition_references_keep_field_and_prefix_order() {
     };
     assert!(step.has_definition_references());
     assert_eq!(step.definition_references(), [first, second, first]);
-    assert!(
-        !ProofStep::VacuousUniversal {
-            formula: ProofFormula::from_defined(DefinedFormula::equal(variable, variable)).unwrap(),
-        }
-        .has_definition_references()
-    );
+    assert_eq!(step.definition_reference_count(), 3);
+    let primitive = ProofStep::VacuousUniversal {
+        formula: ProofFormula::from_defined(DefinedFormula::equal(variable, variable)).unwrap(),
+    };
+    assert!(!primitive.has_definition_references());
+    assert_eq!(primitive.definition_reference_count(), 0);
 }
 
 #[test]

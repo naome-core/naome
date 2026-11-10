@@ -219,6 +219,18 @@ impl DefinedFormula {
         collect_definition_references(&self.0, references);
     }
 
+    pub(crate) fn definition_reference_count(&self) -> usize {
+        fn count(node: &Node) -> usize {
+            match node {
+                Node::DefinedRelation { .. } => 1,
+                Node::Not(formula) | Node::ForAll(formula) => count(formula),
+                Node::Implies(antecedent, consequent) => count(antecedent) + count(consequent),
+                Node::Equal(..) | Node::Member(..) => 0,
+            }
+        }
+        count(&self.0)
+    }
+
     pub(crate) fn first_definition_reference(&self) -> Option<DefinitionId> {
         first_definition_reference(&self.0)
     }
