@@ -34,6 +34,13 @@ fn input(descriptor: &Descriptor) -> [f32; INPUTS] {
     input[SIGNALS + 2] = 1.;
     input
 }
+fn utility_features(descriptor: &Descriptor) -> impl Iterator<Item = f32> + Clone {
+    input(descriptor)
+        .into_iter()
+        .chain(descriptor.bindings)
+        .chain(std::iter::once(1.))
+}
+
 fn sigmoid(value: f32) -> f32 {
     1. / (1. + (-value.clamp(-20., 20.)).exp())
 }
@@ -217,16 +224,14 @@ impl Model {
         }
     }
     pub fn utility(&self, descriptor: &Descriptor) -> f32 {
-        let mut features = input(descriptor).to_vec();
-        features.extend(descriptor.bindings);
-        features.push(1.);
-        sigmoid(features.iter().zip(&self.utility).map(|(x, w)| x * w).sum())
+        self.utility_from(utility_features(descriptor))
+    }
+    fn utility_from(&self, features: impl Iterator<Item = f32>) -> f32 {
+        sigmoid(features.zip(&self.utility).map(|(x, w)| x * w).sum())
     }
     fn train_utility(&mut self, descriptor: &Descriptor, target: f32) {
-        let error = self.utility(descriptor) - target;
-        let mut features = input(descriptor).to_vec();
-        features.extend(descriptor.bindings);
-        features.push(1.);
+        let features = utility_features(descriptor);
+        let error = self.utility_from(features.clone()) - target;
         for (weight, value) in self.utility.iter_mut().zip(features) {
             *weight = (*weight - 0.05 * error * value).clamp(-4., 4.);
         }
