@@ -7,7 +7,10 @@ async fn cancelled_partial_result_remains_framed_and_large_output_drains_through
     cleanup.push(b'\n');
     output.write_all(&cleanup).await.unwrap();
     let mut frames = FrameReader::new(input);
-    assert_eq!(frames.next().await.unwrap().unwrap(), cleanup);
+    assert!(matches!(
+        frames.next().await,
+        Ok(Some(Frame::CleanupComplete { id: 1 }))
+    ));
     // The pipe has insufficient capacity for the result. Consume a prefix,
     // cancel that read, then keep the prefix while draining the rest.
     let mut expected = serde_json::to_vec(&Frame::Result {
@@ -34,7 +37,9 @@ async fn cancelled_partial_result_remains_framed_and_large_output_drains_through
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(result, expected);
+    let mut actual = serde_json::to_vec(&result).unwrap();
+    actual.push(b'\n');
+    assert_eq!(actual, expected);
     assert!(frames.next().await.unwrap().is_none());
     supplier.await.unwrap();
 }
@@ -67,7 +72,10 @@ async fn truncated_provider_frame_has_a_machine_readable_cause() {
     output.write_all(b"[1,{\"id\":1}").await.unwrap();
     drop(output);
     let mut frames = FrameReader::new(input);
-    assert_eq!(frames.next().await, Err(WorkerFailure::FrameTruncated));
+    assert!(matches!(
+        frames.next().await,
+        Err(WorkerFailure::FrameTruncated)
+    ));
 }
 
 #[test]
