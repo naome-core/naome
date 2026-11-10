@@ -127,25 +127,21 @@ impl DiskRegistry {
             }
             let address = formula_address(bytes);
             self.records.storage().write(address, bytes)?;
-            let mut metadata = Vec::with_capacity(72);
-            metadata.extend_from_slice(statement.as_bytes());
-            metadata.extend_from_slice(&address);
-            metadata.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+            let mut metadata = [0; 72];
+            metadata[..32].copy_from_slice(statement.as_bytes());
+            metadata[32..64].copy_from_slice(&address);
+            metadata[64..].copy_from_slice(&(bytes.len() as u64).to_be_bytes());
             let mut next = self.clone();
             next.records.insert(entry.record, &metadata)?;
             bucket.insert(entry.record, &[])?;
             let root = bucket.root().ok_or(ContextError::Corrupt)?;
-            let mut encoded = Vec::with_capacity(64);
-            encoded.extend_from_slice(&root.address);
-            encoded.extend_from_slice(&root.fingerprint);
-            next.statements.set(*statement.as_bytes(), &encoded)?;
+            next.statements
+                .set(*statement.as_bytes(), &encode_root(root))?;
             let mut related = next.bucket(equivalence)?;
             related.insert(entry.record, &[])?;
             let root = related.root().ok_or(ContextError::Corrupt)?;
-            let mut encoded = Vec::with_capacity(64);
-            encoded.extend_from_slice(&root.address);
-            encoded.extend_from_slice(&root.fingerprint);
-            next.statements.set(*equivalence.as_bytes(), &encoded)?;
+            next.statements
+                .set(*equivalence.as_bytes(), &encode_root(root))?;
             next.contents.insert(content, &[])?;
             Ok(next)
         })();
@@ -153,6 +149,14 @@ impl DiskRegistry {
         Ok(())
     }
 }
+
+fn encode_root(root: Root) -> [u8; 64] {
+    let mut bytes = [0; 64];
+    bytes[..32].copy_from_slice(&root.address);
+    bytes[32..].copy_from_slice(&root.fingerprint);
+    bytes
+}
+
 pub(super) fn formula_address(bytes: &[u8]) -> Identity {
     let mut hash = Sha256::new();
     hash.update(b"naome:registered-question-formula\0");
