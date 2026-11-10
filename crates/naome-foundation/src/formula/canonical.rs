@@ -39,7 +39,8 @@ const BOUND_VARIABLE: u8 = 0x01;
 /// retain the original canonical bytes; hashing them keeps existing identities.
 pub struct CanonicalImplication {
     bytes: Vec<u8>,
-    consequents: Vec<usize>,
+    first_consequent: usize,
+    later_consequents: Vec<usize>,
 }
 impl CanonicalImplication {
     /// Returns the canonical encoding of the complete implication.
@@ -48,10 +49,12 @@ impl CanonicalImplication {
     }
 
     pub fn antecedent(&self) -> &[u8] {
-        &self.bytes[1..self.consequents[0]]
+        &self.bytes[1..self.first_consequent]
     }
     pub fn consequents(&self) -> impl Iterator<Item = &[u8]> {
-        self.consequents.iter().map(|start| &self.bytes[*start..])
+        std::iter::once(self.first_consequent)
+            .chain(self.later_consequents.iter().copied())
+            .map(|start| &self.bytes[start..])
     }
 }
 
@@ -72,26 +75,35 @@ impl FormulaView<'_> {
 impl Formula {
     /// Encodes an implication once and exposes its borrowed canonical ranges.
     pub fn canonical_implication(&self) -> Result<Option<CanonicalImplication>, FormulaCodecError> {
-        let Node::Implies(_, _) = &self.0 else {
+        let Node::Implies(left, right) = &self.0 else {
             return Ok(None);
         };
         let mut bytes = Vec::new();
         let mut nodes = NodeBudget::new(FORMULA_MAX_NODES);
         let mut variables = FreeVariableEncoding::Preserve;
-        let mut current = &self.0;
-        let mut depth = 0;
-        let mut consequents = Vec::new();
+        nodes.charge()?;
+        bytes.push(IMPLIES);
+        encode_node(left, 1, &mut nodes, &mut variables, &mut bytes)?;
+        let first_consequent = bytes.len();
+
+        let mut current = right.as_ref();
+        let mut depth = 1;
+        let mut later_consequents = Vec::new();
         while let Node::Implies(left, right) = current {
             check_depth(depth)?;
             nodes.charge()?;
             bytes.push(IMPLIES);
             depth += 1;
             encode_node(left, depth, &mut nodes, &mut variables, &mut bytes)?;
-            consequents.push(bytes.len());
+            later_consequents.push(bytes.len());
             current = right;
         }
         encode_node(current, depth, &mut nodes, &mut variables, &mut bytes)?;
-        Ok(Some(CanonicalImplication { bytes, consequents }))
+        Ok(Some(CanonicalImplication {
+            bytes,
+            first_consequent,
+            later_consequents,
+        }))
     }
 
     /// Encodes this formula using the canonical Proof Certificate format.
