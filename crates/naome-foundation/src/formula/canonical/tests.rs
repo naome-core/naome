@@ -303,28 +303,35 @@ fn codec_enforces_derived_node_and_byte_limits() {
 }
 
 #[test]
-fn borrowed_spine_ranges_preserve_every_original_canonical_suffix() {
+fn borrowed_spine_ranges_preserve_canonical_antecedents_and_suffixes() {
     let x = FreeVariable::new(17);
     let atom = Formula::for_all(x, Formula::equal(x, x));
     let mut formula = atom.clone();
-    for _ in 0..120 {
-        formula = Formula::implies(atom.clone(), formula);
+    for index in 0..120 {
+        let left = if index % 2 == 0 {
+            Formula::member(FreeVariable::new(index), x)
+        } else {
+            atom.clone()
+        };
+        formula = Formula::implies(left, formula);
     }
     let encoded = formula.canonical_implication().unwrap().unwrap();
     let (left, mut right) = formula.implication_parts().unwrap();
     assert_eq!(encoded.antecedent(), left.encode_canonical().unwrap());
-    let mut expected = Vec::new();
+    let mut antecedents = vec![left.encode_canonical().unwrap()];
+    let mut consequents = Vec::new();
     loop {
-        expected.push(right.encode_canonical().unwrap());
+        consequents.push(right.encode_canonical().unwrap());
         match right.implication_parts() {
-            Some((_, next)) => right = next,
+            Some((left, next)) => {
+                antecedents.push(left.encode_canonical().unwrap());
+                right = next;
+            }
             None => break,
         }
     }
-    assert_eq!(
-        encoded.consequents().collect::<Vec<_>>(),
-        expected.iter().map(Vec::as_slice).collect::<Vec<_>>()
-    );
+    assert_eq!(encoded.antecedents().collect::<Vec<_>>(), antecedents);
+    assert_eq!(encoded.consequents().collect::<Vec<_>>(), consequents);
     assert!(
         encoded
             .consequents()
