@@ -53,6 +53,17 @@ fn checked_pattern_candidates_require_exact_bounded_operands() {
 }
 
 #[test]
+fn projections_preserve_the_full_pattern_and_each_implication_suffix() {
+    let x = FreeVariable::new(1);
+    let atom = Formula::equal(x, x);
+    let suffix = Formula::implies(Formula::member(x, x), atom.clone());
+    let body = Formula::implies(atom.clone(), suffix.clone());
+    let source = Formula::for_all(x, body.clone());
+
+    assert_eq!(projections(&source), [key(&body), key(&suffix), key(&atom)]);
+}
+
+#[test]
 fn an_open_local_rule_keeps_its_outer_variables_fixed() {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
