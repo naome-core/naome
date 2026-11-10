@@ -710,4 +710,32 @@ fn proof_registration_rules_match_for_duplicates_collisions_aliases_and_missing_
     let _ = twin.register(vec![ProofStep::ProofReference { proof_id: parent }]);
 }
 
+#[test]
+fn exact_duplicate_after_self_record_matches_memory_on_disk() {
+    let state = ArtifactState::new();
+    let formula = unresolved();
+    let mut memory = QuestionRegistry::new();
+    let mut disk = QuestionRegistry::with_storage(Files::new());
+    for registry in [&mut memory, &mut disk] {
+        for record in [[1; 32], [2; 32]] {
+            registry
+                .insert(RegisteredQuestion::new(record, &formula).unwrap())
+                .unwrap();
+        }
+    }
+    let request =
+        AssessmentQuestion::new(FOUNDATION_ID, &formula, b"duplicate", &[], Some([1; 32])).unwrap();
+    let assess = |registry| {
+        assess_question(
+            &request,
+            &KnowledgeSnapshot::new([7; 32], &state, registry),
+            &PrefilterPolicy::default(),
+        )
+    };
+    let expected = assess(&memory);
+    assert_eq!(expected.reason, Some(RejectionReason::ExactDuplicate));
+    assert_eq!(expected.related_record, Some([2; 32]));
+    assert_eq!(assess(&disk), expected);
+}
+
 mod equivalence;

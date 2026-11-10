@@ -745,12 +745,10 @@ fn evaluate(
     if let Some(record) = question.registered_record {
         work.index()?;
         work.formula(encoded.len(), 2)?;
-        if snapshot
+        if !snapshot
             .questions
-            .get(&record)
+            .matches_formula(&record, question.formula, &encoded)
             .map_err(context_failure)?
-            .as_deref()
-            != Some(question.formula)
         {
             return Err((
                 RejectionReason::InvalidRegistry,
@@ -770,10 +768,8 @@ fn evaluate(
         if Some(record) != question.registered_record
             && snapshot
                 .questions
-                .get(&record)
+                .matches_formula(&record, question.formula, &encoded)
                 .map_err(context_failure)?
-                .as_deref()
-                == Some(question.formula)
         {
             decision.related_record = Some(record);
             return Err((
