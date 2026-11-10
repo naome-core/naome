@@ -40,7 +40,8 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Its small predictor learns search outcomes, cost and checked reuse\n\
              in earlier unresolved goals. These observations guide exploration\n\
              and never establish mathematical truth or research novelty.\n\
-             Model, optimizer and replay remain local.\n\
+             Repeated checked citations help recall useful proofs for similar questions.\n\
+             Model, optimizer, replay and recall remain local.\n\
              \nCooperative research:\n\
              Nodes may offer unresolved formal questions to compatible peers and\n\
              voluntarily work on related requests within local resource budgets.\n\

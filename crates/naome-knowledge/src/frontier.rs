@@ -13,6 +13,7 @@ mod finder;
 pub(crate) use finder::research::Decision as ResearchDecision;
 mod lemma_index;
 mod looping;
+mod recall;
 use evidence::{Evidence, Outcome};
 pub(crate) const PROVIDER: &str = "naome-structural-finder";
 #[cfg(test)]
@@ -79,6 +80,8 @@ pub(crate) struct Frontier {
     _memory: Arc<crate::resources::MemoryLease>,
     #[cfg(test)]
     treatment: Treatment,
+    #[cfg(test)]
+    structural_recall: bool,
 }
 impl Frontier {
     /// Structural overlap is a scheduling hint, not a proof dependency.
@@ -143,6 +146,8 @@ impl Frontier {
             after: None,
             #[cfg(test)]
             treatment: Treatment::Full,
+            #[cfg(test)]
+            structural_recall: true,
             observed_root: None,
             _memory: crate::resources::MemoryLease::acquire(
                 // Resident goals, proposals and returned candidate copies have
@@ -153,7 +158,7 @@ impl Frontier {
                     .saturating_add(std::mem::size_of::<Self>())
                     .saturating_add(32 * std::mem::size_of::<Features>())
                     .saturating_add(if settings.native_proof_learning {
-                        lemma_index::Index::RESERVATION
+                        lemma_index::Index::RESERVATION + recall::Memory::RESERVATION
                     } else {
                         0
                     })
@@ -836,6 +841,43 @@ impl Frontier {
         }
         Ok(false)
     }
+    #[cfg(test)]
+    pub(crate) fn disable_structural_recall(&mut self) {
+        self.structural_recall = false;
+    }
+
+    fn recall_enabled(&self) -> bool {
+        #[cfg(test)]
+        if !self.structural_recall {
+            return false;
+        }
+        self.native
+    }
+
+    fn recalled(
+        &self,
+        question: &ResearchQuestion,
+        family: u16,
+    ) -> Vec<(naome_proof::ProofId, u8)> {
+        if !self.recall_enabled() {
+            return Vec::new();
+        }
+        self.evidence
+            .recall(recall::Memory::context(family, question))
+    }
+
+    fn recall_opportunity(
+        &self,
+        analysis: &finder::Descriptor,
+        question: &ResearchQuestion,
+    ) -> u64 {
+        if !self.recall_enabled() {
+            return 0;
+        }
+        self.evidence
+            .recall_opportunity(recall::Memory::context(analysis.features.family, question))
+    }
+
     pub(crate) fn research_frame(&self, graph: &Graph, backlog: usize) -> Option<Frame> {
         let feedback = self.feedback.as_ref()?;
         let model = self.evidence.model();
@@ -907,13 +949,14 @@ impl Frontier {
             (feedback.priority(question, 128).min(scale) * 255 / scale) as u8
         });
         let observations = self.evidence.draws();
+        let recall = self.recall_opportunity(&analysis.descriptor, question);
         let summary = [
             (solvable * 255.) as u8,
             (cost * 255.) as u8,
             (useful * 255.) as u8,
             overlap.min(16) as u8 * 15,
             affected.min(16) as u8 * 15,
-            u8::from(self.lemmas.has_support(analysis.lookup_keys())) * 255,
+            u8::from(recall > 0 || self.lemmas.has_support(analysis.lookup_keys())) * 255,
             hint.map_or(0, |record| record.unverified_attempts.min(8) as u8 * 31),
             hint.map_or(0, |record| (record.spent_ms / 1_000).min(255) as u8),
             (graph.accepted_count().checked_ilog2().unwrap_or(0).min(16) as u8) * 15,
@@ -931,8 +974,12 @@ impl Frontier {
             limits,
         );
         decision.checked_inputs = checked_inputs;
-        decision.forecast =
-            self.research_forecast(graph, decision.action(), [solvable, cost, useful], overlap);
+        decision.forecast = self.research_forecast(
+            graph,
+            decision.action(),
+            [solvable, cost, useful],
+            overlap.max(recall),
+        );
         Ok(decision)
     }
     fn weight(
@@ -1033,7 +1080,8 @@ impl Frontier {
             // Prioritize helpers that can relieve work across multiple goals.
             weight = weight.saturating_mul(1 + relevance.min(8) * 4);
             weight = weight.saturating_mul(1 + saved_work.min(32));
-            let action = if self.lemmas.has_support(analysis.lookup_keys()) {
+            let recall = self.recall_opportunity(&analysis.descriptor, question);
+            let action = if recall > 0 || self.lemmas.has_support(analysis.lookup_keys()) {
                 ResearchAction::Reuse
             } else if relevance > 0
                 || self
@@ -1049,7 +1097,7 @@ impl Frontier {
                 let forecast = frame.question(
                     action,
                     self.evidence.model().predictions_from(&analysis.descriptor),
-                    relevance,
+                    relevance.max(recall),
                 );
                 let factor = 768 + (forecast.value().clamp(0, 1_000) / 2) as u64;
                 weight = weight.saturating_mul(factor) / 1024;
@@ -1243,7 +1291,18 @@ impl Frontier {
                 .describe(root)?
                 .ok_or(crate::InputFault::EvidenceGoalMissing)?
                 .statement_question(graph.checked_context())?;
-            for dependency in graph.learning_proof_dependencies(root)? {
+            let dependencies = graph.learning_proof_dependencies(root)?;
+            if self.recall_enabled() && !consumer.recall_observed {
+                let cited = recall::contributing(graph, &actual_goal, &dependencies)?;
+                self.evidence.remember_reuse(
+                    question,
+                    &actual_goal,
+                    &mut consumer,
+                    root,
+                    &cited,
+                )?;
+            }
+            for dependency in dependencies {
                 if let Some(lemma) = self.evidence.support(
                     question,
                     &actual_goal,

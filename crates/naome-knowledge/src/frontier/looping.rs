@@ -292,7 +292,14 @@ impl Frontier {
         if self.native && planned.is_empty() {
             let target = question.proved_target();
             let mut candidates = Vec::new();
-            for proof in self.lemmas.offers(&lemma_index::Index::query(question)) {
+            let recent = self.lemmas.offers(&lemma_index::Index::query(question));
+            let learned = self.recalled(question, Features::of(question).family);
+            for proof in recent.iter().copied().chain(
+                learned
+                    .iter()
+                    .map(|&(id, _)| id)
+                    .filter(|id| !recent.contains(id)),
+            ) {
                 let Some(header) = graph.checked_context().proof_header(proof)? else {
                     continue;
                 };
@@ -309,6 +316,16 @@ impl Frontier {
                 };
                 let applies =
                     crate::learning::knowledge::directly_applies(target, formula.as_ref())?;
+                // Only expand the old candidate set with witnesses that close
+                // this exact scope. A contextual association alone cannot spend
+                // the goal's search allowance on a new indirect route.
+                if !applies && !recent.contains(&proof) {
+                    continue;
+                }
+                let strength = learned
+                    .iter()
+                    .find(|(id, _)| *id == proof)
+                    .map_or(0, |&(_, strength)| strength);
                 let value = ResearchQuestion::from_formula(formula.as_ref().clone())
                     .ok()
                     .and_then(|lemma| {
@@ -325,10 +342,15 @@ impl Frontier {
                         )
                     })
                     .map_or(0, Forecast::value);
-                candidates.push((!applies, std::cmp::Reverse(value), proof));
+                candidates.push((
+                    !applies,
+                    std::cmp::Reverse(strength),
+                    std::cmp::Reverse(value),
+                    proof,
+                ));
             }
-            candidates.sort_by_key(|&(indirect, value, _)| (indirect, value));
-            for (_, _, proof) in candidates {
+            candidates.sort_by_key(|&(indirect, strength, value, _)| (indirect, strength, value));
+            for (_, _, _, proof) in candidates.into_iter().take(4) {
                 if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
                     return Ok((Vec::new(), inputs));
                 }
