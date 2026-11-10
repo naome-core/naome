@@ -56,7 +56,8 @@ impl crate::context::ProgramNodes for ProgramNodes {
             let bytes = self.0.get(&address)?.ok_or(ContextError::Corrupt)?;
             let (node, properties) = naome_proof::program::decode_graph_node(&bytes)
                 .map_err(|_| ContextError::Corrupt)?;
-            if naome_proof::program::graph_node_hash(node, properties) != address {
+            // The decoder has verified that these are the canonical node bytes.
+            if <[u8; 32]>::from(Sha256::digest(&bytes)) != address {
                 return Err(ContextError::Corrupt);
             }
             Ok((node, properties))
