@@ -48,6 +48,17 @@ pub enum StepResult {
     InstantiationAxiom(u64),
 }
 
+#[derive(Clone, Copy)]
+enum InstantiationFold {
+    Ordinary,
+    OmittedAxiom,
+    Application {
+        axiom: u32,
+        premise: u32,
+        replacement: FreeVariable,
+    },
+}
+
 impl Projection {
     pub fn from_normal_form(proof: &ProofNormalForm) -> Self {
         Self::with_instantiations(proof, &[]).expect("unfused projection")
@@ -70,8 +81,7 @@ impl Projection {
         sites: impl IntoIterator<Item = usize>,
         authored: &BTreeMap<DefinitionId, DefinedFormula>,
     ) -> Result<Self, ProjectionFailure> {
-        let mut omitted = vec![false; steps.len()];
-        let mut folds = vec![None; steps.len()];
+        let mut folds = vec![InstantiationFold::Ordinary; steps.len()];
         for site in sites {
             let Some(ProofStep::ModusPonens {
                 premise,
@@ -87,11 +97,18 @@ impl Projection {
             else {
                 return Err(ProjectionFailure::MissingInstantiation);
             };
-            if uses[axiom] != 1 || body.as_defined().is_some() || omitted[axiom] {
+            if uses[axiom] != 1
+                || body.as_defined().is_some()
+                || matches!(folds[axiom], InstantiationFold::OmittedAxiom)
+            {
                 return Err(ProjectionFailure::ReferencedInstantiation);
             }
-            omitted[axiom] = true;
-            folds[site] = Some((axiom, *premise as usize, *replacement));
+            folds[axiom] = InstantiationFold::OmittedAxiom;
+            folds[site] = InstantiationFold::Application {
+                axiom: *implication,
+                premise: *premise,
+                replacement: *replacement,
+            };
         }
 
         let mut builder = Builder {
@@ -100,19 +117,22 @@ impl Projection {
         };
         let mut results = vec![StepResult::Result(0); steps.len()];
         let mut handles = vec![0; steps.len()];
-        for (index, step) in steps.iter().enumerate() {
-            if omitted[index] {
-                continue;
-            }
-            let position = if let Some((axiom, premise, replacement)) = folds[index] {
-                let position = builder.push(Command::Instantiate {
-                    premise: handles[premise],
-                    replacement: replacement.identifier(),
-                });
-                results[axiom] = StepResult::InstantiationAxiom(position);
-                position
-            } else {
-                builder.step(step, &handles)
+        for (index, (step, fold)) in steps.iter().zip(folds).enumerate() {
+            let position = match fold {
+                InstantiationFold::Ordinary => builder.step(step, &handles),
+                InstantiationFold::OmittedAxiom => continue,
+                InstantiationFold::Application {
+                    axiom,
+                    premise,
+                    replacement,
+                } => {
+                    let position = builder.push(Command::Instantiate {
+                        premise: handles[premise as usize],
+                        replacement: replacement.identifier(),
+                    });
+                    results[axiom as usize] = StepResult::InstantiationAxiom(position);
+                    position
+                }
             };
             handles[index] = position;
             results[index] = StepResult::Result(position);
@@ -509,6 +529,38 @@ mod tests {
         assert!(matches!(
             Projection::from_inference_steps(&[]),
             Err(ProjectionFailure::EmptyRecipe)
+        ));
+    }
+
+    #[test]
+    fn a_selected_instantiation_cannot_be_folded_twice() {
+        use crate::ProofCertificate;
+        use naome_foundation::Formula;
+
+        let [x, y] = [0, 1].map(FreeVariable::new);
+        let proof = ProofCertificate::new(vec![
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: x,
+            },
+            ProofStep::UniversalInstantiation {
+                variable: x,
+                replacement: y,
+                body: Formula::equal(x, x).into(),
+            },
+            ProofStep::ModusPonens {
+                premise: 1,
+                implication: 2,
+            },
+        ])
+        .unwrap()
+        .into_unchecked_normal_form();
+        let site = proof.certificate().steps().len() - 1;
+        assert!(Projection::with_instantiations(&proof, &[site]).is_ok());
+        assert!(matches!(
+            Projection::with_instantiations(&proof, &[site, site]),
+            Err(ProjectionFailure::ReferencedInstantiation)
         ));
     }
 }
