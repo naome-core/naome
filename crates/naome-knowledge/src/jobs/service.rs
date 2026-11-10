@@ -14,6 +14,14 @@ fn lanes() -> [usize; 4] {
     crate::resources::limits().workers
 }
 
+fn requires_native_model(record: &Record) -> bool {
+    record.provider == crate::learning::PROVIDER
+        && matches!(
+            record.input,
+            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
+        )
+}
+
 #[derive(Clone)]
 pub(crate) struct Recovery {
     pub next_cursor: u64,
@@ -258,6 +266,7 @@ impl Owner {
             .await
             .unwrap_or_else(|_| Err(crate::ResearchFailure::DriverPanic.into()));
         let cleanup = self.stop_all().await;
+        crate::resources::feedback::jobs([0; 4], [0; 4], 0);
 
         combine_outcomes(result, cleanup)
     }
@@ -1033,6 +1042,25 @@ impl Owner {
         if reply.is_closed() {
             return Ok(());
         }
+        if binding.catalog.is_some()
+            && (!self.settings.native_proof_learning
+                || binding.cooperative
+                || !matches!(input, Input::Solve { .. })
+                || !required.is_empty()
+                || !prerequisites.is_empty())
+        {
+            reject(reply, binding, AdmissionFailure::PrerequisitesNotRetained);
+            return Ok(());
+        }
+        if self.journal.records.values().any(|record| {
+            (binding.catalog.is_some() || record.binding.catalog.is_some())
+                && record.input == input
+                && !record.acknowledged
+                && record.binding != binding
+        }) {
+            reject(reply, binding, AdmissionFailure::InFlightPrerequisites);
+            return Ok(());
+        }
         if !required.is_empty() || !prerequisites.is_empty() {
             if !matches!(input, Input::Solve { .. })
                 || self
@@ -1348,18 +1376,36 @@ impl Owner {
         Ok(Reservation::Granted)
     }
 
-    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), crate::Error> {
+    fn scheduling_feedback(&self) -> ([usize; 4], [usize; 4], u64) {
         let mut queued = [0; 4];
         let mut running = [0; 4];
+        let mut native = false;
         for record in self.journal.records.values() {
             if matches!(record.state, State::Queued | State::Suspended) {
                 queued[record.input.lane()] += 1;
+                native |= requires_native_model(record)
+                    && self
+                        .waiters
+                        .get(&record.id)
+                        .is_some_and(|waiters| waiters.iter().any(|waiter| !waiter.is_closed()));
             }
         }
         for id in self.running.keys() {
-            running[self.journal.records[id].input.lane()] += 1;
+            let record = &self.journal.records[id];
+            running[record.input.lane()] += 1;
+            native |= requires_native_model(record);
         }
-        crate::resources::feedback::jobs(queued, running);
+        let demand = if native {
+            crate::resources::limits().native_model_work_bytes as u64
+        } else {
+            0
+        };
+        (queued, running, demand)
+    }
+
+    fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), crate::Error> {
+        let (queued, running, demand) = self.scheduling_feedback();
+        crate::resources::feedback::jobs(queued, running, demand);
         let first_lane = self.next_lane;
         for offset in 0..lanes().len() {
             let lane = (first_lane + offset) % lanes().len();
@@ -1392,13 +1438,12 @@ impl Owner {
                 let Some(computation) = self.computation.try_enter() else {
                     break;
                 };
-                let model_memory = if self.journal.records.get(&id).is_some_and(|r| {
-                    r.provider == crate::learning::PROVIDER
-                        && matches!(
-                            r.input,
-                            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
-                        )
-                }) {
+                let model_memory = if self
+                    .journal
+                    .records
+                    .get(&id)
+                    .is_some_and(requires_native_model)
+                {
                     match crate::resources::MemoryLease::acquire(
                         crate::resources::limits().native_model_work_bytes,
                     ) {

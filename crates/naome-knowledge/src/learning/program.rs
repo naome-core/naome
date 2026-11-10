@@ -122,7 +122,7 @@ impl Candidate {
         if !self.native_scope {
             return Ok(solution.helpers.clone());
         }
-        use naome_proof::{ArtifactId, ArtifactPayload, DefinitionId};
+        use naome_proof::{ArtifactId, ArtifactPayload};
         let mut needed = self
             .commands
             .iter()
@@ -130,10 +130,7 @@ impl Candidate {
                 Command::ProofReference { proof_id } => {
                     Some(ArtifactId::from(ProofId::from_bytes(*proof_id)))
                 }
-                Command::DefinedRelation { definition_id, .. } => {
-                    Some(ArtifactId::from(DefinitionId::from_bytes(*definition_id)))
-                }
-                _ => None,
+                _ => command.definition_reference().map(ArtifactId::from),
             })
             .collect::<std::collections::BTreeSet<_>>();
         if needed.is_empty() {

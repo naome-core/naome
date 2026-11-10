@@ -3,10 +3,16 @@ use super::*;
 use naome_foundation::graph::Node as FormulaNode;
 use naome_proof::{
     ProofFormula,
-    program::{Command, Projection, ScopedAction},
+    program::{Command, Projection, SCOPE_ASSUMPTIONS, ScopedAction},
 };
 
+pub(crate) mod cut;
+mod demand;
+
 const ACTIONS: usize = 8;
+const FACTS: usize = 32;
+const OFFERS: usize = 16;
+const GENERAL_ASSUMPTIONS: usize = 8;
 
 struct Scope {
     binders: Vec<FreeVariable>,
@@ -42,7 +48,7 @@ impl Scope {
             goal = result;
         }
         if assumptions.is_empty()
-            || assumptions.len() > 8
+            || assumptions.len() > SCOPE_ASSUMPTIONS.min(FACTS)
             || !assumptions
                 .iter()
                 .any(|f| matches!(f.view().graph_node(), FormulaNode::ForAll(_)))
@@ -54,6 +60,27 @@ impl Scope {
             assumptions,
             goal,
         }))
+    }
+
+    fn offers(&self, facts: &[Formula]) -> (Vec<(ScopedAction, Formula)>, bool) {
+        let demanded = demand::offers(&self.goal, facts);
+        if self.assumptions.len() > GENERAL_ASSUMPTIONS {
+            return (demanded, true);
+        }
+        if demanded.is_empty() {
+            return (self.general_offers(facts), false);
+        }
+        // Keep the existing scored menu for a closing step already offered
+        // at the start of an ordinary narrow scope.
+        if facts.len() == self.assumptions.len() && demanded[0].1 == self.goal {
+            let general = self.general_offers(facts);
+            if general.iter().any(|(action, result)| {
+                result == &self.goal && demanded.iter().any(|(candidate, _)| candidate == action)
+            }) {
+                return (general, false);
+            }
+        }
+        (demanded, true)
     }
 
     fn program(
@@ -127,7 +154,7 @@ impl Scope {
         }
     }
 
-    fn offers(&self, facts: &[Formula]) -> Vec<(ScopedAction, Formula)> {
+    fn general_offers(&self, facts: &[Formula]) -> Vec<(ScopedAction, Formula)> {
         let mut offered = Vec::new();
         let mut variables = self.goal.free_variables();
         for fact in facts {
@@ -199,10 +226,14 @@ impl Scope {
                 self.goal.clone(),
             ));
         }
-        // Ensure a closing inference stays available even when there are
-        // more legal instances than the model's existing decision envelope.
-        offered.sort_by_key(|(_, result)| *result != self.goal);
-        offered.truncate(16);
+        // Preserve closing and immediately applicable inferences when bare
+        // instances compete for the bounded decision menu.
+        offered.sort_by_key(|(action, result)| {
+            let bare =
+                matches!(action, ScopedAction::Instantiate { premises, .. } if premises.is_empty());
+            (*result != self.goal, bare)
+        });
+        offered.truncate(OFFERS);
         offered
     }
 
@@ -211,47 +242,67 @@ impl Scope {
         facts: &[Formula],
         offers: &[(ScopedAction, Formula)],
         expert: usize,
+        compact: bool,
     ) -> Decision {
+        let mut candidates: Vec<_> = offers
+            .iter()
+            .map(|(action, result)| {
+                let (rule, premises) = match action {
+                    ScopedAction::Instantiate {
+                        universal,
+                        premises,
+                        ..
+                    } => (
+                        Rule::UniversalInstance,
+                        std::iter::once(*universal)
+                            .chain(premises.iter().copied())
+                            .map(|i| i as usize)
+                            .collect(),
+                    ),
+                    ScopedAction::Conjoin { left, right } => (
+                        Rule::ConstructionPlan,
+                        vec![*left as usize, *right as usize],
+                    ),
+                };
+                Candidate {
+                    rule,
+                    premises,
+                    replacement: match action {
+                        ScopedAction::Instantiate { replacement, .. } => {
+                            Some(FreeVariable::new(*replacement))
+                        }
+                        ScopedAction::Conjoin { .. } => None,
+                    },
+                    consequences: vec![result.clone()],
+                }
+            })
+            .collect();
+        let positions = if compact {
+            candidates
+                .iter()
+                .flat_map(|candidate| candidate.premises.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            (0..facts.len()).collect()
+        };
+        if compact {
+            for candidate in &mut candidates {
+                for premise in &mut candidate.premises {
+                    *premise = positions.binary_search(premise).expect("offered operand");
+                }
+            }
+        }
         Decision {
             goal: self.goal.clone(),
-            context: facts
-                .iter()
-                .cloned()
-                .map(|formula| Binding { formula })
-                .collect(),
-            candidates: offers
-                .iter()
-                .map(|(action, result)| {
-                    let (rule, premises) = match action {
-                        ScopedAction::Instantiate {
-                            universal,
-                            premises,
-                            ..
-                        } => (
-                            Rule::UniversalInstance,
-                            std::iter::once(*universal)
-                                .chain(premises.iter().copied())
-                                .map(|i| i as usize)
-                                .collect(),
-                        ),
-                        ScopedAction::Conjoin { left, right } => (
-                            Rule::ConstructionPlan,
-                            vec![*left as usize, *right as usize],
-                        ),
-                    };
-                    Candidate {
-                        rule,
-                        premises,
-                        replacement: match action {
-                            ScopedAction::Instantiate { replacement, .. } => {
-                                Some(FreeVariable::new(*replacement))
-                            }
-                            ScopedAction::Conjoin { .. } => None,
-                        },
-                        consequences: vec![result.clone()],
-                    }
+            context: positions
+                .into_iter()
+                .map(|position| Binding {
+                    formula: facts[position].clone(),
                 })
                 .collect(),
+            candidates,
             expert,
         }
     }
@@ -269,20 +320,18 @@ pub(in crate::learning) fn lemma_closes(
     let Some(scope) = Scope::open_with(target, Some(lemma))? else {
         return Ok(false);
     };
-    Ok(scope
-        .offers(&scope.assumptions)
-        .into_iter()
-        .any(|(action, result)| {
-            result == scope.goal
-                && match action {
-                    ScopedAction::Instantiate {
-                        universal,
-                        premises,
-                        ..
-                    } => universal == 0 || premises.contains(&0),
-                    ScopedAction::Conjoin { left, right } => left == 0 || right == 0,
-                }
-        }))
+    let (offered, _) = scope.offers(&scope.assumptions);
+    Ok(offered.into_iter().any(|(action, result)| {
+        result == scope.goal
+            && match action {
+                ScopedAction::Instantiate {
+                    universal,
+                    premises,
+                    ..
+                } => universal == 0 || premises.contains(&0),
+                ScopedAction::Conjoin { left, right } => left == 0 || right == 0,
+            }
+    }))
 }
 
 pub(in crate::learning) fn search(
@@ -377,18 +426,19 @@ fn search_scope(
 ) -> Result<(Option<Vec<ScopedAction>>, usize), crate::Error> {
     let mut facts = scope.assumptions.clone();
     let mut actions = Vec::new();
-    for _ in 0..maximum.min(ACTIONS) {
+    let allowance = maximum.min(ACTIONS).min(FACTS - facts.len());
+    for _ in 0..allowance {
         if started.elapsed() >= Duration::from_millis(2500) {
             break;
         }
-        let offered = scope.offers(&facts);
+        let (offered, compact) = scope.offers(&facts);
         if offered.is_empty() {
             break;
         }
         let selected = if offered.len() == 1 || offered[0].1 == scope.goal {
             0
         } else {
-            let scores = match ranker.scores(&scope.decision(&facts, &offered, 0)) {
+            let scores = match ranker.scores(&scope.decision(&facts, &offered, 0, compact)) {
                 Ok(scores) => scores,
                 Err(crate::Error::LearningGraph(crate::LearningGraphFailure::Capacity)) => break,
                 Err(error) => return Err(error),
@@ -419,7 +469,9 @@ pub(super) fn compile(
         Scope::open(target)?.ok_or(crate::ResearchFailure::ScopeTraceTarget)?,
         target,
         actions,
-    )?;
+        false,
+    )?
+    .ok_or(crate::ResearchFailure::ScopeReplayOperand)?;
     let result = scope.assumptions.len() + actions.len() - 1;
     let mut term = deduce(&scope.assumptions, actions, result as u32)?;
     for variable in scope.binders.into_iter().rev() {
@@ -432,33 +484,39 @@ fn decision_graphs(
     scope: Scope,
     target: &Formula,
     actions: &[ScopedAction],
-) -> Result<(Scope, Vec<Graph>), crate::Error> {
-    if actions.is_empty() || actions.len() > ACTIONS {
-        return Err(crate::ResearchFailure::ScopeTraceCapacity.into());
+    checked_reference: bool,
+) -> Result<Option<(Scope, Vec<Graph>)>, crate::Error> {
+    if actions.is_empty() || actions.len() > ACTIONS.min(FACTS - scope.assumptions.len()) {
+        return Ok(None);
     }
     let mut facts = scope.assumptions.clone();
     let mut graphs = Vec::new();
     let target_bytes = target.encode_canonical().map_err(crate::Error::from)?;
     for (offset, action) in actions.iter().enumerate() {
-        let mut offered = scope.offers(&facts);
+        let (mut offered, compact) = scope.offers(&facts);
         let selected = if let Some(index) = offered.iter().position(|(choice, _)| choice == action)
         {
             index
-        } else {
-            // A checked program supplies the action, even when the current
-            // search policy would prune it. These are local labels only.
+        } else if checked_reference {
+            // A replayed citation supplies the checked action when its
+            // operands are outside the bounded search menu.
             let result = scope
                 .apply(&facts, action)
                 .ok_or(crate::ResearchFailure::ScopeReplayOperand)?;
             offered.truncate(15);
             offered.push((action.clone(), result));
             offered.len() - 1
+        } else {
+            return Ok(None);
         };
         if offered.len() > 1 {
-            match Graph::encode(&scope.decision(&facts, &offered, selected)) {
+            match Graph::encode(&scope.decision(&facts, &offered, selected, compact)) {
                 Ok(mut graph) => {
                     graph.binding = super::super::digest(&(&target_bytes, &actions[..offset]));
                     graphs.push(graph);
+                }
+                Err(crate::LearningGraphFailure::Capacity) if !checked_reference => {
+                    return Ok(None);
                 }
                 Err(
                     crate::LearningGraphFailure::Capacity
@@ -472,7 +530,7 @@ fn decision_graphs(
     if facts.last() != Some(&scope.goal) {
         return Err(crate::ResearchFailure::ScopeConclusion.into());
     }
-    Ok((scope, graphs))
+    Ok(Some((scope, graphs)))
 }
 
 pub(crate) fn program_graphs(
@@ -492,7 +550,8 @@ pub(crate) fn program_graphs(
     if let Some(scope) = Scope::open(target)?
         && scope.program(actions, &[]).as_deref() == Some(records)
     {
-        return Ok(decision_graphs(scope, target, actions)?.1);
+        return Ok(decision_graphs(scope, target, actions, false)?
+            .map_or_else(Vec::new, |(_, graphs)| graphs));
     }
     let mut references = records.iter().filter_map(|record| match record {
         Command::ProofReference { proof_id } => Some(naome_proof::ProofId::from_bytes(*proof_id)),
@@ -519,7 +578,8 @@ pub(crate) fn program_graphs(
     if let Some(scope) = Scope::open_with(target, Some(formula.as_ref()))?
         && scope.program(actions, &[reference]).as_deref() == Some(records)
     {
-        return Ok(decision_graphs(scope, target, actions)?.1);
+        return Ok(decision_graphs(scope, target, actions, true)?
+            .map_or_else(Vec::new, |(_, graphs)| graphs));
     }
     Ok(Vec::new())
 }

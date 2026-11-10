@@ -43,7 +43,12 @@ impl Governor {
         pressure: Pressure,
         now: Instant,
     ) -> Result<Snapshot, crate::Error> {
-        let mut next = Snapshot::derive(selection, observed, capacity)?;
+        let mut next = Snapshot::derive_with_demand(
+            selection,
+            observed,
+            capacity,
+            statistics.native_memory_demand,
+        )?;
         let quantum = super::super::limits().transport_busy_grace;
         if let Some((before_time, before, previous)) = &self.previous {
             let elapsed = now

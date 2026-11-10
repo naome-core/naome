@@ -1,10 +1,10 @@
 use super::{Axiom, Command, ScopedAction};
 use crate::{
-    ProofFormula, ProofNormalForm, ProofStep,
+    DefinedFormula, DefinitionId, ProofFormula, ProofNormalForm, ProofStep,
     defined_formula::{Node as Defined, Variable as DefinedVariable},
 };
 use naome_foundation::{FormulaView, FreeVariable, ZfcAxiom};
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 
 /// A rejected structural projection of an inference recipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,13 +54,14 @@ impl Projection {
     ) -> Result<Self, ProjectionFailure> {
         let steps = proof.certificate().steps();
         let uses = reference_counts(steps)?;
-        Self::lower_steps(steps, &uses, sites.iter().copied())
+        Self::lower_steps(steps, &uses, sites.iter().copied(), &BTreeMap::new())
     }
 
     fn lower_steps(
         steps: &[ProofStep],
         uses: &[usize],
         sites: impl IntoIterator<Item = usize>,
+        authored: &BTreeMap<DefinitionId, DefinedFormula>,
     ) -> Result<Self, ProjectionFailure> {
         let mut omitted = vec![false; steps.len()];
         let mut folds = vec![None; steps.len()];
@@ -86,7 +87,10 @@ impl Projection {
             folds[site] = Some((axiom, *premise as usize, *replacement));
         }
 
-        let mut builder = Builder::default();
+        let mut builder = Builder {
+            authored: Some(authored),
+            ..Builder::default()
+        };
         let mut results = vec![StepResult::Result(0); steps.len()];
         let mut handles = vec![0; steps.len()];
         for (index, step) in steps.iter().enumerate() {
@@ -123,6 +127,15 @@ impl Projection {
     /// Lower an untrusted, dependency-ordered inference recipe directly into
     /// typed commands. The independent program checker validates the result.
     pub fn from_inference_steps(steps: &[ProofStep]) -> Result<Self, ProjectionFailure> {
+        Self::from_authored_steps(steps, &BTreeMap::new())
+    }
+
+    /// Lower a recipe with formal bodies for selected composed definitions.
+    /// Each supplied body is used only where the recipe applies that definition.
+    pub fn from_authored_steps(
+        steps: &[ProofStep],
+        authored: &BTreeMap<DefinitionId, DefinedFormula>,
+    ) -> Result<Self, ProjectionFailure> {
         let uses = reference_counts(steps)?;
         let sites = steps.iter().enumerate().filter_map(|(index, step)| {
             let ProofStep::ModusPonens { implication, .. } = step else {
@@ -133,7 +146,7 @@ impl Projection {
                 if uses[axiom] == 1 && body.as_defined().is_none())
             .then_some(index)
         });
-        Self::lower_steps(steps, &uses, sites)
+        Self::lower_steps(steps, &uses, sites, authored)
     }
 
     /// Build one scoped deduction, exposing only its discharged conclusion.
@@ -226,12 +239,13 @@ fn reference_counts(steps: &[ProofStep]) -> Result<Vec<usize>, ProjectionFailure
 }
 
 #[derive(Default)]
-struct Builder {
+struct Builder<'a> {
+    authored: Option<&'a BTreeMap<DefinitionId, DefinedFormula>>,
     commands: Vec<Command>,
     formulas: HashMap<Command, u64>,
 }
 
-impl Builder {
+impl Builder<'_> {
     fn push(&mut self, command: Command) -> u64 {
         let position = self.commands.len() as u64;
         self.commands.push(command);
@@ -259,6 +273,7 @@ impl Builder {
                     .expect("definition-aware formula")
                     .graph_root(),
                 0,
+                self.authored,
             )
         }
     }
@@ -268,7 +283,12 @@ impl Builder {
         self.intern(Command::Graph { node })
     }
 
-    fn defined(&mut self, formula: &Defined, depth: u32) -> u64 {
+    fn defined(
+        &mut self,
+        formula: &Defined,
+        depth: u32,
+        authored: Option<&BTreeMap<DefinitionId, DefinedFormula>>,
+    ) -> u64 {
         let term = |variable| match variable {
             DefinedVariable::Free(id) => id.identifier(),
             DefinedVariable::Bound(index) => bound_identifier(depth, index),
@@ -283,23 +303,34 @@ impl Builder {
                 set: term(*set),
             },
             Defined::Not(body) => Command::Not {
-                formula: self.defined(body, depth),
+                formula: self.defined(body, depth, authored),
             },
             Defined::Implies(left, right) => Command::Implies {
-                antecedent: self.defined(left, depth),
-                consequent: self.defined(right, depth),
+                antecedent: self.defined(left, depth, authored),
+                consequent: self.defined(right, depth, authored),
             },
             Defined::ForAll(body) => Command::ForAll {
                 variable: binder(depth),
-                body: self.defined(body, depth + 1),
+                body: self.defined(body, depth + 1, authored),
             },
             Defined::DefinedRelation {
                 definition_id,
                 arguments,
-            } => Command::DefinedRelation {
-                definition_id: *definition_id.as_bytes(),
-                arguments: arguments.iter().copied().map(term).collect(),
-            },
+            } => {
+                let arguments = arguments.iter().copied().map(term).collect();
+                if let Some(body) = authored.and_then(|bodies| bodies.get(definition_id)) {
+                    Command::AuthoredRelation {
+                        definition_id: *definition_id.as_bytes(),
+                        arguments,
+                        body: self.defined(body.graph_root(), 0, None),
+                    }
+                } else {
+                    Command::DefinedRelation {
+                        definition_id: *definition_id.as_bytes(),
+                        arguments,
+                    }
+                }
+            }
         };
         self.intern(command)
     }

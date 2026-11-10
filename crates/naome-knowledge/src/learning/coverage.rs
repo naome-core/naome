@@ -35,8 +35,13 @@ enum Feature {
 }
 // One quarter of each existing replay share bounds structural metadata.
 // The filter is a lossy selection proxy: collisions can hide distinct features.
-// Complete trajectories, native identities and admission never use this filter.
+// Native programs append an exact support digest to the fixed filter.
 const PROFILE_BYTES: usize = 32 * 1024 / (4 * super::REPLAY);
+const SUPPORT_BYTES: usize = 32;
+
+fn profile_width(bytes: usize) -> bool {
+    bytes == PROFILE_BYTES || bytes == PROFILE_BYTES + SUPPORT_BYTES
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
@@ -48,20 +53,20 @@ mod packed {
     use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        if bytes.len() != super::PROFILE_BYTES {
+        if !super::profile_width(bytes.len()) {
             return Err(serde::ser::Error::custom("replay coverage capacity"));
         }
         STANDARD_NO_PAD.encode(bytes).serialize(serializer)
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
         let value = String::deserialize(deserializer)?;
-        if value.len() > (4 * super::PROFILE_BYTES).div_ceil(3) {
+        if value.len() > (4 * (super::PROFILE_BYTES + super::SUPPORT_BYTES)).div_ceil(3) {
             return Err(serde::de::Error::custom("replay coverage capacity"));
         }
         let bytes = STANDARD_NO_PAD
             .decode(value)
             .map_err(serde::de::Error::custom)?;
-        if bytes.len() != super::PROFILE_BYTES {
+        if !super::profile_width(bytes.len()) {
             return Err(serde::de::Error::custom("replay coverage width"));
         }
         Ok(bytes)
@@ -73,16 +78,18 @@ std::thread_local! {
 }
 impl Profile {
     pub fn validate(&self) -> Result<(), crate::Error> {
-        if self.bits.len() != PROFILE_BYTES
-            || self.features == 0
+        if !profile_width(self.bits.len()) {
+            return Err(crate::ResearchFailure::CoverageFilterInvalid.into());
+        }
+        let filter = &self.bits[..PROFILE_BYTES];
+        if self.features == 0
             || self.features > crate::resources::limits().closure_steps
-            || self
-                .bits
+            || filter
                 .iter()
                 .map(|byte| byte.count_ones() as usize)
                 .sum::<usize>()
                 > self.features
-            || self.bits.iter().all(|byte| *byte == 0)
+            || filter.iter().all(|byte| *byte == 0)
         {
             return Err(crate::ResearchFailure::CoverageFilterInvalid.into());
         }
@@ -165,6 +172,8 @@ impl Profile {
             branches(&core, &mut features);
             search::compile(target, &core)?.1
         };
+        let program_support =
+            matches!(example.tree, search::Tree::Program(_)).then(|| program_support(&graphs));
         // Canonical traversal preserves shared variables and binder backlinks.
         // Irrelevant context, offered alternatives and artifact IDs are omitted.
         for graph in graphs {
@@ -190,6 +199,9 @@ impl Profile {
                 % (PROFILE_BYTES * 8);
             profile.bits[index / 8] |= 1 << (index % 8);
         }
+        if let Some(support) = program_support {
+            profile.bits.extend_from_slice(&support);
+        }
         profile.validate()?;
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
@@ -200,6 +212,18 @@ impl Profile {
         });
         Ok(profile)
     }
+    pub(super) fn has_program_support(
+        example: &Example,
+        expected: &[u8; SUPPORT_BYTES],
+    ) -> Result<bool, crate::Error> {
+        match example.tree {
+            search::Tree::Program(_) | search::Tree::Stored { .. } => {
+                Ok(Self::of(example)?.bits.get(PROFILE_BYTES..) == Some(expected))
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Unique occupied filter bits, not an exact count of proof strategies.
     pub fn losses(profiles: &[Self], anchors: &[Self]) -> Vec<usize> {
         let mut counts = [0usize; PROFILE_BYTES * 8];
@@ -222,6 +246,23 @@ impl Profile {
             .collect()
     }
 }
+/// Native programs supply single-decision labels. The model receives the
+/// ordered graph inputs and witnessed action indices, while program positions
+/// and proof identities belong to provenance.
+pub(super) fn program_support(graphs: &[Graph]) -> [u8; SUPPORT_BYTES] {
+    use sha2::{Digest, Sha256};
+
+    let mut support = BTreeMap::<String, BTreeSet<usize>>::new();
+    for graph in graphs {
+        let input = digest(&(&graph.nodes, graph.goal, &graph.context, &graph.candidates));
+        support
+            .entry(input)
+            .or_default()
+            .extend(graph.successes.iter().copied());
+    }
+    Sha256::digest(serde_json::to_vec(&support).expect("serializable program support")).into()
+}
+
 fn structure(graph: &Graph, roots: &[usize]) -> Result<Vec<(i32, usize, usize)>, crate::Error> {
     fn visit(
         graph: &Graph,

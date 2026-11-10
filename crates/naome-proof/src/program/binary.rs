@@ -214,8 +214,18 @@ pub(super) fn write_command(command: &Command, out: &mut Vec<u8>) -> Result<(), 
         Command::DefinedRelation {
             definition_id,
             arguments,
+        }
+        | Command::AuthoredRelation {
+            definition_id,
+            arguments,
+            ..
         } => {
-            out.push(0x05);
+            let authored = if let Command::AuthoredRelation { body, .. } = command {
+                Some(*body)
+            } else {
+                None
+            };
+            out.push(if authored.is_some() { 0x1e } else { 0x05 });
             out.extend_from_slice(definition_id);
             if arguments.len() > crate::DEFINITION_MAX_GRAPH_ARITY as usize {
                 return Err(CodecFailure::DefinitionArguments);
@@ -223,6 +233,9 @@ pub(super) fn write_command(command: &Command, out: &mut Vec<u8>) -> Result<(), 
             put_integer(out, arguments.len() as u64);
             for &argument in arguments {
                 put_integer(out, u64::from(argument));
+            }
+            if let Some(body) = authored {
+                put_integer(out, body);
             }
         }
         Command::Equal { left, right } => {
@@ -512,6 +525,11 @@ pub(super) fn read_command(input: &mut Reader<'_>) -> Result<Command, CodecFailu
         },
         0x1d => Command::Seal {
             proof: input.integer()?,
+        },
+        0x1e => Command::AuthoredRelation {
+            definition_id: input.fixed()?,
+            arguments: input.arguments()?,
+            body: input.integer()?,
         },
         _ => return Err(CodecFailure::Opcode),
     })

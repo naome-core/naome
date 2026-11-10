@@ -43,6 +43,32 @@ fn fixture(units: u32) -> (Directory, Owner) {
     )
 }
 
+#[test]
+fn native_memory_demand_follows_live_waiters_and_admitted_work() {
+    let (_directory, mut owner) = fixture(2);
+    let demand = crate::resources::limits().native_model_work_bytes as u64;
+    let ticket = submit(&mut owner, 1);
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.provider = crate::learning::PROVIDER.to_owned();
+    record.state = State::Suspended;
+    assert_eq!(owner.scheduling_feedback().2, demand);
+
+    drop(ticket);
+    assert_eq!(owner.scheduling_feedback().2, 0);
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    owner.running.insert(
+        1,
+        Running {
+            cancel: None,
+            clock: Instant::now(),
+        },
+    );
+    assert_eq!(owner.scheduling_feedback().2, demand);
+    owner.running.remove(&1);
+    owner.journal.records.get_mut(&1).unwrap().state = State::Complete;
+    assert_eq!(owner.scheduling_feedback().2, 0);
+}
+
 #[cfg(feature = "developer-tools")]
 #[test]
 fn streamed_candidate_groups_keep_original_reservations_and_survive_restart() {

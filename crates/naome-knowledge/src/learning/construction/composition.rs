@@ -3,6 +3,9 @@ use super::{logic, proof};
 use naome_foundation::Formula;
 use std::{collections::BTreeSet, time::Instant};
 
+mod cuts;
+pub(crate) use cuts::closed_cut_routes;
+
 pub fn used(verified: &proof::Verified, inputs: &[String]) -> Result<Vec<String>, crate::Error> {
     let context = proof::lemma_context(&verified.definitions, &verified.lemmas)?;
     let mut ids = context
@@ -336,13 +339,63 @@ pub(crate) fn construct_term(
 ) -> Result<(Option<proof::Term>, usize), crate::Error> {
     let maximum = maximum.min(16);
     let mut context = context.to_vec();
-    let deduction_work = deductions(target, &mut context, maximum, started)?;
+    let deduction_work = if context
+        .iter()
+        .any(|term| matches!(term, proof::Term::CheckedInput(..)))
+    {
+        // Checked program references need their program context. The
+        // certificate-only obligation prepass cannot verify them in isolation.
+        0
+    } else {
+        deductions(target, &mut context, maximum, started)?
+    };
     let mut search = logic::Search::new(maximum.saturating_sub(deduction_work), started);
     if native {
         search = search.native();
     }
     let term = search.prove(target, &context)?;
     Ok((term, deduction_work + search.work))
+}
+
+/// Recheck an independently established, self-contained cut against the exact
+/// job target. Its proof stays inside the emitted native program.
+pub(in crate::learning) fn known_cut(
+    target: &Formula,
+    source: &[u8],
+    maximum: usize,
+    started: Instant,
+) -> Result<(Option<super::ProgramCandidate>, usize), crate::Error> {
+    use naome_proof::{ProofCertificate, ProofStep};
+    if maximum < 2 {
+        return Ok((None, 0));
+    }
+    let certificate = ProofCertificate::from_canonical_bytes(source)
+        .map_err(|error| crate::object::certificate_error(source, error))?;
+    let verified = proof::verify_native(certificate, Vec::new(), Vec::new(), None)?;
+    if !closed_cut_routes(target, true).contains(&verified.target) {
+        return Err(crate::ResearchFailure::InternalCutTargetMismatch.into());
+    }
+    let source = verified.native_id;
+    let term = proof::Term::Native {
+        certificate: verified.certificate,
+        lemmas: Vec::new(),
+        definitions: Vec::new(),
+        target: verified.target,
+    };
+    let (closed, work) = construct_term(target, &[term], maximum - 1, started, true)?;
+    let Some(closed) = closed else {
+        return Ok((None, work + 1));
+    };
+    let recipe = proof::recipe(&closed, target)?;
+    if !recipe
+        .steps
+        .iter()
+        .any(|step| matches!(step, ProofStep::ProofReference { proof_id } if *proof_id == source))
+    {
+        return Ok((None, work + 1));
+    }
+    let candidate = super::program_from_recipe_with_inputs(target, recipe, &[], [], Some(source))?;
+    Ok((Some(candidate), work + 1))
 }
 
 #[cfg(test)]

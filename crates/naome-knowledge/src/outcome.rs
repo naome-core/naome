@@ -147,7 +147,7 @@ codes! {
         CommandRead = 7,
         IdentityWidth = 8, HexWidth = 9, HexNoncanonical = 10,
         PrerequisiteDuplicate = 11, PrerequisiteProgramInvalid = 12,
-        PrerequisiteOfferedProofMissing = 13,
+        InternalCutContext = 786, PrerequisiteOfferedProofMissing = 13,
         PrerequisiteNotClosed = 14, PrerequisiteObligationMissing = 15,
         RegularFileRequired = 16,
         RelayListenAddress = 17,
@@ -938,6 +938,7 @@ codes! {
         ConstructionScoreCount = 701, ConstructionScoreNonFinite = 702, ConstructionSourceNotClosed = 703, ConstructionSelectionIndex = 704, ConstructionMeaningMismatch = 705, ConstructionRootMissing = 706, ConstructionHelperForward = 707, ConstructionHelperWidth = 708, ConstructionRecipeEmpty = 709, ConstructionRecipeRootMismatch = 710,
         RepairDeadline = 711, RepairWorkAllowance = 712, RepairProtectedProof = 713, RepairHelperConclusion = 714, RepairProtectedHelper = 715, RepairRootConclusion = 716, RepairClosureCapacity = 717, PartitionFreshVariable = 718, PartitionBinderMissing = 719, PartitionReferenceMismatch = 720, PartitionConclusionMissing = 721, PartitionVariableInventory = 722, PartitionOriginMissing = 723, PartitionTargetMismatch = 724, PartitionArtifactCapacity = 725, PartitionReplayMismatch = 726, PartitionCutMissing = 727,
         FinderDescriptorShape = 728, FinderDescriptorBinding = 729, FinderPredictorWidth = 730, FinderUtilityWidth = 731, FinderPredictorWeight = 732, FinderUtilityWeight = 733, FinderObservationCounts = 734, FinderUtilityLabel = 735, FinderUtilityOverflow = 736, FinderReplayUtility = 737, FinderRehearsalOverflow = 738, FinderUpdateOverflow = 739, FinderSuccessOverflow = 740, FinderAttemptOverflow = 741, FinderSupportOverflow = 742, FinderRecipeInvalid = 743, FinderCurriculumCapacity = 744, FinderCurriculumCounts = 745, FinderRehearsalInvalid = 746, FinderCursorOverflow = 747, PeerSealMissing = 748, PeerOperandWidth = 749, PeerOperandOrder = 750, MeasurementScopeMismatch = 751, MeasurementCounterOverflow = 752,
+        InternalCutTargetMismatch = 753, DefinitionAuthorshipIdentity = 754,
     }
 
 }

@@ -29,6 +29,7 @@ diagnostic_codes! {
         ContextCorrupt = 0x0025_0011,
         ContextStorage = 0x0025_0012,
         TargetMismatch = 0x0025_0013,
+        DefinitionBodyMismatch = 0x0025_0015,
     }
 }
 

@@ -301,12 +301,7 @@ impl Closure {
                 Command::ProofReference { proof_id } => Some(ArtifactId::from_proof_id(
                     naome_proof::ProofId::from_bytes(*proof_id),
                 )),
-                Command::DefinedRelation { definition_id, .. } => {
-                    Some(ArtifactId::from_definition_id(
-                        naome_proof::DefinitionId::from_bytes(*definition_id),
-                    ))
-                }
-                _ => None,
+                _ => command.definition_reference().map(ArtifactId::from),
             };
             // Keep only the bounded unpublished closure. A program may cite
             // arbitrarily many committed facts; its canonical stream owns them.

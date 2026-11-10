@@ -1441,12 +1441,49 @@ impl Autonomous {
                     } else {
                         Vec::new()
                     };
-                    let inputs = match &self.frontier {
-                        Some(frontier) => frontier.solving_inputs(graph, &question, &required),
-                        None => graph
-                            .solving_inputs(&required, &[])
-                            .map(|inputs| (required, inputs.unwrap_or_default())),
-                    };
+                    let mut binding = context.binding();
+                    if let Some(frontier) = &self.frontier {
+                        match frontier.planned_catalog_retry(graph, &question, &required) {
+                            Ok(catalog) => binding.catalog = catalog,
+                            Err(error) if error.fatal() => {
+                                self.error = Some(error);
+                                self.retain(question);
+                                return accepted;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    let inputs = (|| -> Result<_, crate::Error> {
+                        if binding.catalog.is_some() {
+                            return Ok((Vec::new(), Default::default()));
+                        }
+                        let Some(frontier) = &self.frontier else {
+                            return graph
+                                .solving_inputs(&required, &[])
+                                .map(|inputs| (required, inputs.unwrap_or_default()));
+                        };
+                        let (required, prerequisites) =
+                            frontier.solving_inputs(graph, &question, &required)?;
+                        if !required.is_empty() || !prerequisites.is_empty() {
+                            return Ok((required, prerequisites));
+                        }
+                        for cut in frontier.local_cut_candidates(&question)? {
+                            let assessed = questions.assess(graph, &cut);
+                            if assessed.reason
+                                == Some(naome_checker::question::RejectionReason::KnownProof)
+                                && let Some(witness) = assessed.deduction
+                                && witness.original_proofs().is_empty()
+                                && witness.canonical_certificate().len()
+                                    <= crate::learning::knowledge::BYTES
+                            {
+                                let input = crate::learning::Prerequisites::internal_cut(
+                                    witness.canonical_certificate().to_vec(),
+                                )?;
+                                return Ok((required, input));
+                            }
+                        }
+                        Ok((required, prerequisites))
+                    })();
                     let (required, prerequisites) = match inputs {
                         Ok(selected) => selected,
                         Err(error) => {
@@ -1457,11 +1494,30 @@ impl Autonomous {
                             return accepted;
                         }
                     };
-                    if !required.is_empty() || !question.dependencies().is_empty() {
+                    if binding.catalog.is_none()
+                        && required.is_empty()
+                        && prerequisites.is_empty()
+                        && let Some(frontier) = &self.frontier
+                    {
+                        match frontier.catalog_retry(graph, &question) {
+                            Ok(catalog) => binding.catalog = catalog,
+                            Err(error) if error.fatal() => {
+                                self.error = Some(error);
+                                self.retain(question);
+                                return accepted;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    if !required.is_empty()
+                        || !question.dependencies().is_empty()
+                        || binding.catalog.is_some()
+                    {
                         emit(json!({
                             "event": crate::outcome::NodeEvent::FinderCheckedInputs,
                             "resolution_id": crate::hex(question.resolution_id()),
-                            "proofs": required,
+                            "proofs": required.iter().cloned().chain(binding.catalog.iter()
+                                .map(|source| crate::hex(source.proof_id().as_bytes()))).collect::<Vec<_>>(),
                             "definitions": question.dependencies().iter().map(|id| crate::hex(id.as_bytes())).collect::<Vec<_>>(),
                         }));
                     }
@@ -1486,7 +1542,7 @@ impl Autonomous {
                         };
                     match self.client.submit_after(
                         jobs::Input::Solve { question: solving },
-                        context.binding(),
+                        binding,
                         required,
                         prerequisites,
                     ) {

@@ -9,6 +9,7 @@ use std::{collections::BTreeSet, sync::Arc};
 struct Data {
     artifacts: Vec<Envelope>,
     programs: Vec<Packet>,
+    internal_cut: Option<Vec<u8>>,
     offered: Option<[u8; 32]>,
     #[serde(skip)]
     _memory: Option<Arc<crate::resources::MemoryLease>>,
@@ -26,8 +27,13 @@ impl Serialize for Prerequisites {
 impl<'de> Deserialize<'de> for Prerequisites {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let data = Data::deserialize(deserializer)?;
-        Self::from_inputs(data.artifacts, data.programs, data.offered)
-            .map_err(serde::de::Error::custom)
+        Self::from_parts(
+            data.artifacts,
+            data.programs,
+            data.offered,
+            data.internal_cut,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 impl Prerequisites {
@@ -41,10 +47,28 @@ impl Prerequisites {
         programs: Vec<Packet>,
         offered: Option<[u8; 32]>,
     ) -> Result<Self, crate::Error> {
+        Self::from_parts(artifacts, programs, offered, None)
+    }
+
+    pub(crate) fn internal_cut(certificate: Vec<u8>) -> Result<Self, crate::Error> {
+        Self::from_parts(Vec::new(), Vec::new(), None, Some(certificate))
+    }
+
+    pub(super) fn cut_certificate(&self) -> Option<&[u8]> {
+        self.0.internal_cut.as_deref()
+    }
+
+    fn from_parts(
+        artifacts: Vec<Envelope>,
+        programs: Vec<Packet>,
+        offered: Option<[u8; 32]>,
+        internal_cut: Option<Vec<u8>>,
+    ) -> Result<Self, crate::Error> {
         let mut value = Self(Arc::new(Data {
             artifacts,
             programs,
             offered,
+            internal_cut,
             _memory: None,
         }));
         value.validate()?;
@@ -55,6 +79,7 @@ impl Prerequisites {
             .map(Packet::retained_bytes)
             .sum::<usize>();
         let bytes = program_bytes
+            + value.cut_certificate().map_or(0, <[u8]>::len)
             + value
                 .0
                 .artifacts
@@ -68,14 +93,19 @@ impl Prerequisites {
         Ok(value)
     }
     pub fn is_empty(&self) -> bool {
-        self.0.artifacts.is_empty() && self.0.programs.is_empty()
+        self.0.artifacts.is_empty()
+            && self.0.programs.is_empty()
+            && self.cut_certificate().is_none()
     }
     pub fn contains_inputs(&self, requested: &Self) -> bool {
         requested
-            .0
-            .artifacts
-            .iter()
-            .all(|input| self.0.artifacts.contains(input))
+            .cut_certificate()
+            .is_none_or(|cut| self.cut_certificate() == Some(cut))
+            && requested
+                .0
+                .artifacts
+                .iter()
+                .all(|input| self.0.artifacts.contains(input))
             && requested
                 .0
                 .programs
@@ -93,7 +123,7 @@ impl Prerequisites {
             .any(|artifact| artifact.statement_id.is_none())
     }
     pub(crate) fn has_optional_context(&self) -> bool {
-        self.has_definitions() || self.has_offer()
+        self.has_definitions() || self.has_offer() || self.cut_certificate().is_some()
     }
 
     pub fn definitions(
@@ -121,6 +151,14 @@ impl Prerequisites {
         Ok(selected)
     }
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(certificate) = self.cut_certificate()
+            && (certificate.is_empty()
+                || certificate.len() > knowledge::BYTES
+                || !self.0.artifacts.is_empty()
+                || !self.0.programs.is_empty())
+        {
+            return Err(crate::InputFault::InternalCutContext.into());
+        }
         let limits = crate::resources::limits();
         let mut ids = BTreeSet::new();
         let mut bytes = self
@@ -194,6 +232,13 @@ impl Prerequisites {
         !self.0.programs.is_empty()
     }
 
+    pub(super) fn supplies_program(&self, id: &str) -> bool {
+        self.0
+            .programs
+            .iter()
+            .any(|packet| crate::hex(packet.manifest.proof_id().as_bytes()) == id)
+    }
+
     pub(super) fn has_offer(&self) -> bool {
         self.0.offered.is_some()
     }
@@ -263,10 +308,12 @@ impl Prerequisites {
         &self,
         target: &naome_foundation::Formula,
         required: &[String],
-    ) -> Result<Option<Packet>, crate::Error> {
+        maximum: usize,
+        started: std::time::Instant,
+    ) -> Result<(Option<super::construction::ProgramCandidate>, usize), crate::Error> {
         use naome_checker::ContextView;
         use naome_proof::{
-            ProofId,
+            ProofId, ProofStep,
             program::{Command, Projection},
         };
 
@@ -286,6 +333,9 @@ impl Prerequisites {
                 let formula = context
                     .proof_formula(header, header.canonical_length())?
                     .ok_or(crate::ResearchFailure::PeerPrerequisiteFormulaMissing)?;
+                if !formula.is_closed() {
+                    return Err(crate::InputFault::PrerequisiteNotClosed.into());
+                }
                 sources.push((id, formula.into_owned()));
             }
         }
@@ -295,42 +345,96 @@ impl Prerequisites {
                 .find(|(_, known)| known == formula)
                 .map(|(id, _)| *id)
         };
-        let commands = if let Some(id) = select(target) {
-            vec![
+        let direct = if let Some(id) = select(target) {
+            Some(vec![
                 Command::ProofReference {
                     proof_id: *id.as_bytes(),
                 },
                 Command::Seal { proof: 0 },
-            ]
-        } else {
-            let Some((left, right)) = super::conjunction_operands(target) else {
-                return Ok(None);
-            };
-            if left == right {
-                return Ok(None);
-            }
-            let (Some(left_id), Some(right_id)) = (select(&left), select(&right)) else {
-                return Ok(None);
-            };
+            ])
+        } else if let Some((left, right)) = super::conjunction_operands(target)
+            && left != right
+            && let (Some(left_id), Some(right_id)) = (select(&left), select(&right))
+        {
             let definitions = self.definitions(&[], required)?;
-            Projection::conjoin(&[
+            Some(Projection::conjoin(&[
                 (left_id, definitions::represent(&left, &definitions)?),
                 (right_id, definitions::represent(&right, &definitions)?),
-            ])
+            ]))
+        } else {
+            None
         };
         drop(context);
         drop(_work);
-        Packet::compose(
+        let artifacts = || artifacts.iter().map(|a| a.bytes.clone());
+        if let Some(commands) = direct {
+            let packet = Packet::compose(target, &commands, &self.0.programs, artifacts())?;
+            return Ok((
+                Some(super::construction::ProgramCandidate {
+                    packet,
+                    helpers: Vec::new(),
+                }),
+                1,
+            ));
+        }
+
+        let programs = self
+            .0
+            .programs
+            .iter()
+            .map(|packet| packet.manifest.proof_id())
+            .collect::<BTreeSet<_>>();
+        if (1..=2).contains(&sources.len())
+            && let Some(cut) = super::search::scope::cut::plan(target, sources.len(), |formula| {
+                select(formula).filter(|id| programs.contains(id))
+            })
+            && cut.work() <= maximum
+            && started.elapsed() < std::time::Duration::from_millis(2500)
+        {
+            let packet = Packet::compose(target, &cut.commands(), &self.0.programs, artifacts())?;
+            return Ok((
+                Some(super::construction::ProgramCandidate {
+                    packet,
+                    helpers: Vec::new(),
+                }),
+                cut.work(),
+            ));
+        }
+
+        if sources.iter().all(|(id, _)| !programs.contains(id)) {
+            return Ok((None, 0));
+        }
+        let terms = sources
+            .into_iter()
+            .map(|(id, formula)| proof::Term::CheckedInput(id, formula))
+            .collect::<Vec<_>>();
+        let (term, work) = super::construction::composition::construct_term(
+            target, &terms, maximum, started, true,
+        )?;
+        let Some(term) = term else {
+            return Ok((None, work));
+        };
+        let recipe = proof::recipe(&term, target)?;
+        if !recipe.steps.iter().any(|step| {
+            matches!(step, ProofStep::ProofReference { proof_id } if programs.contains(proof_id))
+        }) {
+            return Ok((None, work));
+        }
+        let candidate = super::construction::program_from_recipe_with_inputs(
             target,
-            &commands,
+            recipe,
             &self.0.programs,
-            artifacts.iter().map(|a| a.bytes.clone()),
-        )
-        .map(Some)
+            artifacts(),
+            None,
+        )?;
+        Ok((Some(candidate), work))
     }
 
     pub fn require(&self, base: &State, required: &[String]) -> Result<(), crate::Error> {
         self.validate()?;
+        if self.cut_certificate().is_some() && !required.is_empty() {
+            return Err(crate::InputFault::InternalCutContext.into());
+        }
         if required.len() > knowledge::CAPACITY
             || required.iter().collect::<BTreeSet<_>>().len() != required.len()
         {
@@ -340,11 +444,7 @@ impl Prerequisites {
         for id in required {
             let address = crate::hex(crate::object::proof_address(id)?.as_bytes());
             if !self.0.artifacts.iter().any(|a| a.artifact_id == address)
-                && !self
-                    .0
-                    .programs
-                    .iter()
-                    .any(|program| crate::hex(program.manifest.proof_id().as_bytes()) == *id)
+                && !self.supplies_program(id)
             {
                 missing.push(id.clone());
             }

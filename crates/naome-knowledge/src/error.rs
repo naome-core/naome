@@ -670,6 +670,7 @@ impl fmt::Display for Error {
                 InputFault::HexNoncanonical => "noncanonical hex",
                 InputFault::PrerequisiteDuplicate => "duplicate prerequisite",
                 InputFault::PrerequisiteProgramInvalid => "invalid prerequisite program",
+                InputFault::InternalCutContext => "invalid internal cut context",
                 InputFault::PrerequisiteOfferedProofMissing => {
                     "offered theorem absent from captured inputs"
                 }
@@ -2534,6 +2535,8 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::FinderRehearsalInvalid => "finder rehearsal identity or labels differ",
                 crate::ResearchFailure::MeasurementScopeMismatch => "native training scope changed within a job",
                 crate::ResearchFailure::MeasurementCounterOverflow => "native measurement counter overflow",
+                crate::ResearchFailure::InternalCutTargetMismatch => "internal cut does not match the requested proof path",
+                crate::ResearchFailure::DefinitionAuthorshipIdentity => "authored definition identity differs",
                 crate::ResearchFailure::PeerSealMissing => "peer program seal missing",
                 crate::ResearchFailure::PeerOperandWidth => "peer program operand width",
                 crate::ResearchFailure::PeerOperandOrder => "peer program operand order differs",

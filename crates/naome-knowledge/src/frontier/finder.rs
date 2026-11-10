@@ -24,13 +24,201 @@ fn close(mut formula: Formula) -> Formula {
     }
     formula
 }
-fn open(formula: &Formula) -> Option<Formula> {
-    let fresh = formula
+fn fresh_opening(formula: &Formula) -> Option<FreeVariable> {
+    formula
         .free_variables()
         .last()
-        .map_or(Some(0), |v| v.identifier().checked_add(1))?;
-    formula.open_outer_universal(FreeVariable::new(fresh))
+        .map_or(Some(0), |v| v.identifier().checked_add(1))
+        .map(FreeVariable::new)
 }
+fn open(formula: &Formula) -> Option<Formula> {
+    formula.open_outer_universal(fresh_opening(formula)?)
+}
+/// Direct Horn assumptions can consume two independently provable closed
+/// premises. Prefer the pair that activates fewer rules in the first two
+/// rounds of forward search, which spend from the same root allowance.
+fn closed_pairs(target: &Formula) -> Vec<[Formula; 2]> {
+    let mut goal = target.clone();
+    while let Some(opened) = open(&goal) {
+        goal = opened;
+    }
+    let mut rules = Vec::new();
+    for _ in 0..16 {
+        let Some((assumption, rest)) = goal.implication_parts() else {
+            break;
+        };
+        if let Some(rule) = assumption.implication_parts() {
+            rules.push(rule);
+        }
+        goal = rest;
+    }
+    let mut pairs = Vec::<(usize, [Formula; 2])>::new();
+    for (first, suffix) in &rules {
+        let Some((second, conclusion)) = suffix.implication_parts() else {
+            continue;
+        };
+        if conclusion != goal || !first.is_closed() || !second.is_closed() || first == &second {
+            continue;
+        }
+        if pairs
+            .iter()
+            .any(|(_, [a, b])| (a == first && b == &second) || (b == first && a == &second))
+        {
+            continue;
+        }
+        let pair = [first.clone(), second];
+        let mut facts = pair.iter().collect::<Vec<_>>();
+        let mut activated = 0u16;
+        for _ in 0..2 {
+            let mut round = Vec::new();
+            for (index, (premise, consequence)) in rules.iter().enumerate() {
+                let bit = 1 << index;
+                if activated & bit == 0 && facts.contains(&premise) {
+                    activated |= bit;
+                    round.push(consequence);
+                }
+            }
+            facts.extend(round);
+        }
+        pairs.push((activated.count_ones() as usize, pair));
+    }
+    pairs.sort_by_key(|(cost, _)| *cost);
+    pairs.into_iter().map(|(_, pair)| pair).collect()
+}
+
+/// Complete alternatives, in the order in which the Finder considers them.
+pub(super) fn cut_groups(target: &Formula) -> Vec<Vec<ResearchQuestion>> {
+    let mut groups = crate::learning::scoped_cut_questions(target);
+    groups.extend(closed_cut_groups(target));
+    groups
+}
+
+fn closed_cut_groups(target: &Formula) -> impl Iterator<Item = Vec<ResearchQuestion>> {
+    closed_pairs(target).into_iter().filter_map(|pair| {
+        pair.into_iter()
+            .map(|formula| ResearchQuestion::from_formula(formula).ok())
+            .collect()
+    })
+}
+
+/// Independently provable witnesses for the bounded routes to an open goal.
+pub(super) fn cut_helpers(
+    goal: &ResearchQuestion,
+    existing: &[ResearchQuestion],
+    maximum: usize,
+    bytes: usize,
+) -> Vec<ResearchQuestion> {
+    let goal_nodes = goal.formula().view().node_count_and_depth().0;
+    let valid = |helper: &ResearchQuestion| {
+        helper.formula().view().node_count_and_depth().0 < goal_nodes
+            && helper.resolution_id() != goal.resolution_id()
+            && independent_goal(helper, goal)
+    };
+    let group_fits = |group: &[ResearchQuestion]| {
+        group.len() <= maximum
+            && group.iter().map(key).collect::<BTreeSet<_>>().len() == group.len()
+            && group.iter().all(|helper| {
+                valid(helper)
+                    && question_bytes(helper) <= bytes
+                    && meaningful(helper)
+                    && crate::learning::State::eligible(&helper.to_hex())
+            })
+    };
+    let mut questions = Vec::new();
+    for group in crate::learning::scoped_cut_questions(goal.proved_target()) {
+        if group.len() == 1 {
+            questions.extend(group.into_iter().filter(valid));
+        } else if group_fits(&group) {
+            // Keep the remaining slots available for recursive transport cuts.
+            return if existing.is_empty() {
+                group
+            } else {
+                Vec::new()
+            };
+        }
+    }
+    let mut alternatives = existing.to_vec();
+    for group in closed_cut_groups(goal.proved_target()).filter(|group| group_fits(group)) {
+        let new = group
+            .into_iter()
+            .filter(|helper| {
+                !alternatives
+                    .iter()
+                    .any(|previous| previous.resolution_id() == helper.resolution_id())
+            })
+            .collect::<Vec<_>>();
+        if alternatives.len() + new.len() <= maximum {
+            alternatives.extend(new);
+        }
+        if alternatives.len() == maximum {
+            break;
+        }
+    }
+    if !alternatives.is_empty() {
+        alternatives.drain(..existing.len());
+        return alternatives;
+    }
+    let routes = crate::learning::closed_cut_routes(goal.proved_target(), true);
+    let mut ranked = routes.exact;
+    ranked.extend(routes.quantified);
+    ranked.sort_by_key(|(_, distance)| *distance);
+    questions.extend(
+        ranked
+            .into_iter()
+            .filter_map(|(formula, _)| ResearchQuestion::from_formula(formula).ok())
+            .filter(valid),
+    );
+    bounded(questions, maximum, bytes)
+}
+
+/// The catalog cut is queued as canonical source. Its decoded working set
+/// is leased here and again by the planner when it opens the retained source.
+pub(super) fn catalog_cut_sources(
+    goal: &ResearchQuestion,
+    existing: &[String],
+    maximum: usize,
+    bytes: usize,
+) -> Vec<String> {
+    const SOURCE_OVERHEAD: usize = 64;
+    if existing.len() >= maximum {
+        return Vec::new();
+    }
+    let mut retained = existing
+        .iter()
+        .map(|source| source.len() + SOURCE_OVERHEAD)
+        .sum::<usize>();
+    if retained >= bytes {
+        return Vec::new();
+    }
+    let Ok(_decoded) =
+        crate::resources::MemoryLease::acquire(16 * naome_checker::question::QUESTION_BYTES)
+    else {
+        return Vec::new();
+    };
+    let root_nodes = goal.formula().view().node_count_and_depth().0;
+    let mut sources = Vec::new();
+    for candidate in crate::jobs::CatalogSource::cut_questions(goal.proved_target()) {
+        let source = candidate.to_hex();
+        let cost = source.len() + SOURCE_OVERHEAD;
+        if cost <= bytes - retained
+            && candidate.resolution_id() != goal.resolution_id()
+            && candidate.formula().view().node_count_and_depth().0 < root_nodes
+            && meaningful(&candidate)
+            && independent_goal(&candidate, goal)
+            && crate::learning::State::eligible(&source)
+            && !existing.contains(&source)
+            && !sources.contains(&source)
+        {
+            retained += cost;
+            sources.push(source);
+            if existing.len() + sources.len() == maximum {
+                break;
+            }
+        }
+    }
+    sources
+}
+
 fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {
     let free = formula.free_variables().into_iter().collect::<Vec<_>>();
     if free.len() != 2 {
@@ -276,6 +464,9 @@ pub(super) fn for_goal(
 ) -> Vec<ResearchQuestion> {
     bounded(helpers(goal, cursor), maximum, bytes)
 }
+fn question_bytes(question: &ResearchQuestion) -> usize {
+    question.to_hex().len() * 8 + 256
+}
 fn bounded(all: Vec<ResearchQuestion>, maximum: usize, bytes: usize) -> Vec<ResearchQuestion> {
     bounded_eligible(all, maximum, bytes, &mut |_| true)
 }
@@ -290,7 +481,7 @@ fn bounded_eligible(
     let mut result = Vec::new();
     let mut checks = 0;
     for question in all {
-        let cost = question.to_hex().len() * 8 + 256;
+        let cost = question_bytes(&question);
         if result.len() >= maximum.min(12) || checks >= 20 {
             break;
         }

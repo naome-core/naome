@@ -65,6 +65,8 @@ pub enum Term {
         target: Formula,
         definitions: Vec<super::definitions::Entry>,
     },
+    /// A proof already checked in the exact program input context.
+    CheckedInput(ProofId, Formula),
     Sealed(Arc<Term>, Formula),
     Variable(usize, Formula),
     Kernel(Kernel),
@@ -104,9 +106,10 @@ impl Term {
 
     pub fn formula(&self) -> Formula {
         match self {
-            Self::Variable(_, formula) | Self::Apply(_, _, formula) | Self::Sealed(_, formula) => {
-                formula.clone()
-            }
+            Self::Variable(_, formula)
+            | Self::Apply(_, _, formula)
+            | Self::Sealed(_, formula)
+            | Self::CheckedInput(_, formula) => formula.clone(),
             Self::Kernel(k) => k.formula(),
             Self::Native { target, .. } | Self::Lemma { target, .. } => target.clone(),
             Self::Generalize(variable, body) => Formula::for_all(*variable, body.formula()),
@@ -244,6 +247,9 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, crate::Error> {
                 verified.native_id,
                 verified.definitions,
             )))
+        }
+        Term::CheckedInput(id, target) => {
+            Ok(Combinator::new(Kind::CheckedInput(*id, target.clone())))
         }
         Term::Sealed(body, target) => {
             let body = lower(body)?;
@@ -419,6 +425,7 @@ fn lower_recipe(
                 }
                 ProofStep::ProofReference { proof_id: *id }
             }
+            Kind::CheckedInput(id, _) => ProofStep::ProofReference { proof_id: *id },
             Kind::Variable(_, _) => {
                 return Err(crate::ResearchFailure::ProofUndischargedAssumption.into());
             }

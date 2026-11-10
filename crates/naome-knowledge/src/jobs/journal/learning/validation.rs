@@ -1,5 +1,56 @@
 //! Current native rows and their derived indexes are checked before recovery.
 use super::*;
+
+const CHECKED_EXAMPLES: usize = 128;
+const CHECKED_ARTIFACTS: usize = 64;
+
+/// Reuse only exact checks within one journal scan. Each reference still
+/// checks its own source row, sample, provenance and admission receipt.
+#[derive(Default)]
+struct CheckedReplay {
+    examples: std::collections::BTreeSet<String>,
+    artifacts: std::collections::BTreeMap<u64, (String, naome_proof::ArtifactId)>,
+}
+
+impl CheckedReplay {
+    fn matches(
+        &mut self,
+        example: &crate::learning::Example,
+        solution: &crate::learning::Solution,
+    ) -> bool {
+        let key = crate::learning::digest(&(example, solution));
+        if self.examples.contains(&key) {
+            return true;
+        }
+        if !example.matches_solution(solution) {
+            return false;
+        }
+        if self.examples.len() < CHECKED_EXAMPLES {
+            self.examples.insert(key);
+        }
+        true
+    }
+
+    fn artifact(
+        &mut self,
+        job: u64,
+        solution: &crate::learning::Solution,
+        question: &str,
+    ) -> Result<naome_proof::ArtifactId, crate::Error> {
+        let binding = crate::learning::digest(&(question, solution));
+        if let Some((previous, artifact)) = self.artifacts.get(&job)
+            && *previous == binding
+        {
+            return Ok(*artifact);
+        }
+        let artifact = crate::learning::program::Candidate::artifact(solution, question)?;
+        if self.artifacts.len() < CHECKED_ARTIFACTS || self.artifacts.contains_key(&job) {
+            self.artifacts.insert(job, (binding, artifact));
+        }
+        Ok(artifact)
+    }
+}
+
 fn record(c: &crate::checkpoint::Checkpoint, id: u64) -> Result<Record, crate::Error> {
     c.get("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
         .ok_or(crate::ResearchFailure::JournalNativeSourceJobMissing.into())
@@ -40,6 +91,15 @@ pub(super) fn validate_source(
     example: &crate::learning::Example,
     source: &Record,
 ) -> Result<(), crate::Error> {
+    validate_source_with(c, example, source, None)
+}
+
+fn validate_source_with(
+    c: &crate::checkpoint::Checkpoint,
+    example: &crate::learning::Example,
+    source: &Record,
+    mut checked: Option<&mut CheckedReplay>,
+) -> Result<(), crate::Error> {
     let q = naome_checker::question::ResearchQuestion::from_hex(&example.question)?;
     if c.get::<u64>("sample", &crate::hex(q.resolution_id()), 64)?
         .is_none()
@@ -58,7 +118,10 @@ pub(super) fn validate_source(
         || source.state != State::Complete
         || solution.proof_id != example.proof_id
         || solution.refuted != example.refuted
-        || !example.matches_solution(solution)
+        || !match checked.as_deref_mut() {
+            Some(memo) => memo.matches(example, solution),
+            None => example.matches_solution(solution),
+        }
     {
         return Err(crate::ResearchFailure::ReplayIdentityMismatch.into());
     }
@@ -66,7 +129,10 @@ pub(super) fn validate_source(
         (crate::learning::Origin::Local, Input::Solve { question })
             if question == &example.question =>
         {
-            let root = crate::learning::program::Candidate::artifact(solution, question)?;
+            let root = match checked {
+                Some(memo) => memo.artifact(source.id, solution, question),
+                None => crate::learning::program::Candidate::artifact(solution, question),
+            }?;
             if c.get::<String>("learned", &example.job.to_string(), 256)?
                 .as_deref()
                 != Some(&crate::hex(root.as_bytes()))
@@ -103,9 +169,10 @@ pub(super) fn validate_source(
 fn validate_sources(
     c: &crate::checkpoint::Checkpoint,
     state: &crate::learning::State,
+    checked: &mut CheckedReplay,
 ) -> Result<(), crate::Error> {
     for example in state.examples() {
-        validate_source(c, example, &record(c, example.job)?)?;
+        validate_source_with(c, example, &record(c, example.job)?, Some(checked))?;
     }
     for experience in state.meta_experiences() {
         let source = record(c, experience.job)?;
@@ -134,8 +201,9 @@ pub(in crate::jobs::journal) fn validate_rows(
     if c.count("learning")? != 1 {
         return Err(crate::ResearchFailure::JournalNativeLearningSingletonDiffers.into());
     }
+    let mut checked = CheckedReplay::default();
     if let Some(state) = state {
-        validate_sources(c, state)?;
+        validate_sources(c, state, &mut checked)?;
     }
     c.scan("record", crate::checkpoint::MAX_ROW, |key, bytes| {
         let source: Record = crate::checkpoint::decode(bytes)?;
@@ -166,10 +234,8 @@ pub(in crate::jobs::journal) fn validate_rows(
                         question, artifact, evidence, solution,
                     )?,
                     Input::Solve { question } => {
-                        let expected = crate::hex(
-                            crate::learning::program::Candidate::artifact(solution, question)?
-                                .as_bytes(),
-                        );
+                        let expected =
+                            crate::hex(checked.artifact(origin.id, solution, question)?.as_bytes());
                         if c.get::<String>("learned", &origin.id.to_string(), 256)?
                             .as_deref()
                             != Some(expected.as_str())
@@ -188,7 +254,7 @@ pub(in crate::jobs::journal) fn validate_rows(
         if !source.acknowledged
             && let Some(native) = &source.native
         {
-            validate_sources(c, &native.base)?;
+            validate_sources(c, &native.base, &mut checked)?;
         }
         Ok(())
     })?;
@@ -279,7 +345,9 @@ pub(in crate::jobs::journal) fn validate_rows(
         }
         Ok(())
     })?;
-    c.scan("learned", 256, |key, bytes| validate_learned(c, key, bytes))?;
+    c.scan("learned", 256, |key, bytes| {
+        validate_learned(c, key, bytes, &mut checked)
+    })?;
     c.scan(
         "peer_receipt",
         crate::resources::limits().closure_bytes,
@@ -329,6 +397,7 @@ fn validate_learned(
     c: &crate::checkpoint::Checkpoint,
     key: &str,
     bytes: &[u8],
+    checked: &mut CheckedReplay,
 ) -> Result<(), crate::Error> {
     let id = key
         .parse::<u64>()
@@ -344,7 +413,7 @@ fn validate_learned(
         Input::Solve { question },
     ) = (&source.result, &source.input)
     {
-        let expected = crate::learning::program::Candidate::artifact(solution, question)?;
+        let expected = checked.artifact(source.id, solution, question)?;
         crate::hex(expected.as_bytes()) == root
     } else {
         false
@@ -480,6 +549,38 @@ fn validate_sample(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_memo_rechecks_changed_solution_and_question() {
+        let example = crate::learning::tests::own_example();
+        let solution = crate::learning::tests::own_solution();
+        let mut checked = CheckedReplay::default();
+
+        assert!(checked.matches(&example, &solution));
+        let artifact = checked
+            .artifact(example.job, &solution, &example.question)
+            .unwrap();
+
+        let mut changed = solution.clone();
+        changed.proof_id = "00".repeat(32);
+        assert!(!checked.matches(&example, &changed));
+        assert!(
+            checked
+                .artifact(example.job, &changed, &example.question)
+                .is_err()
+        );
+        assert!(checked.artifact(example.job, &solution, "invalid").is_err());
+
+        assert!(checked.matches(&example, &solution));
+        assert_eq!(
+            checked
+                .artifact(example.job, &solution, &example.question)
+                .unwrap(),
+            artifact
+        );
+        assert_eq!(checked.examples.len(), 1);
+        assert_eq!(checked.artifacts.len(), 1);
+    }
     #[test]
     fn reopening_rejects_a_model_owner_index_not_derived_from_current_state() {
         malformed_model_row(false);

@@ -244,6 +244,28 @@ pub(super) fn represent(
     naome_proof::ProofFormula::from_defined(defined(formula, entries)?).map_err(crate::Error::from)
 }
 
+/// Reconstruct a checked authoring body from the earlier selected meanings.
+pub(super) fn authored_body(
+    entry: &Entry,
+    earlier: &[Entry],
+    context: &ArtifactState,
+) -> Result<Option<DefinedFormula>, crate::Error> {
+    let certificate = entry.certificate()?;
+    let authored = represent(&entry.body()?, earlier)?;
+    let Some(authored) = authored.as_defined() else {
+        return Ok(None);
+    };
+    let checked = naome_checker::normalize_and_check_definition_with_state(
+        certificate.kind(),
+        authored.clone(),
+        context,
+    )?;
+    if checked.definition_id() != certificate.definition_id() {
+        return Err(crate::ResearchFailure::DefinitionAuthorshipIdentity.into());
+    }
+    Ok(Some(authored.clone()))
+}
+
 pub fn discover(target: &Formula) -> Result<Option<Entry>, crate::Error> {
     Ok(discover_many(target, 1)?.into_iter().next())
 }

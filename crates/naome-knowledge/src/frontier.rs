@@ -200,10 +200,10 @@ impl Frontier {
             let mut after = None;
             loop {
                 let page = local.evidence.page(after.as_deref())?;
-                if page.is_empty() {
+                if page.records.is_empty() {
                     break;
                 }
-                for (key, record) in page {
+                for (key, record) in page.records {
                     if let Some(root) = &record.verified
                         && record.solver == local.solver_contract
                     {
@@ -1039,7 +1039,7 @@ impl Frontier {
                 .get(question)?
                 .is_none_or(|record| completion.id > record.last_job);
         let before = self.evidence.model().updates;
-        let observed_search =
+        let opened =
             self.evidence
                 .attempted(question, graph.content_root(), completion, outcome)?;
         self.learning_event(question, before, false);
@@ -1052,7 +1052,7 @@ impl Frontier {
             for (total, count) in self.attempts.iter_mut().zip(Features::of(question).counts) {
                 *total = total.saturating_add(u64::from(count > 0));
             }
-            if outcome == Outcome::NoCandidate && observed_search {
+            if outcome == Outcome::NoCandidate && opened {
                 if self.native {
                     self.focus(question.clone());
                 } else {
@@ -1090,16 +1090,18 @@ impl Frontier {
             self.demonstrated(&Features::of(question), units, millis);
             self.learning_event(question, before, true);
         }
-        if self.native {
+        if self.native
+            && let Some(consumer) = self.evidence.support_consumer(question, job, root)?
+        {
             let actual_goal = graph
                 .describe(root)?
                 .ok_or(crate::InputFault::EvidenceGoalMissing)?
                 .statement_question(graph.checked_context())?;
-            for dependency in graph.direct_dependencies(root)? {
+            for dependency in graph.learning_proof_dependencies(root)? {
                 if let Some(lemma) = self.evidence.support(
                     question,
                     &actual_goal,
-                    job,
+                    &consumer,
                     root,
                     dependency,
                     |lemma| {

@@ -4,15 +4,17 @@ use naome_proof::{DefinitionExpansionError, DefinitionId, DefinitionInstantiatio
 pub(super) struct DefinitionEvaluation {
     id: DefinitionId,
     arguments: Vec<u32>,
+    authored_body: Option<u64>,
     nodes: Option<DefinitionInstantiation>,
     frames: Vec<Frame>,
     value: Option<u64>,
 }
 impl DefinitionEvaluation {
-    pub(super) fn new(id: DefinitionId, arguments: Vec<u32>) -> Self {
+    pub(super) fn new(id: DefinitionId, arguments: Vec<u32>, authored_body: Option<u64>) -> Self {
         Self {
             id,
             arguments,
+            authored_body,
             nodes: None,
             frames: Vec::new(),
             value: None,
@@ -70,13 +72,15 @@ impl Engine {
             if ContextRead::charge(&mut evaluation.context_read, context, || {
                 context.definition_canonical_length(definition.id)
             })? {
-                definition.nodes = Some(self.load_definition(
-                    context,
-                    definition.id,
-                    &definition.arguments,
-                    query,
-                )?);
-                definition.arguments = Vec::new();
+                let formal_arguments;
+                let arguments = if definition.authored_body.is_some() {
+                    formal_arguments = (0..definition.arguments.len() as u32).collect::<Vec<_>>();
+                    &formal_arguments
+                } else {
+                    &definition.arguments
+                };
+                definition.nodes =
+                    Some(self.load_definition(context, definition.id, arguments, query)?);
             }
             return Ok(None);
         };
@@ -85,6 +89,26 @@ impl Engine {
                 None => {
                     if !nodes.complete() {
                         return Err(crate::ContextError::Corrupt.into());
+                    }
+                    if let Some(body) = definition.authored_body.take() {
+                        if value != body {
+                            return Err(Error::Check(Box::new(self.proof_diagnostic(
+                                &self.current_command()?,
+                                crate::diagnostics::Failure::DefinitionBodyMismatch,
+                                context,
+                                query,
+                            )?)));
+                        }
+                        if !definition
+                            .arguments
+                            .iter()
+                            .copied()
+                            .zip(0..)
+                            .all(|(argument, formal)| argument == formal)
+                        {
+                            definition.nodes = None;
+                            return Ok(None);
+                        }
                     }
                     sql(self.connection.execute(
                         "INSERT OR IGNORE INTO checked_definition VALUES(?1)",

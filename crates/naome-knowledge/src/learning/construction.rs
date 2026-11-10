@@ -186,7 +186,7 @@ pub(super) fn construct_program(
                     recipe.definitions.push(entry.clone());
                 }
             }
-            program_from_recipe(target, recipe).map(Some)
+            program_from_authored_recipe(target, recipe, definitions).map(Some)
         },
     )?;
     Ok((candidate, work))
@@ -196,19 +196,56 @@ pub(super) fn program_from_recipe(
     target: &Formula,
     recipe: proof::Recipe,
 ) -> Result<ProgramCandidate, crate::Error> {
-    let (steps, helpers) = program_recipe(recipe)?;
-    let commands = naome_proof::program::Projection::from_inference_steps(&steps)?.into_commands();
+    program_from_recipe_with_inputs(target, recipe, &[], [], None)
+}
+
+pub(super) fn program_from_authored_recipe(
+    target: &Formula,
+    recipe: proof::Recipe,
+    earlier: &[super::definitions::Entry],
+) -> Result<ProgramCandidate, crate::Error> {
+    assemble_program(target, recipe, &[], [], None, earlier)
+}
+
+pub(super) fn program_from_recipe_with_inputs(
+    target: &Formula,
+    recipe: proof::Recipe,
+    programs: &[super::peer::Packet],
+    inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
+    inline: Option<naome_proof::ProofId>,
+) -> Result<ProgramCandidate, crate::Error> {
+    assemble_program(target, recipe, programs, inputs, inline, &[])
+}
+
+fn assemble_program(
+    target: &Formula,
+    recipe: proof::Recipe,
+    programs: &[super::peer::Packet],
+    inputs: impl IntoIterator<Item = std::sync::Arc<[u8]>>,
+    inline: Option<naome_proof::ProofId>,
+    earlier: &[super::definitions::Entry],
+) -> Result<ProgramCandidate, crate::Error> {
+    let (commands, helpers) = program_recipe(recipe, inline, earlier)?;
     let artifacts = helpers
         .iter()
         .map(|source| crate::unhex(source).map(std::sync::Arc::from))
         .collect::<Result<Vec<_>, _>>()?;
-    let packet = super::peer::Packet::compose(target, &commands, &[], artifacts)?;
+    let packet = super::peer::Packet::compose(
+        target,
+        &commands,
+        programs,
+        inputs.into_iter().chain(artifacts),
+    )?;
     Ok(ProgramCandidate { packet, helpers })
 }
 
 // Newly synthesized helper derivations can share the root's native command
 // graph. Original bounded artifact references keep their concrete identity.
-fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>), crate::Error> {
+fn program_recipe(
+    recipe: proof::Recipe,
+    inline: Option<naome_proof::ProofId>,
+    earlier: &[super::definitions::Entry],
+) -> Result<(Vec<naome_proof::program::Command>, Vec<String>), crate::Error> {
     use std::collections::{BTreeMap, BTreeSet};
     fn append(
         output: &mut Vec<ProofStep>,
@@ -269,7 +306,8 @@ fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>)
         let needs_inlined = certificate.steps().iter().any(|step| {
             matches!(step, ProofStep::ProofReference { proof_id } if aliases.contains_key(proof_id))
         });
-        if needs_inlined
+        if inline == Some(id)
+            || needs_inlined
             || checked.normal_form().canonical_bytes().len() + 1
                 > crate::resources::limits().proof_bytes
         {
@@ -286,10 +324,47 @@ fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>)
     if conclusion as usize + 1 != output.len() {
         return Err(crate::ResearchFailure::ConstructionRecipeRootMismatch.into());
     }
-    let used = output
+    let references = output
         .iter()
-        .chain(kept.iter().flat_map(|proof| proof.steps()))
         .flat_map(ProofStep::definition_references)
+        .collect::<BTreeSet<_>>();
+    let mut authored = BTreeMap::new();
+    if !earlier.is_empty() {
+        let earlier_ids = earlier
+            .iter()
+            .map(super::definitions::Entry::address)
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let entries = recipe
+            .definitions
+            .iter()
+            .map(|entry| Ok((entry.address()?, entry)))
+            .collect::<Result<Vec<_>, crate::Error>>()?;
+        let earlier = entries
+            .iter()
+            .filter(|(id, _)| earlier_ids.contains(id))
+            .map(|(_, entry)| (*entry).clone())
+            .collect::<Vec<_>>();
+        for (id, entry) in entries {
+            let definition = entry.certificate()?.definition_id();
+            if references.contains(&definition)
+                && !earlier_ids.contains(&id)
+                && let Some(body) = super::definitions::authored_body(entry, &earlier, &context)?
+            {
+                authored.insert(definition, body);
+            }
+        }
+    }
+    let commands =
+        naome_proof::program::Projection::from_authored_steps(&output, &authored)?.into_commands();
+    let used = commands
+        .iter()
+        .filter_map(naome_proof::program::Command::definition_reference)
+        .chain(kept.iter().flat_map(|proof| {
+            proof
+                .steps()
+                .iter()
+                .flat_map(ProofStep::definition_references)
+        }))
         .collect::<BTreeSet<_>>();
     let definitions = recipe
         .definitions
@@ -307,7 +382,7 @@ fn program_recipe(recipe: proof::Recipe) -> Result<(Vec<ProofStep>, Vec<String>)
             helpers.push(lemma);
         }
     }
-    Ok((output, helpers))
+    Ok((commands, helpers))
 }
 
 struct ConstructionContext<'a> {
@@ -415,7 +490,7 @@ mod tests {
             definitions: vec![],
         };
         assert_eq!(
-            super::program_recipe(empty).unwrap_err(),
+            super::program_recipe(empty, None, &[]).unwrap_err(),
             crate::Error::from(crate::ResearchFailure::ConstructionRecipeEmpty)
         );
         let forward = super::proof::Recipe {
@@ -427,7 +502,7 @@ mod tests {
             definitions: vec![],
         };
         assert_eq!(
-            super::program_recipe(forward).unwrap_err(),
+            super::program_recipe(forward, None, &[]).unwrap_err(),
             crate::Error::ResearchIndex {
                 code: crate::ResearchFailure::ConstructionHelperForward,
                 index: 0,

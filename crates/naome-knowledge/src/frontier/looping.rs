@@ -13,9 +13,15 @@ struct Node {
     question: ResearchQuestion,
     record: Option<evidence::Record>,
     children: Vec<usize>,
-    checked: Option<(String, u64)>,
+    cuts: Vec<Vec<usize>>,
+    checked: Option<Checked>,
     depth: usize,
     available: bool,
+}
+struct Checked {
+    proof_id: String,
+    at: u64,
+    proves_requested_side: bool,
 }
 impl Node {
     fn load(
@@ -34,12 +40,19 @@ impl Node {
         memory.push(crate::resources::MemoryLease::acquire(bytes)?);
         let checked = if let Some(record) = &record
             && let Some(root) = &record.verified
+            && let Some(metadata) =
+                graph.describe(ArtifactId::from_bytes(crate::object::id_bytes(root)?))?
         {
-            let root = ArtifactId::from_bytes(crate::object::id_bytes(root)?);
-            if Frontier::checked_target(graph, root, &question)? {
-                graph
-                    .describe(root)?
-                    .map(|m| (m.proof_id, record.verified_at))
+            let (_, statement, target) = metadata.compile(graph.checked_context())?;
+            if target.resolution_id() == question.resolution_id()
+                && target.core() == question.core()
+            {
+                Some(Checked {
+                    proof_id: metadata.proof_id,
+                    at: record.verified_at,
+                    proves_requested_side: statement
+                        == crate::object::target_id(question.proved_target())?,
+                })
             } else {
                 None
             }
@@ -50,6 +63,7 @@ impl Node {
             question,
             record,
             children: vec![],
+            cuts: vec![],
             checked,
             depth,
             available: true,
@@ -61,19 +75,90 @@ struct Choice {
     pending: Vec<usize>,
     required: Vec<(String, u64)>,
 }
+fn cut_member_can_advance(nodes: &[Node], index: usize, depth: usize) -> bool {
+    let node = &nodes[index];
+    if let Some(proof) = &node.checked {
+        return proof.proves_requested_side;
+    }
+    if !node.available {
+        return false;
+    }
+    let Some(record) = &node.record else {
+        return true;
+    };
+    if record.last_outcome == Outcome::Candidate && !record.publication_abandoned {
+        return true;
+    }
+    if record.last_outcome != Outcome::NoCandidate
+        || record.loop_disabled
+        || depth + 1 >= DEPTH
+        || node.children.is_empty()
+    {
+        return false;
+    }
+    let nested = next(nodes, index, depth + 1);
+    !nested.pending.is_empty()
+        || nested
+            .required
+            .iter()
+            .any(|(_, at)| *at > record.last_attempt_at)
+}
+
 fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
     let mut work = Choice {
         target: index,
         pending: vec![],
         required: vec![],
     };
-    for &child in &nodes[index].children {
+    let node = &nodes[index];
+    let last_attempt = node
+        .record
+        .as_ref()
+        .map_or(0, |record| record.last_attempt_at);
+    for group in &node.cuts {
+        if let Some(checked) = group
+            .iter()
+            .map(|&child| {
+                nodes[child]
+                    .checked
+                    .as_ref()
+                    .filter(|proof| proof.proves_requested_side)
+            })
+            .collect::<Option<Vec<_>>>()
+            && checked.iter().any(|proof| proof.at > last_attempt)
+        {
+            work.required = checked
+                .into_iter()
+                .map(|proof| (proof.proof_id.clone(), proof.at))
+                .collect();
+            return work;
+        }
+    }
+    let available_cuts = node
+        .cuts
+        .iter()
+        .filter(|group| {
+            group.len() == 1
+                || group
+                    .iter()
+                    .all(|&child| cut_member_can_advance(nodes, child, depth))
+        })
+        .flatten()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    for &child in &node.children {
+        let alternative = node.cuts.iter().flatten().any(|&cut| cut == child);
+        if alternative && !available_cuts.contains(&child) {
+            continue;
+        }
         let node = &nodes[child];
         if !node.available {
             continue;
         }
         if let Some(proof) = &node.checked {
-            work.required.push(proof.clone());
+            if !alternative {
+                work.required.push((proof.proof_id.clone(), proof.at));
+            }
         } else if node.record.is_none() && !node.children.is_empty() && depth + 1 < DEPTH {
             let mut nested = next(nodes, child, depth + 1);
             if nested.pending.is_empty() {
@@ -85,6 +170,13 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
             .as_ref()
             .is_none_or(|r| r.last_outcome == Outcome::Candidate && !r.publication_abandoned)
         {
+            if alternative {
+                return Choice {
+                    target: index,
+                    pending: vec![child],
+                    required: vec![],
+                };
+            }
             work.pending.push(child);
         } else if depth + 1 < DEPTH
             && let Some(record) = &node.record
@@ -110,7 +202,7 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
     work
 }
 impl Frontier {
-    #[cfg(all(test, feature = "developer-tools"))]
+    #[cfg(test)]
     pub(crate) fn support_updates(&self) -> u64 {
         self.evidence.model().supports
     }
@@ -125,24 +217,73 @@ impl Frontier {
         use naome_checker::ContextView;
         use naome_proof::StatementId;
         let definitions = question.dependencies();
-        if planned.is_empty()
-            && let Some((left, right)) =
-                crate::learning::conjunction_operands(question.proved_target())
-            && left != right
-            && left.is_closed()
-            && right.is_closed()
-        {
-            // The Solver can directly compose these two closed operands.
-            let mut witnesses = Vec::with_capacity(2);
-            for operand in [left, right] {
+        if planned.is_empty() {
+            let witness = |operand: &Formula| -> Result<Option<String>, crate::Error> {
                 let bytes = operand.encode_canonical()?;
                 let statement = StatementId::of_canonical_formula(&bytes)
                     .ok_or(crate::InputFault::FinderOperandStatementWidth)?;
-                if let Some(header) = graph.checked_context().statement_header(statement)? {
-                    witnesses.push(crate::hex(header.proof_id().as_bytes()));
+                Ok(graph
+                    .checked_context()
+                    .statement_header(statement)?
+                    .map(|header| crate::hex(header.proof_id().as_bytes())))
+            };
+            if let Some((left, right)) =
+                crate::learning::conjunction_operands(question.proved_target())
+                && left != right
+                && left.is_closed()
+                && right.is_closed()
+                && let (Some(left), Some(right)) = (witness(&left)?, witness(&right)?)
+            {
+                let witnesses = vec![left, right];
+                if let Some(inputs) = graph.solving_inputs(&witnesses, definitions)? {
+                    return Ok((witnesses, inputs));
                 }
             }
-            if witnesses.len() == 2
+            if self.native {
+                for group in finder::cut_groups(question.proved_target()) {
+                    let mut selected = Vec::new();
+                    for helper in &group {
+                        if let Some(id) = witness(helper.proved_target())? {
+                            selected.push(id);
+                        } else {
+                            break;
+                        }
+                    }
+                    if selected.len() == group.len()
+                        && let Some(inputs) = graph.solving_inputs(&selected, definitions)?
+                    {
+                        return Ok((selected, inputs));
+                    }
+                }
+            }
+            let routes = crate::learning::closed_cut_routes(question.proved_target(), self.native);
+            let mut witnesses = Vec::new();
+            let mut best_exact = usize::MAX;
+            for (antecedent, distance) in routes.exact {
+                if let Some(id) = witness(&antecedent)?
+                    && !witnesses.contains(&id)
+                {
+                    best_exact = best_exact.min(distance);
+                    witnesses.push(id);
+                    if witnesses.len() == 4 {
+                        break;
+                    }
+                }
+            }
+            // A strictly shorter route needs just one checked witness. Extra
+            // alternatives can trigger inferences that spend its allowance.
+            for (antecedent, distance) in routes.quantified {
+                if distance >= best_exact {
+                    break;
+                }
+                if let Some(id) = witness(&antecedent)? {
+                    let selected = vec![id];
+                    if let Some(inputs) = graph.solving_inputs(&selected, definitions)? {
+                        return Ok((selected, inputs));
+                    }
+                }
+            }
+            if !witnesses.is_empty()
                 && let Some(inputs) = graph.solving_inputs(&witnesses, definitions)?
             {
                 return Ok((witnesses, inputs));
@@ -181,6 +322,70 @@ impl Frontier {
             .solving_inputs(planned, definitions)?
             .unwrap_or_default();
         Ok((planned.to_vec(), inputs))
+    }
+
+    pub(crate) fn catalog_retry(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+    ) -> Result<Option<crate::jobs::CatalogSource>, crate::Error> {
+        if self.paid_catalog_retry(question)? {
+            crate::jobs::CatalogSource::for_local_scope(graph, question.proved_target())
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn planned_catalog_retry(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+        required: &[String],
+    ) -> Result<Option<crate::jobs::CatalogSource>, crate::Error> {
+        let [proof] = required else {
+            return Ok(None);
+        };
+        if !question.dependencies().is_empty() || !self.paid_catalog_retry(question)? {
+            return Ok(None);
+        }
+        let proof = naome_proof::ProofId::from_bytes(crate::object::id_bytes(proof)?);
+        crate::jobs::CatalogSource::for_planned_local_scope(graph, question.proved_target(), proof)
+    }
+
+    fn paid_catalog_retry(&self, question: &ResearchQuestion) -> Result<bool, crate::Error> {
+        Ok(self.native
+            && self
+                .evidence
+                .get(question)?
+                .is_some_and(|record| record.paid_open_search()))
+    }
+
+    /// Exact planned cuts for an earlier open goal. The formal owner decides
+    /// whether it can already supply an independently checked local proof.
+    pub(crate) fn local_cut_candidates(
+        &self,
+        question: &ResearchQuestion,
+    ) -> Result<Vec<ResearchQuestion>, crate::Error> {
+        let Some(record) = self.evidence.get(question)? else {
+            return Ok(Vec::new());
+        };
+        if !self.native
+            || record.first_unresolved_job == 0
+            || record.verified.is_some()
+            || record.loop_disabled
+            || record.helpers.is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        let routes = crate::learning::closed_cut_routes(question.proved_target(), true);
+        let mut candidates = Vec::new();
+        for source in record.helpers {
+            let helper = ResearchQuestion::from_hex(&source)?;
+            if routes.contains(helper.proved_target()) {
+                candidates.push(helper);
+            }
+        }
+        Ok(candidates)
     }
 
     pub(crate) fn loop_focus(
@@ -263,6 +468,14 @@ impl Frontier {
                 } else {
                     Vec::new()
                 };
+                let routes = (self.native && !sources.is_empty()).then(|| {
+                    crate::learning::closed_cut_routes(nodes[index].question.proved_target(), true)
+                });
+                let groups = if routes.is_some() {
+                    finder::cut_groups(nodes[index].question.proved_target())
+                } else {
+                    Vec::new()
+                };
                 for source in sources {
                     let helper = ResearchQuestion::from_hex(&source)?;
                     if helper.formula().view().node_count_and_depth().0
@@ -289,6 +502,39 @@ impl Frontier {
                     };
                     nodes[index].children.push(child);
                 }
+                let mut incomplete = Vec::new();
+                for group in groups {
+                    let members = group
+                        .iter()
+                        .filter_map(|helper| {
+                            nodes[index].children.iter().copied().find(|&child| {
+                                helper.resolution_id() == nodes[child].question.resolution_id()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if members.len() == group.len() {
+                        nodes[index].cuts.push(members);
+                    } else {
+                        incomplete.extend(members);
+                    }
+                }
+                if let Some(routes) = routes {
+                    let independent = nodes[index]
+                        .children
+                        .iter()
+                        .filter(|&&child| {
+                            !nodes[index].cuts.iter().flatten().any(|&cut| cut == child)
+                                && routes.contains(nodes[child].question.proved_target())
+                        })
+                        .map(|&child| vec![child])
+                        .collect::<Vec<_>>();
+                    nodes[index].cuts.extend(independent);
+                }
+                let node = &mut nodes[index];
+                node.children.retain(|child| {
+                    !incomplete.contains(child)
+                        || node.cuts.iter().flatten().any(|cut| cut == child)
+                });
             }
             index += 1;
         }

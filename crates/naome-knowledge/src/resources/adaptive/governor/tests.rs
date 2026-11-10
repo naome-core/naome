@@ -14,6 +14,43 @@ fn hardware() -> Observed {
 }
 
 #[test]
+fn queued_native_demand_respects_hardware_pressure() {
+    let mut governor = Governor::default();
+    let now = Instant::now();
+    let stats = Statistics {
+        queued_jobs: 1,
+        native_memory_demand: crate::learning::MODEL_REQUIREMENTS.work_bytes as u64,
+        ..Statistics::default()
+    };
+    let ready = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            4 * 1024 * MIB,
+            stats,
+            Pressure::default(),
+            now,
+        )
+        .unwrap();
+    assert!(ready.budget.memory_bytes - ready.observed.process_rss >= stats.native_memory_demand);
+    let paused = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            4 * 1024 * MIB,
+            stats,
+            Pressure {
+                memory: Some(true),
+                ..Pressure::default()
+            },
+            now + Duration::from_secs(1),
+        )
+        .unwrap();
+    assert_eq!(paused.budget.concurrency, 0);
+    assert!(paused.budget.paused.is_some());
+}
+
+#[test]
 fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
     let mut governor = Governor::default();
     let now = Instant::now();

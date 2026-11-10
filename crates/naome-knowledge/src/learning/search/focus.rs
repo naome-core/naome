@@ -1,17 +1,46 @@
 //! Prefer executable, non-branching consequences in existential tableau search.
 use super::super::model::{Decision, Rule};
-use naome_foundation::{FormulaView, graph::Node};
+use naome_foundation::{Formula, FormulaView, graph::Node};
 use std::collections::HashSet;
+
+pub(super) fn existential(goal: &Formula) -> bool {
+    goal.view()
+        .negated()
+        .is_some_and(|body| matches!(body.graph_node(), Node::ForAll(_)))
+}
+
+pub(super) fn instance_tier<'a>(
+    instance: FormulaView<'a>,
+    fused: bool,
+    present: impl Fn(FormulaView<'a>) -> bool,
+    denied: impl Fn(FormulaView<'a>) -> bool,
+) -> u8 {
+    if let Some((left, right)) = instance.negated().and_then(FormulaView::implication_parts) {
+        // This instance exposes both A and ¬B without a split. Check their
+        // exact variable wiring.
+        if denied(left) || present(right) {
+            4
+        } else if !present(left) || !denied(right) {
+            2
+        } else {
+            0
+        }
+    } else if fused
+        || instance
+            .implication_parts()
+            .is_some_and(|(left, right)| present(left) && !present(right))
+    {
+        2
+    } else {
+        0
+    }
+}
 
 pub(in crate::learning) fn rank(decision: &Decision, scores: &mut [f32]) {
     if scores.len() != decision.candidates.len()
         || scores.len() < 2
         || scores.iter().any(|score| !score.is_finite())
-        || decision
-            .goal
-            .view()
-            .negated()
-            .is_none_or(|body| !matches!(body.graph_node(), Node::ForAll(_)))
+        || !existential(&decision.goal)
     {
         return;
     }
@@ -45,28 +74,12 @@ pub(in crate::learning) fn rank(decision: &Decision, scores: &mut [f32]) {
                         .consequences
                         .iter()
                         .map(|formula| {
-                            let view = formula.view();
-                            if let Some((left, right)) =
-                                view.negated().and_then(FormulaView::implication_parts)
-                            {
-                                // This instance exposes both A and ¬B without a
-                                // split. Check their exact variable wiring.
-                                if negatives.contains(&left) || facts.contains(&right) {
-                                    4
-                                } else if !facts.contains(&left) || !negatives.contains(&right) {
-                                    2
-                                } else {
-                                    0
-                                }
-                            } else if candidate.premises.len() == 2
-                                || view.implication_parts().is_some_and(|(left, right)| {
-                                    facts.contains(&left) && !facts.contains(&right)
-                                })
-                            {
-                                2
-                            } else {
-                                0
-                            }
+                            instance_tier(
+                                formula.view(),
+                                candidate.premises.len() == 2,
+                                |f| facts.contains(&f),
+                                |f| negatives.contains(&f),
+                            )
                         })
                         .max()
                         .unwrap_or(0),

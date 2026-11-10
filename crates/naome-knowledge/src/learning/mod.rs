@@ -3,7 +3,9 @@ use crate::outcome::{GenerationOutcome, Qualification};
 mod artifact;
 mod calculus;
 mod construction;
+pub(crate) use construction::composition::closed_cut_routes;
 pub(crate) use construction::logic::conjunction as conjunction_operands;
+pub(crate) use search::scope::cut::questions as scoped_cut_questions;
 mod coverage;
 mod curriculum;
 pub(crate) mod definitions;
@@ -108,6 +110,26 @@ impl Example {
         }
         Ok(&source.trace)
     }
+    fn checked_graphs(
+        &self,
+        target: &naome_foundation::Formula,
+        evidence: &[Evidence],
+    ) -> Result<(Option<search::Tree>, Vec<graph::Graph>), crate::Error> {
+        let tree = self.trajectory(evidence)?;
+        if let search::Tree::Program(packet) = tree {
+            if self.proof_id != crate::hex(packet.manifest.proof_id().as_bytes()) {
+                return Err(crate::ResearchFailure::ReplayProgramBinding.into());
+            }
+            return Ok((None, peer::program_graphs(target, packet)?));
+        }
+        let (core, _, verified) = search::core::checked(target, tree)?;
+        if crate::hex(verified.native_id.as_bytes()) != self.proof_id {
+            return Err(crate::ResearchFailure::ReplayProofBinding.into());
+        }
+        let graphs = search::compile(target, &core)?.1;
+        Ok((Some(core), graphs))
+    }
+
     pub fn evidence_job(&self) -> Option<u64> {
         matches!(self.tree, search::Tree::Stored { .. }).then_some(self.job)
     }
@@ -1115,12 +1137,7 @@ fn program_generation(
     cost.definition_references = packet
         .commands()?
         .iter()
-        .filter(|command| {
-            matches!(
-                command,
-                naome_proof::program::Command::DefinedRelation { .. }
-            )
-        })
+        .filter(|command| command.definition_reference().is_some())
         .count();
     let proof_id = crate::hex(packet.manifest.proof_id().as_bytes());
     Ok(Generation {
@@ -1172,24 +1189,6 @@ fn solve_with_report_typed(
         seed: job.max(1),
         explore: budget >= 128,
     };
-    if budget != 0
-        && !context.required.is_empty()
-        && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
-        && let Some(packet) = inputs.native_proof(question.proved_target(), context.required)?
-    {
-        return program_generation(
-            packet,
-            Vec::new(),
-            question.proved_target(),
-            false,
-            GenerationCost {
-                search_expansions: 1,
-                generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
-                ..GenerationCost::default()
-            },
-            Vec::new(),
-        );
-    }
     let mut lemma_work = 0;
     if budget != 0
         && context.native_programs
@@ -1433,6 +1432,30 @@ fn search_compiled_question(
     let mut frontier = None;
     let mut executions = Vec::new();
     let mut certificate_failures = 0;
+    let mut required_knowledge = context.required.to_vec();
+    if remaining != 0
+        && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
+    {
+        let (candidate, work) =
+            inputs.native_proof(q.proved_target(), context.required, remaining, started)?;
+        remaining = remaining.saturating_sub(work);
+        if let Some(candidate) = candidate {
+            return program_generation(
+                candidate.packet,
+                candidate.helpers,
+                q.proved_target(),
+                false,
+                GenerationCost {
+                    search_expansions: budget - remaining,
+                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                        as u64,
+                    ..GenerationCost::default()
+                },
+                Vec::new(),
+            );
+        }
+        required_knowledge.retain(|id| !inputs.supplies_program(id));
+    }
     let retrieval_started = std::time::Instant::now();
     let dependency_checking = proof::checking_work().steps;
     let terms = context
@@ -1484,6 +1507,41 @@ fn search_compiled_question(
                 },
                 executions,
             );
+        }
+        if context.native_programs
+            && !refuted
+            && scoped.is_none()
+            && let Some(certificate) = context
+                .prerequisites
+                .and_then(Prerequisites::cut_certificate)
+        {
+            let dependency_checking = proof::checking_work().steps;
+            let (candidate, work) = construction::composition::known_cut(
+                &target,
+                certificate,
+                remaining,
+                orientation_started,
+            )?;
+            dependency_steps += proof::checking_work()
+                .steps
+                .saturating_sub(dependency_checking) as usize;
+            remaining = remaining.saturating_sub(work);
+            if let Some(candidate) = candidate {
+                return program_generation(
+                    candidate.packet,
+                    candidate.helpers,
+                    &target,
+                    false,
+                    GenerationCost {
+                        search_expansions: budget - remaining,
+                        dependency_check_steps: dependency_steps,
+                        generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                            as u64,
+                        ..GenerationCost::default()
+                    },
+                    executions,
+                );
+            }
         }
         if context.native_programs && !terms.is_empty() && scoped.is_none() && remaining != 0 {
             let (term, work) = construction::composition::construct_term(
@@ -1594,7 +1652,7 @@ fn search_compiled_question(
                 knowledge
                     .as_ref()
                     .expect("checked theorem snapshot")
-                    .offer(&target, context.required)
+                    .offer(&target, &required_knowledge)
             })();
             let (selected, steps) = match selection {
                 Ok(selected) => selected,
@@ -1720,7 +1778,11 @@ fn search_compiled_question(
                         recipe.definitions.push(entry);
                     }
                 }
-                match construction::program_from_recipe(&target, recipe) {
+                match construction::program_from_authored_recipe(
+                    &target,
+                    recipe,
+                    context.definitions,
+                ) {
                     Ok(candidate) => {
                         return program_generation(
                             candidate.packet,
