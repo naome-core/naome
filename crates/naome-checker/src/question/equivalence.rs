@@ -113,18 +113,12 @@ fn extend(
     }))
 }
 
-fn unwrapped(formula: &Formula) -> Vec<Formula> {
-    let mut levels = vec![formula.clone()];
-    while let Some(body) = levels
-        .last()
-        .and_then(|formula| formula.open_outer_universal(FreeVariable::new(0)))
-    {
-        if !body.is_closed() {
-            break;
-        }
-        levels.push(body);
-    }
-    levels
+fn unwrapped(formula: &Formula) -> impl Iterator<Item = Formula> {
+    std::iter::successors(Some(formula.clone()), |current| {
+        current
+            .open_outer_universal(FreeVariable::new(0))
+            .filter(Formula::is_closed)
+    })
 }
 
 fn parts(formula: &Formula) -> Option<(Formula, Formula, bool)> {
@@ -148,10 +142,11 @@ fn swapped(a: Formula, b: Formula, negative: bool) -> Formula {
 /// The complete derived registry bucket for outer vacuity and the single
 /// root exchange `(A -> not(B)) <-> (B -> not(A))`, including its negation.
 pub(super) fn key(formula: &Formula) -> Result<StatementId, ContextError> {
-    let levels = unwrapped(formula);
-    let core = levels.last().expect("initial equivalence level");
+    let core = unwrapped(formula)
+        .last()
+        .expect("initial equivalence level");
     let mut bytes = core.encode_canonical().map_err(|_| ContextError::Limit)?;
-    if let Some((a, b, negative)) = parts(core) {
+    if let Some((a, b, negative)) = parts(&core) {
         let alternate = swapped(a, b, negative)
             .encode_canonical()
             .map_err(|_| ContextError::Limit)?;
@@ -237,8 +232,8 @@ pub(super) fn prove(
 ) -> Result<Option<DeductionWitness>, Failure> {
     reserve_key(from, work)?;
     reserve_key(to, work)?;
-    let from_levels = unwrapped(from);
-    let to_levels = unwrapped(to);
+    let from_levels: Vec<_> = unwrapped(from).collect();
+    let to_levels: Vec<_> = unwrapped(to).collect();
     let from_core = from_levels.last().ok_or(INVALID)?;
     let to_core = to_levels.last().ok_or(INVALID)?;
     let exchange = if from_core == to_core {
