@@ -119,7 +119,13 @@ impl Memory {
             .filter(|edge| edge.context == context)
             .filter_map(|edge| {
                 let strength = edge.strength(now);
-                (strength >= 2).then_some((strength, edge.observed, edge.proof))
+                // A recent checked use can supply another exact attempt.
+                // Only recurrent evidence changes the Finder opportunity prior.
+                (strength >= 2 || now.saturating_sub(edge.observed) < RECENCY).then_some((
+                    strength,
+                    edge.observed,
+                    edge.proof,
+                ))
             })
             .collect::<Vec<_>>();
         offers.sort_unstable_by_key(|&(strength, observed, proof)| {
@@ -181,4 +187,29 @@ pub(super) fn contributing(
         }
     }
     Ok(proofs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use naome_foundation::{Formula, FreeVariable};
+
+    #[test]
+    fn first_checked_use_can_be_retrieved_before_it_changes_the_opportunity_prior() {
+        let x = FreeVariable::new(0);
+        let goal =
+            ResearchQuestion::from_formula(Formula::for_all(x, Formula::member(x, x))).unwrap();
+        let context = Memory::context(Features::of(&goal).family, &goal);
+        let proof = ProofId::from_bytes([1; 32]);
+        let mut memory = Memory::default();
+
+        memory.observe(&goal, ArtifactId::from_bytes([2; 32]), &[proof], 1);
+        assert_eq!(memory.offers(context, 1), [(proof, 1)]);
+        assert_eq!(memory.opportunity(context, 1), 0);
+        assert!(memory.offers(context, 1 + RECENCY).is_empty());
+
+        memory.observe(&goal, ArtifactId::from_bytes([3; 32]), &[proof], 2);
+        assert_eq!(memory.offers(context, 2), [(proof, 2)]);
+        assert_eq!(memory.opportunity(context, 2), 1);
+    }
 }

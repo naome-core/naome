@@ -1150,12 +1150,19 @@ fn recurrent_checked_citations_restore_a_route_from_the_same_catalogue() {
             finder.disable_structural_recall();
         }
         for (index, q) in seed_goals.iter().enumerate() {
-            // The same seed opportunities are given the same checked source
-            // in both arms. Later cases ask Finder to recover it on its own.
-            let inputs = graph
-                .offered_solving_inputs(source_id, &[])
-                .unwrap()
-                .unwrap();
+            let (required, selected) = finder.solving_inputs(&graph, q, &[]).unwrap();
+            assert!(required.is_empty());
+            assert_eq!(selected.has_offer(), recall);
+            // Keep the checked starting catalogue for the post-restart probes
+            // identical even when the control cannot retrieve the source.
+            let inputs = if recall {
+                selected
+            } else {
+                graph
+                    .offered_solving_inputs(source_id, &[])
+                    .unwrap()
+                    .unwrap()
+            };
             let found = solve(q, &[], &inputs, seed, 12).unwrap();
             let job = index as u64 + 1;
             let root = stage_publication(&mut finder, &mut graph, q, found, job);
@@ -1168,7 +1175,11 @@ fn recurrent_checked_citations_restore_a_route_from_the_same_catalogue() {
                 // Redelivery is not another encounter.
                 finder.verified(q, &graph, job, root).unwrap();
                 let (_, inputs) = finder.solving_inputs(&graph, &probes[0], &[]).unwrap();
-                assert!(!inputs.has_offer(), "one use cannot establish recurrence");
+                assert_eq!(
+                    inputs.has_offer(),
+                    recall,
+                    "one checked use can supply an applicable offer",
+                );
             } else {
                 // The checker committed the proof; the resolution transaction
                 // committed, but its acknowledgement did not reach Finder.
