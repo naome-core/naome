@@ -222,7 +222,7 @@ impl<'a> RegisteredQuestion<'a> {
         maximum_nodes: usize,
     ) -> Result<Self, RejectionReason> {
         formula
-            .encode_canonical_with_node_limit(maximum_nodes)
+            .encoded_length_with_node_limit(maximum_nodes)
             .map_err(|_| RejectionReason::InputLimit)?;
         if !formula.is_closed() {
             return Err(RejectionReason::InvalidRegistry);
