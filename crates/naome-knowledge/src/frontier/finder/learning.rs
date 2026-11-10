@@ -453,7 +453,10 @@ impl Learning {
         }
         let outcomes = outcomes.values().collect::<Vec<_>>();
         let mut result = Vec::new();
-        for offset in 0..groups.len().min(3) {
+        // A family can supply distinct current outcomes and confirmed reuse
+        // from an earlier solver. Do not make them compete for a single slot
+        // just because the formulas share a shape.
+        for offset in 0..groups.len().max(outcomes.len()).min(3) {
             let index = if outcomes.len() > 1 {
                 let ordinal = self.cursor as usize + offset;
                 let classes = outcomes[ordinal % outcomes.len()]
