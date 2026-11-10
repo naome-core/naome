@@ -2,18 +2,27 @@
 //! establish input integrity only, never mathematical validity or admission.
 use super::{
     CHUNK_BYTES, CHUNK_RECORDS, Chunk, CodecFailure, Command, Manifest, RECORD_BYTES,
-    binary::{Reader, put_integer, read_command, write_command},
+    binary::{Reader, integer_length, put_integer, read_command, write_command},
     command_hash, decode_command, encode_command, stream_hash,
 };
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_BYTES: usize = 2 * 10 + 4 * 32;
+const MANIFEST_DIGEST_BYTES: usize = 4 * 32;
+pub const MANIFEST_BYTES: usize = 2 * 10 + MANIFEST_DIGEST_BYTES;
 
 impl Manifest {
+    /// Returns the length of the canonical manifest without its transport prefix.
+    pub fn encoded_length(&self) -> Result<usize, CodecFailure> {
+        self.validate_size_fields()?;
+        Ok(
+            integer_length(self.commands)
+                + integer_length(self.input_bytes)
+                + MANIFEST_DIGEST_BYTES,
+        )
+    }
+
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CodecFailure> {
-        if self.commands == 0 || self.input_bytes == 0 {
-            return Err(CodecFailure::InvalidManifest);
-        }
+        self.validate_size_fields()?;
         let mut bytes = Vec::with_capacity(MANIFEST_BYTES);
         put_integer(&mut bytes, self.commands);
         put_integer(&mut bytes, self.input_bytes);
@@ -26,6 +35,13 @@ impl Manifest {
             bytes.extend_from_slice(&digest);
         }
         Ok(bytes)
+    }
+
+    fn validate_size_fields(&self) -> Result<(), CodecFailure> {
+        if self.commands == 0 || self.input_bytes == 0 {
+            return Err(CodecFailure::InvalidManifest);
+        }
+        Ok(())
     }
 
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CodecFailure> {

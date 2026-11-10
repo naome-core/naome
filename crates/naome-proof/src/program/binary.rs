@@ -6,6 +6,10 @@ use super::{
 };
 use naome_foundation::graph::{Node, Variable};
 
+pub(super) fn integer_length(value: u64) -> usize {
+    (u64::BITS - value.leading_zeros()).max(1).div_ceil(7) as usize
+}
+
 pub(super) fn put_integer(out: &mut Vec<u8>, mut value: u64) {
     while value >= 128 {
         out.push((value as u8 & 0x7f) | 0x80);
