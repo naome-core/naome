@@ -71,6 +71,7 @@ jobs:
           --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
           --output_groups=+clippy_checks
           //:mr_build //:mr_tests //crates/... //vendor/...
+          @burn_dispatch_local//... @burn_tensor_local//...
           --profile="$RUNNER_TEMP/naome-bazel-build.json.gz"
 
       - name: Run fast regression tests
@@ -88,6 +89,11 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
           retention-days: 7
+
+      # Fresh crate resolution can regenerate ignored BUILD files. Detect any
+      # substantive change to the checked-in definitions before accepting CI.
+      - name: Verify generated Burn build definitions
+        run: bash tools/ci/verify-generated-burn-builds.sh
 
       - name: Verify tracked sources are unchanged
         run: git diff --exit-code HEAD
