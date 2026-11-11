@@ -43,7 +43,10 @@ impl Graph {
         use naome_checker::{ContextView, context::BucketKind, question};
         use naome_proof::StatementId;
 
-        let _memory = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)?;
+        let Ok(_memory) = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)
+        else {
+            return Ok(None);
+        };
         let mut roots = Vec::new();
         let context = self.checked_context();
         for goal in crate::learning::scoped_context_goals(question.proved_target())? {

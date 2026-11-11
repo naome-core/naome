@@ -122,24 +122,7 @@ fn graph_lemmas_feed_checked_decoder_replay_and_the_training_pool_after_reload()
     );
     let question = ResearchQuestion::from_formula(target).unwrap();
     let mut graph = crate::Graph::default();
-    let directory = crate::checkpoint::tests::Directory::new();
-    let frontier = crate::frontier::Frontier::open(
-        &directory.0,
-        &graph,
-        7,
-        crate::jobs::Settings {
-            native_proof_learning: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert!(
-        frontier
-            .solving_inputs(&graph, &question, &[])
-            .unwrap()
-            .1
-            .is_empty()
-    );
+    assert!(graph.scoped_solving_inputs(&question).unwrap().is_none());
     for lemma in &lemmas {
         graph
             .ingest(
@@ -150,8 +133,8 @@ fn graph_lemmas_feed_checked_decoder_replay_and_the_training_pool_after_reload()
             )
             .unwrap();
     }
-    let (required, inputs) = frontier.solving_inputs(&graph, &question, &[]).unwrap();
-    assert!(required.is_empty());
+    let inputs = graph.scoped_solving_inputs(&question).unwrap().unwrap();
+    assert!(!inputs.has_offer());
     let inputs: Prerequisites =
         serde_json::from_slice(&serde_json::to_vec(&inputs).unwrap()).unwrap();
     let (_, generated, _) = paired(&question, 3, &[], Some(&inputs), &[]);
