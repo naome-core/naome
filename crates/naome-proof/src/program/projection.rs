@@ -71,6 +71,14 @@ impl Projection {
         sites: &[usize],
     ) -> Result<Self, ProjectionFailure> {
         let steps = proof.certificate().steps();
+        // Normal forms already have dependency-ordered references.
+        if sites.is_empty() {
+            return Self::emit_steps(
+                steps,
+                std::iter::repeat_n(InstantiationFold::Ordinary, steps.len()),
+                &BTreeMap::new(),
+            );
+        }
         let uses = reference_counts(steps)?;
         Self::lower_steps(steps, &uses, sites.iter().copied(), &BTreeMap::new())
     }
@@ -111,6 +119,14 @@ impl Projection {
             };
         }
 
+        Self::emit_steps(steps, folds, authored)
+    }
+
+    fn emit_steps(
+        steps: &[ProofStep],
+        folds: impl IntoIterator<Item = InstantiationFold>,
+        authored: &BTreeMap<DefinitionId, DefinedFormula>,
+    ) -> Result<Self, ProjectionFailure> {
         let mut builder = Builder {
             authored: Some(authored),
             ..Builder::default()
