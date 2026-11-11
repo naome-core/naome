@@ -6,6 +6,7 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use std::{cell::Cell, collections::BTreeMap, fs, path::Path, time::Instant};
+pub(super) mod codec;
 mod digest;
 mod inventory;
 pub(super) mod program;
@@ -38,9 +39,9 @@ const TABLES: [(&str, &str); 7] = [
     ("program_input", "CREATE TABLE program_input (
         id BLOB NOT NULL CHECK(length(id)=32),
         position INTEGER NOT NULL CHECK(position>=0),
-        command BLOB NOT NULL CHECK(length(command) BETWEEN 1 AND 4096),
-        hash BLOB NOT NULL CHECK(length(hash)=32),
-        suffix BLOB NOT NULL CHECK(length(suffix)=32),
+        input_before INTEGER NOT NULL CHECK(input_before>=0),
+        chunk BLOB NOT NULL CHECK(length(chunk) BETWEEN 1 AND 32842),
+        digest BLOB NOT NULL CHECK(length(digest)=32),
         PRIMARY KEY(id,position), FOREIGN KEY(id) REFERENCES programs(id)
     ) STRICT, WITHOUT ROWID"),
     (
@@ -74,8 +75,8 @@ const TABLES: [(&str, &str); 7] = [
         statement BLOB CHECK(statement IS NULL OR length(statement) = 32),
         obligation BLOB CHECK(obligation IS NULL OR length(obligation) = 32),
         compatibility BLOB NOT NULL CHECK(length(compatibility) = 32),
-        payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 4194305),
-        payload_length INTEGER NOT NULL CHECK(payload_length = length(payload)),
+        payload BLOB NOT NULL CHECK(length(payload) BETWEEN 2 AND 4194306),
+        payload_length INTEGER NOT NULL CHECK(payload_length BETWEEN 1 AND 4194305 AND length(payload) <= payload_length + 1),
         payload_digest BLOB NOT NULL CHECK(length(payload_digest) = 32),
         origin_commit BLOB NOT NULL CHECK(length(origin_commit) = 32),
         FOREIGN KEY(origin_commit) REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED
@@ -1059,7 +1060,8 @@ fn read_record(
         return Err(crate::InputFault::CatalogPayloadLength.into());
     }
     let bytes = length
-        .checked_mul(4)
+        .checked_mul(6)
+        .and_then(|bytes| bytes.checked_add(65536))
         .ok_or(crate::InputFault::CatalogProofMemoryOverflow)?;
     let memory = match admission {
         ReadAdmission::Work => crate::resources::MemoryLease::acquire(bytes),
@@ -1080,13 +1082,13 @@ fn read_record(
     let stored: Option<Stored> = {
         let mut statement = connection
             .prepare_cached(
-                "SELECT substr(statement,1,33), substr(compatibility,1,33), substr(payload,1,4194306),
+                "SELECT substr(statement,1,33), substr(compatibility,1,33), substr(payload,1,?2),
                 payload_length, substr(payload_digest,1,33), substr(origin_commit,1,33), replay_order, substr(obligation,1,33)
          FROM artifacts WHERE id = ?1",
             )
             .map_err(sql_error)?;
         statement
-            .query_row(params![id.as_slice()], |row| {
+            .query_row(params![id.as_slice(), (length + 2) as i64], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -1101,8 +1103,16 @@ fn read_record(
             .optional()
             .map_err(sql_error)?
     };
-    let Some((statement, compatibility, payload, length, digest, origin, ordinal, obligation)) =
-        stored
+    let Some((
+        statement,
+        compatibility,
+        encoded,
+        stored_length,
+        digest,
+        origin,
+        ordinal,
+        obligation,
+    )) = stored
     else {
         return Ok(None);
     };
@@ -1112,11 +1122,13 @@ fn read_record(
     let digest = key(digest)?;
     let origin = key(origin)?;
     let replay_order = replay_ordinal(ordinal)?;
-    if payload.is_empty()
-        || payload.len() > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES
-        || usize::try_from(length).ok() != Some(payload.len())
-        || <[u8; 32]>::from(Sha256::digest(&payload)) != digest
+    if usize::try_from(stored_length).ok() != Some(length)
+        || encoded.len() > length.saturating_add(1)
     {
+        return Err(crate::InputFault::CatalogPayloadDigest.into());
+    }
+    let payload = codec::decode(&encoded, length)?;
+    if <[u8; 32]>::from(Sha256::digest(&payload)) != digest {
         return Err(crate::InputFault::CatalogPayloadDigest.into());
     }
     if compatibility != crate::compatibility()
@@ -1276,8 +1288,8 @@ fn corpus_summary(connection: &Connection) -> Result<Summary, crate::Error> {
     let (count, bytes, invalid): (i64, i64, i64) = connection
         .query_row(
             "SELECT count(*), coalesce(sum(payload_length), 0),
-            coalesce(sum(CASE WHEN payload_length != length(payload)
-                OR length(payload) NOT BETWEEN 1 AND 4194305 THEN 1 ELSE 0 END), 0) FROM artifacts",
+            coalesce(sum(CASE WHEN payload_length NOT BETWEEN 1 AND 4194305
+                OR length(payload) NOT BETWEEN 2 AND payload_length + 1 THEN 1 ELSE 0 END), 0) FROM artifacts",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -1387,11 +1399,18 @@ fn insert_commit(
                 .checked_add(object.input_order)
                 .and_then(|value| value.checked_add(1))
                 .ok_or(crate::InputFault::CatalogReplayOrdinalOverflow)?;
+            let work = member
+                .length
+                .checked_mul(3)
+                .and_then(|bytes| bytes.checked_add(65536))
+                .ok_or(crate::InputFault::CatalogProofMemoryOverflow)?;
+            let _memory = crate::resources::MemoryLease::acquire_drain(work)?;
+            let payload = codec::encode(&object.payload)?;
             connection.execute(
                 "INSERT INTO artifacts(id, statement, obligation, compatibility, payload, payload_length, payload_digest, origin_commit, replay_order)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![member.id.as_slice(), member.statement.as_ref().map(|id| id.as_slice()), member.obligation.as_ref().map(|id| id.as_slice()), member.compatibility.as_slice(),
-                    object.payload.as_slice(), sql_width(member.length)?, member.digest.as_slice(), commit.as_slice(), sql_width(replay_order)?],
+                    payload.as_slice(), sql_width(member.length)?, member.digest.as_slice(), commit.as_slice(), sql_width(replay_order)?],
             ).map_err(sql_error)?;
             for (ordinal, dependency) in member.dependencies.iter().enumerate() {
                 connection

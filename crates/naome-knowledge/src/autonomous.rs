@@ -1416,7 +1416,12 @@ impl Autonomous {
                 // Ranking is a scheduling hint. The selected target crosses the
                 // fresh formal gate below before any provider work is admitted.
                 let candidates = self.unanswered.iter().collect::<Vec<_>>();
-                match frontier.choose(&candidates, graph, self.intervals.jobs.solving, false) {
+                let choice = if self.formal_goal.is_none() {
+                    frontier.choose_free_solver(&candidates, graph, self.intervals.jobs.solving)
+                } else {
+                    frontier.choose(&candidates, graph, self.intervals.jobs.solving, false)
+                };
+                match choice {
                     Ok(index) => index,
                     Err(error) => {
                         if error.fatal() {

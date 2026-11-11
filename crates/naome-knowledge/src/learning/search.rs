@@ -23,6 +23,7 @@ use std::{
 };
 
 pub(super) const TIME_LIMIT: Duration = Duration::from_millis(2500);
+const FACT_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Action {
@@ -99,12 +100,12 @@ struct State {
 enum Wrap {
     Universal(FreeVariable),
     Assumption(Formula),
+    DoubleNegation,
 }
 struct Prepared {
     body: Formula,
     wrap: Vec<Wrap>,
     state: State,
-    double: usize,
 }
 
 fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, crate::Error> {
@@ -117,14 +118,14 @@ fn fresh(formulas: impl Iterator<Item = Formula>) -> Result<FreeVariable, crate:
 
 fn prepare(target: &Formula) -> Result<Prepared, crate::Error> {
     let mut body = target.clone();
-    let mut double = 0;
-    while let Some(inner) = body.view().negated().and_then(|f| f.negated()) {
-        body = inner.to_owned();
-        double += 1;
-    }
     let mut wrap = Vec::new();
     let mut facts = Vec::new();
     loop {
+        if let Some(inner) = body.view().negated().and_then(|f| f.negated()) {
+            body = inner.to_owned();
+            wrap.push(Wrap::DoubleNegation);
+            continue;
+        }
         let variable = fresh(facts.iter().cloned().chain(std::iter::once(body.clone())))?;
         if let Some(opened) = body.open_outer_universal(variable) {
             body = opened;
@@ -164,7 +165,6 @@ fn prepare(target: &Formula) -> Result<Prepared, crate::Error> {
             used: BTreeSet::new(),
             domain: domain.into_iter().collect(),
         },
-        double,
     })
 }
 
@@ -192,6 +192,15 @@ fn offers(state: &State) -> Vec<Offer> {
         index.entry(fact.view()).or_insert(position);
     }
     let already_closed = close(state).is_some();
+    // If an existing implication concludes the denied goal, supplying its
+    // exact missing premise enables a one-step contradiction in the child.
+    let closing_premises = state
+        .facts
+        .iter()
+        .filter_map(|fact| fact.view().implication_parts())
+        .filter(|(premise, result)| *result == state.goal.view() && !index.contains_key(premise))
+        .map(|(premise, _)| premise)
+        .collect::<std::collections::HashSet<_>>();
     let mut result = Vec::new();
     let mut fused_actions = Vec::new();
     for (i, f) in state.facts.iter().enumerate() {
@@ -266,7 +275,7 @@ fn offers(state: &State) -> Vec<Offer> {
             .collect::<std::collections::HashSet<_>>()
     });
     let mut relevance_cache = HashMap::new();
-    type RankedOffer = ((bool, u8, usize), Offer);
+    type RankedOffer = ((bool, bool, u8, usize), Offer);
     let mut ranked: Vec<RankedOffer> = Vec::new();
     let mut best_by_rule: [Option<RankedOffer>; 8] = Default::default();
     let mut direct_close = false;
@@ -295,6 +304,11 @@ fn offers(state: &State) -> Vec<Offer> {
             continue;
         }
         direct_close |= !fused && closes;
+        let prepares_close = delta.count == 1
+            && state.facts.len() + delta.additions[0].len() <= FACT_LIMIT
+            && delta.additions[0]
+                .iter()
+                .any(|fact| closing_premises.contains(&fact.view()));
         let relevance = delta
             .branches()
             .iter()
@@ -329,6 +343,7 @@ fn offers(state: &State) -> Vec<Offer> {
             });
         let score = (
             closes,
+            prepares_close,
             instance_tier,
             relevance * 4 + usize::from(!matches!(action, Action::Beta(_))),
         );
@@ -348,6 +363,7 @@ fn offers(state: &State) -> Vec<Offer> {
                 action,
                 delta,
                 closes,
+                prepares_close,
             },
         );
         let compare =
@@ -379,10 +395,10 @@ fn offers(state: &State) -> Vec<Offer> {
             selected.push(candidate);
         }
     }
-    // The tier affects admission only. Keep the menu order for ranking and
-    // checked replay independent of the capacity preference.
+    // Capacity preferences affect admission only. Keep the menu order for
+    // learned ranking and checked replay consistent.
     selected.sort_by(
-        |((a_close, _, a_relevance), a), ((b_close, _, b_relevance), b)| {
+        |((a_close, _, _, a_relevance), a), ((b_close, _, _, b_relevance), b)| {
             (b_close, b_relevance)
                 .cmp(&(a_close, a_relevance))
                 .then(a.action.cmp(&b.action))
@@ -396,6 +412,7 @@ struct Offer {
     action: Action,
     delta: Delta,
     closes: bool,
+    prepares_close: bool,
 }
 
 #[derive(Clone)]
@@ -441,6 +458,7 @@ fn decision(
             Ok(Offer {
                 action: action.clone(),
                 closes: false,
+                prepares_close: false,
                 delta: transition(state, action, &index)?,
             })
         })
@@ -726,7 +744,7 @@ impl Search<'_> {
             self.expansion_limit();
             return Ok(None);
         }
-        if state.facts.len() > 32 {
+        if state.facts.len() > FACT_LIMIT {
             self.failure = Some(GenerationOutcome::FactLimit);
             self.terminal
                 .include(TerminalEvidence::Unsupported(Capacity::Facts));
@@ -742,13 +760,17 @@ impl Search<'_> {
             }
             return Ok(None);
         }
-        // A transition that closes every child needs neither a learned
-        // ordering nor successor memory. Its exact action remains in the
-        // offered set and the checker still verifies the resulting proof.
+        // A one- or two-step closure has concrete operands and needs no
+        // learned ordering or successor memory.
         let closing = (depth < 32)
             .then(|| offers.iter().position(|offer| offer.closes))
             .flatten();
-        let (plan, key) = if let Some(index) = closing {
+        let forced = closing.or_else(|| {
+            (depth < 31 && self.limit - self.expansions >= 2)
+                .then(|| offers.iter().position(|offer| offer.prepares_close))
+                .flatten()
+        });
+        let (plan, key) = if let Some(index) = forced {
             let mut ranks = vec![0.; actions.len()];
             ranks[index] = 1.;
             (Plan::scores(ranks), None)
@@ -793,7 +815,7 @@ impl Search<'_> {
         }
         let mut order: Vec<_> = (0..actions.len()).collect();
         order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));
-        if closing.is_some() {
+        if forced.is_some() {
             order.truncate(1);
         }
         // Give the first genuinely ambiguous decision room to try an
@@ -1305,15 +1327,12 @@ fn compile_tableau(
     p.state.knowledge = knowledge.iter().map(Term::formula).collect();
     let mut names = Names::default();
     let mut facts = Vec::new();
-    let mut wrappers = Vec::new();
+    let mut assumption_ids = Vec::new();
     for w in &p.wrap {
-        match w {
-            Wrap::Universal(v) => wrappers.push((Some(*v), 0, None)),
-            Wrap::Assumption(f) => {
-                let (id, t) = names.assumption(f.clone());
-                facts.push(t);
-                wrappers.push((None, id, Some(f.clone())));
-            }
+        if let Wrap::Assumption(f) = w {
+            let (id, term) = names.assumption(f.clone());
+            facts.push(term);
+            assumption_ids.push(id);
         }
     }
     let (root, ng) = names.assumption(c::not(p.body.clone()));
@@ -1339,19 +1358,18 @@ fn compile_tableau(
     } else {
         c::raa(p.body, root, a, b, &mut names)?
     };
-    for (v, id, f) in wrappers.into_iter().rev() {
-        term = if let Some(v) = v {
-            Term::Generalize(v, Box::new(term))
-        } else {
-            Term::Lambda(
-                id,
-                f.ok_or(crate::ResearchFailure::ReplayAssumptionWrapper)?,
+    for wrap in p.wrap.into_iter().rev() {
+        term = match wrap {
+            Wrap::Universal(variable) => Term::Generalize(variable, Box::new(term)),
+            Wrap::Assumption(formula) => Term::Lambda(
+                assumption_ids
+                    .pop()
+                    .ok_or(crate::ResearchFailure::ReplayAssumptionWrapper)?,
+                formula,
                 Box::new(term),
-            )
+            ),
+            Wrap::DoubleNegation => c::double_intro(term, &mut names)?,
         };
-    }
-    for _ in 0..p.double {
-        term = c::double_intro(term, &mut names)?;
     }
     if term.formula() != *target {
         return Err(crate::ResearchFailure::ReplayCompiledTarget.into());
@@ -1388,6 +1406,67 @@ mod witness_tests {
             Ok(vec![0.; d.candidates.len()])
         }
     }
+
+    #[test]
+    fn nested_goal_double_negations_use_checked_introductions_without_search() {
+        struct UnexpectedInference;
+        impl Ranker for UnexpectedInference {
+            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+                Err("goal introductions must not invoke inference".into())
+            }
+        }
+
+        let [x, y] = [0, 1].map(FreeVariable::new);
+        let p = Formula::member(x, x);
+        let q = Formula::member(y, x);
+        let double = |formula| Formula::negate(Formula::negate(formula));
+        let nested = Formula::for_all(y, Formula::implies(q, double(p.clone())));
+        let target = double(Formula::for_all(x, Formula::implies(p, double(nested))));
+        let result = solve(&target, &mut UnexpectedInference, 1).unwrap();
+        assert_eq!(result.expansions, 0);
+        let (term, graphs) = compile(&target, &result.tree.unwrap()).unwrap();
+        assert!(graphs.is_empty());
+        super::super::proof::verify(&term, &target).unwrap();
+    }
+
+    #[test]
+    fn equality_substitution_can_prepare_a_checked_two_step_closure() {
+        struct UnexpectedInference;
+        impl Ranker for UnexpectedInference {
+            fn scores(&mut self, _: &Decision) -> Result<Vec<f32>, crate::Error> {
+                Err("a two-step closure must not invoke inference".into())
+            }
+        }
+
+        let [x, y, z] = [0, 1, 2].map(FreeVariable::new);
+        let premise = Formula::member(x, z);
+        let intermediate = Formula::member(y, z);
+        let goal = Formula::member(z, y);
+        let rule = Formula::implies(intermediate, goal.clone());
+        let target = Formula::implies(
+            Formula::equal(x, y),
+            Formula::implies(
+                premise,
+                Formula::implies(rule, Formula::negate(Formula::negate(goal))),
+            ),
+        );
+        let result = solve(&target, &mut UnexpectedInference, 2).unwrap();
+        assert_eq!(result.expansions, 2);
+        let tree = result.tree.unwrap();
+        assert!(matches!(
+            tree,
+            Tree::Step {
+                action: Action::Substitute(..),
+                ..
+            }
+        ));
+        let (term, _) = compile(&target, &tree).unwrap();
+        super::super::proof::verify(&term, &target).unwrap();
+        let limited = solve(&target, &mut Ordered, 1).unwrap();
+        assert!(limited.tree.is_none());
+        assert_eq!(limited.expansions, 1);
+    }
+
     #[test]
     fn the_last_allowed_transition_can_close_without_spending_another_expansion() {
         struct UnexpectedInference;

@@ -550,7 +550,7 @@ impl CheckedProgram {
     /// Requires the original bounded target. Larger targets can use
     /// `check_target_root`; neither operation materializes the proved DAG.
     pub fn check_target(&self, target: &Formula) -> Result<(), Error> {
-        if let Err(error) = target.encode_canonical() {
+        if let Err(error) = target.encoded_length() {
             return Err(Error::Check(Box::new(
                 self.target_report(crate::diagnostics::formula_failure(&error))?,
             )));

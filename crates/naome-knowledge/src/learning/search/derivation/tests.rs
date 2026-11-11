@@ -330,22 +330,27 @@ fn hindsight_does_not_invent_observation_of_a_rebased_checked_path() {
                 .collect())
         }
     }
-    let [x, y] = [0, 1].map(FreeVariable::new);
+    let [x, y, z] = [0, 1, 2].map(FreeVariable::new);
     let seed = Formula::member(x, x);
-    let intermediate = Formula::member(x, y);
-    let goal = Formula::member(y, x);
+    let first = Formula::member(x, y);
+    let second = Formula::member(y, x);
+    let goal = Formula::member(z, x);
     let detour = Formula::negate(Formula::negate(Formula::member(y, y)));
     let target = [
         detour,
         seed.clone(),
-        Formula::implies(seed, intermediate.clone()),
-        Formula::implies(intermediate, goal.clone()),
+        Formula::implies(seed, first.clone()),
+        Formula::implies(first, second.clone()),
+        Formula::implies(second, goal.clone()),
     ]
     .into_iter()
     .rev()
     .fold(goal, |result, premise| Formula::implies(premise, result));
-    let q =
-        ResearchQuestion::from_formula(Formula::for_all(x, Formula::for_all(y, target))).unwrap();
+    let q = ResearchQuestion::from_formula(Formula::for_all(
+        x,
+        Formula::for_all(y, Formula::for_all(z, target)),
+    ))
+    .unwrap();
     let found = solve(q.proved_target(), &mut Detour, 128).unwrap();
     let tree = found.tree.unwrap();
     let trace = found.execution.unwrap();

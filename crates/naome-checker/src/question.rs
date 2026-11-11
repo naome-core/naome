@@ -29,7 +29,7 @@ pub(crate) mod index;
 mod instantiation;
 pub use instantiation::{universal_operands, universal_pattern};
 mod registry;
-pub use registry::{QuestionRegistry, QuestionRegistryCopy};
+pub use registry::{QuestionRegistry, QuestionRegistryCopy, authenticates_registry_storage};
 
 /// Hard limits for one question and the work performed by one assessment.
 /// These impose no total checked-graph or registry cardinality/byte ceiling.

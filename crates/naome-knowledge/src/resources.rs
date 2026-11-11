@@ -481,7 +481,7 @@ pub(crate) struct DiskLease {
     reservation: u64,
     bytes: u128,
 }
-fn disk_capacity(path: &std::path::Path) -> Result<(u64, u128), crate::Error> {
+fn disk_capacity(path: &std::path::Path) -> Result<(u64, u128, u64), crate::Error> {
     use std::os::unix::fs::MetadataExt;
     let volume = std::fs::metadata(path)
         .map_err(|error| {
@@ -499,7 +499,11 @@ fn disk_capacity(path: &std::path::Path) -> Result<(u64, u128), crate::Error> {
     let available = TEST_DISK
         .with(|value| value.get())
         .map_or(available, |(_, available)| available);
-    Ok((volume, available))
+    Ok((
+        volume,
+        available,
+        stats.block_size().max(stats.fragment_size()),
+    ))
 }
 impl DiskLease {
     fn reservation_key(&self) -> u64 {
@@ -513,7 +517,7 @@ impl DiskLease {
         }
     }
     pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
-        let (volume, available) = disk_capacity(path)?;
+        let (volume, available, _) = disk_capacity(path)?;
         if volume != self.volume {
             return Err(validation(
                 crate::ResourceValidationReason::DiskVolumeChanged,
@@ -544,7 +548,32 @@ impl DiskLease {
         Ok(())
     }
     pub(crate) fn acquire(path: &std::path::Path, additional: u64) -> Result<Self, crate::Error> {
-        let (volume, available) = disk_capacity(path)?;
+        let (volume, available, _) = disk_capacity(path)?;
+        Self::acquire_at(volume, available, additional)
+    }
+    /// Reserve bytes and filesystem block overhead from the same capacity observation.
+    pub(crate) fn acquire_with_filesystem_overhead(
+        path: &std::path::Path,
+        additional: u64,
+        minimum: u64,
+        blocks: u64,
+    ) -> Result<Self, crate::Error> {
+        let (volume, available, block_size) = disk_capacity(path)?;
+        let total = block_size
+            .checked_mul(blocks)
+            .map(|overhead| overhead.max(minimum))
+            .and_then(|overhead| additional.checked_add(overhead))
+            .ok_or_else(|| {
+                validation(
+                    crate::ResourceValidationReason::DiskReservationOverflow,
+                    None,
+                    None,
+                    None,
+                )
+            })?;
+        Self::acquire_at(volume, available, total)
+    }
+    fn acquire_at(volume: u64, available: u128, additional: u64) -> Result<Self, crate::Error> {
         let mut lease = Self {
             volume,
             bytes: 0,
@@ -562,7 +591,7 @@ impl DiskLease {
         path: &std::path::Path,
         total: u64,
     ) -> Result<(), crate::Error> {
-        let (volume, available) = disk_capacity(path)?;
+        let (volume, available, _) = disk_capacity(path)?;
         if volume != self.volume {
             return Err(validation(
                 crate::ResourceValidationReason::DiskVolumeChanged,

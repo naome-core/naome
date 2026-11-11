@@ -82,11 +82,19 @@ impl Chunk {
     }
 
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CodecFailure> {
+        Self::from_canonical_bytes_with_record_limit(bytes, CHUNK_RECORDS)
+    }
+
+    /// Decode a chunk while limiting the number of allocated commands.
+    pub fn from_canonical_bytes_with_record_limit(
+        bytes: &[u8],
+        limit: usize,
+    ) -> Result<Self, CodecFailure> {
         let mut input = Reader(bytes);
         let start = input.integer()?;
         let previous = input.fixed()?;
         let next = input.fixed()?;
-        let records = decode_records(input.0)?;
+        let records = decode_records_with_limit(input.0, limit)?;
         Ok(Self {
             start,
             previous,
@@ -112,13 +120,17 @@ pub fn encode_records(records: &[Command]) -> Result<Vec<u8>, CodecFailure> {
 }
 
 pub fn decode_records(bytes: &[u8]) -> Result<Vec<Command>, CodecFailure> {
+    decode_records_with_limit(bytes, CHUNK_RECORDS)
+}
+
+fn decode_records_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Command>, CodecFailure> {
     if bytes.is_empty() || bytes.len() > CHUNK_BYTES {
         return Err(CodecFailure::ChunkBytes);
     }
     let mut input = Reader(bytes);
     let mut records = Vec::new();
     while !input.0.is_empty() {
-        if records.len() == CHUNK_RECORDS {
+        if records.len() >= limit.min(CHUNK_RECORDS) {
             return Err(CodecFailure::ChunkRecords);
         }
         let before = input.0.len();

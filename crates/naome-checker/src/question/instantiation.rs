@@ -127,6 +127,9 @@ pub fn universal_operands(
     target: &Formula,
     maximum: usize,
 ) -> Result<Option<Vec<FreeVariable>>, naome_foundation::FormulaCodecError> {
+    if maximum == 0 || !source.has_outer_universal() {
+        return Ok(None);
+    }
     let Some((opened, variables)) = open(source, &target.free_variables(), maximum) else {
         return Ok(None);
     };

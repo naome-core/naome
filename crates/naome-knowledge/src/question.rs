@@ -541,7 +541,11 @@ where
                 Err(error) if error.retryable() => return Ok(()),
                 Err(error) => return Err(error),
             };
-            let target = storage.successor()?;
+            let target = match storage.successor() {
+                Ok(target) => target,
+                Err(error) if error.retryable() => return Ok(()),
+                Err(error) => return Err(error),
+            };
             storage.mirror_to(target.clone())?;
             let mut copy = RegistryCompaction {
                 source: storage,
@@ -562,7 +566,10 @@ where
             ) {
                 Ok(progress) => progress,
                 Err(naome_checker::ContextError::Limit) => {
-                    self.compaction = Some(copy);
+                    // A failed authenticated cursor is invalid even when the
+                    // limit is transient. Dropping the copy detaches its
+                    // mirror; the next maintenance pass starts from the
+                    // current source roots and a fresh target.
                     return Ok(());
                 }
                 Err(error) => return Err(error.into()),

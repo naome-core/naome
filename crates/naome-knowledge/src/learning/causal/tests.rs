@@ -128,6 +128,56 @@ fn opposing_halves_and_interactions_use_only_explicit_coordinates() {
 }
 
 #[test]
+fn screening_cannot_skip_a_better_checked_update() {
+    let (gains, protected) = (0b11000, 0b00111);
+    for current in 0..32 {
+        let incumbent = Subset {
+            spans: Vec::new(),
+            changed: 2,
+            checked: current,
+        };
+        for checked in 0..32 {
+            for changed in [1, 2, 3] {
+                let mut calls = Vec::new();
+                let (observed, paid) =
+                    selection::screen(&incumbent, changed, gains, protected, |index| {
+                        calls.push(index);
+                        Ok((checked & (1 << index) != 0, 2))
+                    })
+                    .unwrap();
+                let mut proposal = Subset {
+                    spans: Vec::new(),
+                    changed,
+                    checked,
+                };
+                let best = rank(&incumbent, gains, protected);
+                let improves = rank(&proposal, gains, protected) > best;
+                proposal.checked = observed;
+                assert_eq!(rank(&proposal, gains, protected) > best, improves);
+                if improves {
+                    assert_eq!(calls.len(), 5);
+                    assert_eq!(observed, checked);
+                }
+                assert_eq!(paid as usize, 2 * calls.len());
+            }
+        }
+    }
+    let incumbent = Subset {
+        spans: Vec::new(),
+        changed: 2,
+        checked: 0b11011,
+    };
+    let mut calls = Vec::new();
+    let (checked, paid) = selection::screen(&incumbent, 3, gains, protected, |index| {
+        calls.push(index);
+        Ok((false, 32))
+    })
+    .unwrap();
+    assert_eq!((checked, paid), (0, 32));
+    assert_eq!(calls, vec![2]);
+}
+
+#[test]
 fn typed_forks_require_the_same_prefix_and_ordered_menu() {
     let mut sample = test_pair([false, true]);
     let decision = |state, offered, selected| generation::DecisionObservation {

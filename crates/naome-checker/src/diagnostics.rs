@@ -282,7 +282,7 @@ impl ProofDiagnostic {
         target: &naome_foundation::Formula,
     ) -> Result<(), FormulaFailure> {
         target
-            .encode_canonical()
+            .encoded_length()
             .map_err(|error| FormulaFailure::from(&error))?;
         let mut fragment = formula::tree_fragment(target.view(), FORMULA_FRAGMENT_NODES, 0);
         fragment.variable_namespace = VariableNamespace::Supplied;
