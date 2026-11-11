@@ -375,3 +375,6 @@ fn certified_proof_addresses_resolve_in_both_solver_contexts() {
         assert!(commands.contains(&reference));
     }
 }
+
+mod replay;
+mod transfer;

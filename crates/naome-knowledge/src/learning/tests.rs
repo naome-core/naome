@@ -1793,7 +1793,7 @@ fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
     finder.refresh(&graph, |_| true).unwrap();
     let (required, inputs) = finder.solving_inputs(&graph, &target, &[]).unwrap();
     assert!(required.is_empty());
-    assert!(inputs.has_optional_context());
+    assert!(inputs.has_offer());
     assert!(
         !inputs.is_empty(),
         "structural lookup must supply the checked lemma"

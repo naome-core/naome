@@ -9,6 +9,7 @@ use naome_proof::{
 pub(crate) mod cut;
 mod demand;
 pub(in crate::learning) mod generation;
+pub(in crate::learning) use generation::graphs as typed_program_graphs;
 
 const TIME_LIMIT: Duration = Duration::from_millis(2500);
 const ACTIONS: usize = 8;

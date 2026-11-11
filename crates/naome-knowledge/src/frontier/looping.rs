@@ -290,6 +290,9 @@ impl Frontier {
             }
         }
         if self.native && planned.is_empty() {
+            if let Some(inputs) = graph.scoped_solving_inputs(question)? {
+                return Ok((Vec::new(), inputs));
+            }
             let target = question.proved_target();
             let mut candidates = Vec::new();
             let recent = self.lemmas.offers(&lemma_index::Index::query(question));

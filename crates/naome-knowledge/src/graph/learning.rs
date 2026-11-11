@@ -16,7 +16,14 @@ impl Graph {
         required: &[String],
         definitions: &[ArtifactId],
     ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
-        self.capture_solving_inputs(required, definitions, None)
+        if required.len() > crate::learning::knowledge::CAPACITY {
+            return Err(crate::InputFault::LearningPrerequisiteCapacity.into());
+        }
+        let roots = required
+            .iter()
+            .map(|id| crate::object::proof_address(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.capture_solving_inputs(&roots, definitions, None)
     }
 
     pub(crate) fn offered_solving_inputs(
@@ -24,12 +31,78 @@ impl Graph {
         proof: naome_proof::ProofId,
         definitions: &[ArtifactId],
     ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
-        self.capture_solving_inputs(&[], definitions, Some(proof))
+        self.capture_solving_inputs(&[proof.into()], definitions, Some(proof))
+    }
+
+    /// Supply a bounded pool of checked operands to the typed worker.
+    /// The roots remain optional and the worker checks the captured closure.
+    pub(crate) fn scoped_solving_inputs(
+        &self,
+        question: &naome_checker::question::ResearchQuestion,
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        use naome_checker::{ContextView, context::BucketKind, question};
+        use naome_proof::StatementId;
+
+        let _memory = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)?;
+        let mut roots = Vec::new();
+        let context = self.checked_context();
+        for goal in crate::learning::scoped_context_goals(question.proved_target())? {
+            let closed = crate::learning::proof::close(goal.clone());
+            let bytes = closed.encode_canonical()?;
+            let statement = StatementId::of_canonical_formula(&bytes)
+                .ok_or(crate::InputFault::FinderOperandStatementWidth)?;
+            let mut selected = context
+                .statement_header(statement)?
+                .map(|header| header.proof_id());
+            if selected.is_none() && !goal.is_closed() {
+                let pattern = question::universal_pattern(&goal)?;
+                for statement in context.bucket(BucketKind::Instances, pattern)?.take(4) {
+                    let statement = statement?;
+                    let Some(header) = context.statement_header(statement)? else {
+                        continue;
+                    };
+                    if header.canonical_length() > question::QUESTION_BYTES {
+                        continue;
+                    }
+                    let Some(source) = context.statement_formula_from_header(
+                        statement,
+                        header,
+                        header.canonical_length(),
+                    )?
+                    else {
+                        continue;
+                    };
+                    if question::universal_operands(
+                        &source,
+                        &goal,
+                        question::QUESTION_TARGET_MAX_DEPTH,
+                    )?
+                    .is_some()
+                    {
+                        selected = Some(header.proof_id());
+                        break;
+                    }
+                }
+            }
+            if let Some(proof) = selected {
+                let id = ArtifactId::from(proof);
+                if !roots.contains(&id) {
+                    roots.push(id);
+                    if roots.len() == 4 {
+                        break;
+                    }
+                }
+            }
+        }
+        if roots.is_empty() {
+            return Ok(None);
+        }
+        self.capture_solving_inputs(&roots, question.dependencies(), None)
     }
 
     fn capture_solving_inputs(
         &self,
-        required: &[String],
+        roots: &[ArtifactId],
         definitions: &[ArtifactId],
         offered: Option<naome_proof::ProofId>,
     ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
@@ -91,9 +164,6 @@ impl Graph {
                 Ok(true)
             }
         }
-        if required.len() > crate::learning::knowledge::CAPACITY {
-            return Err(crate::InputFault::LearningPrerequisiteCapacity.into());
-        }
         let mut capture = Capture {
             graph: self,
             active: Default::default(),
@@ -111,15 +181,10 @@ impl Graph {
                 return Ok(None);
             }
         }
-        for id in required {
-            if !capture.visit(crate::object::proof_address(id)?)? {
+        for &id in roots {
+            if !capture.visit(id)? {
                 return Ok(None);
             }
-        }
-        if let Some(proof) = offered
-            && !capture.visit(proof.into())?
-        {
-            return Ok(None);
         }
         crate::learning::Prerequisites::from_inputs(
             capture.artifacts,

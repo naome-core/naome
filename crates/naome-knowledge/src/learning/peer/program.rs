@@ -722,7 +722,13 @@ fn graphs(
     let goal_parts = crate::learning::knowledge::fragments(target);
     let used = used_commands(commands, Command::operands)?;
     let mut recent = VecDeque::new();
-    let scopes = crate::learning::search::scope::program_graphs(target, commands, context)?;
+    let scopes =
+        crate::learning::search::scope::typed_program_graphs(engine, target, commands, &used)?;
+    let scopes = if scopes.is_empty() {
+        crate::learning::search::scope::program_graphs(target, commands, context)?
+    } else {
+        scopes
+    };
     let mut bytes = scopes.iter().map(Graph::work_bytes).sum::<usize>();
     let mut graphs = Decisions::default();
     for graph in scopes {

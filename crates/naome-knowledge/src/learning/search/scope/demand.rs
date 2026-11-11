@@ -1,5 +1,7 @@
-//! Backward demand over atomic implications in an opened local scope.
-use super::{Formula, FormulaNode, FreeVariable, ScopedAction};
+//! Backward demand over typed formulas in an opened local scope.
+use super::{
+    ACTIONS, FACTS, Formula, FormulaNode, FreeVariable, Scope, ScopedAction, instantiation,
+};
 use naome_foundation::{FormulaView, graph::Variable};
 use std::collections::BTreeMap;
 
@@ -128,4 +130,59 @@ pub(super) fn offers(goal: &Formula, facts: &[Formula]) -> Vec<(ScopedAction, Fo
         }
     }
     offered
+}
+
+pub(super) fn goals(scope: &Scope, facts: &[Formula]) -> Vec<Formula> {
+    use crate::learning::construction::logic::conjunction;
+    let mut goals = vec![scope.goal.clone()];
+    let rules = facts
+        .iter()
+        .filter_map(instantiation::Universal::new)
+        .collect::<Vec<_>>();
+    let first = scope
+        .binders
+        .first()
+        .copied()
+        .unwrap_or(FreeVariable::new(0));
+    for index in 0..FACTS {
+        let Some(goal) = goals.get(index).cloned() else {
+            break;
+        };
+        if goals.len() == FACTS {
+            break;
+        }
+        if facts.contains(&goal) {
+            continue;
+        }
+        let parts = conjunction(&goal)
+            .into_iter()
+            .flat_map(|(left, right)| [left, right]);
+        let premises = rules
+            .iter()
+            .flat_map(|rule| rule.prerequisites(&goal, first));
+        let specializations = facts.iter().flat_map(|source| {
+            let operands = naome_checker::question::universal_operands(source, &goal, ACTIONS)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let mut instance = source.clone();
+            operands
+                .into_iter()
+                .take(ACTIONS - 1)
+                .filter_map(move |variable| {
+                    let rule = instantiation::Universal::new(&instance)?;
+                    instance = rule.instance(variable);
+                    Some(instance.clone())
+                })
+        });
+        for part in parts.chain(premises).chain(specializations) {
+            if goals.len() == FACTS {
+                break;
+            }
+            if !goals.contains(&part) && !facts.contains(&part) {
+                goals.push(part);
+            }
+        }
+    }
+    goals
 }

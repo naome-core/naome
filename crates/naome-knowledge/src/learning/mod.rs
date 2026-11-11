@@ -6,6 +6,7 @@ mod construction;
 pub(crate) use construction::composition::closed_cut_routes;
 pub(crate) use construction::logic::conjunction as conjunction_operands;
 pub(crate) use search::scope::cut::questions as scoped_cut_questions;
+pub(crate) use search::scope::generation::context_goals as scoped_context_goals;
 mod coverage;
 mod curriculum;
 pub(crate) mod definitions;
@@ -556,10 +557,7 @@ impl Job {
             return Err(crate::ResearchFailure::JobParentSnapshot.into());
         }
         self.base.validate()?;
-        if !self.prerequisites.is_empty()
-            && (self.training
-                || self.required.is_empty() && !self.prerequisites.has_optional_context())
-        {
+        if self.training && !self.prerequisites.is_empty() {
             return Err(crate::ResearchFailure::JobPrerequisiteRole.into());
         }
         if self.required.len() > knowledge::CAPACITY
@@ -1537,6 +1535,7 @@ fn search_compiled_question(
     let mut certificate_failures = 0;
     let mut required_knowledge = context.required.to_vec();
     if remaining != 0
+        && !context.required.is_empty()
         && let Some(inputs) = context.prerequisites.filter(|inputs| inputs.has_programs())
     {
         let (candidate, work) =
@@ -1563,6 +1562,7 @@ fn search_compiled_question(
     let dependency_checking = proof::checking_work().steps;
     let terms = context
         .prerequisites
+        .filter(|_| !context.required.is_empty())
         .map(|p| p.terms(context.required))
         .transpose()?
         .unwrap_or_default();

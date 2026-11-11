@@ -5,10 +5,13 @@ use crate::learning::{
     knowledge, peer::Packet, prerequisites::ProgramInputs, proof,
 };
 use naome_checker::{ContextView, question::QUESTION_BYTES};
+
+mod replay;
 use naome_proof::{
     ProofId,
     program::{ACTION_PREMISES, Axiom, ScopedInput},
 };
+pub(in crate::learning) use replay::graphs;
 
 #[derive(Clone, Copy)]
 enum Source {
@@ -56,6 +59,14 @@ struct ProjectionResult {
     helpers: Vec<String>,
 }
 
+enum Selection<'a> {
+    Model {
+        ranker: &'a mut dyn Ranker,
+        started: Instant,
+    },
+    Checked(Vec<Graph>),
+}
+
 struct Decoder<'a> {
     scope: Scope,
     // Local assumptions, then external sources, then generated facts.
@@ -63,23 +74,45 @@ struct Decoder<'a> {
     sources: Vec<Source>,
     actions: Vec<ScopedAction>,
     goals: Vec<Formula>,
-    ranker: &'a mut dyn Ranker,
-    started: Instant,
+    selection: Selection<'a>,
     work: Work,
 }
 
 impl Decoder<'_> {
-    fn pick<T>(&mut self, mut choices: Vec<Choice<T>>) -> Result<Option<T>, crate::Error> {
-        if self.started.elapsed() >= TIME_LIMIT || choices.is_empty() {
+    fn within_time(&self) -> bool {
+        match self.selection {
+            Selection::Model { started, .. } => started.elapsed() < TIME_LIMIT,
+            Selection::Checked(_) => true,
+        }
+    }
+
+    fn pick<T>(
+        &mut self,
+        mut choices: Vec<Choice<T>>,
+        checked: impl Fn(&T) -> bool,
+    ) -> Result<Option<T>, crate::Error> {
+        if !self.within_time() || choices.is_empty() {
             return Ok(None);
         }
+        let replay = matches!(self.selection, Selection::Checked(_));
         if choices.len() == 1 {
-            return Ok(choices.pop().map(|choice| choice.value));
+            return Ok(choices
+                .pop()
+                .filter(|choice| !replay || checked(&choice.value))
+                .map(|choice| choice.value));
         }
         // Prefer exact closure in the bounded view. The model selects from
         // typed fields of the current prefix, using decision-local addresses.
         choices.sort_by_key(|choice| choice.effect != self.scope.goal);
         choices.truncate(OFFERS);
+        let expert = if replay {
+            let Some(index) = choices.iter().position(|choice| checked(&choice.value)) else {
+                return Ok(None);
+            };
+            index
+        } else {
+            0
+        };
         let operands: Vec<_> = choices
             .iter()
             .map(|choice| choice.operand)
@@ -107,9 +140,20 @@ impl Decoder<'_> {
                     consequences: vec![choice.effect.clone()],
                 })
                 .collect(),
-            expert: 0,
+            expert,
         };
-        let scores = match self.ranker.scores(&decision) {
+        let ranker = match &mut self.selection {
+            Selection::Model { ranker, .. } => ranker,
+            Selection::Checked(graphs) => {
+                match Graph::encode(&decision) {
+                    Ok(graph) => graphs.push(graph),
+                    Err(crate::LearningGraphFailure::Capacity) => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                }
+                return Ok(Some(choices.swap_remove(expert).value));
+            }
+        };
+        let scores = match ranker.scores(&decision) {
             Ok(scores) => scores,
             Err(crate::Error::LearningGraph(crate::LearningGraphFailure::Capacity)) => {
                 return Ok(None);
@@ -171,9 +215,12 @@ impl Decoder<'_> {
         }
     }
 
-    fn next(&mut self) -> Result<Option<ScopedAction>, crate::Error> {
+    fn next(
+        &mut self,
+        checked: Option<&ScopedAction>,
+    ) -> Result<Option<ScopedAction>, crate::Error> {
         use crate::learning::construction::logic::conjunction;
-        if self.started.elapsed() >= TIME_LIMIT {
+        if !self.within_time() {
             return Ok(None);
         }
         let conjunctions: Vec<_> = self
@@ -216,9 +263,18 @@ impl Decoder<'_> {
             ))
         })
         .collect();
-        match self.pick(operations)? {
+        match self.pick(operations, |operation| {
+            matches!(
+                (operation, checked),
+                (Operation::Conjoin, Some(ScopedAction::Conjoin { .. }))
+                    | (
+                        Operation::Instantiate,
+                        Some(ScopedAction::Instantiate { .. })
+                    )
+            )
+        })? {
             Some(Operation::Conjoin) => {
-                let Some(left) = self.pick(lefts)? else {
+                let Some(left) = self.pick(lefts, |index| matches!(checked, Some(ScopedAction::Conjoin { left, .. }) if *left as usize == *index))? else {
                     return Ok(None);
                 };
                 let rights = self
@@ -232,16 +288,20 @@ impl Decoder<'_> {
                         Some(Choice::new(index, Rule::ConstructionPlan, index, goal))
                     })
                     .collect();
-                Ok(self.pick(rights)?.map(|right| ScopedAction::Conjoin {
+                Ok(self.pick(rights, |index| matches!(checked, Some(ScopedAction::Conjoin { right, .. }) if *right as usize == *index))?.map(|right| ScopedAction::Conjoin {
                     left: left as u32,
                     right: right as u32,
                 }))
             }
             Some(Operation::Instantiate) => {
-                let Some(universal) = self.pick(universals)? else {
+                let Some(universal) = self.pick(universals, |index| matches!(checked, Some(ScopedAction::Instantiate { universal, .. }) if *universal as usize == *index))? else {
                     return Ok(None);
                 };
-                self.instantiate(universal, std::mem::take(&mut replacements[universal]))
+                self.instantiate(
+                    universal,
+                    std::mem::take(&mut replacements[universal]),
+                    checked,
+                )
             }
             None => Ok(None),
         }
@@ -251,6 +311,7 @@ impl Decoder<'_> {
         &mut self,
         universal: usize,
         replacements: Vec<(FreeVariable, Formula)>,
+        checked: Option<&ScopedAction>,
     ) -> Result<Option<ScopedAction>, crate::Error> {
         let choices = replacements
             .into_iter()
@@ -262,12 +323,17 @@ impl Decoder<'_> {
                 value: (variable, effect),
             })
             .collect();
-        let Some((replacement, wanted)) = self.pick(choices)? else {
+        let checked_effect = checked.and_then(|action| self.scope.apply(&self.facts, action));
+        let Some((replacement, wanted)) = self.pick(choices, |(variable, effect)| {
+            matches!(checked, Some(ScopedAction::Instantiate { replacement, .. })
+                if *replacement == variable.identifier() && checked_effect.as_ref() == Some(effect))
+        })?
+        else {
             return Ok(None);
         };
-        let mut result = self.facts[universal]
-            .open_outer_universal(replacement)
-            .expect("typed universal");
+        let mut result = instantiation::Universal::new(&self.facts[universal])
+            .expect("typed universal")
+            .instance(replacement);
         let mut premises = Vec::new();
         while result != wanted {
             let Some((antecedent, consequent)) = result.view().implication_parts() else {
@@ -284,7 +350,11 @@ impl Decoder<'_> {
                 .filter(|(_, fact)| fact.view() == antecedent)
                 .map(|(index, _)| Choice::new(index, Rule::ModusPonens, index, &consequence))
                 .collect();
-            let Some(premise) = self.pick(choices)? else {
+            let Some(premise) = self.pick(choices, |index| {
+                matches!(checked, Some(ScopedAction::Instantiate { premises: expected, .. })
+                    if expected.get(premises.len()).copied() == Some(*index as u32))
+            })?
+            else {
                 return Ok(None);
             };
             premises.push(premise as u32);
@@ -329,7 +399,7 @@ impl Decoder<'_> {
             if choices.is_empty() {
                 assumptions.push(ProofFormula::from(formula));
             } else {
-                let Some((selected, representation)) = self.pick(choices)? else {
+                let Some((selected, representation)) = self.pick(choices, |_| false)? else {
                     return Ok(None);
                 };
                 definitions::append_artifacts(&entries[selected..=selected], &mut helpers)?;
@@ -354,6 +424,29 @@ impl Decoder<'_> {
     }
 }
 
+fn supported_goal(scope: &Scope) -> bool {
+    crate::learning::construction::logic::conjunction(&scope.goal).is_some()
+        || demand::atomic(&scope.goal) && scope.supports_standard_search()
+}
+
+/// Exact checked statements that can serve as typed operands in this scope.
+pub(crate) fn context_goals(target: &Formula) -> Result<Vec<Formula>, crate::Error> {
+    let scope = Scope::decompose(target, None)?;
+    if scope.assumptions.len() >= FACTS - 1 || !supported_goal(&scope) {
+        return Ok(Vec::new());
+    }
+    let mut requested = Vec::new();
+    for goal in demand::goals(&scope, &scope.assumptions)
+        .into_iter()
+        .skip(1)
+    {
+        if &goal != target && !requested.contains(&goal) {
+            requested.push(goal);
+        }
+    }
+    Ok(requested)
+}
+
 pub(in crate::learning) fn attempt(
     target: &Formula,
     ranker: &mut dyn Ranker,
@@ -361,28 +454,14 @@ pub(in crate::learning) fn attempt(
     started: Instant,
     context: &SolveContext<'_>,
 ) -> Result<(Option<ProgramCandidate>, Work), crate::Error> {
-    use crate::learning::construction::logic::conjunction;
     if maximum == 0 || started.elapsed() >= TIME_LIMIT {
         return Ok((None, Work::default()));
     }
     let scope = Scope::decompose(target, None)?;
-    if scope.assumptions.len() >= FACTS - 1 || conjunction(&scope.goal).is_none() {
+    if scope.assumptions.len() >= FACTS - 1 || !supported_goal(&scope) {
         return Ok((None, Work::default()));
     }
     let _memory = crate::resources::MemoryLease::acquire(8 * FACTS * QUESTION_BYTES)?;
-    let mut goals = vec![scope.goal.clone()];
-    for index in 0..FACTS {
-        let Some(goal) = goals.get(index) else {
-            break;
-        };
-        if let Some((left, right)) = conjunction(goal) {
-            for part in [left, right] {
-                if goals.len() < FACTS && !goals.contains(&part) {
-                    goals.push(part);
-                }
-            }
-        }
-    }
     // Leave a closing action already supplied by the original scope search
     // on its fast path.
     if scope.supports_standard_search()
@@ -399,9 +478,8 @@ pub(in crate::learning) fn attempt(
         scope,
         sources: Vec::new(),
         actions: Vec::new(),
-        goals,
-        ranker,
-        started,
+        goals: Vec::new(),
+        selection: Selection::Model { ranker, started },
         work: Work::default(),
     };
 
@@ -432,8 +510,9 @@ pub(in crate::learning) fn attempt(
         );
     }
 
+    decoder.goals = demand::goals(&decoder.scope, &decoder.facts);
     for _ in 0..maximum.min(ACTIONS).min(FACTS - decoder.facts.len()) {
-        let Some(action) = decoder.next()? else {
+        let Some(action) = decoder.next(None)? else {
             break;
         };
         decoder.work.actions += 1;
@@ -502,7 +581,7 @@ fn add_checked_inputs(
     inputs: &ProgramInputs<'_>,
 ) -> Result<(), crate::Error> {
     for id in inputs.proof_ids() {
-        if decoder.facts.len() == FACTS - 1 || decoder.started.elapsed() >= TIME_LIMIT {
+        if decoder.facts.len() == FACTS - 1 || !decoder.within_time() {
             break;
         }
         let id = id?;
