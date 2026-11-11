@@ -194,9 +194,16 @@ impl DefinedFormula {
 
     /// Maps every free variable in canonical traversal order.
     #[must_use]
-    pub fn map_free_variables(mut self, mut map: impl FnMut(FreeVariable) -> FreeVariable) -> Self {
-        map_free_variables(&mut self.0, &mut map);
+    pub fn map_free_variables(mut self, map: impl FnMut(FreeVariable) -> FreeVariable) -> Self {
+        self.map_free_variables_in_place(map);
         self
+    }
+
+    pub(crate) fn map_free_variables_in_place(
+        &mut self,
+        mut map: impl FnMut(FreeVariable) -> FreeVariable,
+    ) {
+        map_free_variables(&mut self.0, &mut map);
     }
 
     /// Returns all free variables occurring in this formula.

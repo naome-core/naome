@@ -55,3 +55,34 @@ fn construction_and_codec_round_trip_have_one_canonical_representation() {
         assert_eq!(decoded, formula);
     }
 }
+
+#[test]
+fn mapping_defined_formula_preserves_binding_and_occurrence_order() {
+    let bound = FreeVariable::new(99);
+    let free = FreeVariable::new(7);
+    let id = DefinitionId::from_bytes([0x33; 32]);
+    let source = DefinedFormula::for_all(
+        bound,
+        DefinedFormula::implies(
+            DefinedFormula::defined_relation(id, [bound, free]),
+            DefinedFormula::equal(free, free),
+        ),
+    );
+    let expected = DefinedFormula::for_all(
+        bound,
+        DefinedFormula::implies(
+            DefinedFormula::defined_relation(id, [bound, FreeVariable::new(10)]),
+            DefinedFormula::equal(FreeVariable::new(11), FreeVariable::new(12)),
+        ),
+    );
+    let mut seen = Vec::new();
+    let mapped = ProofFormula::from_defined(source)
+        .unwrap()
+        .map_free_variables(|variable| {
+            seen.push(variable);
+            FreeVariable::new(9 + seen.len() as u32)
+        });
+    assert_eq!(seen, [free, free, free]);
+    assert_eq!(mapped, ProofFormula::from_defined(expected).unwrap());
+    assert_eq!(mapped.definition_references(), vec![id]);
+}
