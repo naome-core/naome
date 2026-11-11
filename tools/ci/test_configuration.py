@@ -176,18 +176,20 @@ class BuildContractTests(unittest.TestCase):
     def test_bazel_cache_restores_trusted_snapshots_and_only_saves_successful_main(self):
         workflow = (ROOT / ".github/workflows/bazel-tests.yml").read_text()
         restore = workflow.split("      - name: Restore local Bazel cache", 1)[1].split("      - name:", 1)[0]
-        previous = workflow.split("      - name: Restore previous Bazel cache snapshot", 1)[1].split("      - name:", 1)[0]
         save = workflow.split("      - name: Save local Bazel cache from main", 1)[1].split("      - name:", 1)[0]
-        self.assertIn("${{ runner.os }}-${{ runner.arch }}-", restore)
-        self.assertIn("${{ steps.cache-day.outputs.day }}", restore.split("restore-keys:", 1)[0])
-        self.assertIn("hashFiles(", restore.split("restore-keys:", 1)[1])
-        self.assertNotIn("cache-day.outputs.day", restore.split("restore-keys:", 1)[1])
+        primary, fallback_block = restore.split("restore-keys: |", 1)
+        prefix = "bazel-v1-${{ runner.os }}-${{ runner.arch }}-"
+        self.assertIn(f"key: {prefix}", primary)
+        self.assertIn("${{ steps.cache-day.outputs.day }}", primary)
         self.assertIn("date -u +%Y-%m-%d", workflow)
-        self.assertIn("steps.cache.outputs.cache-matched-key == ''", previous)
-        self.assertIn("path: ~/.cache/naome-bazel", previous)
-        previous_primary, previous_fallbacks = previous.split("restore-keys:", 1)
-        self.assertIn("key: bazel-legacy-import-${{ runner.os }}-${{ runner.arch }}", previous_primary)
-        self.assertIn("bazel-v1-${{ runner.os }}-${{ runner.arch }}-", previous_fallbacks)
+        paths = "~/.cache/naome-bazel/disk\n            ~/.cache/naome-bazel/repository"
+        self.assertIn(paths, restore)
+        self.assertIn(paths, save)
+        same_inputs, same_platform = fallback_block.strip().splitlines()
+        self.assertTrue(same_inputs.startswith(prefix))
+        self.assertIn("hashFiles(", same_inputs)
+        self.assertNotIn("cache-day.outputs.day", same_inputs)
+        self.assertEqual(same_platform.strip(), prefix)
         self.assertIn("success()", save)
         self.assertIn("github.event_name == 'push'", save)
         self.assertIn("github.ref == 'refs/heads/main'", save)
