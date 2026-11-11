@@ -550,6 +550,55 @@ impl Frontier {
         Ok(candidates)
     }
 
+    pub(crate) fn awaiting_first_evidence<'a>(
+        &self,
+        searches: impl IntoIterator<Item = &'a ResearchQuestion>,
+    ) -> Result<bool, crate::Error> {
+        for question in searches {
+            if self.evidence.get(question)?.is_none() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn shared_cut_goals(
+        &self,
+        helper: &ResearchQuestion,
+        open: impl FnMut(&ResearchQuestion) -> bool,
+    ) -> Result<Vec<naome_checker::question::Identity>, crate::Error> {
+        self.evidence.shared_cut_goals(helper, open)
+    }
+
+    pub(crate) fn shared_cut_candidate(
+        &mut self,
+        goal: &ResearchQuestion,
+        mut open: impl FnMut(&ResearchQuestion) -> bool,
+    ) -> Result<Option<ResearchQuestion>, crate::Error> {
+        let Some(record) = self.evidence.get(goal)? else {
+            return Ok(None);
+        };
+        let routes = crate::learning::closed_cut_routes(goal.proved_target(), true);
+        for source in record.helpers {
+            let helper = ResearchQuestion::from_hex(&source)?;
+            if routes.contains(helper.proved_target())
+                && self.shared_cut_goals(&helper, &mut open)?.len() > 1
+                && self.evidence.admit_loop_member(goal, &helper)?
+            {
+                return Ok(Some(helper));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn shared_catalog_trial(
+        &self,
+        helper: naome_proof::ProofId,
+        target: &ResearchQuestion,
+    ) -> Result<bool, crate::Error> {
+        self.evidence.shared_catalog_trial(helper, target)
+    }
+
     pub(crate) fn loop_focus(
         &mut self,
         graph: &Graph,
