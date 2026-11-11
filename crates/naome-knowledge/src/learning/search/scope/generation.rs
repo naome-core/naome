@@ -31,11 +31,39 @@ enum Operation {
     Instantiate,
 }
 
+pub(in crate::learning) const DECISION_LIMIT: usize = ACTIONS * (3 + ACTION_PREMISES) + FACTS;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(in crate::learning) struct DecisionObservation {
+    pub state: String,
+    pub offered: String,
+    pub selected: usize,
+}
+
+#[derive(Serialize)]
+enum Field<'a> {
+    Operation,
+    ConjunctionLeft,
+    ConjunctionRight(usize),
+    Universal,
+    Replacement(usize),
+    Premise {
+        universal: usize,
+        replacement: u32,
+        previous: &'a [u32],
+    },
+    Definition {
+        fact: usize,
+        entries: &'a str,
+    },
+}
+
 struct Choice<T> {
     value: T,
     rule: Rule,
     operand: usize,
     replacement: Option<FreeVariable>,
+    definition: Option<usize>,
     effect: Formula,
 }
 impl<T> Choice<T> {
@@ -45,6 +73,7 @@ impl<T> Choice<T> {
             rule,
             operand,
             replacement: None,
+            definition: None,
             effect: effect.clone(),
         }
     }
@@ -66,10 +95,15 @@ struct Decoder<'a> {
     ranker: &'a mut dyn Ranker,
     started: Instant,
     work: Work,
+    observations: Option<&'a mut Vec<DecisionObservation>>,
 }
 
 impl Decoder<'_> {
-    fn pick<T>(&mut self, mut choices: Vec<Choice<T>>) -> Result<Option<T>, crate::Error> {
+    fn pick<T>(
+        &mut self,
+        field: Field<'_>,
+        mut choices: Vec<Choice<T>>,
+    ) -> Result<Option<T>, crate::Error> {
         if self.started.elapsed() >= TIME_LIMIT || choices.is_empty() {
             return Ok(None);
         }
@@ -123,6 +157,53 @@ impl Decoder<'_> {
         let index = (0..scores.len())
             .max_by(|&a, &b| scores[a].total_cmp(&scores[b]).then(b.cmp(&a)))
             .expect("nonempty choices");
+        if let Some(observations) = &mut self.observations {
+            let facts = self
+                .facts
+                .iter()
+                .map(Formula::encode_canonical)
+                .collect::<Result<Vec<_>, _>>()?;
+            let sources = self
+                .sources
+                .iter()
+                .map(|source| match source {
+                    Source::Axiom(axiom) => (Some(*axiom), None),
+                    Source::Snapshot(_, id) | Source::Input(id) => (None, Some(id.as_bytes())),
+                })
+                .collect::<Vec<_>>();
+            let binders = self
+                .scope
+                .binders
+                .iter()
+                .map(|variable| variable.identifier())
+                .collect::<Vec<_>>();
+            let state = super::super::super::digest(&(
+                &field,
+                self.scope.goal.encode_canonical()?,
+                self.scope.assumptions.len(),
+                binders,
+                sources,
+                facts,
+                &self.actions,
+            ));
+            let menu = choices
+                .iter()
+                .map(|choice| {
+                    Ok::<_, crate::Error>((
+                        choice.rule.kind(),
+                        choice.operand,
+                        choice.replacement.map(FreeVariable::identifier),
+                        choice.definition,
+                        choice.effect.encode_canonical()?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            observations.push(DecisionObservation {
+                state,
+                offered: super::super::super::digest(&menu),
+                selected: index,
+            });
+        }
         Ok(Some(choices.swap_remove(index).value))
     }
 
@@ -216,9 +297,9 @@ impl Decoder<'_> {
             ))
         })
         .collect();
-        match self.pick(operations)? {
+        match self.pick(Field::Operation, operations)? {
             Some(Operation::Conjoin) => {
-                let Some(left) = self.pick(lefts)? else {
+                let Some(left) = self.pick(Field::ConjunctionLeft, lefts)? else {
                     return Ok(None);
                 };
                 let rights = self
@@ -232,13 +313,15 @@ impl Decoder<'_> {
                         Some(Choice::new(index, Rule::ConstructionPlan, index, goal))
                     })
                     .collect();
-                Ok(self.pick(rights)?.map(|right| ScopedAction::Conjoin {
-                    left: left as u32,
-                    right: right as u32,
-                }))
+                Ok(self
+                    .pick(Field::ConjunctionRight(left), rights)?
+                    .map(|right| ScopedAction::Conjoin {
+                        left: left as u32,
+                        right: right as u32,
+                    }))
             }
             Some(Operation::Instantiate) => {
-                let Some(universal) = self.pick(universals)? else {
+                let Some(universal) = self.pick(Field::Universal, universals)? else {
                     return Ok(None);
                 };
                 self.instantiate(universal, std::mem::take(&mut replacements[universal]))
@@ -256,13 +339,14 @@ impl Decoder<'_> {
             .into_iter()
             .map(|(variable, effect)| Choice {
                 replacement: Some(variable),
+                definition: None,
                 rule: Rule::UniversalInstance,
                 operand: universal,
                 effect: effect.clone(),
                 value: (variable, effect),
             })
             .collect();
-        let Some((replacement, wanted)) = self.pick(choices)? else {
+        let Some((replacement, wanted)) = self.pick(Field::Replacement(universal), choices)? else {
             return Ok(None);
         };
         let mut result = self.facts[universal]
@@ -284,7 +368,15 @@ impl Decoder<'_> {
                 .filter(|(_, fact)| fact.view() == antecedent)
                 .map(|(index, _)| Choice::new(index, Rule::ModusPonens, index, &consequence))
                 .collect();
-            let Some(premise) = self.pick(choices)? else {
+            let Some(premise) = self.pick(
+                Field::Premise {
+                    universal,
+                    replacement: replacement.identifier(),
+                    previous: &premises,
+                },
+                choices,
+            )?
+            else {
                 return Ok(None);
             };
             premises.push(premise as u32);
@@ -310,6 +402,10 @@ impl Decoder<'_> {
         let mut positions = vec![None; inputs];
         let mut assumptions = Vec::with_capacity(retained);
         let mut helpers = Vec::new();
+        let entries_binding = self
+            .observations
+            .as_ref()
+            .map(|_| super::super::super::digest(&entries));
         for (position, index) in imports.iter().copied().chain(0..locals).enumerate() {
             positions[index] = Some(position as u32);
             let formula = self.facts[index].clone();
@@ -318,18 +414,27 @@ impl Decoder<'_> {
                 if let Some(application) =
                     definitions::application(&formula, std::slice::from_ref(entry))?
                 {
-                    choices.push(Choice::new(
+                    let mut choice = Choice::new(
                         (i, ProofFormula::from_defined(application)?),
                         Rule::DefinitionReference,
                         index,
                         &entry.body()?,
-                    ));
+                    );
+                    choice.definition = Some(i);
+                    choices.push(choice);
                 }
             }
             if choices.is_empty() {
                 assumptions.push(ProofFormula::from(formula));
             } else {
-                let Some((selected, representation)) = self.pick(choices)? else {
+                let Some((selected, representation)) = self.pick(
+                    Field::Definition {
+                        fact: index,
+                        entries: entries_binding.as_deref().unwrap_or_default(),
+                    },
+                    choices,
+                )?
+                else {
                     return Ok(None);
                 };
                 definitions::append_artifacts(&entries[selected..=selected], &mut helpers)?;
@@ -360,6 +465,7 @@ pub(in crate::learning) fn attempt(
     maximum: usize,
     started: Instant,
     context: &SolveContext<'_>,
+    observations: Option<&mut Vec<DecisionObservation>>,
 ) -> Result<(Option<ProgramCandidate>, Work), crate::Error> {
     use crate::learning::construction::logic::conjunction;
     if maximum == 0 || started.elapsed() >= TIME_LIMIT {
@@ -403,6 +509,7 @@ pub(in crate::learning) fn attempt(
         ranker,
         started,
         work: Work::default(),
+        observations,
     };
 
     let proofs = knowledge::checked_entries(context.theorems)?;

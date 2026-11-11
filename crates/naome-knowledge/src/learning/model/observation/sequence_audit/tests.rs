@@ -7,6 +7,7 @@ fn an_unstarted_job_and_closed_resource_gate_cannot_produce_an_audit() {
     let job = state.job();
     // Deliberately incomplete test metadata; never a trained checkpoint.
     let progress = Progress {
+        causal: crate::learning::causal::Trial::default(),
         finder: None,
         prepared: None,
         cost: None,

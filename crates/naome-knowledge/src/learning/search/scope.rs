@@ -10,7 +10,6 @@ pub(crate) mod cut;
 mod demand;
 pub(in crate::learning) mod generation;
 
-const TIME_LIMIT: Duration = Duration::from_millis(2500);
 const ACTIONS: usize = 8;
 const FACTS: usize = 32;
 const OFFERS: usize = 16;

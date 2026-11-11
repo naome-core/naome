@@ -2542,6 +2542,7 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerOperandOrder => "peer program operand order differs",
                 crate::ResearchFailure::FinderCursorOverflow => "finder replay cursor overflow",
                 crate::ResearchFailure::FinderRecallInvalid => "invalid structural proof recall",
+                crate::ResearchFailure::CausalTrialBinding => "causal weight trial does not match its reserved evidence",
                 crate::ResearchFailure::ResearchValueInvalid => "research value transition or forecast is invalid",
                 crate::ResearchFailure::FinderDecisionInvalid => "finder research decision or policy state differs",
                 crate::ResearchFailure::ModelChunkMissing => {

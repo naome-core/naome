@@ -10,7 +10,6 @@ pub struct Bank {
     pub learning: Vec<Case>,
     pub development: Vec<Case>,
     pub transfer: Vec<Case>,
-    #[cfg(test)]
     pub confirmation: Vec<Case>,
     #[cfg(test)]
     pub prior_confirmation: Vec<Case>,
@@ -170,7 +169,6 @@ fn build() -> Bank {
         learning: Vec::new(),
         development: Vec::new(),
         transfer: Vec::new(),
-        #[cfg(test)]
         confirmation: Vec::new(),
         #[cfg(test)]
         prior_confirmation: Vec::new(),
@@ -316,10 +314,8 @@ fn build() -> Bank {
     #[cfg(test)]
     {
         bank.confirmation_roots = roots.difference(&bank.excluded_roots).cloned().collect();
-        bank.confirmation = confirmation;
     }
-    #[cfg(not(test))]
-    drop(confirmation);
+    bank.confirmation = confirmation;
     bank
 }
 
