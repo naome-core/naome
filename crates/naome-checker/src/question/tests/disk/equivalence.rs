@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn equivalence_key_reuses_only_the_encoding_of_the_selected_core() {
+    let left = unresolved();
+    let x = FreeVariable::new(0);
+    let right = Formula::for_all(x, Formula::negate(Formula::member(x, x)));
+    let exchange = Formula::implies(left.clone(), Formula::negate(right.clone()));
+    let reverse = Formula::implies(right, Formula::negate(left));
+    let wrapped = Formula::for_all(var(17), reverse.clone());
+    let expected = crate::question::equivalence::key(&exchange, None).unwrap();
+    for formula in [&exchange, &reverse, &wrapped] {
+        let bytes = formula.encode_canonical().unwrap();
+        assert_eq!(
+            crate::question::equivalence::key(formula, Some(&bytes)),
+            Ok(expected)
+        );
+    }
+}
+
+#[test]
 fn elementary_equivalence_index_matches_ram_survives_copy_and_never_hides_read_failure() {
     let files = Files::new();
     let target_storage = Files::new();
