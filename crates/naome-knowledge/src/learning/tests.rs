@@ -665,6 +665,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        catalog_comparison: None,
         causal: causal::Trial::default(),
         executions: Vec::new(),
         terminal: experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly),

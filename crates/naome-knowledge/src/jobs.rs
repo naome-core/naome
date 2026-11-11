@@ -234,6 +234,8 @@ pub(crate) struct Binding {
     /// Exact native source captured from the checked catalog for this retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSource>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compare_catalog: bool,
     /// Finder scheduling context is evidence, separate from formal request identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub research: Option<Box<crate::frontier::ResearchDecision>>,
@@ -248,6 +250,8 @@ struct RequestContext<'a> {
     cooperative: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     catalog: Option<&'a CatalogSource>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    compare_catalog: bool,
 }
 
 impl Binding {
@@ -259,6 +263,7 @@ impl Binding {
             selection: identity(&provider::SELECTION_PROVIDER),
             cooperative: false,
             catalog: None,
+            compare_catalog: false,
             research: None,
         }
     }
@@ -281,6 +286,7 @@ impl Binding {
             selection: &self.selection,
             cooperative: self.cooperative,
             catalog: self.catalog.as_ref(),
+            compare_catalog: self.compare_catalog,
         }
     }
 
@@ -308,7 +314,9 @@ impl Binding {
         if self.cooperative && !matches!(input, Input::Solve { .. }) {
             return Err(crate::InputFault::CooperativeRole.into());
         }
-        if self.catalog.is_some() && (self.cooperative || !matches!(input, Input::Solve { .. })) {
+        if (self.catalog.is_some() && (self.cooperative || !matches!(input, Input::Solve { .. })))
+            || (self.compare_catalog && self.catalog.is_none())
+        {
             return Err(crate::InputFault::PrerequisiteRoots.into());
         }
         if let Some(decision) = &self.research {
@@ -563,6 +571,64 @@ pub(crate) struct Record {
     pub result: Option<Output>,
     pub acknowledged: bool,
     pub failure: Option<crate::outcome::JobFailureCode>,
+}
+
+impl Record {
+    fn validate_catalog_comparison(
+        &self,
+        progress: &crate::learning::Progress,
+    ) -> Result<(), crate::Error> {
+        let Some(pair) = &progress.catalog_comparison else {
+            return Ok(());
+        };
+        let catalog = self
+            .binding
+            .catalog
+            .as_ref()
+            .filter(|_| self.binding.compare_catalog)
+            .ok_or(crate::ResearchFailure::ExperienceExecutionMismatch)?;
+        let native = self
+            .native
+            .as_ref()
+            .ok_or(crate::ResearchFailure::LearningSnapshotMissing)?;
+        let proof = progress
+            .result
+            .as_ref()
+            .ok_or(crate::ResearchFailure::ExperienceExecutionMismatch)?;
+        let artifact = naome_proof::ArtifactId::from(naome_proof::ProofId::from_bytes(
+            crate::object::id_bytes(&proof.proof_id)?,
+        ));
+        if pair.lemma != crate::hex(catalog.proof_id().as_bytes())
+            || pair.seed != self.id
+            || pair.search_limit != native.base.search_budget()
+            || pair.control.uses_lemma
+            || pair.control.cost.search_expansions > pair.search_limit as usize
+            || pair.with_lemma.cost.search_expansions > pair.search_limit as usize
+            || pair.with_lemma.terminal != progress.terminal
+            || pair.with_lemma.checked_artifact.as_deref() != Some(&crate::hex(artifact.as_bytes()))
+            || progress.cost.as_ref().map(crate::learning::digest)
+                != Some(crate::learning::digest(&pair.with_lemma.cost))
+        {
+            return Err(crate::ResearchFailure::ExperienceExecutionMismatch.into());
+        }
+        match (&pair.control.terminal, &pair.control.checked_artifact) {
+            (
+                crate::learning::experience::TerminalEvidence::CertifiedCandidate {
+                    proof_id, ..
+                },
+                Some(artifact),
+            ) => {
+                crate::object::id_bytes(proof_id)?;
+                crate::object::id_bytes(artifact)?;
+            }
+            (crate::learning::experience::TerminalEvidence::CertifiedCandidate { .. }, _)
+            | (_, Some(_)) => {
+                return Err(crate::ResearchFailure::ExperienceExecutionMismatch.into());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -765,6 +765,7 @@ impl Owner {
                 {
                     return Err(crate::ResearchFailure::LearningReservation.into());
                 }
+                record.validate_catalog_comparison(&pending.progress)?;
                 let native = record
                     .native
                     .as_mut()
@@ -1787,6 +1788,22 @@ impl Owner {
             "state":completion.state,"spent_ms":completion.spent_ms,
             "reserved_units":completion.reserved_units,"experience":completion.experience}),
         );
+        if record.state == State::Complete
+            && record.binding.compare_catalog
+            && let Some(job) = &record.native
+            && let Some(progress) = &job.progress
+            && let Some(comparison) = &progress.catalog_comparison
+            && let Input::Solve { question } = &record.input
+        {
+            let question = naome_checker::question::ResearchQuestion::from_hex(question)?;
+            crate::network::emit(serde_json::json!({
+                "event": crate::outcome::NodeEvent::FinderLemmaComparison,
+                "job": id,
+                "resolution_id": crate::hex(question.resolution_id()),
+                "checkpoint": job.model_checkpoint(),
+                "comparison": comparison,
+            }));
+        }
         if let Some(waiters) = self.waiters.remove(&id) {
             for waiter in waiters {
                 let _ = waiter.send(completion.clone());

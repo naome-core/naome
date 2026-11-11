@@ -284,9 +284,23 @@ impl Provider for Native {
             });
             catalog_cpu = crate::learning::meta::cpu_micros()?.saturating_sub(cpu);
         }
+        let comparison = if self.record.binding.compare_catalog && catalog_result.is_some() {
+            let catalog = self
+                .record
+                .binding
+                .catalog
+                .as_ref()
+                .ok_or(crate::WorkerFailure::NativeSnapshotMissing)?;
+            let lemma = catalog.proof_id();
+            job.can_compare_catalog(lemma)?.then_some(lemma)
+        } else {
+            None
+        };
         job.execute(
             unit,
-            if catalog_result.is_some() || matches!(self.record.input, Input::Peer { .. }) {
+            if (catalog_result.is_some() && comparison.is_none())
+                || matches!(self.record.input, Input::Peer { .. })
+            {
                 None
             } else {
                 question
@@ -302,8 +316,57 @@ impl Provider for Native {
                 .ok_or(crate::WorkerFailure::NativeProgressMissing)?;
             progress.cpu_micros = progress.cpu_micros.saturating_add(catalog_cpu);
             progress.wall_micros = progress.wall_micros.saturating_add(wall);
+            let terminal = crate::learning::experience::TerminalEvidence::certified(&solution);
+            if let Some(lemma) = comparison
+                && let (Some(question), Some(cost)) = (question, progress.cost.clone())
+            {
+                let checked_started = Instant::now();
+                let checked_cpu = crate::learning::meta::cpu_micros()?;
+                let target = naome_checker::question::ResearchQuestion::from_hex(question)
+                    .map_err(crate::Error::from)?;
+                let pair = (
+                    crate::learning::CatalogArm::check(
+                        &target,
+                        lemma,
+                        progress.terminal.clone(),
+                        cost,
+                        progress.result.as_ref(),
+                    ),
+                    crate::learning::CatalogArm::check(
+                        &target,
+                        lemma,
+                        terminal.clone(),
+                        (*solution.cost).clone(),
+                        Some(&solution),
+                    ),
+                );
+                match pair {
+                    (Ok(control), Ok(with_lemma)) if !control.uses_lemma => {
+                        progress.catalog_comparison = Some(crate::learning::CatalogComparison {
+                            lemma: crate::hex(lemma.as_bytes()),
+                            seed: self.record.id,
+                            search_limit: job.base.search_budget(),
+                            control,
+                            with_lemma,
+                        });
+                    }
+                    _ => {}
+                }
+                progress.cpu_micros = progress.cpu_micros.saturating_add(
+                    crate::learning::meta::cpu_micros()?.saturating_sub(checked_cpu),
+                );
+                progress.wall_micros = progress.wall_micros.saturating_add(
+                    checked_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                );
+                // The isolated control does not contribute training evidence.
+                progress.executions.clear();
+                progress.frontier = None;
+            }
             progress.cost = Some((*solution.cost).clone());
-            progress.terminal = crate::learning::experience::TerminalEvidence::certified(&solution);
+            progress.terminal = terminal;
             progress.generation = Some(crate::outcome::GenerationOutcome::CertifiedProgram);
             progress.result = Some(solution);
         }

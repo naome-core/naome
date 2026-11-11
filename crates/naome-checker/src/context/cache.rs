@@ -139,11 +139,8 @@ impl ContextView for ReadContext<'_> {
         id: StatementId,
         maximum: usize,
     ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
-        if let Some((length, formula)) = self.cached(id) {
-            if *length > maximum {
-                return Err(ContextError::Limit);
-            }
-            return Ok(Some(Cow::Borrowed(formula)));
+        if let Some(formula) = self.cached_formula(id, maximum)? {
+            return Ok(Some(formula));
         }
         let header = self.statements.borrow().get(&id).copied().flatten();
         let formula = match header {
@@ -167,8 +164,8 @@ impl ContextView for ReadContext<'_> {
         header: ProofHeader,
         maximum: usize,
     ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
-        if self.cached(header.statement).is_some() {
-            return self.statement_formula(header.statement, maximum);
+        if let Some(formula) = self.cached_formula(header.statement, maximum)? {
+            return Ok(Some(formula));
         }
         let formula = self.source.proof_formula(header, maximum)?;
         self.remember(header.statement, header.length, formula)
@@ -216,19 +213,29 @@ impl ContextView for ReadContext<'_> {
 }
 impl ReadContext<'_> {
     fn parsed(&self) -> impl Iterator<Item = &Parsed> {
+        // Entries fill the first vacant slot and stay there for this operation.
         self.parsed
             .get()
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
-            .filter_map(OnceCell::get)
+            .map_while(OnceCell::get)
     }
 
-    fn cached(&self, id: StatementId) -> Option<(&usize, &Formula)> {
-        self.parsed().find_map(|parsed| match parsed {
+    fn cached_formula(
+        &self,
+        id: StatementId,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
+        let cached = self.parsed().find_map(|parsed| match parsed {
             Parsed::Formula(cached, length, formula) if *cached == id => Some((length, formula)),
             _ => None,
-        })
+        });
+        match cached {
+            Some((length, _)) if *length > maximum => Err(ContextError::Limit),
+            Some((_, formula)) => Ok(Some(Cow::Borrowed(formula))),
+            None => Ok(None),
+        }
     }
     fn available_slot(&self, charge: usize) -> Option<&OnceCell<Parsed>> {
         if self.limits.entries > 0

@@ -318,6 +318,18 @@ impl Packet {
         Ok(self.check_program()?.conclusion()?.clone())
     }
 
+    pub(crate) fn check_trial(
+        &self,
+        target: &Formula,
+        lemma: ProofId,
+    ) -> Result<bool, crate::Error> {
+        let checked = self.check_program()?;
+        if checked.conclusion()? != target {
+            return Err(crate::ResearchFailure::PeerProgramConclusionMismatch.into());
+        }
+        Ok(contributing_proofs(&checked.commands)?.contains(&lemma))
+    }
+
     pub(super) fn replay(&self, target: &Formula) -> Result<Arc<Replay>, crate::Error> {
         let replay = self.rechecked()?;
         if &replay.target != target {
