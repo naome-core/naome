@@ -377,3 +377,20 @@ fn deduction_preparation_yields_and_charges_the_rejected_action() {
     assert_eq!(engine.status().unwrap().checked_commands, 1);
     assert!(engine.checked_fact(1).is_err());
 }
+
+#[test]
+fn append_group_rolls_back_a_command_after_seal() {
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    let first = Command::Axiom {
+        axiom: naome_proof::program::Axiom::Pairing,
+    };
+    let seal = Command::Seal { proof: 0 };
+    assert!(matches!(
+        engine.append_group(&[first.clone(), seal.clone(), first.clone()]),
+        Err(Error::Invalid(ProgramFault::Sealed))
+    ));
+    assert_eq!(engine.status().unwrap().commands, 0);
+    assert_eq!(engine.append_group(&[first, seal]).unwrap(), Some(0));
+    drain(&mut engine);
+    assert!(engine.status().unwrap().fully_checked);
+}
