@@ -606,7 +606,7 @@ pub(super) fn check_steps(
         encoded = encoded.checked_add(bytes).ok_or(LIMIT)?;
         formula_work = formula_work.checked_add(cost).ok_or(LIMIT)?;
     }
-    let target_length = target.encode_canonical().map_err(|_| LIMIT)?.len();
+    let target_length = target.encoded_length().map_err(|_| LIMIT)?;
     let formula_work = formula_work.checked_add(target_length).ok_or(LIMIT)?;
     work.reserve_certificate(steps.len(), encoded, formula_work, reference_count)?;
     check_reserved(steps, target, artifacts)

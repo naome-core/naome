@@ -43,7 +43,7 @@ impl<'a> Search<'a> {
         let mut pending = BTreeSet::new();
         let mut closing = Vec::new();
         let root = if instantiated {
-            let length = target.encode_canonical().map_err(|_| LIMIT)?.len();
+            let length = target.encoded_length().map_err(|_| LIMIT)?;
             work.formula(length, 8)?;
             let mut opened = target.clone();
             for identifier in 0..super::super::instantiation::MAX_INSTANTIATIONS {
