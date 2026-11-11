@@ -143,6 +143,19 @@ impl QuestionRegistry {
         }
     }
 
+    /// Compares a record with a formula already encoded within registry limits.
+    pub(super) fn matches_formula(
+        &self,
+        record: &Identity,
+        formula: &Formula,
+        canonical: &[u8],
+    ) -> Result<bool, ContextError> {
+        match &self.cold {
+            Some(cold) => cold.matches_formula(record, formula, canonical),
+            None => Ok(self.records.get(record) == Some(formula)),
+        }
+    }
+
     pub(super) fn records_for(
         &self,
         statement: StatementId,
@@ -168,9 +181,6 @@ impl QuestionRegistry {
         let Some(record) = records.next().transpose()? else {
             return Ok(false);
         };
-        match &self.cold {
-            Some(cold) => cold.matches_formula(&record, formula, &bytes),
-            None => Ok(self.records.get(&record) == Some(formula)),
-        }
+        self.matches_formula(&record, formula, &bytes)
     }
 }
