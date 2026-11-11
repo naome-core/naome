@@ -305,6 +305,7 @@ pub(crate) enum Input {
     },
     Train {
         epoch: u64,
+        requalify: Option<u64>,
     },
     Find {
         cursor: u64,
@@ -347,9 +348,12 @@ impl Input {
                 naome_checker::question::ResearchQuestion::source_requires_definitions(question)
                     .map_err(crate::Error::from)?;
             }
-            Self::Train { epoch } => {
+            Self::Train { epoch, requalify } => {
                 if *epoch == 0 {
                     return Err(crate::InputFault::EmptyTrainingEpoch.into());
+                }
+                if *requalify == Some(0) {
+                    return Err(crate::ResearchFailure::JobPromotionBinding.into());
                 }
             }
             Self::Peer {

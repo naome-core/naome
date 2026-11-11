@@ -493,13 +493,34 @@ impl Owner {
                 continue;
             }
             if record.state == State::Complete
+                && !allowance_expired(&self.journal, id)?
+                && let (Some(native), Some(learning)) =
+                    (&record.native, self.journal.learning.as_ref())
+                && let Some(proposal) = learning.requalify(native)
+            {
+                if !self.settings.native_proof_learning {
+                    continue;
+                }
+                let input = Input::Train {
+                    epoch: proposal.epoch,
+                    requalify: Some(id),
+                };
+                if self
+                    .submit_internal(input, Binding::new([0; 32], [0; 32]))?
+                    .is_none()
+                {
+                    continue;
+                }
+            }
+            let record = &self.journal.records[&id];
+            if record.state == State::Complete
                 && let (Some(native), Some(learning)) =
                     (&record.native, self.journal.learning.as_mut())
             {
                 native.validate()?;
                 learning.qualify(native);
             }
-            if let Input::Train { epoch } = record.input
+            if let Input::Train { epoch, .. } = record.input
                 && let Some(learning) = self.journal.learning.as_mut()
             {
                 learning.attempted(epoch);
@@ -571,14 +592,22 @@ impl Owner {
             return Ok(());
         };
         if learning.needs_training()
-            && !self.journal.records.values().any(|r| {
-                matches!(r.input, Input::Train { .. }) && !r.state.terminal() && !r.acknowledged
-            })
+            && !self
+                .journal
+                .records
+                .values()
+                .any(|r| matches!(r.input, Input::Train { .. }) && !r.acknowledged)
         {
             let epoch = learning.learning_epoch();
             let binding = Binding::new([0; 32], [0; 32]);
             if self
-                .submit_internal(Input::Train { epoch }, binding)?
+                .submit_internal(
+                    Input::Train {
+                        epoch,
+                        requalify: None,
+                    },
+                    binding,
+                )?
                 .is_some()
             {
                 self.journal
@@ -960,12 +989,14 @@ impl Owner {
         }
         let uncertain = record.state == State::InDoubt;
         let mut learning_applied = false;
+        let mut requalify = false;
         if record.state == State::Complete
             && let Some(learning) = self.journal.learning.as_mut()
         {
             if let Some(native) = &record.native {
                 native.validate()?;
                 learning_applied = learning.qualify(native);
+                requalify = !learning_applied && learning.requalify(native).is_some();
             }
             if let (
                 Input::Solve { question },
@@ -987,7 +1018,7 @@ impl Owner {
         }
         let internal = record.input.internal();
         if internal {
-            record.acknowledged = true;
+            record.acknowledged = !requalify;
         }
         // Keep the completing job protected from terminal-history compaction
         // until its persisted outcome can be delivered, even if abandoned.
@@ -1241,6 +1272,27 @@ impl Owner {
             job.required = required;
             job.prerequisites = prerequisites;
             if job.training {
+                if let Input::Train {
+                    requalify: Some(source),
+                    ..
+                } = input
+                {
+                    let original = self
+                        .journal
+                        .records
+                        .get(&source)
+                        .filter(|record| record.state == State::Complete && !record.acknowledged)
+                        .and_then(|record| record.native.as_ref())
+                        .ok_or(crate::ResearchFailure::JobPromotionBinding)?;
+                    let proposal = job
+                        .base
+                        .requalify(original)
+                        .ok_or(crate::ResearchFailure::JobPromotionBinding)?;
+                    for blob in proposal.blobs() {
+                        self.disk.verify_blob(blob)?;
+                    }
+                    job.requalification = Some(proposal);
+                }
                 job.research = self
                     .research
                     .lock()
@@ -1250,7 +1302,9 @@ impl Owner {
                         frame.solver == job.base.feedback_stamp().0
                             && frame.solver_revision <= job.base.feedback_stamp().1
                     });
-                job.request_history(self.journal.next_id);
+                if job.requalification.is_none() {
+                    job.request_history(self.journal.next_id);
+                }
                 job.evidence = self.disk.replay_evidence(&job.base)?;
             }
             job.validate()?;
@@ -1739,7 +1793,7 @@ impl Owner {
             .filter(|r| {
                 (r.state.terminal() || r.state == State::InDoubt)
                     && !self.running.contains_key(&r.id)
-                    && (!matches!(r.input, Input::Peer { .. }) || r.acknowledged)
+                    && (!r.input.internal() || r.acknowledged)
             })
             .map(|r| r.id)
             .collect::<Vec<_>>();
@@ -1788,7 +1842,7 @@ impl Owner {
                 .find(|r| {
                     (r.state.terminal() || r.state == State::InDoubt)
                         && !self.running.contains_key(&r.id)
-                        && (!matches!(r.input, Input::Peer { .. }) || r.acknowledged)
+                        && (!r.input.internal() || r.acknowledged)
                         && !self.journal.records.changed(&r.id)
                 })
                 .map(|r| r.id);

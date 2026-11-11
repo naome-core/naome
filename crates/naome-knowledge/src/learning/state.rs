@@ -327,6 +327,7 @@ impl State {
             history: None,
             evidence: Vec::new(),
             training: false,
+            requalification: None,
             research: None,
             required: Vec::new(),
             prerequisites: Default::default(),
@@ -416,23 +417,41 @@ impl State {
             budget,
         );
     }
+    fn same_qualification_parent(&self, base: &Self) -> bool {
+        self.model == base.model
+            && self.trained == base.trained
+            && self.meta.model == base.meta.model
+            && self.meta.draw == base.meta.draw
+    }
+
+    fn same_qualification_context(&self, base: &Self) -> bool {
+        digest(&(&self.knowledge, &self.definitions))
+            == digest(&(&base.knowledge, &base.definitions))
+    }
+
+    pub(crate) fn requalify(&self, native: &Job) -> Option<Requalification> {
+        if self.same_qualification_parent(&native.base)
+            && !self.same_qualification_context(&native.base)
+        {
+            native.qualified_proposal()
+        } else {
+            None
+        }
+    }
+
     pub fn qualify(&mut self, native: &Job) -> bool {
         let Some(p) = &native.progress else {
             return false;
         };
         if p.unit != native.units()
             || native.units() == 1
-            || self.model != native.base.model
-            || self.trained != native.base.trained
-            || self.meta.model != native.base.meta.model
-            || self.meta.draw != native.base.meta.draw
+            || !self.same_qualification_parent(&native.base)
             || !native.promotion_bound(p)
         {
             return false;
         }
         if p.qualification == super::Qualification::Promoted
-            && digest(&(&self.knowledge, &self.definitions))
-                != digest(&(&native.base.knowledge, &native.base.definitions))
+            && !self.same_qualification_context(&native.base)
         {
             return false;
         }

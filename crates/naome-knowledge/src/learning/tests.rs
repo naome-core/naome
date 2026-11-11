@@ -420,6 +420,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     previous.unit = job.units() - 1;
     previous.plan = Some(selection.clone());
     previous.candidate = Some(candidate.clone());
+    previous.proposal = Some(candidate.clone());
     previous.first_loss = Some(1.);
     previous.causal = causal::test_fixture(&candidate, 0, 0);
     previous.last_loss = Some(0.5);
@@ -612,6 +613,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     let mut pending = finished_progress(&state);
     pending.unit = job.units() - 1;
     pending.candidate = Some(candidate.clone());
+    pending.proposal = Some(candidate.clone());
     pending.first_loss = Some(1.);
     pending.causal = causal::test_fixture(&candidate, 1, 2);
     pending.last_loss = Some(0.1);
@@ -683,6 +685,7 @@ fn finished_progress(state: &State) -> Progress {
         promotions: state.promotions,
         rejections: state.rejections,
         candidate: None,
+        proposal: None,
         rng: state.draws,
         first_loss: None,
         last_loss: None,
@@ -1259,6 +1262,7 @@ fn evaluate_fixture(base: &State, progress: &mut Progress, before: u32, after: u
     progress.evaluation = transfer::Evidence::default();
     progress.transfer = transfer::Summary::default();
     progress.causal = causal::test_fixture(&progress.model, before, after);
+    progress.proposal = Some(progress.model.clone());
     progress.first_loss = Some(1.);
     progress.last_loss = Some(0.5);
     for _ in 0..curriculum::DEVELOPMENT + base.anchors.len() {
@@ -1273,6 +1277,59 @@ fn evaluate_fixture(base: &State, progress: &mut Progress, before: u32, after: u
             .unwrap();
     }
     progress.assessment = Some(progress.evaluation.assessment(base).unwrap());
+}
+
+pub(crate) fn qualified_job_fixture(job: &mut Job) -> [(Blob, Vec<u8>); 2] {
+    // Fixture for journal custody. Native search and witness reproduction are
+    // tested independently of the owner's persistence transaction.
+    assert_eq!(job.base.preparation, Preparation::Targeted);
+    job.history_request = None;
+    let example = own_example();
+    let target = ResearchQuestion::from_hex(&example.question).unwrap();
+    let (_, graphs) = search::compile(target.proved_target(), &example.tree).unwrap();
+    let mut store = MemoryStore::default();
+    let (model, _, _) = Engine::default()
+        .train(
+            &job.base.model,
+            &pool::Pool::from_graphs(&graphs),
+            &mut 19,
+            &mut store,
+        )
+        .unwrap();
+    let blobs = [
+        model.model.clone().unwrap(),
+        model.optimizer.clone().unwrap(),
+    ]
+    .map(|blob| {
+        let bytes = artifact::load(&mut store, &blob).unwrap();
+        (blob, bytes)
+    });
+    let mut progress = finished_progress(&job.base);
+    progress.unit = job.units();
+    progress.model = model;
+    progress.promotions += 1;
+    progress.qualification = Qualification::Promoted;
+    progress.development_after.checkpoint = digest(&progress.model);
+    evaluate_fixture(&job.base, &mut progress, 1, 0b01010101);
+    job.progress = Some(progress);
+    job.validate().unwrap();
+    blobs
+}
+
+pub(crate) fn grow_qualification_context(state: &mut State) {
+    let certificate = naome_proof::DefinitionCertificate::relation(
+        2,
+        naome_proof::DefinedFormula::member(FreeVariable::new(0), FreeVariable::new(1)),
+    )
+    .unwrap();
+    assert!(
+        state
+            .remember_definition(definitions::Entry {
+                certificate: certificate.to_canonical_bytes(),
+                obligation: None,
+            })
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1299,21 +1356,17 @@ fn causal_promotion_preserves_transfer_and_uses_the_original_knowledge() {
     job.progress = Some(p.clone());
     job.validate().unwrap();
     let mut changed = state.clone();
-    let example = own_example();
-    let question = ResearchQuestion::from_hex(&example.question).unwrap();
-    let target = question.proved_target();
-    let (term, _) = search::compile(target, &example.tree).unwrap();
-    let verified = proof::verify(&term, target).unwrap();
-    assert!(
-        changed
-            .remember_theorem(knowledge::Entry {
-                packet: evidence::pack(&verified).unwrap(),
-            })
-            .unwrap()
-    );
+    grow_qualification_context(&mut changed);
     let changed_checkpoint = digest(&changed);
     assert!(!changed.qualify(&job));
     assert_eq!(digest(&changed), changed_checkpoint);
+    let source = changed.requalify(&job).unwrap();
+    assert_eq!(source.candidate, p.proposal.unwrap());
+    let mut retry = changed.job();
+    retry.training = true;
+    retry.requalification = Some(source);
+    assert_eq!(retry.units(), job.units() - model::TRAINING_UNITS);
+    retry.validate().unwrap();
     assert!(state.qualify(&job));
     assert_eq!(state.model, p.model);
 }
@@ -1373,6 +1426,7 @@ fn causal_selection_is_retained_before_the_worker_can_qualify_it() {
     progress.first_loss = Some(1.);
     progress.last_loss = Some(0.5);
     progress.candidate = Some(candidate.clone());
+    progress.proposal = Some(candidate.clone());
     let selection_unit = progress.unit + 1;
     let initial_evaluation = digest(&progress.evaluation);
     owner.progress = Some(progress);
@@ -1433,6 +1487,7 @@ fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
         ..state.model.clone()
     });
     let candidate = p.candidate.clone().unwrap();
+    p.proposal = Some(candidate.clone());
     p.causal
         .discover(0, &candidate, &causal::test_pair([true, true]))
         .unwrap();

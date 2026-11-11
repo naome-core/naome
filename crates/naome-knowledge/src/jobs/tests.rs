@@ -303,7 +303,13 @@ fn research_submission_preserves_validation_and_capacity_codes() {
     let binding = Binding::new([0; 32], [0; 32]);
     let error = owner
         .client
-        .submit(Input::Train { epoch: 0 }, binding.clone())
+        .submit(
+            Input::Train {
+                epoch: 0,
+                requalify: None,
+            },
+            binding.clone(),
+        )
         .err()
         .unwrap();
     assert_eq!(

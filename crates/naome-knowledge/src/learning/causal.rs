@@ -53,6 +53,12 @@ enum Route {
 }
 
 impl Trial {
+    pub(super) fn proposal_matches(&self, candidate: &Checkpoint) -> bool {
+        self.proposal
+            .as_ref()
+            .is_none_or(|value| value == &digest(candidate))
+    }
+
     fn invalid() -> crate::ResearchFailure {
         crate::ResearchFailure::CausalTrialBinding
     }
