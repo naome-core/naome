@@ -491,3 +491,75 @@ async fn cold_peer_checks_function_witness_before_selecting_compact_question() {
     assert!(receiver.contains(function_receipt.id).unwrap());
     assert!(receiver.resolves_question(root, &question).unwrap());
 }
+
+#[tokio::test]
+async fn unsolicited_offers_do_not_schedule_missing_question_definitions() {
+    if isolated("unsolicited_offers_do_not_schedule_missing_question_definitions") {
+        return;
+    }
+
+    let directory = ConfigFile::new();
+    let donor_path = directory.0.join("donor");
+    let receiver_path = directory.0.join("receiver");
+    let (definition, source, answer) = large_answer();
+    init_peer(&donor_path, Some(&definition));
+    let receiver_id = init_peer(&receiver_path, None);
+    let mut donor = Graph::open(&donor_path).unwrap();
+    let question = ResearchQuestion::from_defined_formula(source, donor.checked_context()).unwrap();
+    let checked = naome_checker::normalize_and_check(answer.clone()).unwrap();
+    let proof_id = checked.proof_id();
+    let metadata = Metadata {
+        artifact_id: hex(ArtifactId::from_proof_id(proof_id).as_bytes()),
+        proof_id: hex(proof_id.as_bytes()),
+        statement_id: hex(checked.statement_id().as_bytes()),
+        question: question.to_hex(),
+    };
+    assert_eq!(
+        metadata.compile(donor.checked_context()).unwrap().2,
+        question
+    );
+    let (program, batch) = stage_program(&donor, answer, &question);
+    donor
+        .commit_batch(program, batch, Instant::now() + Duration::from_secs(15))
+        .unwrap();
+    let Some(crate::object::ArtifactTransfer::Program(mut program_metadata)) =
+        donor.transfer(program).unwrap()
+    else {
+        panic!("expected program metadata");
+    };
+    program_metadata.question = Some(question.to_hex());
+
+    let mut client = isolated_transport();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let receiver = config(receiver_path, port, *client.local_peer_id(), 1);
+    let address = receiver.listen.parse().unwrap();
+    let (_, admin, inbox) = crate::question::channel();
+    let running = tokio::spawn(run_with_questions(
+        receiver,
+        false,
+        inbox,
+        crate::mocks::select_question,
+    ));
+    connected(&mut client, receiver_id, address).await;
+    for offer in [
+        Body::Offer { metadata },
+        Body::ProgramOffer {
+            metadata: program_metadata,
+        },
+    ] {
+        let response = request(&mut client, receiver_id, offer).await;
+        assert!(
+            matches!(
+                response,
+                Body::Error {
+                    code: PeerFailure::InvalidRequest
+                }
+            ),
+            "{response:?}"
+        );
+    }
+    admin.stop().await.unwrap();
+    running.await.unwrap().unwrap();
+}

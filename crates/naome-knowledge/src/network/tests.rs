@@ -492,6 +492,96 @@ fn isolated_transport() -> Swarm<Behaviour> {
         .build()
 }
 
+fn answer_background(client: &mut Swarm<Behaviour>, event: SwarmEvent<BehaviourEvent>) {
+    if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message {
+        message: request_response::Message::Request { channel, .. },
+        ..
+    })) = event
+    {
+        client
+            .behaviour_mut()
+            .exchange
+            .send_response(channel, Frame::new(Body::Missing))
+            .unwrap();
+    }
+}
+
+async fn connected(client: &mut Swarm<Behaviour>, server: PeerId, address: Multiaddr) {
+    let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);
+    client.behaviour_mut().gossip.subscribe(&topic).unwrap();
+    client
+        .dial(
+            libp2p::swarm::dial_opts::DialOpts::peer_id(server)
+                .addresses(vec![address.clone()])
+                .build(),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = client.select_next_some().await;
+            if matches!(&event, SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Subscribed { peer_id, topic: subscribed })) if *peer_id == server && *subscribed == topic.hash()) {
+                break;
+            }
+            if matches!(&event, SwarmEvent::OutgoingConnectionError { peer_id: Some(peer), .. } if *peer == server) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                client.dial(libp2p::swarm::dial_opts::DialOpts::peer_id(server)
+                    .addresses(vec![address.clone()]).build()).unwrap();
+            }
+            answer_background(client, event);
+        }
+    }).await.expect("the server must peer and subscribe");
+}
+
+async fn request(client: &mut Swarm<Behaviour>, server: PeerId, body: Body) -> Body {
+    let mut id = client
+        .behaviour_mut()
+        .exchange
+        .send_request(&server, Frame::new(body.clone()));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = client.select_next_some().await;
+            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                request_response::Event::Message {
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
+                    ..
+                },
+            )) = event
+            {
+                if request_id == id {
+                    if let Body::Error { code } = &response.message.body {
+                        let delay = match code {
+                            PeerFailure::Disabled | PeerFailure::OwnerBusy => {
+                                Some(crate::resources::limits().transport_busy_grace)
+                            }
+                            PeerFailure::RateLimited => {
+                                Some(crate::resources::limits().request_rate_window)
+                            }
+                            _ => None,
+                        };
+                        if let Some(delay) = delay {
+                            tokio::time::sleep(delay).await;
+                            id = client
+                                .behaviour_mut()
+                                .exchange
+                                .send_request(&server, Frame::new(body.clone()));
+                            continue;
+                        }
+                    }
+                    return response.message.body;
+                }
+            } else {
+                answer_background(client, event);
+            }
+        }
+    })
+    .await
+    .expect("the server must respond to the request")
+}
+
 #[tokio::test]
 async fn changing_from_proof_peer_to_public_router_revokes_existing_publication_grants() {
     let mut swarm = isolated_transport();

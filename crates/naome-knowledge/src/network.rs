@@ -1898,10 +1898,10 @@ impl Node {
         let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
             return result;
         };
-        // Retain only the ordinary bounded inventory hint. After each checked
-        // definition is admitted, a fresh description supplies the next one.
-        if !self.want(artifact)? {
-            return Err(crate::Error::ExecutionLimit);
+        // An offer cannot create local interest. Keep the existing selection
+        // while the definition is checked and the description is retried.
+        if !self.wanted.contains_key(&artifact) {
+            return Err(crate::Error::MissingQuestionDefinition(definition));
         }
         self.intake.request_question_definition(
             crate::intake::DefinitionRequest {
