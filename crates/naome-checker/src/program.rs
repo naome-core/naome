@@ -12,7 +12,9 @@ use naome_proof::program::{Command, ScopedAction};
 mod engine;
 mod error;
 mod schema;
-pub use engine::{CheckedFact, CheckedProgram, Engine, FactShape, ProgramDependency, Status};
+pub use engine::{
+    CheckedFact, CheckedProgram, Engine, FactShape, ProgramDependency, ProvedFormulas, Status,
+};
 pub use error::{Error, ProgramFault};
 pub use schema::{APPLICATION_ID, verify_database};
 

@@ -1,5 +1,9 @@
 use super::*;
-use crate::learning::{self as native, graph::Batch, model::Pool, tests::MemoryStore};
+use crate::learning::{
+    self as native,
+    model::{Batch, Pool},
+    tests::MemoryStore,
+};
 
 fn graph() -> Graph {
     let solution = native::tests::own_solution();
@@ -134,8 +138,8 @@ fn observer_maps_disjoint_graphs_without_sentinel_or_candidate_padding() {
                 .unwrap();
             assert_eq!(actual[i].embedding_nodes, separate[0].embedding_nodes);
             assert_eq!(
-                actual[i].message_three_nodes,
-                separate[0].message_three_nodes
+                actual[i].role_conditioned_nodes,
+                separate[0].role_conditioned_nodes
             );
         }
     }

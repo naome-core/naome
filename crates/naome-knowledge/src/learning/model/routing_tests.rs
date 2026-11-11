@@ -87,7 +87,7 @@ fn row_routing_preserves_logits_and_the_complete_adam_update_bitwise() {
             // Exact checkpoint identities also cover gradient accumulation,
             // parameter updates and Adam continuation, not just predictions.
             for (runtime, logits) in [(&mut reference, expected), (&mut indexed, actual)] {
-                let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
+                let probability = logits.exp();
                 let loss = -(probability * batch.successes.clone())
                     .sum_dim(1)
                     .clamp_min(1e-12)
@@ -132,15 +132,15 @@ fn cached_formula_rows_are_reused_across_roles_and_discarded_after_training() {
             .zip(dense)
             .all(|(sparse, dense)| (sparse - dense).abs() < 1e-5)
     );
-    let size = runtime.formulas.borrow().len();
+    let size = runtime.token_rows.borrow().len();
     assert!(size > 1);
     let mut oversized = runtime.scoring_batch(&graph).unwrap();
-    let sentinel = oversized.nodes[0].clone();
-    oversized.nodes.resize(1025, sentinel);
+    let sentinel = oversized.rows[0];
+    oversized.rows.resize(1025, sentinel);
     let rejected = runtime.policy.valid().encode_cached(
         &oversized,
         &graph.context,
-        &mut runtime.formulas.borrow_mut(),
+        &mut runtime.token_rows.borrow_mut(),
     );
     assert!(matches!(
         rejected,
@@ -148,14 +148,14 @@ fn cached_formula_rows_are_reused_across_roles_and_discarded_after_training() {
             crate::ResearchFailure::FormulaCacheBatchCapacity
         ))
     ));
-    assert_eq!(runtime.formulas.borrow().len(), size);
+    assert_eq!(runtime.token_rows.borrow().len(), size);
 
     let mut changed_context = graph.clone();
     changed_context.context.clear();
     let goal = changed_context.goal;
     changed_context.nodes[goal].role = 1;
     let cached = runtime.scores_graph(&changed_context).unwrap();
-    assert_eq!(runtime.formulas.borrow().len(), size);
+    assert_eq!(runtime.token_rows.borrow().len(), size);
     let batch = runtime.scoring_batch(&changed_context).unwrap();
     let expected = runtime
         .policy
@@ -170,8 +170,8 @@ fn cached_formula_rows_are_reused_across_roles_and_discarded_after_training() {
     runtime
         .train(&Pool::from_graphs(std::slice::from_ref(&graph)), &mut 41, 1)
         .unwrap();
-    assert_eq!(runtime.formulas.borrow().len(), 0);
+    assert_eq!(runtime.token_rows.borrow().len(), 0);
     let trained = runtime.scores_graph(&graph).unwrap();
     assert_ne!(trained, initial);
-    assert_eq!(runtime.formulas.borrow().len(), size);
+    assert_eq!(runtime.token_rows.borrow().len(), size);
 }

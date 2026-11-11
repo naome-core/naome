@@ -84,6 +84,7 @@ fn matched_inference_device_memory_screen() {
         let count = 48 + iteration % 209;
         let graph = Graph {
             binding: String::new(),
+            field: crate::learning::graph::Field::Action,
             nodes: (0..count)
                 .map(|i| Node {
                     kind: if i == 0 { 0 } else { 1 + (i % 7) as i32 },
@@ -148,6 +149,7 @@ fn maximum_supported_batch_memory_is_bounded() {
         .collect();
     let graph = Graph {
         binding: String::new(),
+        field: crate::learning::graph::Field::Action,
         nodes,
         goal: 255,
         context: (1..33).collect(),
@@ -241,14 +243,13 @@ fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
             );
         }
     }
-    let probability = burn::tensor::activation::log_softmax(
-        dense.policy.independent(
+    let probability = dense
+        .policy
+        .independent(
             &Batch::from_dense_context(&sample, &dense.device).unwrap(),
             dense.recurrent(),
-        ),
-        1,
-    )
-    .exp();
+        )
+        .exp();
     let loss = -(probability * batch.successes)
         .sum_dim(1)
         .clamp_min(1e-12)
@@ -302,7 +303,7 @@ fn zero_update_snapshot_preserves_fresh_predictions_and_optimizer_continuation()
     );
 }
 #[test]
-fn research_policy_trains_and_restores_both_million_parameter_model_and_adam() {
+fn token_policy_trains_and_restores_model_and_adam() {
     let source = super::super::tests::own_question();
     struct Ordered;
     impl Ranker for Ordered {

@@ -39,7 +39,7 @@ mod references;
 mod scoped;
 #[cfg(test)]
 mod typed_actions;
-use materialization::{Finalization, Shape};
+use materialization::{Finalization, NodeCache, Shape, Tree};
 pub use references::ProgramDependency;
 
 #[derive(Debug, Serialize)]
@@ -105,6 +105,43 @@ pub struct CheckedProgram {
     manifest: Manifest,
     canonical: Option<Formula>,
 }
+
+/// Bounded formula projection from one live checked program.
+pub struct ProvedFormulas<'a> {
+    engine: &'a Engine,
+    nodes: NodeCache<(Node<u64>, Properties)>,
+}
+
+impl ProvedFormulas<'_> {
+    /// Read a checked result if it is proved and fits the Foundation codec.
+    pub fn get(&mut self, position: u64) -> Result<Option<Formula>, Error> {
+        self.engine.live()?;
+        let value = checker::Context::previous_node(self.engine, position)?;
+        if !value.proved {
+            return Ok(None);
+        }
+        let mut load = |id| {
+            self.nodes.load(id, |id| {
+                let (node, _, properties) = self.engine.load(id)?;
+                Ok((node, properties))
+            })
+        };
+        let (root, properties) = load(value.formula)?;
+        if properties.required_binders != 0 {
+            return Err(ProgramFault::DanglingBinder.into());
+        }
+        let result = format::bounded_formula(value.formula, |id| {
+            if id == value.formula {
+                Ok(root)
+            } else {
+                load(id).map(|(node, _)| node)
+            }
+        })?;
+        self.engine.live()?;
+        Ok(result)
+    }
+}
+
 impl CheckedProgram {
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -119,11 +156,20 @@ impl CheckedProgram {
     /// Materializes an earlier proved operand when it fits the formula codec.
     /// Open graph construction records and unproved expressions are not facts.
     pub fn proved_formula(&self, position: u64) -> Result<Option<Formula>, Error> {
-        self.engine.live()?;
-        if !checker::Context::previous_node(&self.engine, position)?.proved {
-            return Ok(None);
+        ProvedFormulas {
+            engine: &self.engine,
+            nodes: NodeCache::new(0),
         }
-        self.engine.result_formula(position)
+        .get(position)
+    }
+
+    /// Reuse authenticated nodes across projections within the checked
+    /// evaluator's materialization cache budget.
+    pub fn proved_formulas(&mut self) -> ProvedFormulas<'_> {
+        ProvedFormulas {
+            engine: &self.engine,
+            nodes: NodeCache::new(Tree::cache_bytes(self.engine.cache_budget.unwrap_or(0))),
+        }
     }
 
     /// The primitive instantiation axiom checked inside a fused instruction.
@@ -324,6 +370,7 @@ impl Engine {
         }
         sql(self.connection.pragma_update(None, "cache_size", 0))?;
         sql(self.connection.pragma_update(Some("temp"), "cache_size", 0))?;
+        self.connection.flush_prepared_statement_cache();
         sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
         if let Some(tree) = self
             .finalization
@@ -695,7 +742,7 @@ impl Engine {
         if self.cache_budget != Some(cache_bytes) {
             // Main/temp SQLite caches and the bounded projection cache share
             // one effective byte budget, including live downward adjustments.
-            let sqlite_bytes = cache_bytes - materialization::Tree::cache_bytes(cache_bytes);
+            let sqlite_bytes = cache_bytes - Tree::cache_bytes(cache_bytes);
             let kib = -i64::try_from((sqlite_bytes / 2048).max(1))
                 .map_err(|_| ProgramFault::CacheBudget)?;
             sql(self.connection.pragma_update(None, "cache_size", kib))?;
@@ -705,6 +752,7 @@ impl Engine {
             // A growing allowance needs no eviction. Preserve the live temp
             // evaluator while still trimming on initialization and every cut.
             if self.cache_budget.is_none_or(|before| cache_bytes < before) {
+                self.connection.flush_prepared_statement_cache();
                 sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
             }
             if let Some(tree) = self
@@ -1119,10 +1167,11 @@ impl Engine {
     }
     fn raw(&self, id: u64) -> Result<(Node<u64>, [u8; 32], Properties), Error> {
         type Row = (i64, i64, i64, i64, i64, bool, u64, Vec<u8>);
-        let (tag, a, b, ak, bk, free, required, hash): Row = sql(self.connection.query_row(
-            "SELECT tag,a,b,ak,bk,free,required,hash FROM node WHERE id=?1",
-            [number(id)?],
-            |r| {
+        let mut query = sql(self
+            .connection
+            .prepare_cached("SELECT tag,a,b,ak,bk,free,required,hash FROM node WHERE id=?1"))?;
+        let (tag, a, b, ak, bk, free, required, hash): Row =
+            sql(query.query_row([number(id)?], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -1133,8 +1182,7 @@ impl Engine {
                     unsigned(r, 6)?,
                     r.get(7)?,
                 ))
-            },
-        ))?;
+            }))?;
         let variable = |kind, value: i64| -> Result<Variable, Error> {
             match (kind, value) {
                 (0, 0..) => u32::try_from(value)
@@ -1206,22 +1254,20 @@ impl Engine {
         Ok((node, hash, p))
     }
     fn authenticated(&self, id: u64) -> Result<Option<([u8; 32], Properties, Shape)>, Error> {
-        let row: Option<(Vec<u8>, bool, u64, u64, u64, u64)> = sql(self
-            .connection
-            .query_row(
-                "SELECT hash,free,required,nodes,bytes,depth FROM authenticated_node WHERE id=?1",
-                [number(id)?],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        unsigned(row, 2)?,
-                        unsigned(row, 3)?,
-                        unsigned(row, 4)?,
-                        unsigned(row, 5)?,
-                    ))
-                },
-            )
+        let mut query = sql(self.connection.prepare_cached(
+            "SELECT hash,free,required,nodes,bytes,depth FROM authenticated_node WHERE id=?1",
+        ))?;
+        let row: Option<(Vec<u8>, bool, u64, u64, u64, u64)> = sql(query
+            .query_row([number(id)?], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    unsigned(row, 2)?,
+                    unsigned(row, 3)?,
+                    unsigned(row, 4)?,
+                    unsigned(row, 5)?,
+                ))
+            })
             .optional())?;
         row.map(
             |(hash, has_free_variables, required_binders, nodes, bytes, depth)| {
@@ -1249,18 +1295,18 @@ impl Engine {
         properties: Properties,
         shape: Shape,
     ) -> Result<(), Error> {
-        sql(self.connection.execute(
+        let mut insert = sql(self.connection.prepare_cached(
             "INSERT OR IGNORE INTO authenticated_node VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                number(id)?,
-                hash.as_slice(),
-                properties.has_free_variables,
-                number(properties.required_binders)?,
-                number(shape.nodes)?,
-                number(shape.bytes)?,
-                number(shape.depth)?
-            ],
         ))?;
+        sql(insert.execute(params![
+            number(id)?,
+            hash.as_slice(),
+            properties.has_free_variables,
+            number(properties.required_binders)?,
+            number(shape.nodes)?,
+            number(shape.bytes)?,
+            number(shape.depth)?
+        ]))?;
         if self.authenticated(id)? != Some((hash, properties, shape)) {
             return Err(ProgramFault::FormulaMutation.into());
         }
@@ -1378,11 +1424,11 @@ impl checker::Context for Engine {
         Ok(value)
     }
     fn previous_node(&self, index: u64) -> Result<Value<u64>, Error> {
-        let (formula, proved) = sql(self.connection.query_row(
-            "SELECT node,proved FROM checked WHERE position=?1",
-            [number(index)?],
-            |r| Ok((unsigned(r, 0)?, r.get(1)?)),
-        ))?;
+        let mut query = sql(self
+            .connection
+            .prepare_cached("SELECT node,proved FROM checked WHERE position=?1"))?;
+        let (formula, proved) =
+            sql(query.query_row([number(index)?], |r| Ok((unsigned(r, 0)?, r.get(1)?))))?;
         Ok(Value { formula, proved })
     }
     fn implication(&self, formula: u64) -> Result<Option<(u64, u64)>, Error> {

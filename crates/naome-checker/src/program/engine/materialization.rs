@@ -39,32 +39,66 @@ impl Shape {
 pub(super) struct Tree {
     pending: Vec<u64>,
     bytes: Vec<u8>,
-    cache: BTreeMap<u64, Node<u64>>,
-    order: VecDeque<u64>,
-    cache_limit: usize,
+    cache: NodeCache<Node<u64>>,
 }
-impl Tree {
+
+pub(super) struct NodeCache<T> {
+    nodes: BTreeMap<u64, T>,
+    order: VecDeque<u64>,
+    limit: usize,
+}
+
+impl<T: Copy> NodeCache<T> {
     // Conservative map-node, allocation and FIFO metadata charge per entry.
     fn entry_bytes() -> usize {
-        std::mem::size_of::<(u64, Node<u64>)>() + 128
+        std::mem::size_of::<(u64, T)>() + 128
     }
+    pub fn new(bytes: u64) -> Self {
+        Self {
+            nodes: BTreeMap::new(),
+            order: VecDeque::new(),
+            limit: usize::try_from(bytes).unwrap_or(usize::MAX) / Self::entry_bytes(),
+        }
+    }
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.order.clear();
+    }
+    pub fn load(
+        &mut self,
+        id: u64,
+        load: impl FnOnce(u64) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        if let Some(node) = self.nodes.get(&id) {
+            return Ok(*node);
+        }
+        let node = load(id)?;
+        if self.limit > 0 {
+            if self.nodes.len() >= self.limit
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.nodes.remove(&oldest);
+            }
+            self.nodes.insert(id, node);
+            self.order.push_back(id);
+        }
+        Ok(node)
+    }
+}
+
+impl Tree {
     pub fn cache_bytes(budget: u64) -> u64 {
         budget / 4
     }
     pub fn new(root: u64, budget: u64) -> Self {
-        let cache_limit = Self::cache_bytes(budget) as usize / Self::entry_bytes();
         Self {
             pending: vec![root],
             bytes: Vec::new(),
-            cache: BTreeMap::new(),
-            order: VecDeque::new(),
-            cache_limit,
+            cache: NodeCache::new(Self::cache_bytes(budget)),
         }
     }
     pub fn restrict_cache(&mut self, budget: u64) {
-        self.cache_limit = Self::cache_bytes(budget) as usize / Self::entry_bytes();
-        self.cache.clear();
-        self.order = VecDeque::new();
+        self.cache = NodeCache::new(Self::cache_bytes(budget));
     }
     pub fn advance(
         &mut self,
@@ -74,28 +108,12 @@ impl Tree {
         // Reauthenticate on every owner boundary; cached nodes never restore
         // trust across quanta, replay, or an observed external write.
         self.cache.clear();
-        self.order.clear();
         for _ in 0..steps {
             let Some(&id) = self.pending.last() else {
                 return Ok(true);
             };
             // A failed cold read preserves this exact node for a later retry.
-            let node = match self.cache.get(&id) {
-                Some(node) => *node,
-                None => {
-                    let node = load(id)?;
-                    if self.cache_limit > 0 {
-                        if self.cache.len() >= self.cache_limit
-                            && let Some(oldest) = self.order.pop_front()
-                        {
-                            self.cache.remove(&oldest);
-                        }
-                        self.cache.insert(id, node);
-                        self.order.push_back(id);
-                    }
-                    node
-                }
-            };
+            let node = self.cache.load(id, &mut load)?;
             self.pending.pop();
             self.bytes.push(match node {
                 Node::Equal(..) => 0,

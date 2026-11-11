@@ -1,8 +1,9 @@
-//! The native structural policy behind a narrow checkpoint/training boundary.
-//! Formula graphs, goal-conditioned context attention and typed proof choices
+//! The native token policy behind the checkpoint and training boundary.
+//! Legal proof prefixes, goal-conditioned context and typed references
 //! use Adam, checked-action objectives and at most 16 graph slots. Real observed
 //! predecessor windows carry bounded working state; the native checker retains
 //! all mathematical authority. No pretrained weights are imported.
+mod batch;
 pub(super) mod intervention;
 mod measurement;
 mod memory;
@@ -11,18 +12,19 @@ use measurement::TrainingMeasurements;
 pub(super) mod observation;
 mod policy;
 mod sequence;
+mod token;
 pub(crate) use memory::Recurrence;
 pub use memory::{Memory, Plan};
 mod preservation;
 #[cfg(test)]
 mod routing_tests;
 mod utility;
-use super::graph::Graph;
+use super::graph::{Field, Graph};
 use super::{
     artifact::{self, ArtifactIo, Blob},
-    graph::Batch,
     pool::{Pool, Sample},
 };
+use batch::Batch;
 use burn::{
     module::{Module, ModuleMapper, Param},
     optim::{AdamConfig, GradientsParams, ModuleOptimizer},
@@ -49,9 +51,10 @@ pub(crate) const REQUIREMENTS: Requirements = Requirements {
     io_bytes: 2 * 1024 * 1024 * 1024,
     work_bytes: 768 * 1024 * 1024,
 };
-pub const PARAMETERS: usize = READOUT_PARAMETERS
-    + (19 + super::graph::SYMBOLS + 4 + 4 * policy::LAYERS + 4 * policy::WIDTH + 1) * policy::WIDTH;
-pub(super) const READOUT_PARAMETERS: usize = 384_961;
+pub const PARAMETERS: usize =
+    READOUT_PARAMETERS + (token::VOCABULARY + 4 + 4 * policy::WIDTH + 1) * policy::WIDTH;
+pub(super) const READOUT_PARAMETERS: usize =
+    (5 * policy::WIDTH + 1) * policy::READOUT + policy::READOUT + 1;
 pub const TRAINING_UNITS: u32 = 25;
 pub const UPDATES_PER_UNIT: u64 = 10;
 
@@ -96,6 +99,9 @@ pub struct Decision {
 }
 pub trait Ranker {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error>;
+    fn field_scores(&mut self, d: &Decision, _field: Field) -> Result<Vec<f32>, crate::Error> {
+        self.scores(d)
+    }
     fn plan(
         &mut self,
         d: &Decision,
@@ -135,6 +141,8 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
+    hash.update(include_str!("model/token.rs"));
+    hash.update(include_str!("model/batch.rs"));
     hash.update(include_str!("model/policy/cache.rs"));
     hash.update(include_str!("model/memory.rs"));
     hash.update(include_str!("model/intervention.rs"));
@@ -199,7 +207,7 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("curriculum/frontier.rs"));
     hash.update(include_str!("curriculum/composition.rs"));
     hash.update(
-        b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;structural-formula-cache;batch=16;lr=0.001;float32",
+        b"Adam;checked-prefix-marginal;hierarchical-cyclic-pool;packed-token-prefixes;token-row-cache;batch=16;lr=0.001;float32",
     );
     crate::hex(&hash.finalize())
 }
@@ -278,7 +286,7 @@ pub fn random(seed: &mut u64) -> u64 {
 }
 pub struct Runtime {
     policy: Policy,
-    formulas: std::cell::RefCell<policy::FormulaCache>,
+    token_rows: std::cell::RefCell<policy::RowCache>,
     optimizer: ModuleOptimizer,
     preservation: preservation::Preservation,
     preservation_micros: u64,
@@ -485,7 +493,7 @@ impl Runtime {
         }
         Ok(Self {
             policy,
-            formulas: Default::default(),
+            token_rows: Default::default(),
             optimizer,
             preservation,
             preservation_micros: 0,
@@ -553,7 +561,7 @@ impl Runtime {
         if graphs.is_empty() {
             return Err(crate::ResearchFailure::TrainingPoolEmpty.into());
         }
-        self.formulas.get_mut().clear();
+        self.token_rows.get_mut().clear();
         if self.readout_only {
             self.policy = self.policy.clone().readout_training();
         }
@@ -662,13 +670,14 @@ impl Runtime {
         Ok((first, last))
     }
 }
-fn checked_marginal(logits: Tensor<2>, batch: &Batch) -> Tensor<1> {
-    let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
-    -(probability * batch.successes.clone())
+fn checked_losses(log_probabilities: Tensor<2>, batch: &Batch) -> Tensor<2> {
+    -(log_probabilities.exp() * batch.successes.clone())
         .sum_dim(1)
         .clamp_min(1e-12)
         .log()
-        .mean()
+}
+fn checked_marginal(log_probabilities: Tensor<2>, batch: &Batch) -> Tensor<1> {
+    checked_losses(log_probabilities, batch).mean()
 }
 fn loss_value(loss: &Tensor<1>) -> Result<f32, crate::Error> {
     let data = loss.clone().into_data();
@@ -690,6 +699,9 @@ fn loss_value(loss: &Tensor<1>) -> Result<f32, crate::Error> {
 impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
         self.scores_graph(&Graph::encode(d)?)
+    }
+    fn field_scores(&mut self, d: &Decision, field: Field) -> Result<Vec<f32>, crate::Error> {
+        self.scores_graph(&Graph::encode_field(d, field)?)
     }
     fn plan(
         &mut self,
@@ -937,11 +949,11 @@ impl Engine {
             .map_err(record_failure)
             .and_then(|policy| {
                 let original = std::mem::replace(&mut runtime.policy, policy.train());
-                let formulas = std::mem::take(&mut runtime.formulas);
+                let token_rows = std::mem::take(&mut runtime.token_rows);
                 runtime.identity = super::digest(&(parent, candidate, spans, removal));
                 let result = operation(&mut runtime);
                 runtime.policy = original;
-                runtime.formulas = formulas;
+                runtime.token_rows = token_rows;
                 result
             });
         self.retain(source.clone(), runtime);

@@ -1,8 +1,7 @@
-//! Packed formula and action graphs with decision-local variable slots.
+//! Symbolic decision records with interned formulas and decision-local references.
 
 use super::model::Decision;
 use crate::LearningGraphFailure as Failure;
-use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
 use naome_foundation::{
     FormulaView,
     graph::{Node as FormulaNode, Variable},
@@ -13,6 +12,8 @@ use std::collections::HashMap;
 pub const MAX_NODES: usize = 256;
 pub const MAX_CONTEXT: usize = 48;
 pub(super) const SYMBOLS: usize = 2 * MAX_NODES + 1;
+pub(super) const NEGATION: i32 = 3;
+pub(super) const PAIR: i32 = 14;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Node {
@@ -23,9 +24,25 @@ pub struct Node {
     pub symbol: i32,
 }
 
+/// The grammar slot the checker and search are supplying to the policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub(crate) enum Field {
+    #[default]
+    Action,
+    Operation,
+    ConjunctionLeft,
+    ConjunctionRight,
+    Universal,
+    Replacement,
+    Premise,
+    Definition,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Graph {
     pub binding: String,
+    pub(crate) field: Field,
     pub nodes: Vec<Node>,
     pub goal: usize,
     pub context: Vec<usize>,
@@ -84,7 +101,7 @@ impl<'a> Builder<'a> {
         };
         rest.iter().try_fold(first, |left, &right| {
             self.push(Node {
-                kind: 14,
+                kind: PAIR,
                 left,
                 right,
                 role: 0,
@@ -167,7 +184,7 @@ impl<'a> Builder<'a> {
                 node.right = self.variable(b, binders)?;
             }
             FormulaNode::Not(body) => {
-                node.kind = 3;
+                node.kind = NEGATION;
                 node.left = self.formula(body, binders, children)?;
             }
             FormulaNode::Implies(left, right) => {
@@ -198,6 +215,7 @@ impl Graph {
     pub fn key(&self) -> String {
         super::digest(&(
             &self.binding,
+            self.field,
             &self.nodes,
             self.goal,
             &self.context,
@@ -206,6 +224,12 @@ impl Graph {
     }
     pub fn encode(decision: &Decision) -> Result<Self, Failure> {
         Self::encode_at_depth(decision, usize::MAX)
+    }
+
+    pub(super) fn encode_field(decision: &Decision, field: Field) -> Result<Self, Failure> {
+        let mut graph = Self::encode(decision)?;
+        graph.field = field;
+        Ok(graph)
     }
 
     /// A bounded view of existing checked operands, for replay choices whose
@@ -295,190 +319,13 @@ impl Graph {
         }
         Ok(Self {
             binding: String::new(),
+            field: Field::Action,
             nodes: builder.nodes,
             goal,
             context,
             candidates,
             expert: decision.expert,
             successes,
-        })
-    }
-}
-
-enum ContextMask {
-    Packed(Vec<bool>),
-    #[cfg(test)]
-    Dense(Vec<f32>),
-}
-
-impl ContextMask {
-    fn include(&mut self, index: usize, _multiplicity: usize) {
-        match self {
-            Self::Packed(rows) => rows[index] = false,
-            #[cfg(test)]
-            Self::Dense(rows) => rows[index] += 1. / _multiplicity as f32,
-        }
-    }
-
-    fn tensor(self, shape: [usize; 2], device: &Device) -> Tensor<2, Bool> {
-        match self {
-            Self::Packed(rows) => Tensor::from_data(TensorData::new(rows, shape), device),
-            #[cfg(test)]
-            Self::Dense(rows) => {
-                Tensor::<2>::from_data(TensorData::new(rows, shape), device).equal_elem(0.)
-            }
-        }
-    }
-}
-
-pub struct Batch {
-    pub kinds: Tensor<2, Int>,
-    pub roles: Tensor<2, Int>,
-    pub left: Tensor<2, Int>,
-    pub right: Tensor<2, Int>,
-    pub symbols: Tensor<2, Int>,
-    pub(super) nodes: Vec<Node>,
-    pub valid: Tensor<3>,
-    pub goal: Tensor<2, Int>,
-    context_mask: Tensor<2, Bool>,
-    pub candidates: Tensor<2, Int>,
-    pub invalid: Tensor<2, Bool>,
-    pub successes: Tensor<2>,
-}
-
-impl Batch {
-    pub fn context_mask(&self) -> Tensor<2, Bool> {
-        self.context_mask.clone()
-    }
-
-    pub fn from_graphs<G: std::borrow::Borrow<Graph>>(
-        graphs: &[G],
-        device: &Device,
-    ) -> Result<Self, Failure> {
-        Self::pack(
-            graphs,
-            device,
-            #[cfg(test)]
-            false,
-        )
-    }
-
-    #[cfg(test)]
-    pub fn from_dense_context<G: std::borrow::Borrow<Graph>>(
-        graphs: &[G],
-        device: &Device,
-    ) -> Result<Self, Failure> {
-        Self::pack(graphs, device, true)
-    }
-
-    fn pack<G: std::borrow::Borrow<Graph>>(
-        graphs: &[G],
-        device: &Device,
-        #[cfg(test)] dense: bool,
-    ) -> Result<Self, Failure> {
-        let graphs = graphs
-            .iter()
-            .map(std::borrow::Borrow::borrow)
-            .collect::<Vec<_>>();
-        if graphs.is_empty() {
-            return Err(Failure::EmptyBatch);
-        }
-        if graphs.len() > 16
-            || graphs.iter().any(|g| {
-                g.nodes.is_empty()
-                    || g.nodes.len() > MAX_NODES
-                    || g.candidates.is_empty()
-                    || g.candidates.len() > 16
-            })
-        {
-            return Err(Failure::BatchCapacity);
-        }
-        let b = graphs.len();
-        // One shared zero sentinel and disjoint ranges for the actual nodes.
-        // No graph is padded to another graph's size.
-        let n = 1 + graphs.iter().map(|g| g.nodes.len() - 1).sum::<usize>();
-        let c = graphs.iter().map(|g| g.candidates.len()).max().unwrap();
-        let mut kinds = vec![0i32; n];
-        let mut roles = kinds.clone();
-        let mut left = kinds.clone();
-        let mut right = kinds.clone();
-        let mut symbols = kinds.clone();
-        let mut nodes = vec![graphs[0].nodes[0].clone()];
-        let mut valid = vec![0f32; n];
-        let mut goal = vec![0i32; b];
-        // Attention uses only membership. Build the bool mask directly
-        // from indexed context handles without materializing float weights.
-        #[cfg(test)]
-        let mut context = if dense {
-            ContextMask::Dense(vec![0.; b * n])
-        } else {
-            ContextMask::Packed(vec![true; b * n])
-        };
-        #[cfg(not(test))]
-        let mut context = ContextMask::Packed(vec![true; b * n]);
-        let mut candidates = vec![0i32; b * c];
-        let mut invalid = vec![true; b * c];
-        let mut successes = vec![0f32; b * c];
-        let mut base = 1;
-        for (batch, graph) in graphs.iter().enumerate() {
-            let index = |i: usize| -> Result<usize, Failure> {
-                if i >= graph.nodes.len() {
-                    Err(Failure::NodeBinding)
-                } else {
-                    Ok(if i == 0 { 0 } else { base + i - 1 })
-                }
-            };
-            for (i, node) in graph.nodes.iter().enumerate().skip(1) {
-                let offset = index(i)?;
-                kinds[offset] = node.kind;
-                roles[offset] = node.role;
-                if node.left >= i || node.right >= i || !(0..SYMBOLS as i32).contains(&node.symbol)
-                {
-                    return Err(Failure::NodeOperandOrSymbol);
-                }
-                let left_index = index(node.left)?;
-                let right_index = index(node.right)?;
-                left[offset] = left_index as i32;
-                right[offset] = right_index as i32;
-                symbols[offset] = node.symbol;
-                valid[offset] = 1.;
-                nodes.push(Node {
-                    left: left_index,
-                    right: right_index,
-                    ..node.clone()
-                });
-            }
-            goal[batch] = index(graph.goal)? as i32;
-            for root in &graph.context {
-                context.include(batch * n + index(*root)?, graph.context.len());
-            }
-            for (i, root) in graph.candidates.iter().enumerate() {
-                candidates[batch * c + i] = index(*root)? as i32;
-                invalid[batch * c + i] = false;
-            }
-            if graph.successes.is_empty()
-                || graph.successes.iter().any(|i| *i >= graph.candidates.len())
-            {
-                return Err(Failure::SuccessfulActionBinding);
-            }
-            for i in &graph.successes {
-                successes[batch * c + i] = 1.;
-            }
-            base += graph.nodes.len() - 1;
-        }
-        Ok(Self {
-            kinds: Tensor::from_data(TensorData::new(kinds, [1, n]), device),
-            roles: Tensor::from_data(TensorData::new(roles, [1, n]), device),
-            left: Tensor::from_data(TensorData::new(left, [1, n]), device),
-            right: Tensor::from_data(TensorData::new(right, [1, n]), device),
-            symbols: Tensor::from_data(TensorData::new(symbols, [1, n]), device),
-            nodes,
-            valid: Tensor::from_data(TensorData::new(valid, [1, n, 1]), device),
-            goal: Tensor::from_data(TensorData::new(goal, [b, 1]), device),
-            context_mask: context.tensor([b, n], device),
-            candidates: Tensor::from_data(TensorData::new(candidates, [b, c]), device),
-            invalid: Tensor::from_data(TensorData::new(invalid, [b, c]), device),
-            successes: Tensor::from_data(TensorData::new(successes, [b, c]), device),
         })
     }
 }

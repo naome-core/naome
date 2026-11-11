@@ -3,6 +3,7 @@ use crate::learning::graph::Node;
 fn case(number: usize) -> Graph {
     Graph {
         binding: String::new(),
+        field: crate::learning::graph::Field::Action,
         nodes: vec![
             Node {
                 kind: 0,

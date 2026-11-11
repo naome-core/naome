@@ -10,6 +10,10 @@ use naome_proof::{
 };
 
 fn donor(pattern: u32) -> (Formula, peer::Packet, peer::Packet) {
+    donor_with_guard(pattern, false)
+}
+
+fn donor_with_guard(pattern: u32, reflexive: bool) -> (Formula, peer::Packet, peer::Packet) {
     let [a, b, c] = [10, 11, 12].map(FreeVariable::new);
     let atom = |bit, left, right| {
         if pattern & (1u32 << bit) == 0u32 {
@@ -39,7 +43,11 @@ fn donor(pattern: u32) -> (Formula, peer::Packet, peer::Packet) {
         .into_commands();
     let foundation = peer::Packet::compose(&base, &commands, &[], []).unwrap();
     let foundation_id = foundation.manifest.proof_id();
-    let guard = proof::close(Formula::implies(atom(0, a, b), atom(5, c, b)));
+    let guard = if reflexive {
+        base.clone()
+    } else {
+        proof::close(Formula::implies(atom(0, a, b), atom(5, c, b)))
+    };
     let target = Formula::implies(guard.clone(), base.clone());
     let nested = Projection::from_inference_steps(&[
         ProofStep::ProofReference {
@@ -161,7 +169,9 @@ fn a_nested_native_prerequisite_unlocks_a_distinct_goal_within_the_same_budget()
     let mut derived = Vec::new();
     let mut continuation = None;
     for (index, (relevant, decoy)) in [(21, 38), (54, 9), (15, 49)].into_iter().enumerate() {
-        let (lemma, donor, base) = donor(relevant);
+        // The direct controls have a structural closing step. The remaining
+        // case needs the checked prerequisite under the same search budget.
+        let (lemma, donor, base) = donor_with_guard(relevant, index != 1);
         let (_, decoy, decoy_base) = self::donor(decoy);
         let donor_id = donor.manifest.proof_id();
         let decoy_id = decoy.manifest.proof_id();

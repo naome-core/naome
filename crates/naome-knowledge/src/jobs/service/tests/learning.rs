@@ -1562,7 +1562,11 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
 #[test]
 fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening() {
     let (directory, mut owner) = native();
-    let question = crate::learning::tests::own_question();
+    // This equality chain leaves an observed tableau window that can be
+    // matched to its independently checked proof after the history reload.
+    let question =
+        "04040403020300010000000201000000010200010000000101000000000001000000000100000002"
+            .to_owned();
     let (source, _receive) = submit_native(
         &mut owner,
         Input::Solve {
@@ -2395,7 +2399,7 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     };
     let body = [Formula::equal(a, b), Formula::member(a, c)]
         .into_iter()
-        .chain((0..4).map(guard))
+        .chain((3..7).map(guard))
         .fold(Formula::member(b, c), |body, premise| {
             Formula::implies(premise, body)
         });
