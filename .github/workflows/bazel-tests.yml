@@ -54,17 +54,6 @@ jobs:
           key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml') }}-${{ steps.cache-day.outputs.day }}
           restore-keys: |
             bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml') }}
-
-      # The earlier snapshot used the parent directory as its cache path.
-      # Only import it when no snapshot with the current paths can be restored.
-      - name: Restore previous Bazel cache snapshot
-        if: ${{ steps.cache.outputs.cache-matched-key == '' }}
-        continue-on-error: true
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/naome-bazel
-          key: bazel-legacy-import-${{ runner.os }}-${{ runner.arch }}
-          restore-keys: |
             bazel-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build and lint product and test targets
