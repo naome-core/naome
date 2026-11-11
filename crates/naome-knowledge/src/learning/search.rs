@@ -4,6 +4,8 @@ pub(crate) mod derivation;
 pub(super) mod focus;
 pub(crate) mod frontier;
 mod instantiation;
+#[cfg(test)]
+mod planner;
 pub(super) mod scope;
 pub(crate) mod trace;
 use super::calculus::{self as c, Names};
@@ -24,6 +26,7 @@ use std::{
 
 pub(super) const TIME_LIMIT: Duration = Duration::from_millis(2500);
 const FACT_LIMIT: usize = 32;
+const MAX_DEPTH: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Action {
@@ -415,6 +418,32 @@ struct Offer {
     prepares_close: bool,
 }
 
+fn forced_offer(offers: &[Offer], depth: usize, remaining: usize) -> Option<usize> {
+    (depth < MAX_DEPTH)
+        .then(|| offers.iter().position(|offer| offer.closes))
+        .flatten()
+        .or_else(|| {
+            (depth < MAX_DEPTH - 1 && remaining >= 2)
+                .then(|| offers.iter().position(|offer| offer.prepares_close))
+                .flatten()
+        })
+}
+
+fn decision_capacity(error: &crate::Error) -> bool {
+    matches!(
+        error,
+        crate::Error::LearningGraph(
+            crate::LearningGraphFailure::Capacity
+                | crate::LearningGraphFailure::ActionArity
+                | crate::LearningGraphFailure::BoundIndexWidth
+                | crate::LearningGraphFailure::DanglingBoundVariable
+                | crate::LearningGraphFailure::DecisionCapacity
+                | crate::LearningGraphFailure::MissingExpert
+                | crate::LearningGraphFailure::MissingPremise,
+        )
+    )
+}
+
 #[derive(Clone)]
 struct Delta {
     additions: [Vec<Formula>; 2],
@@ -682,10 +711,38 @@ pub struct ResultTree {
     pub terminal: TerminalEvidence,
     pub execution: Option<trace::Trace>,
 }
+
+#[derive(Clone, Copy)]
+struct SearchClock {
+    started: Instant,
+    #[cfg(test)]
+    cpu_deadline: Option<u64>,
+}
+
+impl SearchClock {
+    fn wall(started: Instant) -> Self {
+        Self {
+            started,
+            #[cfg(test)]
+            cpu_deadline: None,
+        }
+    }
+
+    fn expired(self) -> Result<bool, crate::Error> {
+        #[cfg(test)]
+        if let Some(deadline) = self.cpu_deadline
+            && super::meta::cpu_micros()? >= deadline
+        {
+            return Ok(true);
+        }
+        Ok(self.started.elapsed() > TIME_LIMIT)
+    }
+}
+
 struct Search<'a> {
     ranker: &'a mut dyn Ranker,
     goal: Formula,
-    started: Instant,
+    clock: SearchClock,
     expansions: usize,
     maximum: usize,
     limit: usize,
@@ -719,13 +776,13 @@ impl Search<'_> {
         parent: Option<trace::Branch>,
         incoming: Option<(&super::model::Plan, usize)>,
     ) -> Result<Option<Tree>, crate::Error> {
-        if self.started.elapsed() > TIME_LIMIT || depth > 32 {
+        if self.clock.expired()? || depth > MAX_DEPTH {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
             self.failure = Some(GenerationOutcome::SearchBudget);
             self.terminal
-                .include(TerminalEvidence::Budget(if depth > 32 {
+                .include(TerminalEvidence::Budget(if depth > MAX_DEPTH {
                     Budget::Depth
                 } else {
                     Budget::Time
@@ -762,14 +819,7 @@ impl Search<'_> {
         }
         // A one- or two-step closure has concrete operands and needs no
         // learned ordering or successor memory.
-        let closing = (depth < 32)
-            .then(|| offers.iter().position(|offer| offer.closes))
-            .flatten();
-        let forced = closing.or_else(|| {
-            (depth < 31 && self.limit - self.expansions >= 2)
-                .then(|| offers.iter().position(|offer| offer.prepares_close))
-                .flatten()
-        });
+        let forced = forced_offer(&offers, depth, self.limit - self.expansions);
         let (plan, key) = if let Some(index) = forced {
             let mut ranks = vec![0.; actions.len()];
             ranks[index] = 1.;
@@ -783,7 +833,7 @@ impl Search<'_> {
                 .flatten();
             let key = super::digest(&(
                 &state_binding,
-                32usize.saturating_sub(depth),
+                MAX_DEPTH.saturating_sub(depth),
                 self.ranker.identity(),
                 memory.as_ref(),
             ));
@@ -796,15 +846,7 @@ impl Search<'_> {
                 .plan(&d, &state_binding, &offered, memory.as_ref())
             {
                 Ok(plan) => plan,
-                Err(crate::Error::LearningGraph(
-                    crate::LearningGraphFailure::Capacity
-                    | crate::LearningGraphFailure::ActionArity
-                    | crate::LearningGraphFailure::BoundIndexWidth
-                    | crate::LearningGraphFailure::DanglingBoundVariable
-                    | crate::LearningGraphFailure::DecisionCapacity
-                    | crate::LearningGraphFailure::MissingExpert
-                    | crate::LearningGraphFailure::MissingPremise,
-                )) => {
+                Err(error) if decision_capacity(&error) => {
                     if let Some(report) = &mut self.frontier {
                         report.observe(state, depth);
                     }
@@ -915,7 +957,7 @@ impl Search<'_> {
         }
         if let Some(key) = key
             && self.expansions < self.limit
-            && self.started.elapsed() <= TIME_LIMIT
+            && !self.clock.expired()?
             && self.exhausted.len() < 256
         {
             self.exhausted.insert(key);
@@ -961,6 +1003,24 @@ fn solve_recording(
     knowledge: &[super::knowledge::Entry],
     capture: bool,
 ) -> Result<ResultTree, crate::Error> {
+    solve_clocked(
+        target,
+        ranker,
+        maximum,
+        SearchClock::wall(started),
+        knowledge,
+        capture,
+    )
+}
+
+fn solve_clocked(
+    target: &Formula,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+    clock: SearchClock,
+    knowledge: &[super::knowledge::Entry],
+    capture: bool,
+) -> Result<ResultTree, crate::Error> {
     if maximum == 0 {
         return Ok(ResultTree {
             execution: None,
@@ -995,7 +1055,7 @@ fn solve_recording(
             .transpose()?,
         ranker,
         goal: p.body,
-        started,
+        clock,
         expansions: 0,
         maximum,
         limit: maximum,
@@ -1644,7 +1704,7 @@ mod transposition_tests {
             terminal: TerminalEvidence::Unknown,
             ranker: &mut Ordered,
             goal: q,
-            started: Instant::now(),
+            clock: SearchClock::wall(Instant::now()),
             expansions: 0,
             maximum: 16,
             limit: 16,
