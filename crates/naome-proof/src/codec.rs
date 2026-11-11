@@ -269,6 +269,9 @@ fn write_formula(
     output: &mut impl ByteSink,
     remaining_formula_nodes: &mut usize,
 ) -> Result<(), ProofCertificateError> {
+    if let Some(result) = output.measure_formula(formula, remaining_formula_nodes) {
+        return result;
+    }
     let (bytes, used_nodes) = formula
         .encode_canonical_with_node_limit(*remaining_formula_nodes)
         .map_err(map_proof_formula_error)?;
@@ -413,6 +416,14 @@ trait ByteSink {
     fn len(&self) -> usize;
     fn push(&mut self, byte: u8);
     fn extend_from_slice(&mut self, bytes: &[u8]);
+
+    fn measure_formula(
+        &mut self,
+        _formula: &ProofFormula,
+        _remaining_formula_nodes: &mut usize,
+    ) -> Option<Result<(), ProofCertificateError>> {
+        None
+    }
 }
 
 impl ByteSink for Vec<u8> {
@@ -445,6 +456,25 @@ impl ByteSink for LengthSink {
 
     fn extend_from_slice(&mut self, bytes: &[u8]) {
         self.length += bytes.len();
+    }
+
+    fn measure_formula(
+        &mut self,
+        formula: &ProofFormula,
+        remaining_formula_nodes: &mut usize,
+    ) -> Option<Result<(), ProofCertificateError>> {
+        let formula = formula.as_primitive()?;
+        Some((|| {
+            let (length, used_nodes) = formula
+                .encoded_length_with_node_limit(*remaining_formula_nodes)
+                .map_err(map_formula_error)?;
+            *remaining_formula_nodes = remaining_formula_nodes
+                .checked_sub(used_nodes)
+                .expect("Formula reports no more nodes than the supplied limit");
+            ensure_additional_bytes(self.length, 4 + length)?;
+            self.length += 4 + length;
+            Ok(())
+        })())
     }
 }
 

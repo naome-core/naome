@@ -129,10 +129,18 @@ fn caller_node_limits_are_counted_before_the_next_node() {
     let (decoded, decoded_nodes) = Formula::decode_canonical_with_node_limit(&encoded, 2).unwrap();
 
     assert_eq!(encoded_nodes, 2);
+    assert_eq!(
+        formula.encoded_length_with_node_limit(2),
+        Ok((encoded.len(), encoded_nodes))
+    );
     assert_eq!(decoded_nodes, 2);
     assert_eq!(decoded, formula);
     assert_eq!(
         formula.encode_canonical_with_node_limit(1),
+        Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
+    );
+    assert_eq!(
+        formula.encoded_length_with_node_limit(1),
         Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
     );
     assert_eq!(
