@@ -28,6 +28,13 @@ impl From<ProjectionFailure> for String {
     }
 }
 
+/// A proved source for a leading assumption of a scoped deduction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopedInput {
+    Axiom(Axiom),
+    Proof(crate::ProofId),
+}
+
 /// A structural projection of a bounded certificate into a shared program.
 /// The program requires independent checking and has its own manifest identity.
 pub struct Projection {
@@ -168,6 +175,24 @@ impl Projection {
         binders: &[FreeVariable],
         references: &[crate::ProofId],
     ) -> Vec<Command> {
+        Self::scoped_with_inputs(
+            assumptions,
+            actions,
+            result,
+            binders,
+            references.iter().copied().map(ScopedInput::Proof),
+        )
+    }
+
+    /// Discharge the local scope, then apply proved inputs to its leading
+    /// assumptions in order. The checker verifies each input and application.
+    pub fn scoped_with_inputs(
+        assumptions: &[ProofFormula],
+        actions: &[ScopedAction],
+        result: u32,
+        binders: &[FreeVariable],
+        inputs: impl IntoIterator<Item = ScopedInput>,
+    ) -> Vec<Command> {
         let mut builder = Builder::default();
         let assumptions = assumptions
             .iter()
@@ -178,9 +203,12 @@ impl Projection {
             actions: actions.to_vec(),
             result,
         });
-        for reference in references {
-            let premise = builder.push(Command::ProofReference {
-                proof_id: *reference.as_bytes(),
+        for input in inputs {
+            let premise = builder.push(match input {
+                ScopedInput::Axiom(axiom) => Command::Axiom { axiom },
+                ScopedInput::Proof(reference) => Command::ProofReference {
+                    proof_id: *reference.as_bytes(),
+                },
             });
             proof = builder.push(Command::ModusPonens {
                 premise,

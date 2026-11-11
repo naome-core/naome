@@ -55,28 +55,8 @@ fn solve(question: &ResearchQuestion, budget: usize) -> Option<Solution> {
     result.solution
 }
 
-// Independent proof checking reserves process-wide memory. Keep the
-// checker-heavy scope regressions separate from concurrent tests.
 fn isolated(name: &str) -> bool {
-    const CHILD: &str = "NAOME_SCOPE_TEST";
-    let test = format!("learning::search::scope::tests::{name}");
-    if std::env::var(CHILD).as_deref() == Ok(test.as_str()) {
-        return true;
-    }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test.as_str(), "--nocapture"])
-        .env(CHILD, &test)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("running 1 test"),
-        "{}
-{}",
-        stdout,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    false
+    crate::learning::tests::isolated(&format!("learning::search::scope::tests::{name}"))
 }
 
 #[test]

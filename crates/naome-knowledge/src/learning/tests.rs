@@ -1722,8 +1722,36 @@ fn native_nat_program_reuse_from_a_received_catalog() {
 
 mod native_prerequisite;
 pub(crate) use native_prerequisite::{catalog_case, publish_catalog_solution};
+// Independent native checking reserves process-wide memory. Give these
+// scenarios separate budgets so the parallel test harness cannot spend them.
+pub(super) fn isolated(name: &str) -> bool {
+    const CHILD: &str = "NAOME_LEARNING_CHECKER_TEST";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, name)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("running 1 test"),
+        "{stdout}\n{stderr}"
+    );
+    print!("{stdout}");
+    eprint!("{stderr}");
+    false
+}
+
 #[test]
 fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
+    if !isolated(
+        "learning::tests::checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs",
+    ) {
+        return;
+    }
     let (_, [lemma, _]) = helper_goal();
     let solved = symbolic_solution(&lemma);
     let mut graph = crate::Graph::default();

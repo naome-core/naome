@@ -153,7 +153,7 @@ fn canonical(formula: &Formula) -> (Formula, Vec<FreeVariable>) {
 }
 
 /// IDs route the reference; only its actual expanded body enters model features.
-fn application(
+pub(super) fn application(
     formula: &Formula,
     entries: &[Entry],
 ) -> Result<Option<DefinedFormula>, crate::Error> {
