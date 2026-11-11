@@ -791,14 +791,17 @@ fn evaluate(
             question.question,
             question.formula,
             RejectionReason::KnownProof,
+            encoded.len(),
         ),
         (
             statement_id(&negative_bytes),
             &negative,
             RejectionReason::KnownRefutation,
+            negative_bytes.len(),
         ),
     ];
-    for (target_id, target, reason) in targets {
+    let deduction_targets = targets.map(|(id, formula, _, length)| (formula, id, length));
+    for (target_id, target, reason, _) in targets {
         if let Some((proof, _)) = lookup_id(snapshot.artifacts, target_id, target, work)? {
             decision.witness = Some(proof);
             return Err((reason, crate::question::PrefilterRule::Q04ExactAnswer));
@@ -807,7 +810,7 @@ fn evaluate(
     // Registry/dependency validation and exact-answer authentication still run
     // first. Context search cannot consume the work needed for an independent
     // elementary certificate, which is always checked before issuing an answer.
-    for (_, target, reason) in targets {
+    for (_, target, reason, _) in targets {
         if let Some(plan) = elementary::plan(target, work)? {
             decision.deduction = Some(plan.finish(target, snapshot.artifacts, work)?);
             return Err((
@@ -829,12 +832,9 @@ fn evaluate(
         Err(error @ (RejectionReason::ExecutionLimit, _)) => Some(error),
         Err(error) => return Err(error),
     };
-    if let Some((orientation, witness)) = deduction::derive_answers(
-        [question.formula, &negative],
-        snapshot.artifacts,
-        work,
-        false,
-    )? {
+    if let Some((orientation, witness)) =
+        deduction::derive_answers(deduction_targets, snapshot.artifacts, work, false)?
+    {
         decision.witness = witness.original_proofs().first().copied();
         decision.supporting_witness = witness.original_proofs().get(1).copied();
         decision.deduction = Some(witness);
@@ -843,7 +843,7 @@ fn evaluate(
             crate::question::PrefilterRule::Q04CheckedMpClosure,
         ));
     }
-    for (target_id, target, _) in targets {
+    for (target_id, target, _, _) in targets {
         work.index()?;
         for statement in snapshot
             .artifacts
@@ -941,12 +941,9 @@ fn evaluate(
             }
         }
     }
-    if let Some((orientation, witness)) = deduction::derive_answers(
-        [question.formula, &negative],
-        snapshot.artifacts,
-        work,
-        true,
-    )? {
+    if let Some((orientation, witness)) =
+        deduction::derive_answers(deduction_targets, snapshot.artifacts, work, true)?
+    {
         decision.witness = witness.original_proofs().first().copied();
         decision.supporting_witness = witness.original_proofs().get(1).copied();
         decision.deduction = Some(witness);

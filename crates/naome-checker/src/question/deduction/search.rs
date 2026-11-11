@@ -34,7 +34,7 @@ pub(super) struct Search<'a> {
 
 impl<'a> Search<'a> {
     pub(super) fn new(
-        target: &'a Formula,
+        (target, statement, length): (&'a Formula, StatementId, usize),
         artifacts: &'a dyn ContextView,
         instantiated: bool,
         work: &mut Work,
@@ -43,7 +43,6 @@ impl<'a> Search<'a> {
         let mut pending = BTreeSet::new();
         let mut closing = Vec::new();
         let root = if instantiated && target.has_outer_universal() {
-            let length = target.encoded_length().map_err(|_| LIMIT)?;
             work.formula(length, 8)?;
             let mut opened = target.clone();
             for identifier in 0..super::super::instantiation::MAX_INSTANTIATIONS {
@@ -57,18 +56,16 @@ impl<'a> Search<'a> {
             }
             add_goal(opened, length, &mut goals, &mut pending, work)?
         } else {
-            let bytes = target.encode_canonical().map_err(|_| LIMIT)?;
-            let length = bytes.len();
             work.formula(length, 8)?;
             if instantiated {
                 // The first binder attempt still consumes its reservation.
                 work.formula(length, 4)?;
             }
             work.formula(length, 8)?;
-            add_encoded_goal(
+            insert_goal(
                 target.clone(),
+                statement,
                 length,
-                &bytes,
                 &mut goals,
                 &mut pending,
                 work,

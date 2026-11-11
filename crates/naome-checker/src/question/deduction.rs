@@ -61,21 +61,27 @@ fn add_goal(
 ) -> Result<StatementId, Failure> {
     work.formula(upper_length, 8)?;
     let bytes = formula.encode_canonical().map_err(|_| LIMIT)?;
-    add_encoded_goal(formula, upper_length, &bytes, goals, pending, work)
+    if bytes.len() > upper_length {
+        return Err(INVALID);
+    }
+    insert_goal(
+        formula,
+        statement_id(&bytes),
+        bytes.len(),
+        goals,
+        pending,
+        work,
+    )
 }
 
-fn add_encoded_goal(
+fn insert_goal(
     formula: Formula,
-    upper_length: usize,
-    bytes: &[u8],
+    id: StatementId,
+    length: usize,
     goals: &mut BTreeMap<StatementId, Goal>,
     pending: &mut BTreeSet<StatementId>,
     work: &mut Work,
 ) -> Result<StatementId, Failure> {
-    if bytes.len() > upper_length {
-        return Err(INVALID);
-    }
-    let id = statement_id(bytes);
     work.index()?;
     if let Some(existing) = goals.get(&id) {
         if existing.formula != formula {
@@ -89,7 +95,7 @@ fn add_encoded_goal(
         id,
         Goal {
             formula,
-            length: bytes.len(),
+            length,
             seed: None,
         },
     );
@@ -101,8 +107,9 @@ mod search;
 
 /// The same resumable search drives both ordinary and instantiated closure.
 /// An answer is sufficient for rejection; PASS requires both searches to finish.
+/// Each target carries its statement ID and byte length from its canonical encoding.
 pub(super) fn derive_answers(
-    targets: [&Formula; 2],
+    targets: [(&Formula, StatementId, usize); 2],
     artifacts: &dyn ContextView,
     work: &mut Work,
     instantiated: bool,
@@ -149,10 +156,11 @@ pub(super) fn derive(
     artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<Option<DeductionWitness>, Failure> {
-    if statement_id(&target.encode_canonical().map_err(|_| LIMIT)?) != target_id {
+    let bytes = target.encode_canonical().map_err(|_| LIMIT)?;
+    if statement_id(&bytes) != target_id {
         return Err(INVALID);
     }
-    let mut search = search::Search::new(target, artifacts, false, work)?;
+    let mut search = search::Search::new((target, target_id, bytes.len()), artifacts, false, work)?;
     loop {
         if let search::Progress::Complete(witness) = search.advance(work)? {
             return Ok(witness);
