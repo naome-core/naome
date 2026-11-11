@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Finite real mDNS, bootstrap DHT, relay circuit and DCUtR process evidence."""
 from fixture_result import FixtureResult
+from relay_fixture import relay_process
 
 import argparse
 import json
@@ -42,8 +43,8 @@ class Relay(Node):
         path = self.driver.output / "relay.config.json"
         config = {"directory": str(self.directory), "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "allow_private_addresses": True}
         path.write_text(json.dumps(config, indent=2) + "\n")
-        command = [str(self.driver.binary), "relay", str(path)]
-        self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        command, env = relay_process(path)
+        self.process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, bufsize=1)
         self.driver.summary["commands"].append({"command": command, "pid": self.process.pid})
         self.driver.summary["processes"].append({"role": "relay", "pid": self.process.pid,
@@ -97,12 +98,11 @@ class DiscoveryDriver(Driver):
         return {"listen": f"/ip4/{'0.0.0.0' if self.mode != 'dht' else '127.0.0.1'}/tcp/{node.port}",
                 "peers": [], "discovery": config}
 
-    def start_node(self, node, produce=True):
-        node.start([source(node.index + 1)] if produce else [], test_controls=False,
-                   network_config=self.settings(node))
+    def start_node(self, node):
+        node.start(test_controls=False, network_config=self.settings(node))
 
     def own_proof(self, node):
-        event = node.wait_event(lambda event: event.get("event") == 0x0017003d, timeout=15)
+        event = node.command("produce", artifact=source(node.index + 1))
         assert event["result"]["status"] in [0x0016_0001, 0x0016_0002]
         object = node.command("object", id=event["result"]["id"])["object"]
         return self.retain_proof(f"independent-{node.index}", object)
@@ -163,7 +163,7 @@ class DiscoveryDriver(Driver):
         initial.append(extra["artifact_id"])
         self.convergence("remaining_nodes_while_peer_offline", [0, 2, 3], initial, time.monotonic(), timeout=30)
         started = time.monotonic()
-        self.start_node(node, produce=False)
+        self.start_node(node)
         assert node.process.pid != old_pid
         assert extra["artifact_id"] not in before["ids"]
         self.convergence("restart_rediscovery_and_catchup", range(4), initial, started, timeout=40)

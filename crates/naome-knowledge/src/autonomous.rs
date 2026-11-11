@@ -395,7 +395,8 @@ impl Autonomous {
         {
             self.cooperation.clear_request();
         }
-        if (now >= self.next_question || now >= self.next_proof)
+        if self.intervals.jobs.research_enabled()
+            && (now >= self.next_question || now >= self.next_proof)
             && let Some(frontier) = &mut self.frontier
         {
             frontier.finder_snapshot(self.client.finder_snapshot());
@@ -1380,7 +1381,8 @@ impl Autonomous {
         }
         // Give local work and accepted assistance alternating starts, even when
         // the node only has one solver slot. An idle local queue lends its turn.
-        if now >= self.next_proof
+        if self.intervals.jobs.research_enabled()
+            && now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
             && self.publications.len() + self.solving.len() + self.evidence_publications.len()
                 < crate::resources::active_limits().publications
@@ -1467,7 +1469,8 @@ impl Autonomous {
                 }
             }
         }
-        if now >= self.next_proof
+        if self.intervals.jobs.research_enabled()
+            && now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
             && self.publications.len() + self.solving.len() + self.evidence_publications.len()
                 < crate::resources::active_limits().publications
@@ -1741,7 +1744,8 @@ impl Autonomous {
                 }
             }
         }
-        if now >= self.next_question
+        if self.intervals.jobs.research_enabled()
+            && now >= self.next_question
             && self.finding.is_none()
             && self.admissions.len() < crate::resources::active_limits().finding_admissions
             && questions.available_local()
@@ -1835,7 +1839,15 @@ impl Autonomous {
                         }
                     }
                 } else {
-                    crate::mocks::create_question(cursor)
+                    #[cfg(test)]
+                    {
+                        crate::mocks::create_question(cursor)
+                    }
+                    #[cfg(not(test))]
+                    {
+                        self.error = Some(crate::RuntimeFailure::AutonomousCursor.into());
+                        return accepted;
+                    }
                 };
                 let context = questions.formal_context(graph);
                 (

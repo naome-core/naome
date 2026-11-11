@@ -34,7 +34,7 @@ impl Drop for Directory {
 
 fn fixture(units: u32) -> (Directory, Owner) {
     let directory = Directory::new();
-    let mut settings = Settings::default();
+    let mut settings = Settings::fixture();
     settings.solving.limits.work_units = units;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     (
@@ -74,7 +74,7 @@ fn native_memory_demand_follows_live_waiters_and_admitted_work() {
 fn streamed_candidate_groups_keep_original_reservations_and_survive_restart() {
     use naome_proof::program::Command;
     let directory = Directory::new();
-    let mut settings = Settings::default();
+    let mut settings = Settings::fixture();
     settings.solving.mock.program_units = 3;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     let mut owner = Owner::new(disk, journal, settings, Arc::default());
@@ -327,7 +327,7 @@ fn identical_bindings_share_one_job_but_changed_epochs_do_not() {
 #[test]
 fn uncertain_running_recovery_is_held_even_after_its_original_horizon() {
     let directory = Directory::new();
-    let mut settings = Settings::default();
+    let mut settings = Settings::fixture();
     settings.solving.recovery = RecoveryPolicy::HoldInFlight;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     let mut owner = Owner::new(disk, journal, settings, Arc::default());
@@ -661,7 +661,7 @@ fn bounded_kernel_slots_are_independent_and_never_reused_while_held() {
 fn dropping_service_joins_the_owner_even_without_explicit_shutdown() {
     let directory = Directory::new();
     let (service, client, _) =
-        Service::open(&directory.0, Settings::default(), 0, Arc::default()).unwrap();
+        Service::open(&directory.0, Settings::fixture(), 0, Arc::default()).unwrap();
     drop(service);
     assert!(client.sender.is_closed());
 }
@@ -863,7 +863,7 @@ fn thousands_of_obligations_keep_only_retained_accounts_across_process_restarts(
             .unwrap()
             .parse()
             .unwrap();
-        let mut settings = Settings::default();
+        let mut settings = Settings::fixture();
         settings.solving.limits.work_units = 2;
         let (disk, state) = Disk::open(&directory, settings, 0).unwrap();
         let mut owner = Owner::new(disk, state, settings, Arc::default());

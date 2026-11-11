@@ -273,7 +273,7 @@ impl Directory {
         .unwrap();
         Self(path)
     }
-    fn config(&self, sources: Vec<String>) -> network::Config {
+    fn config(&self) -> network::Config {
         let discovery = network::DiscoveryConfig {
             mdns: false,
             dht: false,
@@ -284,7 +284,6 @@ impl Directory {
             listen: "/ip4/127.0.0.1/tcp/0".into(),
             peers: Vec::new(),
             discovery: Some(discovery),
-            producer_artifacts: sources,
             formal_goal: None,
         }
     }
@@ -327,14 +326,13 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_select
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
             async { Ok(true) }
-        },
+        }),
     ));
     assert_eq!(context(&handle).await.checked_artifacts, 1);
     let proved = handle.admit_question(question(SOLVED)).await.unwrap();
@@ -436,11 +434,10 @@ async fn running_node_prefilter_reaches_separate_selection_without_storing_quest
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             let ordinal = observed.fetch_add(1, Ordering::SeqCst);
             async move {
                 if ordinal == 2 {
@@ -449,7 +446,7 @@ async fn running_node_prefilter_reaches_separate_selection_without_storing_quest
                     Ok(false)
                 }
             }
-        },
+        }),
     ));
     let before = context(&handle).await;
     for expected in [
@@ -485,7 +482,7 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
     // after the initial prefilter is captured. No timer or scheduler race may
     // put the proof into the initial snapshot before the callback starts.
     let task = tokio::spawn(network::run_inner(
-        directory.config(Vec::new()),
+        directory.config(),
         false,
         inbox,
         Some(move |_| {
@@ -592,11 +589,10 @@ async fn running_node_registry_growth_rechecks_formally_and_policy_changes_inval
     let release = Arc::new(Notify::new());
     let notify = started.clone();
     let permit = release.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             let notify = notify.clone();
             let permit = permit.clone();
             async move {
@@ -604,7 +600,7 @@ async fn running_node_registry_growth_rechecks_formally_and_policy_changes_inval
                 permit.notified().await;
                 Ok(true)
             }
-        },
+        }),
     ));
     for policy_change in [true, false] {
         let client = handle.clone();
@@ -689,11 +685,10 @@ async fn running_node_bounds_pending_selection_and_drops_it_on_cancel_and_stop()
     let dropped = Arc::new(AtomicUsize::new(0));
     let notify = started.clone();
     let observed = dropped.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             let owned = OwnedSelection(observed.clone());
             let notify = notify.clone();
             async move {
@@ -702,7 +697,7 @@ async fn running_node_bounds_pending_selection_and_drops_it_on_cancel_and_stop()
                 std::future::pending::<()>().await;
                 Ok(true)
             }
-        },
+        }),
     ));
     let client = handle.clone();
     let first = tokio::spawn(async move { client.admit_question(question(QUESTION)).await });
@@ -911,14 +906,13 @@ async fn running_node_uses_entire_large_graph_and_registry_before_selection() {
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
             async { Ok(true) }
-        },
+        }),
     ));
     let initial = tokio::time::timeout(Duration::from_secs(30), handle.context())
         .await
@@ -988,14 +982,13 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
             async { Ok(true) }
-        },
+        }),
     ));
     let before = context(&handle).await;
     let input = question(QUESTION);
@@ -1077,10 +1070,10 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
 async fn running_node_admission_without_selection_reports_pass_without_insertion() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
-    let task = tokio::spawn(network::run_with_questions_without_selection(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
+        network::NO_TEST_SELECTION,
     ));
     let before = context(&handle).await;
     let result = handle.admit_question(question(QUESTION)).await.unwrap();
@@ -1103,11 +1096,10 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
     let dropped = Arc::new(AtomicUsize::new(0));
     let observed_calls = calls.clone();
     let observed_drops = dropped.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             let ordinal = observed_calls.fetch_add(1, Ordering::SeqCst);
             let owned = OwnedSelection(observed_drops.clone());
             async move {
@@ -1118,7 +1110,7 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
                     _ => std::future::pending().await,
                 }
             }
-        },
+        }),
     ));
     let before = context(&handle).await;
     for expected in [
@@ -1177,14 +1169,13 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |_| {
+        Some(move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
             async { Ok(true) }
-        },
+        }),
     ));
     let before = context(&handle).await;
     assert_eq!(before.checked_artifacts, 3);

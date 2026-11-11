@@ -1,15 +1,14 @@
-#![cfg(all(unix, feature = "developer-tools"))]
+#![cfg(unix)]
 use naome_knowledge::{Graph, training};
 use std::{
     fs,
-    process::Command,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[test]
-fn developer_training_command_exports_recheckable_targets_from_a_stopped_node() {
+fn training_selection_exports_recheckable_targets_from_the_checked_graph() {
     let directory = std::env::temp_dir().join(format!(
-        "naome-training-cli-{}-{}",
+        "naome-training-selection-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -57,31 +56,14 @@ fn developer_training_command_exports_recheckable_targets_from_a_stopped_node() 
         seed: 23,
         random_only: false,
     };
-    let input = directory.join("request.json");
-    fs::write(
-        &input,
-        serde_json::to_vec(&training::Command::Select { request }).unwrap(),
-    )
-    .unwrap();
-    let run = || {
-        Command::new(env!("CARGO_BIN_EXE_naome-knowledge-dev"))
-            .arg("training")
-            .arg(&node)
-            .arg(&input)
-            .output()
-            .unwrap()
-    };
-    // A second process must not borrow the live node's store ownership.
-    assert!(!run().status.success());
     let root = graph.content_root();
+    let training::Response::Batch(batch) =
+        training::execute(&graph, &training::Command::Select { request }).unwrap()
+    else {
+        panic!("selection must return a batch");
+    };
+    assert_eq!(graph.content_root(), root);
     drop(graph);
-    let output = run();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let batch: training::Batch = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(batch.examples.len(), expected);
     assert_eq!(batch.knowledge, naome_knowledge::hex(&root));
     let receiver = directory.join("receiver");
@@ -91,17 +73,6 @@ fn developer_training_command_exports_recheckable_targets_from_a_stopped_node() 
         graph.ingest(example.target.proof, Instant::now()).unwrap();
     }
     assert_eq!(graph.accepted_count(), expected);
-    drop(graph);
-    fs::write(&input, br#"{"operation":"questions","partition":"reserved","after":null,"scan":16,"unexpected":true}"#).unwrap();
-    let rejected = run();
-    assert!(!rejected.status.success());
-    let error: serde_json::Value = serde_json::from_slice(&rejected.stderr).unwrap();
-    assert_eq!(
-        error["error"]["code"],
-        u32::from(naome_knowledge::RuntimeFailure::TrainingRequestParse)
-    );
-    let graph = Graph::open(&node).unwrap();
-    assert_eq!(graph.content_root(), root);
     drop(graph);
     fs::remove_dir_all(directory).unwrap();
 }

@@ -486,7 +486,7 @@ class Node:
         self.serial, self.generation = 0, 0
         self.threads = []
 
-    def start(self, producer_artifacts=(), command_input=True, test_controls=True, network_config=None):
+    def start(self, command_input=True, test_controls=True, network_config=None):
         assert self.process is None or self.process.poll() is not None
         self.generation += 1
         event_offset = len(self.events)
@@ -495,7 +495,6 @@ class Node:
             "listen": f"/ip4/127.0.0.1/tcp/{self.port}",
             "peers": [{"id": other.identity, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}
                       for other in self.driver.nodes if other is not self],
-            "producer_artifacts": list(producer_artifacts),
             "discovery": {"mdns": False, "dht": False},
         }
         if network_config is not None:
@@ -517,9 +516,7 @@ class Node:
                                                "network_config": {key: config[key] for key in ["listen", "peers", "discovery"]},
                                                "config_bytes": path.stat().st_size,
                                                "config_sha256": digest(path),
-                                               "command_input": "pipe" if command_input else "closed",
-                                               "producer_source_count": len(config["producer_artifacts"]),
-                                               "producer_source_bytes": sum(len(s) // 2 for s in config["producer_artifacts"])})
+                                               "command_input": "pipe" if command_input else "closed"})
         for name, stream in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:
             log = self.driver.output / f"node-{self.index}-{self.generation}.{name}.jsonl"
             thread = threading.Thread(target=self.read, args=(name, stream, log), daemon=True)
@@ -833,8 +830,7 @@ class Driver:
             initial = []
             for index, node in enumerate(self.nodes):
                 reservations[index].close()
-                producer_source = source(index + 1, padding=64000)
-                node.start([producer_source])
+                node.start()
                 if index == 0:
                     response = node._command_once(
                         "unknown-command", min(self.deadline, time.monotonic() + 10), {}
@@ -844,8 +840,9 @@ class Driver:
             assert len({node.identity for node in self.nodes}) == 4
             assert len({node.process.pid for node in self.nodes}) == 4
             for index, node in enumerate(self.nodes):
-                event = node.wait_event(lambda event: event.get("event") == 0x0017003d)
-                id = event["result"]["id"]
+                result = node.command("produce", artifact=source(index + 1, padding=64000))
+                assert result["result"]["status"] == 0x0016_0001
+                id = result["result"]["id"]
                 status = node.status_snapshot()
                 assert status["ids"] == [id]
                 object = node.command("object", id=id)["object"]

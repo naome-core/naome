@@ -1,5 +1,4 @@
-//! Operator-run relay infrastructure. This service routes encrypted circuits
-//! and discovery hints; it neither owns a proof graph nor checks/adopts proofs.
+//! Bounded relay and bootstrap peer for process fixtures.
 
 use crate::{
     discovery, network,
@@ -122,7 +121,7 @@ fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     })
 }
 
-pub async fn run(path: &Path) -> Result<(), crate::Error> {
+pub(super) async fn run(path: &Path) -> Result<(), crate::Error> {
     use crate::{InputFault, InputLimit, RuntimeFailure};
     let shutdown = network::shutdown_signal().map_err(|cause| crate::Error::RuntimeContext {
         code: RuntimeFailure::RelaySignal,

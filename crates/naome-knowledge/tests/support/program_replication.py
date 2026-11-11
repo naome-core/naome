@@ -96,7 +96,7 @@ def run(trial,units,memory_mib=None):
     for node, limit_mib in profiles:
         write_receipt(node.directory/'resource-profile.json',{'profile':ResourceProfile.CUSTOM,'custom':{
             'memory_bytes':limit_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
-    donor.config['runtime']['jobs']={'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
+    donor.config['runtime']['jobs']={'native_proof_learning':False,'fixture_workloads':True,'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
         'mock':{'program_units':units}}}
     for node in (donor,receiver):node.write_config();node.start();node.stop()
     assert donor.peer!=receiver.peer and donor.port!=receiver.port

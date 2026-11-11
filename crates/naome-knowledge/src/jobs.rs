@@ -9,6 +9,7 @@ mod allowance;
 mod catalog;
 mod journal;
 mod process;
+#[cfg(any(test, feature = "developer-tools"))]
 mod program;
 mod provider;
 mod service;
@@ -102,15 +103,31 @@ pub enum RecoveryPolicy {
 }
 
 /// Independent horizons; transport leases deliberately do not appear here.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
-    /// Enable the bounded local graph solver and learning loop at node start.
+    /// Enable the bounded local graph solver and learning loop. Defaults to true.
     /// Weights, optimizer and replay stay in the local job journal.
     pub native_proof_learning: bool,
+    #[cfg(any(test, feature = "developer-tools"))]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fixture_workloads: bool,
     pub finding: RoleSettings,
     pub solving: RoleSettings,
     pub selection: RoleSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            native_proof_learning: true,
+            #[cfg(any(test, feature = "developer-tools"))]
+            fixture_workloads: false,
+            finding: RoleSettings::default(),
+            solving: RoleSettings::default(),
+            selection: RoleSettings::default(),
+        }
+    }
 }
 
 impl RoleSettings {
@@ -140,15 +157,32 @@ impl RoleSettings {
 }
 
 impl Settings {
+    pub(crate) fn research_enabled(self) -> bool {
+        self.native_proof_learning || self.fixture_workloads()
+    }
+
+    pub(crate) fn fixture_workloads(self) -> bool {
+        #[cfg(any(test, feature = "developer-tools"))]
+        return self.fixture_workloads;
+        #[cfg(not(any(test, feature = "developer-tools")))]
+        false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture() -> Self {
+        Self {
+            native_proof_learning: false,
+            fixture_workloads: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn validate(self) -> Result<Self, crate::Error> {
         if self.native_proof_learning {
-            crate::resources::limits().native_model_capacity()?;
-            if [self.finding, self.solving]
-                .iter()
-                .any(|role| role.mock != MockWork::default())
-            {
+            if self.fixture_workloads() {
                 return Err(crate::ResearchFailure::ConflictingProviders.into());
             }
+            crate::resources::limits().native_model_capacity()?;
         }
         for role in [self.finding, self.solving, self.selection] {
             if role.limits.horizon_ms == 0
@@ -172,8 +206,7 @@ impl Settings {
             {
                 return Err(crate::ResearchFailure::InvalidRoleLimits.into());
             }
-            #[cfg(not(feature = "developer-tools"))]
-            if role.mock != MockWork::default() {
+            if !self.fixture_workloads() && role.mock != MockWork::default() {
                 return Err(crate::ResearchFailure::DeveloperWorkloadUnavailable.into());
             }
         }
@@ -227,7 +260,7 @@ impl Binding {
             snapshot: crate::hex(&snapshot),
             policy: crate::hex(&policy),
             compatibility: crate::hex(&crate::compatibility()),
-            selection: identity(&provider::DEFAULT_PROVIDER),
+            selection: identity(&provider::SELECTION_PROVIDER),
             cooperative: false,
             catalog: None,
             compare_catalog: false,
@@ -905,6 +938,7 @@ impl Client {
     }
 }
 
+#[cfg(any(test, feature = "developer-tools"))]
 pub(crate) fn declared_solver_support(
     question: &naome_checker::question::ResearchQuestion,
     settings: RoleSettings,
@@ -920,7 +954,11 @@ pub(crate) fn solver_identity(settings: Settings) -> String {
             settings.solving,
         ))
     } else {
-        identity(&(provider::DEFAULT_PROVIDER, settings.solving))
+        #[cfg(any(test, feature = "developer-tools"))]
+        if settings.fixture_workloads() {
+            return identity(&(provider::MOCK_PROVIDER, settings.solving));
+        }
+        identity(&"disabled")
     }
 }
 

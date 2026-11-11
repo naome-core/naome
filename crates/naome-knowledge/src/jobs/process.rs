@@ -16,6 +16,7 @@ use crate::resources::feedback::{Phase, Sample};
 const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
 const SUPERVISOR: &str = "--research-supervisor-v1";
 const WORKER: &str = "--research-worker-v1";
+#[cfg(any(test, feature = "developer-tools"))]
 const DESCENDANT: &str = "--research-descendant-v1";
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -810,6 +811,7 @@ pub(super) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), cr
         } else {
             Err(crate::ResearchFailure::ProviderInvocationRequired.into())
         }),
+        #[cfg(any(test, feature = "developer-tools"))]
         DESCENDANT => Some(
             if std::env::var(INTERNAL).as_deref() == Ok("descendant-v1") {
                 descendant()
@@ -883,7 +885,9 @@ impl Worker {
     }
 }
 
+#[cfg(any(test, feature = "developer-tools"))]
 struct Descendant(Child);
+#[cfg(any(test, feature = "developer-tools"))]
 impl Drop for Descendant {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -1176,6 +1180,7 @@ fn work() -> Result<(), crate::Error> {
         current_unit: record.checkpoint,
         id: record.id,
         receiver,
+        #[cfg(any(test, feature = "developer-tools"))]
         descendants: Vec::new(),
         blocked_nanos: 0,
     };
@@ -1200,6 +1205,7 @@ struct WorkerControl {
     id: u64,
     current_unit: u32,
     receiver: sync_channel::Receiver<Vec<u8>>,
+    #[cfg(any(test, feature = "developer-tools"))]
     descendants: Vec<Descendant>,
     blocked_nanos: u64,
 }
@@ -1295,6 +1301,7 @@ impl super::provider::Supervisor for WorkerControl {
             sample,
         })
     }
+    #[cfg(any(test, feature = "developer-tools"))]
     fn program(
         &mut self,
         unit: u32,
@@ -1324,6 +1331,7 @@ impl super::provider::Supervisor for WorkerControl {
         })?;
         self.grant(checkpoint)
     }
+    #[cfg(any(test, feature = "developer-tools"))]
     fn probe(&mut self, probe: super::provider::Probe) -> Result<(), WorkerFailure> {
         use super::provider::Probe;
         match probe {
@@ -1360,6 +1368,7 @@ impl super::provider::Supervisor for WorkerControl {
     }
 }
 
+#[cfg(any(test, feature = "developer-tools"))]
 fn descendant() -> Result<(), crate::Error> {
     // Stay in the worker's owned group and retain the inherited kernel slot.
     // A safe Tokio signal registration makes TERM non-cooperative; KILL must

@@ -21,7 +21,6 @@ fn missing_check_feedback_preserves_configured_work_cadence() {
         .unwrap();
     capacity.finding_interval = Duration::from_secs(3);
     capacity.solving_interval = Duration::from_secs(7);
-    capacity.production_interval = Duration::from_secs(9);
     let budget = Budget {
         memory_bytes: capacity.memory_bytes as u64,
         concurrency: 1,
@@ -40,7 +39,6 @@ fn missing_check_feedback_preserves_configured_work_cadence() {
 
     assert_eq!(work.finding_interval, capacity.finding_interval);
     assert_eq!(work.solving_interval, capacity.solving_interval);
-    assert_eq!(work.production_interval, capacity.production_interval);
 }
 
 #[test]

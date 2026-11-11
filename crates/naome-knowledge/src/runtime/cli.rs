@@ -30,8 +30,9 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Questions follow gaps in checked local knowledge and measured solving\n\
              opportunities, with randomized exploration within the automatic\n\
              computation budgets.\n\
-             \nNative proof learning (opt-in):\n\
-             Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
+             \nNative proof learning:\n\
+             Native solving and learning are enabled by default. For replication-only\n\
+             operation, set runtime.jobs.native_proof_learning=false while stopped.\n\
              An optional formal_goal string in config.json selects a native question.\n\
              Checked lemmas and meanings support bounded ZFC construction and reuse.\n\
              A fresh 1,004,001-parameter CPU graph policy learns from admitted traces.\n\

@@ -693,21 +693,18 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
             dht: false,
             ..Default::default()
         }),
-        producer_artifacts: Vec::new(),
     };
     let (sender_handle, sender_admin, inbox) = crate::question::channel();
-    let sender_task = tokio::spawn(network::run_with_questions(
+    let sender_task = tokio::spawn(network::test_run(
         config(sender.0.clone(), sender_port, receiver_peer, receiver_port),
-        false,
         inbox,
-        accepting as fn(_) -> _,
+        Some(accepting as fn(_) -> _),
     ));
     let (receiver_handle, receiver_admin, inbox) = crate::question::channel();
-    let receiver_task = tokio::spawn(network::run_with_questions(
+    let receiver_task = tokio::spawn(network::test_run(
         config(receiver.0.clone(), receiver_port, sender_peer, sender_port),
-        false,
         inbox,
-        accepting as fn(_) -> _,
+        Some(accepting as fn(_) -> _),
     ));
     let reached = tokio::time::timeout(std::time::Duration::from_secs(45), async {
         loop {

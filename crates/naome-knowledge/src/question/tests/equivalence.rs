@@ -9,14 +9,13 @@ async fn running_node_rejects_certified_equivalence_before_selection_and_after_r
         let (handle, admin, inbox) = channel();
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
-        let task = tokio::spawn(network::run_with_questions(
-            directory.config(Vec::new()),
-            false,
+        let task = tokio::spawn(network::test_run(
+            directory.config(),
             inbox,
-            move |_| {
+            Some(move |_| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 async { Ok(true) }
-            },
+            }),
         ));
         let _ = context(&handle).await;
         if !recovery {

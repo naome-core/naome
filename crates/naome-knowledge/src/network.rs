@@ -49,9 +49,6 @@ pub struct Config {
     pub peers: Vec<Peer>,
     #[serde(default)]
     pub discovery: Option<discovery::Config>,
-    /// A finite independently operated source queue, attempted once per second.
-    #[serde(default)]
-    pub producer_artifacts: Vec<String>,
     /// Optional native question fixed while the node is stopped. It follows
     /// ordinary finding, admission, solving and checked publication.
     #[serde(default)]
@@ -253,8 +250,6 @@ struct Node {
     intake: crate::intake::Intake,
     test_objects: BTreeMap<ArtifactId, (Metadata, Option<Envelope>)>,
     test_controls: bool,
-    producer_artifacts: VecDeque<String>,
-    next_production: Instant,
     cooperation_enabled: bool,
     work_offers: VecDeque<WorkOffer>,
     work_sent: BTreeMap<WorkKey, Instant>,
@@ -311,17 +306,11 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), crate::Error
     .await
 }
 
-/// Runs the existing Gossip node with a bounded Rust-only local question inbox.
-/// The separately supplied selection future must be nonblocking and own all its
-/// effects without detaching work. It is polled inside this node's lifetime;
-/// shutdown, cancellation or the fixed deadline drops it. No proof-validity
-/// condition depends on selection. Peer proof exchange always requires positive
-/// question selection before full certificate retrieval.
-pub async fn run_with_questions<F, Fut>(
+#[cfg(any(test, all(unix, feature = "developer-tools", feature = "system-tests")))]
+pub(crate) async fn test_run<F, Fut>(
     config: Config,
-    test_controls: bool,
     inbox: crate::question::QuestionInbox,
-    selection: F,
+    selection: Option<F>,
 ) -> Result<(), crate::Error>
 where
     F: Fn(naome_checker::question::ResearchQuestion) -> Fut + Send + Sync + 'static,
@@ -329,44 +318,18 @@ where
         + Send
         + 'static,
 {
-    let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
-    drop(sender);
-    run_inner(
-        config,
-        test_controls,
-        inbox,
-        Some(selection),
-        commands,
-        None,
-    )
-    .await
+    let (_, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
+    run_inner(config, false, inbox, selection, commands, None).await
 }
 
-/// Runs local question intake without a selection provider. The formal result
-/// remains available to assessment; admission reports NotInserted/NotRun.
-/// Embeddings must explicitly supply positive selection to admit a question.
-pub async fn run_with_questions_without_selection(
-    config: Config,
-    test_controls: bool,
-    inbox: crate::question::QuestionInbox,
-) -> Result<(), crate::Error> {
-    let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
-    drop(sender);
-    run_inner(
-        config,
-        test_controls,
-        inbox,
-        None::<
-            fn(
-                naome_checker::question::ResearchQuestion,
-            )
-                -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>,
-        >,
-        commands,
-        None,
-    )
-    .await
-}
+#[cfg(test)]
+type TestSelection =
+    fn(
+        naome_checker::question::ResearchQuestion,
+    ) -> std::future::Ready<Result<bool, crate::question::SelectionProviderError>>;
+
+#[cfg(test)]
+pub(crate) const NO_TEST_SELECTION: Option<TestSelection> = None;
 
 pub(crate) async fn run_inner<F, Fut>(
     config: Config,
@@ -433,15 +396,6 @@ fn validate_config(config: &Config, native: bool) -> Result<(), crate::Error> {
     }
     if config.peers.len() > crate::resources::limits().configured_peers {
         return Err(crate::Error::InputLimit(crate::InputLimit::ConfiguredPeers));
-    }
-    let bytes = config
-        .producer_artifacts
-        .iter()
-        .try_fold(0usize, |total, source| total.checked_add(source.len()));
-    if config.producer_artifacts.len() > crate::resources::limits().producer_artifacts
-        || bytes.is_none_or(|bytes| bytes > 2 * crate::resources::limits().producer_bytes)
-    {
-        return Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue));
     }
     Ok(())
 }
@@ -705,9 +659,7 @@ where
         intake: crate::intake::Intake::default(),
         test_objects: BTreeMap::new(),
         test_controls,
-        producer_artifacts: config.producer_artifacts.into(),
-        next_production: Instant::now() + crate::resources::active_limits().production_interval,
-        cooperation_enabled: autonomy.is_some(),
+        cooperation_enabled: autonomy.is_some_and(|intervals| intervals.jobs.research_enabled()),
         work_offers: VecDeque::new(),
         work_sent: BTreeMap::new(),
         work_members: BTreeMap::new(),
@@ -1811,30 +1763,6 @@ impl Node {
         let now = Instant::now();
         self.discovery_tick(now);
         let work = self.computation.try_enter();
-        if work.is_some()
-            && crate::resources::adaptive::batch(1) > 0
-            && now >= self.next_production
-            && let Some(source) = self.producer_artifacts.pop_front()
-        {
-            self.next_production = now + crate::resources::active_limits().production_interval;
-            let result = self.graph.produce(&source).and_then(|(_, result)| {
-                self.ingested(result, crate::outcome::EventSource::DeterministicProducer)
-            });
-            match result {
-                Ok(result) => emit(
-                    json!({"event":crate::outcome::NodeEvent::ProducerResult, "result":result}),
-                ),
-                Err(error) if retryable_publication(&error) => {
-                    self.producer_artifacts.push_back(source);
-                    emit(
-                        json!({"event":crate::outcome::NodeEvent::ProducerDeferred, "error":error}),
-                    );
-                }
-                Err(error) => emit(
-                    json!({"event":crate::outcome::NodeEvent::ProducerRejected, "error":error}),
-                ),
-            }
-        }
         if work.is_some() {
             match self.graph.resolve_pending() {
                 Ok((admitted, rejected)) => {

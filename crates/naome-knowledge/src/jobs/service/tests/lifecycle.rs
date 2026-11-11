@@ -37,7 +37,7 @@ fn candidate_cache_is_retired_only_after_the_acknowledgement_commits() {
     assert!(!path.with_extension("proof-work.lock").exists());
     let original = owner.journal.records[&1].clone();
     drop(owner);
-    let (_, journal) = Disk::open(&directory.0, Settings::default(), 0).unwrap();
+    let (_, journal) = Disk::open(&directory.0, Settings::fixture(), 0).unwrap();
     assert!(journal.records[&1].acknowledged);
     assert_eq!(journal.records[&1].created_ms, original.created_ms);
     assert_eq!(journal.records[&1].reserved_units, original.reserved_units);
@@ -63,7 +63,7 @@ fn restart_reconciles_acknowledged_cache_left_while_native_custody_was_active() 
     assert!(path.exists(), "live native custody prevents reclamation");
     drop(owner);
     drop(work);
-    let (disk, journal) = Disk::open(&directory.0, Settings::default(), 0).unwrap();
+    let (disk, journal) = Disk::open(&directory.0, Settings::fixture(), 0).unwrap();
     assert!(
         !path.exists(),
         "durable acknowledgement permits startup reconciliation"
@@ -83,7 +83,7 @@ fn unacknowledged_partial_cache_survives_restart_and_is_replayed_from_zero() {
     owner.save().unwrap();
     drop(candidate(&directory, 1));
     drop(owner);
-    let (_disk, journal) = Disk::open(&directory.0, Settings::default(), 0).unwrap();
+    let (_disk, journal) = Disk::open(&directory.0, Settings::fixture(), 0).unwrap();
     assert!(!journal.records[&1].acknowledged);
     let work =
         crate::proof_work::Work::open(&directory.0.join(".program-work/candidate-1.sqlite3"))
@@ -107,7 +107,7 @@ fn restart_finishes_retirement_interrupted_between_database_and_lock_unlink() {
     let lock = path.with_extension("proof-work.lock");
     assert!(lock.exists());
     drop(owner);
-    let (_, journal) = Disk::open(&directory.0, Settings::default(), 0).unwrap();
+    let (_, journal) = Disk::open(&directory.0, Settings::fixture(), 0).unwrap();
     assert!(journal.records[&1].acknowledged);
     assert!(!lock.exists());
 }

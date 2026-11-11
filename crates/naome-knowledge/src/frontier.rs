@@ -65,6 +65,8 @@ struct RecipeWeights {
 pub(crate) struct Frontier {
     evidence: Evidence,
     native: bool,
+    #[cfg(any(test, feature = "developer-tools"))]
+    fixture_workloads: bool,
     feedback: Option<crate::training::ability::Feedback>,
     question_policy: Option<Arc<QuestionPolicy>>,
     recipe_weights: Option<RecipeWeights>,
@@ -139,6 +141,8 @@ impl Frontier {
         let mut local = Self {
             evidence,
             native: settings.native_proof_learning,
+            #[cfg(any(test, feature = "developer-tools"))]
+            fixture_workloads: settings.fixture_workloads(),
             feedback: None,
             question_policy: None,
             recipe_weights: None,
@@ -753,15 +757,22 @@ impl Frontier {
                 eligible,
             )?
         } else {
-            (0..3)
-                .filter_map(|index| {
-                    ResearchQuestion::from_hex(&crate::mocks::create_question(index)).ok()
-                })
-                .map(|question| finder::Proposal {
-                    question,
-                    recipe: None,
-                })
-                .collect::<Vec<_>>()
+            #[cfg(any(test, feature = "developer-tools"))]
+            if self.fixture_workloads {
+                (0..3)
+                    .filter_map(|index| {
+                        ResearchQuestion::from_hex(&crate::mocks::create_question(index)).ok()
+                    })
+                    .map(|question| finder::Proposal {
+                        question,
+                        recipe: None,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+            #[cfg(not(any(test, feature = "developer-tools")))]
+            Vec::new()
         };
         for question in self.goals.iter().chain(&self.proposals) {
             if eligible(question)
@@ -1144,7 +1155,8 @@ impl Frontier {
         }
         // Declared provider support is availability metadata, kept separate
         // from the independently checked observations in `successes`.
-        if jobs::declared_solver_support(question, settings) {
+        #[cfg(any(test, feature = "developer-tools"))]
+        if self.fixture_workloads && jobs::declared_solver_support(question, settings) {
             weight = weight.saturating_mul(8);
         }
         if self.native {

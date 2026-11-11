@@ -2,6 +2,17 @@ use std::{path::PathBuf, process::Command};
 
 static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+#[ignore = "launched by the relay process fixtures"]
+fn relay_fixture_process() {
+    let config =
+        std::env::var_os("NAOME_RELAY_FIXTURE_CONFIG").expect("relay fixture configuration");
+    // Libtest's progress prefix must end before the first JSON event.
+    println!();
+    naome_knowledge::test_support::run_relay(std::path::Path::new(&config));
+}
+
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
 fn ordinary_nodes_form_workgroup_and_recheck_peer_proof() {
@@ -75,7 +86,6 @@ fn workgroup_proof_exchange(
 fn cold_mock_helper_proves_defined_offer_and_requester_rechecks_it() {
     let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
     use naome_checker::question::ResearchQuestion;
-    use naome_knowledge::question::AdmissionOutcome;
     use naome_proof::{ArtifactId, ArtifactPayload, DefinedFormula, DefinitionCertificate};
     let question = ResearchQuestion::from_hex(&naome_knowledge::mocks::create_question(0)).unwrap();
     let element = naome_foundation::FreeVariable::new(0);
@@ -129,50 +139,7 @@ fn cold_mock_helper_proves_defined_offer_and_requester_rechecks_it() {
             naome_knowledge::IngestStatus::Accepted
         );
     }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let (handle, admin, inbox) = naome_knowledge::question::channel();
-        let config = naome_knowledge::network::Config {
-            directory: seed.clone(),
-            listen: "/ip4/127.0.0.1/tcp/0".into(),
-            peers: vec![],
-            discovery: Some(naome_knowledge::network::DiscoveryConfig {
-                mdns: false,
-                dht: false,
-                internet: false,
-                ..Default::default()
-            }),
-            producer_artifacts: vec![],
-            formal_goal: None,
-        };
-        let node = tokio::spawn(naome_knowledge::network::run_with_questions(
-            config,
-            false,
-            inbox,
-            naome_knowledge::mocks::select_question,
-        ));
-        let admission = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            handle.admit_question_bytes(&source),
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-        assert!(matches!(admission.outcome, AdmissionOutcome::Admitted(_)));
-        tokio::time::timeout(std::time::Duration::from_secs(15), admin.stop())
-            .await
-            .unwrap()
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(15), node)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    });
+    naome_knowledge::test_support::seed_checked_question(&seed, source);
     workgroup_proof_exchange(
         "mock",
         Some((
@@ -415,16 +382,22 @@ fn native_provider_feedback_reaches_owner_without_changing_job_allowances() {
 #[cfg(unix)]
 #[test]
 fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_artifacts() {
+    run_autonomous("native-default");
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn controlled_generation_preserves_distinct_obligations_and_checked_restart() {
     run_autonomous("direct");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "developer-tools"))]
 #[test]
 fn ordinary_autonomous_nodes_exchange_after_mdns_discovery() {
     run_autonomous("mdns");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "developer-tools"))]
 #[test]
 fn ordinary_autonomous_nodes_exchange_after_bootstrap_dht_discovery() {
     run_autonomous("dht");
@@ -509,7 +482,7 @@ fn run_autonomous(mode: &str) {
             "--timeout",
             match mode {
                 "mdns" => "180",
-                "direct" => "60",
+                "direct" | "native-default" => "60",
                 "guardian-probe" => "45",
                 "startup" => "50",
                 "native" => "480",
@@ -532,7 +505,15 @@ fn run_autonomous(mode: &str) {
     }
     #[cfg(feature = "developer-tools")]
     if matches!(mode, "relay" | "guardian-probe") {
-        command.args(["--relay-binary", env!("CARGO_BIN_EXE_naome-knowledge-dev")]);
+        command
+            .env(
+                "NAOME_RELAY_TEST_EXECUTABLE",
+                std::env::current_exe().unwrap(),
+            )
+            .args([
+                "--fixture-init-binary",
+                env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+            ]);
     }
     let output = command
         .output()
@@ -599,17 +580,12 @@ mod developer_transport {
 
     #[test]
     fn four_process_proof_graph_partition_dependencies_and_restart() {
-        run_driver(false, false);
+        run_driver(false);
     }
 
     #[test]
     fn ten_page_inventory_fetches_every_checked_object() {
-        run_driver(true, false);
-    }
-
-    #[test]
-    fn closed_stdin_keeps_autonomous_production_and_listener_alive() {
-        run_driver(false, true);
+        run_driver(true);
     }
 
     #[test]
@@ -662,6 +638,10 @@ mod developer_transport {
         ));
         let output = Command::new("python3")
             .arg(root.join("crates/naome-knowledge/tests/support/proof_question_exchange.py"))
+            .env(
+                "NAOME_RELAY_TEST_EXECUTABLE",
+                std::env::current_exe().unwrap(),
+            )
             .args([
                 "--binary",
                 env!("CARGO_BIN_EXE_naome-knowledge-dev"),
@@ -708,6 +688,10 @@ mod developer_transport {
         ));
         let output = Command::new("python3")
             .arg(root.join("crates/naome-knowledge/tests/support/proof_network_shutdown.py"))
+            .env(
+                "NAOME_RELAY_TEST_EXECUTABLE",
+                std::env::current_exe().unwrap(),
+            )
             .args([
                 "--binary",
                 env!("CARGO_BIN_EXE_naome-knowledge-dev"),
@@ -754,6 +738,10 @@ mod developer_transport {
         let mut command = python_driver(&root, mode);
         let output = command
             .arg(root.join("crates/naome-knowledge/tests/support/proof_network_discovery.py"))
+            .env(
+                "NAOME_RELAY_TEST_EXECUTABLE",
+                std::env::current_exe().unwrap(),
+            )
             .args([
                 "--binary",
                 env!("CARGO_BIN_EXE_naome-knowledge-dev"),
@@ -783,7 +771,7 @@ mod developer_transport {
         );
     }
 
-    fn run_driver(large_inventory: bool, closed_input: bool) {
+    fn run_driver(large_inventory: bool) {
         // Each measured trial owns its process/IO workload. Running both drivers
         // concurrently adds two nodes to the four-node fixture and contaminates
         // its bounded connection/recovery deadlines on shared CI runners.
@@ -792,8 +780,7 @@ mod developer_transport {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let directory = root.join(".local/proof-network").join(format!(
-            "{}-{}-{}",
-            if closed_input { "service" } else { "test" },
+            "test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -802,11 +789,7 @@ mod developer_transport {
         ));
         let mut command = Command::new("python3");
         command
-            .arg(root.join(if closed_input {
-                "crates/naome-knowledge/tests/support/proof_network_service.py"
-            } else {
-                "crates/naome-knowledge/tests/support/proof_network.py"
-            }))
+            .arg(root.join("crates/naome-knowledge/tests/support/proof_network.py"))
             .args([
                 "--binary",
                 env!("CARGO_BIN_EXE_naome-knowledge-dev"),
@@ -815,13 +798,7 @@ mod developer_transport {
             .arg(&directory)
             .args([
                 "--timeout",
-                if large_inventory {
-                    "240"
-                } else if closed_input {
-                    "30"
-                } else {
-                    "120"
-                },
+                if large_inventory { "240" } else { "120" },
                 "--profile",
                 if cfg!(debug_assertions) {
                     "test"

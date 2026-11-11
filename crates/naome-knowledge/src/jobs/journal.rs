@@ -435,7 +435,7 @@ impl Disk {
         if now < journal.observed_ms {
             return Err(crate::ResearchFailure::ClockRollback.into());
         }
-        // Deterministic mock state is resumable. Charge downtime conservatively;
+        // Charge downtime conservatively for resumable providers;
         // neither a process PID nor a prior provider response grants authority.
         for record in journal.records.values_mut() {
             if !record.state.terminal() && record.state != State::InDoubt {

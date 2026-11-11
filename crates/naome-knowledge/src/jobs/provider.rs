@@ -1,9 +1,14 @@
 //! Provider semantics are independent of process custody and durable budgets.
 use super::*;
 use crate::resources::feedback::{Meter, Phase, Sample};
-use std::time::{Duration, Instant};
+#[cfg(any(test, feature = "developer-tools"))]
+use std::time::Duration;
+use std::time::Instant;
 
-pub(super) const DEFAULT_PROVIDER: &str = "naome-deterministic-mocks-v1";
+pub(super) const SELECTION_PROVIDER: &str = "naome-question-selection";
+#[cfg(any(test, feature = "developer-tools"))]
+pub(super) const MOCK_PROVIDER: &str = "naome-deterministic-mocks-v1";
+#[cfg(any(test, feature = "developer-tools"))]
 #[derive(Clone, Copy)]
 pub(super) enum Probe {
     Descendant,
@@ -48,6 +53,7 @@ pub(super) trait Supervisor {
     ) -> Result<crate::learning::history::Receipt, crate::Error> {
         Err(crate::WorkerFailure::HistoryUnsupported.into())
     }
+    #[cfg(any(test, feature = "developer-tools"))]
     fn program(
         &mut self,
         _unit: u32,
@@ -79,6 +85,7 @@ pub(super) trait Supervisor {
     }
     fn reserve(&mut self, next: u32) -> Result<(), crate::outcome::WorkerFailure>;
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), crate::outcome::WorkerFailure>;
+    #[cfg(any(test, feature = "developer-tools"))]
     fn probe(&mut self, probe: Probe) -> Result<(), crate::outcome::WorkerFailure>;
     fn blocked_nanos(&self) -> u64;
     fn observe(
@@ -146,7 +153,12 @@ pub(super) fn contract(record: &Record) -> Option<Contract> {
             units: job.units(),
             resumable: true,
         }),
-        DEFAULT_PROVIDER => Some(Contract {
+        SELECTION_PROVIDER if matches!(record.input, Input::Select { .. }) => Some(Contract {
+            units: 1,
+            resumable: true,
+        }),
+        #[cfg(any(test, feature = "developer-tools"))]
+        MOCK_PROVIDER => Some(Contract {
             units: if streams(&record.input, record.settings.mock) {
                 record.settings.mock.program_units
             } else {
@@ -182,13 +194,36 @@ pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, crate::Error>
             record: record.clone(),
             engine: crate::learning::Engine::default(),
         })),
-        DEFAULT_PROVIDER => Ok(Box::new(Mock {
+        SELECTION_PROVIDER => match &record.input {
+            Input::Select { question, .. } => Ok(Box::new(Selection(question.clone()))),
+            _ => Err(crate::ResearchFailure::ProviderRoleMismatch.into()),
+        },
+        #[cfg(any(test, feature = "developer-tools"))]
+        MOCK_PROVIDER => Ok(Box::new(Mock {
             input: record.input.clone(),
             work: record.settings.mock,
         })),
         _ => Err(crate::ResearchFailure::ProviderUnknown.into()),
     }
 }
+struct Selection(String);
+impl Provider for Selection {
+    fn next(&self, checkpoint: u32) -> Result<Option<u32>, Failure> {
+        Ok((checkpoint == 0).then_some(1))
+    }
+
+    fn execute(&mut self, _unit: u32, _owner: &mut dyn Supervisor) -> Result<(), Failure> {
+        // Formal validation, including definition resolution, belongs to the receiver.
+        naome_checker::question::ResearchQuestion::source_requires_definitions(&self.0)
+            .map_err(crate::Error::from)?;
+        Ok(())
+    }
+
+    fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
+        Ok(Output::Selected(true))
+    }
+}
+
 /// Generation and its learned state belong to Frontier. This worker finalizes
 /// the immutable selected source under the ordinary job reservation/custody.
 struct Finding {
@@ -391,19 +426,23 @@ impl Provider for Native {
         })
     }
 }
+#[cfg(any(test, feature = "developer-tools"))]
 struct Mock {
     input: Input,
     work: MockWork,
 }
+#[cfg(any(test, feature = "developer-tools"))]
 fn streams(input: &Input, work: MockWork) -> bool {
     work.program_units > 0
         && matches!(input,Input::Solve{question} if naome_checker::question::ResearchQuestion::from_hex(question).ok()==naome_checker::question::ResearchQuestion::from_hex(&crate::mocks::create_question(0)).ok())
 }
+#[cfg(any(test, feature = "developer-tools"))]
 impl Mock {
     fn streams(&self) -> bool {
         streams(&self.input, self.work)
     }
 }
+#[cfg(any(test, feature = "developer-tools"))]
 impl Provider for Mock {
     fn start(&mut self, supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
         if self.work.descendant {

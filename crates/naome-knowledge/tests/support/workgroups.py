@@ -24,14 +24,15 @@ def run(trial, args):
         assert args.definition_id not in helper.ids()
     for node, other in ((requester, helper), (helper, requester)):
         node.config["peers"] = [{"id": other.peer, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}]
-    if args.helper_provider == "native":
-        helper.config["runtime"]["jobs"] = {"native_proof_learning": True}
+    if args.helper_provider == "mock":
+        helper.config["runtime"]["jobs"] = {"native_proof_learning": False, "fixture_workloads": True}
     requester.config["runtime"]["question_interval_ms"] = 3600000 if args.seed else 100
     if args.seed:
         requester.config["runtime"]["proof_interval_ms"] = 2000
     # This controlled failure makes the requester's need observable; the helper
     # uses the native solver and normal checked publication path.
-    requester.config["runtime"]["jobs"] = {"solving": {"mock": {"outcome": "failed"}}}
+    requester.config["runtime"]["jobs"] = {"native_proof_learning": False, "fixture_workloads": True,
+                                              "solving": {"mock": {"outcome": "failed"}}}
     for node in trial.nodes:
         node.write_config()
     helper.start()

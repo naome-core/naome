@@ -27,7 +27,7 @@ mod signals;
 mod tests;
 
 pub use crate::jobs::Limits as SearchBudget;
-pub use command::{Command, HELP, QuestionPage, Response, execute, questions, run};
+pub use command::{Command, QuestionPage, Response, execute, questions};
 pub use evaluation::{Comparison, Compute, Evaluation, Results, compare};
 #[cfg(test)]
 pub(crate) use planning::continuation;

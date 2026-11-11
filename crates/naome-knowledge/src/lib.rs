@@ -51,7 +51,6 @@ pub mod proof_work;
 mod publication;
 pub mod question;
 mod quota;
-pub mod relay;
 pub mod resources;
 #[cfg(unix)]
 pub mod runtime;
@@ -59,6 +58,9 @@ mod sampling;
 mod storage;
 mod store;
 mod structure;
+#[cfg(feature = "developer-tools")]
+#[doc(hidden)]
+pub mod test_support;
 /// Checked proof curricula and model-bound development feedback.
 pub mod training;
 mod wire;
