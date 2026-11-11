@@ -51,6 +51,7 @@ struct AttemptHint {
     spent_ms: u64,
     checkpoint_attempts: u64,
     checkpoint: Option<[u8; 32]>,
+    paid_open_search: bool,
 }
 
 pub(crate) struct Frontier {
@@ -800,6 +801,7 @@ impl Frontier {
                         .as_deref()
                         .map(crate::object::id_bytes)
                         .transpose()?,
+                    paid_open_search: record.paid_open_search(),
                 })
             })
             .transpose()?;
@@ -814,18 +816,15 @@ impl Frontier {
         self.recent.retain(|(id, _)| id != question.resolution_id());
     }
     fn retry_ready(
-        &mut self,
+        &self,
         question: &ResearchQuestion,
         graph: &Graph,
+        record: Option<AttemptHint>,
+        checkpoint: Option<[u8; 32]>,
     ) -> Result<bool, crate::Error> {
-        let Some(record) = self.previous(question)? else {
+        let Some(record) = record else {
             return Ok(true);
         };
-        let checkpoint = self
-            .feedback
-            .as_ref()
-            .map(|f| crate::object::id_bytes(&f.checkpoint))
-            .transpose()?;
         if record.verified
             || checkpoint.is_some() && record.checkpoint != checkpoint
             || self.evidence.draws().saturating_sub(record.last_draw)
@@ -1136,6 +1135,26 @@ impl Frontier {
         settings: jobs::RoleSettings,
         random_only: bool,
     ) -> Result<Option<usize>, crate::Error> {
+        self.choose_weighted(candidates, graph, settings, random_only, false)
+    }
+
+    pub(crate) fn choose_free_solver(
+        &mut self,
+        candidates: &[&ResearchQuestion],
+        graph: &Graph,
+        settings: jobs::RoleSettings,
+    ) -> Result<Option<usize>, crate::Error> {
+        self.choose_weighted(candidates, graph, settings, false, true)
+    }
+
+    fn choose_weighted(
+        &mut self,
+        candidates: &[&ResearchQuestion],
+        graph: &Graph,
+        settings: jobs::RoleSettings,
+        random_only: bool,
+        prefer_fresh: bool,
+    ) -> Result<Option<usize>, crate::Error> {
         #[cfg(test)]
         let random_only = random_only || self.treatment == Treatment::Uniform;
         if candidates.is_empty() {
@@ -1145,10 +1164,27 @@ impl Frontier {
             self.evidence.feedback(graph, feedback)?;
         }
         self.analyses.trim();
+        let checkpoint = self
+            .feedback
+            .as_ref()
+            .map(|feedback| crate::object::id_bytes(&feedback.checkpoint))
+            .transpose()?;
+        let knowledge = graph.content_root();
         let mut indices = Vec::with_capacity(candidates.len());
         for (index, question) in candidates.iter().enumerate() {
-            if !self.native || self.retry_ready(question, graph)? {
-                indices.push(index);
+            let record = if self.native {
+                self.previous(question)?
+            } else {
+                None
+            };
+            if self.retry_ready(question, graph, record, checkpoint)? {
+                let unchanged_retry = prefer_fresh
+                    && record.is_some_and(|record| {
+                        record.paid_open_search
+                            && record.knowledge == knowledge
+                            && record.checkpoint == checkpoint
+                    });
+                indices.push((index, unchanged_retry));
             }
         }
         if indices.is_empty() {
@@ -1158,7 +1194,7 @@ impl Frontier {
             return Ok(None);
         }
         if random_only {
-            let index = indices[self.random.below(indices.len() as u64) as usize];
+            let (index, _) = indices[self.random.below(indices.len() as u64) as usize];
             self.evidence.selected_question(
                 self.random.0,
                 candidates[index],
@@ -1170,18 +1206,25 @@ impl Frontier {
             return Ok(Some(index));
         }
         let research = self.research_frame(graph, 0);
+        let has_alternative = indices.iter().any(|&(_, retry)| !retry);
         let weighted = indices
             .iter()
-            .map(|index| {
-                let question = candidates[*index];
+            .map(|&(index, unchanged_retry)| {
+                let question = candidates[index];
+                let mut weight = self.weight(question, graph, settings, research.as_ref())?;
+                // Favor fresh search contexts while keeping paid retries in
+                // the lottery and giving them the full turn when alone.
+                if has_alternative && unchanged_retry {
+                    weight = weight.div_ceil(8);
+                }
                 Ok((
                     self.analyses.get(question)?.descriptor.features.family,
-                    self.weight(question, graph, settings, research.as_ref())?,
+                    weight,
                 ))
             })
             .collect::<Result<Vec<_>, crate::Error>>()?;
         let position = crate::sampling::choose(&mut self.random, &weighted, random_only);
-        let index = indices[position];
+        let (index, _) = indices[position];
         self.evidence.selected_question(
             self.random.0,
             candidates[index],
