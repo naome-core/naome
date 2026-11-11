@@ -84,3 +84,34 @@ fn a_zero_read_cache_preserves_definition_results_without_retaining_reads() {
         Some(&3)
     );
 }
+
+#[test]
+fn definition_cache_respects_the_exact_byte_budget() {
+    for fits in [false, true] {
+        let (storage, state, certificate) = fixture();
+        let required = 512 + 512 + certificate.canonical_bytes().len() * 64;
+        let budget = if fits { required } else { required - 1 };
+        let state = state
+            .with_read_cache_limits(crate::ReadCacheLimits::new(1, budget).unwrap())
+            .unwrap();
+        let context = ReadContext::new(&state);
+        for _ in 0..2 {
+            assert_eq!(
+                context
+                    .resolve_definition(certificate.definition_id())
+                    .unwrap()
+                    .unwrap()
+                    .body(),
+                certificate.body()
+            );
+        }
+        assert_eq!(
+            storage
+                .reads
+                .lock()
+                .unwrap()
+                .get(&definition_address(certificate.canonical_bytes())),
+            Some(if fits { &1 } else { &2 })
+        );
+    }
+}

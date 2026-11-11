@@ -52,7 +52,7 @@ pub(crate) struct ReadContext<'a> {
     source: &'a dyn ContextView,
     proofs: RefCell<BTreeMap<ProofId, Option<ProofHeader>>>,
     statements: RefCell<BTreeMap<StatementId, Option<StatementHeader>>>,
-    parsed: Vec<OnceCell<Parsed>>,
+    parsed: OnceCell<Vec<OnceCell<Parsed>>>,
     limits: ReadCacheLimits,
     parsed_bytes: Cell<usize>,
 }
@@ -62,15 +62,14 @@ enum Parsed {
 }
 impl<'a> ReadContext<'a> {
     pub(crate) fn new(source: &'a dyn ContextView) -> Self {
+        let limits = source.read_cache_limits();
         Self {
             source,
             proofs: RefCell::new(BTreeMap::new()),
             statements: RefCell::new(BTreeMap::new()),
-            parsed: (0..source.read_cache_limits().entries)
-                .map(|_| OnceCell::new())
-                .collect(),
-            limits: source.read_cache_limits(),
-            parsed_bytes: Cell::new(source.read_cache_limits().entries * 512),
+            parsed: OnceCell::new(),
+            limits,
+            parsed_bytes: Cell::new(limits.entries * 512),
         }
     }
 }
@@ -185,7 +184,7 @@ impl ContextView for ReadContext<'_> {
         &self,
         id: DefinitionId,
     ) -> Result<Option<Cow<'_, DefinitionCertificate>>, ContextError> {
-        for parsed in self.parsed.iter().filter_map(OnceCell::get) {
+        for parsed in self.parsed() {
             if let Parsed::Definition(cached, definition) = parsed
                 && *cached == id
             {
@@ -216,25 +215,35 @@ impl ContextView for ReadContext<'_> {
     }
 }
 impl ReadContext<'_> {
-    fn cached(&self, id: StatementId) -> Option<(&usize, &Formula)> {
+    fn parsed(&self) -> impl Iterator<Item = &Parsed> {
         self.parsed
+            .get()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
             .iter()
             .filter_map(OnceCell::get)
-            .find_map(|parsed| match parsed {
-                Parsed::Formula(cached, length, formula) if *cached == id => {
-                    Some((length, formula))
-                }
-                _ => None,
-            })
+    }
+
+    fn cached(&self, id: StatementId) -> Option<(&usize, &Formula)> {
+        self.parsed().find_map(|parsed| match parsed {
+            Parsed::Formula(cached, length, formula) if *cached == id => Some((length, formula)),
+            _ => None,
+        })
     }
     fn available_slot(&self, charge: usize) -> Option<&OnceCell<Parsed>> {
-        if self
-            .parsed_bytes
-            .get()
-            .checked_add(charge)
-            .is_some_and(|n| n <= self.limits.bytes)
+        if self.limits.entries > 0
+            && self
+                .parsed_bytes
+                .get()
+                .checked_add(charge)
+                .is_some_and(|n| n <= self.limits.bytes)
         {
-            self.parsed.iter().find(|slot| slot.get().is_none())
+            // Allocate stable slots only when the context returns an owned
+            // value that fits the parsed cache's existing limits.
+            self.parsed
+                .get_or_init(|| (0..self.limits.entries).map(|_| OnceCell::new()).collect())
+                .iter()
+                .find(|slot| slot.get().is_none())
         } else {
             None
         }
