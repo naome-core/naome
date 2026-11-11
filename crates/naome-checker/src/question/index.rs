@@ -69,16 +69,22 @@ impl KnowledgeIndex {
         self.witnesses.get(&statement).map(|(_, proof)| proof)
     }
 
-    pub(crate) fn outgoing(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
-        entries(self.outgoing.get(&target))
-    }
-
-    pub(crate) fn instances(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
-        entries(self.instances.get(&target))
-    }
-
-    pub(crate) fn deductions(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
-        entries(self.deductions.get(&target))
+    pub(crate) fn bucket(
+        &self,
+        kind: BucketKind,
+        target: StatementId,
+    ) -> Option<impl Iterator<Item = StatementId> + '_> {
+        let index = match kind {
+            BucketKind::Outgoing => &self.outgoing,
+            BucketKind::Deductions => &self.deductions,
+            BucketKind::Instances => &self.instances,
+        };
+        Some(
+            index
+                .get(&target)?
+                .entries()
+                .map(|(statement, ())| *statement),
+        )
     }
 }
 
@@ -115,13 +121,6 @@ fn insert(index: &mut Buckets, key: StatementId, statement: StatementId) {
     if bucket.insert(statement, ()) {
         index.set(key, bucket);
     }
-}
-
-fn entries(bucket: Option<&Statements>) -> impl Iterator<Item = StatementId> + '_ {
-    bucket
-        .into_iter()
-        .flat_map(PersistentMap::entries)
-        .map(|(statement, ())| *statement)
 }
 
 pub(super) struct UniversalInstance {
