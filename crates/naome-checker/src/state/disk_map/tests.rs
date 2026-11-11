@@ -237,7 +237,11 @@ fn cold_tamper_and_missing_nodes_are_errors_even_for_absent_queries() {
         Some(&ContextError::Corrupt)
     );
     assert_eq!(map.get(&bit_key(0)), Err(ContextError::Corrupt));
+    let mut entries = map.entries_after(Some([0; 32]));
+    assert_eq!(entries.next(), Some(Err(ContextError::Corrupt)));
+    assert_eq!(entries.next(), None);
     storage.bytes.lock().unwrap().insert(leaf.address, original);
+    assert_eq!(map.entries_after(Some([0; 32])).next(), None);
     map.insert(bit_key(0), b"right").unwrap();
     storage.bytes.lock().unwrap().remove(&leaf.address);
     assert!(matches!(

@@ -108,7 +108,8 @@ impl DiskMap {
     {
         let cursor = LeafCursor {
             storage: self.storage(),
-            pending: self.root.into_iter().map(Pending::root).collect(),
+            root: self.root,
+            pending: Vec::new(),
             previous_key: after,
             after,
         };
@@ -394,6 +395,7 @@ impl Walk {
 /// A failed read yields one error and terminates this failed traversal.
 struct LeafCursor {
     storage: Arc<dyn ContextStorage>,
+    root: Option<Root>,
     pending: Vec<Pending>,
     previous_key: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
@@ -403,7 +405,8 @@ impl Iterator for LeafCursor {
     type Item = Result<([u8; 32], Vec<u8>), ContextError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(pending) = self.pending.pop() {
+        let mut root = self.root.take().map(Pending::root);
+        while let Some(pending) = root.take().or_else(|| self.pending.pop()) {
             if self
                 .after
                 .zip(pending.range)
