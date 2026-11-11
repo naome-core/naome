@@ -243,7 +243,15 @@ struct VariableNormalizer {
 }
 
 impl VariableNormalizer {
+    // Keep formula traversal out of inference-only normalization.
+    #[inline(never)]
     fn formula(&mut self, formula: ProofFormula) -> ProofFormula {
+        if formula
+            .as_primitive()
+            .is_some_and(naome_foundation::Formula::is_closed)
+        {
+            return formula;
+        }
         formula.map_free_variables(|variable| self.variable(variable))
     }
 

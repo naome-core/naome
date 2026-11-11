@@ -457,3 +457,39 @@ fn duplicate_identity_proof(variable: FreeVariable) -> ProofCertificate {
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
     ProofCertificate::new(steps).expect("the test proof is structurally valid")
 }
+
+#[test]
+fn closed_and_open_formulas_normalize_together_without_changing_scope() {
+    let bound = FreeVariable::new(17);
+    let free = FreeVariable::new(42);
+    let canonical = FreeVariable::new(0);
+    let closed = Formula::for_all(bound, Formula::equal(bound, bound));
+    let open = Formula::member(free, free);
+    let normalized_open = Formula::member(canonical, canonical);
+    for (left, right, expected_left, expected_right) in [
+        (
+            closed.clone(),
+            open.clone(),
+            closed.clone(),
+            normalized_open.clone(),
+        ),
+        (
+            open.clone(),
+            closed.clone(),
+            normalized_open.clone(),
+            closed.clone(),
+        ),
+    ] {
+        let input = ProofCertificate::new(vec![ProofStep::Simplification {
+            antecedent: left.into(),
+            consequent: right.into(),
+        }])
+        .unwrap()
+        .into_unchecked_normal_form();
+        let expected = ProofStep::Simplification {
+            antecedent: expected_left.into(),
+            consequent: expected_right.into(),
+        };
+        assert_eq!(input.certificate().steps(), &[expected]);
+    }
+}
