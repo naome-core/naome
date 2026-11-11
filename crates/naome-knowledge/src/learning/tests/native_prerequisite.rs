@@ -1074,6 +1074,82 @@ pub(crate) fn publish_catalog_solution(
 }
 
 #[test]
+fn catalog_reuses_a_checked_universal_for_an_existential_consequent() {
+    use crate::{checkpoint::tests::Directory, jobs::CatalogSource};
+    use naome_proof::program::{Axiom, ScopedAction};
+
+    let _reservation = qualification_fixture();
+    let directory = Directory::new();
+    let mut graph = crate::Graph::open(&directory.0).unwrap();
+    let pairing = naome_foundation::ZfcAxiom::Pairing.formula();
+    let [a, b, p] = [0, 1, 2].map(FreeVariable::new);
+    let consequent = pairing
+        .open_outer_universal(b)
+        .unwrap()
+        .open_outer_universal(a)
+        .unwrap();
+    let question = ResearchQuestion::from_formula(proof::close(Formula::implies(
+        Formula::member(a, p),
+        consequent,
+    )))
+    .unwrap();
+    assert!(
+        CatalogSource::for_exact_local_scope(&graph, &question)
+            .unwrap()
+            .is_none()
+    );
+
+    let source = peer::Packet::compose(
+        &pairing,
+        &[
+            Command::Axiom {
+                axiom: Axiom::Pairing,
+            },
+            Command::Seal { proof: 0 },
+        ],
+        &[],
+        [],
+    )
+    .unwrap();
+    register_program(&mut graph, &source);
+    let selected = CatalogSource::for_exact_local_scope(&graph, &question)
+        .unwrap()
+        .expect("the checked instance is indexed under the opened consequent");
+    assert_eq!(selected.proof_id(), source.manifest.proof_id());
+    let selected: CatalogSource =
+        serde_json::from_slice(&serde_json::to_vec(&selected).unwrap()).unwrap();
+    let solution = selected
+        .solve_local_scope(&question.to_hex())
+        .unwrap()
+        .unwrap();
+    assert_eq!(solution.cost.search_expansions, 3);
+    assert!(selected.supports(&solution).unwrap());
+    let search::Tree::Program(packet) = &solution.tree else {
+        panic!("expected a native program");
+    };
+    let commands = packet.commands().unwrap();
+    let actions = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::Deduce { actions, .. } => Some(actions),
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(actions.as_slice(), [
+        ScopedAction::Instantiate { premises: first, .. },
+        ScopedAction::Instantiate { premises: second, .. },
+    ] if first.is_empty() && second.is_empty()));
+    solution.check_target(&question).unwrap();
+    let root = publish_catalog_solution(&mut graph, &solution);
+    drop(graph);
+    let graph = crate::Graph::open(&directory.0).unwrap();
+    assert_eq!(
+        graph.learning_proof_dependencies(root).unwrap().as_ref(),
+        &[source.manifest.artifact_id()]
+    );
+}
+
+#[test]
 fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source() {
     let _reservation = qualification_fixture();
     use crate::checkpoint::tests::Directory;

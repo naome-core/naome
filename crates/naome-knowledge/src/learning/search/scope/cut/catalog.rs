@@ -17,6 +17,18 @@ fn open_catalog_scope(target: &Formula) -> Result<Option<Scope>, Error> {
     Ok(Scope::open(target)?.filter(|scope| scope.assumptions.len() + BINDERS + 1 < FACTS))
 }
 
+fn exact_operands(
+    lemma: &Formula,
+    goal: &Formula,
+    inputs: usize,
+) -> Result<Option<Vec<FreeVariable>>, Error> {
+    if !lemma.is_closed() {
+        return Ok(None);
+    }
+    Ok(question::universal_operands(lemma, goal, BINDERS)?
+        .filter(|operands| !operands.is_empty() && inputs + operands.len() < FACTS))
+}
+
 fn retained_program(graph: &Graph, proof: ProofId) -> Result<Option<CatalogSource>, Error> {
     let Some(manifest) = graph.program_manifest(ArtifactId::from(proof))? else {
         return Ok(None);
@@ -25,6 +37,34 @@ fn retained_program(graph: &Graph, proof: ProofId) -> Result<Option<CatalogSourc
         .peer_program(manifest)?
         .map(CatalogSource::new)
         .transpose()
+}
+
+fn indexed_program(
+    graph: &Graph,
+    goal: &Formula,
+    matches: impl Fn(&Formula) -> Result<bool, Error>,
+) -> Result<Option<CatalogSource>, Error> {
+    let context = graph.checked_context();
+    let key = question::universal_pattern(goal)?;
+    for statement in context.bucket(BucketKind::Instances, key)?.take(CANDIDATES) {
+        let statement = statement?;
+        let Some(header) = context.statement_header(statement)? else {
+            continue;
+        };
+        let length = header.canonical_length();
+        if length > question::QUESTION_BYTES {
+            continue;
+        }
+        let Some(lemma) = context.statement_formula_from_header(statement, header, length)? else {
+            continue;
+        };
+        if matches(&lemma)?
+            && let Some(source) = retained_program(graph, header.proof_id())?
+        {
+            return Ok(Some(source));
+        }
+    }
+    Ok(None)
 }
 
 fn closing_premises(
@@ -81,6 +121,30 @@ impl CatalogSource {
             .collect()
     }
 
+    /// A checked universal can close the opened consequent without using a
+    /// local hypothesis. The worker reconstructs the same specialization from
+    /// the retained program before publishing any proof.
+    pub(crate) fn for_exact_local_scope(
+        graph: &Graph,
+        question: &question::ResearchQuestion,
+    ) -> Result<Option<Self>, Error> {
+        if crate::learning::curriculum::reserved(&crate::hex(question.resolution_id())) {
+            return Ok(None);
+        }
+        let Ok(_memory) = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)
+        else {
+            return Ok(None);
+        };
+        let scope = Scope::decompose(question.proved_target(), None)?;
+        let inputs = scope.assumptions.len() + 1;
+        if inputs >= FACTS {
+            return Ok(None);
+        }
+        indexed_program(graph, &scope.goal, |lemma| {
+            Ok(exact_operands(lemma, &scope.goal, inputs)?.is_some())
+        })
+    }
+
     pub(crate) fn for_local_scope(graph: &Graph, target: &Formula) -> Result<Option<Self>, Error> {
         let Ok(_memory) = crate::resources::MemoryLease::acquire(question::QUESTION_BYTES * 16)
         else {
@@ -89,29 +153,11 @@ impl CatalogSource {
         let Some(scope) = open_catalog_scope(target)? else {
             return Ok(None);
         };
-        let context = graph.checked_context();
         for (_, _, premise) in closing_premises(&scope, 0) {
-            let key = question::universal_pattern(&premise)?;
-            for statement in context.bucket(BucketKind::Instances, key)?.take(CANDIDATES) {
-                let statement = statement?;
-                let Some(header) = context.statement_header(statement)? else {
-                    continue;
-                };
-                let length = header.canonical_length();
-                if length > question::QUESTION_BYTES {
-                    continue;
-                }
-                let Some(lemma) =
-                    context.statement_formula_from_header(statement, header, length)?
-                else {
-                    continue;
-                };
-                if question::universal_operands(&lemma, &premise, BINDERS)?.is_none() {
-                    continue;
-                }
-                if let Some(source) = retained_program(graph, header.proof_id())? {
-                    return Ok(Some(source));
-                }
+            if let Some(source) = indexed_program(graph, &premise, |lemma| {
+                Ok(question::universal_operands(lemma, &premise, BINDERS)?.is_some())
+            })? {
+                return Ok(Some(source));
             }
         }
         Ok(None)
@@ -165,51 +211,63 @@ impl CatalogSource {
         }
         let target = question.proved_target();
         let lemma = self.packet().target()?;
-        let scope = Scope::open_with(target, Some(&lemma))?
-            .ok_or(crate::ResearchFailure::OfferedProofBinding)?;
-        for (universal, replacement, premise) in closing_premises(&scope, 1) {
-            let Some(operands) = question::universal_operands(&lemma, &premise, BINDERS)? else {
-                continue;
+        let scope = Scope::decompose(target, Some(&lemma))?;
+        let inputs = scope.assumptions.len();
+        let (operands, closing) =
+            if let Some(operands) = exact_operands(&lemma, &scope.goal, inputs)? {
+                (operands, None)
+            } else {
+                if !scope.supports_standard_search() {
+                    return Err(crate::ResearchFailure::OfferedProofBinding.into());
+                }
+                let mut selected = None;
+                for (universal, replacement, premise) in closing_premises(&scope, 1) {
+                    let Some(operands) = question::universal_operands(&lemma, &premise, BINDERS)?
+                    else {
+                        continue;
+                    };
+                    if inputs + operands.len() < FACTS {
+                        selected = Some((operands, Some((universal, replacement))));
+                        break;
+                    }
+                }
+                selected.ok_or(crate::ResearchFailure::OfferedProofBinding)?
             };
-            if scope.assumptions.len() + operands.len() >= FACTS {
-                continue;
-            }
-            let mut cited = 0;
-            let mut actions = Vec::new();
-            for operand in operands {
-                actions.push(ScopedAction::Instantiate {
-                    universal: cited,
-                    replacement: operand.identifier(),
-                    premises: Vec::new(),
-                });
-                cited = (scope.assumptions.len() + actions.len() - 1) as u32;
-            }
+        let mut cited = 0;
+        let mut actions = Vec::new();
+        for operand in operands {
+            actions.push(ScopedAction::Instantiate {
+                universal: cited,
+                replacement: operand.identifier(),
+                premises: Vec::new(),
+            });
+            cited = (inputs + actions.len() - 1) as u32;
+        }
+        if let Some((universal, replacement)) = closing {
             actions.push(ScopedAction::Instantiate {
                 universal,
                 replacement: replacement.identifier(),
                 premises: vec![cited],
             });
-            let commands = scope
-                .program(&actions, &[self.proof_id()])
-                .ok_or(crate::ResearchFailure::OfferedProofBinding)?;
-            let packet =
-                peer::Packet::compose(target, &commands, std::slice::from_ref(self.packet()), [])?;
-            return Ok(crate::learning::program_generation(
-                packet,
-                Vec::new(),
-                target,
-                false,
-                GenerationCost {
-                    search_expansions: actions.len() + 1,
-                    retrieved_lemmas: 1,
-                    generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
-                        as u64,
-                    ..GenerationCost::default()
-                },
-                Vec::new(),
-            )?
-            .solution);
         }
-        Err(crate::ResearchFailure::OfferedProofBinding.into())
+        let commands = scope
+            .program(&actions, &[self.proof_id()])
+            .ok_or(crate::ResearchFailure::OfferedProofBinding)?;
+        let packet =
+            peer::Packet::compose(target, &commands, std::slice::from_ref(self.packet()), [])?;
+        Ok(crate::learning::program_generation(
+            packet,
+            Vec::new(),
+            target,
+            false,
+            GenerationCost {
+                search_expansions: actions.len() + 1,
+                retrieved_lemmas: 1,
+                generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                ..GenerationCost::default()
+            },
+            Vec::new(),
+        )?
+        .solution)
     }
 }
