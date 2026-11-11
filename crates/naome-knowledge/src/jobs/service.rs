@@ -969,7 +969,7 @@ impl Owner {
             .and_then(|n| n.progress.as_ref());
         if learning_applied && let Some(progress) = progress {
             crate::network::emit(
-                serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification,"assessment":progress.assessment}),
+                serde_json::json!({"event":crate::outcome::NodeEvent::NativeLearningQualification,"job":id,"qualification":progress.qualification,"assessment":progress.assessment,"causal":progress.causal}),
             );
         }
         if let Some(progress) = progress

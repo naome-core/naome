@@ -201,14 +201,57 @@ pub(super) struct Outcome {
     #[cfg(all(test, feature = "developer-tools"))]
     pub diagnostic: crate::outcome::GenerationOutcome,
     pub micros: u64,
-    #[cfg(all(test, feature = "developer-tools"))]
     pub proof_id: Option<String>,
+    pub decisions: Vec<super::SearchTrace>,
 }
 pub(super) struct Evaluation {
     pub before: Outcome,
     pub after: Outcome,
 }
-pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
+/// One checked outcome from the installed Solver at the common allowance.
+pub(super) fn solve(
+    source: &str,
+    base: &super::State,
+    runtime: &mut super::model::Runtime,
+    job: u64,
+) -> Result<Outcome, crate::Error> {
+    let start = std::time::Instant::now();
+    let cpu = super::meta::cpu_micros()?;
+    let generation = super::solve_with_report_typed(
+        source,
+        runtime,
+        usize::from(ALLOWANCE),
+        job,
+        super::SolveContext {
+            definitions: &base.definitions,
+            theorems: &base.knowledge,
+            native_programs: true,
+            ..Default::default()
+        },
+    )?;
+    let expansions = u8::try_from(generation.cost.search_expansions)
+        .ok()
+        .filter(|used| *used <= ALLOWANCE)
+        .ok_or(crate::ResearchFailure::ResearchValueInvalid)?;
+    if let Some(solution) = &generation.solution {
+        let question = naome_checker::question::ResearchQuestion::from_hex(source)?;
+        solution.check_target(&question)?;
+    }
+    Ok(Outcome {
+        solved: generation.solution.is_some(),
+        expansions,
+        cpu_micros: u32::try_from(super::meta::cpu_micros()?.saturating_sub(cpu))
+            .map_err(|_| crate::ResearchFailure::ResearchValueInvalid)?,
+        terminal: generation.terminal,
+        #[cfg(all(test, feature = "developer-tools"))]
+        diagnostic: generation.diagnostic,
+        micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        proof_id: generation.solution.map(|s| s.proof_id),
+        decisions: generation.executions,
+    })
+}
+
+pub(super) fn pair<I: super::ArtifactIo + ?Sized>(
     source: &str,
     base: &super::State,
     candidate: &super::Checkpoint,
@@ -217,47 +260,25 @@ pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
     job: u64,
 ) -> Result<Evaluation, crate::Error> {
     let mut solve = |checkpoint: &super::Checkpoint| {
-        let start = std::time::Instant::now();
-        let cpu = super::meta::cpu_micros()?;
-        let generation = engine.with_error(checkpoint, io, |runtime| {
-            super::solve_with_report_typed(
-                source,
-                runtime,
-                usize::from(ALLOWANCE),
-                job,
-                super::SolveContext {
-                    definitions: &base.definitions,
-                    theorems: &base.knowledge,
-                    native_programs: true,
-                    ..Default::default()
-                },
-            )
-        })?;
-        let expansions = u8::try_from(generation.cost.search_expansions)
-            .ok()
-            .filter(|used| *used <= ALLOWANCE)
-            .ok_or(crate::ResearchFailure::ResearchValueInvalid)?;
-        if let Some(solution) = &generation.solution {
-            let question = naome_checker::question::ResearchQuestion::from_hex(source)?;
-            solution.check_target(&question)?;
-        }
-        Ok::<_, crate::Error>(Outcome {
-            solved: generation.solution.is_some(),
-            expansions,
-            cpu_micros: u32::try_from(super::meta::cpu_micros()?.saturating_sub(cpu))
-                .map_err(|_| crate::ResearchFailure::ResearchValueInvalid)?,
-            terminal: generation.terminal,
-            #[cfg(all(test, feature = "developer-tools"))]
-            proof_id: generation.solution.map(|s| s.proof_id),
-            #[cfg(all(test, feature = "developer-tools"))]
-            diagnostic: generation.diagnostic,
-            micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        engine.with_error(checkpoint, io, |runtime| {
+            self::solve(source, base, runtime, job)
         })
     };
-    let result = Evaluation {
+    Ok(Evaluation {
         before: solve(&base.model)?,
         after: solve(candidate)?,
-    };
+    })
+}
+
+pub(super) fn evaluate<I: super::ArtifactIo + ?Sized>(
+    source: &str,
+    base: &super::State,
+    candidate: &super::Checkpoint,
+    engine: &mut super::Engine,
+    io: &mut I,
+    job: u64,
+) -> Result<Evaluation, crate::Error> {
+    let result = pair(source, base, candidate, engine, io, job)?;
     #[cfg(all(test, feature = "developer-tools"))]
     observation::record(source, &result)?;
     Ok(result)

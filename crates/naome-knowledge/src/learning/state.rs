@@ -423,7 +423,7 @@ impl State {
         {
             return false;
         }
-        if p.assessment.is_some_and(|assessment| assessment.accepts())
+        if p.qualification == super::Qualification::Promoted
             && digest(&(&self.knowledge, &self.definitions))
                 != digest(&(&native.base.knowledge, &native.base.definitions))
         {
