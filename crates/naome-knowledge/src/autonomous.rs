@@ -1486,7 +1486,7 @@ impl Autonomous {
                         }
                         Ok((required, prerequisites))
                     })();
-                    let (required, prerequisites) = match inputs {
+                    let (required, mut prerequisites) = match inputs {
                         Ok(selected) => selected,
                         Err(error) => {
                             if error.fatal() {
@@ -1509,6 +1509,17 @@ impl Autonomous {
                                 return accepted;
                             }
                             Err(_) => {}
+                        }
+                        if binding.catalog.is_none() && self.intervals.jobs.native_proof_learning {
+                            match graph.scoped_solving_inputs(&question) {
+                                Ok(Some(inputs)) => prerequisites = inputs,
+                                Err(error) if error.fatal() => {
+                                    self.error = Some(error);
+                                    self.retain(question);
+                                    return accepted;
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     if self.intervals.jobs.native_proof_learning
