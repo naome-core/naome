@@ -41,6 +41,10 @@ fn insertion_permutations_cover_boundary_bits_without_replacement() {
         for (index, key) in keys.iter().enumerate() {
             assert_eq!(map.get(key), Some(&index));
         }
+        assert_eq!(
+            map.entries().map(|(_, value)| *value).collect::<Vec<_>>(),
+            [0, 4, 3, 2, 1]
+        );
 
         let before_duplicate = map.clone();
         assert!(!map.insert(keys[2], usize::MAX));
@@ -110,4 +114,26 @@ fn maximum_key_path_round_trips_and_remains_clone_isolated() {
     assert_eq!(branch.get(&TestKey(branch_key)), Some(&usize::MAX));
     assert_eq!(selected.get(&zero), Some(&0));
     assert_eq!(branch.get(&zero), Some(&0));
+}
+
+#[test]
+fn cursor_orders_maximum_depth_and_stays_exhausted() {
+    let mut map = PersistentMap::new();
+    assert!(map.entries().next().is_none());
+    let zero = [0; 32];
+    map.insert(TestKey(zero), 0);
+    let mut expected = vec![zero];
+    for bit in 0..256 {
+        let mut bytes = [0; 32];
+        bytes[bit / 8] = 1 << (7 - bit % 8);
+        assert!(map.insert(TestKey(bytes), bit + 1));
+        expected.push(bytes);
+    }
+    expected.sort();
+    let mut cursor = map.entries();
+    for key in expected {
+        assert_eq!(cursor.next().map(|(key, _)| key.0), Some(key));
+    }
+    assert!(cursor.next().is_none());
+    assert!(cursor.next().is_none());
 }

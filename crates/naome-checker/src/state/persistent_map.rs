@@ -23,18 +23,19 @@ impl<K, V> PersistentMap<K, V> {
     }
 
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&K, &V)> {
-        let mut pending: Vec<_> = self.root.as_deref().into_iter().collect();
+        let mut root = self.root.as_deref();
+        let mut pending = Vec::new();
         std::iter::from_fn(move || {
-            while let Some(node) = pending.pop() {
+            let mut node = root.take().or_else(|| pending.pop())?;
+            loop {
                 match node {
                     Node::Leaf { key, value, .. } => return Some((key, value)),
                     Node::Branch { left, right, .. } => {
                         pending.push(right.as_ref());
-                        pending.push(left.as_ref());
+                        node = left;
                     }
                 }
             }
-            None
         })
     }
 
