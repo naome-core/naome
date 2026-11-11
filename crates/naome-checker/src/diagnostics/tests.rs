@@ -499,8 +499,34 @@ fn target_and_manifest_diagnostics_remain_bound_to_checked_results() {
     while engine.advance(37, 4096, &context).unwrap() {}
     while !engine.prepare_export(37).unwrap() {}
     let checked = engine.checked().unwrap();
+    checked.check_target(&actual).unwrap();
+    let mut too_deep = target.clone();
+    for _ in 0..naome_foundation::FORMULA_MAX_DEPTH {
+        too_deep = Formula::negate(too_deep);
+    }
+    let outside_limits = checked.check_target(&too_deep).unwrap_err();
+    let depth_limit = FormulaFailure::DepthLimit {
+        maximum: naome_foundation::FORMULA_MAX_DEPTH,
+    };
+    assert_eq!(
+        inspect_formula_value(&too_deep, &query).unwrap_err(),
+        InspectionError::FormulaOutsideLimits {
+            reason: depth_limit.clone()
+        }
+    );
+    assert_eq!(
+        target_mismatch(&proof, &context, &target, &too_deep).unwrap_err(),
+        depth_limit
+    );
+    assert_eq!(
+        outside_limits.diagnostic().unwrap().failure,
+        Failure::Formula {
+            reason: depth_limit.clone()
+        }
+    );
     let error = checked.check_target(&target).unwrap_err();
     let report = error.diagnostic().unwrap();
+    assert_eq!(report.clone().bind_target(&too_deep), Err(depth_limit));
     assert_eq!(report.failure, Failure::TargetMismatch);
     assert_eq!(
         report.target_root,

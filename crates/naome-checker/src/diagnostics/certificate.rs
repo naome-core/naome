@@ -504,7 +504,7 @@ pub fn target_mismatch_at_snapshot(
     actual: &Formula,
 ) -> Result<ProofDiagnostic, FormulaFailure> {
     actual
-        .encode_canonical()
+        .encoded_length()
         .map_err(|error| FormulaFailure::from(&error))?;
     let mut diagnostic = ProofDiagnostic::new(
         InputBinding {
