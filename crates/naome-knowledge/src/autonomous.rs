@@ -1445,7 +1445,13 @@ impl Autonomous {
                     };
                     let mut binding = context.binding();
                     if let Some(frontier) = &self.frontier {
-                        match frontier.planned_catalog_retry(graph, &question, &required) {
+                        let catalog =
+                            if required.is_empty() && self.intervals.jobs.native_proof_learning {
+                                jobs::CatalogSource::for_exact_local_scope(graph, &question)
+                            } else {
+                                frontier.planned_catalog_retry(graph, &question, &required)
+                            };
+                        match catalog {
                             Ok(catalog) => binding.catalog = catalog,
                             Err(error) if error.fatal() => {
                                 self.error = Some(error);
