@@ -1151,6 +1151,25 @@ fn catalog_reuses_a_checked_universal_for_an_existential_consequent() {
 
 #[test]
 fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source() {
+    const TEST: &str = "learning::tests::native_prerequisite::free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source";
+    const SMALL_CACHE: usize = 4096;
+    if std::env::var_os("NAOME_WITNESS_CACHE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_WITNESS_CACHE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let mut profile = crate::resources::ResourceProfile::default();
+    profile.tuning.question_cache_bytes = Some(SMALL_CACHE);
+    crate::resources::configure(profile).unwrap();
     let _reservation = qualification_fixture();
     use crate::checkpoint::tests::Directory;
 
@@ -1161,6 +1180,8 @@ fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source
     let x = FreeVariable::new(0);
     let body = lemma.target().unwrap().open_outer_universal(x).unwrap();
     let expected = ResearchQuestion::from_formula(Formula::exists(x, body)).unwrap();
+    let proposal_bytes = expected.canonical_bytes().len() * 8 + 256;
+    assert!(proposal_bytes > 1024 && proposal_bytes <= SMALL_CACHE);
     let settings = jobs::Settings {
         native_proof_learning: true,
         ..Default::default()
