@@ -218,15 +218,17 @@ fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
 }
 
 #[test]
-fn free_solver_favors_fresh_work_while_unchanged_paid_retries_remain_selectable() {
-    let graph = Graph::default();
+fn free_solver_uses_unchanged_retry_turns_for_checked_witness_questions() {
+    let (graph, lemma, _, retried, _) = helper_use_fixture();
     let settings = jobs::Settings {
         native_proof_learning: true,
         ..Default::default()
     };
-    let (retried, helpers) = crate::learning::tests::helper_goal();
-    let candidates = [&retried, &helpers[0]];
-    let run = |prefer_fresh| {
+    let x = FreeVariable::new(0);
+    let instance = lemma.proved_target().open_outer_universal(x).unwrap();
+    let witness = ResearchQuestion::from_formula(Formula::exists(x, instance)).unwrap();
+    let candidates = [&retried, &witness];
+    let run = |reuse_on_retry| {
         let directory = Directory::new();
         let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
         frontier.feedback(Some(crate::learning::State::fresh().feedback()));
@@ -241,9 +243,9 @@ fn free_solver_favors_fresh_work_while_unchanged_paid_retries_remain_selectable(
         for _ in 0..2 {
             frontier.evidence.selected(frontier.random.0).unwrap();
         }
-        let retries = (0..64)
+        let retries = (0..32)
             .filter(|_| {
-                let choice = if prefer_fresh {
+                let choice = if reuse_on_retry {
                     frontier.choose_free_solver(&candidates, &graph, settings.solving)
                 } else {
                     frontier.choose(&candidates, &graph, settings.solving, false)
@@ -261,10 +263,8 @@ fn free_solver_favors_fresh_work_while_unchanged_paid_retries_remain_selectable(
     };
     let control = run(false);
     let preferred = run(true);
-    assert!(
-        preferred > 0 && preferred < control,
-        "{preferred} vs {control}"
-    );
+    assert!(control > 0);
+    assert_eq!(preferred, 0);
 }
 
 #[test]

@@ -1153,7 +1153,7 @@ impl Frontier {
         graph: &Graph,
         settings: jobs::RoleSettings,
         random_only: bool,
-        prefer_fresh: bool,
+        reuse_on_retry: bool,
     ) -> Result<Option<usize>, crate::Error> {
         #[cfg(test)]
         let random_only = random_only || self.treatment == Treatment::Uniform;
@@ -1170,6 +1170,7 @@ impl Frontier {
             .map(|feedback| crate::object::id_bytes(&feedback.checkpoint))
             .transpose()?;
         let knowledge = graph.content_root();
+        let reuse_on_retry = reuse_on_retry && self.recall_enabled();
         let mut indices = Vec::with_capacity(candidates.len());
         for (index, question) in candidates.iter().enumerate() {
             let record = if self.native {
@@ -1178,7 +1179,7 @@ impl Frontier {
                 None
             };
             if self.retry_ready(question, graph, record, checkpoint)? {
-                let unchanged_retry = prefer_fresh
+                let unchanged_retry = reuse_on_retry
                     && record.is_some_and(|record| {
                         record.paid_open_search
                             && record.knowledge == knowledge
@@ -1206,24 +1207,27 @@ impl Frontier {
             return Ok(Some(index));
         }
         let research = self.research_frame(graph, 0);
-        let has_alternative = indices.iter().any(|&(_, retry)| !retry);
         let weighted = indices
             .iter()
-            .map(|&(index, unchanged_retry)| {
+            .map(|&(index, _)| {
                 let question = candidates[index];
-                let mut weight = self.weight(question, graph, settings, research.as_ref())?;
-                // Favor fresh search contexts while keeping paid retries in
-                // the lottery and giving them the full turn when alone.
-                if has_alternative && unchanged_retry {
-                    weight = weight.div_ceil(8);
-                }
                 Ok((
                     self.analyses.get(question)?.descriptor.features.family,
-                    weight,
+                    self.weight(question, graph, settings, research.as_ref())?,
                 ))
             })
             .collect::<Result<Vec<_>, crate::Error>>()?;
-        let position = crate::sampling::choose(&mut self.random, &weighted, random_only);
+        let mut position = crate::sampling::choose(&mut self.random, &weighted, random_only);
+        // Spend an unchanged retry's turn on an applicable checked lemma
+        // when one of the ready questions can use it.
+        if indices[position].1 {
+            for (alternate, &(index, unchanged_retry)) in indices.iter().enumerate() {
+                if !unchanged_retry && Self::witness_source(graph, candidates[index])?.is_some() {
+                    position = alternate;
+                    break;
+                }
+            }
+        }
         let (index, _) = indices[position];
         self.evidence.selected_question(
             self.random.0,
