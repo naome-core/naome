@@ -162,15 +162,11 @@ pub(super) fn specialize(
     artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<Option<Specialized>, Failure> {
-    let source_bytes = source.encode_canonical().map_err(|_| LIMIT)?;
+    let source_length = source.encoded_length().map_err(|_| LIMIT)?;
     // Reserve all possible outer openings and projections before cloning.
-    let binders = source_bytes
-        .iter()
-        .take_while(|&&tag| tag == 4)
-        .count()
-        .min(MAX_INSTANTIATIONS);
+    let binders = source.outer_universal_count().min(MAX_INSTANTIATIONS);
     work.formula(
-        source_bytes.len(),
+        source_length,
         binders
             .checked_mul(8)
             .and_then(|n| n.checked_add(16))
@@ -182,7 +178,7 @@ pub(super) fn specialize(
     };
     let target_bytes = target.encode_canonical().map_err(|_| LIMIT)?;
     let assignments = {
-        work.formula(source_bytes.len(), 8)?;
+        work.formula(source_length, 8)?;
         let implication = opened.canonical_implication().map_err(|_| LIMIT)?;
         let encoded;
         let mut candidate = match &implication {
@@ -200,7 +196,7 @@ pub(super) fn specialize(
             let Some(suffix) = suffixes.next() else {
                 return Ok(None);
             };
-            work.formula(source_bytes.len(), 8)?;
+            work.formula(source_length, 8)?;
             candidate = suffix;
         }
     };
@@ -211,7 +207,7 @@ pub(super) fn specialize(
     let mut plan = Plan::new();
     let mut root = plan.reference(proof, artifacts, work)?;
     let mut current = source.clone();
-    let mut current_length = source_bytes.len();
+    let mut current_length = source_length;
     for variable in variables {
         work.formula(current_length, 16)?;
         let body = current.open_outer_universal(variable).ok_or(INVALID)?;
