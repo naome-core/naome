@@ -11,5 +11,10 @@ fn formal_targets_need_no_source_parser_and_preserve_orientation_and_family() {
     assert!(!positive.negation_parity());
     assert!(negative.negation_parity());
     assert_eq!(negative.refuted_target(), &formula);
+    let double_negative =
+        QuestionTarget::from_formula(Formula::negate(negative.formula().clone())).unwrap();
+    assert!(!double_negative.negation_parity());
+    assert_eq!(double_negative.resolution_id(), positive.resolution_id());
+    assert_eq!(double_negative.negative_target(), negative.formula());
     assert!(QuestionTarget::from_formula(Formula::equal(x, x)).is_err());
 }

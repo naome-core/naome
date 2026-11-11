@@ -138,9 +138,16 @@ impl QuestionTarget {
         }
         let canonical_core = encoded[leading..].to_vec();
         let mut core = formula.view();
-        for _ in 0..leading {
+        let negative_target = if leading == 0 {
+            Formula::negate(formula.clone())
+        } else {
+            for _ in 1..leading {
+                core = core.negated().expect("encoded outer negation");
+            }
+            let negative = core.to_owned();
             core = core.negated().expect("encoded outer negation");
-        }
+            negative
+        };
         let core = core.to_owned();
         let resolution_id = hash(
             b"naome:state:resolution:v1\0",
@@ -148,7 +155,7 @@ impl QuestionTarget {
         );
         Ok(Self {
             formula,
-            negative_target: Formula::negate(core.clone()),
+            negative_target,
             core,
             canonical_core,
             negation_parity: leading % 2 != 0,
