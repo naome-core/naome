@@ -76,10 +76,23 @@ fn ordinary_cli_rejects_invalid_arguments_without_creating_node_state() {
                 "unexpected invalid operation: {args:?}"
             );
             assert!(output.stdout.is_empty());
-            let error = String::from_utf8(output.stderr).unwrap();
-            assert!(
-                error.contains("usage: naome [--json] start | stop | status"),
-                "{error}"
+            let event: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(
+                event,
+                serde_json::json!({
+                    "event": 0x00170017, // FatalError
+                    "error": {
+                        "code": u32::from(naome_knowledge::RuntimeFailure::Arguments),
+                        "fatal": true,
+                        "retryable": false,
+                        "cause": {
+                            "code": u32::from(naome_knowledge::InputFault::CliArgumentsInvalid),
+                            "fatal": false,
+                            "retryable": false,
+                        },
+                    },
+                }),
+                "invalid operation: {args:?} (JSON mode: {json})"
             );
             assert!(!directory.join("node").exists());
         }
