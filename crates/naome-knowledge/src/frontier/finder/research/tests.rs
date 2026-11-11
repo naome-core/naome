@@ -101,6 +101,40 @@ fn candidate_needs_matched_disjoint_validation_and_retains_previous_checkpoint()
 }
 
 #[test]
+fn validation_keeps_independent_pairs_when_new_outcomes_fill_both_groups() {
+    let mut policy = Policy::default();
+    let mut job = 1;
+    let mut add = |policy: &mut Policy, knowledge, checked| {
+        let (decision, receipt) = observation(job, true, if checked { 220 } else { 12 }, knowledge);
+        policy.observe(&decision, &receipt, checked).unwrap();
+        job += 1;
+    };
+    for knowledge in [1, 2] {
+        add(&mut policy, knowledge, true);
+        add(&mut policy, knowledge, false);
+    }
+    for offset in 0..(2 * PER_GROUP) as u8 {
+        add(&mut policy, 10 + offset, true);
+        add(&mut policy, 100 + offset, false);
+    }
+    add(&mut policy, 3, true);
+    add(&mut policy, 3, false);
+
+    let bytes = serde_json::to_vec(&policy).unwrap();
+    let reopened: Policy = serde_json::from_slice(&bytes).unwrap();
+    reopened.validate().unwrap();
+    assert_eq!(reopened.transitions.len(), 2 * PER_GROUP);
+    assert_eq!(
+        reopened
+            .pairs(true)
+            .into_iter()
+            .map(|(checked, _)| checked.decision.knowledge[0])
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+}
+
+#[test]
 fn real_reuse_upgrades_an_exact_earlier_job_without_replaying_the_label() {
     let mut policy = Policy::default();
     let (decision, receipt) = observation(13, false, 65, 2);
