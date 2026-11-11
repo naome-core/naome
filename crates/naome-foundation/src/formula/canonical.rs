@@ -135,15 +135,25 @@ impl Formula {
 
     /// Measures the canonical byte length with the same codec limits.
     pub fn encoded_length(&self) -> Result<usize, FormulaCodecError> {
+        self.encoded_length_with_node_limit(FORMULA_MAX_NODES)
+            .map(|(length, _)| length)
+    }
+
+    /// Measures the canonical byte length and node count within a caller's budget.
+    pub fn encoded_length_with_node_limit(
+        &self,
+        maximum_nodes: usize,
+    ) -> Result<(usize, usize), FormulaCodecError> {
         let mut output = LengthSink(0);
+        let mut nodes = NodeBudget::new(maximum_nodes);
         encode_node(
             &self.0,
             0,
-            &mut NodeBudget::new(FORMULA_MAX_NODES),
+            &mut nodes,
             &mut FreeVariable::identifier,
             &mut output,
         )?;
-        Ok(output.0)
+        Ok((output.0, nodes.used()))
     }
 
     /// Encodes this formula within a caller-supplied node limit.

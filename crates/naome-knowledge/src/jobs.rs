@@ -780,10 +780,7 @@ impl Client {
         if binding.catalog.is_some() && (!required.is_empty() || !prerequisites.is_empty()) {
             return Err(crate::InputFault::PrerequisiteRoots.into());
         }
-        if !prerequisites.is_empty()
-            && (!matches!(input, Input::Solve { .. })
-                || required.is_empty() && !prerequisites.has_optional_context())
-        {
+        if !prerequisites.is_empty() && !matches!(input, Input::Solve { .. }) {
             return Err(crate::InputFault::PrerequisiteRoots.into());
         }
         for id in &required {

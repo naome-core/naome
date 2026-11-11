@@ -157,6 +157,12 @@ fn certificate_formula_node_budget_spans_steps_and_fields() {
         third: (leaf).into(),
     };
     assert_eq!(
+        across_fields.encoded_length(),
+        Err(ProofCertificateError::FormulaNodeLimitExceeded {
+            maximum: CERTIFICATE_MAX_FORMULA_NODES,
+        })
+    );
+    assert_eq!(
         ProofCertificate::new(vec![across_fields]),
         Err(ProofCertificateError::FormulaNodeLimitExceeded {
             maximum: CERTIFICATE_MAX_FORMULA_NODES,
