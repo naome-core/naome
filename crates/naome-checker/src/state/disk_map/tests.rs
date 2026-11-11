@@ -68,7 +68,7 @@ fn bit_key(bit: usize) -> [u8; 32] {
 }
 
 fn restored_node(storage: Arc<MemoryStorage>, node: Node<'_>) -> DiskMap {
-    let bytes = node.encode();
+    let bytes = node.encode(&mut [0; NODE_ENCODING_CAPACITY]).to_vec();
     let root = Root {
         address: storage_address(&bytes),
         fingerprint: node.fingerprint(),
@@ -383,7 +383,8 @@ fn strict_node_codec_and_value_limit_preserve_existing_root() {
         key: [0; 32],
         value: &[1],
     }
-    .encode();
+    .encode(&mut [0; NODE_ENCODING_CAPACITY])
+    .to_vec();
     let mut bad_version = original.clone();
     bad_version[0] = 2;
     let mut bad_type = original.clone();

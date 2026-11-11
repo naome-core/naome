@@ -9,6 +9,9 @@ const LEAF: u8 = 0;
 const BRANCH: u8 = 1;
 const LEAF_HEADER_BYTES: usize = 36;
 const CHILD_BYTES: usize = 128;
+const BRANCH_BYTES: usize = 3 + 2 * CHILD_BYTES;
+const NODE_ENCODING_CAPACITY: usize = LEAF_HEADER_BYTES + MAX_VALUE_BYTES;
+const _: () = assert!(BRANCH_BYTES <= NODE_ENCODING_CAPACITY);
 
 /// Only an authenticated enclosing context may restore a root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,15 +237,16 @@ impl DiskMap {
         fingerprint: Option<&[u8; 32]>,
     ) -> Result<Child, ContextError> {
         node.validate()?;
-        let bytes = node.encode();
+        let mut encoding = [0; NODE_ENCODING_CAPACITY];
+        let bytes = node.encode(&mut encoding);
         if bytes.len() > MAX_NODE_BYTES {
             return Err(ContextError::Limit);
         }
         let root = Root {
-            address: storage_address(&bytes),
+            address: storage_address(bytes),
             fingerprint: fingerprint.copied().unwrap_or_else(|| node.fingerprint()),
         };
-        self.storage.write(root.address, &bytes)?;
+        self.storage.write(root.address, bytes)?;
         Ok(Child {
             root,
             range: node.range(),
@@ -557,27 +561,26 @@ impl<'a> Node<'a> {
         }
     }
 
-    fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(match self {
-            Self::Leaf { value, .. } => LEAF_HEADER_BYTES + value.len(),
-            Self::Branch { .. } => 3 + 2 * CHILD_BYTES,
-        });
-        bytes.push(VERSION);
-        match self {
+    fn encode<'b>(&self, bytes: &'b mut [u8; NODE_ENCODING_CAPACITY]) -> &'b [u8] {
+        bytes[0] = VERSION;
+        let length = match self {
             Self::Leaf { key, value } => {
-                bytes.push(LEAF);
-                bytes.extend_from_slice(key);
-                bytes.extend_from_slice(&(value.len() as u16).to_be_bytes());
-                bytes.extend_from_slice(value);
+                bytes[1] = LEAF;
+                bytes[2..34].copy_from_slice(key);
+                bytes[34..LEAF_HEADER_BYTES].copy_from_slice(&(value.len() as u16).to_be_bytes());
+                let length = LEAF_HEADER_BYTES + value.len();
+                bytes[LEAF_HEADER_BYTES..length].copy_from_slice(value);
+                length
             }
             Self::Branch { bit, left, right } => {
-                bytes.push(BRANCH);
-                bytes.push(*bit);
-                encode_child(&mut bytes, *left);
-                encode_child(&mut bytes, *right);
+                bytes[1] = BRANCH;
+                bytes[2] = *bit;
+                encode_child(&mut bytes[3..3 + CHILD_BYTES], *left);
+                encode_child(&mut bytes[3 + CHILD_BYTES..BRANCH_BYTES], *right);
+                BRANCH_BYTES
             }
-        }
-        bytes
+        };
+        &bytes[..length]
     }
 
     fn decode(bytes: &'a [u8]) -> Result<Self, ContextError> {
@@ -595,7 +598,7 @@ impl<'a> Node<'a> {
                     value: &bytes[LEAF_HEADER_BYTES..],
                 }
             }
-            Some(&BRANCH) if bytes.len() == 3 + 2 * CHILD_BYTES => Self::Branch {
+            Some(&BRANCH) if bytes.len() == BRANCH_BYTES => Self::Branch {
                 bit: bytes[2],
                 left: decode_child(&bytes[3..3 + CHILD_BYTES])?,
                 right: decode_child(&bytes[3 + CHILD_BYTES..])?,
@@ -646,11 +649,11 @@ pub(crate) fn storage_address(bytes: &[u8]) -> [u8; 32] {
     hash.finalize().into()
 }
 
-fn encode_child(bytes: &mut Vec<u8>, child: Child) {
-    bytes.extend_from_slice(&child.root.address);
-    bytes.extend_from_slice(&child.root.fingerprint);
-    bytes.extend_from_slice(&child.range.minimum);
-    bytes.extend_from_slice(&child.range.maximum);
+fn encode_child(bytes: &mut [u8], child: Child) {
+    bytes[..32].copy_from_slice(&child.root.address);
+    bytes[32..64].copy_from_slice(&child.root.fingerprint);
+    bytes[64..96].copy_from_slice(&child.range.minimum);
+    bytes[96..].copy_from_slice(&child.range.maximum);
 }
 
 fn decode_child(bytes: &[u8]) -> Result<Child, ContextError> {
