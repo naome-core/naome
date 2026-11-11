@@ -355,11 +355,14 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
             .map(|q| *q.resolution_id())
             .collect::<Vec<_>>()
     };
-    let page = identities(frontier.candidate_page(17, |_| true));
+    let page = identities(frontier.candidate_page(17, |_| true).unwrap());
     drop(frontier);
     let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     assert_eq!(frontier.evidence.model(), &model);
-    assert_eq!(identities(frontier.candidate_page(17, |_| true)), page);
+    assert_eq!(
+        identities(frontier.candidate_page(17, |_| true).unwrap()),
+        page
+    );
 }
 
 #[test]
@@ -698,6 +701,7 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
     assert!(
         frontier
             .candidate_page(0, |_| true)
+            .unwrap()
             .iter()
             .any(|q| q.resolution_id() == goal.resolution_id())
     );
@@ -810,6 +814,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     assert!(
         frontier
             .candidate_page(0, |_| true)
+            .unwrap()
             .iter()
             .any(|q| q.resolution_id() == helper.resolution_id())
     );
@@ -839,7 +844,7 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
     frontier.refresh(&graph, |_| true).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
-    let candidates = frontier.candidate_page(0, |_| true);
+    let candidates = frontier.candidate_page(0, |_| true).unwrap();
     let eligible = candidates
         .iter()
         .filter(|q| formal.assess(&graph, q).passed())
@@ -876,6 +881,7 @@ fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjecture
     assert!(
         frontier
             .candidate_page(0, |_| true)
+            .unwrap()
             .iter()
             .any(|q| q.resolution_id() == expected.resolution_id())
     );
@@ -927,6 +933,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
         frontier.refresh(&graph, &mut eligible).unwrap();
         let candidates = frontier
             .candidate_page(0, |_| true)
+            .unwrap()
             .into_iter()
             .filter(&mut eligible)
             .collect::<Vec<_>>();
@@ -1345,7 +1352,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     frontier.focus(goal.clone());
     assert_eq!(frontier.goals.len(), 1);
     let candidates = (0..32)
-        .flat_map(|cursor| frontier.candidate_page(cursor, |_| true))
+        .flat_map(|cursor| frontier.candidate_page(cursor, |_| true).unwrap())
         .collect::<Vec<_>>();
     assert!(candidates.iter().any(|q| q.core() == goal.core()));
     for helper in &helpers {

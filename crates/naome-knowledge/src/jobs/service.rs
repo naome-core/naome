@@ -61,16 +61,11 @@ impl Service {
                 .collect(),
         };
         let (sender, receiver) = mpsc::channel(crate::resources::active_limits().job_commands);
-        let feedback = Arc::new(Mutex::new(
-            journal
-                .learning
-                .as_ref()
-                .map(crate::learning::State::feedback),
-        ));
+        let finder = Arc::new(Mutex::new(None));
         let research = Arc::new(Mutex::new(None));
         let client = Client {
             sender,
-            feedback: feedback.clone(),
+            finder: finder.clone(),
             research: research.clone(),
         };
         let (halt, stop) = oneshot::channel();
@@ -88,7 +83,7 @@ impl Service {
                     let (events, progress) =
                         mpsc::channel(crate::resources::active_limits().provider_events);
                     let mut owner = Owner::new(disk, journal, settings, computation);
-                    owner.feedback = feedback;
+                    owner.finder = finder;
                     owner.research = research;
                     runtime.block_on(owner.run(receiver, stop, events, progress))
                 })();
@@ -184,7 +179,7 @@ struct PendingLearning {
     reply: oneshot::Sender<Result<(), crate::Error>>,
 }
 struct Owner {
-    feedback: Arc<Mutex<Option<crate::training::ability::Feedback>>>,
+    finder: Arc<Mutex<Option<FinderSnapshot>>>,
     research: Arc<Mutex<Option<crate::research_value::Frame>>>,
     yielded_research: Option<u64>,
     computation: Arc<crate::resources::Computation>,
@@ -220,14 +215,8 @@ impl Owner {
         computation: Arc<crate::resources::Computation>,
     ) -> Self {
         let recovery_skip = journal.records.keys().copied().collect();
-        let feedback = Arc::new(Mutex::new(
-            journal
-                .learning
-                .as_ref()
-                .map(crate::learning::State::feedback),
-        ));
         let mut owner = Self {
-            feedback,
+            finder: Default::default(),
             research: Arc::new(Mutex::new(None)),
             yielded_research: None,
             computation,
@@ -286,6 +275,7 @@ impl Owner {
         mut progress: mpsc::Receiver<process::Event>,
     ) -> Result<(), crate::Error> {
         self.recover_internal()?;
+        self.publish_finder()?;
         let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -423,17 +413,56 @@ impl Owner {
             self.persist_programs()?;
             self.fill_internal()?;
             self.schedule(&events)?;
-            if let Some(learning) = &self.journal.learning {
-                let mut cached = self.feedback.lock().unwrap_or_else(|e| e.into_inner());
-                let (checkpoint, revision) = learning.feedback_stamp();
-                if cached
-                    .as_ref()
-                    .is_none_or(|c| c.checkpoint != checkpoint || c.revision != revision)
-                {
-                    *cached = Some(learning.feedback());
-                }
-            }
+            self.publish_finder()?;
         }
+        Ok(())
+    }
+
+    fn publish_finder(&self) -> Result<(), crate::Error> {
+        let Some(learning) = self
+            .journal
+            .learning
+            .as_ref()
+            .filter(|_| self.settings.native_proof_learning)
+        else {
+            return Ok(());
+        };
+        let (checkpoint, revision) = learning.feedback_stamp();
+        let mut cached = self
+            .finder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(snapshot) = cached.as_mut()
+            && snapshot.feedback.checkpoint == checkpoint
+        {
+            if snapshot.feedback.revision != revision {
+                snapshot.feedback = learning.feedback();
+            }
+            if snapshot.policy.is_some() {
+                return Ok(());
+            }
+        } else {
+            // A changed checkpoint must never keep the old policy while its
+            // replacement waits for memory or is read from the journal.
+            *cached = Some(FinderSnapshot {
+                feedback: learning.feedback(),
+                policy: None,
+            });
+        }
+        drop(cached);
+        let policy = match learning.question_policy(|blob, range| self.disk.read_model(blob, range))
+        {
+            Ok(policy) => Arc::new(policy),
+            Err(error) if error.retryable() => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        *self
+            .finder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(FinderSnapshot {
+            feedback: learning.feedback(),
+            policy: Some(policy),
+        });
         Ok(())
     }
 

@@ -14,6 +14,10 @@ pub const MAX_CONTEXT: usize = 48;
 pub(super) const SYMBOLS: usize = 2 * MAX_NODES + 1;
 pub(super) const NEGATION: i32 = 3;
 pub(super) const PAIR: i32 = 14;
+pub(crate) const QUESTION_OPERATORS: usize = 10;
+pub(crate) const QUESTION_VARIATIONS: usize = 3;
+pub(crate) const QUESTION_RECIPES: usize = QUESTION_OPERATORS * QUESTION_VARIATIONS;
+const QUESTION_OPERATOR_START: i32 = 19;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Node {
@@ -37,6 +41,7 @@ pub(crate) enum Field {
     Replacement,
     Premise,
     Definition,
+    QuestionRecipe,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,6 +89,21 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    fn new() -> Self {
+        Self {
+            nodes: vec![Node {
+                kind: 0,
+                left: 0,
+                right: 0,
+                role: 0,
+                symbol: 0,
+            }],
+            formulas: HashMap::new(),
+            variables: HashMap::new(),
+            free: HashMap::new(),
+        }
+    }
+
     fn push(&mut self, node: Node) -> Result<usize, Failure> {
         if self.nodes.len() >= MAX_NODES {
             return Err(Failure::Capacity);
@@ -222,6 +242,44 @@ impl Graph {
             &self.candidates,
         ))
     }
+    /// The Finder supplies relation operands and the finite question grammar.
+    /// This inference menu carries no checked action labels.
+    pub(super) fn question_recipes(
+        relations: &[&naome_foundation::Formula],
+    ) -> Result<Self, Failure> {
+        let mut builder = Builder::new();
+        let mut context = Vec::with_capacity(relations.len());
+        for formula in relations {
+            let root = builder.formula(formula.view(), 0, 4)?;
+            builder.nodes[root].role |= 2;
+            context.push(root);
+        }
+        let goal = *context.first().ok_or(Failure::DecisionCapacity)?;
+        builder.nodes[goal].role |= 1;
+        let mut candidates = Vec::with_capacity(QUESTION_RECIPES);
+        for variation in 0..QUESTION_VARIATIONS {
+            for operator in 0..QUESTION_OPERATORS {
+                candidates.push(builder.push(Node {
+                    kind: QUESTION_OPERATOR_START + operator as i32,
+                    left: goal,
+                    right: 0,
+                    role: 0,
+                    symbol: variation as i32,
+                })?);
+            }
+        }
+        Ok(Self {
+            binding: String::new(),
+            field: Field::QuestionRecipe,
+            nodes: builder.nodes,
+            goal,
+            context,
+            candidates,
+            expert: 0,
+            successes: Vec::new(),
+        })
+    }
+
     pub fn encode(decision: &Decision) -> Result<Self, Failure> {
         Self::encode_at_depth(decision, usize::MAX)
     }
@@ -257,18 +315,7 @@ impl Graph {
             .filter(|(i, candidate)| *i == decision.expert || equivalent(witnessed, candidate))
             .map(|(i, _)| i)
             .collect();
-        let mut builder = Builder {
-            nodes: vec![Node {
-                kind: 0,
-                left: 0,
-                right: 0,
-                role: 0,
-                symbol: 0,
-            }],
-            formulas: HashMap::new(),
-            variables: HashMap::new(),
-            free: HashMap::new(),
-        };
+        let mut builder = Builder::new();
         let goal = builder.formula(decision.goal.view(), 0, depth)?;
         let mut context = Vec::new();
         for binding in &decision.context {

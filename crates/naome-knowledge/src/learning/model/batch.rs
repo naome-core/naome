@@ -1,7 +1,7 @@
 //! Validated, disjoint token inputs and legal prefix routing for a model batch.
 use super::token::{FEATURES, Menu, Row};
 use crate::LearningGraphFailure as Failure;
-use crate::learning::graph::{Graph, MAX_NODES, SYMBOLS};
+use crate::learning::graph::{Field, Graph, MAX_NODES, QUESTION_RECIPES, SYMBOLS};
 use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
 
 const MAX_BATCH: usize = 16;
@@ -36,7 +36,7 @@ impl Batch {
         graphs: &[G],
         device: &Device,
     ) -> Result<Self, Failure> {
-        Self::pack(graphs, device, false)
+        Self::pack(graphs, device, false, false)
     }
 
     #[cfg(test)]
@@ -44,13 +44,18 @@ impl Batch {
         graphs: &[G],
         device: &Device,
     ) -> Result<Self, Failure> {
-        Self::pack(graphs, device, true)
+        Self::pack(graphs, device, true, false)
+    }
+
+    pub(super) fn for_question_recipes(graph: &Graph, device: &Device) -> Result<Self, Failure> {
+        Self::pack(std::slice::from_ref(graph), device, false, true)
     }
 
     fn pack<G: std::borrow::Borrow<Graph>>(
         graphs: &[G],
         device: &Device,
         dense: bool,
+        finder: bool,
     ) -> Result<Self, Failure> {
         if graphs.is_empty() {
             return Err(Failure::EmptyBatch);
@@ -65,7 +70,7 @@ impl Batch {
         let menus = graphs
             .iter()
             .map(|graph| {
-                Self::validate(graph)?;
+                Self::validate(graph, finder)?;
                 Menu::lower(graph)
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -163,10 +168,18 @@ impl Batch {
         })
     }
 
-    fn validate(graph: &Graph) -> Result<(), Failure> {
+    fn validate(graph: &Graph, finder: bool) -> Result<(), Failure> {
         let n = graph.nodes.len();
         let c = graph.candidates.len();
-        if n == 0 || n > MAX_NODES || c == 0 || c > MAX_ACTIONS {
+        if finder != (graph.field == Field::QuestionRecipe) {
+            return Err(Failure::NodeBinding);
+        }
+        let max_actions = if finder {
+            QUESTION_RECIPES
+        } else {
+            MAX_ACTIONS
+        };
+        if n == 0 || n > MAX_NODES || c == 0 || c > max_actions {
             return Err(Failure::BatchCapacity);
         }
         if graph.goal >= n
@@ -192,7 +205,9 @@ impl Batch {
         {
             return Err(Failure::NodeOperandOrSymbol);
         }
-        if graph.successes.is_empty() || graph.successes.iter().any(|&i| i >= c) {
+        if (finder && !graph.successes.is_empty())
+            || (!finder && (graph.successes.is_empty() || graph.successes.iter().any(|&i| i >= c)))
+        {
             return Err(Failure::SuccessfulActionBinding);
         }
         Ok(())

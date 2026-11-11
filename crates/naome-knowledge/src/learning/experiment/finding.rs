@@ -593,10 +593,12 @@ fn arm(
                         && owner.assess(&graph, q).passed()
                 })
                 .unwrap();
-            let candidates = finder.candidate_page(cursor, |q| {
-                !reserved.contains(&curriculum::owned::family(q.proved_target()))
-                    && owner.assess(&graph, q).passed()
-            });
+            let candidates = finder
+                .candidate_page(cursor, |q| {
+                    !reserved.contains(&curriculum::owned::family(q.proved_target()))
+                        && owner.assess(&graph, q).passed()
+                })
+                .unwrap();
             cursor += 1;
             let refs = candidates.iter().collect::<Vec<_>>();
             let Some(index) = finder

@@ -96,6 +96,7 @@ pub(super) fn execute(
                 .map_err(|e| e.to_string())?;
             let mut candidates = finder
                 .candidate_page(cursor, &mut allowed)
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .take(4)
                 .collect::<Vec<_>>();

@@ -160,7 +160,7 @@ fn productive_construction_recipes_outweigh_mastered_and_unreached_cells() {
     assert!(learning.priority(1, 32) > learning.priority(2, 32));
     let mut selected = [0; 3];
     for draw in 32..232 {
-        for recipe in learning.recipes(draw, draw) {
+        for recipe in learning.recipes(draw, draw, &[1024; CELLS]) {
             if recipe.level == 0 && recipe.operator < 3 {
                 selected[recipe.operator as usize] += 1;
             }

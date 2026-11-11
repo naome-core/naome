@@ -82,7 +82,9 @@ fn replay(
         finder
             .refresh(&graph, |q| owner.assess(&graph, q).passed())
             .unwrap();
-        let candidates = finder.candidate_page(index as u64, |q| owner.assess(&graph, q).passed());
+        let candidates = finder
+            .candidate_page(index as u64, |q| owner.assess(&graph, q).passed())
+            .unwrap();
         let refs = candidates.iter().collect::<Vec<_>>();
         let selected = finder
             .choose(&refs, &graph, settings.solving, false)

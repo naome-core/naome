@@ -361,12 +361,17 @@ fn varied(seed: &Formula, other: &Formula, recipe: Recipe) -> Option<Formula> {
         _ => Formula::implies(left(a, b)?, right(b, a)?),
     })
 }
+pub(super) fn builtin_relations() -> [Formula; 2] {
+    let a = FreeVariable::new(0);
+    let b = FreeVariable::new(1);
+    [Formula::member(a, b), Formula::equal(a, b)]
+}
+
 pub(super) fn proposals(
     cursor: u64,
     seeds: &VecDeque<Formula>,
     goals: &VecDeque<ResearchQuestion>,
-    learning: &Learning,
-    draw: u64,
+    selected_recipes: Vec<Recipe>,
     budget: PageBudget,
     eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
 ) -> Vec<Proposal> {
@@ -380,25 +385,20 @@ pub(super) fn proposals(
     {
         groups.push(VecDeque::from(helpers(goal, cursor)));
     }
-    let a = FreeVariable::new(0);
-    let b = FreeVariable::new(1);
-    let mut relations = vec![Formula::member(a, b), Formula::equal(a, b)];
-    let checked = seeds
-        .iter()
-        .filter(|f| f.free_variables().len() == 2 && f.view().node_count_and_depth().0 <= 24)
-        .collect::<Vec<_>>();
+    let mut relations = Vec::from(builtin_relations());
+    // Frontier retains only checked, bounded binary relations here.
     relations.extend(
-        checked
+        seeds
             .iter()
             .cycle()
-            .skip(cursor as usize % checked.len().max(1))
-            .take(checked.len().min(4))
-            .map(|f| (*f).clone()),
+            .skip(cursor as usize % seeds.len().max(1))
+            .take(seeds.len().min(4))
+            .cloned(),
     );
     let mut recipes = std::collections::BTreeMap::new();
     let mut checked_questions = VecDeque::new();
     let mut free_questions = VecDeque::new();
-    for (offset, recipe) in learning.recipes(cursor, draw).into_iter().enumerate() {
+    for (offset, recipe) in selected_recipes.into_iter().enumerate() {
         let index = (cursor as usize + offset) % relations.len();
         let other = &relations[(index + 1 + offset % 2) % relations.len()];
         if let Some(seed) = varied(&relations[index], other, recipe)
@@ -445,8 +445,11 @@ pub(super) fn questions(
         cursor,
         seeds,
         goals,
-        &Learning::fresh("00".repeat(32)),
-        0,
+        Learning::fresh("00".repeat(32)).recipes(
+            cursor,
+            0,
+            &[1024; crate::learning::QUESTION_RECIPES],
+        ),
         PageBudget {
             questions: maximum,
             bytes,

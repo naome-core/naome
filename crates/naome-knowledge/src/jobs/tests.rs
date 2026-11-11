@@ -20,7 +20,7 @@ impl Manual {
         Self {
             client: Client {
                 sender,
-                feedback: Default::default(),
+                finder: Default::default(),
                 research: Default::default(),
             },
             receiver,

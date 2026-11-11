@@ -1,6 +1,6 @@
 //! Decision-local typed prefixes shared by search and checked replay.
 use crate::LearningGraphFailure as Failure;
-use crate::learning::graph::{Graph, NEGATION, Node, PAIR};
+use crate::learning::graph::{Field, Graph, NEGATION, Node, PAIR};
 use std::ops::Range;
 
 pub(super) const VOCABULARY: usize = 2048;
@@ -71,6 +71,7 @@ enum Token {
     Rule(i32),
     Premise(usize),
     Replacement(i32),
+    Variation(i32),
     Effect(usize),
     End,
 }
@@ -181,6 +182,7 @@ impl<'a> Input<'a> {
             }
             Token::Replacement(symbol) => (3, u64::from(symbol != 0), 0, symbol as u64, 0),
             Token::End => (5, 0, 0, 0, 0),
+            Token::Variation(level) => (6, level as u64, 0, 0, 0),
         };
         let head = mix(tag, kind);
         let detail = mix(mix(head, shape), relation);
@@ -252,9 +254,14 @@ impl Menu {
             let suffix = effects
                 .iter()
                 .fold(0, |flags, &index| flags | input.relationship(index));
+            let variant = if graph.field == Field::QuestionRecipe {
+                Token::Variation(action.symbol)
+            } else {
+                Token::Replacement(action.symbol)
+            };
             let tokens = std::iter::once(Token::Rule(action.kind))
                 .chain(premises.into_iter().map(Token::Premise))
-                .chain([Token::Replacement(action.symbol)])
+                .chain([variant])
                 .chain(effects.into_iter().map(Token::Effect))
                 .chain([Token::End]);
             let mut parent = 0;

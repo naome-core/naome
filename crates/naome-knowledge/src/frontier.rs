@@ -1,6 +1,9 @@
 //! Structural research scheduling over checked local knowledge. Scores are
 //! hypotheses about useful work, never mathematical evidence or job allowances.
-use crate::{Graph, jobs};
+use crate::{
+    Graph, jobs,
+    learning::{QUESTION_RECIPES, QuestionPolicy},
+};
 use naome_checker::ContextView;
 use naome_checker::question::ResearchQuestion;
 use naome_foundation::{Formula, FreeVariable, Separation};
@@ -54,10 +57,19 @@ struct AttemptHint {
     paid_open_search: bool,
 }
 
+struct RecipeWeights {
+    relations: Vec<Formula>,
+    weights: [u32; QUESTION_RECIPES],
+}
+
 pub(crate) struct Frontier {
     evidence: Evidence,
     native: bool,
     feedback: Option<crate::training::ability::Feedback>,
+    question_policy: Option<Arc<QuestionPolicy>>,
+    recipe_weights: Option<RecipeWeights>,
+    #[cfg(test)]
+    owns_policy_snapshot: bool,
     research_limits: jobs::Limits,
     // Bounded scheduling hints. Durable writes evict the affected entry;
     // selection still crosses the generation-checked checkpoint before work.
@@ -128,6 +140,10 @@ impl Frontier {
             evidence,
             native: settings.native_proof_learning,
             feedback: None,
+            question_policy: None,
+            recipe_weights: None,
+            #[cfg(test)]
+            owns_policy_snapshot: false,
             research_limits: settings.solving.limits,
             recent: VecDeque::new(),
             analyses: finder::Cache::default(),
@@ -271,6 +287,26 @@ impl Frontier {
     pub(crate) fn retain_goals(&mut self, mut open: impl FnMut(&ResearchQuestion) -> bool) {
         self.goals.retain(|q| open(q));
     }
+    pub(crate) fn finder_snapshot(&mut self, snapshot: Option<jobs::FinderSnapshot>) {
+        if !self.native {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.owns_policy_snapshot = snapshot.is_some();
+        }
+        let (feedback, policy) = snapshot.map_or((None, None), |snapshot| {
+            (Some(snapshot.feedback), snapshot.policy)
+        });
+        match (&self.question_policy, &policy) {
+            (Some(previous), Some(current)) if Arc::ptr_eq(previous, current) => {}
+            _ => self.recipe_weights = None,
+        }
+        self.question_policy = policy;
+        self.feedback = feedback;
+    }
+
+    #[cfg(test)]
     pub(crate) fn feedback(&mut self, feedback: Option<crate::training::ability::Feedback>) {
         if !self.native {
             return;
@@ -656,8 +692,9 @@ impl Frontier {
         candidates
     }
     #[cfg(test)]
-    pub(crate) fn candidates(&self, cursor: u64) -> Vec<ResearchQuestion> {
+    pub(crate) fn candidates(&mut self, cursor: u64) -> Vec<ResearchQuestion> {
         self.page(cursor, &mut |_| true)
+            .unwrap()
             .into_iter()
             .map(|p| p.question)
             .collect()
@@ -666,8 +703,8 @@ impl Frontier {
         &mut self,
         cursor: u64,
         mut eligible: impl FnMut(&ResearchQuestion) -> bool,
-    ) -> Vec<ResearchQuestion> {
-        let page = self.page(cursor, &mut eligible);
+    ) -> Result<Vec<ResearchQuestion>, crate::Error> {
+        let page = self.page(cursor, &mut eligible)?;
         for proposal in &page {
             if let Some(recipe) = proposal.recipe {
                 self.recipes
@@ -681,13 +718,13 @@ impl Frontier {
         {
             self.recipes.pop_front();
         }
-        page.into_iter().map(|p| p.question).collect()
+        Ok(page.into_iter().map(|p| p.question).collect())
     }
     fn page(
-        &self,
+        &mut self,
         cursor: u64,
         eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
-    ) -> Vec<finder::Proposal> {
+    ) -> Result<Vec<finder::Proposal>, crate::Error> {
         let mut candidates = if self.native {
             let limits = crate::resources::active_limits();
             let nodes = self
@@ -705,7 +742,7 @@ impl Frontier {
             let Ok(_scratch) =
                 crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))
             else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
             self.generate(
                 cursor,
@@ -714,7 +751,7 @@ impl Frontier {
                     bytes: limits.question_cache_bytes / 2,
                 },
                 eligible,
-            )
+            )?
         } else {
             (0..3)
                 .filter_map(|index| {
@@ -738,17 +775,47 @@ impl Frontier {
                 });
             }
         }
-        candidates
+        Ok(candidates)
     }
+
+    fn recipe_weights(&mut self) -> Result<Option<[u32; QUESTION_RECIPES]>, crate::Error> {
+        #[cfg(test)]
+        {
+            if matches!(self.treatment, Treatment::Uniform | Treatment::NoGeneration) {
+                return Ok(Some([1024; QUESTION_RECIPES]));
+            }
+            if self.question_policy.is_none() && !self.owns_policy_snapshot {
+                self.question_policy = Some(Arc::new(QuestionPolicy::fresh()?));
+            }
+        }
+        let Some(policy) = &self.question_policy else {
+            return Ok(None);
+        };
+        let builtin = finder::builtin_relations();
+        let relations = builtin.iter().chain(self.predicates.iter().take(4));
+        if let Some(cached) = &self.recipe_weights
+            && cached.relations.iter().eq(relations.clone())
+        {
+            return Ok(Some(cached.weights));
+        }
+        let relations = relations.collect::<Vec<_>>();
+        let weights = policy.recipe_weights(&relations)?;
+        self.recipe_weights = Some(RecipeWeights {
+            relations: relations.into_iter().cloned().collect(),
+            weights,
+        });
+        Ok(Some(weights))
+    }
+
     fn generate(
-        &self,
+        &mut self,
         cursor: u64,
         budget: finder::PageBudget,
         eligible: &mut dyn FnMut(&ResearchQuestion) -> bool,
-    ) -> Vec<finder::Proposal> {
+    ) -> Result<Vec<finder::Proposal>, crate::Error> {
         #[cfg(test)]
         if self.treatment == Treatment::Previous {
-            return finder::reference::questions(
+            return Ok(finder::reference::questions(
                 cursor,
                 &self.predicates,
                 &self.goals,
@@ -761,18 +828,26 @@ impl Frontier {
                 question,
                 recipe: None,
             })
-            .collect();
+            .collect());
         }
-        finder::proposals(
+        let recipes = match self.recipe_weights()? {
+            Some(weights) => {
+                self.evidence
+                    .learning()
+                    .recipes(cursor, self.evidence.draws(), &weights)
+            }
+            None => Vec::new(),
+        };
+        Ok(finder::proposals(
             cursor,
             &self.predicates,
             &self.goals,
-            self.evidence.learning(),
-            self.evidence.draws(),
+            recipes,
             budget,
             eligible,
-        )
+        ))
     }
+
     fn previous(
         &mut self,
         question: &ResearchQuestion,

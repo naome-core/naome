@@ -1204,6 +1204,7 @@ fn free_finder_proposes_a_witness_question_whose_checked_answer_cites_the_source
         .unwrap();
     let question = finder
         .candidate_page(0, |q| owner.assess(&graph, q).passed())
+        .unwrap()
         .into_iter()
         .find(|q| q == &expected)
         .expect("a checked universal yields a novel witness question without a supplied goal");

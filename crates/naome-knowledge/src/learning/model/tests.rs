@@ -348,6 +348,35 @@ fn token_policy_trains_and_restores_model_and_adam() {
         continued, restored,
         "resume must preserve weights and Adam moments exactly"
     );
+    // Finder sees the same restored weights and does not consume Adam.
+    let x = naome_foundation::FreeVariable::new(0);
+    let y = naome_foundation::FreeVariable::new(1);
+    let member = Formula::member(x, y);
+    let equal = Formula::equal(x, y);
+    let relations = [&member, &equal];
+    let question_menu = Graph::question_recipes(&relations).unwrap();
+    assert!(question_menu.successes.is_empty());
+    assert!(matches!(
+        Batch::from_graphs(&[question_menu], &runtime.device.clone().inner()),
+        Err(crate::LearningGraphFailure::NodeBinding)
+    ));
+    let original = QuestionPolicy::fresh()
+        .unwrap()
+        .recipe_weights(&relations)
+        .unwrap();
+    let finder = QuestionPolicy::load(&trained, |blob, range| {
+        assert_eq!(Some(blob), trained.model.as_ref());
+        io.read(blob, range)
+    })
+    .unwrap();
+    let trained_weights = finder.recipe_weights(&relations).unwrap();
+    assert_ne!(original, trained_weights);
+    assert!(
+        trained_weights
+            .iter()
+            .all(|weight| (512..=1024).contains(weight))
+    );
+
     let blob = trained.model.as_ref().unwrap();
     io.0.get_mut(&(blob.sha256.clone(), 0)).unwrap()[0] ^= 1;
     assert!(

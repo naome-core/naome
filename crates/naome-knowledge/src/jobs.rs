@@ -667,10 +667,16 @@ pub(crate) enum Receipt {
 }
 
 #[derive(Clone)]
+pub(crate) struct FinderSnapshot {
+    pub feedback: crate::training::ability::Feedback,
+    pub policy: Option<std::sync::Arc<crate::learning::QuestionPolicy>>,
+}
+
+#[derive(Clone)]
 pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
     // Derived read-only mirror. The jobs journal remains the sole state owner.
-    feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
+    finder: std::sync::Arc<std::sync::Mutex<Option<FinderSnapshot>>>,
     research: std::sync::Arc<std::sync::Mutex<Option<crate::research_value::Frame>>>,
 }
 
@@ -686,8 +692,8 @@ impl Client {
         *self.research.lock().unwrap_or_else(|e| e.into_inner()) = frame;
     }
 
-    pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
-        self.feedback
+    pub(crate) fn finder_snapshot(&self) -> Option<FinderSnapshot> {
+        self.finder
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
