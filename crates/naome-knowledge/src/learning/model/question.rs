@@ -6,6 +6,7 @@ use crate::learning::QUESTION_RECIPES;
 pub(crate) struct QuestionPolicy {
     policy: Policy,
     device: Device,
+    trained: bool,
     _memory: std::sync::Arc<crate::resources::MemoryLease>,
 }
 
@@ -27,6 +28,7 @@ impl QuestionPolicy {
         Ok(Self {
             policy: policy.valid(),
             device: device.inner(),
+            trained: checkpoint.updates > 0,
             _memory: memory,
         })
     }
@@ -36,6 +38,10 @@ impl QuestionPolicy {
         Self::load(&Checkpoint::fresh(), |_, _| {
             unreachable!("fresh checkpoint")
         })
+    }
+
+    pub(crate) fn trained(&self) -> bool {
+        self.trained
     }
 
     pub(crate) fn recipe_weights(

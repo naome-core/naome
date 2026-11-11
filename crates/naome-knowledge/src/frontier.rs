@@ -58,8 +58,8 @@ struct AttemptHint {
 }
 
 struct RecipeWeights {
-    relations: Vec<Formula>,
-    weights: [u32; QUESTION_RECIPES],
+    checked_relations: Vec<Formula>,
+    values: [u32; QUESTION_RECIPES],
 }
 
 pub(crate) struct Frontier {
@@ -791,18 +791,24 @@ impl Frontier {
         let Some(policy) = &self.question_policy else {
             return Ok(None);
         };
-        let builtin = finder::builtin_relations();
-        let relations = builtin.iter().chain(self.predicates.iter().take(4));
+        // A trained model rates the question grammar on its primitive
+        // relations. The sampled constructors still apply to checked operands.
+        // At initialization the existing context-dependent scores seed discovery.
+        let checked = self
+            .predicates
+            .iter()
+            .take(if policy.trained() { 0 } else { 4 });
         if let Some(cached) = &self.recipe_weights
-            && cached.relations.iter().eq(relations.clone())
+            && cached.checked_relations.iter().eq(checked.clone())
         {
-            return Ok(Some(cached.weights));
+            return Ok(Some(cached.values));
         }
-        let relations = relations.collect::<Vec<_>>();
+        let builtins = finder::builtin_relations();
+        let relations = builtins.iter().chain(checked.clone()).collect::<Vec<_>>();
         let weights = policy.recipe_weights(&relations)?;
         self.recipe_weights = Some(RecipeWeights {
-            relations: relations.into_iter().cloned().collect(),
-            weights,
+            checked_relations: checked.cloned().collect(),
+            values: weights,
         });
         Ok(Some(weights))
     }

@@ -17,6 +17,37 @@ fn finder_outcomes_have_distinct_numeric_codes() {
 }
 
 #[test]
+fn recipe_weights_follow_policy_and_fresh_relation_context() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 91, settings).unwrap();
+    let mut snapshot = jobs::FinderSnapshot {
+        feedback: crate::learning::State::fresh().feedback(),
+        policy: Some(Arc::new(QuestionPolicy::fresh().unwrap())),
+    };
+    frontier.finder_snapshot(Some(snapshot.clone()));
+    let weights = frontier.recipe_weights().unwrap().unwrap();
+    snapshot.feedback.revision += 1;
+    frontier.finder_snapshot(Some(snapshot.clone()));
+    assert_eq!(frontier.recipe_weights().unwrap(), Some(weights));
+    let [membership, equality] = finder::builtin_relations();
+    let relation = Formula::implies(membership, equality);
+    frontier.retain_predicate(relation.clone());
+    frontier.recipe_weights().unwrap();
+    assert_eq!(
+        frontier.recipe_weights.as_ref().unwrap().checked_relations,
+        [relation]
+    );
+    snapshot.policy = Some(Arc::new(QuestionPolicy::fresh().unwrap()));
+    frontier.finder_snapshot(Some(snapshot));
+    assert!(frontier.recipe_weights.is_none());
+}
+
+#[test]
 fn frozen_finder_parameters_survive_real_observations_and_five_sqlite_reopens() {
     let directory = Directory::new();
     let graph = Graph::default();

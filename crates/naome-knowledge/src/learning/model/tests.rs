@@ -369,6 +369,7 @@ fn token_policy_trains_and_restores_model_and_adam() {
         io.read(blob, range)
     })
     .unwrap();
+    assert!(finder.trained());
     let trained_weights = finder.recipe_weights(&relations).unwrap();
     assert_ne!(original, trained_weights);
     assert!(
