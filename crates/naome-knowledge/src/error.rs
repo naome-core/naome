@@ -2072,8 +2072,8 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::HistoryObservationHorizon => {
                     "history observation differs from its original job horizon"
                 }
-                crate::ResearchFailure::HistorySourcePageLane => {
-                    "admitted source page contains a different journal view"
+                crate::ResearchFailure::HistorySourceObservationMismatch => {
+                    "historical execution differs from its admitted source"
                 }
                 crate::ResearchFailure::HistorySourcePageMismatch => {
                     "historical page omitted or substituted an owned source"

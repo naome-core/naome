@@ -853,7 +853,7 @@ codes! {
         HistoryPageContinuation = 97,
         HistoryRecordPageMismatch = 98,
         HistoryObservationHorizon = 99,
-        HistorySourcePageLane = 100,
+        HistorySourceObservationMismatch = 100,
         HistorySourcePageMismatch = 101,
         HistoryPreparedCapacity = 102,
         HistoryPreparedIdentity = 103,

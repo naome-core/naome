@@ -265,9 +265,26 @@ fn accepted(owner: &mut Owner) -> u64 {
         crate::Error::from(crate::ResearchFailure::LearningProgramIdentity)
     );
     assert_eq!(learning(owner)["accepted"], 0);
-    let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
+    admit_own_solution(owner, id, &source, &solution);
+    owner
+        .journal
+        .learning
+        .as_ref()
+        .unwrap()
+        .require_theorems(std::slice::from_ref(&solution.proof_id))
+        .unwrap();
+    id
+}
+
+fn admit_own_solution(
+    owner: &mut Owner,
+    id: u64,
+    source: &str,
+    solution: &crate::learning::Solution,
+) {
+    let q = naome_checker::question::ResearchQuestion::from_hex(source).unwrap();
     let mut graph = crate::Graph::default();
-    let program = crate::learning::program::Candidate::from_solution(&solution, &q).unwrap();
+    let program = crate::learning::program::Candidate::from_solution(solution, &q).unwrap();
     let mut work = crate::proof_work::Work::open(
         &graph
             .ownership()
@@ -320,14 +337,6 @@ fn accepted(owner: &mut Owner) -> u64 {
         .accept_learning(&mut owner.journal, id, &crate::hex(root.as_bytes()))
         .unwrap();
     assert_eq!(learning(owner)["local_examples"], 1);
-    owner
-        .journal
-        .learning
-        .as_ref()
-        .unwrap()
-        .require_theorems(std::slice::from_ref(&solution.proof_id))
-        .unwrap();
-    id
 }
 #[test]
 fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
@@ -1553,7 +1562,55 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
 #[test]
 fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening() {
     let (directory, mut owner) = native();
-    let source = accepted(&mut owner);
+    let question = crate::learning::tests::own_question();
+    let (source, _receive) = submit_native(
+        &mut owner,
+        Input::Solve {
+            question: question.clone(),
+        },
+    );
+    owner.journal.records.get_mut(&source).unwrap().state = State::Running;
+    owner.reserve(source, 1).unwrap();
+    let record = owner.journal.records.get_mut(&source).unwrap();
+    let native = record.native.as_mut().unwrap();
+    native
+        .execute(
+            1,
+            Some(&question),
+            source,
+            &mut crate::learning::Engine::default(),
+            &mut crate::learning::tests::MemoryStore::default(),
+        )
+        .unwrap();
+    let progress = native.progress.as_ref().unwrap();
+    let solution = progress
+        .result
+        .clone()
+        .expect("the native source must solve");
+    assert!(
+        !progress.executions.is_empty(),
+        "the source must record actual search"
+    );
+    let output = Output::Native {
+        terminal: progress.terminal.clone().into(),
+        frontier: progress.frontier.clone(),
+        solution: Some(solution.clone()),
+    };
+    record.checkpoint = 1;
+    owner
+        .complete(
+            source,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(output),
+            },
+        )
+        .unwrap();
+    admit_own_solution(&mut owner, source, &question, &solution);
+    let original =
+        crate::learning::experience::Observation::from_record(&owner.journal.records[&source])
+            .unwrap()
+            .unwrap();
     let mut state = learning(&owner);
     state["replay"] = serde_json::json!([]);
     state["anchors"] = serde_json::json!([]);
@@ -1625,8 +1682,50 @@ fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening(
             None,
         )
         .unwrap();
+    assert_eq!(
+        receipt.read_operations, 3,
+        "the index, source, and admission are the only reads"
+    );
+    let page: crate::learning::history::Page = crate::checkpoint::decode(&bytes).unwrap();
+    assert_eq!(page.records.len(), 1);
+    let observed = page.records[0].observation.as_ref().unwrap();
+    assert_eq!(observed.summary.receipt, original.summary.receipt);
+    assert_eq!(observed.executions, original.executions);
     let job = owner.journal.records[&id].native.as_ref().unwrap();
     let prepared = crate::learning::history::inspect_reload(job, &receipt, &bytes).unwrap();
+
+    let mut substituted = page.clone();
+    substituted.records[0].job = id;
+    let substituted = crate::checkpoint::encode(&substituted).unwrap();
+    let mut substituted_receipt = receipt.clone();
+    substituted_receipt.blob = crate::learning::Blob::of(&substituted);
+    let error = crate::learning::history::inspect_reload(job, &substituted_receipt, &substituted)
+        .unwrap_err();
+    assert!(error.contains("historical execution differs from its admitted source"));
+
+    let mut worker = job.clone();
+    let mut artifacts = crate::learning::tests::MemoryStore::default();
+    crate::learning::ArtifactIo::write(
+        &mut artifacts,
+        &receipt.blob,
+        0..receipt.blob.chunks(),
+        bytes.clone(),
+    )
+    .unwrap();
+    worker
+        .execute(
+            1,
+            None,
+            id,
+            &mut crate::learning::Engine::default(),
+            &mut artifacts,
+        )
+        .unwrap();
+    let cost = &worker.progress.as_ref().unwrap().training_cost;
+    assert!(
+        cost.observed_sequences > 0,
+        "the source execution must reach the training pool"
+    );
     assert!(prepared.examples().any(|example| example.job == source));
     assert_eq!(prepared.sample_counts(), job.base.sample_counts());
     assert_eq!(prepared.learning_epoch(), job.base.learning_epoch());
