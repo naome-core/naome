@@ -168,3 +168,22 @@ fn partial_corrupt_and_failed_registry_copies_cannot_publish_roots() {
     let unrelated = QuestionRegistry::with_storage(Arc::new(Storage::default()));
     assert!(copy.finish(&unrelated).is_err());
 }
+
+#[test]
+fn registry_cursor_reports_corrupted_bucket_and_stops() {
+    let (disk, storage, _) = registry();
+    let formula = ZfcAxiom::Pairing.formula();
+    let statement = statement_id(&formula.encode_canonical().unwrap());
+    let cold = disk.cold.as_ref().unwrap();
+    let encoded_root = cold.statements.get(statement.as_bytes()).unwrap().unwrap();
+    let address: Identity = encoded_root[..32].try_into().unwrap();
+    storage.bytes.lock().unwrap().get_mut(&address).unwrap()[0] ^= 1;
+
+    let mut entries = disk.records_for(statement).unwrap();
+    assert_eq!(entries.next(), Some(Err(ContextError::Corrupt)));
+    assert_eq!(entries.next(), None);
+    assert_eq!(
+        *storage.failures.lock().unwrap(),
+        [ContextError::Corrupt, ContextError::Corrupt]
+    );
+}
