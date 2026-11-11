@@ -91,12 +91,48 @@ fn defined_question_evidence_replays_using_its_checked_primitive_target() {
         frontier.evidence.get(&question).unwrap().unwrap().question,
         primitive.to_hex()
     );
+    assert_eq!(frontier.evidence.model().unresolved, 1);
+    let proof = crate::test_inputs::proof(vec![
+        naome_proof::ProofStep::EqualityReflexivity { variable: x },
+        naome_proof::ProofStep::Generalization {
+            premise: 0,
+            variable: x,
+        },
+    ]);
+    let result = completion(
+        2,
+        jobs::Output::Proof {
+            proof: proof.clone(),
+            helpers: Vec::new(),
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(&question, &graph, &result, Outcome::Candidate)
+        .unwrap();
+    let root = graph.produce(&proof).unwrap().1.id;
+    frontier.prepared(&question, 2, root).unwrap();
+    frontier.verified(&question, &graph, 2, root).unwrap();
+    assert!(
+        frontier
+            .evidence
+            .support_consumer(&question, 2, root)
+            .unwrap()
+            .is_some()
+    );
+    let learned = frontier.evidence.model().clone();
+    assert_eq!(
+        (learned.updates, learned.unresolved, learned.resolved),
+        (2, 1, 1)
+    );
     drop(frontier);
-    let reopened = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
+    let mut reopened = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
     assert_eq!(
         reopened.evidence.get(&question).unwrap().unwrap().last_job,
-        1
+        2
     );
+    reopened.verified(&primitive, &graph, 2, root).unwrap();
+    assert_eq!(reopened.evidence.model(), &learned);
 }
 
 fn question(index: u64) -> ResearchQuestion {

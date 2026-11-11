@@ -534,8 +534,14 @@ impl Evidence {
                 Observation::CutBlocked => None,
             };
             if let Some((resolved, millis)) = label
-                && crate::learning::State::eligible(&question.to_hex())
+                && crate::learning::State::eligible(&record.question)
             {
+                // The owner records the expanded target so admission through a
+                // checked definition can teach the same model as its primitive form.
+                let expanded = (!question.dependencies().is_empty())
+                    .then(|| ResearchQuestion::from_hex(&record.question))
+                    .transpose()?;
+                let question = expanded.as_ref().unwrap_or(question);
                 if let (Some(decision), Some(experience)) = (&record.decision, &record.experience) {
                     header.policy.observe(decision, experience, resolved)?;
                     if let Some(forecast) = decision.forecast
@@ -923,12 +929,10 @@ impl Evidence {
         job: u64,
         root: ArtifactId,
     ) -> Result<Option<Record>, crate::Error> {
-        if !crate::learning::State::eligible(&goal.to_hex()) {
-            return Ok(None);
-        }
         Ok(self.get(goal)?.filter(|consumer| {
             consumer.last_job == job
                 && consumer.verified.as_deref() == Some(crate::hex(root.as_bytes()).as_str())
+                && crate::learning::State::eligible(&consumer.question)
         }))
     }
 

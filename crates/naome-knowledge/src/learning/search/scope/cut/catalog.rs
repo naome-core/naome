@@ -123,7 +123,7 @@ impl CatalogSource {
 
     /// A checked universal can close the opened consequent without using a
     /// local hypothesis. The worker reconstructs the same specialization from
-    /// the retained program before publishing any proof.
+    /// the retained program for the graph owner to check and commit.
     pub(crate) fn for_exact_local_scope(
         graph: &Graph,
         question: &question::ResearchQuestion,
