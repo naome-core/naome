@@ -21,13 +21,6 @@ rust_library(
     version = "0.1.0-alpha.1",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    compile_data = glob(
-        [
-            "src/**/*.hex",
-            "tests/fixtures/**",
-        ],
-        allow_empty = True,
-    ),
     edition = "2024",
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -45,6 +38,12 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":naome_checker",
+    compile_data = [
+        "src/question/fixtures/conjunction.hex",
+        "src/tests/fixtures/identity_unique.proof.hex",
+        "tests/fixtures/membership-witness.bin",
+        "tests/fixtures/membership-witness.program",
+    ],
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -54,15 +53,7 @@ rust_test(
     name = "semantic_oracle",
     size = "small",
     srcs = glob(["tests/**/*.rs"]),
-    compile_data = glob(
-        ["tests/fixtures/**"],
-        allow_empty = True,
-    ),
     crate_root = "tests/semantic_oracle.rs",
-    data = glob(
-        ["tests/fixtures/**"],
-        allow_empty = True,
-    ),
     edition = "2024",
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(
