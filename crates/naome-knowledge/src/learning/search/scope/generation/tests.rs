@@ -116,6 +116,11 @@ fn independent_replay(
 
 #[test]
 fn native_solver_composes_nested_conjunctions_outside_the_original_menu() {
+    if !crate::learning::tests::isolated(
+        "learning::search::scope::generation::tests::native_solver_composes_nested_conjunctions_outside_the_original_menu",
+    ) {
+        return;
+    }
     let question = transport_pair();
     let definitions = [member_relation()];
     let (baseline, generated) = paired(&question, 5, &definitions, None, &[]);
@@ -245,6 +250,11 @@ fn reflexivity(alias: bool) -> (Formula, Packet) {
 
 #[test]
 fn native_solver_resolves_new_checked_proofs_and_fixed_axioms_from_context() {
+    if !crate::learning::tests::isolated(
+        "learning::search::scope::generation::tests::native_solver_resolves_new_checked_proofs_and_fixed_axioms_from_context",
+    ) {
+        return;
+    }
     let (reflexive, first) = reflexivity(false);
     let (_, second) = reflexivity(true);
     assert_ne!(first.manifest.proof_id(), second.manifest.proof_id());
@@ -322,6 +332,11 @@ impl Ranker for Ordered {
 
 #[test]
 fn certified_proof_addresses_resolve_in_both_solver_contexts() {
+    if !crate::learning::tests::isolated(
+        "learning::search::scope::generation::tests::certified_proof_addresses_resolve_in_both_solver_contexts",
+    ) {
+        return;
+    }
     let variable = FreeVariable::new(0);
     let certificate = naome_proof::ProofCertificate::new(vec![
         naome_proof::ProofStep::EqualityReflexivity { variable },
