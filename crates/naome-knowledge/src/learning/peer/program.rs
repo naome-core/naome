@@ -914,7 +914,6 @@ mod capacity_tests {
 
     #[test]
     fn checking_a_packet_target_does_not_materialize_learning_replay() {
-        crate::resources::tests::budget(false);
         use naome_proof::program::Axiom;
         let target = naome_foundation::ZfcAxiom::Pairing.formula();
         let packet = Packet::compose(
