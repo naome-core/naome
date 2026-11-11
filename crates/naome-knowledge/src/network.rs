@@ -1908,34 +1908,6 @@ impl Node {
             && self.outgoing_ready(peer, now)
     }
 
-    fn finish_description(
-        &mut self,
-        peer: PeerId,
-        artifact: ArtifactId,
-        grant: Option<crate::publication::PeerGrant>,
-        result: Result<OfferStatus, crate::Error>,
-    ) -> Result<OfferStatus, crate::Error> {
-        let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
-            return result;
-        };
-        // Retain only the ordinary bounded inventory hint. After each checked
-        // definition is admitted, a fresh description supplies the next one.
-        if !self.want(artifact)? {
-            return Err(crate::Error::ExecutionLimit);
-        }
-        self.intake.request_question_definition(
-            crate::intake::DefinitionRequest {
-                peer,
-                definition,
-                question_proof: Some(artifact),
-                helper_deadline: None,
-            },
-            &self.graph,
-            grant,
-        )?;
-        Ok(OfferStatus::AwaitingDefinition)
-    }
-
     fn fetch_grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
         self.intake
             .definition_capability(peer, root)
@@ -2629,11 +2601,10 @@ impl Node {
                 }
             }
             Body::ProgramOffer { metadata } => {
-                let id = metadata.manifest.artifact_id();
                 let queued =
                     self.intake
                         .enqueue_program(peer, metadata, &self.graph, grant.clone());
-                match self.finish_description(peer, id, grant, queued) {
+                match queued {
                     Ok(status) => Body::Receipt { status },
                     Err(error) => Body::Error {
                         code: peer_failure(&error),
@@ -2670,11 +2641,9 @@ impl Node {
                     .unwrap_or(Body::Missing),
             },
             Body::Offer { metadata } => {
-                let queued = id_bytes(&metadata.artifact_id).and_then(|id| {
-                    let queued =
-                        self.intake
-                            .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
-                    self.finish_description(peer, ArtifactId::from_bytes(id), grant, queued)
+                let queued = id_bytes(&metadata.artifact_id).and_then(|_| {
+                    self.intake
+                        .enqueue_with_grant(peer, metadata, &self.graph, grant)
                 });
                 match queued {
                     Ok(status) => Body::Receipt { status },
@@ -2743,7 +2712,7 @@ impl Node {
                     let queued =
                         self.intake
                             .enqueue_program(peer, metadata, &self.graph, grant.clone());
-                    match self.finish_description(peer, id, grant, queued) {
+                    match queued {
                         Ok(OfferStatus::Duplicate) => {
                             self.wanted.remove(&id);
                         }
@@ -2865,7 +2834,7 @@ impl Node {
                 let queued =
                     self.intake
                         .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
-                match self.finish_description(peer, id, grant, queued) {
+                match queued {
                     Ok(OfferStatus::Duplicate) => {
                         self.wanted.remove(&id);
                     }
