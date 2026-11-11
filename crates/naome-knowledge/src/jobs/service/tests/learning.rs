@@ -2629,7 +2629,10 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     };
     let helper = ResearchQuestion::from_formula(close(body.clone())).unwrap();
     let goal = ResearchQuestion::from_formula(close(Formula::implies(
-        Formula::for_all(witness, Formula::implies(body, Formula::member(witness, a))),
+        Formula::for_all(
+            witness,
+            Formula::implies(body.clone(), Formula::member(witness, a)),
+        ),
         Formula::member(c, a),
     )))
     .unwrap();
@@ -2644,6 +2647,30 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     frontier
         .attempted(&goal, &graph, &miss, Outcome::NoCandidate)
         .unwrap();
+    let related = ResearchQuestion::from_formula(close(Formula::implies(
+        Formula::for_all(witness, Formula::implies(body, Formula::member(witness, b))),
+        Formula::member(c, b),
+    )))
+    .unwrap();
+    assert_ne!(goal.resolution_id(), related.resolution_id());
+    let other_miss = submit(&mut owner, &related, gate.formal_context(&graph).binding());
+    assert!(matches!(
+        &other_miss.result,
+        Ok(Output::Native { solution: None, .. })
+    ));
+    frontier
+        .attempted(&related, &graph, &other_miss, Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(
+        frontier.shared_cut_goals(&helper, |_| true).unwrap(),
+        [*goal.resolution_id(), *related.resolution_id()],
+    );
+    assert_eq!(
+        frontier
+            .shared_cut_goals(&helper, |q| q != &related)
+            .unwrap(),
+        [*goal.resolution_id()],
+    );
     let plan = frontier
         .loop_work(&goal, &graph, |q| {
             gate.generation_decision(&graph, q).passed()
@@ -2676,6 +2703,12 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     assert_eq!(naome_proof::ArtifactId::from(catalog.proof_id()), helper_id);
     drop(planned);
     let mut binding = gate.formal_context(&graph).binding();
+    assert!(
+        frontier
+            .shared_catalog_trial(catalog.proof_id(), &goal)
+            .unwrap()
+    );
+    binding.compare_catalog = true;
     binding.catalog = Some(catalog);
     let binding = research_binding(
         &mut frontier,
@@ -2685,6 +2718,16 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
         settings.solving.limits,
     );
     let retry = submit(&mut owner, &goal, binding);
+    let record = &owner.journal.records[&retry.id];
+    let progress = record.native.as_ref().unwrap().progress.as_ref().unwrap();
+    let comparison = progress.catalog_comparison.as_ref().unwrap();
+    assert_eq!(comparison.seed, retry.id);
+    assert_eq!(comparison.search_limit, 128);
+    assert_eq!(comparison.control.cost.search_expansions, 128);
+    assert!(comparison.control.checked_artifact.is_none());
+    assert!(comparison.with_lemma.uses_lemma);
+    assert_eq!(comparison.with_lemma.cost.search_expansions, 5);
+    record.validate_catalog_comparison(progress).unwrap();
     assert_eq!(
         retry.experience.as_ref().unwrap().checkpoint,
         first.checkpoint

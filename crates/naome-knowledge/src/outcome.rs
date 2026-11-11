@@ -648,6 +648,8 @@ codes! {
         ResearchCleanupFailed = 113,
         ResearchValueDecision = 114,
         ResearchValueObserved = 115,
+        FinderSharedHelper = 116,
+        FinderLemmaComparison = 117,
     }
     pub(crate) enum EventSource in 24 {
         Fetch = 1,

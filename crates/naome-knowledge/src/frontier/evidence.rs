@@ -7,6 +7,8 @@ mod experience;
 pub(crate) use experience::tests::observed_completion;
 const DOMAIN: &str = "naome:research-evidence";
 const MARKER: &[u8] = b"naome-research-evidence\n";
+const CUT_GOALS: usize = 8;
+const CUT_INDEX_BYTES: usize = CUT_GOALS * 68 + 16;
 const MAX_RECORD: usize = 6 * naome_checker::question::QUESTION_BYTES + 4096;
 pub(crate) use crate::outcome::FinderEvidenceOutcome as Outcome;
 
@@ -277,7 +279,7 @@ impl Evidence {
             header.policy = finder::research::Policy::default();
             header.effects = Default::default();
         }
-        checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
+        checkpoint.require_kinds(&["question", "proved", "support", "plan", "cut"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
             crate::storage::write_marker(&marker, MARKER)?;
         }
@@ -410,6 +412,87 @@ impl Evidence {
         }
         Ok(record)
     }
+    fn cut_index(&self, helper: &ResearchQuestion) -> Result<Vec<String>, crate::Error> {
+        let key = record_key(&self.solver, helper);
+        let entries = self
+            .checkpoint
+            .get::<Vec<String>>("cut", &key, CUT_INDEX_BYTES)?
+            .unwrap_or_default();
+        if entries.len() > CUT_GOALS
+            || entries.iter().enumerate().any(|(index, entry)| {
+                crate::object::id_bytes(entry).is_err() || entries[..index].contains(entry)
+            })
+        {
+            return Err(crate::ResearchFailure::EvidenceIdentity.into());
+        }
+        Ok(entries)
+    }
+
+    pub(super) fn shared_cut_goals(
+        &self,
+        helper: &ResearchQuestion,
+        mut open: impl FnMut(&ResearchQuestion) -> bool,
+    ) -> Result<Vec<naome_checker::question::Identity>, crate::Error> {
+        if !self.native || self.get(helper)?.is_some() {
+            return Ok(Vec::new());
+        }
+        let mut goals = Vec::new();
+        for key in self.cut_index(helper)? {
+            let record: Record = self
+                .checkpoint
+                .get("question", &key, MAX_RECORD)?
+                .ok_or(crate::ResearchFailure::EvidenceIdentity)?;
+            record.validate(&key, self.header.observations)?;
+            if record.solver != self.solver || !record.paid_open_search() || record.loop_disabled {
+                continue;
+            }
+            let goal = ResearchQuestion::from_hex(&record.question)?;
+            if open(&goal)
+                && record.helpers.iter().any(|source| {
+                    ResearchQuestion::from_hex(source)
+                        .is_ok_and(|cut| cut.resolution_id() == helper.resolution_id())
+                })
+            {
+                goals.push(*goal.resolution_id());
+            }
+        }
+        Ok(goals)
+    }
+
+    pub(super) fn shared_catalog_trial(
+        &self,
+        helper: naome_proof::ProofId,
+        target: &ResearchQuestion,
+    ) -> Result<bool, crate::Error> {
+        let artifact = ArtifactId::from(helper);
+        let Some((_, source)) = self.proof_source(&crate::hex(artifact.as_bytes()))? else {
+            return Ok(false);
+        };
+        let question = ResearchQuestion::from_hex(&source.question)?;
+        let own_key = record_key(&self.solver, target);
+        let mut related = 0;
+        let mut includes_target = false;
+        for key in self.cut_index(&question)? {
+            let record: Record = self
+                .checkpoint
+                .get("question", &key, MAX_RECORD)?
+                .ok_or(crate::ResearchFailure::EvidenceIdentity)?;
+            record.validate(&key, self.header.observations)?;
+            if record.solver == self.solver
+                && record.first_unresolved_at > 0
+                && record.first_unresolved_at < source.verified_at
+                && record.helpers.iter().any(|candidate| {
+                    ResearchQuestion::from_hex(candidate)
+                        .is_ok_and(|cut| cut.resolution_id() == question.resolution_id())
+                })
+            {
+                related += 1;
+                includes_target |= key == own_key;
+            }
+        }
+        Ok(related > 1 && includes_target)
+    }
+
     pub(super) fn page(&self, after: Option<&str>) -> Result<EvidencePage, crate::Error> {
         self.page_with_budget(
             after,
@@ -577,6 +660,25 @@ impl Evidence {
         }
         let key = record_key(&self.solver, question);
         let mut updates = vec![Update::put("question", &key, &record)?];
+        if self.native && record.paid_open_search() && !record.loop_disabled {
+            for source in &record.helpers {
+                let helper = ResearchQuestion::from_hex(source)?;
+                let mut goals = self.cut_index(&helper)?;
+                if goals.last() == Some(&key) {
+                    continue;
+                }
+                goals.retain(|goal| goal != &key);
+                if goals.len() == CUT_GOALS {
+                    goals.remove(0);
+                }
+                goals.push(key.clone());
+                updates.push(Update::put(
+                    "cut",
+                    record_key(&self.solver, &helper),
+                    &goals,
+                )?);
+            }
+        }
         if let Some(root) = &record.verified
             && self
                 .checkpoint

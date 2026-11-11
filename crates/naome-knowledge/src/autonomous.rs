@@ -671,6 +671,7 @@ impl Autonomous {
             }
         }
 
+        let mut corroborated_cut = None;
         let ids = self.solving.keys().copied().collect::<Vec<_>>();
         for id in ids {
             let mut solving = self.solving.remove(&id).expect("owned solving job");
@@ -727,6 +728,26 @@ impl Autonomous {
                         self.solving.insert(id, solving);
                     }
                     return accepted;
+                }
+                if self.formal_goal.is_none()
+                    && self.intervals.jobs.native_proof_learning
+                    && outcome == Outcome::NoCandidate
+                    && corroborated_cut.is_none()
+                {
+                    match frontier.shared_cut_candidate(&solving.question, |goal| {
+                        !questions.generation_decision(graph, goal).has_answer()
+                    }) {
+                        Ok(helper) => {
+                            corroborated_cut = helper.filter(|helper| {
+                                questions.generation_decision(graph, helper).passed()
+                            })
+                        }
+                        Err(error) if error.fatal() => {
+                            self.error = Some(error);
+                            return accepted;
+                        }
+                        Err(_) => {}
+                    }
                 }
             }
             if let Ok(completion) = &completion
@@ -1226,6 +1247,22 @@ impl Autonomous {
             self.publications.push_back(pending);
         }
 
+        if let Some(helper) = corroborated_cut
+            && !self.unanswered.contains(&helper)
+            && !self.solving.contains_key(helper.resolution_id())
+        {
+            // The original registry keeps a displaced question in its durable backlog.
+            if self.unanswered.len() >= crate::resources::active_limits().question_page
+                && let Some(index) = self
+                    .unanswered
+                    .iter()
+                    .rposition(|goal| questions.owned_question(graph, goal).is_some())
+            {
+                self.unanswered.remove(index);
+            }
+            self.retain(helper);
+        }
+
         // Refill one fair FIFO item per turn. The complete backlog is durable;
         // the parsed queue is only a bounded working page, never a lifetime cap.
         if self.unanswered.len() < crate::resources::active_limits().question_page
@@ -1252,7 +1289,30 @@ impl Autonomous {
                     .loop_work(goal, graph, &mut available)
                     .map(|work| Some((goal.clone(), work)))
             } else {
-                frontier.loop_focus(graph, &mut available)
+                frontier.loop_focus(graph, &mut available).and_then(|plan| {
+                    if self.intervals.jobs.native_proof_learning
+                        && let Some((_, work)) = &plan
+                        && let [helper] = work.pending.as_slice()
+                        && frontier
+                            .shared_cut_goals(helper, |goal| {
+                                !questions.generation_decision(graph, goal).has_answer()
+                            })?
+                            .len()
+                            < 2
+                        && frontier.awaiting_first_evidence(self.solving.values().filter_map(
+                            |search| {
+                                (!search.cooperative
+                                    && search.question.resolution_id() != helper.resolution_id())
+                                .then_some(&search.question)
+                            },
+                        ))?
+                    {
+                        // An already-running first search can corroborate the
+                        // proposed cut before the node spends work on it.
+                        return Ok(None);
+                    }
+                    Ok(plan)
+                })
             };
             match result {
                 Ok(work) => work,
@@ -1273,6 +1333,7 @@ impl Autonomous {
         let mut goal_requirements = Vec::new();
         let mut required_goal = loop_goal.clone();
         let mut loop_candidates = None;
+        let mut shared_helper = None;
         if let Some((goal, work)) = planned_work {
             required_goal = Some(work.target);
             let planned = work.planned;
@@ -1415,14 +1476,45 @@ impl Autonomous {
             let selected = if let Some(frontier) = &mut self.frontier {
                 // Ranking is a scheduling hint. The selected target crosses the
                 // fresh formal gate below before any provider work is admitted.
-                let candidates = self.unanswered.iter().collect::<Vec<_>>();
+                let mut candidates = self.unanswered.iter().enumerate().collect::<Vec<_>>();
+                let mut cuts = BTreeMap::new();
+                if self.formal_goal.is_none() && self.intervals.jobs.native_proof_learning {
+                    for (_, question) in &candidates {
+                        match frontier.shared_cut_goals(question, |goal| {
+                            !questions.generation_decision(graph, goal).has_answer()
+                        }) {
+                            Ok(goals) if goals.len() > 1 => {
+                                cuts.insert(*question.resolution_id(), goals);
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                if error.fatal() {
+                                    self.error = Some(error);
+                                }
+                                return accepted;
+                            }
+                        }
+                    }
+                }
+                if let Some(best) = cuts.values().map(Vec::len).max() {
+                    candidates.retain(|(_, q)| {
+                        cuts.get(q.resolution_id())
+                            .is_some_and(|goals| goals.len() == best)
+                    });
+                }
+                let references = candidates.iter().map(|(_, q)| *q).collect::<Vec<_>>();
                 let choice = if self.formal_goal.is_none() {
-                    frontier.choose_free_solver(&candidates, graph, self.intervals.jobs.solving)
+                    frontier.choose_free_solver(&references, graph, self.intervals.jobs.solving)
                 } else {
-                    frontier.choose(&candidates, graph, self.intervals.jobs.solving, false)
+                    frontier.choose(&references, graph, self.intervals.jobs.solving, false)
                 };
                 match choice {
-                    Ok(index) => index,
+                    Ok(index) => index.map(|index| {
+                        let (original, q) = candidates[index];
+                        let id = *q.resolution_id();
+                        shared_helper = cuts.get(&id).map(|goals| (id, goals.clone()));
+                        original
+                    }),
                     Err(error) => {
                         if error.fatal() {
                             self.error = Some(error);
@@ -1536,6 +1628,17 @@ impl Autonomous {
                     if self.intervals.jobs.native_proof_learning
                         && let Some(frontier) = &mut self.frontier
                     {
+                        if let Some(catalog) = &binding.catalog {
+                            match frontier.shared_catalog_trial(catalog.proof_id(), &question) {
+                                Ok(compare) => binding.compare_catalog = compare,
+                                Err(error) if error.fatal() => {
+                                    self.error = Some(error);
+                                    self.retain(question);
+                                    return accepted;
+                                }
+                                Err(_) => {}
+                            }
+                        }
                         match frontier.research_decision(
                             &question,
                             graph,
@@ -1594,6 +1697,15 @@ impl Autonomous {
                         prerequisites,
                     ) {
                         Ok(ticket) => {
+                            if let Some((helper, goals)) = shared_helper
+                                && &helper == question.resolution_id()
+                            {
+                                emit(json!({
+                                    "event": crate::outcome::NodeEvent::FinderSharedHelper,
+                                    "resolution_id": crate::hex(&helper),
+                                    "open_goals": goals.iter().map(|goal| crate::hex(goal)).collect::<Vec<_>>(),
+                                }));
+                            }
                             let member = if self.cooperation.selected_is(question.resolution_id()) {
                                 self.cooperation.take().and_then(|selected| {
                                     if questions.refresh_exchange(graph, &selected.question, &selected.assessment).is_ok() {

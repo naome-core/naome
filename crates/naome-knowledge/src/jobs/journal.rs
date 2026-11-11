@@ -1073,6 +1073,9 @@ fn validate_record(
             }
             _ => {}
         }
+        if let Some(progress) = &native.progress {
+            r.validate_catalog_comparison(progress)?;
+        }
         if r.provider != crate::learning::PROVIDER
             || !matches!(
                 r.input,

@@ -199,7 +199,70 @@ pub(crate) struct State {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct CatalogComparison {
+    pub lemma: String,
+    pub seed: u64,
+    pub search_limit: u32,
+    pub control: CatalogArm,
+    pub with_lemma: CatalogArm,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogArm {
+    pub terminal: experience::TerminalEvidence,
+    pub cost: GenerationCost,
+    pub checked_artifact: Option<String>,
+    pub uses_lemma: bool,
+}
+
+impl CatalogArm {
+    pub(crate) fn check(
+        question: &ResearchQuestion,
+        lemma: naome_proof::ProofId,
+        terminal: experience::TerminalEvidence,
+        cost: GenerationCost,
+        solution: Option<&Solution>,
+    ) -> Result<Self, crate::Error> {
+        terminal.validate(solution)?;
+        let (checked_artifact, uses_lemma) = if let Some(solution) = solution {
+            let target = if solution.refuted {
+                question.refuted_target()
+            } else {
+                question.proved_target()
+            };
+            let (artifact, cited) = if let search::Tree::Program(packet) = &solution.tree {
+                (
+                    packet.manifest.artifact_id(),
+                    packet.check_trial(target, lemma)?,
+                )
+            } else {
+                let checked = solution.checked()?;
+                if checked.conclusion() != target {
+                    return Err(crate::ResearchFailure::NativeCertificateConclusion.into());
+                }
+                let proof = program::Candidate::from_solution(solution, question)?;
+                let cited = peer::contributing_proofs(&proof.commands)?.contains(&lemma);
+                (proof.manifest.artifact_id(), cited)
+            };
+            (Some(crate::hex(artifact.as_bytes())), cited)
+        } else {
+            (None, false)
+        };
+        Ok(Self {
+            terminal,
+            cost,
+            checked_artifact,
+            uses_lemma,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Progress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_comparison: Option<CatalogComparison>,
     pub finder: Option<finder::Utility>,
     prepared: Option<history::Prepared>,
     pub cost: Option<GenerationCost>,
@@ -661,6 +724,34 @@ impl Job {
     pub fn allows_read(&self, blob: &Blob) -> bool {
         self.blobs().into_iter().any(|b| b == blob)
     }
+    pub(crate) fn can_compare_catalog(
+        &self,
+        lemma: naome_proof::ProofId,
+    ) -> Result<bool, crate::Error> {
+        if self.units() != 1
+            || !self.required.is_empty()
+            || !self.prerequisites.is_empty()
+            || self
+                .base
+                .definitions
+                .iter()
+                .any(|entry| entry.obligation.is_some())
+        {
+            return Ok(false);
+        }
+        for entry in &self.base.knowledge {
+            let entry = entry.verified()?;
+            if entry.native_id == lemma || std::iter::once(&entry.certificate)
+                .chain(entry.lemmas.iter())
+                .flat_map(|certificate| certificate.steps())
+                .any(|step| matches!(step, naome_proof::ProofStep::ProofReference { proof_id } if *proof_id == lemma))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub fn units(&self) -> u32 {
         let training = self.training_units();
         if training != 0 || self.requalification.is_some() {
@@ -1019,6 +1110,7 @@ impl Job {
         let cpu_started = meta::cpu_micros()?;
         let training_units = self.training_units();
         let mut p = self.progress.clone().unwrap_or(Progress {
+            catalog_comparison: None,
             finder: None,
             prepared: None,
             cost: None,
