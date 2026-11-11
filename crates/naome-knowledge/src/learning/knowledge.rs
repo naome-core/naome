@@ -160,6 +160,24 @@ pub(crate) fn directly_applies(target: &Formula, lemma: &Formula) -> Result<bool
     super::search::scope::lemma_closes(target, lemma)
 }
 
+/// Project a nonvacuous universal theorem onto existence with the same body.
+pub(crate) fn existential_consequence(lemma: &Formula) -> Option<Formula> {
+    let variable = naome_foundation::FreeVariable::new(0);
+    let body = lemma.open_outer_universal(variable)?;
+    body.free_variables()
+        .contains(&variable)
+        .then(|| Formula::exists(variable, body))
+}
+
+/// Invert the existential projection for exact checked catalogue lookup.
+pub(crate) fn universal_source(target: &Formula) -> Option<Formula> {
+    let variable = naome_foundation::FreeVariable::new(0);
+    let body = super::construction::logic::existential(target, variable)?;
+    body.free_variables()
+        .contains(&variable)
+        .then(|| Formula::for_all(variable, body))
+}
+
 pub(super) struct CheckedEntry<'a> {
     pub entry: &'a Entry,
     pub target: Formula,

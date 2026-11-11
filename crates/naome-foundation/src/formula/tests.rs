@@ -38,6 +38,29 @@ fn nested_binders_retain_their_correct_indices() {
 }
 
 #[test]
+fn opening_a_universal_requires_a_fresh_variable_under_nested_binders() {
+    let outer = FreeVariable::new(1);
+    let inner = FreeVariable::new(2);
+    let free = FreeVariable::new(3);
+    let fresh = FreeVariable::new(4);
+    let body = Formula::for_all(
+        inner,
+        Formula::implies(Formula::member(inner, outer), Formula::member(free, inner)),
+    );
+    let formula = Formula::for_all(outer, body.clone());
+
+    assert_eq!(formula.open_outer_universal(free), None);
+    assert_eq!(
+        formula.open_outer_universal(fresh),
+        Some(body.substitute_free(outer, fresh))
+    );
+    assert_eq!(
+        Formula::equal(outer, inner).open_outer_universal(fresh),
+        None
+    );
+}
+
+#[test]
 fn multiple_binders_match_repeated_binding_with_nesting_and_duplicates() {
     let x = FreeVariable::new(1);
     let y = FreeVariable::new(2);

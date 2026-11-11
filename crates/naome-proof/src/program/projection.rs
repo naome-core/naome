@@ -28,6 +28,13 @@ impl From<ProjectionFailure> for String {
     }
 }
 
+/// A proved source for a leading assumption of a scoped deduction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopedInput {
+    Axiom(Axiom),
+    Proof(crate::ProofId),
+}
+
 /// A structural projection of a bounded certificate into a shared program.
 /// The program requires independent checking and has its own manifest identity.
 pub struct Projection {
@@ -39,6 +46,17 @@ pub struct Projection {
 pub enum StepResult {
     Result(u64),
     InstantiationAxiom(u64),
+}
+
+#[derive(Clone, Copy)]
+enum InstantiationFold {
+    Ordinary,
+    OmittedAxiom,
+    Application {
+        axiom: u32,
+        premise: u32,
+        replacement: FreeVariable,
+    },
 }
 
 impl Projection {
@@ -59,12 +77,11 @@ impl Projection {
 
     fn lower_steps(
         steps: &[ProofStep],
-        uses: &[usize],
+        uses: &[u8],
         sites: impl IntoIterator<Item = usize>,
         authored: &BTreeMap<DefinitionId, DefinedFormula>,
     ) -> Result<Self, ProjectionFailure> {
-        let mut omitted = vec![false; steps.len()];
-        let mut folds = vec![None; steps.len()];
+        let mut folds = vec![InstantiationFold::Ordinary; steps.len()];
         for site in sites {
             let Some(ProofStep::ModusPonens {
                 premise,
@@ -80,11 +97,18 @@ impl Projection {
             else {
                 return Err(ProjectionFailure::MissingInstantiation);
             };
-            if uses[axiom] != 1 || body.as_defined().is_some() || omitted[axiom] {
+            if uses[axiom] != 1
+                || body.as_defined().is_some()
+                || matches!(folds[axiom], InstantiationFold::OmittedAxiom)
+            {
                 return Err(ProjectionFailure::ReferencedInstantiation);
             }
-            omitted[axiom] = true;
-            folds[site] = Some((axiom, *premise as usize, *replacement));
+            folds[axiom] = InstantiationFold::OmittedAxiom;
+            folds[site] = InstantiationFold::Application {
+                axiom: *implication,
+                premise: *premise,
+                replacement: *replacement,
+            };
         }
 
         let mut builder = Builder {
@@ -93,19 +117,22 @@ impl Projection {
         };
         let mut results = vec![StepResult::Result(0); steps.len()];
         let mut handles = vec![0; steps.len()];
-        for (index, step) in steps.iter().enumerate() {
-            if omitted[index] {
-                continue;
-            }
-            let position = if let Some((axiom, premise, replacement)) = folds[index] {
-                let position = builder.push(Command::Instantiate {
-                    premise: handles[premise],
-                    replacement: replacement.identifier(),
-                });
-                results[axiom] = StepResult::InstantiationAxiom(position);
-                position
-            } else {
-                builder.step(step, &handles)
+        for (index, (step, fold)) in steps.iter().zip(folds).enumerate() {
+            let position = match fold {
+                InstantiationFold::Ordinary => builder.step(step, &handles),
+                InstantiationFold::OmittedAxiom => continue,
+                InstantiationFold::Application {
+                    axiom,
+                    premise,
+                    replacement,
+                } => {
+                    let position = builder.push(Command::Instantiate {
+                        premise: handles[premise as usize],
+                        replacement: replacement.identifier(),
+                    });
+                    results[axiom as usize] = StepResult::InstantiationAxiom(position);
+                    position
+                }
             };
             handles[index] = position;
             results[index] = StepResult::Result(position);
@@ -168,6 +195,24 @@ impl Projection {
         binders: &[FreeVariable],
         references: &[crate::ProofId],
     ) -> Vec<Command> {
+        Self::scoped_with_inputs(
+            assumptions,
+            actions,
+            result,
+            binders,
+            references.iter().copied().map(ScopedInput::Proof),
+        )
+    }
+
+    /// Discharge the local scope, then apply proved inputs to its leading
+    /// assumptions in order. The checker verifies each input and application.
+    pub fn scoped_with_inputs(
+        assumptions: &[ProofFormula],
+        actions: &[ScopedAction],
+        result: u32,
+        binders: &[FreeVariable],
+        inputs: impl IntoIterator<Item = ScopedInput>,
+    ) -> Vec<Command> {
         let mut builder = Builder::default();
         let assumptions = assumptions
             .iter()
@@ -178,9 +223,12 @@ impl Projection {
             actions: actions.to_vec(),
             result,
         });
-        for reference in references {
-            let premise = builder.push(Command::ProofReference {
-                proof_id: *reference.as_bytes(),
+        for input in inputs {
+            let premise = builder.push(match input {
+                ScopedInput::Axiom(axiom) => Command::Axiom { axiom },
+                ScopedInput::Proof(reference) => Command::ProofReference {
+                    proof_id: *reference.as_bytes(),
+                },
             });
             proof = builder.push(Command::ModusPonens {
                 premise,
@@ -225,14 +273,16 @@ impl Projection {
     }
 }
 
-fn reference_counts(steps: &[ProofStep]) -> Result<Vec<usize>, ProjectionFailure> {
-    let mut uses = vec![0; steps.len()];
+fn reference_counts(steps: &[ProofStep]) -> Result<Vec<u8>, ProjectionFailure> {
+    // A fold needs exactly one use. Saturation keeps repeated uses repeated.
+    let mut uses = vec![0u8; steps.len()];
     for (position, step) in steps.iter().enumerate() {
         for reference in step.local_references().into_iter().flatten() {
             if reference as usize >= position {
                 return Err(ProjectionFailure::ForwardReference);
             }
-            uses[reference as usize] += 1;
+            let count = &mut uses[reference as usize];
+            *count = count.saturating_add(1);
         }
     }
     Ok(uses)
@@ -481,6 +531,68 @@ mod tests {
         assert!(matches!(
             Projection::from_inference_steps(&[]),
             Err(ProjectionFailure::EmptyRecipe)
+        ));
+    }
+
+    #[test]
+    fn heavily_shared_instantiation_is_never_treated_as_single_use() {
+        use naome_foundation::Formula;
+
+        let variable = FreeVariable::new(0);
+        let mut steps = vec![
+            ProofStep::UniversalInstantiation {
+                variable,
+                replacement: variable,
+                body: Formula::equal(variable, variable).into(),
+            },
+            ProofStep::EqualityReflexivity { variable },
+        ];
+        steps.extend(std::iter::repeat_n(
+            ProofStep::ModusPonens {
+                premise: 1,
+                implication: 0,
+            },
+            257,
+        ));
+        let projection = Projection::from_inference_steps(&steps).unwrap();
+        assert!(matches!(projection.results()[0], StepResult::Result(_)));
+        assert!(
+            projection
+                .commands()
+                .iter()
+                .all(|command| !matches!(command, Command::Instantiate { .. }))
+        );
+    }
+
+    #[test]
+    fn a_selected_instantiation_cannot_be_folded_twice() {
+        use crate::ProofCertificate;
+        use naome_foundation::Formula;
+
+        let [x, y] = [0, 1].map(FreeVariable::new);
+        let proof = ProofCertificate::new(vec![
+            ProofStep::EqualityReflexivity { variable: x },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: x,
+            },
+            ProofStep::UniversalInstantiation {
+                variable: x,
+                replacement: y,
+                body: Formula::equal(x, x).into(),
+            },
+            ProofStep::ModusPonens {
+                premise: 1,
+                implication: 2,
+            },
+        ])
+        .unwrap()
+        .into_unchecked_normal_form();
+        let site = proof.certificate().steps().len() - 1;
+        assert!(Projection::with_instantiations(&proof, &[site]).is_ok());
+        assert!(matches!(
+            Projection::with_instantiations(&proof, &[site, site]),
+            Err(ProjectionFailure::ReferencedInstantiation)
         ));
     }
 }

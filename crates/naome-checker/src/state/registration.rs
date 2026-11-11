@@ -5,7 +5,6 @@ use crate::{
 use naome_proof::{DerivationId, ProofId, ProofStep, StatementId};
 
 pub(super) trait RegistrationView: ContextView {
-    fn has_proof(&self, id: ProofId) -> Result<bool, ContextError>;
     fn derivation_statement(&self, id: DerivationId) -> Result<Option<StatementId>, ContextError>;
 }
 
@@ -13,6 +12,7 @@ pub(super) fn validate(
     state: &impl RegistrationView,
     proof: &CheckedProof,
     aliases: bool,
+    mut has_dependency: impl FnMut(ProofId) -> Result<bool, ContextError>,
 ) -> Result<(), ArtifactStateError> {
     let access = ArtifactStateError::Context;
     if let Some(header) = state.proof_header(proof.proof_id).map_err(access)? {
@@ -28,21 +28,19 @@ pub(super) fn validate(
     }
     for step in proof.normal_form.certificate().steps() {
         if let ProofStep::ProofReference { proof_id } = step
-            && !state.has_proof(*proof_id).map_err(access)?
+            && !has_dependency(*proof_id).map_err(access)?
         {
             return Err(ArtifactStateError::MissingProofDependency {
                 proof_id: *proof_id,
             });
         }
-        for definition_id in step.definition_references() {
-            if state
+        step.try_for_each_definition_reference(|definition_id| {
+            state
                 .definition_kind(definition_id)
                 .map_err(access)?
-                .is_none()
-            {
-                return Err(ArtifactStateError::MissingDefinitionDependency { definition_id });
-            }
-        }
+                .ok_or(ArtifactStateError::MissingDefinitionDependency { definition_id })?;
+            Ok(())
+        })?;
     }
     if let Some(statement) = state
         .derivation_statement(proof.derivation_id)

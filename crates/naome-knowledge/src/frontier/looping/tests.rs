@@ -242,7 +242,18 @@ fn failed_helper_descends_and_checked_children_release_its_original_parent_once(
     let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     assert!(!frontier.evidence.admit_loop_member(&root, &fifth).unwrap());
     assert!(!frontier.evidence.admit_loop_member(&root, &root).unwrap());
-    frontier.evidence.bind_solver("44".repeat(32));
+    frontier.feedback(Some(crate::training::ability::Feedback::fresh(
+        "44".repeat(32),
+    )));
+    assert!(
+        !frontier
+            .evidence
+            .get(&root)
+            .unwrap()
+            .unwrap()
+            .helpers
+            .is_empty()
+    );
     failed(&mut frontier, &graph, &root, 11);
     assert!(
         !frontier.evidence.admit_loop_member(&root, &fifth).unwrap(),

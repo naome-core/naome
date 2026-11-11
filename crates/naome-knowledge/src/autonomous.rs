@@ -399,6 +399,8 @@ impl Autonomous {
             && let Some(frontier) = &mut self.frontier
         {
             frontier.feedback(self.client.feedback());
+            self.client
+                .research_frame(frontier.research_frame(graph, self.unanswered.len()));
         }
         while let Some(publication) = self.evidence_publications.pop_front() {
             let result = self
@@ -1443,7 +1445,13 @@ impl Autonomous {
                     };
                     let mut binding = context.binding();
                     if let Some(frontier) = &self.frontier {
-                        match frontier.planned_catalog_retry(graph, &question, &required) {
+                        let catalog =
+                            if required.is_empty() && self.intervals.jobs.native_proof_learning {
+                                jobs::CatalogSource::for_exact_local_scope(graph, &question)
+                            } else {
+                                frontier.planned_catalog_retry(graph, &question, &required)
+                            };
+                        match catalog {
                             Ok(catalog) => binding.catalog = catalog,
                             Err(error) if error.fatal() => {
                                 self.error = Some(error);
@@ -1484,7 +1492,7 @@ impl Autonomous {
                         }
                         Ok((required, prerequisites))
                     })();
-                    let (required, prerequisites) = match inputs {
+                    let (required, mut prerequisites) = match inputs {
                         Ok(selected) => selected,
                         Err(error) => {
                             if error.fatal() {
@@ -1507,6 +1515,40 @@ impl Autonomous {
                                 return accepted;
                             }
                             Err(_) => {}
+                        }
+                        if binding.catalog.is_none() && self.intervals.jobs.native_proof_learning {
+                            match graph.scoped_solving_inputs(&question) {
+                                Ok(Some(inputs)) => prerequisites = inputs,
+                                Err(error) if error.fatal() => {
+                                    self.error = Some(error);
+                                    self.retain(question);
+                                    return accepted;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if self.intervals.jobs.native_proof_learning
+                        && let Some(frontier) = &mut self.frontier
+                    {
+                        match frontier.research_decision(
+                            &question,
+                            graph,
+                            self.intervals.jobs.solving.limits,
+                            !required.is_empty()
+                                || !prerequisites.is_empty()
+                                || binding.catalog.is_some(),
+                        ) {
+                            Ok(context) => binding.research = Some(Box::new(context)),
+                            Err(error) if error.fatal() => {
+                                self.error = Some(error);
+                                self.retain(question);
+                                return accepted;
+                            }
+                            Err(_) => {
+                                self.retain(question);
+                                return accepted;
+                            }
                         }
                     }
                     if !required.is_empty()
@@ -1624,7 +1666,12 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let mut candidates = if let Some(pending) = &loop_candidates {
+                    let mut candidates = if self.intervals.jobs.native_proof_learning
+                        && self.formal_goal.is_none()
+                        && cursor.is_multiple_of(5)
+                    {
+                        frontier.candidate_page(cursor, &mut eligible)
+                    } else if let Some(pending) = &loop_candidates {
                         pending.clone()
                     } else if let Some(goal) = &loop_goal {
                         match frontier.helpers_needed(goal) {

@@ -35,6 +35,39 @@ fn fixture() -> (Manifest, Chunk, Progress) {
 }
 
 #[test]
+fn manifest_length_matches_the_codec_at_integer_boundaries() {
+    let (mut manifest, _, _) = fixture();
+    for shift in (7..64).step_by(7) {
+        let boundary = 1u64 << shift;
+        for (commands, input_bytes) in [(boundary - 1, boundary), (boundary, boundary - 1)] {
+            manifest.commands = commands;
+            manifest.input_bytes = input_bytes;
+            assert_eq!(
+                manifest.encoded_length().unwrap(),
+                manifest.canonical_bytes().unwrap().len()
+            );
+        }
+    }
+    manifest.commands = u64::MAX;
+    manifest.input_bytes = u64::MAX;
+    assert_eq!(manifest.encoded_length(), Ok(MANIFEST_BYTES));
+    assert_eq!(manifest.canonical_bytes().unwrap().len(), MANIFEST_BYTES);
+
+    for (commands, input_bytes) in [(0, 1), (1, 0)] {
+        manifest.commands = commands;
+        manifest.input_bytes = input_bytes;
+        assert_eq!(
+            manifest.encoded_length(),
+            Err(CodecFailure::InvalidManifest)
+        );
+        assert_eq!(
+            manifest.canonical_bytes(),
+            Err(CodecFailure::InvalidManifest)
+        );
+    }
+}
+
+#[test]
 fn fixed_command_bytes_and_both_commitments_remain_exact() {
     let (manifest, chunk, initial) = fixture();
     assert_eq!(

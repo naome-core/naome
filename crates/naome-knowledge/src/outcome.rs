@@ -445,12 +445,8 @@ codes! {
         OptimizationUnresolved = 3,
         NoAmbiguousTrainingDecisions = 4,
         Promoted = 5,
-        DevelopmentRegression = 6,
-        AnchorRegression = 7,
-        NoDevelopmentGain = 8,
-        IncompleteTransfer = 9,
-        TransferRegression = 10,
-        NoTransferGain = 11,
+        InsufficientResearchValue = 12,
+        InsufficientCausalEvidence = 13,
     }
 
     pub(crate) enum GenerationOutcome in 16 {
@@ -650,6 +646,8 @@ codes! {
         WorkgroupReceipt = 111,
         ResourceObservationFailure = 112,
         ResearchCleanupFailed = 113,
+        ResearchValueDecision = 114,
+        ResearchValueObserved = 115,
     }
     pub(crate) enum EventSource in 24 {
         Fetch = 1,
@@ -855,7 +853,7 @@ codes! {
         HistoryPageContinuation = 97,
         HistoryRecordPageMismatch = 98,
         HistoryObservationHorizon = 99,
-        HistorySourcePageLane = 100,
+        HistorySourceObservationMismatch = 100,
         HistorySourcePageMismatch = 101,
         HistoryPreparedCapacity = 102,
         HistoryPreparedIdentity = 103,
@@ -905,10 +903,10 @@ codes! {
         PeerProgramFrameOutputWidth = 360, PeerProgramPacketCapacity = 361, PeerProgramContextBytesOverflow = 362,
         PeerProgramContextBytesCapacity = 363, PeerPrerequisiteProofBinding = 364, PeerPrerequisiteStatement = 365,
         PeerPrerequisiteDefinitionBinding = 366, PeerPrerequisiteObligationMissing = 367, PeerPrerequisiteObligationBinding = 368, PeerProgramConclusionCapacity = 369, PeerProgramConclusionMismatch = 370, PeerPrerequisiteFormulaMissing = 371, GeneratedTraceMissing = 372,
-        JobParentSnapshot = 373, JobHistoryRequestBinding = 374, JobHistoryRequestMissing = 375, JobReplaySnapshotBinding = 376, JobArtifactLifetimeCapacity = 377, JobArtifactReservation = 378, JobReplayReceiptBinding = 379, JobReplayPreparationMissing = 380, JobObservationWorkOverflow = 381, JobObservationBinding = 382, JobMetaPlanContext = 383, JobMetaPlanMissing = 384, JobMetaCost = 385, JobMetaUpdatePlanMissing = 386, JobMetaUpdateBinding = 387, JobMetaUpdateMissing = 388, JobCheckpointCapacity = 389, JobPromotionBinding = 390, JobTransferCoverage = 391, JobDevelopmentBinding = 392, JobCompositionBinding = 393, JobModelQualification = 394, JobSamplingContinuation = 395, JobQualificationSequence = 396, JobFinderBinding = 397, JobCheckpointUnit = 398, JobPrerequisiteRole = 399,
+        JobParentSnapshot = 373, JobHistoryRequestBinding = 374, JobHistoryRequestMissing = 375, JobReplaySnapshotBinding = 376, JobArtifactLifetimeCapacity = 377, JobArtifactReservation = 378, JobReplayReceiptBinding = 379, JobReplayPreparationMissing = 380, JobObservationWorkOverflow = 381, JobObservationBinding = 382, JobMetaPlanContext = 383, JobMetaPlanMissing = 384, JobMetaCost = 385, JobMetaUpdatePlanMissing = 386, JobMetaUpdateBinding = 387, JobMetaUpdateMissing = 388, JobCheckpointCapacity = 389, JobPromotionBinding = 390, JobTransferCoverage = 391, JobDevelopmentBinding = 392, JobCompositionBinding = 393, JobSamplingContinuation = 395, JobQualificationSequence = 396, JobFinderBinding = 397, JobCheckpointUnit = 398, JobPrerequisiteRole = 399,
         LearningExampleOwner = 400, LearningExampleEligibility = 401, LearningReplayPointer = 402, LearningProgramProvenance = 403, LearningProofProvenance = 404, LearningProgramTarget = 405, LearningDefinitionUtility = 406, LearningStateCapacity = 407, LearningReplayStrategyCapacity = 408, LearningFeedbackModel = 409,
         LearningFixedSnapshotCapacity = 410, LearningMetaHeadroom = 411, LearningMetaBatchCapacity = 412, LearningLocalCountOverflow = 413, LearningPeerCountOverflow = 414, LearningSequenceOverflow = 415, LearningRevisionOverflow = 416,
-        ProgressMetaJobBinding = 417, ProgressRepeatedMismatch = 418, ProgressContinuationMismatch = 419, ProgressMetaTrialBinding = 420, ProgressFirstUnit = 421, ProgressTransferLoss = 422,
+        ProgressMetaJobBinding = 417, ProgressRepeatedMismatch = 418, ProgressContinuationMismatch = 419, ProgressMetaTrialBinding = 420, ProgressFirstUnit = 421,
         JournalConfiguration = 423, JournalSequence = 424, JournalUnitsOverflow = 425, JournalTimeOverflow = 426, JournalAllowance = 427, JournalTrainingRole = 428, JournalLearningEpoch = 429, JournalFrontierRole = 430, JournalResolvedFrontier = 431, JournalHistoryJob = 432, JournalMetaJob = 433, JournalProviderRole = 434, JournalProviderMissing = 435, JournalHorizonOverflow = 436, JournalRecordBinding = 437, JournalProgramCheckpoint = 438, JournalAccountMissing = 439, JournalAccountBinding = 440, JournalFinderCursor = 441, JournalAccountCorrupt = 442,
         RoleHistoryFormat = 443, OutputFrontierRole = 444, OutputFrontierResolved = 445, OutputTypeCapacity = 446,
         ReplaySnapshotMissing = 447, ReplaySnapshotBinding = 448, ReplayCoverageBinding = 449, ReplayTrainingSplit = 450, ReplayProgramBinding = 451, ReplayProofBinding = 452,
@@ -938,7 +936,7 @@ codes! {
         ConstructionScoreCount = 701, ConstructionScoreNonFinite = 702, ConstructionSourceNotClosed = 703, ConstructionSelectionIndex = 704, ConstructionMeaningMismatch = 705, ConstructionRootMissing = 706, ConstructionHelperForward = 707, ConstructionHelperWidth = 708, ConstructionRecipeEmpty = 709, ConstructionRecipeRootMismatch = 710,
         RepairDeadline = 711, RepairWorkAllowance = 712, RepairProtectedProof = 713, RepairHelperConclusion = 714, RepairProtectedHelper = 715, RepairRootConclusion = 716, RepairClosureCapacity = 717, PartitionFreshVariable = 718, PartitionBinderMissing = 719, PartitionReferenceMismatch = 720, PartitionConclusionMissing = 721, PartitionVariableInventory = 722, PartitionOriginMissing = 723, PartitionTargetMismatch = 724, PartitionArtifactCapacity = 725, PartitionReplayMismatch = 726, PartitionCutMissing = 727,
         FinderDescriptorShape = 728, FinderDescriptorBinding = 729, FinderPredictorWidth = 730, FinderUtilityWidth = 731, FinderPredictorWeight = 732, FinderUtilityWeight = 733, FinderObservationCounts = 734, FinderUtilityLabel = 735, FinderUtilityOverflow = 736, FinderReplayUtility = 737, FinderRehearsalOverflow = 738, FinderUpdateOverflow = 739, FinderSuccessOverflow = 740, FinderAttemptOverflow = 741, FinderSupportOverflow = 742, FinderRecipeInvalid = 743, FinderCurriculumCapacity = 744, FinderCurriculumCounts = 745, FinderRehearsalInvalid = 746, FinderCursorOverflow = 747, PeerSealMissing = 748, PeerOperandWidth = 749, PeerOperandOrder = 750, MeasurementScopeMismatch = 751, MeasurementCounterOverflow = 752,
-        InternalCutTargetMismatch = 753, DefinitionAuthorshipIdentity = 754,
+        InternalCutTargetMismatch = 753, DefinitionAuthorshipIdentity = 754, FinderDecisionInvalid = 755, ResearchValueInvalid = 756, FinderRecallInvalid = 757, CausalTrialBinding = 758,
     }
 
 }

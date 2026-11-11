@@ -181,7 +181,7 @@ fn maximum_supported_batch_memory_is_bounded() {
                 ranking_quarters: 2,
                 gentle_rate: true,
             },
-            Some((&pool, 0)),
+            Some((&pool, 0, false)),
             preservation::Mode::default(),
         )
         .unwrap();

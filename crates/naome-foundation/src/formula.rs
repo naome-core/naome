@@ -244,6 +244,24 @@ impl Formula {
         !has_matching_free_variable(&self.0, &|_| true)
     }
 
+    /// Returns whether the outermost formula node is a universal binder.
+    #[must_use]
+    pub const fn has_outer_universal(&self) -> bool {
+        matches!(&self.0, Node::ForAll(_))
+    }
+
+    /// Counts consecutive universal binders at the root.
+    #[must_use]
+    pub fn outer_universal_count(&self) -> usize {
+        let mut node = &self.0;
+        let mut count = 0;
+        while let Node::ForAll(body) = node {
+            count += 1;
+            node = body;
+        }
+        count
+    }
+
     /// Opens the outer universal binder using a fresh free variable.
     ///
     /// This is a structural projection, not an inference rule. A consumer must
@@ -252,12 +270,12 @@ impl Formula {
     /// A variable already free in this formula cannot be used for opening.
     #[must_use]
     pub fn open_outer_universal(&self, variable: FreeVariable) -> Option<Self> {
-        if self.free_variables().contains(&variable) {
-            return None;
-        }
         let Node::ForAll(body) = &self.0 else {
             return None;
         };
+        if has_matching_free_variable(body, &|candidate| candidate == variable) {
+            return None;
+        }
         let mut body = body.as_ref().clone();
         open_binder(&mut body, 0, variable);
         Some(Self(body))

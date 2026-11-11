@@ -21,6 +21,7 @@ impl Manual {
             client: Client {
                 sender,
                 feedback: Default::default(),
+                research: Default::default(),
             },
             receiver,
             next: 1,

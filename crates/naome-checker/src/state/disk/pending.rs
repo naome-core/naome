@@ -24,11 +24,11 @@ impl DiskArtifactState {
                 let map = kind.map(self);
                 let mut walk = map.walk();
                 while let Some(visit) = walk.step_selected(&mut select)? {
-                    let Some((key, record)) = visit.entry else {
+                    let Some((key, record)) = visit.entry() else {
                         continue;
                     };
                     if matches!(kind, MapKind::Statements) {
-                        let (address, length) = decode_statement_record(&record)?;
+                        let (address, length) = decode_statement_record(record)?;
                         let id = StatementId::from_bytes(key);
                         if length == 0 {
                             if naome_proof::program::graph_statement_id(address) != id
@@ -46,7 +46,7 @@ impl DiskArtifactState {
                             }
                         }
                     } else if matches!(kind, MapKind::Definitions) {
-                        let (address, length) = definition_record(&record)?;
+                        let (address, length) = definition_record(record)?;
                         if select(address)? {
                             let bytes = map.storage().read(address, length)?;
                             if bytes.len() != length
@@ -61,7 +61,7 @@ impl DiskArtifactState {
                         MapKind::Outgoing | MapKind::Deductions | MapKind::Instances
                     ) {
                         let mut nested =
-                            DiskMap::from_root(map.storage(), decode_root(Some(&record))?).walk();
+                            DiskMap::from_root(map.storage(), decode_root(Some(record))?).walk();
                         while nested.step_selected(&mut select)?.is_some() {}
                     }
                 }

@@ -81,6 +81,34 @@ fn free_variable_normalization_leaves_bound_indices_unchanged() {
 }
 
 #[test]
+fn pattern_encoding_erases_free_identifiers_and_preserves_bound_variables_and_suffixes() {
+    let x = FreeVariable::new(1);
+    let y = FreeVariable::new(2);
+    let bound_body = Formula::for_all(x, Formula::member(y, x));
+    let tail = Formula::implies(Formula::equal(x, y), Formula::member(y, x));
+    let formula = Formula::implies(bound_body.clone(), tail);
+    let wildcard = |formula: Formula| formula.map_free_variables(|_| FreeVariable::new(0));
+    let expected = wildcard(formula.clone()).encode_canonical().unwrap();
+    let pattern = formula.canonical_implication_pattern().unwrap().unwrap();
+
+    assert_eq!(formula.encode_free_variable_pattern().unwrap(), expected);
+    assert_eq!(pattern.as_bytes(), expected);
+    assert_eq!(
+        pattern.antecedent(),
+        wildcard(bound_body).encode_canonical().unwrap()
+    );
+    let (_, first_suffix) = formula.implication_parts().unwrap();
+    let (_, last_suffix) = first_suffix.implication_parts().unwrap();
+    let first_suffix = wildcard(first_suffix).encode_canonical().unwrap();
+    let last_suffix = wildcard(last_suffix).encode_canonical().unwrap();
+    assert!(
+        pattern
+            .consequents()
+            .eq([first_suffix.as_slice(), last_suffix.as_slice()])
+    );
+}
+
+#[test]
 fn canonical_formula_round_trips_free_and_bound_variables() {
     let x = FreeVariable::new(1);
     let y = FreeVariable::new(2);
@@ -101,10 +129,18 @@ fn caller_node_limits_are_counted_before_the_next_node() {
     let (decoded, decoded_nodes) = Formula::decode_canonical_with_node_limit(&encoded, 2).unwrap();
 
     assert_eq!(encoded_nodes, 2);
+    assert_eq!(
+        formula.encoded_length_with_node_limit(2),
+        Ok((encoded.len(), encoded_nodes))
+    );
     assert_eq!(decoded_nodes, 2);
     assert_eq!(decoded, formula);
     assert_eq!(
         formula.encode_canonical_with_node_limit(1),
+        Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
+    );
+    assert_eq!(
+        formula.encoded_length_with_node_limit(1),
         Err(FormulaCodecError::NodeLimitExceeded { maximum: 1 })
     );
     assert_eq!(
@@ -181,9 +217,18 @@ fn codec_fails_closed_at_the_depth_limit() {
     let mut rejected = accepted.clone();
     rejected = Formula::negate(rejected);
 
-    assert!(accepted.encode_canonical().is_ok());
+    assert_eq!(
+        accepted.encoded_length(),
+        accepted.encode_canonical().map(|bytes| bytes.len())
+    );
     assert_eq!(
         rejected.encode_canonical(),
+        Err(FormulaCodecError::DepthLimitExceeded {
+            maximum: FORMULA_MAX_DEPTH,
+        })
+    );
+    assert_eq!(
+        rejected.encoded_length(),
         Err(FormulaCodecError::DepthLimitExceeded {
             maximum: FORMULA_MAX_DEPTH,
         })
@@ -227,8 +272,15 @@ fn codec_enforces_derived_node_and_byte_limits() {
         accepted.encode_canonical().unwrap().len(),
         FORMULA_MAX_BYTES
     );
+    assert_eq!(accepted.encoded_length(), Ok(FORMULA_MAX_BYTES));
     assert_eq!(
         rejected.encode_canonical(),
+        Err(FormulaCodecError::NodeLimitExceeded {
+            maximum: FORMULA_MAX_NODES,
+        })
+    );
+    assert_eq!(
+        rejected.encoded_length(),
         Err(FormulaCodecError::NodeLimitExceeded {
             maximum: FORMULA_MAX_NODES,
         })
@@ -285,6 +337,54 @@ fn borrowed_spine_ranges_preserve_every_original_canonical_suffix() {
 }
 
 #[test]
+fn implication_projection_enforces_the_canonical_depth_and_node_limits() {
+    let x = FreeVariable::new(0);
+    let atom = Formula::equal(x, x);
+    let mut spine = atom.clone();
+    for _ in 1..FORMULA_MAX_DEPTH {
+        spine = Formula::implies(atom.clone(), spine);
+    }
+    assert!(spine.canonical_implication().is_ok());
+    let too_deep = Formula::implies(atom.clone(), spine);
+    assert_eq!(
+        too_deep.canonical_implication().err(),
+        Some(FormulaCodecError::DepthLimitExceeded {
+            maximum: FORMULA_MAX_DEPTH,
+        })
+    );
+
+    let mut wide = atom.clone();
+    for _ in 0..15 {
+        wide = Formula::implies(wide.clone(), wide);
+    }
+    let too_many_nodes = Formula::implies(wide, atom);
+    assert_eq!(
+        too_many_nodes.canonical_implication().err(),
+        Some(FormulaCodecError::NodeLimitExceeded {
+            maximum: FORMULA_MAX_NODES,
+        })
+    );
+}
+
+#[test]
+fn single_implication_exposes_one_suffix_without_allocating_offsets() {
+    let x = FreeVariable::new(0);
+    let left = Formula::equal(x, x);
+    let right = Formula::member(x, x);
+    let formula = Formula::implies(left.clone(), right.clone());
+    let projection = formula.canonical_implication().unwrap().unwrap();
+
+    assert_eq!(projection.antecedent(), left.encode_canonical().unwrap());
+    let mut consequents = projection.consequents();
+    assert_eq!(
+        consequents.next(),
+        Some(right.encode_canonical().unwrap().as_slice())
+    );
+    assert_eq!(consequents.next(), None);
+    assert_eq!(projection.later_consequents.capacity(), 0);
+}
+
+#[test]
 fn implication_projection_retains_linear_buffer_capacity_for_growing_spines() {
     let x = FreeVariable::new(0);
     for count in [16, 32, 64, 128] {
@@ -294,9 +394,9 @@ fn implication_projection_retains_linear_buffer_capacity_for_growing_spines() {
         }
         let projection = formula.canonical_implication().unwrap().unwrap();
         let retained = projection.bytes.capacity()
-            + projection.consequents.capacity() * std::mem::size_of::<usize>();
+            + (1 + projection.later_consequents.capacity()) * std::mem::size_of::<usize>();
         let repeated_bytes: usize = projection.consequents().map(<[u8]>::len).sum();
-        assert_eq!(projection.consequents.len(), count);
+        assert_eq!(projection.consequents().count(), count);
         assert_eq!(projection.bytes.len(), 12 * count + 11);
         assert!(retained <= 40 * count + 128);
         assert!(repeated_bytes > projection.bytes.len() * count / 3);

@@ -106,7 +106,7 @@ pub(in crate::learning) fn join(a: Term, b: Term, names: &mut Names) -> Result<T
     )?;
     c::app(c::app(law, a)?, b)
 }
-fn exists_intro(
+pub(in crate::learning) fn exists_intro(
     goal: &Formula,
     v: FreeVariable,
     body: Term,

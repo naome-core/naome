@@ -7,6 +7,7 @@ const MAX_VALUE_BYTES: usize = 2048;
 const VERSION: u8 = 1;
 const LEAF: u8 = 0;
 const BRANCH: u8 = 1;
+const LEAF_HEADER_BYTES: usize = 36;
 const CHILD_BYTES: usize = 128;
 
 /// Only an authenticated enclosing context may restore a root.
@@ -47,16 +48,20 @@ impl DiskMap {
     }
 
     pub(crate) fn get(&self, key: &[u8; 32]) -> Result<Option<Vec<u8>>, ContextError> {
-        let mut lookup = self.lookup(*key);
+        self.finish_lookup(*key)?.into_value()
+    }
+
+    fn finish_lookup(&self, key: [u8; 32]) -> Result<Lookup, ContextError> {
+        let mut lookup = self.lookup(key);
         while self.advance_lookup(&mut lookup)?.is_some() {}
-        lookup.into_value()
+        Ok(lookup)
     }
 
     pub(crate) fn lookup(&self, key: [u8; 32]) -> Lookup {
         Lookup {
             pending: self.root.map(Pending::root),
             key,
-            value: None,
+            leaf: None,
             failed: false,
         }
     }
@@ -69,7 +74,7 @@ impl DiskMap {
     }
 
     pub(crate) fn contains_key(&self, key: &[u8; 32]) -> Result<bool, ContextError> {
-        self.get(key).map(|value| value.is_some())
+        self.finish_lookup(*key)?.found()
     }
 
     /// An existing key keeps both its value and the complete root unchanged.
@@ -81,16 +86,35 @@ impl DiskMap {
         self.write_value(key, value, true).map(|_| ())
     }
 
-    pub(crate) fn entries(&self) -> Entries {
+    pub(crate) fn entries(
+        &self,
+    ) -> impl Iterator<Item = Result<([u8; 32], Vec<u8>), ContextError>> + use<> {
         self.entries_after(None)
     }
-    pub(crate) fn entries_after(&self, after: Option<[u8; 32]>) -> Entries {
-        Entries {
+    pub(crate) fn entries_after(
+        &self,
+        after: Option<[u8; 32]>,
+    ) -> impl Iterator<Item = Result<([u8; 32], Vec<u8>), ContextError>> + use<> {
+        self.map_entries_after(after, |key, value| Ok((key, value.to_vec())))
+    }
+
+    pub(crate) fn map_entries_after<T, F>(
+        &self,
+        after: Option<[u8; 32]>,
+        mut project: F,
+    ) -> impl Iterator<Item = Result<T, ContextError>> + use<T, F>
+    where
+        F: FnMut([u8; 32], &[u8]) -> Result<T, ContextError>,
+    {
+        let cursor = LeafCursor {
             storage: self.storage(),
             pending: self.root.into_iter().map(Pending::root).collect(),
             previous_key: after,
             after,
-        }
+        };
+        cursor.map(move |entry| {
+            entry.and_then(|(key, bytes)| project(key, &bytes[LEAF_HEADER_BYTES..]))
+        })
     }
 
     pub(crate) fn walk(&self) -> Walk {
@@ -112,10 +136,7 @@ impl DiskMap {
             return Err(ContextError::Limit);
         }
         let Some(root) = self.root else {
-            let leaf = self.save_node(Node::Leaf {
-                key,
-                value: value.to_vec(),
-            })?;
+            let leaf = self.save_node(Node::Leaf { key, value })?;
             self.root = Some(leaf.root);
             return Ok(true);
         };
@@ -123,14 +144,26 @@ impl DiskMap {
         // At most 256 branch frames are retained, independent of corpus size.
         let mut path = Vec::new();
         let mut pending = Pending::root(root);
-        let (terminal, old_key, old_value) = loop {
-            let node = load_node(self.storage.as_ref(), pending)?;
+        let storage = self.storage.as_ref();
+        let (terminal, old_key) = loop {
+            let bytes =
+                read_node(storage, pending).inspect_err(|error| storage.record_failure(error))?;
+            let node =
+                decode_node(&bytes, pending).inspect_err(|error| storage.record_failure(error))?;
             let source = Child {
                 root: pending.root,
                 range: node.range(),
             };
             match node {
-                Node::Leaf { key, value } => break (source, key, value),
+                Node::Leaf {
+                    key: old_key,
+                    value: old_value,
+                } => {
+                    if old_key == key && (!replace || old_value == value) {
+                        return Ok(false);
+                    }
+                    break (source, old_key);
+                }
                 Node::Branch { bit, left, right } => {
                     let right_side = key_bit(&key, bit);
                     path.push(Frame {
@@ -145,14 +178,13 @@ impl DiskMap {
             }
         };
 
-        if old_key == key && (!replace || old_value == value) {
-            return Ok(false);
-        }
-        let mut changed = self.save_node(Node::Leaf {
-            key,
-            value: value.to_vec(),
-        })?;
-        let prefix_length = if old_key == key {
+        let replacing = old_key == key;
+        // The authenticated source path already verified these key-only fingerprints.
+        let mut changed = self.save_node_with_fingerprint(
+            Node::Leaf { key, value },
+            replacing.then_some(&terminal.root.fingerprint),
+        )?;
+        let prefix_length = if replacing {
             path.len()
         } else {
             let bit = first_differing_bit(&old_key, &key).ok_or(ContextError::Corrupt)?;
@@ -176,19 +208,30 @@ impl DiskMap {
             } else {
                 (changed, frame.right)
             };
-            changed = self.save_node(Node::Branch {
-                bit: frame.bit,
-                left,
-                right,
-            })?;
+            changed = self.save_node_with_fingerprint(
+                Node::Branch {
+                    bit: frame.bit,
+                    left,
+                    right,
+                },
+                replacing.then_some(&frame.source.root.fingerprint),
+            )?;
         }
         // A failed write can leave unreachable immutable nodes, never a
         // partially updated published root or a mutation of an old handle.
         self.root = Some(changed.root);
-        Ok(old_key != key)
+        Ok(!replacing)
     }
 
-    fn save_node(&self, node: Node) -> Result<Child, ContextError> {
+    fn save_node(&self, node: Node<'_>) -> Result<Child, ContextError> {
+        self.save_node_with_fingerprint(node, None)
+    }
+
+    fn save_node_with_fingerprint(
+        &self,
+        node: Node<'_>,
+        fingerprint: Option<&[u8; 32]>,
+    ) -> Result<Child, ContextError> {
         node.validate()?;
         let bytes = node.encode();
         if bytes.len() > MAX_NODE_BYTES {
@@ -196,7 +239,7 @@ impl DiskMap {
         }
         let root = Root {
             address: storage_address(&bytes),
-            fingerprint: node.fingerprint(),
+            fingerprint: fingerprint.copied().unwrap_or_else(|| node.fingerprint()),
         };
         self.storage.write(root.address, &bytes)?;
         Ok(Child {
@@ -211,22 +254,27 @@ impl DiskMap {
 pub(crate) struct Lookup {
     pending: Option<Pending>,
     key: [u8; 32],
-    value: Option<Vec<u8>>,
+    // The complete authenticated leaf buffer, retained only for a hit.
+    leaf: Option<Vec<u8>>,
     failed: bool,
 }
 impl Lookup {
     pub(crate) fn complete(&self) -> bool {
         !self.failed && self.pending.is_none()
     }
-    pub(crate) fn value(&self) -> Result<Option<&[u8]>, ContextError> {
+    pub(crate) fn found(&self) -> Result<bool, ContextError> {
         if !self.complete() {
             return Err(ContextError::Corrupt);
         }
-        Ok(self.value.as_deref())
+        Ok(self.leaf.is_some())
     }
     fn into_value(self) -> Result<Option<Vec<u8>>, ContextError> {
-        self.value()?;
-        Ok(self.value)
+        self.found()?;
+        Ok(self.leaf.map(|mut bytes| {
+            bytes.copy_within(LEAF_HEADER_BYTES.., 0);
+            bytes.truncate(bytes.len() - LEAF_HEADER_BYTES);
+            bytes
+        }))
     }
     fn step(&mut self, storage: &dyn ContextStorage) -> Result<Option<usize>, ContextError> {
         if self.failed {
@@ -236,15 +284,16 @@ impl Lookup {
             return Ok(None);
         };
         let result = (|| {
-            let (node, bytes) = load_node_sized(storage, pending)?;
-            match node {
-                Node::Leaf { key, value } => self.value = (key == self.key).then_some(value),
+            let bytes = read_node(storage, pending)?;
+            let byte_count = bytes.len();
+            match decode_node(&bytes, pending)? {
+                Node::Leaf { key, .. } => self.leaf = (key == self.key).then_some(bytes),
                 Node::Branch { bit, left, right } => {
                     let child = if key_bit(&self.key, bit) { right } else { left };
                     self.pending = Some(pending.child(child, bit)?);
                 }
             }
-            Ok(Some(bytes))
+            Ok(Some(byte_count))
         })();
         if let Err(error) = &result {
             self.failed = true;
@@ -266,8 +315,19 @@ pub(crate) struct Walk {
 
 pub(crate) struct Visit {
     pub(crate) address: [u8; 32],
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) entry: Option<([u8; 32], Vec<u8>)>,
+    bytes: Vec<u8>,
+    key: Option<[u8; 32]>,
+}
+
+impl Visit {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn entry(&self) -> Option<([u8; 32], &[u8])> {
+        // Walk only records a key after authenticating and decoding a leaf.
+        self.key.map(|key| (key, &self.bytes[LEAF_HEADER_BYTES..]))
+    }
 }
 
 impl Walk {
@@ -300,15 +360,14 @@ impl Walk {
                     break pending;
                 }
             };
-            let node = load_node_inner(self.storage.as_ref(), pending)?;
-            let bytes = node.encode();
-            let entry = match node {
-                Node::Leaf { key, value } => {
+            let bytes = read_node(self.storage.as_ref(), pending)?;
+            let key = match decode_node(&bytes, pending)? {
+                Node::Leaf { key, .. } => {
                     if self.previous_key.is_some_and(|previous| previous >= key) {
                         return Err(ContextError::Corrupt);
                     }
                     self.previous_key = Some(key);
-                    Some((key, value))
+                    Some(key)
                 }
                 Node::Branch { bit, left, right } => {
                     self.pending.push(pending.child(right, bit)?);
@@ -319,7 +378,7 @@ impl Walk {
             Ok(Some(Visit {
                 address: pending.root.address,
                 bytes,
-                entry,
+                key,
             }))
         })();
         if let Err(error) = &result {
@@ -333,14 +392,14 @@ impl Walk {
 
 /// Completion is decided only by the checker's exhausted traversal stack.
 /// A failed read yields one error and terminates this failed traversal.
-pub(crate) struct Entries {
+struct LeafCursor {
     storage: Arc<dyn ContextStorage>,
     pending: Vec<Pending>,
     previous_key: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
 }
 
-impl Iterator for Entries {
+impl Iterator for LeafCursor {
     type Item = Result<([u8; 32], Vec<u8>), ContextError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -352,21 +411,24 @@ impl Iterator for Entries {
             {
                 continue;
             }
-            let result = (|| match load_node(self.storage.as_ref(), pending)? {
-                Node::Leaf { key, value } => {
-                    if self.after.is_some_and(|after| key <= after) {
-                        return Ok(None);
+            let result = (|| {
+                let bytes = read_node(self.storage.as_ref(), pending)?;
+                match decode_node(&bytes, pending)? {
+                    Node::Leaf { key, .. } => {
+                        if self.after.is_some_and(|after| key <= after) {
+                            return Ok(None);
+                        }
+                        if self.previous_key.is_some_and(|previous| previous >= key) {
+                            return Err(ContextError::Corrupt);
+                        }
+                        self.previous_key = Some(key);
+                        Ok(Some((key, bytes)))
                     }
-                    if self.previous_key.is_some_and(|previous| previous >= key) {
-                        return Err(ContextError::Corrupt);
+                    Node::Branch { bit, left, right } => {
+                        self.pending.push(pending.child(right, bit)?);
+                        self.pending.push(pending.child(left, bit)?);
+                        Ok(None)
                     }
-                    self.previous_key = Some(key);
-                    Ok(Some((key, value)))
-                }
-                Node::Branch { bit, left, right } => {
-                    self.pending.push(pending.child(right, bit)?);
-                    self.pending.push(pending.child(left, bit)?);
-                    Ok(None)
                 }
             })();
             match result {
@@ -438,12 +500,12 @@ struct Frame {
 // Nodes are short-lived; each traversal path is bounded to 256 branches. Inline
 // children avoid an extra heap allocation for each authenticated branch read.
 #[allow(clippy::large_enum_variant)]
-enum Node {
-    Leaf { key: [u8; 32], value: Vec<u8> },
+enum Node<'a> {
+    Leaf { key: [u8; 32], value: &'a [u8] },
     Branch { bit: u8, left: Child, right: Child },
 }
 
-impl Node {
+impl<'a> Node<'a> {
     fn range(&self) -> KeyRange {
         match self {
             Self::Leaf { key, .. } => KeyRange {
@@ -475,18 +537,15 @@ impl Node {
             Self::Branch { bit, left, right } => {
                 let left_range = left.range;
                 let right_range = right.range;
+                // The outer endpoints bound a single prefix at the split.
+                // The ordered inner endpoints must lie on their respective sides.
                 if left_range.minimum > left_range.maximum
                     || right_range.minimum > right_range.maximum
                     || left_range.maximum >= right_range.minimum
                     || left.root.address == right.root.address
                     || first_differing_bit(&left_range.minimum, &right_range.maximum) != Some(*bit)
-                    || !same_prefix(&left_range.minimum, &left_range.maximum, *bit)
-                    || !same_prefix(&left_range.minimum, &right_range.minimum, *bit)
-                    || !same_prefix(&right_range.minimum, &right_range.maximum, *bit)
-                    || key_bit(&left_range.minimum, *bit)
                     || key_bit(&left_range.maximum, *bit)
                     || !key_bit(&right_range.minimum, *bit)
-                    || !key_bit(&right_range.maximum, *bit)
                 {
                     return Err(ContextError::Corrupt);
                 }
@@ -497,7 +556,7 @@ impl Node {
 
     fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(match self {
-            Self::Leaf { value, .. } => 36 + value.len(),
+            Self::Leaf { value, .. } => LEAF_HEADER_BYTES + value.len(),
             Self::Branch { .. } => 3 + 2 * CHILD_BYTES,
         });
         bytes.push(VERSION);
@@ -518,19 +577,19 @@ impl Node {
         bytes
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self, ContextError> {
+    fn decode(bytes: &'a [u8]) -> Result<Self, ContextError> {
         if bytes.first() != Some(&VERSION) {
             return Err(ContextError::Corrupt);
         }
         let node = match bytes.get(1) {
-            Some(&LEAF) if bytes.len() >= 36 => {
+            Some(&LEAF) if bytes.len() >= LEAF_HEADER_BYTES => {
                 let length = u16::from_be_bytes([bytes[34], bytes[35]]) as usize;
-                if length > MAX_VALUE_BYTES || bytes.len() != 36 + length {
+                if length > MAX_VALUE_BYTES || bytes.len() != LEAF_HEADER_BYTES + length {
                     return Err(ContextError::Corrupt);
                 }
                 Self::Leaf {
                     key: fixed_key(&bytes[2..34])?,
-                    value: bytes[36..].to_vec(),
+                    value: &bytes[LEAF_HEADER_BYTES..],
                 }
             }
             Some(&BRANCH) if bytes.len() == 3 + 2 * CHILD_BYTES => Self::Branch {
@@ -545,22 +604,7 @@ impl Node {
     }
 }
 
-fn load_node(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
-    let result = load_node_inner(storage, pending);
-    if let Err(error) = &result {
-        storage.record_failure(error);
-    }
-    result
-}
-
-fn load_node_inner(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
-    load_node_sized(storage, pending).map(|(node, _)| node)
-}
-
-fn load_node_sized(
-    storage: &dyn ContextStorage,
-    pending: Pending,
-) -> Result<(Node, usize), ContextError> {
+fn read_node(storage: &dyn ContextStorage, pending: Pending) -> Result<Vec<u8>, ContextError> {
     if pending.depth > 256 {
         return Err(ContextError::Corrupt);
     }
@@ -571,7 +615,11 @@ fn load_node_sized(
     if storage_address(&bytes) != pending.root.address {
         return Err(ContextError::Corrupt);
     }
-    let node = Node::decode(&bytes)?;
+    Ok(bytes)
+}
+
+fn decode_node(bytes: &[u8], pending: Pending) -> Result<Node<'_>, ContextError> {
+    let node = Node::decode(bytes)?;
     if node.fingerprint() != pending.root.fingerprint
         || pending.range.is_some_and(|range| range != node.range())
     {
@@ -585,7 +633,7 @@ fn load_node_sized(
     {
         return Err(ContextError::Corrupt);
     }
-    Ok((node, bytes.len()))
+    Ok(node)
 }
 
 pub(crate) fn storage_address(bytes: &[u8]) -> [u8; 32] {
@@ -630,10 +678,6 @@ fn first_differing_bit(left: &[u8; 32], right: &[u8; 32]) -> Option<u8> {
         }
     }
     None
-}
-
-fn same_prefix(left: &[u8; 32], right: &[u8; 32], bit: u8) -> bool {
-    first_differing_bit(left, right).is_none_or(|differing| differing >= bit)
 }
 
 fn key_bit(key: &[u8; 32], bit: u8) -> bool {

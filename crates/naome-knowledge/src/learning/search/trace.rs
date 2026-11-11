@@ -99,7 +99,62 @@ pub(crate) struct Trace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     repair: Option<Repair>,
 }
+/// A difference in the attempted action at the same checked search state
+/// and ordered menu. The observation does not assert mathematical necessity.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(in crate::learning) struct DecisionFork<'a> {
+    pub state: &'a str,
+    pub offered: &'a str,
+    pub index: usize,
+    pub original: usize,
+    pub intervened: usize,
+}
+
 impl Trace {
+    pub(in crate::learning) fn decision_digest(&self) -> String {
+        super::super::digest(&(
+            &self.target,
+            self.attempts,
+            self.omitted,
+            self.events
+                .iter()
+                .map(|event| {
+                    (
+                        event.parent,
+                        &event.state,
+                        &event.offered,
+                        event.selected,
+                        event.closed,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    pub(in crate::learning) fn first_decision_fork<'a>(
+        &'a self,
+        alternative: &'a Self,
+    ) -> Option<DecisionFork<'a>> {
+        if self.target != alternative.target || self.root != alternative.root {
+            return None;
+        }
+        for (index, (a, b)) in self.events.iter().zip(&alternative.events).enumerate() {
+            if a.parent != b.parent || a.state != b.state || a.offered != b.offered {
+                return None;
+            }
+            if a.selected != b.selected {
+                return Some(DecisionFork {
+                    state: &a.state,
+                    offered: &a.offered,
+                    index,
+                    original: a.selected,
+                    intervened: b.selected,
+                });
+            }
+        }
+        None
+    }
+
     /// At most four actual observed transitions, cut at every missing match.
     /// A reconstructed proof supplies local checked labels, never chronology.
     pub(crate) fn windows(

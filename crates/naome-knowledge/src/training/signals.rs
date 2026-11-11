@@ -55,7 +55,7 @@ pub(super) fn rules(steps: &[ProofStep], present: &mut [bool; RULES]) {
             ProofStep::Generalization { .. } => 19,
         };
         present[index] = true;
-        present[20] |= !step.definition_references().is_empty();
+        present[20] |= step.has_definition_references();
     }
 }
 

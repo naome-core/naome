@@ -10,7 +10,7 @@ use crate::{
 use naome_foundation::Formula;
 use naome_proof::{
     ArtifactId, DefinitionCertificate, DefinitionId, DefinitionResolution, DefinitionResolver,
-    DerivationId, ProofId, ProofStep, StatementId,
+    DerivationId, ProofId, StatementId,
 };
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc};
@@ -56,7 +56,8 @@ impl crate::context::ProgramNodes for ProgramNodes {
             let bytes = self.0.get(&address)?.ok_or(ContextError::Corrupt)?;
             let (node, properties) = naome_proof::program::decode_graph_node(&bytes)
                 .map_err(|_| ContextError::Corrupt)?;
-            if naome_proof::program::graph_node_hash(node, properties) != address {
+            // The decoder has verified that these are the canonical node bytes.
+            if <[u8; 32]>::from(Sha256::digest(&bytes)) != address {
                 return Err(ContextError::Corrupt);
             }
             Ok((node, properties))
@@ -150,12 +151,10 @@ impl DiskArtifactState {
         after: Option<ArtifactId>,
     ) -> impl Iterator<Item = Result<ArtifactId, ContextError>> {
         self.artifacts
-            .entries_after(after.map(|id| *id.as_bytes()))
-            .map(|entry| {
-                entry.and_then(|(id, value)| {
-                    artifact_proof_id(ArtifactId::from_bytes(id), &value)?;
-                    Ok(ArtifactId::from_bytes(id))
-                })
+            .map_entries_after(after.map(|id| *id.as_bytes()), |key, value| {
+                let id = ArtifactId::from_bytes(key);
+                artifact_proof_id(id, value)?;
+                Ok(id)
             })
     }
 
@@ -216,13 +215,11 @@ impl DiskArtifactState {
             .storage()
             .write(address, bytes)
             .map_err(ArtifactStateError::Context)?;
-        let mut record = address.to_vec();
-        record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        let record = encode_record_with_u64(&address, bytes.len() as u64);
         next.definitions
             .insert(*definition.definition_id().as_bytes(), &record)
             .map_err(ArtifactStateError::Context)?;
-        let mut identity = vec![1];
-        identity.extend_from_slice(definition.definition_id().as_bytes());
+        let identity = encode_artifact_record(1, definition.definition_id().as_bytes());
         next.artifacts
             .insert(
                 *ArtifactId::from_definition_id(definition.definition_id()).as_bytes(),
@@ -290,8 +287,9 @@ impl DiskArtifactState {
         after: Option<ProofId>,
     ) -> impl Iterator<Item = Result<ProofId, ContextError>> {
         self.proofs
-            .entries_after(after.map(|id| *id.as_bytes()))
-            .map(|entry| entry.map(|(id, _)| ProofId::from_bytes(id)))
+            .map_entries_after(after.map(|id| *id.as_bytes()), |id, _| {
+                Ok(ProofId::from_bytes(id))
+            })
     }
 
     /// Clone a live checked view into fresh byte storage, preserving its exact
@@ -314,23 +312,11 @@ impl DiskArtifactState {
         &mut self,
         proof: CheckedProof,
     ) -> Result<Box<[u8]>, ArtifactStateError> {
-        self.validate_registration(&proof)?;
-        let mut next = self.clone();
-        let mut depth = 0usize;
-        for step in proof.normal_form.certificate().steps() {
-            if let ProofStep::ProofReference { proof_id } = step {
-                depth = depth.max(
-                    self.proof_dependency_depth(*proof_id)
-                        .map_err(ArtifactStateError::Context)?
-                        .ok_or(ArtifactStateError::MissingProofDependency {
-                            proof_id: *proof_id,
-                        })?,
-                );
-            }
-        }
-        let depth = depth
+        let depth = self
+            .validate_registration(&proof)?
             .checked_add(1)
             .ok_or(ArtifactStateError::Context(ContextError::Limit))?;
+        let mut next = self.clone();
         let bytes = proof
             .conclusion
             .encode_canonical()
@@ -345,8 +331,7 @@ impl DiskArtifactState {
             .storage()
             .write(address, &bytes)
             .map_err(ArtifactStateError::Context)?;
-        let mut statement_record = address.to_vec();
-        statement_record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        let statement_record = encode_record_with_u64(&address, bytes.len() as u64);
         next.register_fact(
             proof.proof_id,
             proof.derivation_id,
@@ -362,8 +347,19 @@ impl DiskArtifactState {
         Ok(proof.normal_form.into_canonical_bytes())
     }
 
-    fn validate_registration(&self, proof: &CheckedProof) -> Result<(), ArtifactStateError> {
-        super::registration::validate(self, proof, true)
+    fn validate_registration(&self, proof: &CheckedProof) -> Result<usize, ArtifactStateError> {
+        let mut depth = Ok(0);
+        super::registration::validate(self, proof, true, |id| {
+            let Some(record) = self.proofs.get(id.as_bytes())? else {
+                return Ok(false);
+            };
+            // Keep the first depth error for after the registration checks.
+            if let Ok(maximum) = depth {
+                depth = proof_record(&record).map(|(_, cited_depth)| maximum.max(cited_depth));
+            }
+            Ok(true)
+        })?;
+        self.report(depth).map_err(ArtifactStateError::Context)
     }
     fn index(&self, kind: BucketKind) -> &DiskMap {
         match kind {
@@ -423,12 +419,39 @@ impl DiskArtifactState {
             Ok(Some((address, length)))
         })())
     }
+
+    fn proof_header_and_depth(
+        &self,
+        id: ProofId,
+    ) -> Result<Option<(ProofHeader, usize)>, ContextError> {
+        self.report((|| {
+            let Some(record) = self.proofs.get(id.as_bytes())? else {
+                return Ok(None);
+            };
+            let (derivation, depth) = proof_record(&record)?;
+            let statement = self
+                .derivations
+                .get(derivation.as_bytes())?
+                .ok_or(ContextError::Corrupt)?;
+            let statement = StatementId::from_bytes(fixed(&statement)?);
+            let (address, length) = self
+                .statement_record(statement)?
+                .ok_or(ContextError::Corrupt)?;
+            let header = ProofHeader {
+                location: Some(FormulaLocation {
+                    address,
+                    snapshot: self.snapshot_id(),
+                }),
+                derivation,
+                statement,
+                length: if length == 0 { usize::MAX } else { length },
+            };
+            Ok(Some((header, depth)))
+        })())
+    }
 }
 
 impl super::registration::RegistrationView for DiskArtifactState {
-    fn has_proof(&self, id: ProofId) -> Result<bool, ContextError> {
-        self.contains_proof(id)
-    }
     fn derivation_statement(&self, id: DerivationId) -> Result<Option<StatementId>, ContextError> {
         self.report(
             self.derivations
@@ -491,29 +514,8 @@ impl ContextView for DiskArtifactState {
         self.artifacts.contains_key(id.as_bytes())
     }
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError> {
-        self.report((|| {
-            let Some(derivation) = self.proofs.get(id.as_bytes())? else {
-                return Ok(None);
-            };
-            let (derivation, _) = proof_record(&derivation)?;
-            let statement = self
-                .derivations
-                .get(derivation.as_bytes())?
-                .ok_or(ContextError::Corrupt)?;
-            let statement = StatementId::from_bytes(fixed(&statement)?);
-            let (address, length) = self
-                .statement_record(statement)?
-                .ok_or(ContextError::Corrupt)?;
-            Ok(Some(ProofHeader {
-                location: Some(FormulaLocation {
-                    address,
-                    snapshot: self.snapshot_id(),
-                }),
-                derivation,
-                statement,
-                length: if length == 0 { usize::MAX } else { length },
-            }))
-        })())
+        self.proof_header_and_depth(id)
+            .map(|record| record.map(|(header, _)| header))
     }
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
         self.report((|| {
@@ -634,6 +636,20 @@ fn definition_record(record: &[u8]) -> Result<([u8; 32], usize), ContextError> {
     }
     Ok((address, length))
 }
+fn encode_record_with_u64(prefix: &[u8; 32], value: u64) -> [u8; 40] {
+    let mut record = [0; 40];
+    record[..32].copy_from_slice(prefix);
+    record[32..].copy_from_slice(&value.to_be_bytes());
+    record
+}
+
+fn encode_artifact_record(kind: u8, id: &[u8; 32]) -> [u8; 33] {
+    let mut record = [0; 33];
+    record[0] = kind;
+    record[1..].copy_from_slice(id);
+    record
+}
+
 fn artifact_proof_id(id: ArtifactId, record: &[u8]) -> Result<Option<ProofId>, ContextError> {
     if record.len() != 33 {
         return Err(ContextError::Corrupt);
@@ -695,16 +711,12 @@ fn formula_address(bytes: &[u8]) -> [u8; 32] {
     hash.update(bytes);
     hash.finalize().into()
 }
-fn encode_root(root: Option<Root>) -> Vec<u8> {
-    match root {
-        None => vec![0],
-        Some(root) => {
-            let mut bytes = vec![1];
-            bytes.extend_from_slice(&root.address);
-            bytes.extend_from_slice(&root.fingerprint);
-            bytes
-        }
-    }
+fn encode_root(root: Root) -> [u8; 65] {
+    let mut bytes = [0; 65];
+    bytes[0] = 1;
+    bytes[1..33].copy_from_slice(&root.address);
+    bytes[33..].copy_from_slice(&root.fingerprint);
+    bytes
 }
 fn decode_root(bytes: Option<&[u8]>) -> Result<Option<Root>, ContextError> {
     match bytes {

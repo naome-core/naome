@@ -37,6 +37,9 @@ struct Header {
     model_contract: String,
     model: finder::Model,
     learning: finder::Learning,
+    policy: finder::research::Policy,
+    effects: crate::research_value::Effects,
+    recall: super::recall::Memory,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +53,9 @@ struct Support {
     first_unresolved_at: u64,
     lemma_at: u64,
     goal_at: u64,
+    first_reuse: bool,
+    continuation: bool,
+    forecast: Option<crate::research_value::Forecast>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,11 +70,18 @@ pub(super) struct Record {
     pub question: String,
     pub model_checkpoint: Option<String>,
     pub experience: Option<crate::learning::experience::ExperienceSummary>,
+    decision: Option<ResearchDecision>,
+    value_observed: Option<String>,
+    contributed: bool,
+    used_own_proof: bool,
+    pub(super) recall_observed: bool,
+    continued: bool,
     pub solver: String,
     pub knowledge: String,
     pub last_draw: u64,
     pub last_job: u64,
     pub outcomes: [u64; 6],
+    pub checkpoint_attempts: u64,
     pub last_outcome: Outcome,
     pub units: u64,
     pub spent_ms: u64,
@@ -124,6 +137,15 @@ impl Record {
     fn validate(&self, key: &str, observations: u64) -> Result<(), crate::Error> {
         let question = ResearchQuestion::from_hex(&self.question).map_err(crate::Error::from)?;
         experience::record(&question, self)?;
+        if let Some(checkpoint) = &self.value_observed {
+            crate::object::id_bytes(checkpoint)?;
+        }
+        if let Some(decision) = &self.decision {
+            decision.validate()?;
+            if &decision.resolution != question.resolution_id() || self.experience.is_none() {
+                return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
+            }
+        }
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err(crate::ResearchFailure::EvidenceIdentity.into());
         }
@@ -153,11 +175,24 @@ impl Record {
         for root in [&self.verified, &self.prepared].into_iter().flatten() {
             crate::object::id_bytes(root)?;
         }
-        if self.first_unresolved_job > self.last_job
+        if self.checkpoint_attempts == 0
+            || self.checkpoint_attempts
+                > self
+                    .outcomes
+                    .iter()
+                    .copied()
+                    .fold(0u64, u64::saturating_add)
+            || self.first_unresolved_job > self.last_job
             || self.verified_job > self.last_job
             || self.verified.is_some() != (self.verified_job > 0)
             || (self.first_unresolved_job > 0) != (self.first_unresolved_at > 0)
             || self.verified.is_some() != (self.verified_at > 0)
+            || self.verified.is_none()
+                && (self.contributed
+                    || self.used_own_proof
+                    || self.continued
+                    || self.recall_observed)
+            || self.continued && (!self.contributed || !self.used_own_proof)
             || self.first_unresolved_at > observations
             || self.verified_at > observations
             || self.last_attempt_at > observations
@@ -213,6 +248,9 @@ impl Evidence {
                     model_contract: solver.clone(),
                     model: finder::Model::fresh(),
                     learning: finder::Learning::fresh(solver.clone()),
+                    policy: finder::research::Policy::default(),
+                    effects: Default::default(),
+                    recall: Default::default(),
                 },
                 vec![],
             )?
@@ -224,13 +262,20 @@ impl Evidence {
         crate::object::id_bytes(&header.model_contract)?;
         header.model.validate()?;
         header.learning.validate()?;
-        if header.observations < header.model.updates {
+        header.policy.validate()?;
+        header.effects.validate()?;
+        header.recall.validate(header.observations)?;
+        if header.observations < header.model.updates
+            || header.learning.utility_current() && header.model.utility_observations == 0
+        {
             return Err(crate::ResearchFailure::EvidenceObservationSequence.into());
         }
         if header.model_contract != solver {
             header.model_contract = solver.clone();
             header.model = finder::Model::fresh();
             header.learning = finder::Learning::fresh(solver.clone());
+            header.policy = finder::research::Policy::default();
+            header.effects = Default::default();
         }
         checkpoint.require_kinds(&["question", "proved", "support", "plan"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
@@ -243,14 +288,14 @@ impl Evidence {
             native: settings.native_proof_learning,
         })
     }
-    pub(super) fn bind_solver(&mut self, solver: String) {
-        // The small predictor is an online historical prior for the configured
-        // solver, including in-flight earlier lower-model snapshots. Precise
-        // current-checkpoint ability stays with the existing feedback owner.
-        self.solver = solver;
-    }
     pub(super) fn model(&self) -> &finder::Model {
         &self.header.model
+    }
+    pub(super) fn effects(&self) -> &crate::research_value::Effects {
+        &self.header.effects
+    }
+    pub(super) fn policy(&self) -> &finder::research::Policy {
+        &self.header.policy
     }
     pub(super) fn learning(&self) -> &finder::Learning {
         &self.header.learning
@@ -281,15 +326,50 @@ impl Evidence {
     }
     pub(super) fn feedback(
         &mut self,
+        graph: &Graph,
         feedback: &crate::training::ability::Feedback,
     ) -> Result<(), crate::Error> {
         let mut next = self.header.clone();
-        if next.learning.feedback(&mut next.model, feedback)? {
+        let rebound = next.effects.bind(&feedback.checkpoint);
+        if next.learning.feedback(&mut next.model, feedback, |score| {
+            self.utility_source(graph, score)
+        })? || rebound
+        {
             next.learning.validate()?;
             self.commit(&next, vec![])?;
             self.header = next;
         }
         Ok(())
+    }
+    fn utility_source(
+        &self,
+        graph: &Graph,
+        score: &crate::learning::finder::Score,
+    ) -> Result<Option<ResearchQuestion>, crate::Error> {
+        let proof = naome_proof::ProofId::from_bytes(crate::object::id_bytes(&score.proof)?);
+        let root = ArtifactId::from_proof_id(proof);
+        let Some((_, producer)) = self.proof_source(&crate::hex(root.as_bytes()))? else {
+            return Ok(None);
+        };
+        let question = ResearchQuestion::from_hex(&producer.question)?;
+        if question.resolution_id() != &crate::object::id_bytes(&score.resolution)? {
+            return Err(crate::ResearchFailure::FinderUtilityIdentity.into());
+        }
+        Ok(Frontier::checked_target(graph, root, &question)?.then_some(question))
+    }
+    fn proof_source(&self, root: &str) -> Result<Option<(String, Record)>, crate::Error> {
+        let Some(key) = self.checkpoint.get::<String>("proved", root, 128)? else {
+            return Ok(None);
+        };
+        let record = self
+            .checkpoint
+            .get::<Record>("question", &key, MAX_RECORD)?
+            .ok_or(crate::ResearchFailure::EvidenceProofSourceMissing)?;
+        record.validate(&key, self.header.observations)?;
+        if record.verified.as_deref() != Some(root) {
+            return Err(crate::ResearchFailure::EvidenceProofIdentity.into());
+        }
+        Ok(Some((key, record)))
     }
     pub(super) fn random(&self) -> u64 {
         self.header.random
@@ -435,6 +515,7 @@ impl Evidence {
     ) -> Result<(), crate::Error> {
         let mut header = self.header.clone();
         let mut record = record.clone();
+        let mut effect = None;
         if let Some(observation) = observation {
             header.observations = header
                 .observations
@@ -453,8 +534,30 @@ impl Evidence {
                 Observation::CutBlocked => None,
             };
             if let Some((resolved, millis)) = label
-                && crate::learning::State::eligible(&question.to_hex())
+                && crate::learning::State::eligible(&record.question)
             {
+                // The owner records the expanded target so admission through a
+                // checked definition can teach the same model as its primitive form.
+                let expanded = (!question.dependencies().is_empty())
+                    .then(|| ResearchQuestion::from_hex(&record.question))
+                    .transpose()?;
+                let question = expanded.as_ref().unwrap_or(question);
+                if let (Some(decision), Some(experience)) = (&record.decision, &record.experience) {
+                    header.policy.observe(decision, experience, resolved)?;
+                    if let Some(forecast) = decision.forecast
+                        && record.value_observed.as_ref() != Some(&experience.checkpoint)
+                        && header.effects.observe(
+                            forecast,
+                            &decision.resolution,
+                            &experience.checkpoint,
+                            resolved,
+                            millis,
+                        )
+                    {
+                        record.value_observed = Some(experience.checkpoint.clone());
+                        effect = Some((forecast, resolved, millis));
+                    }
+                }
                 header
                     .learning
                     .observe(&mut header.model, question, resolved, millis)?;
@@ -484,6 +587,13 @@ impl Evidence {
         }
         self.commit(&header, updates)?;
         self.header = header;
+        if let Some((forecast, checked, spent_ms)) = effect {
+            crate::network::emit(serde_json::json!({
+                "event":crate::outcome::NodeEvent::ResearchValueObserved, "job":record.last_job,
+                "resolution_id":crate::hex(question.resolution_id()), "forecast":forecast,
+                "checked":checked, "spent_ms":spent_ms,
+            }));
+        }
         Ok(())
     }
     pub(super) fn attempted(
@@ -505,11 +615,18 @@ impl Evidence {
             question: evidence_question.to_hex(),
             model_checkpoint: None,
             experience: None,
+            decision: None,
+            value_observed: None,
+            contributed: false,
+            used_own_proof: false,
+            recall_observed: false,
+            continued: false,
             solver: self.solver.clone(),
             knowledge: crate::hex(&knowledge),
             last_draw: 0,
             last_job: 0,
             outcomes: [0; 6],
+            checkpoint_attempts: 0,
             last_outcome: outcome,
             units: 0,
             spent_ms: 0,
@@ -542,8 +659,16 @@ impl Evidence {
         record.knowledge = crate::hex(&knowledge);
         record.last_draw = self.header.draws;
         record.last_job = completion.id;
+        if record.model_checkpoint != completion.model_checkpoint {
+            record.checkpoint_attempts = 0;
+        }
+        record.checkpoint_attempts = record
+            .checkpoint_attempts
+            .checked_add(1)
+            .ok_or(crate::ResearchFailure::EvidenceAttemptOverflow)?;
         record.model_checkpoint = completion.model_checkpoint.clone();
         record.experience = experience.cloned();
+        record.decision = experience.and_then(|_| completion.binding.research.as_deref().cloned());
         record.last_outcome = outcome;
         record.outcomes[outcome.index()] = record.outcomes[outcome.index()]
             .checked_add(1)
@@ -804,44 +929,75 @@ impl Evidence {
         job: u64,
         root: ArtifactId,
     ) -> Result<Option<Record>, crate::Error> {
-        if !crate::learning::State::eligible(&goal.to_hex()) {
-            return Ok(None);
-        }
         Ok(self.get(goal)?.filter(|consumer| {
             consumer.last_job == job
                 && consumer.verified.as_deref() == Some(crate::hex(root.as_bytes()).as_str())
-                && consumer.first_unresolved_job != 0
+                && crate::learning::State::eligible(&consumer.question)
         }))
     }
 
-    /// Credit a distinct earlier unresolved goal once, after both exact
-    /// checked targets and their actual dependency edge have been established.
+    pub(super) fn recall(&self, context: u16) -> Vec<(naome_proof::ProofId, u8)> {
+        self.header.recall.offers(context, self.header.observations)
+    }
+
+    pub(super) fn recall_opportunity(&self, context: u16) -> u64 {
+        self.header
+            .recall
+            .opportunity(context, self.header.observations)
+    }
+
+    /// Store the association and its consumer receipt in one transaction.
+    /// Startup replays checked resolutions, including one committed just
+    /// before a crash; the receipt prevents duplicate reinforcement.
+    pub(super) fn remember_reuse(
+        &mut self,
+        goal: &ResearchQuestion,
+        actual_goal: &ResearchQuestion,
+        consumer: &mut Record,
+        root: ArtifactId,
+        proofs: &[naome_proof::ProofId],
+    ) -> Result<(), crate::Error> {
+        if proofs.is_empty() || consumer.recall_observed {
+            return Ok(());
+        }
+        let mut header = self.header.clone();
+        header
+            .recall
+            .observe(actual_goal, root, proofs, header.observations);
+        let mut updated = consumer.clone();
+        updated.recall_observed = true;
+        let update = Update::put("question", record_key(&self.solver, goal), &updated)?;
+        self.commit(&header, vec![update])?;
+        self.header = header;
+        *consumer = updated;
+        Ok(())
+    }
+
+    /// Attribute exact downstream reuse once. A dependency that appeared
+    /// during an earlier open goal also supplies delayed Finder support.
     pub(super) fn support(
         &mut self,
         goal: &ResearchQuestion,
         actual_goal: &ResearchQuestion,
-        consumer: &Record,
+        consumer: &mut Record,
         root: ArtifactId,
         dependency: ArtifactId,
         mut checked: impl FnMut(&ResearchQuestion) -> Result<Option<ResearchQuestion>, crate::Error>,
     ) -> Result<Option<ResearchQuestion>, crate::Error> {
         let lemma = crate::hex(dependency.as_bytes());
-        let Some(key) = self.checkpoint.get::<String>("proved", &lemma, 128)? else {
+        let Some((key, mut producer)) = self.proof_source(&lemma)? else {
             return Ok(None);
         };
-        let mut producer = self
-            .checkpoint
-            .get::<Record>("question", &key, MAX_RECORD)?
-            .ok_or(crate::ResearchFailure::EvidenceProofSourceMissing)?;
-        producer.validate(&key, self.header.observations)?;
-        if producer.verified.as_deref() != Some(lemma.as_str()) {
-            return Err(crate::ResearchFailure::EvidenceProofIdentity.into());
-        }
         // Job IDs are allocated before execution; concurrent completions may
         // arrive in another order. Only durable observations establish timing.
-        if consumer.first_unresolved_at >= producer.verified_at
-            || producer.verified_at >= consumer.verified_at
-        {
+        let delayed =
+            consumer.first_unresolved_at > 0 && consumer.first_unresolved_at < producer.verified_at;
+        let decision = producer
+            .decision
+            .as_ref()
+            .zip(producer.experience.as_ref())
+            .filter(|(_, experience)| experience.job == producer.verified_job);
+        if producer.verified_at >= consumer.verified_at || !delayed && decision.is_none() {
             return Ok(None);
         }
         let question =
@@ -861,13 +1017,15 @@ impl Evidence {
             .get::<Support>("support", &receipt_key, 4096)?
         {
             crate::object::id_bytes(&receipt.goal)?;
+            if let Some(forecast) = receipt.forecast {
+                forecast.validate()?;
+            }
             if receipt.lemma != lemma
                 || receipt.resolution != resolution
-                || receipt.first_unresolved_job == 0
+                || (receipt.first_unresolved_job == 0) != (receipt.first_unresolved_at == 0)
                 || receipt.lemma_job == 0
                 || receipt.goal_job == 0
-                || receipt.first_unresolved_at == 0
-                || receipt.first_unresolved_at >= receipt.lemma_at
+                || receipt.first_unresolved_at >= receipt.goal_at
                 || receipt.lemma_at >= receipt.goal_at
                 || receipt.goal_at > self.header.observations
             {
@@ -881,13 +1039,38 @@ impl Evidence {
             .checked_add(1)
             .ok_or(crate::ResearchFailure::EvidenceObservationOverflow)?;
         if crate::learning::State::eligible(&question.to_hex()) {
-            header.model.support(&question)?;
-            header.learning.support(&mut header.model, &question)?;
+            if delayed {
+                header.model.support(&question)?;
+                header.learning.support(&mut header.model, &question)?;
+            }
+            if let Some((decision, experience)) = decision {
+                header.policy.reused(decision, experience)?;
+            }
         }
-        producer.supports = producer
-            .supports
-            .checked_add(1)
-            .ok_or(crate::ResearchFailure::EvidenceSupportOverflow)?;
+        if delayed {
+            producer.supports = producer
+                .supports
+                .checked_add(1)
+                .ok_or(crate::ResearchFailure::EvidenceSupportOverflow)?;
+        }
+        let forecast = decision.and_then(|(decision, experience)| {
+            decision
+                .forecast
+                .map(|forecast| (forecast, experience.checkpoint.as_str()))
+        });
+        let first_reuse = !producer.contributed;
+        let continuation = producer.used_own_proof && !producer.continued;
+        header.effects.reuse(forecast, first_reuse, continuation);
+        let forecast = forecast.map(|(forecast, _)| forecast);
+        producer.contributed = true;
+        producer.continued |= continuation;
+        let consumer_update = if consumer.used_own_proof {
+            None
+        } else {
+            let mut updated = consumer.clone();
+            updated.used_own_proof = true;
+            Some(updated)
+        };
         let receipt = Support {
             lemma,
             goal: crate::hex(root.as_bytes()),
@@ -898,16 +1081,34 @@ impl Evidence {
             first_unresolved_at: consumer.first_unresolved_at,
             lemma_at: producer.verified_at,
             goal_at: consumer.verified_at,
+            first_reuse,
+            continuation,
+            forecast,
         };
-        self.commit(
-            &header,
-            vec![
-                Update::put("question", key, &producer)?,
-                Update::put("support", receipt_key, &receipt)?,
-            ],
-        )?;
+        let mut updates = vec![
+            Update::put("question", key, &producer)?,
+            Update::put("support", receipt_key, &receipt)?,
+        ];
+        if let Some(updated) = &consumer_update {
+            updates.push(Update::put(
+                "question",
+                record_key(&self.solver, goal),
+                updated,
+            )?);
+        }
+        self.commit(&header, updates)?;
         self.header = header;
-        Ok(Some(question))
+        if let Some(updated) = consumer_update {
+            *consumer = updated;
+        }
+        if first_reuse || continuation {
+            crate::network::emit(serde_json::json!({
+                "event":crate::outcome::NodeEvent::ResearchValueObserved, "job":receipt.goal_job,
+                "forecast":forecast, "producer":receipt.lemma, "consumer":receipt.goal,
+                "first_reuse":first_reuse, "continuation":continuation,
+            }));
+        }
+        Ok(delayed.then_some(question))
     }
 }
 

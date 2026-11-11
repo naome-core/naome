@@ -366,6 +366,16 @@ pub(super) fn recipe(term: &Term, expected: &Formula) -> Result<Recipe, crate::E
     lower_recipe(term, expected, false)
 }
 
+pub(super) fn recipe_within_capacity(
+    term: &Term,
+    expected: &Formula,
+) -> Result<Option<Recipe>, crate::Error> {
+    match recipe(term, expected) {
+        Err(crate::Error::CertificateConstruction(crate::FormatFailure::Limit { .. })) => Ok(None),
+        result => result.map(Some),
+    }
+}
+
 #[expect(
     clippy::mutable_key_type,
     reason = "OnceLock memoizes immutable structure; hash and equality never change."

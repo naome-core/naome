@@ -38,7 +38,7 @@ fn scoring_real_checked_graphs_preserves_model_adam_mask_and_cursor() {
             &mut cursor,
             1,
             crate::learning::meta::Plan::balanced().phase(0),
-            Some((&pool, 0)),
+            Some((&pool, 0, false)),
             preservation::Mode::default(),
         )
         .unwrap();

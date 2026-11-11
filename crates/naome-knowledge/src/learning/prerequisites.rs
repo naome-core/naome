@@ -19,6 +19,33 @@ struct Data {
 /// Identity claims permit scheduling only; `terms` checks every supplied proof.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Prerequisites(Arc<Data>);
+/// Reconstructed native inputs for semantic reference selection in a worker.
+pub(super) struct ProgramInputs<'a> {
+    pub context: naome_checker::DiskArtifactState,
+    pub programs: &'a [Packet],
+    pub artifacts: Vec<crate::object::Candidate>,
+    _memory: Arc<crate::resources::MemoryLease>,
+}
+
+impl<'a> ProgramInputs<'a> {
+    pub fn proof_ids(
+        &self,
+    ) -> impl Iterator<Item = Result<naome_proof::ProofId, crate::Error>> + '_ {
+        self.programs
+            .iter()
+            .map(|packet| Ok(packet.manifest.proof_id()))
+            .chain(
+                self.artifacts
+                    .iter()
+                    .filter_map(|artifact| artifact.record().proof_id().transpose()),
+            )
+    }
+
+    pub fn into_sources(self) -> (&'a [Packet], Vec<crate::object::Candidate>) {
+        (self.programs, self.artifacts)
+    }
+}
+
 impl Serialize for Prerequisites {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(serializer)
@@ -122,10 +149,6 @@ impl Prerequisites {
             .iter()
             .any(|artifact| artifact.statement_id.is_none())
     }
-    pub(crate) fn has_optional_context(&self) -> bool {
-        self.has_definitions() || self.has_offer() || self.cut_certificate().is_some()
-    }
-
     pub fn definitions(
         &self,
         base: &[definitions::Entry],
@@ -243,6 +266,24 @@ impl Prerequisites {
         self.0.offered.is_some()
     }
 
+    pub(super) fn checked_program_inputs(&self) -> Result<ProgramInputs<'_>, crate::Error> {
+        let memory =
+            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
+        let artifacts = self
+            .0
+            .artifacts
+            .iter()
+            .map(|envelope| envelope.clone().prepare())
+            .collect::<Result<Vec<_>, _>>()?;
+        let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
+        Ok(ProgramInputs {
+            context,
+            programs: &self.0.programs,
+            artifacts,
+            _memory: memory,
+        })
+    }
+
     pub(super) fn search_native_lemma(
         &self,
         target: &naome_foundation::Formula,
@@ -251,17 +292,13 @@ impl Prerequisites {
         started: std::time::Instant,
     ) -> Result<(Option<Packet>, usize), crate::Error> {
         use naome_checker::ContextView;
-        use naome_proof::{ProofId, program::Command};
+        use naome_proof::{
+            ProofId,
+            program::{Command, Projection},
+        };
 
-        let _work =
-            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
-        let artifacts = self
-            .0
-            .artifacts
-            .iter()
-            .map(|a| a.clone().prepare())
-            .collect::<Result<Vec<_>, _>>()?;
-        let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
+        let inputs = self.checked_program_inputs()?;
+        let context = &inputs.context;
         let id = ProofId::from_bytes(
             self.0
                 .offered
@@ -286,17 +323,33 @@ impl Prerequisites {
                 ]),
                 1,
             )
+        } else if maximum >= 2
+            && super::knowledge::universal_source(target).as_ref() == Some(formula.as_ref())
+        {
+            use super::{calculus, construction::logic, proof};
+            let variable = naome_foundation::FreeVariable::new(0);
+            let mut names = calculus::Names::default();
+            names.native_programs = true;
+            let instance = calculus::instantiate(
+                proof::Term::CheckedInput(id, formula.into_owned()),
+                variable,
+            )?;
+            let term = logic::exists_intro(target, variable, instance, &mut names)?;
+            let recipe = proof::recipe(&term, target)?;
+            (
+                Some(Projection::from_inference_steps(&recipe.steps)?.into_commands()),
+                2,
+            )
         } else {
             super::search::scope::search_with_lemma(target, id, &formula, ranker, maximum, started)?
         };
-        drop(context);
-        drop(_work);
+        let (programs, artifacts) = inputs.into_sources();
         let packet = commands
             .map(|commands| {
                 Packet::compose(
                     target,
                     &commands,
-                    &self.0.programs,
+                    programs,
                     artifacts.iter().map(|a| a.bytes.clone()),
                 )
             })
@@ -317,15 +370,8 @@ impl Prerequisites {
             program::{Command, Projection},
         };
 
-        let _work =
-            crate::resources::MemoryLease::acquire(32 * crate::resources::limits().closure_bytes)?;
-        let artifacts = self
-            .0
-            .artifacts
-            .iter()
-            .map(|envelope| envelope.clone().prepare())
-            .collect::<Result<Vec<_>, _>>()?;
-        let context = Packet::checked_inputs(&self.0.programs, &artifacts)?;
+        let inputs = self.checked_program_inputs()?;
+        let context = &inputs.context;
         let mut sources = Vec::new();
         for id in required {
             let id = ProofId::from_bytes(crate::object::id_bytes(id)?);
@@ -364,11 +410,10 @@ impl Prerequisites {
         } else {
             None
         };
-        drop(context);
-        drop(_work);
+        let (programs, artifacts) = inputs.into_sources();
         let artifacts = || artifacts.iter().map(|a| a.bytes.clone());
         if let Some(commands) = direct {
-            let packet = Packet::compose(target, &commands, &self.0.programs, artifacts())?;
+            let packet = Packet::compose(target, &commands, programs, artifacts())?;
             return Ok((
                 Some(super::construction::ProgramCandidate {
                     packet,
@@ -378,20 +423,18 @@ impl Prerequisites {
             ));
         }
 
-        let programs = self
-            .0
-            .programs
+        let program_ids = programs
             .iter()
             .map(|packet| packet.manifest.proof_id())
             .collect::<BTreeSet<_>>();
         if (1..=2).contains(&sources.len())
             && let Some(cut) = super::search::scope::cut::plan(target, sources.len(), |formula| {
-                select(formula).filter(|id| programs.contains(id))
+                select(formula).filter(|id| program_ids.contains(id))
             })
             && cut.work() <= maximum
             && started.elapsed() < std::time::Duration::from_millis(2500)
         {
-            let packet = Packet::compose(target, &cut.commands(), &self.0.programs, artifacts())?;
+            let packet = Packet::compose(target, &cut.commands(), programs, artifacts())?;
             return Ok((
                 Some(super::construction::ProgramCandidate {
                     packet,
@@ -401,7 +444,7 @@ impl Prerequisites {
             ));
         }
 
-        if sources.iter().all(|(id, _)| !programs.contains(id)) {
+        if sources.iter().all(|(id, _)| !program_ids.contains(id)) {
             return Ok((None, 0));
         }
         let terms = sources
@@ -416,14 +459,14 @@ impl Prerequisites {
         };
         let recipe = proof::recipe(&term, target)?;
         if !recipe.steps.iter().any(|step| {
-            matches!(step, ProofStep::ProofReference { proof_id } if programs.contains(proof_id))
+            matches!(step, ProofStep::ProofReference { proof_id } if program_ids.contains(proof_id))
         }) {
             return Ok((None, work));
         }
         let candidate = super::construction::program_from_recipe_with_inputs(
             target,
             recipe,
-            &self.0.programs,
+            programs,
             artifacts(),
             None,
         )?;

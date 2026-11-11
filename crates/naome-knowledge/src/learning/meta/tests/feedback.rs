@@ -37,6 +37,7 @@ fn cpu_feedback_changes_cost_without_changing_value_or_risk_learning() {
 fn a_cost_only_observation_has_no_quality_gradient() {
     let mut e = experience(400, Plan::targeted(), 30, 30);
     e.candidate_model = None;
+    e.assessment = None;
     e.transfer = super::super::super::transfer::Summary {
         before: 0,
         after: 0,

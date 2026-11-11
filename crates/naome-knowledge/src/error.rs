@@ -2072,8 +2072,8 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::HistoryObservationHorizon => {
                     "history observation differs from its original job horizon"
                 }
-                crate::ResearchFailure::HistorySourcePageLane => {
-                    "admitted source page contains a different journal view"
+                crate::ResearchFailure::HistorySourceObservationMismatch => {
+                    "historical execution differs from its admitted source"
                 }
                 crate::ResearchFailure::HistorySourcePageMismatch => {
                     "historical page omitted or substituted an owned source"
@@ -2541,6 +2541,10 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::PeerOperandWidth => "peer program operand width",
                 crate::ResearchFailure::PeerOperandOrder => "peer program operand order differs",
                 crate::ResearchFailure::FinderCursorOverflow => "finder replay cursor overflow",
+                crate::ResearchFailure::FinderRecallInvalid => "invalid structural proof recall",
+                crate::ResearchFailure::CausalTrialBinding => "causal weight trial does not match its reserved evidence",
+                crate::ResearchFailure::ResearchValueInvalid => "research value transition or forecast is invalid",
+                crate::ResearchFailure::FinderDecisionInvalid => "finder research decision or policy state differs",
                 crate::ResearchFailure::ModelChunkMissing => {
                     "native model checkpoint chunk missing"
                 }
@@ -2751,9 +2755,6 @@ impl fmt::Display for Error {
                 crate::ResearchFailure::ProgressFirstUnit => {
                     "learning checkpoint lacks its first unit"
                 }
-                crate::ResearchFailure::ProgressTransferLoss => {
-                    "learning checkpoint loses an incumbent transfer success"
-                }
                 crate::ResearchFailure::LearningFixedSnapshotCapacity => {
                     "fixed learning snapshot exceeds working byte capacity"
                 }
@@ -2854,9 +2855,6 @@ impl fmt::Display for Error {
                 }
                 crate::ResearchFailure::JobCompositionBinding => {
                     "composition differs from requested prerequisites"
-                }
-                crate::ResearchFailure::JobModelQualification => {
-                    "native model changed before successful qualification"
                 }
                 crate::ResearchFailure::JobSamplingContinuation => {
                     "native sampling continuation differs"

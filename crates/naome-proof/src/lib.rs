@@ -77,6 +77,8 @@ const PROOF_REFERENCE: u8 = 0x30;
 #[must_use]
 pub struct ProofCertificate {
     steps: Vec<ProofStep>,
+    // The exact length established by validation, decoding, or normalization.
+    encoded_length: usize,
 }
 
 impl ProofCertificate {
@@ -88,8 +90,11 @@ impl ProofCertificate {
     /// strictly to earlier steps.
     pub fn new(steps: Vec<ProofStep>) -> Result<Self, ProofCertificateError> {
         validate_steps(&steps)?;
-        codec::validate_steps_encoding(&steps)?;
-        Ok(Self { steps })
+        let encoded_length = codec::checked_steps_length(&steps)?;
+        Ok(Self {
+            steps,
+            encoded_length,
+        })
     }
 
     /// Returns the proof steps in their encoded execution order.
@@ -101,7 +106,7 @@ impl ProofCertificate {
     /// Encodes this certificate in the canonical wire format.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
-        codec::encode_steps(&self.steps)
+        codec::encode_steps(&self.steps, self.encoded_length)
             .expect("ProofCertificate construction guarantees canonical encodability")
     }
 
@@ -402,9 +407,45 @@ impl ProofStep {
     #[must_use]
     pub fn definition_references(&self) -> Vec<DefinitionId> {
         let mut references = Vec::new();
-        let mut extend = |formula: &ProofFormula| {
-            references.extend(formula.definition_references());
-        };
+        self.visit_formulas(|formula| {
+            formula.append_definition_references(&mut references);
+            false
+        });
+        references
+    }
+
+    /// Returns whether any formula field contains a definition application.
+    #[must_use]
+    pub fn has_definition_references(&self) -> bool {
+        self.visit_formulas(|formula| formula.as_defined().is_some())
+    }
+
+    /// Counts definition references across all formula fields, including repeats.
+    #[must_use]
+    pub fn definition_reference_count(&self) -> usize {
+        let mut count = 0;
+        self.visit_formulas(|formula| {
+            count += formula.definition_reference_count();
+            false
+        });
+        count
+    }
+
+    /// Visits definition references in canonical field-prefix order until an error.
+    pub fn try_for_each_definition_reference<E>(
+        &self,
+        mut visit: impl FnMut(DefinitionId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut result = Ok(());
+        self.visit_formulas(|formula| {
+            result = formula.try_for_each_definition_reference(&mut visit);
+            result.is_err()
+        });
+        result
+    }
+
+    // Visit in field order and stop when a visitor returns true.
+    fn visit_formulas(&self, mut visit: impl FnMut(&ProofFormula) -> bool) -> bool {
         match self {
             Self::Simplification {
                 antecedent,
@@ -418,32 +459,24 @@ impl ProofStep {
                 antecedent,
                 consequent,
                 ..
-            } => {
-                extend(antecedent);
-                extend(consequent);
-            }
+            } => visit(antecedent) || visit(consequent),
             Self::Frege {
                 first,
                 second,
                 third,
-            } => {
-                extend(first);
-                extend(second);
-                extend(third);
-            }
-            Self::VacuousUniversal { formula } => extend(formula),
+            } => visit(first) || visit(second) || visit(third),
+            Self::VacuousUniversal { formula } => visit(formula),
             Self::UniversalInstantiation { body, .. } | Self::EqualitySubstitution { body, .. } => {
-                extend(body)
+                visit(body)
             }
-            Self::Separation(instance) => extend(&instance.predicate),
-            Self::Replacement(instance) => extend(&instance.predicate),
+            Self::Separation(instance) => visit(&instance.predicate),
+            Self::Replacement(instance) => visit(&instance.predicate),
             Self::EqualityReflexivity { .. }
             | Self::ZfcAxiom(_)
             | Self::ProofReference { .. }
             | Self::ModusPonens { .. }
-            | Self::Generalization { .. } => {}
+            | Self::Generalization { .. } => false,
         }
-        references
     }
 }
 

@@ -211,8 +211,35 @@ impl DefinedFormula {
     #[must_use]
     pub fn definition_references(&self) -> Vec<DefinitionId> {
         let mut references = Vec::new();
-        collect_definition_references(&self.0, &mut references);
+        self.append_definition_references(&mut references);
         references
+    }
+
+    pub(crate) fn append_definition_references(&self, references: &mut Vec<DefinitionId>) {
+        self.try_for_each_definition_reference(&mut |id| {
+            references.push(id);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap();
+    }
+
+    pub(crate) fn try_for_each_definition_reference<E>(
+        &self,
+        visit: &mut impl FnMut(DefinitionId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        visit_definition_references(&self.0, visit)
+    }
+
+    pub(crate) fn definition_reference_count(&self) -> usize {
+        fn count(node: &Node) -> usize {
+            match node {
+                Node::DefinedRelation { .. } => 1,
+                Node::Not(formula) | Node::ForAll(formula) => count(formula),
+                Node::Implies(antecedent, consequent) => count(antecedent) + count(consequent),
+                Node::Equal(..) | Node::Member(..) => 0,
+            }
+        }
+        count(&self.0)
     }
 
     pub(crate) fn first_definition_reference(&self) -> Option<DefinitionId> {
@@ -590,17 +617,18 @@ fn collect_free_variable(value: Variable, variables: &mut BTreeSet<FreeVariable>
     }
 }
 
-fn collect_definition_references(node: &Node, references: &mut Vec<DefinitionId>) {
+fn visit_definition_references<E>(
+    node: &Node,
+    visit: &mut impl FnMut(DefinitionId) -> Result<(), E>,
+) -> Result<(), E> {
     match node {
-        Node::DefinedRelation { definition_id, .. } => references.push(*definition_id),
-        Node::Not(formula) | Node::ForAll(formula) => {
-            collect_definition_references(formula, references);
-        }
+        Node::DefinedRelation { definition_id, .. } => visit(*definition_id),
+        Node::Not(formula) | Node::ForAll(formula) => visit_definition_references(formula, visit),
         Node::Implies(antecedent, consequent) => {
-            collect_definition_references(antecedent, references);
-            collect_definition_references(consequent, references);
+            visit_definition_references(antecedent, visit)?;
+            visit_definition_references(consequent, visit)
         }
-        Node::Equal(..) | Node::Member(..) => {}
+        Node::Equal(..) | Node::Member(..) => Ok(()),
     }
 }
 

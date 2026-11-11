@@ -13,7 +13,7 @@ use super::{
 };
 
 pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Failure> {
-    let length = target.encode_canonical().map_err(|_| LIMIT)?.len();
+    let length = target.encoded_length().map_err(|_| LIMIT)?;
     work.formula(length, 64)?;
     let mut plan = Plan::new();
     for axiom in [
@@ -35,6 +35,9 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
     let mut variables = Vec::new();
     for identifier in 0..super::instantiation::MAX_INSTANTIATIONS {
         work.formula(length, 4)?;
+        if !current.has_outer_universal() {
+            break;
+        }
         let variable = fresh(&current, identifier as u32);
         let Some(body) = current.open_outer_universal(variable) else {
             break;
@@ -42,7 +45,11 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
         variables.push(variable);
         current = body;
     }
-    let current_length = current.encode_canonical().map_err(|_| LIMIT)?.len();
+    let current_length = if variables.is_empty() {
+        length
+    } else {
+        current.encoded_length().map_err(|_| LIMIT)?
+    };
     let root = if let Some((left, right)) = current.view().equality_variables()
         && left == right
     {
@@ -54,8 +61,8 @@ pub(super) fn plan(target: &Formula, work: &mut Work) -> Result<Option<Plan>, Fa
     } else if let Some((left, right)) = current.view().implication_parts()
         && left == right
     {
-        identity(&mut plan, left.to_owned(), work)?
-    } else if let Some(step) = axiom_instance(&current, work)? {
+        identity(&mut plan, left.to_owned(), current_length, work)?
+    } else if let Some(step) = axiom_instance(&current, current_length, work)? {
         plan.axiom(step, current_length, work)?
     } else {
         return Ok(None);
@@ -75,19 +82,18 @@ fn fresh(formula: &Formula, start: u32) -> FreeVariable {
         .expect("a bounded formula cannot exhaust u32 variables")
 }
 
-fn identity(plan: &mut Plan, formula: Formula, work: &mut Work) -> Result<u32, Failure> {
+fn identity(
+    plan: &mut Plan,
+    formula: Formula,
+    conclusion_length: usize,
+    work: &mut Work,
+) -> Result<u32, Failure> {
     let implies_self = Formula::implies(formula.clone(), formula.clone());
     let first = Logic::simplification(formula.clone(), implies_self.clone());
     let second = Logic::simplification(formula.clone(), formula.clone());
     let frege = Logic::frege(formula.clone(), implies_self.clone(), formula.clone());
     let intermediate = Formula::implies(second.clone(), implies_self.clone());
-    let length = |formula: &Formula| {
-        formula
-            .encode_canonical()
-            .map(|bytes| bytes.len())
-            .map_err(|_| LIMIT)
-    };
-    let conclusion_length = length(&implies_self)?;
+    let length = |formula: &Formula| formula.encoded_length().map_err(|_| LIMIT);
     let a = plan.axiom(
         ProofStep::Simplification {
             antecedent: formula.clone().into(),
@@ -117,7 +123,11 @@ fn identity(plan: &mut Plan, formula: Formula, work: &mut Work) -> Result<u32, F
     plan.modus_ponens(b, d, conclusion_length, work)
 }
 
-fn axiom_instance(formula: &Formula, work: &mut Work) -> Result<Option<ProofStep>, Failure> {
+fn axiom_instance(
+    formula: &Formula,
+    length: usize,
+    work: &mut Work,
+) -> Result<Option<ProofStep>, Failure> {
     let Some((left, right)) = formula.view().implication_parts() else {
         return Ok(None);
     };
@@ -170,12 +180,22 @@ fn axiom_instance(formula: &Formula, work: &mut Work) -> Result<Option<ProofStep
         }));
     }
     if let Some(body) = left.to_owned().open_outer_universal(variable) {
-        let length = formula.encode_canonical().map_err(|_| LIMIT)?.len();
         let mut replacements = formula.free_variables();
         replacements.insert(variable);
-        for replacement in replacements {
+        let mut matching_replacement = None;
+        for (index, replacement) in replacements.into_iter().enumerate() {
+            // Charge the same candidates in order even though matching runs once.
             work.formula(length, 8)?;
-            if body.clone().substitute_free(variable, replacement) == right.to_owned() {
+            if index == 0 {
+                let pattern = body.encode_canonical().map_err(|_| LIMIT)?;
+                let target = right.encode_canonical().map_err(|_| LIMIT)?;
+                matching_replacement =
+                    super::instantiation::match_variables(&pattern, &target, |candidate| {
+                        candidate == variable
+                    })
+                    .map(|assignments| assignments.get(&variable).copied().unwrap_or(replacement));
+            }
+            if matching_replacement == Some(replacement) {
                 return Ok(Some(ProofStep::UniversalInstantiation {
                     variable,
                     replacement,
@@ -195,4 +215,35 @@ fn axiom_instance(formula: &Formula, work: &mut Work) -> Result<Option<ProofStep
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+#[test]
+fn elementary_instantiation_charges_through_the_matching_candidate() {
+    let x = FreeVariable::new(7);
+    let y = FreeVariable::new(0);
+    let replacement = FreeVariable::new(9);
+    let fresh = FreeVariable::new(1);
+    let body = Formula::conjunction(Formula::member(x, y), Formula::equal(x, x));
+    let formula = Logic::universal_instantiation(x, replacement, body.clone());
+    let length = formula.encode_canonical().unwrap().len();
+    let mut work = Work {
+        operations: 2,
+        bytes: length * 24,
+        certificate_steps: 1,
+        certificate_bytes: usize::MAX,
+    };
+
+    assert_eq!(axiom_instance(&formula, length, &mut work), Err(LIMIT));
+    work.operations = 3;
+    work.bytes = length * 24;
+    assert_eq!(
+        axiom_instance(&formula, length, &mut work),
+        Ok(Some(ProofStep::UniversalInstantiation {
+            variable: fresh,
+            replacement,
+            body: body.substitute_free(x, fresh).into(),
+        }))
+    );
+    assert_eq!((work.operations, work.bytes), (0, 0));
 }

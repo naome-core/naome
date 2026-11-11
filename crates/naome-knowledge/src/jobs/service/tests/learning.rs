@@ -265,9 +265,26 @@ fn accepted(owner: &mut Owner) -> u64 {
         crate::Error::from(crate::ResearchFailure::LearningProgramIdentity)
     );
     assert_eq!(learning(owner)["accepted"], 0);
-    let q = naome_checker::question::ResearchQuestion::from_hex(&source).unwrap();
+    admit_own_solution(owner, id, &source, &solution);
+    owner
+        .journal
+        .learning
+        .as_ref()
+        .unwrap()
+        .require_theorems(std::slice::from_ref(&solution.proof_id))
+        .unwrap();
+    id
+}
+
+fn admit_own_solution(
+    owner: &mut Owner,
+    id: u64,
+    source: &str,
+    solution: &crate::learning::Solution,
+) {
+    let q = naome_checker::question::ResearchQuestion::from_hex(source).unwrap();
     let mut graph = crate::Graph::default();
-    let program = crate::learning::program::Candidate::from_solution(&solution, &q).unwrap();
+    let program = crate::learning::program::Candidate::from_solution(solution, &q).unwrap();
     let mut work = crate::proof_work::Work::open(
         &graph
             .ownership()
@@ -320,14 +337,6 @@ fn accepted(owner: &mut Owner) -> u64 {
         .accept_learning(&mut owner.journal, id, &crate::hex(root.as_bytes()))
         .unwrap();
     assert_eq!(learning(owner)["local_examples"], 1);
-    owner
-        .journal
-        .learning
-        .as_ref()
-        .unwrap()
-        .require_theorems(std::slice::from_ref(&solution.proof_id))
-        .unwrap();
-    id
 }
 #[test]
 fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
@@ -741,6 +750,32 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
     assert_eq!(learning(&owner)["peer_examples"], 0);
 }
 #[test]
+fn the_job_owner_accepts_the_complete_bounded_training_artifact_allowance() {
+    let (_directory, mut owner) = native();
+    accepted(&mut owner);
+    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    for index in 0..crate::learning::MAX_TRAINING_ARTIFACTS {
+        let bytes = index.to_le_bytes();
+        let blob = crate::learning::Blob::of(&bytes);
+        owner
+            .disk
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, Some(bytes.to_vec()))
+            .unwrap();
+    }
+    let bytes = crate::learning::MAX_TRAINING_ARTIFACTS.to_le_bytes();
+    let blob = crate::learning::Blob::of(&bytes);
+    assert_eq!(
+        owner
+            .disk
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, Some(bytes.to_vec()))
+            .unwrap_err(),
+        crate::ResearchFailure::NativeModelArtifactCountExhausted.into()
+    );
+}
+
+#[test]
 fn native_model_chunks_require_original_training_reservations_and_immutable_read_custody() {
     let (_directory, mut owner) = native();
     accepted(&mut owner);
@@ -904,20 +939,20 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
     assert_eq!(owner.journal.records[&id].reserved_units, reserved);
 }
 #[test]
-fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_restart() {
+fn model_chunk_groups_commit_atomically_and_charge_every_original_chunk_after_restart() {
     let (directory, mut owner) = native();
     accepted(&mut owner);
     let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
-    let bytes = vec![37; crate::resources::limits().native_model_chunk_bytes + 17];
+    let bytes = vec![37; crate::resources::limits().native_model_chunk_bytes * 2 + 17];
     let blob = crate::learning::Blob::of(&bytes);
     let original = serde_json::to_value(owner.journal.records[&id].native.as_ref()).unwrap();
     crate::checkpoint::fail_next_commit();
     assert!(
         owner
             .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0..2, Some(bytes.clone()))
+            .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
             .unwrap_err()
             .retryable()
     );
@@ -925,26 +960,30 @@ fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_res
         serde_json::to_value(owner.journal.records[&id].native.as_ref()).unwrap(),
         original
     );
-    assert!(
-        owner
-            .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
-            .is_err()
+    let oversized = crate::learning::Blob::of(&vec![
+        0;
+        3 * crate::resources::limits()
+            .native_model_chunk_bytes
+            + 1
+    ]);
+    assert_eq!(
+        oversized.range_len(&(0..4)).unwrap_err(),
+        crate::Error::from(crate::ResearchFailure::ModelChunkRange)
     );
     owner
         .disk
-        .model_io(&mut owner.journal, id, 1, &blob, 0..2, Some(bytes.clone()))
+        .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
         .unwrap();
     let saved = owner.journal.records[&id].native.as_ref().unwrap();
     assert_eq!(saved.io_bytes, bytes.len());
-    assert_eq!(saved.io_operations, 2);
+    assert_eq!(saved.io_operations, 3);
     assert_eq!(saved.written.len(), 1);
     let settings = owner.settings;
     drop(owner);
     let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     let saved = journal.records[&id].native.as_ref().unwrap();
     assert_eq!(saved.io_bytes, bytes.len());
-    assert_eq!(saved.io_operations, 2);
+    assert_eq!(saved.io_operations, 3);
     let connection = rusqlite::Connection::open(directory.0.join("research/jobs.sqlite3")).unwrap();
     let parts = connection
         .prepare("SELECT payload FROM entries WHERE kind='model' ORDER BY key")
@@ -953,7 +992,7 @@ fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_res
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(parts.len(), 2);
+    assert_eq!(parts.len(), 3);
     assert_eq!(parts.concat(), bytes);
 }
 
@@ -1389,6 +1428,7 @@ fn optional_checked_lemma_reaches_the_native_job_without_becoming_required() {
     let client = Client {
         sender,
         feedback: Arc::default(),
+        research: Default::default(),
     };
     let _ticket = client
         .submit_after(
@@ -1522,7 +1562,55 @@ fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
 #[test]
 fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening() {
     let (directory, mut owner) = native();
-    let source = accepted(&mut owner);
+    let question = crate::learning::tests::own_question();
+    let (source, _receive) = submit_native(
+        &mut owner,
+        Input::Solve {
+            question: question.clone(),
+        },
+    );
+    owner.journal.records.get_mut(&source).unwrap().state = State::Running;
+    owner.reserve(source, 1).unwrap();
+    let record = owner.journal.records.get_mut(&source).unwrap();
+    let native = record.native.as_mut().unwrap();
+    native
+        .execute(
+            1,
+            Some(&question),
+            source,
+            &mut crate::learning::Engine::default(),
+            &mut crate::learning::tests::MemoryStore::default(),
+        )
+        .unwrap();
+    let progress = native.progress.as_ref().unwrap();
+    let solution = progress
+        .result
+        .clone()
+        .expect("the native source must solve");
+    assert!(
+        !progress.executions.is_empty(),
+        "the source must record actual search"
+    );
+    let output = Output::Native {
+        terminal: progress.terminal.clone().into(),
+        frontier: progress.frontier.clone(),
+        solution: Some(solution.clone()),
+    };
+    record.checkpoint = 1;
+    owner
+        .complete(
+            source,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(output),
+            },
+        )
+        .unwrap();
+    admit_own_solution(&mut owner, source, &question, &solution);
+    let original =
+        crate::learning::experience::Observation::from_record(&owner.journal.records[&source])
+            .unwrap()
+            .unwrap();
     let mut state = learning(&owner);
     state["replay"] = serde_json::json!([]);
     state["anchors"] = serde_json::json!([]);
@@ -1594,8 +1682,50 @@ fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening(
             None,
         )
         .unwrap();
+    assert_eq!(
+        receipt.read_operations, 3,
+        "the index, source, and admission are the only reads"
+    );
+    let page: crate::learning::history::Page = crate::checkpoint::decode(&bytes).unwrap();
+    assert_eq!(page.records.len(), 1);
+    let observed = page.records[0].observation.as_ref().unwrap();
+    assert_eq!(observed.summary.receipt, original.summary.receipt);
+    assert_eq!(observed.executions, original.executions);
     let job = owner.journal.records[&id].native.as_ref().unwrap();
     let prepared = crate::learning::history::inspect_reload(job, &receipt, &bytes).unwrap();
+
+    let mut substituted = page.clone();
+    substituted.records[0].job = id;
+    let substituted = crate::checkpoint::encode(&substituted).unwrap();
+    let mut substituted_receipt = receipt.clone();
+    substituted_receipt.blob = crate::learning::Blob::of(&substituted);
+    let error = crate::learning::history::inspect_reload(job, &substituted_receipt, &substituted)
+        .unwrap_err();
+    assert!(error.contains("historical execution differs from its admitted source"));
+
+    let mut worker = job.clone();
+    let mut artifacts = crate::learning::tests::MemoryStore::default();
+    crate::learning::ArtifactIo::write(
+        &mut artifacts,
+        &receipt.blob,
+        0..receipt.blob.chunks(),
+        bytes.clone(),
+    )
+    .unwrap();
+    worker
+        .execute(
+            1,
+            None,
+            id,
+            &mut crate::learning::Engine::default(),
+            &mut artifacts,
+        )
+        .unwrap();
+    let cost = &worker.progress.as_ref().unwrap().training_cost;
+    assert!(
+        cost.observed_sequences > 0,
+        "the source execution must reach the training pool"
+    );
     assert!(prepared.examples().any(|example| example.job == source));
     assert_eq!(prepared.sample_counts(), job.base.sample_counts());
     assert_eq!(prepared.learning_epoch(), job.base.learning_epoch());
@@ -2212,6 +2342,21 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
         (root, solution.proof_id.clone())
     }
 
+    fn research_binding(
+        frontier: &mut Frontier,
+        graph: &crate::Graph,
+        question: &ResearchQuestion,
+        mut binding: Binding,
+        limits: Limits,
+    ) -> Binding {
+        let decision = frontier
+            .research_decision(question, graph, limits, binding.catalog.is_some())
+            .unwrap();
+        assert!(decision.forecast.is_some());
+        binding.research = Some(Box::new(decision));
+        binding
+    }
+
     crate::resources::tests::budget(false);
     let graph_dir = Directory::new();
     let frontier_dir = Directory::new();
@@ -2219,6 +2364,14 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     let (_jobs_dir, mut owner) = native();
     let settings = owner.settings;
     let mut frontier = Frontier::open(&frontier_dir.0, &graph, 937, settings).unwrap();
+    frontier.feedback(
+        owner
+            .journal
+            .learning
+            .as_ref()
+            .map(crate::learning::State::feedback),
+    );
+    frontier.refresh(&graph, |_| true).unwrap();
     let mut gate = crate::question::LocalQuestions::new(Some(|_| std::future::ready(Ok(true))));
     let [a, b, c, witness] = [0, 1, 2, 3].map(FreeVariable::new);
     let atoms = [
@@ -2279,7 +2432,14 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
         helper.to_hex().len() + 64 <= crate::resources::active_limits().question_cache_bytes / 2
     );
     drop(plan);
-    let result = submit(&mut owner, &helper, gate.formal_context(&graph).binding());
+    let binding = research_binding(
+        &mut frontier,
+        &graph,
+        &helper,
+        gate.formal_context(&graph).binding(),
+        settings.solving.limits,
+    );
+    let result = submit(&mut owner, &helper, binding);
     let (helper_id, proof) = publish(&mut frontier, &mut graph, &helper, &result);
     assert_eq!(frontier.support_updates(), 0);
 
@@ -2295,6 +2455,13 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
     drop(planned);
     let mut binding = gate.formal_context(&graph).binding();
     binding.catalog = Some(catalog);
+    let binding = research_binding(
+        &mut frontier,
+        &graph,
+        &goal,
+        binding,
+        settings.solving.limits,
+    );
     let retry = submit(&mut owner, &goal, binding);
     assert_eq!(
         retry.experience.as_ref().unwrap().checkpoint,
@@ -2311,12 +2478,24 @@ fn compact_planned_catalog_cut_is_verified_and_credits_the_finder() {
             .search_expansions,
         5
     );
+    let before_reuse = frontier.learning_snapshot()["research_policy"]["observations"]
+        .as_u64()
+        .unwrap();
     let (root, _) = publish(&mut frontier, &mut graph, &goal, &retry);
     assert_eq!(
         graph.learning_proof_dependencies(root).unwrap().as_ref(),
         &[helper_id]
     );
     assert_eq!(frontier.support_updates(), 1);
+    assert_eq!(
+        frontier.learning_snapshot()["research_effects"]["reused"],
+        1
+    );
+    assert_eq!(
+        frontier.learning_snapshot()["research_policy"]["observations"],
+        before_reuse + 2,
+        "the checked consumer and the producer's delayed reuse each contribute one observation"
+    );
     drop(frontier);
     drop(graph);
 

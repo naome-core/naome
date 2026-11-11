@@ -292,7 +292,14 @@ impl Frontier {
         if self.native && planned.is_empty() {
             let target = question.proved_target();
             let mut candidates = Vec::new();
-            for proof in self.lemmas.offers(&lemma_index::Index::query(question)) {
+            let recent = self.lemmas.offers(&lemma_index::Index::query(question));
+            let learned = self.recalled(question, Features::of(question).family);
+            for proof in recent.iter().copied().chain(
+                learned
+                    .iter()
+                    .map(|&(id, _)| id)
+                    .filter(|id| !recent.contains(id)),
+            ) {
                 let Some(header) = graph.checked_context().proof_header(proof)? else {
                     continue;
                 };
@@ -309,10 +316,54 @@ impl Frontier {
                 };
                 let applies =
                     crate::learning::knowledge::directly_applies(target, formula.as_ref())?;
-                candidates.push((!applies, proof));
+                // Only expand the old candidate set with witnesses that close
+                // this exact scope. A contextual association alone cannot spend
+                // the goal's search allowance on a new indirect route.
+                if !applies && !recent.contains(&proof) {
+                    continue;
+                }
+                let strength =
+                    learned
+                        .iter()
+                        .find(|(id, _)| *id == proof)
+                        .map_or(0, |&(_, strength)| {
+                            if applies || strength >= 2 {
+                                strength
+                            } else {
+                                0
+                            }
+                        });
+                let value = ResearchQuestion::from_formula(formula.as_ref().clone())
+                    .ok()
+                    .and_then(|lemma| {
+                        let reuse = self
+                            .evidence
+                            .policy()
+                            .demonstrated_reuse(lemma.resolution_id());
+                        let descriptor = finder::Descriptor::of(&lemma);
+                        self.research_forecast(
+                            graph,
+                            ResearchAction::Reuse,
+                            self.evidence.model().predictions_from(&descriptor),
+                            if reuse { 8 } else { 0 },
+                        )
+                    })
+                    .map_or(0, Forecast::value);
+                candidates.push((
+                    !applies,
+                    std::cmp::Reverse(strength),
+                    std::cmp::Reverse(value),
+                    proof,
+                ));
             }
-            candidates.sort_by_key(|&(indirect, _)| indirect);
-            for (_, proof) in candidates {
+            if !candidates.iter().any(|&(indirect, ..)| !indirect)
+                && let Some(inputs) =
+                    self.first_checked_offer(graph, question, &recent, &learned)?
+            {
+                return Ok((Vec::new(), inputs));
+            }
+            candidates.sort_by_key(|&(indirect, strength, value, _)| (indirect, strength, value));
+            for (_, _, _, proof) in candidates.into_iter().take(4) {
                 if let Some(inputs) = graph.offered_solving_inputs(proof, definitions)? {
                     return Ok((Vec::new(), inputs));
                 }
@@ -322,6 +373,96 @@ impl Frontier {
             .solving_inputs(planned, definitions)?
             .unwrap_or_default();
         Ok((planned.to_vec(), inputs))
+    }
+
+    /// Cold retrieval looks up an exact witness source or uses the checker's
+    /// specialization index. Neither lookup requires a previous citation.
+    fn first_checked_offer(
+        &self,
+        graph: &Graph,
+        question: &ResearchQuestion,
+        recent: &[naome_proof::ProofId],
+        learned: &[(naome_proof::ProofId, u8)],
+    ) -> Result<Option<crate::learning::Prerequisites>, crate::Error> {
+        use crate::learning::{State, knowledge};
+        use naome_checker::context::BucketKind;
+        use naome_checker::question::QUESTION_BYTES;
+
+        if !self.recall_enabled() || !State::eligible(&question.to_hex()) {
+            return Ok(None);
+        }
+        let Ok(_scratch) = crate::resources::MemoryLease::acquire(QUESTION_BYTES * 16) else {
+            return Ok(None);
+        };
+        let target = question.proved_target();
+        let context = graph.checked_context();
+        // A witness question can recover its source even after the Finder's
+        // resident proposals have been evicted or the node has restarted.
+        if let Some(source) = knowledge::universal_source(target)
+            && let Some(statement) =
+                naome_proof::StatementId::of_canonical_formula(&source.encode_canonical()?)
+            && let Some(header) = context.statement_header(statement)?
+            && header.canonical_length() <= QUESTION_BYTES
+            && let Ok(lemma) = ResearchQuestion::from_formula(source)
+            && State::eligible(&lemma.to_hex())
+            && finder::independent_goal(&lemma, question)
+            && let Some(inputs) =
+                graph.offered_solving_inputs(header.proof_id(), question.dependencies())?
+        {
+            return Ok(Some(inputs));
+        }
+        // The question target is closed. Open its prefix in binder order and
+        // look up the final consequent. This is only an index projection.
+        let mut goal = target.clone();
+        for binder in 0..naome_checker::question::QUESTION_TARGET_MAX_DEPTH {
+            let Some(body) = goal.open_outer_universal(FreeVariable::new(binder as u32)) else {
+                break;
+            };
+            goal = body;
+        }
+        while let Some((_, consequent)) = goal.implication_parts() {
+            goal = consequent;
+        }
+        let keys = [
+            naome_proof::StatementId::of_canonical_formula(&goal.encode_canonical()?)
+                .ok_or(crate::InputFault::FinderOperandStatementWidth)?,
+            naome_checker::question::universal_pattern(&goal)?,
+        ];
+        for key in keys {
+            for statement in context.bucket(BucketKind::Instances, key)?.take(4) {
+                let statement = statement?;
+                let Some(header) = context.statement_header(statement)? else {
+                    continue;
+                };
+                let proof = header.proof_id();
+                let bytes = header.canonical_length();
+                if bytes > QUESTION_BYTES
+                    || recent.contains(&proof)
+                    || learned.iter().any(|&(id, _)| id == proof)
+                {
+                    continue;
+                }
+                let Some(formula) =
+                    context.statement_formula_from_header(statement, header, bytes)?
+                else {
+                    continue;
+                };
+                if !knowledge::directly_applies(target, &formula)? {
+                    continue;
+                }
+                let Ok(lemma) = ResearchQuestion::from_formula(formula.as_ref().clone()) else {
+                    continue;
+                };
+                if State::eligible(&lemma.to_hex())
+                    && finder::independent_goal(&lemma, question)
+                    && let Some(inputs) =
+                        graph.offered_solving_inputs(proof, question.dependencies())?
+                {
+                    return Ok(Some(inputs));
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn catalog_retry(
@@ -408,14 +549,24 @@ impl Frontier {
                 sources.push(goal.clone());
             }
         }
+        sources.retain(|goal| !children.contains(goal.resolution_id()));
+        if self.native && sources.len() > 1 && self.feedback.is_some() {
+            let mut ranked = Vec::with_capacity(sources.len());
+            for goal in sources {
+                let decision = self.research_decision(&goal, graph, self.research_limits, false)?;
+                let value = decision.forecast.map_or(0, Forecast::value);
+                let preference = self.evidence.policy().multiplier(&decision) as i64;
+                ranked.push((value * preference, goal));
+            }
+            ranked.sort_by_key(|(weight, _)| std::cmp::Reverse(*weight));
+            sources = ranked.into_iter().map(|(_, goal)| goal).collect();
+        }
         for goal in sources {
-            if !children.contains(goal.resolution_id()) {
-                let work = self.loop_work(&goal, graph, &mut available)?;
-                // Exhaustion parks an optional focus without deleting its
-                // evidence, spending a trial or replenishing plan membership.
-                if work.ready {
-                    return Ok(Some((goal, work)));
-                }
+            let work = self.loop_work(&goal, graph, &mut available)?;
+            // Exhaustion parks an optional focus without deleting its
+            // evidence, spending a trial or replenishing plan membership.
+            if work.ready {
+                return Ok(Some((goal, work)));
             }
         }
         Ok(None)
@@ -542,6 +693,40 @@ impl Frontier {
             // A failed intake gate is a current scheduling constraint, never
             // a negative theorem label or a permanent loss of eligibility.
             node.available = node.checked.is_some() || available(&node.question);
+        }
+        if nodes.len() > 2
+            && let Some(frame) = self.research_frame(graph, 0)
+        {
+            let mut values = Vec::with_capacity(nodes.len());
+            values.push(0);
+            let parent = self.analyses.get(goal)?;
+            for node in nodes.iter().skip(1) {
+                let analysis = self.analyses.get(&node.question)?;
+                let [solvable, cost, useful] =
+                    self.evidence.model().predictions_from(&analysis.descriptor);
+                let action = if node.checked.is_some() {
+                    ResearchAction::Reuse
+                } else {
+                    ResearchAction::Solve
+                };
+                let opportunity = (quantize(useful) + analysis.relevance(&parent).min(8) * 125) / 2;
+                let prior = if node.checked.is_some() {
+                    1_000
+                } else {
+                    quantize(solvable)
+                };
+                let cost = node.record.as_ref().map_or(quantize(cost), |record| {
+                    quantize(((record.spent_ms as f32).ln_1p() / 16.).max(cost))
+                });
+                values.push(frame.forecast(action, prior, opportunity, 0, cost).value());
+            }
+            for node in &mut nodes {
+                node.children
+                    .sort_by_key(|&child| std::cmp::Reverse(values[child]));
+                node.cuts.sort_by_key(|members| {
+                    std::cmp::Reverse(members.iter().map(|&member| values[member]).min())
+                });
+            }
         }
         let choice = next(&nodes, 0, 0);
         let ready = !choice.pending.is_empty()

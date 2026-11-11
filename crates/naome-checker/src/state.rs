@@ -165,7 +165,10 @@ impl ArtifactState {
     /// Canonical proof bytes not retained by the resolver are returned.
     pub fn register_proof(&mut self, proof: CheckedProof) -> Result<Box<[u8]>, ArtifactStateError> {
         self.validate_proof_registration(&proof)?;
+        Ok(self.insert_validated_proof(proof))
+    }
 
+    fn insert_validated_proof(&mut self, proof: CheckedProof) -> Box<[u8]> {
         let bytes = proof.normal_form().canonical_bytes().len() + 1;
         let CheckedProof {
             normal_form,
@@ -191,7 +194,7 @@ impl ArtifactState {
         let inserted = self.proofs.insert(proof_id, derivation_id);
         debug_assert!(inserted);
 
-        Ok(normal_form.into_canonical_bytes())
+        normal_form.into_canonical_bytes()
     }
 
     /// Registers a checked reference in a temporary verification context.
@@ -237,7 +240,7 @@ impl ArtifactState {
                 Ok(proof.normal_form.into_canonical_bytes())
             }
             Err(error) => Err(error),
-            Ok(()) => self.register_proof(proof),
+            Ok(()) => Ok(self.insert_validated_proof(proof)),
         }
     }
 
@@ -246,7 +249,7 @@ impl ArtifactState {
         &self,
         proof: &CheckedProof,
     ) -> Result<(), ArtifactStateError> {
-        registration::validate(self, proof, false)
+        registration::validate(self, proof, false, |id| Ok(self.contains_proof(id)))
     }
 
     /// Registers one checked definition without replacing selected state.
@@ -316,9 +319,6 @@ impl ArtifactState {
 }
 
 impl registration::RegistrationView for ArtifactState {
-    fn has_proof(&self, id: ProofId) -> Result<bool, crate::ContextError> {
-        Ok(self.proofs.contains_key(&id))
-    }
     fn derivation_statement(
         &self,
         id: DerivationId,

@@ -161,7 +161,7 @@ impl TrainingMeasurements {
                     .unwrap_or(0);
         }
     }
-    pub(super) fn reference(&mut self, graphs: &[&Graph], recurrence: Recurrence) {
+    pub(super) fn record_references(&mut self, graphs: &[&Graph]) {
         self.reference_slots += graphs.len();
         self.reference_digest = super::super::digest(&(
             &self.reference_digest,
@@ -170,6 +170,9 @@ impl TrainingMeasurements {
                 .map(|g| (g.key(), &g.successes))
                 .collect::<Vec<_>>(),
         ));
+    }
+    pub(super) fn reference(&mut self, graphs: &[&Graph], recurrence: Recurrence) {
+        self.record_references(graphs);
         if recurrence != Recurrence::Disabled {
             self.internal_steps += 2 * graphs.len();
             self.candidate_transitions +=

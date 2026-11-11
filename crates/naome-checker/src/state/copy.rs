@@ -115,7 +115,7 @@ impl<P: CopyPlan> AuthenticatedCopy<P> {
             match &mut self.follow {
                 Follow::Membership(map, lookup) => {
                     if lookup.complete() {
-                        if lookup.value()?.is_none() {
+                        if !lookup.found()? {
                             return Err(ContextError::Corrupt);
                         }
                         self.follow = Follow::None;
@@ -156,8 +156,8 @@ impl<P: CopyPlan> AuthenticatedCopy<P> {
                         break;
                     }
                     let visit = walk.step()?.ok_or(ContextError::Corrupt)?;
-                    self.target.write(visit.address, &visit.bytes)?;
-                    work.node(visit.bytes.len());
+                    self.target.write(visit.address, visit.bytes())?;
+                    work.node(visit.bytes().len());
                     continue;
                 }
                 Follow::None => {}
@@ -176,11 +176,11 @@ impl<P: CopyPlan> AuthenticatedCopy<P> {
             }
             let visit = walk.step()?.ok_or(ContextError::Corrupt)?;
             if current.copy_nodes {
-                self.target.write(visit.address, &visit.bytes)?;
+                self.target.write(visit.address, visit.bytes())?;
             }
-            work.node(visit.bytes.len());
-            if let Some((key, value)) = visit.entry {
-                self.follow = self.plan.follow(key, &value)?;
+            work.node(visit.bytes().len());
+            if let Some((key, value)) = visit.entry() {
+                self.follow = self.plan.follow(key, value)?;
             }
         }
         work.complete = self.complete();

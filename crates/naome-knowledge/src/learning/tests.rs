@@ -5,6 +5,14 @@ fn fixed_state() -> State {
 }
 use super::*;
 
+/// Native qualification fixtures share the process work reservation.
+pub(super) fn qualification_fixture() -> std::sync::MutexGuard<'static, ()> {
+    static RESERVATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RESERVATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 struct UniversalChoice(usize);
 impl model::Ranker for UniversalChoice {
     fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
@@ -412,7 +420,17 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     previous.unit = job.units() - 1;
     previous.plan = Some(selection.clone());
     previous.candidate = Some(candidate.clone());
-    previous.transfer.observed = transfer::Summary::prefix(transfer::CASES);
+    previous.first_loss = Some(1.);
+    previous.causal = causal::test_fixture(&candidate, 0, 0);
+    previous.last_loss = Some(0.5);
+    for _ in 0..curriculum::DEVELOPMENT + state.anchors.len() {
+        previous.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
+    }
+    for index in 0..transfer::CASES {
+        previous.evaluation.push(true, [false; 2], [32; 2], [1; 2]);
+        previous.transfer.record(index, false, false).unwrap();
+    }
+    let assessment = previous.evaluation.assessment(&state).unwrap();
     previous.cpu_micros = 10;
     previous.wall_micros = 20;
     previous.meta_cpu_micros = 1;
@@ -435,6 +453,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
                 protected_loss: false,
                 anchor_loss: false,
                 transfer: previous.transfer,
+                assessment: Some(assessment),
                 lower_cpu_micros: 9,
                 lower_wall_micros: 19,
             },
@@ -445,6 +464,8 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     progress.unit = job.units();
     progress.candidate = None;
     progress.rejections += 1;
+    progress.assessment = Some(assessment);
+    progress.qualification = Qualification::InsufficientResearchValue;
     progress.meta_update = Some(update);
     progress.cpu_micros = 13;
     progress.wall_micros = 23;
@@ -471,6 +492,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
 }
 #[test]
 fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
+    let _reservation = qualification_fixture();
     struct Interrupted {
         store: MemoryStore,
         writes: usize,
@@ -566,6 +588,7 @@ fn partial_meta_pair_write_replays_the_same_measured_trial_and_update_bytes() {
 }
 #[test]
 fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuation() {
+    let _reservation = qualification_fixture();
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut io = MemoryStore::default();
@@ -574,7 +597,6 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     let incumbent = model::test_update(&state.model, &graphs, &mut 31, &mut io).unwrap();
     state.model = incumbent.clone();
     state.feedback = crate::training::ability::Feedback::fresh(digest(&state.model));
-    let development_parent = state.clone();
     let mut job = state.job();
     job.training = true;
     let (candidate, _, _) = engine
@@ -587,123 +609,61 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         .unwrap();
     assert_ne!(candidate.model, incumbent.model);
     assert_ne!(candidate.optimizer, incumbent.optimizer);
-    let candidate_for_development_regression = candidate.clone();
-    let candidate_for_transfer_regression = candidate.clone();
-    let mut finished = job.base.clone();
-    finished.trained = finished.accepted;
-    job.progress = Some(Progress {
-        frontier: None,
-        cost: None,
-        training_cost: model::TrainingCost::default(),
-        unit: job.units() - 1,
-        model: finished.model,
-        trained: finished.trained,
-        promotions: finished.promotions,
-        rejections: finished.rejections,
-        candidate: Some(candidate),
-        rng: 9,
-        first_loss: Some(1.),
-        last_loss: Some(0.1),
-        incumbent_score: 1,
-        candidate_score: 2,
-        anchor_regression: true,
-        development_regression: false,
-        original_score: [0, 0],
-        transfer: transfer::Summary::default(),
-        result: None,
-        qualification: Qualification::Pending,
-        ..finished_progress(&job.base)
-    });
+    let mut pending = finished_progress(&state);
+    pending.unit = job.units() - 1;
+    pending.candidate = Some(candidate.clone());
+    pending.first_loss = Some(1.);
+    pending.causal = causal::test_fixture(&candidate, 1, 2);
+    pending.last_loss = Some(0.1);
+    pending.development_regression = true;
+    pending.incumbent_score = 1;
+    pending.original_score = [1, 0];
+    for index in 0..curriculum::DEVELOPMENT + state.anchors.len() {
+        pending
+            .evaluation
+            .push(false, [index == 0, false], [32; 2], [1; 2]);
+    }
+    for index in 0..transfer::CASES {
+        let checked = [index == 0, index == 1];
+        pending.evaluation.push(true, checked, [32; 2], [1; 2]);
+        pending
+            .transfer
+            .record(index, checked[0], checked[1])
+            .unwrap();
+    }
+    job.progress = Some(pending.clone());
     job.execute(job.units(), None, 42, &mut engine, &mut io)
         .unwrap();
     assert_eq!(
         job.progress.as_ref().unwrap().qualification,
-        Qualification::AnchorRegression
+        Qualification::InsufficientResearchValue
     );
+    job.validate().unwrap();
+
+    let mut forged = job.progress.clone().unwrap();
+    forged.model = candidate;
+    forged.promotions += 1;
+    forged.rejections -= 1;
+    forged.qualification = Qualification::Promoted;
+    let mut worker = job.clone();
+    worker.progress = Some(pending);
+    assert!(worker.retain_progress(42, forged.clone()).is_err());
+    worker.progress = Some(forged);
+    assert!(!state.qualify(&worker));
+
     assert!(state.qualify(&job));
     assert_eq!(state.model, incumbent);
     let actual = model::test_update(&state.model, &graphs, &mut 59, &mut io).unwrap();
     let expected = model::test_update(&incumbent, &graphs, &mut 59, &mut io).unwrap();
     assert_eq!(
         actual, expected,
-        "the next real update must retain both model and Adam state"
+        "the next real update retains both model and Adam state"
     );
-    let mut alternate = development_parent;
-    let mut job = alternate.job();
-    job.training = true;
-    let mut progress = finished_progress(&alternate);
-    progress.unit = job.units() - 1;
-    progress.candidate = Some(candidate_for_development_regression);
-    progress.candidate_score = 20;
-    progress.incumbent_score = 12;
-    progress.original_score = [7, 6];
-    progress.development_regression = true;
-    job.progress = Some(progress);
-    job.execute(job.units(), None, 43, &mut engine, &mut io)
-        .unwrap();
-    assert_eq!(
-        job.progress.as_ref().unwrap().qualification,
-        Qualification::DevelopmentRegression
-    );
-    assert!(alternate.qualify(&job));
-    assert_eq!(alternate.model, incumbent);
-
-    let mut transfer_parent = job.base.clone();
-    let mut job = transfer_parent.job();
-    job.training = true;
-    let mut progress = finished_progress(&transfer_parent);
-    progress.unit = job.units() - 1;
-    progress.candidate = Some(candidate_for_transfer_regression.clone());
-    progress.candidate_score = 2;
-    progress.incumbent_score = 1;
-    progress.first_loss = Some(1.);
-    progress.last_loss = Some(0.9);
-    for index in 0..transfer::CASES {
-        progress
-            .transfer
-            .record(index, index == 0, index == 1 || index == 2)
-            .unwrap();
-    }
-    let pending = progress.clone();
-    job.progress = Some(progress);
-    job.execute(job.units(), None, 44, &mut engine, &mut io)
-        .unwrap();
-    assert_eq!(
-        job.progress.as_ref().unwrap().qualification,
-        Qualification::TransferRegression
-    );
-    job.validate().unwrap();
-
-    let mut invalid_promotion = job.clone();
-    let progress = invalid_promotion.progress.as_mut().unwrap();
-    progress.model = candidate_for_transfer_regression;
-    progress.promotions += 1;
-    progress.rejections -= 1;
-    progress.qualification = Qualification::Promoted;
-    progress.development_after = crate::training::ability::Profile::new(digest(&progress.model));
-    progress.finder = None;
-    let mut worker_job = job.clone();
-    worker_job.progress = Some(pending);
-    assert_eq!(
-        worker_job
-            .retain_progress(44, invalid_promotion.progress.clone().unwrap())
-            .unwrap_err(),
-        crate::ResearchFailure::ProgressTransferLoss.into()
-    );
-
-    let restored: Job =
-        serde_json::from_slice(&serde_json::to_vec(&invalid_promotion).unwrap()).unwrap();
-    restored.validate().unwrap();
-    assert!(!transfer_parent.qualify(&restored));
-    assert_eq!(transfer_parent.model, incumbent);
-
-    assert!(transfer_parent.qualify(&job));
-    assert_eq!(transfer_parent.model, incumbent);
-    assert!(!transfer_parent.qualify(&job));
-    assert_eq!(transfer_parent.model, incumbent);
 }
+
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        causal: causal::Trial::default(),
         executions: Vec::new(),
         terminal: experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly),
         finder: None,
@@ -732,6 +692,8 @@ fn finished_progress(state: &State) -> Progress {
         development_regression: false,
         original_score: [0, 0],
         transfer: transfer::Summary::default(),
+        evaluation: transfer::Evidence::default(),
+        assessment: None,
         development_before: crate::training::ability::Profile::new(digest(&state.model)),
         development_after: crate::training::ability::Profile::new(digest(&state.model)),
         regressions: [0; crate::training::ability::SKILLS],
@@ -941,6 +903,7 @@ fn evicted_stored_anchor_uses_its_original_owned_evidence_and_existing_source_ca
 }
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
+        causal: causal::Trial::default(),
         terminal: experience::TerminalEvidence::certified(&solution),
         frontier: None,
         cost: Some((*solution.cost).clone()),
@@ -979,6 +942,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         .select(&job.base, &mut MemoryStore::default())
         .unwrap();
     job.progress = Some(Progress {
+        causal: causal::Trial::default(),
         frontier: None,
         cost: None,
         training_cost: model::TrainingCost::default(),
@@ -1029,10 +993,9 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
     );
     assert_eq!(digest(&state), before);
     job.progress.as_mut().unwrap().model.seed += 1;
-    assert!(
-        job.validate()
-            .unwrap_err()
-            .contains("before successful qualification")
+    assert_eq!(
+        job.validate().unwrap_err(),
+        crate::ResearchFailure::JobPromotionBinding.into()
     );
     assert!(
         !state.qualify(&job),
@@ -1275,11 +1238,8 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     progress.model.model = Some(Blob::of(&[1; 32]));
     progress.model.optimizer = Some(Blob::of(&[2; 32]));
     progress.promotions += 1;
-    progress.transfer = transfer::Summary {
-        before: 1,
-        after: 3,
-        observed: transfer::Summary::prefix(transfer::CASES),
-    };
+    evaluate_fixture(&job.base, &mut progress, 1, 0b01010101);
+    progress.qualification = Qualification::Promoted;
     progress.development_after.checkpoint = digest(&progress.model);
     let selected = progress.model.clone();
     let expanded = crate::checkpoint::encode(&selected).unwrap().len()
@@ -1295,28 +1255,167 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     assert!(state.replay.len() < job.base.replay.len());
 }
 
+fn evaluate_fixture(base: &State, progress: &mut Progress, before: u32, after: u32) {
+    progress.evaluation = transfer::Evidence::default();
+    progress.transfer = transfer::Summary::default();
+    progress.causal = causal::test_fixture(&progress.model, before, after);
+    progress.first_loss = Some(1.);
+    progress.last_loss = Some(0.5);
+    for _ in 0..curriculum::DEVELOPMENT + base.anchors.len() {
+        progress.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
+    }
+    for index in 0..transfer::CASES {
+        let checked = [before & (1 << index) != 0, after & (1 << index) != 0];
+        progress.evaluation.push(true, checked, [32; 2], [1; 2]);
+        progress
+            .transfer
+            .record(index, checked[0], checked[1])
+            .unwrap();
+    }
+    progress.assessment = Some(progress.evaluation.assessment(base).unwrap());
+}
+
 #[test]
-fn retained_promotion_cannot_trade_a_transfer_family_loss_for_aggregate_gain() {
+fn causal_promotion_preserves_transfer_and_uses_the_original_knowledge() {
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut job = state.job();
     job.training = true;
     let mut p = finished_progress(&state);
     p.unit = job.units();
+    p.model.updates = 250;
+    p.model.model = Some(Blob::of(&[1; 32]));
+    p.model.optimizer = Some(Blob::of(&[2; 32]));
     p.promotions = state.promotions + 1;
-    p.incumbent_score = 45;
-    p.candidate_score = 49;
-    p.transfer = transfer::Summary {
-        before: 1,
-        after: 12,
-        observed: transfer::Summary::prefix(transfer::CASES),
-    };
+    p.qualification = Qualification::Promoted;
+    p.development_after.checkpoint = digest(&p.model);
+    evaluate_fixture(&job.base, &mut p, 1, 0b01010100);
+    assert!(p.assessment.unwrap().accepts());
+    assert_eq!(p.assessment.unwrap().losses, 1);
     job.progress = Some(p.clone());
     assert!(job.validate().is_err());
-    p.transfer.after = 3;
-    job.progress = Some(p);
+    assert!(!state.clone().qualify(&job));
+    evaluate_fixture(&job.base, &mut p, 1, 0b01010101);
+    job.progress = Some(p.clone());
     job.validate().unwrap();
+    let mut changed = state.clone();
+    let example = own_example();
+    let question = ResearchQuestion::from_hex(&example.question).unwrap();
+    let target = question.proved_target();
+    let (term, _) = search::compile(target, &example.tree).unwrap();
+    let verified = proof::verify(&term, target).unwrap();
+    assert!(
+        changed
+            .remember_theorem(knowledge::Entry {
+                packet: evidence::pack(&verified).unwrap(),
+            })
+            .unwrap()
+    );
+    let changed_checkpoint = digest(&changed);
+    assert!(!changed.qualify(&job));
+    assert_eq!(digest(&changed), changed_checkpoint);
+    assert!(state.qualify(&job));
+    assert_eq!(state.model, p.model);
 }
+
+#[test]
+fn causal_selection_is_retained_before_the_worker_can_qualify_it() {
+    let _reservation = qualification_fixture();
+    struct OwnedSnapshots<'a> {
+        owner: &'a Job,
+        store: &'a mut MemoryStore,
+    }
+    impl ArtifactIo for OwnedSnapshots<'_> {
+        fn read(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+        ) -> Result<Vec<u8>, crate::Error> {
+            if !self.owner.allows_read(blob) {
+                return Err(
+                    crate::ResearchFailure::NativeModelReadOutsideImmutableOwnedSnapshots.into(),
+                );
+            }
+            self.store.read(blob, range)
+        }
+
+        fn write(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+            bytes: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            self.store.write(blob, range, bytes)
+        }
+    }
+
+    let mut state = fixed_state();
+    state.accept(own_example()).unwrap();
+    let mut store = MemoryStore::default();
+    let graphs = state.training_graphs().unwrap();
+    let candidate = model::test_update(&state.model, &graphs[..1], &mut 10, &mut store).unwrap();
+    let mut engine = Engine::default();
+    let weights = engine
+        .intervention_weights(&state.model, &candidate, &mut store)
+        .unwrap();
+    let span = (0..weights.parameters)
+        .map(|start| model::intervention::Span {
+            start,
+            end: start + 1,
+        })
+        .find(|span| weights.changed(&[*span]) == 1)
+        .unwrap();
+    let mut owner = state.job();
+    owner.training = true;
+    let mut progress = finished_progress(&state);
+    progress.causal = causal::before_freeze(&candidate, span);
+    progress.unit = model::TRAINING_UNITS + (transfer::CASES + causal::LOCALIZATION) as u32;
+    progress.first_loss = Some(1.);
+    progress.last_loss = Some(0.5);
+    progress.candidate = Some(candidate.clone());
+    let selection_unit = progress.unit + 1;
+    let initial_evaluation = digest(&progress.evaluation);
+    owner.progress = Some(progress);
+    owner.validate().unwrap();
+    let mut worker = owner.clone();
+    worker
+        .execute(
+            selection_unit,
+            None,
+            71,
+            &mut engine,
+            &mut OwnedSnapshots {
+                owner: &owner,
+                store: &mut store,
+            },
+        )
+        .unwrap();
+    let selected = worker.progress.take().unwrap();
+    assert_eq!(digest(&selected.evaluation), initial_evaluation);
+    let checkpoint = selected.candidate.clone().unwrap();
+    assert_ne!(checkpoint.model, candidate.model);
+    assert!(!owner.allows_read(checkpoint.model.as_ref().unwrap()));
+    owner.retain_progress(71, selected).unwrap();
+    let mut reopened: Job =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&owner).unwrap()).unwrap();
+    reopened
+        .execute(
+            selection_unit + 1,
+            None,
+            71,
+            &mut Engine::default(),
+            &mut OwnedSnapshots {
+                owner: &owner,
+                store: &mut store,
+            },
+        )
+        .unwrap();
+    let evaluated = reopened.progress.take().unwrap();
+    assert_eq!(evaluated.candidate.as_ref(), Some(&checkpoint));
+    assert_ne!(digest(&evaluated.evaluation), initial_evaluation);
+    owner.retain_progress(71, evaluated).unwrap();
+}
+
 #[test]
 fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     let mut state = fixed_state();
@@ -1327,13 +1426,32 @@ fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     p.unit = model::TRAINING_UNITS + 1;
     p.first_loss = Some(1.);
     p.last_loss = Some(0.5);
-    p.transfer.record(0, true, true).unwrap();
+    p.candidate = Some(Checkpoint {
+        updates: 250,
+        model: Some(Blob::of(&[1; 32])),
+        optimizer: Some(Blob::of(&[2; 32])),
+        ..state.model.clone()
+    });
+    let candidate = p.candidate.clone().unwrap();
+    p.causal
+        .discover(0, &candidate, &causal::test_pair([true, true]))
+        .unwrap();
     job.progress = Some(p.clone());
     let before = digest(&job);
     p.unit += 1;
-    p.transfer.record(1, false, true).unwrap();
+    p.causal
+        .discover(1, &candidate, &causal::test_pair([false, true]))
+        .unwrap();
     let mut forged = p.clone();
-    forged.transfer.before ^= 1;
+    forged.causal = causal::Trial::default();
+    forged
+        .causal
+        .discover(0, &candidate, &causal::test_pair([false, true]))
+        .unwrap();
+    forged
+        .causal
+        .discover(1, &candidate, &causal::test_pair([false, true]))
+        .unwrap();
     assert!(job.retain_progress(71, forged).is_err());
     assert_eq!(digest(&job), before);
     job.retain_progress(71, p).unwrap();
@@ -1729,8 +1847,36 @@ fn native_nat_program_reuse_from_a_received_catalog() {
 
 mod native_prerequisite;
 pub(crate) use native_prerequisite::{catalog_case, publish_catalog_solution};
+// Independent native checking reserves process-wide memory. Give these
+// scenarios separate budgets so the parallel test harness cannot spend them.
+pub(super) fn isolated(name: &str) -> bool {
+    const CHILD: &str = "NAOME_LEARNING_CHECKER_TEST";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD, name)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("running 1 test"),
+        "{stdout}\n{stderr}"
+    );
+    print!("{stdout}");
+    eprint!("{stderr}");
+    false
+}
+
 #[test]
 fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
+    if !isolated(
+        "learning::tests::checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs",
+    ) {
+        return;
+    }
     let (_, [lemma, _]) = helper_goal();
     let solved = symbolic_solution(&lemma);
     let mut graph = crate::Graph::default();
@@ -1772,7 +1918,7 @@ fn checked_lemma_index_supplies_a_native_scope_without_mandatory_inputs() {
     finder.refresh(&graph, |_| true).unwrap();
     let (required, inputs) = finder.solving_inputs(&graph, &target, &[]).unwrap();
     assert!(required.is_empty());
-    assert!(inputs.has_optional_context());
+    assert!(inputs.has_offer());
     assert!(
         !inputs.is_empty(),
         "structural lookup must supply the checked lemma"

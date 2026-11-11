@@ -95,6 +95,7 @@ pub struct Experience {
     pub protected_loss: bool,
     pub anchor_loss: bool,
     pub transfer: super::transfer::Summary,
+    pub assessment: Option<crate::research_value::Assessment>,
     /// Measured lower units through the last persisted qualification checkpoint.
     /// Final gate/meta CPU remains in Progress and whole-job totals. Freezing this
     /// target makes a partial paired write replay exactly, not a new experiment.
@@ -105,15 +106,20 @@ impl Experience {
     pub fn validate(&self) -> Result<(), crate::Error> {
         self.plan.validate()?;
         self.transfer.validate()?;
-        if self.candidate_model.is_some() != self.transfer.complete() {
+        if self.candidate_model.is_some() != self.transfer.complete()
+            || self.assessment.is_some() != self.candidate_model.is_some()
+        {
             return Err(crate::ResearchFailure::MetaTransferIncomplete.into());
         }
-        if self.selected_model != self.source_model
-            && (self.candidate_model.as_ref() != Some(&self.selected_model)
-                || self.after <= self.before
-                || self.protected_loss
-                || self.anchor_loss
-                || !self.transfer.supports_recorded_promotion())
+        if let Some(assessment) = self.assessment {
+            assessment.validate()?;
+        }
+        let selected = self.selected_model != self.source_model;
+        if selected
+            && (!self
+                .assessment
+                .is_some_and(|assessment| assessment.accepts())
+                || self.candidate_model.as_ref() != Some(&self.selected_model))
         {
             return Err(crate::ResearchFailure::MetaPromotionBinding.into());
         }
@@ -134,18 +140,12 @@ impl Experience {
     fn features(&self) -> [f32; FEATURES] {
         features(&self.context, &self.plan)
     }
-    fn targets(&self) -> [f32; 3] {
+    pub(crate) fn targets(&self) -> [f32; 3] {
+        let assessment = self.assessment.unwrap_or_default();
+        let expected = assessment.mean.max(0);
         [
-            if self.selected_model == self.source_model || !self.transfer.accepts() {
-                0.
-            } else {
-                self.transfer.gain()
-            },
-            if self.protected_loss || self.anchor_loss {
-                1.
-            } else {
-                self.transfer.loss()
-            },
+            expected as f32 / 1_000.,
+            (expected - assessment.without_best).clamp(0, 1_000) as f32 / 1_000.,
             (self.lower_cpu_micros as f32 / 180_000_000.).min(2.),
         ]
     }
@@ -183,6 +183,32 @@ impl State {
             draw: 991_027,
         }
     }
+    pub fn forecast(
+        &self,
+        frame: &crate::research_value::Frame,
+    ) -> Option<crate::research_value::Forecast> {
+        let mut expected = [0.; 3];
+        let mut counts = [0u32; 3];
+        for experience in &self.memory {
+            for (i, (value, mask)) in experience
+                .targets()
+                .into_iter()
+                .zip(experience.mask())
+                .enumerate()
+            {
+                expected[i] += value * mask;
+                counts[i] += mask as u32;
+            }
+        }
+        if counts[0] == 0 {
+            return None;
+        }
+        for (sum, n) in expected.iter_mut().zip(counts) {
+            *sum /= n.max(1) as f32;
+        }
+        Some(frame.training(expected))
+    }
+
     pub fn validate(&self) -> Result<(), crate::Error> {
         self.model.validate()?;
         if self.memory.len() > MEMORY
@@ -262,9 +288,19 @@ impl Engine {
             _ => Ok(model::Network::fresh(c.seed)),
         }
     }
+    #[cfg(test)]
     pub fn select<I: ArtifactIo + ?Sized>(
         &mut self,
         state: &super::State,
+        io: &mut I,
+    ) -> Result<Selection, crate::Error> {
+        self.select_with_research(state, None, io)
+    }
+
+    pub fn select_with_research<I: ArtifactIo + ?Sized>(
+        &mut self,
+        state: &super::State,
+        research: Option<&crate::research_value::Frame>,
         io: &mut I,
     ) -> Result<Selection, crate::Error> {
         let context = context(state);
@@ -306,13 +342,19 @@ impl Engine {
             .collect::<Vec<_>>();
         let exploration =
             state.meta.trials == 0 || super::model::random(&mut draw).is_multiple_of(5);
+        let value = |prediction| {
+            research.map_or_else(
+                || utility(prediction),
+                |frame| frame.training(prediction).value() as f32 / 1_000.,
+            )
+        };
         let selected = if exploration {
             (super::model::random(&mut draw) % candidates.len() as u64) as usize
         } else {
             (0..candidates.len())
                 .max_by(|a, b| {
-                    utility(predictions[*a])
-                        .total_cmp(&utility(predictions[*b]))
+                    value(predictions[*a])
+                        .total_cmp(&value(predictions[*b]))
                         .then(b.cmp(a))
                 })
                 .unwrap()

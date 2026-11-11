@@ -327,6 +327,7 @@ impl State {
             history: None,
             evidence: Vec::new(),
             training: false,
+            research: None,
             required: Vec::new(),
             prerequisites: Default::default(),
             base_hash: digest(self),
@@ -360,6 +361,12 @@ impl State {
     }
     pub(crate) fn search_budget(&self) -> u32 {
         if self.rejections % 3 == 2 { 256 } else { 128 }
+    }
+    pub(crate) fn training_value(
+        &self,
+        frame: &crate::research_value::Frame,
+    ) -> Option<crate::research_value::Forecast> {
+        self.meta.forecast(frame)
     }
     pub(crate) fn feedback_stamp(&self) -> (&str, u64) {
         (&self.feedback.checkpoint, self.feedback.revision)
@@ -412,7 +419,13 @@ impl State {
             || self.trained != native.base.trained
             || self.meta.model != native.base.meta.model
             || self.meta.draw != native.base.meta.draw
-            || !native.preserves_incumbent_transfer(p)
+            || !native.promotion_bound(p)
+        {
+            return false;
+        }
+        if p.qualification == super::Qualification::Promoted
+            && digest(&(&self.knowledge, &self.definitions))
+                != digest(&(&native.base.knowledge, &native.base.definitions))
         {
             return false;
         }
@@ -573,17 +586,25 @@ impl State {
             pool::Pool::default(),
         )
     }
-    /// These anchors are ordinary eligible training proofs, never the separate
-    /// development, protected-sentinel, transfer or confirmation panels.
+    /// Use older local anchors first. A fresh parent can rehearse verified
+    /// local replay when it has yet to retain any local anchors.
     pub(super) fn preservation_pool(
         &self,
         evidence: &[Evidence],
         training: &pool::Pool,
     ) -> Result<pool::Pool, crate::Error> {
-        self.checked_pool(
-            self.anchors
+        let sources = if self.model.updates == 0
+            && !self
+                .anchors
                 .iter()
-                .filter(|e| matches!(e.origin, Origin::Local)),
+                .any(|e| matches!(e.origin, Origin::Local))
+        {
+            &self.replay
+        } else {
+            &self.anchors
+        };
+        self.checked_pool(
+            sources.iter().filter(|e| matches!(e.origin, Origin::Local)),
             evidence,
             training.remaining(),
         )

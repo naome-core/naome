@@ -173,8 +173,8 @@ pub struct Page {
     pub records: Vec<Record>,
 }
 
-/// Every scanned record is represented, including an explicit absence of an
-/// eligible terminal observation. The page hash binds the journal's decision.
+/// A terminal observation bound by the page hash. The Records lane also
+/// represents scanned jobs without an eligible observation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
@@ -234,9 +234,6 @@ impl Page {
             }
             return Ok(());
         }
-        if !self.records.is_empty() {
-            return Err(crate::ResearchFailure::HistorySourcePageLane.into());
-        }
         let expected: Vec<_> = self
             .examined
             .iter()
@@ -250,6 +247,25 @@ impl Page {
             .collect();
         if actual != expected {
             return Err(crate::ResearchFailure::HistorySourcePageMismatch.into());
+        }
+        let mut sources = self.sources.iter();
+        for record in &self.records {
+            let mismatch = crate::ResearchFailure::HistorySourceObservationMismatch;
+            let source = sources
+                .find(|source| source.job == record.job)
+                .ok_or(mismatch)?;
+            let observation = record.observation.as_ref().ok_or(mismatch)?;
+            observation.validate()?;
+            if observation.summary.job != source.job
+                || observation.question != source.question
+                || observation.summary.origin != source.origin
+                || observation.summary.terminal
+                    != experience::TerminalEvidence::certified(&source.solution)
+                || observation.summary.trace.checked_trajectory
+                    != Some(digest(&source.solution.tree))
+            {
+                return Err(mismatch.into());
+            }
         }
         Ok(())
     }
@@ -327,7 +343,7 @@ impl Working {
                 ..example.clone()
             })?;
         }
-        let result = Self {
+        let mut result = Self {
             base_hash: job.base_hash.clone(),
             page: receipt.clone(),
             replay: state.replay,
@@ -340,8 +356,12 @@ impl Working {
             available: eligible.len(),
             retained,
         };
-        if crate::checkpoint::encode(&result)?.len() > PAGE_BYTES + 32 * 1024 + 8192 {
-            return Err(crate::ResearchFailure::HistoryPreparedCapacity.into());
+        while crate::checkpoint::encode(&result)?.len() > PAGE_BYTES + 32 * 1024 + 8192 {
+            // The admitted proofs take priority if the base and source
+            // evidence together leave less space than the journal page did.
+            if page.request.lane != Lane::Sources || result.observations.pop().is_none() {
+                return Err(crate::ResearchFailure::HistoryPreparedCapacity.into());
+            }
         }
         Ok(result)
     }

@@ -1,6 +1,8 @@
 //! An immutable bounded page from the existing admitted-source journal.
 use super::*;
-use crate::learning::history::{Lane, PAGE_BYTES, Page, Receipt, Request, SOURCES, Source};
+use crate::learning::history::{
+    Lane, PAGE_BYTES, Page, Receipt, Record as HistoryRecord, Request, SOURCES, Source,
+};
 
 // The prepared snapshot also contains the replay (at most 32 KiB) and the
 // job's existing evidence. Of its remaining 8 KiB, reserve half for the
@@ -47,9 +49,10 @@ impl Disk {
             return Ok(receipt.clone());
         }
         let started = crate::learning::meta::cpu_micros()?;
+        let observation_capacity =
+            records_page_bytes(crate::checkpoint::encode(&native.evidence)?.len());
         if request.lane == Lane::Records {
-            let bytes = records_page_bytes(crate::checkpoint::encode(&native.evidence)?.len());
-            return self.experience_page(journal, id, request, started, bytes);
+            return self.experience_page(journal, id, request, started, observation_capacity);
         }
         let mut read_bytes = 0usize;
         let mut read_operations = 1usize;
@@ -63,7 +66,9 @@ impl Disk {
             .iter()
             .map(|(key, bytes)| key.len() + bytes.len())
             .sum::<usize>();
-        let at_end = rows.len() < SOURCES;
+        let mut at_end = rows.len() < SOURCES;
+        let mut observations = Vec::new();
+        let mut staging_bytes = observation_capacity;
         let mut page = Page {
             request: request.clone(),
             next: None,
@@ -77,6 +82,7 @@ impl Disk {
             if source_id == 0 {
                 return Err(crate::ResearchFailure::HistorySourceHasNoJob.into());
             }
+            let mut source_record = None;
             if source_id < id {
                 let bytes = self
                     .checkpoint
@@ -195,6 +201,7 @@ impl Disk {
                     solution: solution.clone(),
                     peer_evidence,
                 });
+                source_record = Some(source);
             }
             page.examined.push((key.clone(), source_id));
             page.next = Some(key);
@@ -209,18 +216,37 @@ impl Disk {
                         crate::ResearchFailure::HistoricalSourceExceedsWorkingPageCapacity.into(),
                     );
                 }
-                return self.retain_history(
-                    journal,
-                    id,
-                    page,
-                    read_bytes,
-                    read_operations,
-                    started,
-                );
+                at_end = false;
+                break;
+            }
+            if let Some(record) = source_record
+                && staging_bytes != 0
+                && let Some(observation) =
+                    crate::learning::experience::Observation::from_record(&record)?
+            {
+                let record = HistoryRecord {
+                    job: source_id,
+                    observation: Some(observation),
+                };
+                // One extra byte covers the delimiter in the page's JSON array.
+                let bytes = crate::checkpoint::encode(&record)?.len() + 1;
+                if bytes <= staging_bytes {
+                    observations.push((record, bytes));
+                    staging_bytes -= bytes;
+                }
             }
         }
         if at_end {
             page.next = None;
+        }
+        // Retain the same admitted proof page before spending its spare bytes
+        // on executions. A large trace must never displace a proof or move its cursor.
+        let mut spare = PAGE_BYTES - crate::checkpoint::encode(&page)?.len();
+        for (record, bytes) in observations {
+            if bytes <= spare {
+                page.records.push(record);
+                spare -= bytes;
+            }
         }
         self.retain_history(journal, id, page, read_bytes, read_operations, started)
     }
@@ -272,7 +298,7 @@ impl Disk {
             } else {
                 None
             };
-            page.records.push(crate::learning::history::Record {
+            page.records.push(HistoryRecord {
                 job: record.id,
                 observation,
             });

@@ -39,11 +39,13 @@ impl<'a> Search<'a> {
         instantiated: bool,
         work: &mut Work,
     ) -> Result<Self, Failure> {
-        let length = target.encode_canonical().map_err(|_| LIMIT)?.len();
-        work.formula(length, 8)?;
-        let mut opened = target.clone();
+        let mut goals = BTreeMap::new();
+        let mut pending = BTreeSet::new();
         let mut closing = Vec::new();
-        if instantiated {
+        let root = if instantiated && target.has_outer_universal() {
+            let length = target.encoded_length().map_err(|_| LIMIT)?;
+            work.formula(length, 8)?;
+            let mut opened = target.clone();
             for identifier in 0..super::super::instantiation::MAX_INSTANTIATIONS {
                 work.formula(length, 4)?;
                 let variable = FreeVariable::new(identifier as u32);
@@ -53,10 +55,25 @@ impl<'a> Search<'a> {
                 closing.push(variable);
                 opened = body;
             }
-        }
-        let mut goals = BTreeMap::new();
-        let mut pending = BTreeSet::new();
-        let root = add_goal(opened, length, &mut goals, &mut pending, work)?;
+            add_goal(opened, length, &mut goals, &mut pending, work)?
+        } else {
+            let bytes = target.encode_canonical().map_err(|_| LIMIT)?;
+            let length = bytes.len();
+            work.formula(length, 8)?;
+            if instantiated {
+                // The first binder attempt still consumes its reservation.
+                work.formula(length, 4)?;
+            }
+            work.formula(length, 8)?;
+            add_encoded_goal(
+                target.clone(),
+                length,
+                &bytes,
+                &mut goals,
+                &mut pending,
+                work,
+            )?
+        };
         Ok(Self {
             target,
             root,

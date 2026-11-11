@@ -18,6 +18,7 @@ fn complete_experience_roundtrips_and_noncanonical_phases_fail_closed() {
                 0,
                 crate::learning::transfer::Summary::prefix(crate::learning::transfer::CASES),
             ],
+            Some(([2, 0, 1], [-120, -240])),
         );
         let bytes = serde_json::to_vec(&p).unwrap();
         let decoded = Experience::try_from(p);
@@ -46,6 +47,7 @@ fn complete_experience_roundtrips_and_noncanonical_phases_fail_closed() {
         [false, false],
         [0, 0],
         [0; 3],
+        None,
     ))
     .unwrap();
     invalid[2][0] = 32.into();

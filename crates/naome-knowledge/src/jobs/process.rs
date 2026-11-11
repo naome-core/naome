@@ -311,9 +311,7 @@ async fn run_owned(
         let mut checkpoint = record.checkpoint;
         let mut outstanding = None;
         loop {
-            let bytes = reader.next().await?.ok_or(WorkerFailure::FrameTruncated)?;
-            let frame: Frame =
-                serde_json::from_slice(&bytes).map_err(|_| WorkerFailure::FrameEncoding)?;
+            let frame = reader.next().await?.ok_or(WorkerFailure::FrameTruncated)?;
             match frame {
                 Frame::Ready { id, binding, pid }
                     if !ready && id == record.id && binding == identity(&record) =>
@@ -654,9 +652,7 @@ async fn run_owned(
             let Some(frame) = reader.next().await? else {
                 return Ok::<(), JobFailureCode>(());
             };
-            match serde_json::from_slice::<Frame>(&frame)
-                .map_err(|_| WorkerFailure::FrameEncoding)?
-            {
+            match frame {
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
                 Frame::CleanupFailed { id, cause } if id == record.id => {
                     crate::network::emit(
@@ -754,7 +750,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
         }
     }
 
-    async fn next(&mut self) -> Result<Option<Vec<u8>>, WorkerFailure> {
+    async fn next(&mut self) -> Result<Option<Frame>, WorkerFailure> {
         loop {
             let buffer = self
                 .reader
@@ -780,18 +776,18 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
             self.partial.extend_from_slice(&buffer[..end]);
             self.reader.consume(end);
             if complete {
-                let program = matches!(
-                    serde_json::from_slice::<Frame>(&self.partial),
-                    Ok(Frame::Program { .. } | Frame::Model { .. })
-                );
+                let bytes = std::mem::take(&mut self.partial);
+                let frame = serde_json::from_slice::<Frame>(&bytes);
+                let separate_allowance =
+                    matches!(&frame, Ok(Frame::Program { .. } | Frame::Model { .. }));
                 self.total = self
                     .total
-                    .checked_add(if program { 0 } else { self.partial.len() })
+                    .checked_add(if separate_allowance { 0 } else { bytes.len() })
                     .ok_or(WorkerFailure::StreamCapacity)?;
                 if self.total > crate::resources::limits().provider_stream_bytes {
                     return Err(WorkerFailure::StreamCapacity);
                 }
-                return Ok(Some(std::mem::take(&mut self.partial)));
+                return frame.map(Some).map_err(|_| WorkerFailure::FrameEncoding);
             }
         }
     }
@@ -872,7 +868,7 @@ fn emit_coded(frame: &Frame) -> Result<(), WorkerFailure> {
 enum Message {
     Parent(Vec<u8>),
     ParentClosed,
-    Provider(Vec<u8>),
+    Provider { bytes: Vec<u8>, result: bool },
     ProviderClosed,
 }
 
@@ -967,13 +963,14 @@ fn supervise() -> Result<(), crate::Error> {
         let mut reader = std::io::BufReader::new(output);
         let mut total = 0usize;
         while let Ok(bytes) = line(&mut reader, max_frame_bytes()) {
-            let program = matches!(
-                serde_json::from_slice::<Frame>(&bytes),
-                Ok(Frame::Program { .. } | Frame::Model { .. })
-            );
-            total = total.saturating_add(if program { 0 } else { bytes.len() });
+            let (separate_allowance, result) = match serde_json::from_slice::<Frame>(&bytes) {
+                Ok(Frame::Program { .. } | Frame::Model { .. }) => (true, false),
+                Ok(Frame::Result { .. }) => (false, true),
+                _ => (false, false),
+            };
+            total = total.saturating_add(if separate_allowance { 0 } else { bytes.len() });
             if total > crate::resources::limits().provider_stream_bytes
-                || sender.send(Message::Provider(bytes)).is_err()
+                || sender.send(Message::Provider { bytes, result }).is_err()
             {
                 break;
             }
@@ -993,11 +990,11 @@ fn supervise() -> Result<(), crate::Error> {
                 }
             }
             Ok(Message::ParentClosed) => break,
-            Ok(Message::Provider(bytes)) => {
-                if matches!(
-                    serde_json::from_slice::<Frame>(&bytes),
-                    Ok(Frame::Result { .. })
-                ) {
+            Ok(Message::Provider {
+                bytes,
+                result: final_result,
+            }) => {
+                if final_result {
                     result = Some(bytes);
                 } else if std::io::stdout()
                     .write_all(&bytes)

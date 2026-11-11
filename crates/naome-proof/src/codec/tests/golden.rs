@@ -103,6 +103,39 @@ fn every_step_variant_round_trips_canonically() {
 }
 
 #[test]
+fn definition_references_keep_field_and_prefix_order() {
+    let first = DefinitionId::from_bytes([1; DefinitionId::BYTE_LENGTH]);
+    let second = DefinitionId::from_bytes([2; DefinitionId::BYTE_LENGTH]);
+    let variable = FreeVariable::new(0);
+    let relation = |id| DefinedFormula::defined_relation(id, [variable]);
+    let step = ProofStep::Simplification {
+        antecedent: ProofFormula::from_defined(DefinedFormula::implies(
+            relation(first),
+            relation(second),
+        ))
+        .unwrap(),
+        consequent: ProofFormula::from_defined(relation(first)).unwrap(),
+    };
+    assert!(step.has_definition_references());
+    assert_eq!(step.definition_references(), [first, second, first]);
+    assert_eq!(step.definition_reference_count(), 3);
+    let mut visited = Vec::new();
+    assert_eq!(
+        step.try_for_each_definition_reference(|id| {
+            visited.push(id);
+            if id == second { Err(id) } else { Ok(()) }
+        }),
+        Err(second)
+    );
+    assert_eq!(visited, [first, second]);
+    let primitive = ProofStep::VacuousUniversal {
+        formula: ProofFormula::from_defined(DefinedFormula::equal(variable, variable)).unwrap(),
+    };
+    assert!(!primitive.has_definition_references());
+    assert_eq!(primitive.definition_reference_count(), 0);
+}
+
+#[test]
 fn definition_application_round_trips_inside_a_proof_formula() {
     let definition_id = DefinitionId::from_bytes([0x7d; DefinitionId::BYTE_LENGTH]);
     let x = FreeVariable::new(1);
@@ -115,6 +148,7 @@ fn definition_application_round_trips_inside_a_proof_formula() {
     let certificate = ProofCertificate::new(vec![step.clone()]).unwrap();
 
     let encoded = certificate.to_canonical_bytes();
+    assert_eq!(step.encoded_length().unwrap(), encoded.len() - 4);
 
     // step count | simplification tag | antecedent length | defined-relation tag
     assert_eq!(

@@ -51,7 +51,7 @@ impl KnowledgeIndex {
             return;
         }
         self.witnesses.insert(statement, candidate);
-        for (kind, target) in projections(proof, formula) {
+        for (kind, target) in projections(formula) {
             let index = match kind {
                 BucketKind::Outgoing => &mut self.outgoing,
                 BucketKind::Deductions => &mut self.deductions,
@@ -83,7 +83,7 @@ impl KnowledgeIndex {
 }
 
 /// Shared complete structural projections for memory and authenticated disk indexes.
-pub(crate) fn projections(proof: ProofId, formula: &Formula) -> Vec<(BucketKind, StatementId)> {
+pub(crate) fn projections(formula: &Formula) -> Vec<(BucketKind, StatementId)> {
     let mut result = Vec::new();
     if let Some(parts) = formula.canonical_implication().expect("checked subformula") {
         result.push((BucketKind::Outgoing, statement_id(parts.antecedent())));
@@ -91,15 +91,15 @@ pub(crate) fn projections(proof: ProofId, formula: &Formula) -> Vec<(BucketKind,
             result.push((BucketKind::Deductions, statement_id(consequent)));
         }
     }
-    for instance in universal_instances(proof, formula) {
-        // Only individually admissible question targets can match this
-        // index. Oversized/deep projections cannot equal a bounded input;
-        // no artifact or eligible target is omitted by graph cardinality.
-        if let Ok((bytes, _)) = instance
-            .formula
-            .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes + 1)
-        {
-            result.push((BucketKind::Instances, statement_id(&bytes)));
+    for (instance, ()) in universal_openings(formula, |_, _| ()) {
+        let closed = Logic::generalization(UNIVERSAL_REPLACEMENT, instance.clone());
+        for projected in [instance, closed] {
+            // Oversized or deep projections cannot equal a bounded question target.
+            if let Ok((bytes, _)) = projected
+                .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes + 1)
+            {
+                result.push((BucketKind::Instances, statement_id(&bytes)));
+            }
         }
     }
     result.extend(
@@ -112,8 +112,9 @@ pub(crate) fn projections(proof: ProofId, formula: &Formula) -> Vec<(BucketKind,
 
 fn insert(index: &mut Buckets, key: StatementId, statement: StatementId) {
     let mut bucket = index.get(&key).cloned().unwrap_or_default();
-    bucket.insert(statement, ());
-    index.set(key, bucket);
+    if bucket.insert(statement, ()) {
+        index.set(key, bucket);
+    }
 }
 
 fn entries(bucket: Option<&Statements>) -> impl Iterator<Item = StatementId> + '_ {
@@ -128,25 +129,34 @@ pub(super) struct UniversalInstance {
     pub(super) steps: Vec<ProofStep>,
 }
 
-/// The same finite structural projections build the complete index and the
-/// temporary certificate. Only the caller's subsequent checker recheck can
-/// establish a mathematical witness; indexing never registers inferred proofs.
-pub(super) fn universal_instances(proof_id: ProofId, premise: &Formula) -> Vec<UniversalInstance> {
-    let replacement = FreeVariable::new(0);
+const UNIVERSAL_REPLACEMENT: FreeVariable = FreeVariable::new(0);
+
+/// Shares the finite openings and substitutions between the index and certificates.
+fn universal_openings<E>(
+    premise: &Formula,
+    mut capture: impl FnMut(FreeVariable, &Formula) -> E,
+) -> impl Iterator<Item = (Formula, E)> {
     let mut current = premise.clone();
+    (0..2).map_while(move |level| {
+        let fresh = FreeVariable::new(2 + level);
+        let body = current.open_outer_universal(fresh)?;
+        let captured = capture(fresh, &body);
+        current = body.substitute_free(fresh, UNIVERSAL_REPLACEMENT);
+        Some((current.clone(), captured))
+    })
+}
+
+/// Builds temporary certificates that the caller rechecks before use.
+pub(super) fn universal_instances(proof_id: ProofId, premise: &Formula) -> Vec<UniversalInstance> {
     let mut steps = vec![ProofStep::ProofReference { proof_id }];
     let mut instances = Vec::new();
-    for level in 0..2 {
-        let fresh = FreeVariable::new(2 + level);
-        let Some(body) = current.open_outer_universal(fresh) else {
-            break;
-        };
+    for (formula, (fresh, body)) in universal_openings(premise, |fresh, body| (fresh, body.clone()))
+    {
         let previous = (steps.len() - 1) as u32;
         let implication = steps.len() as u32;
-        current = body.clone().substitute_free(fresh, replacement);
         steps.push(ProofStep::UniversalInstantiation {
             variable: fresh,
-            replacement,
+            replacement: UNIVERSAL_REPLACEMENT,
             body: body.into(),
         });
         steps.push(ProofStep::ModusPonens {
@@ -154,16 +164,16 @@ pub(super) fn universal_instances(proof_id: ProofId, premise: &Formula) -> Vec<U
             implication,
         });
         instances.push(UniversalInstance {
-            formula: current.clone(),
+            formula: formula.clone(),
             steps: steps.clone(),
         });
         let mut closed_steps = steps.clone();
         closed_steps.push(ProofStep::Generalization {
-            variable: replacement,
+            variable: UNIVERSAL_REPLACEMENT,
             premise: (steps.len() - 1) as u32,
         });
         instances.push(UniversalInstance {
-            formula: Logic::generalization(replacement, current.clone()),
+            formula: Logic::generalization(UNIVERSAL_REPLACEMENT, formula),
             steps: closed_steps,
         });
     }

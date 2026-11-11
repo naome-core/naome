@@ -201,6 +201,20 @@ pub(crate) struct Binding {
     /// Exact native source captured from the checked catalog for this retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSource>,
+    /// Finder scheduling context is evidence, separate from formal request identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research: Option<Box<crate::frontier::ResearchDecision>>,
+}
+
+#[derive(PartialEq, Serialize)]
+struct RequestContext<'a> {
+    snapshot: &'a str,
+    policy: &'a str,
+    compatibility: &'a str,
+    selection: &'a str,
+    cooperative: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog: Option<&'a CatalogSource>,
 }
 
 impl Binding {
@@ -212,6 +226,7 @@ impl Binding {
             selection: identity(&provider::DEFAULT_PROVIDER),
             cooperative: false,
             catalog: None,
+            research: None,
         }
     }
 
@@ -223,6 +238,21 @@ impl Binding {
     pub(crate) fn for_cooperation(mut self) -> Self {
         self.cooperative = true;
         self
+    }
+
+    fn request_context(&self) -> RequestContext<'_> {
+        RequestContext {
+            snapshot: &self.snapshot,
+            policy: &self.policy,
+            compatibility: &self.compatibility,
+            selection: &self.selection,
+            cooperative: self.cooperative,
+            catalog: self.catalog.as_ref(),
+        }
+    }
+
+    fn same_request(&self, other: &Self) -> bool {
+        self.request_context() == other.request_context()
     }
 
     fn validate(&self) -> Result<(), crate::Error> {
@@ -247,6 +277,16 @@ impl Binding {
         }
         if self.catalog.is_some() && (self.cooperative || !matches!(input, Input::Solve { .. })) {
             return Err(crate::InputFault::PrerequisiteRoots.into());
+        }
+        if let Some(decision) = &self.research {
+            decision.validate()?;
+            let Input::Solve { question } = input else {
+                return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
+            };
+            let question = naome_checker::question::ResearchQuestion::from_hex(question)?;
+            if self.cooperative || question.resolution_id() != &decision.resolution {
+                return Err(crate::ResearchFailure::FinderDecisionInvalid.into());
+            }
         }
         Ok(())
     }
@@ -631,6 +671,7 @@ pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
     // Derived read-only mirror. The jobs journal remains the sole state owner.
     feedback: std::sync::Arc<std::sync::Mutex<Option<crate::training::ability::Feedback>>>,
+    research: std::sync::Arc<std::sync::Mutex<Option<crate::research_value::Frame>>>,
 }
 
 fn command_send_error<T>(error: mpsc::error::TrySendError<T>) -> crate::Error {
@@ -641,6 +682,10 @@ fn command_send_error<T>(error: mpsc::error::TrySendError<T>) -> crate::Error {
 }
 
 impl Client {
+    pub(crate) fn research_frame(&self, frame: Option<crate::research_value::Frame>) {
+        *self.research.lock().unwrap_or_else(|e| e.into_inner()) = frame;
+    }
+
     pub(crate) fn feedback(&self) -> Option<crate::training::ability::Feedback> {
         self.feedback
             .lock()
@@ -735,10 +780,7 @@ impl Client {
         if binding.catalog.is_some() && (!required.is_empty() || !prerequisites.is_empty()) {
             return Err(crate::InputFault::PrerequisiteRoots.into());
         }
-        if !prerequisites.is_empty()
-            && (!matches!(input, Input::Solve { .. })
-                || required.is_empty() && !prerequisites.has_optional_context())
-        {
+        if !prerequisites.is_empty() && !matches!(input, Input::Solve { .. }) {
             return Err(crate::InputFault::PrerequisiteRoots.into());
         }
         for id in &required {
@@ -777,6 +819,7 @@ impl Client {
             .map_err(command_send_error)?;
         Ok(receive)
     }
+    #[cfg(test)]
     pub(crate) fn acknowledge(&self, id: u64) -> Result<(), crate::Error> {
         if self.try_receipt(&Receipt::Acknowledge(id))? {
             Ok(())
@@ -814,7 +857,10 @@ fn identity(value: &impl Serialize) -> String {
 fn request_key(input: &Input, binding: &Binding, settings: RoleSettings) -> String {
     let mut hash = Sha256::new();
     hash.update(b"naome:research-request:v1\0");
-    hash.update(serde_json::to_vec(&(input, binding, settings)).expect("finite typed request"));
+    hash.update(
+        serde_json::to_vec(&(input, binding.request_context(), settings))
+            .expect("finite typed request"),
+    );
     crate::hex(&hash.finalize())
 }
 

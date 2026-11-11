@@ -322,10 +322,18 @@ fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit(
         wall_micros: 1,
         gradient_passes: 2,
     };
-    assert!(learning.utility(&mut model, &utility).unwrap());
+    assert!(
+        learning
+            .utility(&mut model, &utility, |_| Ok(Some(question.clone())))
+            .unwrap()
+    );
     assert_eq!(model.utility(&Descriptor::of(&question)), 0.5);
     assert_eq!(model.utility_observations, 1);
-    assert!(!learning.utility(&mut model, &utility).unwrap());
+    assert!(
+        !learning
+            .utility(&mut model, &utility, |_| Ok(Some(question.clone())))
+            .unwrap()
+    );
     assert_eq!(model.utility_observations, 1);
     learning.cells[0].utility_count = 1;
     learning.cells[0].utility_sum = 65535;
@@ -333,10 +341,18 @@ fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit(
     assert!(!learning.utility_current());
     assert_eq!(learning.cells[0].utility_count, 0);
     assert_eq!(learning.cells[0].utility_sum, 0);
-    assert!(!learning.utility(&mut model, &utility).unwrap());
+    assert!(
+        !learning
+            .utility(&mut model, &utility, |_| Ok(Some(question.clone())))
+            .unwrap()
+    );
     utility.checkpoint = "22".repeat(32);
     utility.scores[0].novelty = 65535;
-    assert!(learning.utility(&mut model, &utility).unwrap());
+    assert!(
+        learning
+            .utility(&mut model, &utility, |_| Ok(Some(question.clone())))
+            .unwrap()
+    );
     assert!(model.utility(&Descriptor::of(&question)) > 0.5);
     assert!(learning.utility_current());
     // The old solve label remains attached to its actual old checkpoint.
@@ -344,6 +360,38 @@ fn utility_is_idempotent_checkpoint_bound_and_copies_receive_no_positive_credit(
         learning.samples[0].checkpoint.as_deref(),
         Some(checkpoint().as_str())
     );
+
+    learning.samples.clear();
+    learning.bind(&"66".repeat(32));
+    utility.checkpoint = "66".repeat(32);
+    assert!(
+        learning
+            .utility(&mut model, &utility, |_| Ok(None))
+            .unwrap()
+    );
+    assert!(!learning.utility_current());
+    let prior = model.utility(&Descriptor::of(&question));
+    utility.scores[0].alignment = -32767;
+    let source = |score: &crate::learning::finder::Score| {
+        assert_eq!(score.resolution, crate::hex(question.resolution_id()));
+        Ok(Some(question.clone()))
+    };
+    assert!(learning.utility(&mut model, &utility, source).unwrap());
+    assert!(model.utility(&Descriptor::of(&question)) < prior);
+    assert_eq!(model.utility_observations, 3);
+    assert!(learning.samples.is_empty());
+    assert!(learning.utility_current());
+    let mut learning: Learning =
+        serde_json::from_slice(&serde_json::to_vec(&learning).unwrap()).unwrap();
+    learning.validate().unwrap();
+    assert!(learning.utility_current());
+    assert!(
+        !learning
+            .utility(&mut model, &utility, |_| panic!("duplicate utility lookup"))
+            .unwrap()
+    );
+    learning.bind(&"77".repeat(32));
+    assert!(!learning.utility_current());
 }
 
 #[test]
@@ -388,4 +436,46 @@ fn overflowing_replay_cursor_preserves_pending_and_model() {
     );
     assert_eq!(serde_json::to_value(&learning).unwrap(), before_learning);
     assert_eq!(model, before_model);
+}
+
+#[test]
+fn one_family_can_rehearse_current_outcomes_and_late_checked_support() {
+    let mut learning = Learning::fresh(checkpoint());
+    let mut model = Model::fresh();
+    let earlier = membership_conjunction(1);
+    let success = membership_conjunction(2);
+    let miss = membership_conjunction(3);
+    let family = Descriptor::of(&earlier).features.family;
+    assert_eq!(family, Descriptor::of(&success).features.family);
+    assert_eq!(family, Descriptor::of(&miss).features.family);
+    learning
+        .remember(&mut model, &earlier, Some(&checkpoint()), true, 1, 1)
+        .unwrap();
+
+    let current = "22".repeat(32);
+    learning.bind(&current);
+    learning.support(&mut model, &earlier).unwrap();
+    learning
+        .remember(&mut model, &success, Some(&current), true, 1, 2)
+        .unwrap();
+    learning
+        .remember(&mut model, &miss, Some(&current), false, 2, 3)
+        .unwrap();
+
+    let mut recovered: Learning =
+        serde_json::from_slice(&serde_json::to_vec(&learning).unwrap()).unwrap();
+    recovered.validate().unwrap();
+    let before = model.rehearsals;
+    let choices = recovered.rehearsal_indices();
+    let resolutions = choices
+        .iter()
+        .map(|&index| recovered.samples[index].offer.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        resolutions,
+        [earlier, success, miss].map(|q| *q.resolution_id()).into()
+    );
+    recovered.rehearse(&mut model).unwrap();
+    assert_eq!(model.rehearsals - before, 3);
+    assert_eq!(model.updates, 0, "rehearsal does not count as new evidence");
 }

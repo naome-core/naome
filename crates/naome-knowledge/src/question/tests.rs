@@ -213,6 +213,48 @@ async fn changed_epoch_retires_a_result_already_received_before_finish() {
     assert_eq!(owner.acknowledgements(), vec![id]);
 }
 
+#[tokio::test]
+async fn full_job_channel_defers_the_completed_selection_receipt() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let mut owner = crate::jobs::tests::Manual::new();
+    let mut local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(3600),
+        &graph,
+    )
+    .unwrap();
+    let (reply, receiver) = oneshot::channel();
+    local.process(Command::Assess(question(QUESTION), reply), &graph);
+    let (id, _) = owner.requests().remove(0);
+    owner.complete(id, Ok(crate::jobs::Output::Selected(true)));
+    let selection = local.completed().await;
+    let fillers = (100..)
+        .take(crate::resources::limits().job_commands)
+        .collect::<Vec<_>>();
+    for &filler in &fillers {
+        owner.client.acknowledge(filler).unwrap();
+    }
+    local.finish(&graph, selection);
+    assert_eq!(
+        receiver.await.unwrap().selection_result,
+        SelectionAssessment::Assessed(true)
+    );
+    assert!(!local.available_local());
+    assert!(!local.available_peer());
+    local.flush_acknowledgements();
+    assert!(local.storage_error().is_none());
+    assert_eq!(owner.acknowledgements(), fillers);
+
+    local.flush_acknowledgements();
+    local.flush_acknowledgements();
+    assert_eq!(owner.acknowledgements(), vec![id]);
+    assert!(local.available_local());
+    assert!(local.available_peer());
+    assert!(local.storage_error().is_none());
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {

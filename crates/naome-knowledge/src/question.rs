@@ -8,7 +8,7 @@
 //! obligations; neither their source nor an earlier result authorizes a write.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -402,6 +402,7 @@ pub(crate) struct LocalQuestions<F> {
     provider: Option<Arc<F>>,
     managed: Option<crate::jobs::Client>,
     pending: BTreeMap<u64, Pending>,
+    pending_acknowledgements: VecDeque<u64>,
     next_pending: u64,
     finished: Option<u64>,
     persistence: Option<persistence::Persistence>,
@@ -433,6 +434,7 @@ where
             provider: provider.map(Arc::new),
             managed: None,
             pending: BTreeMap::new(),
+            pending_acknowledgements: VecDeque::new(),
             next_pending: 1,
             finished: None,
             persistence: None,
@@ -714,11 +716,7 @@ where
         self.selection = selection;
         self.cache.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {
-            if let (Some(client), Some(job)) = (&self.managed, pending.job)
-                && let Err(_) = client.acknowledge(job)
-            {
-                self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
-            }
+            self.acknowledge_selection(pending.job);
             pending.reply.send(
                 QuestionAssessment {
                     prefilter: pending.prefilter,
@@ -861,7 +859,8 @@ where
 
     pub(crate) fn available(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.len() < 2 * crate::resources::active_limits().selection_decisions
+            self.pending_acknowledgements.is_empty()
+                && self.pending.len() < 2 * crate::resources::active_limits().selection_decisions
         } else {
             self.pending.is_empty()
         }
@@ -869,16 +868,18 @@ where
 
     pub(crate) fn available_peer(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.values().filter(|p| p.peer).count()
-                < crate::resources::active_limits().selection_decisions
+            self.pending_acknowledgements.is_empty()
+                && self.pending.values().filter(|p| p.peer).count()
+                    < crate::resources::active_limits().selection_decisions
         } else {
             self.available()
         }
     }
     pub(crate) fn available_local(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.values().filter(|p| !p.peer).count()
-                < crate::resources::active_limits().selection_decisions
+            self.pending_acknowledgements.is_empty()
+                && self.pending.values().filter(|p| !p.peer).count()
+                    < crate::resources::active_limits().selection_decisions
         } else {
             self.available()
         }
@@ -1157,11 +1158,10 @@ where
             self.assess(graph, &question)
         };
         let peer = matches!(reply, Reply::Exchange { root: Some(_), .. });
-        let available = if self.managed.is_some() {
-            self.pending.values().filter(|p| p.peer == peer).count()
-                < crate::resources::active_limits().selection_decisions
+        let available = if peer {
+            self.available_peer()
         } else {
-            self.pending.is_empty()
+            self.available_local()
         };
         if prefilter.passed() && !available {
             prefilter = prefilter.reject(
@@ -1409,11 +1409,7 @@ where
             return;
         };
         if pending.reply.is_closed() {
-            if let (Some(client), Some(job)) = (&self.managed, pending.job)
-                && let Err(_) = client.acknowledge(job)
-            {
-                self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
-            }
+            self.acknowledge_selection(pending.job);
             return;
         }
         // Admission always computes again; a cached or caller-manufactured Pass
@@ -1522,10 +1518,36 @@ where
         if delivered && let Some(provenance) = provenance {
             self.remember(provenance.question, true);
         }
-        if let (Some(client), Some(job)) = (&self.managed, pending.job)
-            && let Err(_) = client.acknowledge(job)
-        {
-            self.storage_error = Some(crate::RuntimeFailure::QuestionAcknowledgement.into());
+        self.acknowledge_selection(pending.job);
+    }
+
+    fn acknowledge_selection(&mut self, job: Option<u64>) {
+        if let Some(job) = job.filter(|_| self.managed.is_some()) {
+            // Pending decisions already bound this queue. Until their receipts
+            // drain, the driver does not open more managed selections.
+            self.pending_acknowledgements.push_back(job);
+            self.flush_acknowledgements();
+        }
+    }
+
+    pub(crate) fn flush_acknowledgements(&mut self) {
+        let Some(client) = &self.managed else {
+            return;
+        };
+        while let Some(&job) = self.pending_acknowledgements.front() {
+            match client.try_receipt(&crate::jobs::Receipt::Acknowledge(job)) {
+                Ok(true) => {
+                    self.pending_acknowledgements.pop_front();
+                }
+                Ok(false) => break,
+                Err(cause) => {
+                    self.storage_error = Some(crate::Error::RuntimeContext {
+                        code: crate::RuntimeFailure::QuestionAcknowledgement,
+                        cause: Box::new(cause),
+                    });
+                    break;
+                }
+            }
         }
     }
 

@@ -83,10 +83,32 @@ impl ProofFormula {
     /// Returns definition references in canonical prefix order.
     #[must_use]
     pub fn definition_references(&self) -> Vec<DefinitionId> {
-        match &self.0 {
-            FormulaRepresentation::Primitive(_) => Vec::new(),
-            FormulaRepresentation::Defined(formula) => formula.definition_references(),
+        let mut references = Vec::new();
+        self.append_definition_references(&mut references);
+        references
+    }
+
+    pub(crate) fn append_definition_references(&self, references: &mut Vec<DefinitionId>) {
+        if let Some(formula) = self.as_defined() {
+            formula.append_definition_references(references);
         }
+    }
+
+    pub(crate) fn try_for_each_definition_reference<E>(
+        &self,
+        visit: &mut impl FnMut(DefinitionId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self.as_defined() {
+            Some(formula) => formula.try_for_each_definition_reference(visit),
+            None => Ok(()),
+        }
+    }
+
+    /// Counts definition references, including repeated applications.
+    #[must_use]
+    pub fn definition_reference_count(&self) -> usize {
+        self.as_defined()
+            .map_or(0, DefinedFormula::definition_reference_count)
     }
 
     /// Borrows a primitive formula or expands only the definition-aware path.

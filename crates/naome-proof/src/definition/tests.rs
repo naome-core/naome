@@ -56,6 +56,26 @@ fn interface_validation_requires_exact_used_bounded_formals() {
         })
     );
     assert_eq!(
+        DefinitionCertificate::relation(
+            3,
+            DefinedFormula::equal(FreeVariable::new(2), FreeVariable::new(0)),
+        ),
+        Err(DefinitionCertificateError::MissingFormalVariable {
+            identifier: 1,
+            arity: 3,
+        })
+    );
+    assert_eq!(
+        DefinitionCertificate::relation(
+            3,
+            DefinedFormula::equal(FreeVariable::new(7), FreeVariable::new(4)),
+        ),
+        Err(DefinitionCertificateError::UndeclaredFormalVariable {
+            identifier: 4,
+            arity: 3,
+        })
+    );
+    assert_eq!(
         DefinitionCertificate::relation(0, equality_body()),
         Err(DefinitionCertificateError::ZeroRelationArity)
     );

@@ -91,12 +91,48 @@ fn defined_question_evidence_replays_using_its_checked_primitive_target() {
         frontier.evidence.get(&question).unwrap().unwrap().question,
         primitive.to_hex()
     );
+    assert_eq!(frontier.evidence.model().unresolved, 1);
+    let proof = crate::test_inputs::proof(vec![
+        naome_proof::ProofStep::EqualityReflexivity { variable: x },
+        naome_proof::ProofStep::Generalization {
+            premise: 0,
+            variable: x,
+        },
+    ]);
+    let result = completion(
+        2,
+        jobs::Output::Proof {
+            proof: proof.clone(),
+            helpers: Vec::new(),
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(&question, &graph, &result, Outcome::Candidate)
+        .unwrap();
+    let root = graph.produce(&proof).unwrap().1.id;
+    frontier.prepared(&question, 2, root).unwrap();
+    frontier.verified(&question, &graph, 2, root).unwrap();
+    assert!(
+        frontier
+            .evidence
+            .support_consumer(&question, 2, root)
+            .unwrap()
+            .is_some()
+    );
+    let learned = frontier.evidence.model().clone();
+    assert_eq!(
+        (learned.updates, learned.unresolved, learned.resolved),
+        (2, 1, 1)
+    );
     drop(frontier);
-    let reopened = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
+    let mut reopened = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
     assert_eq!(
         reopened.evidence.get(&question).unwrap().unwrap().last_job,
-        1
+        2
     );
+    reopened.verified(&primitive, &graph, 2, root).unwrap();
+    assert_eq!(reopened.evidence.model(), &learned);
 }
 
 fn question(index: u64) -> ResearchQuestion {
@@ -343,12 +379,12 @@ fn received_knowledge_changes_coverage_without_claiming_local_ability() {
     assert!(frontier.coverage.iter().any(|n| *n > 0));
     assert_eq!(frontier.successes, [0; SIGNALS]);
     let common = frontier
-        .weight(&question(0), &graph, jobs::RoleSettings::default())
+        .weight(&question(0), &graph, jobs::RoleSettings::default(), None)
         .unwrap();
     let rare = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(
         frontier
-            .weight(&rare, &graph, jobs::RoleSettings::default())
+            .weight(&rare, &graph, jobs::RoleSettings::default(), None)
             .unwrap()
             > common
     );
@@ -370,15 +406,19 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
         "040403010100000001010000000003010100000000010000000102030101000000010100000000020101000000000100000001",
     )
     .unwrap();
-    let mut feedback = crate::training::ability::Feedback::fresh("11".repeat(32));
+    let mut feedback = crate::learning::State::fresh().feedback();
     frontier.feedback(Some(feedback.clone()));
-    let before = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    let before = frontier
+        .weight(&hard, &graph, settings.solving, None)
+        .unwrap();
     for _ in 0..64 {
         feedback.development.observe(&easy, 32, Some(true), 1_000);
     }
     feedback.revision += 1;
     frontier.feedback(Some(feedback.clone()));
-    let after = frontier.weight(&hard, &graph, settings.solving).unwrap();
+    let after = frontier
+        .weight(&hard, &graph, settings.solving, None)
+        .unwrap();
     assert_ne!(before, after);
     let candidates = [&easy, &hard];
     let index = frontier
@@ -389,21 +429,87 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
     frontier
         .attempted(candidates[index], &graph, &result, Outcome::NoCandidate)
         .unwrap();
-    assert!(frontier.evidence.get(candidates[index]).unwrap().is_some());
+    assert!(!frontier.retry_ready(candidates[index], &graph).unwrap());
+    let old = frontier.evidence.get(candidates[index]).unwrap().unwrap();
+    assert_eq!(old.last_job, result.id);
     feedback.checkpoint = "22".repeat(32);
     feedback.attempts = crate::training::ability::Profile::new(feedback.checkpoint.clone());
     feedback.development = crate::training::ability::Profile::new(feedback.checkpoint.clone());
     frontier.feedback(Some(feedback));
-    assert!(frontier.recent.is_empty());
     assert!(
-        frontier.evidence.get(candidates[index]).unwrap().is_none(),
+        frontier.retry_ready(candidates[index], &graph).unwrap(),
         "old-model failures cannot cool down a new checkpoint"
     );
+    let retained = frontier.evidence.get(candidates[index]).unwrap().unwrap();
+    assert_eq!(retained.last_job, old.last_job);
+    assert_eq!(retained.model_checkpoint, old.model_checkpoint);
     frontier.refresh(&graph, |_| true).unwrap();
     assert_eq!(
         frontier.learning_snapshot()["curriculum"]["checkpoint"],
         "22".repeat(32),
         "construction must use the current checkpoint before generating its page"
+    );
+}
+
+#[test]
+fn common_value_changes_a_matched_frontier_decision() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..jobs::Settings::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
+    frontier.feedback(Some(crate::learning::State::fresh().feedback()));
+    frontier.refresh(&graph, |_| true).unwrap();
+    let candidates = (0..8).map(question).collect::<Vec<_>>();
+    let frame = frontier.research_frame(&graph, 0).unwrap();
+    let mut control = Vec::new();
+    let mut treatment = Vec::new();
+    for candidate in &candidates {
+        let family = frontier
+            .analyses
+            .get(candidate)
+            .unwrap()
+            .descriptor
+            .features
+            .family;
+        control.push((
+            family,
+            frontier
+                .weight(candidate, &graph, settings.solving, None)
+                .unwrap(),
+        ));
+        treatment.push((
+            family,
+            frontier
+                .weight(candidate, &graph, settings.solving, Some(&frame))
+                .unwrap(),
+        ));
+    }
+    assert!(
+        control
+            .iter()
+            .zip(&treatment)
+            .any(|(base, value)| { base.1 * treatment[0].1 != value.1 * control[0].1 })
+    );
+    let (seed, before, after) = (1..=512)
+        .find_map(|seed| {
+            let a = crate::sampling::choose(&mut Random::new(seed), &control, false);
+            let b = crate::sampling::choose(&mut Random::new(seed), &treatment, false);
+            (a != b).then_some((seed, a, b))
+        })
+        .expect("the same random draw must distinguish the two weightings");
+    frontier.random = Random::new(seed);
+    let references = candidates.iter().collect::<Vec<_>>();
+    assert_eq!(
+        frontier
+            .choose(&references, &graph, settings.solving, false)
+            .unwrap(),
+        Some(after),
+    );
+    eprintln!(
+        "matched research value draw {seed}: {before} -> {after}; control={control:?}; treatment={treatment:?}"
     );
 }
 
@@ -414,7 +520,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     let mut frontier = Frontier::open(&directory.0, &graph, 5, jobs::Settings::default()).unwrap();
     let target = question(0);
     let cost = frontier
-        .weight(&target, &graph, jobs::RoleSettings::default())
+        .weight(&target, &graph, jobs::RoleSettings::default(), None)
         .unwrap();
     let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
     frontier
@@ -425,7 +531,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     assert!(record.verified.is_none());
     assert!(
         frontier
-            .weight(&target, &graph, jobs::RoleSettings::default())
+            .weight(&target, &graph, jobs::RoleSettings::default(), None)
             .unwrap()
             < cost
     );
@@ -1200,7 +1306,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     );
 }
 #[test]
-fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() {
+fn native_checked_theorems_supply_proper_relations_and_a_single_witness_projection() {
     let (graph, lemma, _, _, _) = helper_use_fixture();
     let directory = Directory::new();
     let settings = jobs::Settings {
@@ -1209,10 +1315,10 @@ fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() 
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
-    assert!(
-        frontier.proposals.is_empty(),
-        "closed proofs must not create unconditional weakenings"
-    );
+    let x = FreeVariable::new(0);
+    let body = lemma.proved_target().open_outer_universal(x).unwrap();
+    let witness = ResearchQuestion::from_formula(Formula::exists(x, body)).unwrap();
+    assert_eq!(frontier.proposals, [witness]);
     assert!(!frontier.predicates.is_empty());
     for relation in &frontier.predicates {
         assert_eq!(relation.free_variables().len(), 2);

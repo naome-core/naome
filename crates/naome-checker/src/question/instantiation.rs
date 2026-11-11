@@ -29,17 +29,20 @@ pub(super) fn projections(formula: &Formula) -> Vec<StatementId> {
     let Some((opened, _)) = open(formula, &BTreeSet::new(), MAX_INSTANTIATIONS) else {
         return Vec::new();
     };
-    let wildcard = opened.map_free_variables(|_| FreeVariable::new(0));
-    let mut result = vec![bytes_key(
-        &wildcard.encode_canonical().expect("checked universal body"),
-    )];
-    if let Some(parts) = wildcard
-        .canonical_implication()
-        .expect("checked implication")
+    if let Some(parts) = opened
+        .canonical_implication_pattern()
+        .expect("checked universal body")
     {
-        result.extend(parts.consequents().map(bytes_key));
+        return std::iter::once(parts.as_bytes())
+            .chain(parts.consequents())
+            .map(bytes_key)
+            .collect();
     }
-    result
+    vec![bytes_key(
+        &opened
+            .encode_free_variable_pattern()
+            .expect("checked universal body"),
+    )]
 }
 
 fn open(
@@ -47,24 +50,19 @@ fn open(
     excluded: &BTreeSet<FreeVariable>,
     maximum: usize,
 ) -> Option<(Formula, Vec<FreeVariable>)> {
+    let maximum = maximum.min(MAX_INSTANTIATIONS);
     let mut current = formula.clone();
     let mut variables = Vec::new();
     let mut identifier = u32::MAX;
-    for _ in 0..maximum.min(MAX_INSTANTIATIONS) {
-        while excluded.contains(&FreeVariable::new(identifier))
-            || current
-                .free_variables()
-                .contains(&FreeVariable::new(identifier))
-        {
-            identifier = identifier.checked_sub(1).expect("bounded variable set");
-        }
+    while variables.len() < maximum && current.has_outer_universal() {
         let variable = FreeVariable::new(identifier);
-        let Some(body) = current.open_outer_universal(variable) else {
-            break;
-        };
-        variables.push(variable);
-        current = body;
-        identifier = identifier.checked_sub(1).expect("bounded binders");
+        if !excluded.contains(&variable)
+            && let Some(body) = current.open_outer_universal(variable)
+        {
+            variables.push(variable);
+            current = body;
+        }
+        identifier = identifier.checked_sub(1).expect("bounded variable set");
     }
     (!variables.is_empty()).then_some((current, variables))
 }
@@ -72,7 +70,7 @@ fn open(
 // Both inputs are well-formed canonical formulas. Compare their prefix shapes
 // and bind only outer parameters to free variables: a target's inner bound
 // variable must never be captured by specialization.
-fn match_variables(
+pub(super) fn match_variables(
     pattern: &[u8],
     target: &[u8],
     is_parameter: impl Fn(FreeVariable) -> bool,
@@ -119,8 +117,7 @@ fn match_variables(
 pub fn universal_pattern(
     target: &Formula,
 ) -> Result<StatementId, naome_foundation::FormulaCodecError> {
-    let wildcard = target.clone().map_free_variables(|_| FreeVariable::new(0));
-    Ok(bytes_key(&wildcard.encode_canonical()?))
+    Ok(bytes_key(&target.encode_free_variable_pattern()?))
 }
 
 /// Return the free-variable operands that specialize a universal source to
@@ -165,15 +162,11 @@ pub(super) fn specialize(
     artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<Option<Specialized>, Failure> {
-    let source_bytes = source.encode_canonical().map_err(|_| LIMIT)?;
+    let source_length = source.encoded_length().map_err(|_| LIMIT)?;
     // Reserve all possible outer openings and projections before cloning.
-    let binders = source_bytes
-        .iter()
-        .take_while(|&&tag| tag == 4)
-        .count()
-        .min(MAX_INSTANTIATIONS);
+    let binders = source.outer_universal_count().min(MAX_INSTANTIATIONS);
     work.formula(
-        source_bytes.len(),
+        source_length,
         binders
             .checked_mul(8)
             .and_then(|n| n.checked_add(16))
@@ -184,17 +177,28 @@ pub(super) fn specialize(
         return Ok(None);
     };
     let target_bytes = target.encode_canonical().map_err(|_| LIMIT)?;
-    let mut current = opened.view();
-    let assignments = loop {
-        work.formula(source_bytes.len(), 8)?;
-        let candidate = current.encode_canonical().map_err(|_| LIMIT)?;
-        if let Some(assignments) = match_variables(&candidate, &target_bytes, |_| true) {
-            break assignments;
-        }
-        let Some((_, consequent)) = current.implication_parts() else {
-            return Ok(None);
+    let assignments = {
+        work.formula(source_length, 8)?;
+        let implication = opened.canonical_implication().map_err(|_| LIMIT)?;
+        let encoded;
+        let mut candidate = match &implication {
+            Some(parts) => parts.as_bytes(),
+            None => {
+                encoded = opened.encode_canonical().map_err(|_| LIMIT)?;
+                encoded.as_slice()
+            }
         };
-        current = consequent;
+        let mut suffixes = implication.iter().flat_map(|parts| parts.consequents());
+        loop {
+            if let Some(assignments) = match_variables(candidate, &target_bytes, |_| true) {
+                break assignments;
+            }
+            let Some(suffix) = suffixes.next() else {
+                return Ok(None);
+            };
+            work.formula(source_length, 8)?;
+            candidate = suffix;
+        }
     };
     let default = (0..)
         .map(FreeVariable::new)
@@ -203,13 +207,13 @@ pub(super) fn specialize(
     let mut plan = Plan::new();
     let mut root = plan.reference(proof, artifacts, work)?;
     let mut current = source.clone();
-    let mut current_length = source_bytes.len();
+    let mut current_length = source_length;
     for variable in variables {
         work.formula(current_length, 16)?;
         let body = current.open_outer_universal(variable).ok_or(INVALID)?;
         let replacement = assignments.get(&variable).copied().unwrap_or(default);
         let result = body.clone().substitute_free(variable, replacement);
-        let length = result.encode_canonical().map_err(|_| LIMIT)?.len();
+        let length = result.encoded_length().map_err(|_| LIMIT)?;
         let implication_length = current_length
             .checked_add(length)
             .and_then(|n| n.checked_add(1))

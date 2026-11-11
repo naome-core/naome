@@ -2,6 +2,32 @@ use super::super::*;
 use crate::normalize_and_check_with_state;
 
 #[test]
+fn nonuniversal_instantiated_goal_keeps_its_binder_attempt_charge() {
+    let target = Formula::negate(naome_foundation::ZfcAxiom::Pairing.formula());
+    let state = crate::ArtifactState::new();
+    let budget = |operations| Work {
+        operations,
+        bytes: usize::MAX,
+        certificate_steps: 0,
+        certificate_bytes: 0,
+    };
+    let mut ordinary = budget(5);
+    super::search::Search::new(&target, &state, false, &mut ordinary).unwrap();
+    let mut instantiated = budget(5);
+    super::search::Search::new(&target, &state, true, &mut instantiated).unwrap();
+
+    assert_eq!(ordinary.operations - instantiated.operations, 1);
+    assert_eq!(
+        ordinary.bytes - instantiated.bytes,
+        4 * target.encode_canonical().unwrap().len()
+    );
+    assert!(matches!(
+        super::search::Search::new(&target, &state, true, &mut budget(4)),
+        Err(super::LIMIT)
+    ));
+}
+
+#[test]
 fn opposite_short_answers_survive_a_dense_unprovable_direction_with_the_same_budget() {
     for short_negative in [false, true] {
         let (state, target) = fixtures::budget_case(128, short_negative);

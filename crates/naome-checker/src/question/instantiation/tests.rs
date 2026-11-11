@@ -53,6 +53,71 @@ fn checked_pattern_candidates_require_exact_bounded_operands() {
 }
 
 #[test]
+fn projections_preserve_the_full_pattern_and_each_implication_suffix() {
+    let x = FreeVariable::new(1);
+    let atom = Formula::equal(x, x);
+    let suffix = Formula::implies(Formula::member(x, x), atom.clone());
+    let body = Formula::implies(atom.clone(), suffix.clone());
+    let source = Formula::for_all(x, body.clone());
+
+    assert_eq!(projections(&source), [key(&body), key(&suffix), key(&atom)]);
+}
+
+#[test]
+fn specialization_charges_each_attempt_through_the_last_suffix() {
+    let x = FreeVariable::new(1);
+    let y = FreeVariable::new(2);
+    let atom = Formula::equal(x, x);
+    let suffix = Formula::implies(atom.clone(), atom.clone());
+    let source = Formula::for_all(x, Formula::implies(atom, suffix));
+    let target = Formula::member(y, y);
+    let artifacts = crate::state::ArtifactState::new();
+    let proof = ProofId::from_bytes([0; 32]);
+    let byte_budget = source.encode_canonical().unwrap().len() * (24 + 3 * 8);
+    let budget = |operations, bytes| Work {
+        operations,
+        bytes,
+        certificate_steps: 0,
+        certificate_bytes: 0,
+    };
+
+    let mut exact = budget(4, byte_budget);
+    assert!(
+        specialize(proof, &source, &target, &artifacts, &mut exact)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!((exact.operations, exact.bytes), (0, 0));
+
+    for mut limited in [budget(3, byte_budget), budget(4, byte_budget - 1)] {
+        assert!(matches!(
+            specialize(proof, &source, &target, &artifacts, &mut limited),
+            Err(LIMIT)
+        ));
+    }
+}
+
+#[test]
+fn opening_a_prefix_skips_free_and_excluded_identifiers() {
+    let outer = FreeVariable::new(1);
+    let inner = FreeVariable::new(2);
+    let free = FreeVariable::new(u32::MAX - 1);
+    let excluded = BTreeSet::from([FreeVariable::new(u32::MAX), FreeVariable::new(u32::MAX - 3)]);
+    let body = Formula::implies(Formula::member(outer, free), Formula::equal(inner, free));
+    let source = Formula::for_all(outer, Formula::for_all(inner, body));
+    assert_eq!(source.outer_universal_count(), 2);
+    assert_eq!(Formula::negate(source.clone()).outer_universal_count(), 0);
+    let first = FreeVariable::new(u32::MAX - 2);
+    let second = FreeVariable::new(u32::MAX - 4);
+    let expected = Formula::implies(Formula::member(first, free), Formula::equal(second, free));
+
+    assert_eq!(
+        open(&source, &excluded, 2),
+        Some((expected, vec![first, second]))
+    );
+}
+
+#[test]
 fn an_open_local_rule_keeps_its_outer_variables_fixed() {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);

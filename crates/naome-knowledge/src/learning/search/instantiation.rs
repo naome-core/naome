@@ -60,6 +60,37 @@ impl Universal {
         )
     }
 
+    /// Missing antecedents of the first implication prefix whose conclusion
+    /// unifies with the requested formula. The same substitution applies to
+    /// every antecedent, including those under binders.
+    pub(super) fn prerequisites(
+        &self,
+        goal: &Formula,
+        first: FreeVariable,
+    ) -> impl Iterator<Item = Formula> + '_ {
+        let mut tail = self.body.view();
+        let mut premises = Vec::new();
+        let mut replacement = None;
+        for _ in 0..naome_proof::program::ACTION_PREMISES {
+            let Some((premise, conclusion)) = tail.implication_parts() else {
+                break;
+            };
+            premises.push(premise);
+            if let Some(variable) = self.matching(conclusion, goal.view(), first) {
+                replacement = Some(variable);
+                break;
+            }
+            tail = conclusion;
+        }
+        premises.into_iter().filter_map(move |premise| {
+            Some(
+                premise
+                    .to_owned()
+                    .substitute_free(self.placeholder, replacement?),
+            )
+        })
+    }
+
     fn matching(
         &self,
         pattern: FormulaView<'_>,
