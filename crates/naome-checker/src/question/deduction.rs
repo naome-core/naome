@@ -343,9 +343,9 @@ impl Plan {
         length: usize,
         work: &mut Work,
     ) -> Result<u32, Failure> {
-        let inputs = self.steps[premise as usize]
-            .length
-            .checked_add(self.steps[implication as usize].length)
+        let inputs = self
+            .formula_length(premise)
+            .checked_add(self.formula_length(implication))
             .and_then(|n| n.checked_add(length))
             .ok_or(LIMIT)?;
         self.push(
@@ -358,6 +358,10 @@ impl Plan {
             inputs,
             work,
         )
+    }
+
+    pub(super) fn formula_length(&self, step: u32) -> usize {
+        self.steps[step as usize].length
     }
 
     pub(super) fn axiom(

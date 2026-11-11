@@ -22,6 +22,19 @@ fn reserve(formulas: &[&Formula], work: &mut Work) -> Result<(), Failure> {
     work.formula(bytes, 32)
 }
 
+fn reserve_pair(
+    plan: &Plan,
+    first: &Theorem,
+    second: &Theorem,
+    work: &mut Work,
+) -> Result<(), Failure> {
+    let bytes = plan
+        .formula_length(first.root)
+        .checked_add(plan.formula_length(second.root))
+        .ok_or(LIMIT)?;
+    work.formula(bytes, 32)
+}
+
 fn axiom(
     plan: &mut Plan,
     step: ProofStep,
@@ -38,13 +51,17 @@ fn apply(
     implication: &Theorem,
     work: &mut Work,
 ) -> Result<Theorem, Failure> {
-    reserve(&[&premise.formula, &implication.formula], work)?;
-    let (antecedent, consequent) = implication.formula.implication_parts().ok_or(INVALID)?;
+    reserve_pair(plan, premise, implication, work)?;
+    let (antecedent, formula) = implication.formula.implication_parts().ok_or(INVALID)?;
     if antecedent != premise.formula {
         return Err(INVALID);
     }
-    let formula = consequent.clone();
-    let root = plan.modus_ponens(premise.root, implication.root, length(&formula)?, work)?;
+    // The implication encodes one tag followed by its two operands.
+    let length = plan
+        .formula_length(implication.root)
+        .checked_sub(1 + plan.formula_length(premise.root))
+        .ok_or(INVALID)?;
+    let root = plan.modus_ponens(premise.root, implication.root, length, work)?;
     Ok(Theorem { root, formula })
 }
 
@@ -54,7 +71,7 @@ fn chain(
     second: Theorem,
     work: &mut Work,
 ) -> Result<Theorem, Failure> {
-    reserve(&[&first.formula, &second.formula], work)?;
+    reserve_pair(plan, &first, &second, work)?;
     let (a, b) = first.formula.implication_parts().ok_or(INVALID)?;
     let (middle, c) = second.formula.implication_parts().ok_or(INVALID)?;
     if b != middle {
