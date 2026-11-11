@@ -37,6 +37,7 @@ pub fn create_question(cursor: u64) -> String {
 }
 
 /// Declared support of this installed provider, independent of proof admission.
+#[cfg(any(test, feature = "developer-tools"))]
 pub(crate) fn supports_question(question: &ResearchQuestion) -> bool {
     (0..CATALOG_SIZE).any(|index| target(index) == *question)
 }

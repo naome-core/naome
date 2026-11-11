@@ -147,7 +147,6 @@ fn config(directory: PathBuf, port: u16, remote: PeerId, remote_port: u16) -> Co
             ..Default::default()
         }),
         formal_goal: None,
-        producer_artifacts: Vec::new(),
     }
 }
 
@@ -166,18 +165,16 @@ async fn replicate(
         .map(|listener| listener.local_addr().unwrap().port());
     drop(listeners);
     let (_, donor_admin, donor_inbox) = crate::question::channel();
-    let donor_task = tokio::spawn(run_with_questions(
+    let donor_task = tokio::spawn(test_run(
         config(donor_path.to_path_buf(), ports[0], receiver_id, ports[1]),
-        false,
         donor_inbox,
-        crate::mocks::select_question,
+        Some(crate::mocks::select_question),
     ));
     let (receiver_handle, receiver_admin, receiver_inbox) = crate::question::channel();
-    let receiver_task = tokio::spawn(run_with_questions(
+    let receiver_task = tokio::spawn(test_run(
         config(receiver_path.to_path_buf(), ports[1], donor_id, ports[0]),
-        false,
         receiver_inbox,
-        move |candidate| std::future::ready(Ok(select(candidate))),
+        Some(move |candidate| std::future::ready(Ok(select(candidate)))),
     ));
     let reached = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -536,11 +533,10 @@ async fn unsolicited_offers_do_not_schedule_missing_question_definitions() {
     let receiver = config(receiver_path, port, *client.local_peer_id(), 1);
     let address = receiver.listen.parse().unwrap();
     let (_, admin, inbox) = crate::question::channel();
-    let running = tokio::spawn(run_with_questions(
+    let running = tokio::spawn(test_run(
         receiver,
-        false,
         inbox,
-        crate::mocks::select_question,
+        Some(crate::mocks::select_question),
     ));
     connected(&mut client, receiver_id, address).await;
     for offer in [

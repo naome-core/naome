@@ -1,21 +1,6 @@
 name: Release candidate
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - .github/workflows/release*.yml
-      - .github/workflows/full-cargo.yml
-      - .github/workflows/rust-tests.yml
-      - tools/release/**
-      - tools/ci/test_release*.py
-      - tools/ci/audit_dependencies.py
-      - tools/ci/pinned_tool.py
-      - crates/naome-knowledge/src/runtime/cli.rs
-      - crates/naome-knowledge/src/runtime/cli/**
   workflow_dispatch:
     inputs:
       version:

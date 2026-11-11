@@ -104,7 +104,6 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
             internet: false,
             ..Default::default()
         }),
-        producer_artifacts: Vec::new(),
     };
     let (_handle, _admin, inbox) = crate::question::channel();
     let (commands, input) = mpsc::channel(4);

@@ -136,21 +136,18 @@ async fn two_nodes_exchange_definitions_and_programs_then_recheck_and_reuse_them
             dht: false,
             ..Default::default()
         }),
-        producer_artifacts: Vec::new(),
     };
     let (sender_handle, sender_admin, inbox) = crate::question::channel();
-    let sender_task = tokio::spawn(run_with_questions(
+    let sender_task = tokio::spawn(test_run(
         config(sender.0.clone(), sender_port, receiver_id, receiver_port),
-        false,
         inbox,
-        crate::mocks::select_question,
+        Some(crate::mocks::select_question),
     ));
     let (receiver_handle, receiver_admin, inbox) = crate::question::channel();
-    let receiver_task = tokio::spawn(run_with_questions(
+    let receiver_task = tokio::spawn(test_run(
         config(receiver.0.clone(), receiver_port, sender_id, sender_port),
-        false,
         inbox,
-        crate::mocks::select_question,
+        Some(crate::mocks::select_question),
     ));
     let received = tokio::time::timeout(Duration::from_secs(45), async {
         loop {

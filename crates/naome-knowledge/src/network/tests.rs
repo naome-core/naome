@@ -143,25 +143,6 @@ fn description_rotation_advances_after_the_supplier_actually_used() {
 }
 
 #[test]
-fn full_producer_queue_loads_with_worst_case_json_escaping() {
-    let file = ConfigFile::new();
-    let sources = vec!["\u{0001}".repeat(crate::resources::limits().proof_bytes / 32); 32];
-    let encoded = serde_json::to_vec_pretty(&json!({
-        "directory": "node",
-        "listen": "/ip4/127.0.0.1/tcp/0",
-        "peers": [],
-        "producer_artifacts": sources
-    }))
-    .unwrap();
-    assert!(encoded.len() > 6 * crate::resources::limits().proof_bytes);
-    assert!(encoded.len() < crate::resources::limits().network_config_bytes);
-    std::fs::write(file.path(), &encoded).unwrap();
-    let loaded = read_config(&file.path()).unwrap();
-    assert_eq!(loaded.producer_artifacts, sources);
-    assert_eq!(loaded.directory, file.0.join("node"));
-}
-
-#[test]
 fn oversized_configuration_still_rejects_before_decoding() {
     let file = ConfigFile::new();
     std::fs::write(
@@ -184,7 +165,6 @@ fn node_config_rejects_each_bound_with_a_distinct_code() {
         listen: String::new(),
         peers: vec![],
         discovery: None,
-        producer_artifacts: vec![],
         formal_goal: None,
     };
     assert!(validate_config(&config, false).is_ok());
@@ -207,18 +187,6 @@ fn node_config_rejects_each_bound_with_a_distinct_code() {
     assert!(matches!(
         validate_config(&config, false),
         Err(crate::Error::InputLimit(crate::InputLimit::ConfiguredPeers))
-    ));
-    config.peers.clear();
-    config.producer_artifacts =
-        vec![String::new(); crate::resources::limits().producer_artifacts + 1];
-    assert!(matches!(
-        validate_config(&config, false),
-        Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue))
-    ));
-    config.producer_artifacts = vec!["a".repeat(2 * crate::resources::limits().producer_bytes + 1)];
-    assert!(matches!(
-        validate_config(&config, false),
-        Err(crate::Error::InputLimit(crate::InputLimit::ProducerQueue))
     ));
 }
 
@@ -324,7 +292,6 @@ async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
             dht: false,
             ..Default::default()
         }),
-        producer_artifacts: Vec::new(),
         formal_goal: None,
     };
     let mut sender_graph = Graph::open(&sender_dir).unwrap();
@@ -348,11 +315,10 @@ async fn cli_peer_disable_cancels_final_selection_before_parent_commit() {
         .resolution_id();
     drop(sender_graph);
     let (sender_handle, sender_admin, sender_inbox) = crate::question::channel();
-    let sender = tokio::spawn(run_with_questions(
+    let sender = tokio::spawn(test_run(
         config(sender_dir, sender_port, receiver_peer, receiver_port),
-        false,
         sender_inbox,
-        |_| std::future::ready(Ok(true)),
+        Some(|_| std::future::ready(Ok(true))),
     ));
     let (receiver_handle, receiver_admin, receiver_inbox) = crate::question::channel();
     let (commands, input) = mpsc::channel(8);

@@ -129,7 +129,7 @@ impl Manual {
 
 #[test]
 fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
-    let mut settings = Settings::default();
+    let mut settings = Settings::fixture();
     for horizon in [
         60 * 60 * 1_000,
         24 * 60 * 60 * 1_000,
@@ -143,7 +143,7 @@ fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
         settings.solving.limits.horizon_ms = horizon;
         assert!(settings.validate().is_err());
     }
-    let mut settings = Settings::default();
+    let mut settings = Settings::fixture();
     settings.selection.limits.work_units = 0;
     assert!(settings.validate().is_err());
 }
@@ -164,16 +164,28 @@ fn source_binding_preserves_original_question_orientation_and_strict_schema() {
     assert!(serde_json::from_value::<Input>(value).is_err());
 }
 
+#[test]
+fn native_research_is_enabled_by_default_and_can_be_disabled() {
+    assert!(Settings::default().research_enabled());
+    let defaults: Settings = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults, Settings::default());
+    let disabled: Settings = serde_json::from_str(r#"{"native_proof_learning":false}"#).unwrap();
+    assert!(!disabled.research_enabled());
+}
+
 #[cfg(not(feature = "developer-tools"))]
 #[test]
 fn ordinary_product_rejects_developer_workloads_before_spawning() {
-    let mut settings = Settings::default();
+    let mut settings = Settings {
+        native_proof_learning: false,
+        ..Settings::default()
+    };
+    assert!(settings.validate().is_ok());
     settings.solving.mock.steps = 2;
     assert!(matches!(
         settings.validate().unwrap_err(),
         crate::Error::Research(crate::ResearchFailure::DeveloperWorkloadUnavailable)
     ));
-    assert!(Settings::default().validate().is_ok());
 }
 
 #[test]
@@ -263,7 +275,7 @@ fn cooperative_job_binding_is_limited_to_solving() {
 
 #[test]
 fn invalid_role_settings_report_machine_readable_reason() {
-    let mut settings = Settings::default();
+    let mut settings = Settings::fixture();
     settings.solving.limits.work_units = 0;
     let error = settings.validate().unwrap_err();
     assert!(matches!(

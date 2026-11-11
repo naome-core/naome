@@ -1128,6 +1128,10 @@ impl Owner {
         if reply.is_closed() {
             return Ok(());
         }
+        if !matches!(input, Input::Select { .. }) && !self.settings.research_enabled() {
+            reject(reply, binding, AdmissionFailure::ResearchDisabled);
+            return Ok(());
+        }
         if binding.catalog.is_some()
             && (!self.settings.native_proof_learning
                 || binding.cooperative
@@ -1395,6 +1399,20 @@ impl Owner {
                 },
             );
         }
+        let provider = if native.is_some() {
+            crate::learning::PROVIDER
+        } else if matches!(input, Input::Find { .. }) && self.settings.native_proof_learning {
+            crate::frontier::PROVIDER
+        } else {
+            #[cfg(any(test, feature = "developer-tools"))]
+            if self.settings.fixture_workloads() {
+                super::provider::MOCK_PROVIDER
+            } else {
+                super::provider::SELECTION_PROVIDER
+            }
+            #[cfg(not(any(test, feature = "developer-tools")))]
+            super::provider::SELECTION_PROVIDER
+        };
         let id = self.journal.next_id;
         self.journal.next_id = id
             .checked_add(1)
@@ -1405,15 +1423,7 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
-                provider: if native.is_some() {
-                    crate::learning::PROVIDER
-                } else if self.settings.native_proof_learning && matches!(input, Input::Find { .. })
-                {
-                    crate::frontier::PROVIDER
-                } else {
-                    super::provider::DEFAULT_PROVIDER
-                }
-                .into(),
+                provider: provider.into(),
                 native,
                 configuration: identity(&settings),
                 settings,

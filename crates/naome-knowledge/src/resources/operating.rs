@@ -171,10 +171,6 @@ pub(super) fn derive_with_statistics(
         quantum,
         capacity.solving_interval,
     );
-    work.production_interval = measured
-        .unwrap_or(capacity.production_interval)
-        .min(capacity.production_interval)
-        .max(quantum);
     // Existing buffers/requests retain their admission. Smaller limits only
     // pace new work; callers must never truncate a retained row to fit them.
     work

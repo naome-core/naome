@@ -184,11 +184,10 @@ async fn node_admits_and_restores_total_unique_natural_addition_with_checked_def
     graph.ingest(natural, Instant::now()).unwrap();
     drop(graph);
     let (handle, admin, inbox) = channel();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        |_| async { panic!("unresolved references cannot reach selection") },
+        Some(|_| async { panic!("unresolved references cannot reach selection") }),
     ));
     assert_eq!(context(&handle).await.checked_artifacts, 1);
     let missing = tokio::time::timeout(Duration::from_secs(5), handle.admit_question_bytes(&bytes))
@@ -219,14 +218,13 @@ async fn node_admits_and_restores_total_unique_natural_addition_with_checked_def
 
     let (handle, admin, inbox) = channel();
     let selected = compiled.clone();
-    let task = tokio::spawn(network::run_with_questions(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
-        move |question| {
+        Some(move |question| {
             assert_eq!(question, selected);
             async { Ok(true) }
-        },
+        }),
     ));
     let admission =
         tokio::time::timeout(Duration::from_secs(5), handle.admit_question_bytes(&bytes))
@@ -243,10 +241,10 @@ async fn node_admits_and_restores_total_unique_natural_addition_with_checked_def
     stop(admin, task).await;
 
     let (handle, admin, inbox) = channel();
-    let task = tokio::spawn(network::run_with_questions_without_selection(
-        directory.config(Vec::new()),
-        false,
+    let task = tokio::spawn(network::test_run(
+        directory.config(),
         inbox,
+        network::NO_TEST_SELECTION,
     ));
     assert_eq!(context(&handle).await.registered_questions, 1);
     let duplicate =

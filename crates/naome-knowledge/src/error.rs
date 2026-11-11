@@ -1279,7 +1279,6 @@ impl fmt::Display for Error {
                 InputFault::RuntimeConfigObject => "node configuration must be an object",
                 InputFault::RuntimeConfigDirectory => "configuration directory must be a path",
                 InputFault::RuntimeConfigOwner => "configuration belongs to another node directory",
-                InputFault::RuntimeConfigProducer => "producer artifacts require a developer operation",
                 InputFault::LogRecordEncoding => "runtime event encoding failed",
                 InputFault::LogRecordCapacity => "runtime event exceeds log capacity",
                 InputFault::LogFileInvalid => "runtime log must be one owned regular file",

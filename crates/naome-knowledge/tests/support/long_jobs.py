@@ -45,7 +45,7 @@ def lane(record):
 
 
 def job_settings(**roles):
-    result={}
+    result={"native_proof_learning": False, "fixture_workloads": True}
     for name,values in roles.items():
         result[name]={'limits':{'horizon_ms':values.pop('horizon_ms',60000),
             'work_units':values.pop('work_units',64)},'mock':values}
@@ -198,6 +198,7 @@ def roles(trial,probe):
     # the existing 15-second overlap oracle, including durable unit IPC.
     # Keep solving pending through question preparation and peer delivery too;
     # the original allowances, absolute horizons and observation bounds remain.
+    donor.config['runtime']['jobs']=job_settings()
     receiver.config['runtime'].update(jobs=job_settings(
         finding={'steps':20,'step_ms':150},selection={'step_ms':400},solving={'cpu_ms':40000,'descendant':True}))
     # Establish ordinary identities with the same persisted job settings, then
@@ -453,7 +454,9 @@ def faults(trial,probe):
 
 def basic(trial,probe):
     first,second=Node(trial,0),Node(trial,1)
-    for node in [first,second]:node.start();node.stop()
+    for node in [first,second]:
+        node.config['runtime']['jobs']=job_settings()
+        node.write_config();node.start();node.stop()
     first.config['peers']=[{'id':second.peer,'address':f'/ip4/127.0.0.1/tcp/{second.port}'}]
     first.config['runtime']['question_interval_ms']=100;first.write_config();first.start()
     second.config['peers']=[{'id':first.peer,'address':f'/ip4/127.0.0.1/tcp/{first.port}'}];second.write_config();second.start()

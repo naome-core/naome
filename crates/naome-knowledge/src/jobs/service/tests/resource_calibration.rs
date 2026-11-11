@@ -8,7 +8,7 @@ fn smaller_restart_keeps_original_results_and_rejects_corruption_before_retireme
         let mut profile = crate::resources::ResourceProfile::default();
         profile.tuning.active_job_bytes = Some(4096);
         crate::resources::configure(profile).unwrap();
-        let opened = Disk::open(Path::new(&directory), Settings::default(), 0);
+        let opened = Disk::open(Path::new(&directory), Settings::fixture(), 0);
         if std::env::var_os("NAOME_JOB_REOPEN_CORRUPT").is_some() {
             assert!(
                 opened
@@ -49,7 +49,7 @@ fn smaller_restart_keeps_original_results_and_rejects_corruption_before_retireme
         return;
     }
     let directory = Directory::new();
-    let settings = Settings::default();
+    let settings = Settings::fixture();
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     let mut owner = Owner::new(disk, journal, settings, Arc::default());
     for cursor in 0..6 {

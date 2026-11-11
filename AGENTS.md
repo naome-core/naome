@@ -174,8 +174,7 @@ before a merge. Public two-host discovery is a separate manual
 `Public discovery acceptance` workflow. `CI` contains only the required fast
 checks; neither manual workflow creates skipped MR checks.
 
-`Release candidate` builds and verifies packages for relevant pull requests or
-manual requests. It shares the canonical package workflow with `Release` and
+`Release candidate` builds and verifies packages on manual request. It shares the canonical package workflow with `Release` and
 has no signing or publication jobs. `Release` is exclusively a version-confirmed
 manual publication. Every
 publication runs this same complete matrix within its own `Release` workflow,

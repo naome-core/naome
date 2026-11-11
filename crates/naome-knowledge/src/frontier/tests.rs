@@ -108,7 +108,7 @@ fn defined_question_evidence_replays_using_its_checked_primitive_target() {
     let primitive = ResearchQuestion::from_formula(question.formula().clone()).unwrap();
     assert_ne!(question.to_hex(), primitive.to_hex());
     assert_eq!(question.resolution_id(), primitive.resolution_id());
-    let settings = jobs::Settings::default();
+    let settings = jobs::Settings::fixture();
     let mut frontier = Frontier::open(&directory.0, &graph, 1, settings).unwrap();
     frontier
         .attempted(
@@ -441,7 +441,7 @@ fn structure_ignores_spelling_and_preserves_generalizations_as_candidates() {
     assert_ne!(Features::of(&a), Features::of(&generalized));
     let directory = Directory::new();
     let graph = Graph::default();
-    let mut frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::fixture()).unwrap();
     let candidates = [&a, &generalized];
     let mut observed = [false; 2];
     for _ in 0..128 {
@@ -457,7 +457,7 @@ fn structure_ignores_spelling_and_preserves_generalizations_as_candidates() {
 fn received_knowledge_changes_coverage_without_claiming_local_ability() {
     let directory = Directory::new();
     let mut graph = Graph::default();
-    let mut frontier = Frontier::open(&directory.0, &graph, 7, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 7, jobs::Settings::fixture()).unwrap();
     let _ = checked(&mut graph, &question(0));
     frontier.refresh(&graph, |_| true).unwrap();
     assert!(frontier.coverage.iter().any(|n| *n > 0));
@@ -481,7 +481,7 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
     let graph = Graph::default();
     let settings = jobs::Settings {
         native_proof_learning: true,
-        ..jobs::Settings::default()
+        ..jobs::Settings::fixture()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
     let easy =
@@ -549,7 +549,7 @@ fn common_value_changes_a_matched_frontier_decision() {
     let graph = Graph::default();
     let settings = jobs::Settings {
         native_proof_learning: true,
-        ..jobs::Settings::default()
+        ..jobs::Settings::fixture()
     };
     let mut frontier = Frontier::open(&directory.0, &graph, 19, settings).unwrap();
     frontier.feedback(Some(crate::learning::State::fresh().feedback()));
@@ -609,7 +609,7 @@ fn common_value_changes_a_matched_frontier_decision() {
 fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     let directory = Directory::new();
     let graph = Graph::default();
-    let mut frontier = Frontier::open(&directory.0, &graph, 5, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 5, jobs::Settings::fixture()).unwrap();
     let target = question(0);
     let cost = frontier
         .weight(&target, &graph, jobs::RoleSettings::default(), None)
@@ -668,7 +668,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
     assert_eq!(record.units, 6);
     assert_eq!(record.spent_ms, 21);
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 999, jobs::Settings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &graph, 999, jobs::Settings::fixture()).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
     assert_eq!(
         frontier.evidence.get(&target).unwrap().unwrap().outcomes,
@@ -680,7 +680,7 @@ fn raw_candidates_failures_and_expiry_never_become_solving_evidence() {
 fn fresh_checked_exact_solutions_restore_ability_and_random_state_after_restart() {
     let directory = Directory::new();
     let mut graph = Graph::default();
-    let mut frontier = Frontier::open(&directory.0, &graph, 13, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 13, jobs::Settings::fixture()).unwrap();
     let target = question(0);
     let candidates = [&target];
     frontier
@@ -704,18 +704,18 @@ fn fresh_checked_exact_solutions_restore_ability_and_random_state_after_restart(
     frontier.prepared(&target, 1, root).unwrap();
     // Simulate the cut after graph publication and before the final evidence write.
     drop(frontier);
-    let mut frontier = Frontier::open(&directory.0, &graph, 99, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 99, jobs::Settings::fixture()).unwrap();
     assert!(frontier.successes.iter().any(|n| *n > 0));
     assert_eq!(frontier.evidence.draws(), draw);
     assert_eq!(frontier.evidence.random(), random);
     frontier.verified(&target, &graph, 1, root).unwrap();
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 99, jobs::Settings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &graph, 99, jobs::Settings::fixture()).unwrap();
     assert_eq!(frontier.successes.iter().copied().max(), Some(1));
     // An unverified saved success never transfers validity to another graph.
     let empty = Graph::default();
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &empty, 99, jobs::Settings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &empty, 99, jobs::Settings::fixture()).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
 }
 
@@ -726,7 +726,7 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
     graph
         .produce("0100000000010000000b0100000000000000000000")
         .unwrap();
-    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::fixture()).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
     let goal = ResearchQuestion::from_hex("040101000000000100000000").unwrap();
     assert!(
@@ -791,7 +791,7 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     let directory = Directory::new();
     let mut graph = Graph::default();
     let target = question(0);
-    let mut frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::fixture()).unwrap();
     let result = completion(
         1,
         jobs::Output::Proof {
@@ -807,7 +807,7 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     frontier.prepared(&target, 1, root).unwrap();
     frontier.verified(&target, &graph, 1, root).unwrap();
     drop(frontier);
-    let mut changed = jobs::Settings::default();
+    let mut changed = jobs::Settings::fixture();
     changed.solving.mock.outcome = jobs::MockOutcome::Failed;
     let frontier = Frontier::open(&directory.0, &graph, 41, changed).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
@@ -815,13 +815,13 @@ fn changing_solver_configuration_keeps_attempts_without_claiming_the_previous_ab
     drop(frontier);
     let native = jobs::Settings {
         native_proof_learning: true,
-        ..jobs::Settings::default()
+        ..jobs::Settings::fixture()
     };
     let frontier = Frontier::open(&directory.0, &graph, 41, native).unwrap();
     assert_eq!(frontier.successes, [0; SIGNALS]);
     assert!(frontier.evidence.get(&target).unwrap().is_none());
     drop(frontier);
-    let frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::default()).unwrap();
+    let frontier = Frontier::open(&directory.0, &graph, 41, jobs::Settings::fixture()).unwrap();
     assert!(frontier.successes.iter().any(|count| *count > 0));
     assert_eq!(frontier.evidence.get(&target).unwrap().unwrap().units, 2);
 }
@@ -832,7 +832,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     let graph = Graph::default();
     let target =
         ResearchQuestion::from_hex("040301010000000001000000000001000000000100000000").unwrap();
-    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::fixture()).unwrap();
     let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
     frontier
         .attempted(&target, &graph, &result, Outcome::NoCandidate)
@@ -850,7 +850,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
             .any(|q| q.resolution_id() == helper.resolution_id())
     );
     drop(frontier);
-    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::fixture()).unwrap();
     assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
     let result = completion(2, jobs::Output::NoCandidate, jobs::State::Failed);
     frontier
@@ -858,7 +858,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
         .unwrap();
     assert_eq!(frontier.attempts.iter().copied().max(), Some(1));
     drop(frontier);
-    let mut changed = jobs::Settings::default();
+    let mut changed = jobs::Settings::fixture();
     changed.solving.limits.work_units += 1;
     let frontier = Frontier::open(&directory.0, &graph, 11, changed).unwrap();
     assert_eq!(frontier.attempts, [0; SIGNALS]);
@@ -871,7 +871,7 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
     for index in 0..3 {
         let _ = checked(&mut graph, &question(index));
     }
-    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::fixture()).unwrap();
     frontier.refresh(&graph, |_| true).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
@@ -897,7 +897,7 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
 fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjectures() {
     let directory = Directory::new();
     let graph = Graph::default();
-    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 11, jobs::Settings::fixture()).unwrap();
     let x = FreeVariable::new(0);
     let y = FreeVariable::new(1);
     frontier.explore(
@@ -948,7 +948,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
     for index in 0..3 {
         let _ = checked(&mut graph, &question(index));
     }
-    let mut frontier = Frontier::open(&directory.0, &graph, 17, jobs::Settings::default()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 17, jobs::Settings::fixture()).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
     let mut pending = std::collections::BTreeSet::new();
@@ -1619,9 +1619,9 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
 fn missing_established_evidence_remains_a_structured_start_failure() {
     let directory = Directory::new();
     let graph = Graph::default();
-    drop(Frontier::open(&directory.0, &graph, 1, jobs::Settings::default()).unwrap());
+    drop(Frontier::open(&directory.0, &graph, 1, jobs::Settings::fixture()).unwrap());
     std::fs::remove_file(directory.0.join("research/evidence.sqlite3")).unwrap();
-    let error = Frontier::open(&directory.0, &graph, 1, jobs::Settings::default())
+    let error = Frontier::open(&directory.0, &graph, 1, jobs::Settings::fixture())
         .err()
         .unwrap();
     assert_eq!(

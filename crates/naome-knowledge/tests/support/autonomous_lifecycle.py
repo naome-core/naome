@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Ordinary lifecycle and autonomous real direct, discovery and relay qualification."""
 from fixture_result import FixtureResult, ResourceProfile
+from relay_fixture import relay_process
 
 import argparse
 import ctypes
@@ -11,6 +12,7 @@ from pathlib import Path
 import signal
 import select
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -20,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from types import SimpleNamespace
 
-from proof_network import digest, stored_objects, replace_catalog_payload
+from proof_network import digest, stored_objects, replace_catalog_payload, separation_formula, sqlite_is
 
 
 def assert_node_status(value, *, running, accepted_artifacts=None):
@@ -792,7 +794,8 @@ class Relay:
         config.write_text(json.dumps({"directory": str(directory), "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "allow_private_addresses": True}) + "\n")
         self.log = (trial.output / "relay.log").open("w")
         reservation.close()
-        self.process = subprocess.Popen([str(binary), "relay", str(config)], stdin=subprocess.DEVNULL,
+        command, env = relay_process(config)
+        self.process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
             stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
         self.identity = process_identity(self.process.pid)
         assert self.identity is not None and self.identity["pid"] == self.identity["group"]
@@ -847,7 +850,7 @@ class Node:
         self.config = {
             "directory": str(self.directory),
             "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "peers": [],
-            "producer_artifacts": [], "discovery": {"mdns": False, "dht": False},
+            "discovery": {"mdns": False, "dht": False},
             "runtime": {"question_interval_ms": 3600000, "proof_interval_ms": 100},
         }
         self.write_config()
@@ -975,7 +978,7 @@ def guardian_fixture_worker():
     parser = argparse.ArgumentParser()
     parser.add_argument("--guardian-fixture-worker", action="store_true", required=True)
     parser.add_argument("--binary", required=True, type=Path)
-    parser.add_argument("--relay-binary", required=True, type=Path)
+    parser.add_argument("--fixture-init-binary", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--profile", required=True)
     args = parser.parse_args()
@@ -985,7 +988,8 @@ def guardian_fixture_worker():
         node = Node(trial, 0)
         write_receipt(trial.output / "research-processes.json", [])
         node.config["runtime"]["question_interval_ms"] = 100
-        node.config["runtime"]["jobs"] = {"finding": {"mock": {
+        node.config["runtime"]["jobs"] = {"native_proof_learning": False, "fixture_workloads": True,
+                                          "finding": {"mock": {
             "steps": 0, "cpu_ms": 20000, "descendant": True}}}
         node.write_config()
         node.start()
@@ -1007,7 +1011,7 @@ def guardian_fixture_worker():
         cpu_witness.update(after_sample=after_sample, after_seconds=after_sample["cpu_seconds"])
         write_receipt(trial.output / "driver-loss-cpu-witness.json", cpu_witness)
         assert cpu_witness["after_seconds"] > cpu_witness["before_seconds"], "active research had no positive CPU delta before driver loss"
-        relay = Relay(trial, args.relay_binary.resolve())
+        relay = Relay(trial, args.fixture_init_binary.resolve())
         write_receipt(trial.output / "probe-ready.json", {
             "node": node.process, "node_port": node.port,
             "relay": relay.identity, "relay_port": relay.port,
@@ -1028,7 +1032,7 @@ def guardian_loss_probe():
     parser = argparse.ArgumentParser()
     parser.add_argument("--guardian-loss-probe", action="store_true", required=True)
     parser.add_argument("--binary", required=True, type=Path)
-    parser.add_argument("--relay-binary", required=True, type=Path)
+    parser.add_argument("--fixture-init-binary", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--timeout", type=float, default=45)
@@ -1039,13 +1043,13 @@ def guardian_loss_probe():
     deadline = started + args.timeout
     summary = {"fixture": "ordinary_driver_loss_guardian", "profile": args.profile,
         "driver_sha256": digest(__file__), "binary_sha256": digest(args.binary),
-        "relay_binary_sha256": digest(args.relay_binary), "timeout_seconds": args.timeout,
+        "relay_binary_sha256": digest(args.fixture_init_binary), "timeout_seconds": args.timeout,
         "claim": "finite real driver-loss, suspended-daemon fallback and direct-child relay reap evidence"}
     worker_output = output / "worker"
     log = (output / "driver-loss-worker.log").open("w")
     worker = subprocess.Popen([
         sys.executable, str(Path(__file__).resolve()), "--guardian-fixture-worker",
-        "--binary", str(args.binary.resolve()), "--relay-binary", str(args.relay_binary.resolve()),
+        "--binary", str(args.binary.resolve()), "--fixture-init-binary", str(args.fixture_init_binary.resolve()),
         "--output", str(worker_output), "--profile", args.profile,
     ], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     ready = None
@@ -1099,7 +1103,7 @@ def guardian_loss_probe():
         # cleanup must both terminate its exact session and actually wait/reap.
         relay_trial = Trial(args.binary, output / "relay-timeout", 15, args.profile, "guardian-probe")
         relay_trial.summary["node_count"] = 0
-        relay = Relay(relay_trial, args.relay_binary.resolve())
+        relay = Relay(relay_trial, args.fixture_init_binary.resolve())
         assert process_identity(relay.process.pid) == relay.identity
         os.kill(relay.process.pid, signal.SIGSTOP)
         try:
@@ -1147,24 +1151,109 @@ def guardian_loss_probe():
     return 0 if summary["result"] == FixtureResult.PASS else 1
 
 
+
+def native_default(trial):
+    from native_goal import records
+
+    sender, receiver = Node(trial, 0), Node(trial, 1)
+    for node in trial.nodes:
+        assert "jobs" not in node.config["runtime"]
+        assert not node.ids()
+        node.start()
+        node.stop()
+        assert not node.ids()
+    for node, other in ((sender, receiver), (receiver, sender)):
+        node.config["peers"] = [{"id": other.peer,
+                                 "address": f"/ip4/127.0.0.1/tcp/{other.port}"}]
+    goal = separation_formula().hex()
+    sender.config["formal_goal"] = goal
+    sender.config["runtime"]["question_interval_ms"] = 1000
+    for node in trial.nodes:
+        node.write_config()
+    receiver.start()
+    sender.start()
+
+    def published():
+        for event in sender.logs():
+            if event.get("event") != 0x00170046:
+                continue
+            for job in records(sender):
+                if job["id"] == event["job"] and job["input"] == {"role": "solve", "question": goal}:
+                    assert job["native"] is not None and job["result"]["kind"] == "native", job
+                    return event
+        return None
+
+    proof = trial.wait(published, maximum=25)
+    root = proof["id"]
+    trial.wait(lambda: root in sender.ids() and root in receiver.ids()
+               and any(event.get("event") == 0x00170001 and event.get("source") == 0x180001
+                       and event.get("id") == root for event in receiver.logs()), maximum=15)
+
+    def learning_receipt():
+        journal = (sender.directory / "research/jobs.sqlite3").as_uri()
+        try:
+            with sqlite3.connect(journal + "?mode=ro", uri=True, timeout=0.01) as db:
+                row = db.execute("SELECT payload FROM entries WHERE kind='learned' AND key=?",
+                                 (str(proof["job"]),)).fetchone()
+        except sqlite3.OperationalError as error:
+            if sqlite_is(error, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                return False
+            raise
+        return row is not None and json.loads(row[0]) == root
+
+    trial.wait(learning_receipt, maximum=10)
+    # The successful start wrapper has exited and closed the daemon's startup
+    # stdin. Verify the live listener after native publication.
+    with socket.create_connection(("127.0.0.1", sender.port), timeout=5):
+        pass
+    for node in trial.nodes:
+        assert trial.call(node, "status")["running"]
+        stopped = node.stop()
+        assert stopped["accepted_artifacts"] == len(node.ids())
+        assert root in node.ids()
+        node.config.pop("formal_goal", None)
+        node.config["runtime"]["question_interval_ms"] = 3600000
+        node.write_config()
+        restarted = node.start()
+        assert restarted["artifact_verification"] == 0x0020_0001 and root in node.ids()
+        node.stop()
+    assert learning_receipt(), "the learning owner's checked receipt did not survive restart"
+    trial.summary["scenarios"]["default_native_solving_learning_and_checked_exchange"] = {
+        "result": FixtureResult.PASS, "artifact_id": root, "job": proof["job"],
+        "listener_after_startup_eof": True}
+    trial.summary["result"] = FixtureResult.PASS
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path, help="ordinary naome executable")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--profile", required=True)
-    parser.add_argument("--mode", choices=["direct", "mdns", "dht", "relay"], default="direct")
-    parser.add_argument("--relay-binary", type=Path, help="developer relay infrastructure executable")
+    parser.add_argument("--mode", choices=["native-default", "direct", "mdns", "dht", "relay"], default="native-default")
+    parser.add_argument("--fixture-init-binary", type=Path, help="developer executable for creating the relay fixture identity")
     parser.add_argument("--timeout", type=float, default=60)
     args = parser.parse_args()
     if os.name != "posix":
         parser.error("this supported-platform lifecycle qualification requires POSIX")
-    if args.mode == "relay" and args.relay_binary is None:
+    if args.mode == "relay" and args.fixture_init_binary is None:
         parser.error("relay qualification requires an explicit relay infrastructure executable")
     trial = Trial(args.binary, args.output, args.timeout, args.profile, args.mode)
+    if args.mode == "native-default":
+        try:
+            native_default(trial)
+        except BaseException as error:
+            trial.summary.update(result=FixtureResult.FAIL, error=f"{type(error).__name__}: {error}")
+            raise
+        finally:
+            trial.close()
+            retain_evidence(trial.output, trial.summary, args.mode, args.profile)
+        return 0 if trial.summary["result"] == FixtureResult.PASS else 1
     try:
         sender, receiver = Node(trial, 0), Node(trial, 1)
         seed = Node(trial, 2) if args.mode == "dht" else None
         for node in trial.nodes:
+            node.config["runtime"]["jobs"] = {"native_proof_learning": False, "fixture_workloads": True}
+            node.write_config()
             assert trial.call(node, "status") == {"running": False, "accepted_artifacts": 0, "artifact_verification": 0x0020_0002, "computation": 0x001f_0001, "computation_reason": None}
             assert node.start() == {"running": True, "accepted_artifacts": 0, "artifact_verification": 0x0020_0001, "computation": 0x001f_0002, "computation_reason": None}
             key = node.directory / "identity.key"
@@ -1199,7 +1288,7 @@ def main():
                     "external_addresses": [f"/ip4/127.0.0.1/tcp/{node.port}"],
                     "bootstrap": [] if node is seed else [{"id": seed.peer, "address": f"/ip4/127.0.0.1/tcp/{seed.port}"}]}
         elif args.mode == "relay":
-            relay = Relay(trial, args.relay_binary.resolve())
+            relay = Relay(trial, args.fixture_init_binary.resolve())
             endpoint = {"id": relay.peer, "address": f"/ip4/127.0.0.1/tcp/{relay.port}"}
             for node in trial.nodes:
                 node.config["discovery"] = {"mdns": False, "dht": True, "internet": False, "allow_private_addresses": True,

@@ -22,7 +22,7 @@ fn intervals(question_interval_ms: u64) -> Intervals {
     Intervals {
         question_interval_ms,
         proof_interval_ms: 100,
-        ..Intervals::default()
+        jobs: jobs::Settings::fixture(),
     }
 }
 async fn admitted<F, Fut>(

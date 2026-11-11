@@ -15,8 +15,8 @@ def run(trial, args):
         node.config["discovery"] = {"mdns": False, "dht": False, "internet": False}
     shutil.copytree(args.seed, requester.directory, dirs_exist_ok=True)
     requester.config["runtime"]["jobs"] = {"native_proof_learning": True}
-    if args.helper_provider == "native":
-        helper.config["runtime"]["jobs"] = {"native_proof_learning": True}
+    if args.helper_provider == "mock":
+        helper.config["runtime"]["jobs"] = {"native_proof_learning": False, "fixture_workloads": True}
     requester.write_config()
     helper.write_config()
     requester.start()

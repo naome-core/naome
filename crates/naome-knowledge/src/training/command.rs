@@ -1,7 +1,5 @@
-//! Offline developer/learner interface. Graph::open retains exclusive node
-//! ownership; the node must be stopped before operating on its directory.
+//! Bounded learner operations against an already owned checked graph.
 use super::*;
-use std::{io::Write, path::Path};
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -110,56 +108,3 @@ pub fn execute(graph: &Graph, command: &Command) -> Result<Response, Error> {
         }
     }
 }
-
-/// Reads one owned regular bounded JSON request and streams one JSON response.
-/// The external learner owns training, resource metering and immutable model
-/// identities. This command never enables training in the ordinary node.
-pub fn run(directory: &Path, input: &Path) -> Result<(), Error> {
-    use crate::RuntimeFailure;
-    let limits = crate::resources::limits();
-    let budget = limits
-        .command_parse_budget()
-        .ok_or(crate::InputLimit::CliJsonAllocationBudgetOverflow)?;
-    let _memory = crate::resources::MemoryLease::acquire(budget)?;
-    let bytes = crate::storage::read_owned(input, limits.command_bytes)
-        .map_err(|cause| crate::Error::RuntimeContext {
-            code: RuntimeFailure::TrainingRequestRead,
-            cause: Box::new(cause),
-        })?
-        .ok_or(RuntimeFailure::TrainingRequestMissing)?;
-    crate::resources::json::allocation_bound(&bytes, budget)?;
-    let command: Command =
-        serde_json::from_slice(&bytes).map_err(|_| RuntimeFailure::TrainingRequestParse)?;
-    let graph = Graph::open(directory)?;
-    let response = execute(&graph, &command)?;
-    let mut output = std::io::stdout().lock();
-    serde_json::to_writer(&mut output, &response)
-        .map_err(|_| RuntimeFailure::TrainingResponseWrite)?;
-    output
-        .write_all(b"\n")
-        .map_err(|_| RuntimeFailure::TrainingResponseWrite)?;
-    Ok(())
-}
-
-pub const HELP: &str = "usage: naome-knowledge-dev training <node-directory> <request.json>\n\
-Stop the node first. Input is one owned regular bounded JSON file; output is one JSON response.\n\
-Operations (strict JSON; unknown fields are rejected):\n\
-  select: {operation, request} exports checked native proof targets with their dependency context.\n\
-  plan: {operation, request, candidates:[question-source,...]} selects new question-only solver work.\n\
-  questions: {operation, partition:training|development|reserved, after:null|ArtifactId, scan:1..16}\n\
-    returns question-only pages for freezing diagnostics and final evaluation.\n\
-  compare: {operation, baseline, targeted} validates a matched reserved evaluation.\n\
-Request fields: solver:{checkpoint:SHA256,budget:{work_units,horizon_ms}}, training_roots:[ArtifactId,...],\n\
-  development:null|{solver,knowledge,probes}, previous_development:null|{solver,knowledge,probes},\n\
-  after:null|ArtifactId, scan:1..16 (select) or 1..32 (plan), take:1..scan, seed:u64, random_only:bool.\n\
-Use next_after for the next scan page. Coverage roots are a bounded representative replay sample.\n\
-Probe: {question,spent_ms,work_units, result:{outcome:4063233,artifact:ArtifactId}|{outcome:4063234}|{outcome:4063235}}.\n\
-Only development probes can adapt selection; successes must finish inside the original allowance; verified results must bind to exact checked roots.\n\
-Evaluation fields: initial_checkpoint,solver,knowledge,total_budget_micros,compute,probes.\n\
-Compute fields: selection_micros,generation_and_checking_micros,training_micros,evaluation_micros.\n\
-Both arms require identical starting checkpoint, context, questions and allowance/total ceiling.\n\
-The external learner runs training and measures actual CPU. Reports grant no work or validity authority.\n\
-Inputs expose question and available context only; proof targets and provenance are separate fields.\n\
-Partitions conservatively group syntax and exclude cross-split proof dependencies. Keep authored source\n\
-lineages together as well. These signals do not establish mathematical novelty or semantic independence.\n\
-Streamed proof programs are counted as unsupported; a manifest is never exported as a proof target.";

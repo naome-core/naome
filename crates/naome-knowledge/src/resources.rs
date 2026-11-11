@@ -228,7 +228,6 @@ resource_policy! {
         capacity wanted_attempts (WantedAttempts, 69): usize = 16;
         capacity gossip_packet_bytes (GossipPacketBytes, 70): usize = 1024;
         capacity producer_bytes (ProducerBytes, 71): usize = 65_536;
-        capacity producer_artifacts (ProducerArtifacts, 72): usize = 32;
         capacity exchange_streams (ExchangeStreams, 73): usize = 4;
         capacity inbound_streams (InboundStreams, 74): usize = 16;
         capacity identify_protocol_bytes (IdentifyProtocolBytes, 75): usize = 256;
@@ -280,7 +279,6 @@ resource_policy! {
         capacity supervisor_poll_interval (SupervisorPollInterval, 119), supervisor_poll_interval_ms = Duration::from_millis(50);
         capacity provider_drain_timeout (ProviderDrainTimeout, 120), provider_drain_timeout_ms = Duration::from_secs(3);
         capacity provider_announce_interval (ProviderAnnounceInterval, 121), provider_announce_interval_ms = Duration::from_secs(10);
-        work production_interval (ProductionInterval, 122), production_interval_ms = Duration::from_secs(1);
         capacity gossip_heartbeat (GossipHeartbeat, 123), gossip_heartbeat_ms = Duration::from_secs(1);
         capacity idle_connection_timeout (IdleConnectionTimeout, 124), idle_connection_timeout_ms = Duration::from_secs(60);
         capacity job_flush_interval (JobFlushInterval, 125), job_flush_interval_ms = Duration::from_secs(30);
@@ -731,7 +729,6 @@ impl Limits {
             self.waiters_per_job,
             self.transport_events,
             self.inbound_streams,
-            self.producer_artifacts,
             self.developer_questions,
             self.developer_objects,
             self.provider_events,
@@ -771,7 +768,6 @@ impl Limits {
             self.checker_cache_entries,
             self.wanted_attempts,
             self.exchange_streams,
-            self.producer_artifacts,
             self.request_burst,
         ] {
             if count > self.memory_bytes / 512 {

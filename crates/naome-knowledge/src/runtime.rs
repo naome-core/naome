@@ -830,9 +830,6 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), crate
     *configured = serde_json::json!(directory);
     let config: network::Config =
         serde_json::from_value(value).map_err(crate::error::config_decode)?;
-    if !config.producer_artifacts.is_empty() {
-        return Err(crate::InputFault::RuntimeConfigProducer.into());
-    }
     Ok((config, intervals.validate()?))
 }
 

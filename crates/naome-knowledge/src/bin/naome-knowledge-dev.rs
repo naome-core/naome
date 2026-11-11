@@ -27,12 +27,8 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
     }
     if args == ["--help"] {
         println!(
-            "usage: naome-knowledge-dev init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract | outcome-catalog | training <node-directory> <request.json> | training --help\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, describe, links, announce, offer, stop"
+            "usage: naome-knowledge-dev init <directory> | run <config.json> [--test-controls] | contract | outcome-catalog\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, describe, links, announce, offer, stop"
         );
-        return Ok(());
-    }
-    if args == ["training", "--help"] {
-        println!("{}", naome_knowledge::training::HELP);
         return Ok(());
     }
     naome_knowledge::resources::initialize_from_environment().map_err(|cause| {
@@ -82,11 +78,10 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
                 "{}",
                 json!({"peer_id":key.public().to_peer_id().to_string(),
                 "config":{"directory":fs::canonicalize(directory).map_err(|cause| naome_knowledge::Error::RuntimeContext { code: Failure::DeveloperIdentityCreate, cause: Box::new(cause.into()) })?, "listen":"/ip4/0.0.0.0/tcp/0", "peers":[],
-                "discovery":network::DiscoveryConfig::default(),"producer_artifacts":[]}})
+                "discovery":network::DiscoveryConfig::default()}})
             );
             Ok(())
         }
-        ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
         ["run", config, options @ ..] => {
             let test_controls = match options {
                 [] => false,
@@ -94,9 +89,6 @@ async fn execute() -> Result<(), naome_knowledge::Error> {
                 _ => return Err(Failure::Arguments.into()),
             };
             network::run(network::read_config(Path::new(config))?, test_controls).await
-        }
-        ["training", directory, request] => {
-            naome_knowledge::training::run(Path::new(directory), Path::new(request))
         }
         ["contract"] => {
             println!(
