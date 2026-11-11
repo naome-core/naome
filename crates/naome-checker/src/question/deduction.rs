@@ -516,8 +516,18 @@ fn add_clause(
         intermediate_lengths.push(next_length);
         if consequent == goals[&goal].formula {
             let mut premises = Vec::new();
+            let mut premise_encodings = projection.antecedents();
             for antecedent in antecedents {
-                let premise = add_goal(antecedent, length, goals, pending, work)?;
+                work.formula(length, 8)?;
+                let bytes = premise_encodings.next().ok_or(INVALID)?;
+                let premise = insert_goal(
+                    antecedent,
+                    statement_id(bytes),
+                    bytes.len(),
+                    goals,
+                    pending,
+                    work,
+                )?;
                 work.charge(64).map_err(|_| LIMIT)?;
                 premises.push(premise);
             }

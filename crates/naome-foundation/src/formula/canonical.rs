@@ -55,10 +55,22 @@ impl CanonicalImplication {
     pub fn antecedent(&self) -> &[u8] {
         &self.bytes[1..self.first_consequent]
     }
+
+    /// Returns the canonical antecedents along the outer implication spine.
+    pub fn antecedents(&self) -> impl Iterator<Item = &[u8]> {
+        self.consequent_starts().scan(0, |implication, consequent| {
+            let antecedent = &self.bytes[*implication + 1..consequent];
+            *implication = consequent;
+            Some(antecedent)
+        })
+    }
+
     pub fn consequents(&self) -> impl Iterator<Item = &[u8]> {
-        std::iter::once(self.first_consequent)
-            .chain(self.later_consequents.iter().copied())
-            .map(|start| &self.bytes[start..])
+        self.consequent_starts().map(|start| &self.bytes[start..])
+    }
+
+    fn consequent_starts(&self) -> impl Iterator<Item = usize> {
+        std::iter::once(self.first_consequent).chain(self.later_consequents.iter().copied())
     }
 }
 
