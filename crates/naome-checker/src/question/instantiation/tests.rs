@@ -46,6 +46,8 @@ fn checked_pattern_candidates_require_exact_bounded_operands() {
         Some(vec![b, a])
     );
     assert!(universal_operands(&source, &target, 1).unwrap().is_none());
+    assert!(universal_operands(&source, &target, 0).unwrap().is_none());
+    assert!(universal_operands(&target, &target, 2).unwrap().is_none());
 
     let repeated = Formula::for_all(a, Formula::member(a, a));
     assert!(projections(&repeated).contains(&universal_pattern(&target).unwrap()));
