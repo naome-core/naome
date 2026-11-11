@@ -261,24 +261,39 @@ impl DefinedFormula {
         formula
             .encoded_length()
             .map_err(DefinedFormulaCodecError::Primitive)?;
-        fn copy_node(view: FormulaView<'_>) -> Node {
+        fn copy_node(
+            view: FormulaView<'_>,
+            binder_depth: u32,
+        ) -> Result<Node, DefinedFormulaCodecError> {
             let variable = |value| match value {
-                PrimitiveVariable::Free(id) => Variable::Free(FreeVariable::new(id)),
-                PrimitiveVariable::Bound(index) => Variable::Bound(
-                    u32::try_from(index).expect("Foundation binder indices fit u32"),
-                ),
-            };
-            match view.graph_node() {
-                PrimitiveNode::Equal(left, right) => Node::Equal(variable(left), variable(right)),
-                PrimitiveNode::Member(left, right) => Node::Member(variable(left), variable(right)),
-                PrimitiveNode::Not(body) => Node::Not(Box::new(copy_node(body))),
-                PrimitiveNode::Implies(left, right) => {
-                    Node::Implies(Box::new(copy_node(left)), Box::new(copy_node(right)))
+                PrimitiveVariable::Free(id) => Ok(Variable::Free(FreeVariable::new(id))),
+                PrimitiveVariable::Bound(index) => {
+                    let index = u32::try_from(index).expect("Foundation binder indices fit u32");
+                    if index >= binder_depth {
+                        return Err(DefinedFormulaCodecError::DanglingBoundVariable {
+                            index,
+                            binder_depth,
+                        });
+                    }
+                    Ok(Variable::Bound(index))
                 }
-                PrimitiveNode::ForAll(body) => Node::ForAll(Box::new(copy_node(body))),
-            }
+            };
+            Ok(match view.graph_node() {
+                PrimitiveNode::Equal(left, right) => Node::Equal(variable(left)?, variable(right)?),
+                PrimitiveNode::Member(left, right) => {
+                    Node::Member(variable(left)?, variable(right)?)
+                }
+                PrimitiveNode::Not(body) => Node::Not(Box::new(copy_node(body, binder_depth)?)),
+                PrimitiveNode::Implies(left, right) => Node::Implies(
+                    Box::new(copy_node(left, binder_depth)?),
+                    Box::new(copy_node(right, binder_depth)?),
+                ),
+                PrimitiveNode::ForAll(body) => {
+                    Node::ForAll(Box::new(copy_node(body, binder_depth + 1)?))
+                }
+            })
         }
-        Ok(Self(copy_node(formula.view())))
+        copy_node(formula.view(), 0).map(Self)
     }
 
     /// Converts this formula to Foundation syntax if every definition was eliminated.
