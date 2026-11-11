@@ -116,7 +116,14 @@ fn definition_references_keep_field_and_prefix_order() {
         .unwrap(),
         consequent: ProofFormula::from_defined(relation(first)).unwrap(),
     };
+    assert!(step.has_definition_references());
     assert_eq!(step.definition_references(), [first, second, first]);
+    assert!(
+        !ProofStep::VacuousUniversal {
+            formula: ProofFormula::from_defined(DefinedFormula::equal(variable, variable)).unwrap(),
+        }
+        .has_definition_references()
+    );
 }
 
 #[test]

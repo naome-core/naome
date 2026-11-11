@@ -161,7 +161,7 @@ impl Profile {
                         }
                     }
                     features.insert(Feature::Rule(step.canonical_tag()));
-                    if !step.definition_references().is_empty() {
+                    if step.has_definition_references() {
                         features.insert(Feature::Definition(step.canonical_tag()));
                     }
                     depths.push(depth);
