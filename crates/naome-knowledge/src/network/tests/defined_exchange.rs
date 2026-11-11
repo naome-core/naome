@@ -514,7 +514,10 @@ async fn unsolicited_offers_do_not_schedule_missing_question_definitions() {
         statement_id: hex(checked.statement_id().as_bytes()),
         question: question.to_hex(),
     };
-    metadata.compile(donor.checked_context()).unwrap();
+    assert_eq!(
+        metadata.compile(donor.checked_context()).unwrap().2,
+        question
+    );
     let (program, batch) = stage_program(&donor, answer, &question);
     donor
         .commit_batch(program, batch, Instant::now() + Duration::from_secs(15))
