@@ -60,6 +60,18 @@ fn checker_enforces_derived_depth_and_node_limits() {
             },
         })
     );
+
+    let mut unused = node_proof.steps().to_vec();
+    unused.push(ProofStep::ZfcAxiom(ZfcAxiom::Pairing));
+    assert_eq!(
+        check(&certificate(unused)),
+        Err(CheckError::DerivedFormula {
+            step: 0,
+            source: FormulaCodecError::NodeLimitExceeded {
+                maximum: FORMULA_MAX_NODES,
+            },
+        })
+    );
 }
 
 #[test]
