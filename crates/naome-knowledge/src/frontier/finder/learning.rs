@@ -5,9 +5,9 @@ use naome_checker::question::ResearchQuestion;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
-const OPERATORS: usize = 10;
-const LEVELS: usize = 3;
-const CELLS: usize = OPERATORS * LEVELS;
+use crate::learning::{
+    QUESTION_OPERATORS as OPERATORS, QUESTION_RECIPES as CELLS, QUESTION_VARIATIONS as LEVELS,
+};
 const MEMORY: usize = 48;
 
 #[cfg(test)]
@@ -214,28 +214,29 @@ impl Learning {
             self.rounds = self.rounds.saturating_add(1);
         }
     }
-    pub fn recipes(&self, cursor: u64, draw: u64) -> Vec<Recipe> {
+    pub fn recipes(&self, cursor: u64, draw: u64, policy: &[u32; CELLS]) -> Vec<Recipe> {
         let mut random = crate::sampling::Random::new(
             cursor.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(draw),
         );
-        let mut options = (0..CELLS).collect::<Vec<_>>();
-        let mut result = Vec::new();
+        let mut options = std::array::from_fn::<_, CELLS, _>(|index| {
+            (self.priority(index, draw) * u64::from(policy[index]) / 1024).max(1)
+        });
+        let mut total = options.iter().sum::<u64>();
+        let mut result = Vec::with_capacity(20);
         for _ in 0..20 {
-            let weights = options
-                .iter()
-                .map(|i| self.priority(*i, draw))
-                .collect::<Vec<_>>();
-            let total = weights.iter().sum::<u64>();
             let mut ticket = random.below(total);
-            let mut chosen = 0;
-            for (index, weight) in weights.iter().enumerate() {
-                if ticket < *weight {
-                    chosen = index;
-                    break;
-                }
-                ticket -= weight;
-            }
-            let index = options.remove(chosen);
+            let (index, weight) = options
+                .iter_mut()
+                .enumerate()
+                .find(|(_, weight)| {
+                    if ticket < **weight {
+                        return true;
+                    }
+                    ticket -= **weight;
+                    false
+                })
+                .expect("ticket is within the positive recipe mass");
+            total -= std::mem::take(weight);
             result.push(Recipe {
                 operator: (index % OPERATORS) as u8,
                 level: (index / OPERATORS) as u8,

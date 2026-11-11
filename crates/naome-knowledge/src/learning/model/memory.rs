@@ -100,6 +100,17 @@ impl Memory {
     }
 }
 
+pub(super) fn decode_scores(scores: Tensor<2>, count: usize) -> Result<Vec<f32>, crate::Error> {
+    let scores = scores
+        .into_data()
+        .try_to_vec::<f32>()
+        .map_err(|_| ResearchFailure::MemoryTensorDecode)?;
+    if scores.len() != count || scores.iter().any(|x| !x.is_finite()) {
+        return Err(ResearchFailure::MemoryPrediction.into());
+    }
+    Ok(scores)
+}
+
 impl Runtime {
     pub(super) fn plan_graph(
         &self,
@@ -132,13 +143,7 @@ impl Runtime {
             policy.encode_cached(&batch, &graph.context, &mut self.token_rows.borrow_mut())?,
             initial,
         );
-        let scores = scores
-            .into_data()
-            .try_to_vec::<f32>()
-            .map_err(|_| ResearchFailure::MemoryTensorDecode)?;
-        if scores.len() != graph.candidates.len() || scores.iter().any(|x| !x.is_finite()) {
-            return Err(ResearchFailure::MemoryPrediction.into());
-        }
+        let scores = decode_scores(scores, graph.candidates.len())?;
         let rows = if successors.is_some() {
             vec![OnceCell::new(); scores.len()]
         } else {

@@ -398,7 +398,7 @@ impl Autonomous {
         if (now >= self.next_question || now >= self.next_proof)
             && let Some(frontier) = &mut self.frontier
         {
-            frontier.feedback(self.client.feedback());
+            frontier.finder_snapshot(self.client.finder_snapshot());
             self.client
                 .research_frame(frontier.research_frame(graph, self.unanswered.len()));
         }
@@ -1671,17 +1671,17 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let mut candidates = if self.intervals.jobs.native_proof_learning
+                    let page = if self.intervals.jobs.native_proof_learning
                         && self.formal_goal.is_none()
                         && cursor.is_multiple_of(5)
                     {
                         frontier.candidate_page(cursor, &mut eligible)
                     } else if let Some(pending) = &loop_candidates {
-                        pending.clone()
+                        Ok(pending.clone())
                     } else if let Some(goal) = &loop_goal {
                         match frontier.helpers_needed(goal) {
-                            Ok(false) => vec![goal.clone()],
-                            Ok(true) => frontier.goal_candidates(cursor, goal),
+                            Ok(false) => Ok(vec![goal.clone()]),
+                            Ok(true) => Ok(frontier.goal_candidates(cursor, goal)),
                             Err(error) => {
                                 self.error = Some(error);
                                 return accepted;
@@ -1689,6 +1689,14 @@ impl Autonomous {
                         }
                     } else {
                         frontier.candidate_page(cursor, &mut eligible)
+                    };
+                    let mut candidates = match page {
+                        Ok(candidates) => candidates,
+                        Err(error) if error.retryable() => return accepted,
+                        Err(error) => {
+                            self.error = Some(error);
+                            return accepted;
+                        }
                     };
                     // The explicit owner goal remains admissible even when a
                     // bounded research-context cache cannot retain its copy.

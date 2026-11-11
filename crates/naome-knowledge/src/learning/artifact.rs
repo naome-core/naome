@@ -83,11 +83,18 @@ pub(crate) fn load<I: ArtifactIo + ?Sized>(
     io: &mut I,
     blob: &Blob,
 ) -> Result<Vec<u8>, crate::Error> {
+    load_with(blob, |blob, range| io.read(blob, range))
+}
+
+pub(super) fn load_with(
+    blob: &Blob,
+    mut read: impl FnMut(&Blob, Range<usize>) -> Result<Vec<u8>, crate::Error>,
+) -> Result<Vec<u8>, crate::Error> {
     blob.validate()?;
     let mut bytes = Vec::with_capacity(blob.bytes);
     for range in blob.ranges() {
         let length = blob.range_len(&range)?;
-        let chunk = io.read(blob, range)?;
+        let chunk = read(blob, range)?;
         if chunk.len() != length {
             return Err(crate::ResearchFailure::NativeModelChunkLengthDiffers.into());
         }

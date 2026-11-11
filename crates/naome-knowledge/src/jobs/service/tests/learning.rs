@@ -59,6 +59,20 @@ fn learning(owner: &Owner) -> serde_json::Value {
 }
 
 #[test]
+fn finder_keeps_the_active_policy_across_feedback_revisions() {
+    let (_directory, mut owner) = native();
+    owner.publish_finder().unwrap();
+    let before = owner.finder.lock().unwrap().clone().unwrap();
+    let learning = owner.journal.learning.as_mut().unwrap();
+    learning.observe_attempt(&crate::learning::tests::own_question(), None, 0, 48);
+    owner.publish_finder().unwrap();
+    let after = owner.finder.lock().unwrap().clone().unwrap();
+    assert_eq!(after.feedback.checkpoint, before.feedback.checkpoint);
+    assert_eq!(after.feedback.revision, before.feedback.revision + 1);
+    assert!(Arc::ptr_eq(&after.policy.unwrap(), &before.policy.unwrap()));
+}
+
+#[test]
 fn native_completion_binds_its_actual_model_terminal_trace_and_work() {
     use crate::learning::experience::{ExperienceSummary, TerminalEvidence};
     let (_directory, mut owner) = native();
@@ -1427,7 +1441,7 @@ fn optional_checked_lemma_reaches_the_native_job_without_becoming_required() {
     let (sender, mut queue) = mpsc::channel(1);
     let client = Client {
         sender,
-        feedback: Arc::default(),
+        finder: Arc::default(),
         research: Default::default(),
     };
     let _ticket = client

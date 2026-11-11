@@ -371,6 +371,13 @@ impl State {
     pub(crate) fn feedback_stamp(&self) -> (&str, u64) {
         (&self.feedback.checkpoint, self.feedback.revision)
     }
+    pub(crate) fn question_policy(
+        &self,
+        read: impl FnMut(&Blob, std::ops::Range<usize>) -> Result<Vec<u8>, crate::Error>,
+    ) -> Result<QuestionPolicy, crate::Error> {
+        QuestionPolicy::load(&self.model, read)
+    }
+
     pub(crate) fn feedback(&self) -> crate::training::ability::Feedback {
         self.feedback.clone()
     }

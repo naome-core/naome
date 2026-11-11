@@ -11,6 +11,8 @@ use measurement::TrainingMeasurements;
 #[cfg(test)]
 pub(super) mod observation;
 mod policy;
+mod question;
+pub(crate) use question::QuestionPolicy;
 mod sequence;
 mod token;
 pub(crate) use memory::Recurrence;
@@ -405,6 +407,56 @@ fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, crate::Error> {
     }
     writer.into_bytes().map_err(pack_failure)
 }
+fn load_policy(
+    checkpoint: &Checkpoint,
+    device: &Device,
+    read: impl FnOnce(&Blob) -> Result<Vec<u8>, crate::Error>,
+) -> Result<Policy, crate::Error> {
+    checkpoint.validate()?;
+    let policy = {
+        // Flex has one process-wide RNG, and parameters initialize lazily.
+        // Materialize every parameter under the same seed guard before any
+        // inference, serialization or other model can advance that RNG.
+        static INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = INITIALIZATION
+            .lock()
+            .map_err(|_| crate::ResearchFailure::ModelInitializationPoisoned)?;
+        device.seed(checkpoint.seed);
+        struct StableParameters(u64);
+        impl ModuleMapper for StableParameters {
+            fn map_float<const D: usize>(
+                &mut self,
+                mut param: Param<Tensor<D>>,
+            ) -> Param<Tensor<D>> {
+                self.0 += 1;
+                param.id = self.0.into();
+                param
+            }
+        }
+        let policy = Policy::new(device).train().map(&mut StableParameters(0));
+        drop(policy.clone().into_record());
+        policy
+    };
+    let actual = policy.num_params();
+    if actual != PARAMETERS {
+        return Err(crate::Error::ResearchMismatch {
+            code: crate::ResearchFailure::ModelParameterCountMismatch,
+            expected: PARAMETERS as u64,
+            actual: actual as u64,
+        });
+    }
+    match &checkpoint.model {
+        Some(model) => Ok(policy
+            .try_load_record(
+                ModuleRecord::from_bytes(Bytes::from_bytes_vec(read(model)?))
+                    .map_err(record_failure)?,
+            )
+            .map_err(record_failure)?
+            .train()),
+        None => Ok(policy),
+    }
+}
+
 impl Runtime {
     fn observe_batches(&self) -> bool {
         #[cfg(test)]
@@ -437,51 +489,11 @@ impl Runtime {
         checkpoint: &Checkpoint,
         io: &mut I,
     ) -> Result<Self, crate::Error> {
-        checkpoint.validate()?;
         let device = Device::flex().autodiff();
-        let mut policy = {
-            // Flex has one process-wide RNG, and parameters initialize lazily.
-            // Materialize every parameter under the same seed guard before any
-            // inference, serialization or other model can advance that RNG.
-            static INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let _guard = INITIALIZATION
-                .lock()
-                .map_err(|_| crate::ResearchFailure::ModelInitializationPoisoned)?;
-            device.seed(checkpoint.seed);
-            struct StableParameters(u64);
-            impl ModuleMapper for StableParameters {
-                fn map_float<const D: usize>(
-                    &mut self,
-                    mut param: Param<Tensor<D>>,
-                ) -> Param<Tensor<D>> {
-                    self.0 += 1;
-                    param.id = self.0.into();
-                    param
-                }
-            }
-            let policy = Policy::new(&device).train().map(&mut StableParameters(0));
-            drop(policy.clone().into_record());
-            policy
-        };
-        let actual = policy.num_params();
-        if actual != PARAMETERS {
-            return Err(crate::Error::ResearchMismatch {
-                code: crate::ResearchFailure::ModelParameterCountMismatch,
-                expected: PARAMETERS as u64,
-                actual: actual as u64,
-            });
-        }
+        let policy = load_policy(checkpoint, &device, |model| artifact::load(io, model))?;
         let mut optimizer = AdamConfig::new().init();
         let mut preservation = preservation::Preservation::fresh(&policy);
-        if let (Some(model), Some(adam)) = (&checkpoint.model, &checkpoint.optimizer) {
-            let bytes = artifact::load(io, model)?;
-            policy = policy
-                .try_load_record(
-                    ModuleRecord::from_bytes(Bytes::from_bytes_vec(bytes))
-                        .map_err(record_failure)?,
-                )
-                .map_err(record_failure)?
-                .train();
+        if let Some(adam) = &checkpoint.optimizer {
             let bytes = artifact::load(io, adam)?;
             let adam =
                 preservation.decode(Bytes::from_bytes_vec(bytes.clone()), checkpoint.updates)?;

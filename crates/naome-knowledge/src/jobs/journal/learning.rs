@@ -360,24 +360,7 @@ impl Disk {
             }
             Vec::new()
         } else {
-            let mut bytes = Vec::with_capacity(length);
-            for index in range {
-                let part = self
-                    .checkpoint
-                    .get_bytes(
-                        "model",
-                        &blob.key(index),
-                        crate::resources::limits().native_model_chunk_bytes,
-                    )?
-                    .ok_or(crate::ResearchFailure::NativeModelChunkMissing)?;
-                if part.len() != blob.chunk_len(index)? {
-                    return Err(
-                        crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into(),
-                    );
-                }
-                bytes.extend_from_slice(&part);
-            }
-            bytes
+            self.read_model(blob, range)?
         };
         if reading && output.len() != length {
             return Err(crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into());
@@ -396,6 +379,31 @@ impl Disk {
         }
         Ok(output)
     }
+    /// Read immutable chunks for the active model or an authorized worker.
+    pub(in crate::jobs) fn read_model(
+        &self,
+        blob: &crate::learning::Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, crate::Error> {
+        let length = blob.range_len(&range)?;
+        let mut bytes = Vec::with_capacity(length);
+        for index in range {
+            let part = self
+                .checkpoint
+                .get_bytes(
+                    "model",
+                    &blob.key(index),
+                    crate::resources::limits().native_model_chunk_bytes,
+                )?
+                .ok_or(crate::ResearchFailure::NativeModelChunkMissing)?;
+            if part.len() != blob.chunk_len(index)? {
+                return Err(crate::ResearchFailure::NativeModelRetainedChunkLengthDiffers.into());
+            }
+            bytes.extend_from_slice(&part);
+        }
+        Ok(bytes)
+    }
+
     pub(in crate::jobs) fn verify_blob(
         &mut self,
         blob: &crate::learning::Blob,

@@ -62,11 +62,13 @@ pub(super) fn advance(
                         && owner.assess(graph, q).passed()
                 })
                 .map_err(|e| e.to_string())?;
-            let candidates = finder.candidate_page(*cursor, |q| {
-                State::eligible(&q.to_hex())
-                    && holdout.question(q, None).is_ok()
-                    && owner.assess(graph, q).passed()
-            });
+            let candidates = finder
+                .candidate_page(*cursor, |q| {
+                    State::eligible(&q.to_hex())
+                        && holdout.question(q, None).is_ok()
+                        && owner.assess(graph, q).passed()
+                })
+                .map_err(|e| e.to_string())?;
             *cursor += 1;
             let refs = candidates.iter().collect::<Vec<_>>();
             let Some(index) = finder

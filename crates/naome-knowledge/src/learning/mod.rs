@@ -15,6 +15,7 @@ pub(crate) mod evidence;
 pub(crate) mod experience;
 pub(crate) mod finder;
 mod graph;
+pub(crate) use graph::{QUESTION_OPERATORS, QUESTION_RECIPES, QUESTION_VARIATIONS};
 pub(crate) mod history;
 pub(crate) mod knowledge;
 pub(crate) mod meta;
@@ -37,7 +38,9 @@ use model::Checkpoint;
 pub(crate) fn input_specification() -> String {
     Checkpoint::fresh().specification
 }
-pub(crate) use model::{Engine, REQUIREMENTS as MODEL_REQUIREMENTS, TRAINING_UNITS};
+pub(crate) use model::{
+    Engine, QuestionPolicy, REQUIREMENTS as MODEL_REQUIREMENTS, TRAINING_UNITS,
+};
 use naome_checker::question::ResearchQuestion;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
