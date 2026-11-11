@@ -57,17 +57,12 @@ struct AttemptHint {
     paid_open_search: bool,
 }
 
-struct RecipeWeights {
-    relations: Vec<Formula>,
-    weights: [u32; QUESTION_RECIPES],
-}
-
 pub(crate) struct Frontier {
     evidence: Evidence,
     native: bool,
     feedback: Option<crate::training::ability::Feedback>,
     question_policy: Option<Arc<QuestionPolicy>>,
-    recipe_weights: Option<RecipeWeights>,
+    recipe_weights: Option<[u32; QUESTION_RECIPES]>,
     #[cfg(test)]
     owns_policy_snapshot: bool,
     research_limits: jobs::Limits,
@@ -791,19 +786,15 @@ impl Frontier {
         let Some(policy) = &self.question_policy else {
             return Ok(None);
         };
-        let builtin = finder::builtin_relations();
-        let relations = builtin.iter().chain(self.predicates.iter().take(4));
-        if let Some(cached) = &self.recipe_weights
-            && cached.relations.iter().eq(relations.clone())
-        {
-            return Ok(Some(cached.weights));
+        if let Some(weights) = self.recipe_weights {
+            return Ok(Some(weights));
         }
-        let relations = relations.collect::<Vec<_>>();
-        let weights = policy.recipe_weights(&relations)?;
-        self.recipe_weights = Some(RecipeWeights {
-            relations: relations.into_iter().cloned().collect(),
-            weights,
-        });
+        // The model rates the question grammar once per checkpoint. Checked
+        // relations are operands of the sampled constructors, so knowledge
+        // growth does not invalidate this distribution.
+        let [membership, equality] = finder::builtin_relations();
+        let weights = policy.recipe_weights(&[&membership, &equality])?;
+        self.recipe_weights = Some(weights);
         Ok(Some(weights))
     }
 

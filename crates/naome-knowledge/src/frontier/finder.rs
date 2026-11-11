@@ -220,37 +220,38 @@ pub(super) fn catalog_cut_sources(
     sources
 }
 
-fn relation(formula: &Formula, a: FreeVariable, b: FreeVariable) -> Option<Formula> {
-    let free = formula.free_variables().into_iter().collect::<Vec<_>>();
-    if free.len() != 2 {
+fn relation(formula: &Formula) -> Option<impl Fn(FreeVariable, FreeVariable) -> Formula + '_> {
+    let mut free = formula.free_variables().into_iter();
+    let variables = [free.next()?, free.next()?];
+    if free.next().is_some() {
         return None;
     }
-    Some(
+    Some(move |a, b| {
+        if variables == [a, b] {
+            return formula.clone();
+        }
         formula
             .clone()
-            .map_free_variables(|v| if v == free[0] { a } else { b }),
-    )
+            .map_free_variables(|v| if v == variables[0] { a } else { b })
+    })
 }
 fn property(seed: &Formula, operator: u64) -> Option<Formula> {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
     let c = FreeVariable::new(2);
-    let r = |x, y| relation(seed, x, y);
+    let r = relation(seed)?;
     let body = match operator % 10 {
-        0 => r(a, a)?,
-        1 => Formula::negate(r(a, a)?),
-        2 => Formula::implies(r(a, b)?, r(b, a)?),
-        3 => Formula::implies(
-            Formula::conjunction(r(a, b)?, r(b, a)?),
-            Formula::equal(a, b),
-        ),
-        4 => Formula::implies(Formula::conjunction(r(a, b)?, r(b, c)?), r(a, c)?),
-        5 => Formula::disjunction(r(a, b)?, r(b, a)?),
-        6 => Formula::exists(b, r(a, b)?),
-        7 => Formula::exists(a, r(a, b)?),
-        8 => Formula::exists(a, Formula::for_all(b, r(a, b)?)),
+        0 => r(a, a),
+        1 => Formula::negate(r(a, a)),
+        2 => Formula::implies(r(a, b), r(b, a)),
+        3 => Formula::implies(Formula::conjunction(r(a, b), r(b, a)), Formula::equal(a, b)),
+        4 => Formula::implies(Formula::conjunction(r(a, b), r(b, c)), r(a, c)),
+        5 => Formula::disjunction(r(a, b), r(b, a)),
+        6 => Formula::exists(b, r(a, b)),
+        7 => Formula::exists(a, r(a, b)),
+        8 => Formula::exists(a, Formula::for_all(b, r(a, b))),
         _ => Formula::implies(
-            Formula::for_all(c, Formula::biconditional(r(c, a)?, r(c, b)?)),
+            Formula::for_all(c, Formula::biconditional(r(c, a), r(c, b))),
             Formula::equal(a, b),
         ),
     };
@@ -260,10 +261,8 @@ fn inclusion(seed: &Formula) -> Option<Formula> {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
     let x = FreeVariable::new(2);
-    Some(Formula::for_all(
-        x,
-        Formula::implies(relation(seed, x, a)?, relation(seed, x, b)?),
-    ))
+    let r = relation(seed)?;
+    Some(Formula::for_all(x, Formula::implies(r(x, a), r(x, b))))
 }
 /// Exact invertible AND obligations; proposing them grants no validity.
 pub(super) fn conjuncts(goal: &ResearchQuestion) -> Option<Vec<ResearchQuestion>> {
@@ -305,9 +304,9 @@ fn helpers(goal: &ResearchQuestion, cursor: u64) -> Vec<ResearchQuestion> {
         if let Some((a, b)) = part.implication_parts() {
             for child in [a.clone(), b.clone(), Formula::negate(a.clone())] {
                 if let Ok(question) = ResearchQuestion::from_formula(close(child))
-                    && meaningful(&question)
-                    && key(&question) != goal_key
                     && question.resolution_id() != goal.resolution_id()
+                    && let (shape, true) = semantics::screen(&question)
+                    && shape != goal_key
                 {
                     found.push(question);
                 }
@@ -318,9 +317,9 @@ fn helpers(goal: &ResearchQuestion, cursor: u64) -> Vec<ResearchQuestion> {
             // Conjunction and existence are encoded through negation. Retain
             // the positive proper subgoal as well as its surrounding syntax.
             if let Ok(question) = ResearchQuestion::from_formula(close(body.to_owned()))
-                && meaningful(&question)
                 && question.resolution_id() != goal.resolution_id()
-                && key(&question) != goal_key
+                && let (shape, true) = semantics::screen(&question)
+                && shape != goal_key
             {
                 found.push(question);
             }
@@ -353,12 +352,12 @@ fn varied(seed: &Formula, other: &Formula, recipe: Recipe) -> Option<Formula> {
     let a = FreeVariable::new(0);
     let b = FreeVariable::new(1);
     let c = FreeVariable::new(2);
-    let left = |x, y| relation(seed, x, y);
-    let right = |x, y| relation(other, x, y);
+    let left = relation(seed)?;
+    let right = relation(other)?;
     Some(match recipe.operator % 3 {
-        0 => Formula::conjunction(left(a, b)?, right(a, b)?),
-        1 => Formula::exists(c, Formula::conjunction(left(a, c)?, right(c, b)?)),
-        _ => Formula::implies(left(a, b)?, right(b, a)?),
+        0 => Formula::conjunction(left(a, b), right(a, b)),
+        1 => Formula::exists(c, Formula::conjunction(left(a, c), right(c, b))),
+        _ => Formula::implies(left(a, b), right(b, a)),
     })
 }
 pub(super) fn builtin_relations() -> [Formula; 2] {
@@ -485,15 +484,16 @@ fn bounded_eligible(
     let mut result = Vec::new();
     let mut checks = 0;
     for question in all {
-        let cost = question_bytes(&question);
         if result.len() >= maximum.min(12) || checks >= 20 {
             break;
         }
-        if meaningful(&question)
+        let cost = question_bytes(&question);
+        if retained + cost <= bytes
+            && let (shape, true) = semantics::screen(&question)
+            && !seen.contains(&shape)
             && crate::learning::State::eligible(&question.to_hex())
-            && retained + cost <= bytes
-            && seen.insert(key(&question))
         {
+            seen.insert(shape);
             checks += 1;
             if eligible(&question) {
                 retained += cost;
