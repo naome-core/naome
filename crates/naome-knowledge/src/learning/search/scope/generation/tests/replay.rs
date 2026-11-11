@@ -27,7 +27,7 @@ fn typed_subgoals_unlock_a_two_rule_chain_at_the_same_budget() {
         Formula::implies(premise, goal)
     });
     let question = ResearchQuestion::from_formula(proof::close(target)).unwrap();
-    let (existing, typed) = paired(&question, 7, &[], None, &[]);
+    let (existing, typed, _) = paired(&question, 7, &[], None, &[]);
     assert!(existing.solution.is_none());
     assert_eq!(typed.cost.typed_generation.unwrap().actions, 7);
     let solution = typed
@@ -154,7 +154,7 @@ fn graph_lemmas_feed_checked_decoder_replay_and_the_training_pool_after_reload()
     assert!(required.is_empty());
     let inputs: Prerequisites =
         serde_json::from_slice(&serde_json::to_vec(&inputs).unwrap()).unwrap();
-    let (_, generated) = paired(&question, 3, &[], Some(&inputs), &[]);
+    let (_, generated, _) = paired(&question, 3, &[], Some(&inputs), &[]);
     assert_eq!(generated.cost.typed_generation.unwrap().actions, 3);
     let solution = generated
         .solution
@@ -264,7 +264,7 @@ fn checked_specialization_reuses_a_variable_without_capture() {
         .unwrap()
         .expect("indexed specialization");
     assert!(!inputs.has_offer());
-    let (_, generated) = paired(&question, 4, &[], Some(&inputs), &[]);
+    let (_, generated, _) = paired(&question, 4, &[], Some(&inputs), &[]);
     let solution = generated
         .solution
         .expect("three capture-safe instantiations and a conjunction");

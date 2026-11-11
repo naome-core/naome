@@ -1,7 +1,7 @@
 use super::*;
 use crate::learning::{
     Checkpoint, Engine, Generation, Prerequisites, Solution, experience, program::Candidate,
-    solve_with_generation, solve_with_report_typed, tests::MemoryStore,
+    solve_with_generation, tests::MemoryStore,
 };
 use naome_checker::question::ResearchQuestion;
 use naome_proof::{DefinedFormula, DefinitionCertificate, DefinitionKind};
@@ -41,7 +41,7 @@ fn paired(
     definitions: &[definitions::Entry],
     inputs: Option<&Prerequisites>,
     theorems: &[knowledge::Entry],
-) -> (Generation, Generation) {
+) -> (Generation, Generation, Vec<DecisionObservation>) {
     let mut engine = Engine::default();
     let mut io = MemoryStore::default();
     let checkpoint = Checkpoint::fresh();
@@ -60,9 +60,18 @@ fn paired(
             solve_with_generation(&source, runtime, budget, 1, context(), false)
         })
         .unwrap();
+    let mut decisions = Vec::new();
     let generated = engine
         .with_error(&checkpoint, &mut io, |runtime| {
-            solve_with_report_typed(&source, runtime, budget, 1, context())
+            crate::learning::solve_with_generation_observed(
+                &source,
+                runtime,
+                budget,
+                1,
+                context(),
+                true,
+                Some(&mut decisions),
+            )
         })
         .unwrap();
     for (arm, result) in [("existing", &baseline), ("typed", &generated)] {
@@ -81,7 +90,7 @@ fn paired(
             result.cost.generation_micros,
         );
     }
-    (baseline, generated)
+    (baseline, generated, decisions)
 }
 
 fn independent_replay(
@@ -123,11 +132,12 @@ fn native_solver_composes_nested_conjunctions_outside_the_original_menu() {
     }
     let question = transport_pair();
     let definitions = [member_relation()];
-    let (baseline, generated) = paired(&question, 5, &definitions, None, &[]);
+    let (baseline, generated, model_decisions) = paired(&question, 5, &definitions, None, &[]);
     assert!(baseline.solution.is_none());
     let work = generated.cost.typed_generation.unwrap();
     assert_eq!(work.actions, 5);
     assert!(work.model_decisions >= 2);
+    assert_eq!(model_decisions.len(), work.model_decisions);
     let solution = generated.solution.expect("generated proof");
     let context = definitions::context(&definitions).unwrap();
     let commands = independent_replay(&question, &solution, &context);
@@ -165,6 +175,7 @@ fn native_solver_composes_nested_conjunctions_outside_the_original_menu() {
 
     // Isolate the model's influence on the path from the new grammar's
     // influence on reachability. Both runs have the same typed continuations.
+    let mut ordered_decisions = Vec::new();
     let (ordered, ordered_work) = attempt(
         question.proved_target(),
         &mut Ordered,
@@ -174,8 +185,13 @@ fn native_solver_composes_nested_conjunctions_outside_the_original_menu() {
             definitions: &definitions,
             ..Default::default()
         },
+        Some(&mut ordered_decisions),
     )
     .unwrap();
+    assert_eq!(ordered_decisions.len(), ordered_work.model_decisions);
+    assert!(!ordered_decisions.is_empty());
+    assert_eq!(ordered_decisions[0].state, model_decisions[0].state);
+    assert_eq!(ordered_decisions[0].offered, model_decisions[0].offered);
     let ordered = ordered.unwrap().packet;
     assert_eq!(ordered.target().unwrap(), *question.proved_target());
     assert_eq!(ordered_work.actions, work.actions);
@@ -214,11 +230,11 @@ fn native_solver_composes_nested_conjunctions_outside_the_original_menu() {
         "{error}"
     );
 
-    let (_, standard) = paired(&question, 128, &definitions, None, &[]);
+    let (_, standard, _) = paired(&question, 128, &definitions, None, &[]);
     assert_eq!(standard.cost.typed_generation.unwrap().actions, 5);
     assert!(standard.solution.is_some());
 
-    let (_, exhausted) = paired(&question, 4, &definitions, None, &[]);
+    let (_, exhausted, _) = paired(&question, 4, &definitions, None, &[]);
     assert!(exhausted.solution.is_none());
     assert_eq!(exhausted.cost.search_expansions, 4);
     assert_eq!(exhausted.cost.typed_generation.unwrap().actions, 4);
@@ -269,7 +285,7 @@ fn native_solver_resolves_new_checked_proofs_and_fixed_axioms_from_context() {
     for proof in [first, second] {
         let id = proof.manifest.proof_id();
         let inputs = Prerequisites::from_inputs(Vec::new(), vec![proof], None).unwrap();
-        let (baseline, generated) = paired(&question, 2, &[], Some(&inputs), &[]);
+        let (baseline, generated, _) = paired(&question, 2, &[], Some(&inputs), &[]);
         assert!(baseline.solution.is_none());
         let context = inputs.checked_program_inputs().unwrap();
         let commands =
@@ -317,6 +333,7 @@ fn invalid_model_output_does_not_select_a_fact_or_argument() {
         5,
         Instant::now(),
         &SolveContext::default(),
+        None,
     )
     .err()
     .expect("invalid choice scores");
@@ -370,7 +387,7 @@ fn certified_proof_addresses_resolve_in_both_solver_contexts() {
     };
     context.register_proof(checked).unwrap();
     for (inputs, entries) in [(Some(&prerequisite), &[][..]), (None, &theorem[..])] {
-        let (_, generated) = paired(&goal, 1, &[], inputs, entries);
+        let (_, generated, _) = paired(&goal, 1, &[], inputs, entries);
         let commands = independent_replay(&goal, &generated.solution.unwrap(), &context);
         assert!(commands.contains(&reference));
     }

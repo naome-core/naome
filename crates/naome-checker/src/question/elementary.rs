@@ -187,9 +187,20 @@ fn axiom_instance(
     if let Some(body) = left.to_owned().open_outer_universal(variable) {
         let mut replacements = formula.free_variables();
         replacements.insert(variable);
-        for replacement in replacements {
+        let mut matching_replacement = None;
+        for (index, replacement) in replacements.into_iter().enumerate() {
+            // Charge the same candidates in order even though matching runs once.
             work.formula(length, 8)?;
-            if body.clone().substitute_free(variable, replacement) == right.to_owned() {
+            if index == 0 {
+                let pattern = body.encode_canonical().map_err(|_| LIMIT)?;
+                let target = right.encode_canonical().map_err(|_| LIMIT)?;
+                matching_replacement =
+                    super::instantiation::match_variables(&pattern, &target, |candidate| {
+                        candidate == variable
+                    })
+                    .map(|assignments| assignments.get(&variable).copied().unwrap_or(replacement));
+            }
+            if matching_replacement == Some(replacement) {
                 return Ok(Some(ProofStep::UniversalInstantiation {
                     variable,
                     replacement,
@@ -209,4 +220,35 @@ fn axiom_instance(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+#[test]
+fn elementary_instantiation_charges_through_the_matching_candidate() {
+    let x = FreeVariable::new(7);
+    let y = FreeVariable::new(0);
+    let replacement = FreeVariable::new(9);
+    let fresh = FreeVariable::new(1);
+    let body = Formula::conjunction(Formula::member(x, y), Formula::equal(x, x));
+    let formula = Logic::universal_instantiation(x, replacement, body.clone());
+    let length = formula.encode_canonical().unwrap().len();
+    let mut work = Work {
+        operations: 2,
+        bytes: length * 24,
+        certificate_steps: 1,
+        certificate_bytes: usize::MAX,
+    };
+
+    assert_eq!(axiom_instance(&formula, length, &mut work), Err(LIMIT));
+    work.operations = 3;
+    work.bytes = length * 24;
+    assert_eq!(
+        axiom_instance(&formula, length, &mut work),
+        Ok(Some(ProofStep::UniversalInstantiation {
+            variable: fresh,
+            replacement,
+            body: body.substitute_free(x, fresh).into(),
+        }))
+    );
+    assert_eq!((work.operations, work.bytes), (0, 0));
 }

@@ -70,7 +70,7 @@ fn open(
 // Both inputs are well-formed canonical formulas. Compare their prefix shapes
 // and bind only outer parameters to free variables: a target's inner bound
 // variable must never be captured by specialization.
-fn match_variables(
+pub(super) fn match_variables(
     pattern: &[u8],
     target: &[u8],
     is_parameter: impl Fn(FreeVariable) -> bool,

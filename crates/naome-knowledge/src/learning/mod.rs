@@ -2,6 +2,7 @@
 use crate::outcome::{GenerationOutcome, Qualification};
 mod artifact;
 mod calculus;
+mod causal;
 mod construction;
 pub(crate) use construction::composition::closed_cut_routes;
 pub(crate) use construction::logic::conjunction as conjunction_operands;
@@ -214,6 +215,7 @@ pub(crate) struct Progress {
     transfer: transfer::Summary,
     evaluation: transfer::Evidence,
     pub assessment: Option<crate::research_value::Assessment>,
+    pub causal: causal::Trial,
     development_before: crate::training::ability::Profile,
     development_after: crate::training::ability::Profile,
     regressions: [u16; crate::training::ability::SKILLS],
@@ -232,6 +234,95 @@ pub(crate) struct Progress {
     pub terminal: experience::TerminalEvidence,
 }
 impl Progress {
+    fn accepts(&self, assessment: crate::research_value::Assessment) -> bool {
+        assessment.accepts() && self.causal.accepts(self.transfer)
+    }
+
+    fn rejection(&self, assessment: crate::research_value::Assessment) -> Qualification {
+        if assessment.accepts() {
+            Qualification::InsufficientCausalEvidence
+        } else {
+            Qualification::InsufficientResearchValue
+        }
+    }
+
+    fn evaluate<I: ArtifactIo + ?Sized>(
+        &mut self,
+        job: u64,
+        index: usize,
+        base: &State,
+        engine: &mut Engine,
+        io: &mut I,
+    ) -> Result<(), crate::Error> {
+        let Some(candidate) = self.candidate.clone() else {
+            return Ok(());
+        };
+        if index < transfer::CASES {
+            let source = &curriculum::adaptive::BANK.transfer[index].source;
+            let pair = transfer::pair(source, base, &candidate, engine, io, job)?;
+            return self.causal.discover(index, &candidate, &pair);
+        }
+        let offset = index - transfer::CASES;
+        let localization = self.causal.localization();
+        if offset < localization {
+            if offset < causal::SCREEN {
+                return self
+                    .causal
+                    .screen(offset, base, &candidate, engine, io, job);
+            }
+            return self
+                .causal
+                .witness(offset - causal::SCREEN, base, &candidate, engine, io, job);
+        }
+        let evaluated = if localization != 0 && offset == localization {
+            let evaluated = self.causal.freeze(&base.model, &candidate, engine, io)?;
+            self.candidate = Some(evaluated.clone());
+            evaluated
+        } else {
+            candidate
+        };
+        let development = curriculum::development();
+        let normal = development.len() + base.anchors.len();
+        let confirmation = self.causal.confirmation_cases();
+        let panel = normal + transfer::CASES;
+        let start = self.causal.evaluated(index, panel);
+        let end = self.causal.evaluated(index + 1, panel);
+        for row in start..end {
+            if let Some(case) = development.get(row) {
+                let result = transfer::evaluate(&case.source, base, &evaluated, engine, io, job)?;
+                self.evaluation.record(false, &result);
+                self.observe_qualification(&case.source, &evaluated, &result)?;
+                let (before, after) = (result.before.solved, result.after.solved);
+                self.incumbent_score += u32::from(before);
+                self.candidate_score += u32::from(after);
+                if row < curriculum::CORPUS_DEVELOPMENT {
+                    self.original_score[0] += u32::from(before);
+                    self.original_score[1] += u32::from(after);
+                    self.development_regression |= before && !after;
+                }
+            } else if row < normal {
+                let source = &base.anchors[row - development.len()].question;
+                let result = transfer::evaluate(source, base, &evaluated, engine, io, job)?;
+                self.evaluation.record(false, &result);
+                self.anchor_regression |= result.before.solved && !result.after.solved;
+            } else if row < panel {
+                let transfer_index = row - normal;
+                let source = &curriculum::adaptive::BANK.transfer[transfer_index].source;
+                let result = transfer::evaluate(source, base, &evaluated, engine, io, job)?;
+                self.transfer
+                    .record(transfer_index, result.before.solved, result.after.solved)?;
+                self.evaluation.record(true, &result);
+                self.observe_qualification(source, &evaluated, &result)?;
+            } else {
+                let confirmation_index = row - panel;
+                let source = &confirmation[confirmation_index].source;
+                let result = transfer::pair(source, base, &evaluated, engine, io, job)?;
+                self.causal.confirm(confirmation_index, &result)?;
+            }
+        }
+        Ok(())
+    }
+
     fn observe_qualification(
         &mut self,
         source: &str,
@@ -400,13 +491,14 @@ impl Job {
             {
                 return false;
             }
-            if assessment.accepts() {
+            if progress.accepts(assessment) {
                 return progress.promotions == self.base.promotions.saturating_add(1)
                     && progress.rejections == self.base.rejections
                     && progress.qualification == Qualification::Promoted
-                    && progress.model != self.base.model;
+                    && progress.model != self.base.model
+                    && progress.causal.selected.as_ref() == Some(&digest(&progress.model));
             }
-            if progress.qualification != Qualification::InsufficientResearchValue
+            if progress.qualification != progress.rejection(assessment)
                 || progress.rejections != self.base.rejections.saturating_add(1)
             {
                 return false;
@@ -414,7 +506,9 @@ impl Job {
         } else if progress.rejections != self.base.rejections
             || matches!(
                 progress.qualification,
-                Qualification::Promoted | Qualification::InsufficientResearchValue
+                Qualification::Promoted
+                    | Qualification::InsufficientResearchValue
+                    | Qualification::InsufficientCausalEvidence
             )
         {
             return false;
@@ -443,6 +537,7 @@ impl Job {
             if next.unit != previous.unit + 1
                 || next.plan != previous.plan
                 || next.prepared != previous.prepared
+                || !next.causal.continues(&previous.causal)
                 || next.cpu_micros < previous.cpu_micros
                 || next.wall_micros < previous.wall_micros
                 || next.meta_cpu_micros < previous.meta_cpu_micros
@@ -455,9 +550,14 @@ impl Job {
             {
                 return Err(crate::ResearchFailure::ProgressContinuationMismatch.into());
             }
-            if next
-                .assessment
-                .is_some_and(|assessment| assessment.accepts())
+            if next.unit > model::TRAINING_UNITS
+                && next.unit < self.units()
+                && previous.causal.selected == next.causal.selected
+                && next.candidate != previous.candidate
+            {
+                return Err(crate::ResearchFailure::CausalTrialBinding.into());
+            }
+            if next.qualification == Qualification::Promoted
                 && previous.candidate.as_ref() != Some(&next.model)
             {
                 return Err(crate::ResearchFailure::JobPromotionBinding.into());
@@ -609,7 +709,7 @@ impl Job {
             return Err(crate::ResearchFailure::JobReplaySnapshotBinding.into());
         }
 
-        if self.written.len() > 2 * (model::TRAINING_UNITS as usize + 2)
+        if self.written.len() > 2 * (model::TRAINING_UNITS as usize + 3)
             || self.io_bytes > crate::resources::limits().native_model_io_bytes
             || self.io_operations
                 > crate::resources::limits().native_model_io_bytes
@@ -725,20 +825,26 @@ impl Job {
                 return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             p.transfer.validate()?;
-            let expected_transfer = transfer::Summary::prefix(
+            let evaluated_units = if p.first_loss.is_some() {
                 p.unit
                     .saturating_sub(model::TRAINING_UNITS)
-                    .min(transfer::CASES as u32) as usize,
-            );
-            if p.first_loss.is_some() && p.transfer.observed != expected_transfer {
-                return Err(crate::ResearchFailure::JobTransferCoverage.into());
-            }
-            let paired_cases = if p.first_loss.is_some() {
-                (p.unit.saturating_sub(model::TRAINING_UNITS) as usize)
-                    .min(curriculum::DEVELOPMENT + self.base.anchors.len())
+                    .min(EVALUATIONS) as usize
             } else {
                 0
             };
+            let development = curriculum::DEVELOPMENT + self.base.anchors.len();
+            let panel = development + transfer::CASES;
+            let checked = p.causal.evaluated(evaluated_units, panel);
+            p.causal.valid(
+                evaluated_units,
+                checked.saturating_sub(panel),
+                p.candidate.as_ref(),
+            )?;
+            let expected_transfer = transfer::Summary::prefix(checked.saturating_sub(development));
+            if p.transfer.observed != expected_transfer {
+                return Err(crate::ResearchFailure::JobTransferCoverage.into());
+            }
+            let paired_cases = checked.min(development);
             let summary = p.evaluation.validate(paired_cases, p.transfer)?;
             if summary.overall != [p.incumbent_score, p.candidate_score]
                 || summary.original != p.original_score
@@ -844,6 +950,7 @@ impl Job {
             transfer: transfer::Summary::default(),
             evaluation: transfer::Evidence::default(),
             assessment: None,
+            causal: causal::Trial::default(),
             development_before: crate::training::ability::Profile::new(digest(&self.base.model)),
             development_after: crate::training::ability::Profile::new(digest(&self.base.model)),
             regressions: [0; crate::training::ability::SKILLS],
@@ -957,51 +1064,14 @@ impl Job {
                 p.trained = self.base.epoch;
             }
         } else if self.units() > 1 && unit <= model::TRAINING_UNITS + EVALUATIONS {
-            if let Some(candidate) = p.candidate.clone() {
-                let index = (unit - model::TRAINING_UNITS - 1) as usize;
-                let source = if index < curriculum::DEVELOPMENT {
-                    curriculum::development()
-                        .get(index)
-                        .map(|q| q.source.clone())
-                } else {
-                    self.base
-                        .anchors
-                        .get(index - curriculum::DEVELOPMENT)
-                        .map(|e| e.question.clone())
-                };
-                if let Some(source) = source {
-                    let result =
-                        transfer::evaluate(&source, &self.base, &candidate, engine, io, job)?;
-                    p.evaluation.record(false, &result);
-                    let (before, after) = (result.before.solved, result.after.solved);
-                    if index < curriculum::DEVELOPMENT {
-                        p.observe_qualification(&source, &candidate, &result)?;
-                        p.incumbent_score += u32::from(before);
-                        p.candidate_score += u32::from(after);
-                        if index < curriculum::CORPUS_DEVELOPMENT {
-                            p.original_score[0] += u32::from(before);
-                            p.original_score[1] += u32::from(after);
-                            p.development_regression |= before && !after;
-                        }
-                    } else if before && !after {
-                        p.anchor_regression = true;
-                    }
-                }
-                if let Some(case) = curriculum::adaptive::BANK.transfer.get(index) {
-                    let result =
-                        transfer::evaluate(&case.source, &self.base, &candidate, engine, io, job)?;
-                    p.transfer
-                        .record(index, result.before.solved, result.after.solved)?;
-                    p.evaluation.record(true, &result);
-                    p.observe_qualification(&case.source, &candidate, &result)?;
-                }
-            }
+            let index = (unit - model::TRAINING_UNITS - 1) as usize;
+            p.evaluate(job, index, &self.base, engine, io)?;
         } else {
             let candidate_model = p.candidate.as_ref().map(digest);
             if let Some(candidate) = p.candidate.take() {
                 let assessment = p.evaluation.assessment(&self.base)?;
                 p.assessment = Some(assessment);
-                if assessment.accepts() {
+                if p.accepts(assessment) {
                     p.model = candidate;
                     p.promotions = p
                         .promotions
@@ -1013,7 +1083,7 @@ impl Job {
                         .rejections
                         .checked_add(1)
                         .ok_or(crate::ResearchFailure::JobQualificationSequence)?;
-                    p.qualification = Qualification::InsufficientResearchValue;
+                    p.qualification = p.rejection(assessment);
                 }
             }
             if self.units() > 1 && self.base.preparation == Preparation::Meta {
@@ -1238,6 +1308,18 @@ fn solve_with_generation(
     context: SolveContext<'_>,
     generate: bool,
 ) -> Result<Generation, crate::Error> {
+    solve_with_generation_observed(source, model, budget, job, context, generate, None)
+}
+
+fn solve_with_generation_observed(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    context: SolveContext<'_>,
+    generate: bool,
+    typed_decisions: Option<&mut Vec<search::scope::generation::DecisionObservation>>,
+) -> Result<Generation, crate::Error> {
     let question = ResearchQuestion::from_hex(source)?;
     let definitions = context
         .prerequisites
@@ -1288,6 +1370,7 @@ fn solve_with_generation(
             budget.saturating_sub(prior_work),
             started,
             &context,
+            typed_decisions,
         )?;
         if work.actions != 0 || work.model_decisions != 0 {
             typed_generation = Some(work);

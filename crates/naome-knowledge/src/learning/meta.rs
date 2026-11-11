@@ -116,10 +116,10 @@ impl Experience {
         }
         let selected = self.selected_model != self.source_model;
         if selected
-            != self
+            && (!self
                 .assessment
                 .is_some_and(|assessment| assessment.accepts())
-            || selected && self.candidate_model.as_ref() != Some(&self.selected_model)
+                || self.candidate_model.as_ref() != Some(&self.selected_model))
         {
             return Err(crate::ResearchFailure::MetaPromotionBinding.into());
         }

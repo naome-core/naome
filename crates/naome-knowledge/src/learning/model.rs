@@ -3,6 +3,7 @@
 //! use Adam, checked-action objectives and at most 16 graph slots. Real observed
 //! predecessor windows carry bounded working state; the native checker retains
 //! all mathematical authority. No pretrained weights are imported.
+pub(super) mod intervention;
 mod measurement;
 mod memory;
 use measurement::TrainingMeasurements;
@@ -136,6 +137,7 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("model/policy.rs"));
     hash.update(include_str!("model/policy/cache.rs"));
     hash.update(include_str!("model/memory.rs"));
+    hash.update(include_str!("model/intervention.rs"));
     hash.update(include_str!("model/sequence.rs"));
     hash.update(include_str!("model/measurement.rs"));
     hash.update(include_str!("model/preservation.rs"));
@@ -164,6 +166,8 @@ fn specification_for(corpus: &super::curriculum::Corpus) -> String {
     hash.update(include_str!("meta.rs"));
     hash.update(include_str!("../research_value.rs"));
     hash.update(include_str!("transfer.rs"));
+    hash.update(include_str!("causal.rs"));
+    hash.update(include_str!("causal/selection.rs"));
     hash.update(include_str!("meta/model.rs"));
     hash.update(include_str!("meta/plan.rs"));
     hash.update(include_str!("meta/memory.rs"));
@@ -745,6 +749,11 @@ pub(crate) struct Engine {
     pub cost: TrainingCost,
     cache: Vec<(Checkpoint, Runtime)>,
     pool: Option<(String, Pool, Pool)>,
+    intervention: Option<(
+        Checkpoint,
+        Checkpoint,
+        std::sync::Arc<intervention::Weights>,
+    )>,
     #[cfg(test)]
     pub(super) preservation_mode: PreservationMode,
     #[cfg(test)]
@@ -878,6 +887,107 @@ impl Engine {
         let mut runtime = self.take(c, io)?;
         let result = operation(&mut runtime);
         self.retain(c.clone(), runtime);
+        result
+    }
+    pub(super) fn intervention_weights<I: ArtifactIo + ?Sized>(
+        &mut self,
+        parent: &Checkpoint,
+        candidate: &Checkpoint,
+        io: &mut I,
+    ) -> Result<std::sync::Arc<intervention::Weights>, crate::Error> {
+        if let Some((p, c, weights)) = &self.intervention
+            && p == parent
+            && c == candidate
+        {
+            return Ok(weights.clone());
+        }
+        if parent.seed != candidate.seed || parent.updates >= candidate.updates {
+            return Err(crate::ResearchFailure::ModelCheckpointBinding.into());
+        }
+        self.pool = None;
+        let origin = self.take(parent, io)?;
+        let result = self.take(candidate, io).and_then(|trained| {
+            let result = intervention::Weights::capture(&origin, &trained);
+            self.retain(candidate.clone(), trained);
+            result
+        });
+        self.retain(parent.clone(), origin);
+        let weights = std::sync::Arc::new(result?);
+        self.intervention = Some((parent.clone(), candidate.clone(), weights.clone()));
+        Ok(weights)
+    }
+
+    pub(super) fn with_intervention<I: ArtifactIo + ?Sized, T>(
+        &mut self,
+        parent: &Checkpoint,
+        candidate: &Checkpoint,
+        spans: &[intervention::Span],
+        removal: bool,
+        io: &mut I,
+        operation: impl FnOnce(&mut Runtime) -> Result<T, crate::Error>,
+    ) -> Result<T, crate::Error> {
+        let weights = self.intervention_weights(parent, candidate, io)?;
+        let record = weights.patch(spans, removal)?;
+        let source = if removal { candidate } else { parent };
+        let mut runtime = self.take(source, io)?;
+        let result = runtime
+            .policy
+            .clone()
+            .try_load_record(record)
+            .map_err(record_failure)
+            .and_then(|policy| {
+                let original = std::mem::replace(&mut runtime.policy, policy.train());
+                let formulas = std::mem::take(&mut runtime.formulas);
+                runtime.identity = super::digest(&(parent, candidate, spans, removal));
+                let result = operation(&mut runtime);
+                runtime.policy = original;
+                runtime.formulas = formulas;
+                result
+            });
+        self.retain(source.clone(), runtime);
+        result
+    }
+
+    pub(super) fn checkpoint_intervention<I: ArtifactIo + ?Sized>(
+        &mut self,
+        parent: &Checkpoint,
+        candidate: &Checkpoint,
+        spans: &[intervention::Span],
+        io: &mut I,
+    ) -> Result<Checkpoint, crate::Error> {
+        let weights = self.intervention_weights(parent, candidate, io)?;
+        let record = weights.patch(spans, false)?;
+        let touched = weights.touched_ids(spans);
+        if touched.is_empty() {
+            return Err(crate::ResearchFailure::ModelCheckpointBinding.into());
+        }
+        let changed = weights.changed(spans);
+        if changed
+            == weights.changed(&[intervention::Span {
+                start: 0,
+                end: weights.parameters,
+            }])
+        {
+            return Ok(candidate.clone());
+        }
+        let runtime = self.take(parent, io)?;
+        let result = (|| {
+            let model = canonical_checkpoint(record.into_bytes().map_err(record_failure)?)?;
+            let adam = intervention::without_touched_moments(
+                runtime.optimizer.into_bytes().map_err(record_failure)?,
+                &touched,
+            )?;
+            let preservation = runtime.preservation.without_parameters(&touched);
+            let optimizer = preservation.encode(adam)?;
+            Ok(Checkpoint {
+                specification: parent.specification.clone(),
+                seed: parent.seed,
+                updates: candidate.updates,
+                model: Some(artifact::save(io, &model[..])?),
+                optimizer: Some(artifact::save(io, &optimizer[..])?),
+            })
+        })();
+        self.retain(parent.clone(), runtime);
         result
     }
     pub fn train_replay_using<I: ArtifactIo + ?Sized>(

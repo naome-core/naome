@@ -67,6 +67,23 @@ impl Preservation {
         }
     }
 
+    pub(super) fn without_parameters(&self, touched: &std::collections::BTreeSet<u64>) -> Self {
+        struct Reset<'a>(&'a std::collections::BTreeSet<u64>);
+        impl ModuleMapper for Reset<'_> {
+            fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+                if self.0.contains(&param.id.val()) {
+                    param.map(|v| Tensor::zeros(v.shape(), &v.device()))
+                } else {
+                    param
+                }
+            }
+        }
+        Self {
+            ema: self.ema.clone().map(&mut Reset(touched)),
+            steps: self.steps,
+        }
+    }
+
     pub fn apply(
         &mut self,
         before: &Policy,

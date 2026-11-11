@@ -1,4 +1,5 @@
 use super::{replay::replay_choices, *};
+use crate::learning::solve_with_report_typed;
 
 /// A direct, checked route fits in two typed actions. Following the first
 /// rule of the alternative chain spends a third action before closure.
@@ -35,6 +36,8 @@ fn shortcut_question(edges: u32, equal_goal: bool, reverse: bool) -> ResearchQue
 #[ignore = "bounded paired observation of weight transfer from checked native replay"]
 fn checked_decoder_replay_weight_transfer() {
     let mut graphs = Vec::new();
+    let mut state = crate::learning::State::fresh();
+    let mut evidence = Vec::new();
     for edges in [2, 3] {
         let question = shortcut_question(edges, false, false);
         let scope = Scope::decompose(question.proved_target(), None).unwrap();
@@ -64,15 +67,58 @@ fn checked_decoder_replay_weight_transfer() {
         let checked = replay_choices(&question, &packet, &naome_checker::ArtifactState::new());
         assert!(checked.iter().any(|g| g.candidates.len() > 1));
         graphs.extend(checked);
+        let proof_id = crate::hex(packet.manifest.proof_id().as_bytes());
+        let tree = Tree::Program(Box::new(packet));
+        let job = u64::from(edges);
+        evidence.push(crate::learning::Evidence {
+            job,
+            proof_id: proof_id.clone(),
+            trace: tree.clone(),
+        });
+        assert!(
+            state
+                .accept(crate::learning::Example {
+                    origin: crate::learning::Origin::Local,
+                    job,
+                    question: question.to_hex(),
+                    proof_id,
+                    refuted: false,
+                    tree,
+                })
+                .unwrap()
+        );
     }
+    let pool = state.training_pool(&evidence).unwrap();
+    assert!(
+        graphs
+            .iter()
+            .all(|graph| pool.graphs().iter().any(|row| row.key() == graph.key()))
+    );
 
     let mut io = MemoryStore::default();
     let before = Checkpoint::fresh();
     let mut after = before.clone();
-    let mut rng = 91;
+    let mut cursor = 91;
+    let mut trainer = Engine::default();
+    let phase = crate::learning::meta::Plan::targeted().phase(0);
     for _ in 0..4 {
-        after = crate::learning::model::test_update(&after, &graphs, &mut rng, &mut io).unwrap();
+        after = trainer
+            .train_replay_using(
+                &after,
+                &state,
+                (&evidence, &[]),
+                &mut cursor,
+                phase,
+                &mut io,
+            )
+            .unwrap()
+            .unwrap()
+            .0;
     }
+    assert_eq!(
+        state.model, before,
+        "candidate training must preserve the serving checkpoint"
+    );
     assert_eq!(after.updates, before.updates + 4);
     assert!(after.model.is_some() && after.optimizer.is_some());
 
@@ -97,6 +143,7 @@ fn checked_decoder_replay_weight_transfer() {
             2,
             Instant::now(),
             &context(),
+            None,
         )
         .unwrap()
         .0;
@@ -126,7 +173,7 @@ fn checked_decoder_replay_weight_transfer() {
             "transfer edges={edges} equality={equality} reverse={reverse} checked_neutral_before_after={solved:?}"
         );
     }
-    let base = crate::learning::State::fresh();
+    let base = state;
     assert_eq!(base.model, before);
     let mut protected = [0; 2];
     let mut losses = Vec::new();

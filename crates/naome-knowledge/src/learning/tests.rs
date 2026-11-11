@@ -421,6 +421,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     previous.plan = Some(selection.clone());
     previous.candidate = Some(candidate.clone());
     previous.first_loss = Some(1.);
+    previous.causal = causal::test_fixture(&candidate, 0, 0);
     previous.last_loss = Some(0.5);
     for _ in 0..curriculum::DEVELOPMENT + state.anchors.len() {
         previous.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
@@ -612,6 +613,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     pending.unit = job.units() - 1;
     pending.candidate = Some(candidate.clone());
     pending.first_loss = Some(1.);
+    pending.causal = causal::test_fixture(&candidate, 1, 2);
     pending.last_loss = Some(0.1);
     pending.development_regression = true;
     pending.incumbent_score = 1;
@@ -661,6 +663,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        causal: causal::Trial::default(),
         executions: Vec::new(),
         terminal: experience::TerminalEvidence::NoSearch(experience::NoSearch::TrainingOnly),
         finder: None,
@@ -900,6 +903,7 @@ fn evicted_stored_anchor_uses_its_original_owned_evidence_and_existing_source_ca
 }
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
+        causal: causal::Trial::default(),
         terminal: experience::TerminalEvidence::certified(&solution),
         frontier: None,
         cost: Some((*solution.cost).clone()),
@@ -938,6 +942,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         .select(&job.base, &mut MemoryStore::default())
         .unwrap();
     job.progress = Some(Progress {
+        causal: causal::Trial::default(),
         frontier: None,
         cost: None,
         training_cost: model::TrainingCost::default(),
@@ -1233,7 +1238,7 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     progress.model.model = Some(Blob::of(&[1; 32]));
     progress.model.optimizer = Some(Blob::of(&[2; 32]));
     progress.promotions += 1;
-    evaluate_fixture(&job.base, &mut progress, 1, 0b01010100);
+    evaluate_fixture(&job.base, &mut progress, 1, 0b01010101);
     progress.qualification = Qualification::Promoted;
     progress.development_after.checkpoint = digest(&progress.model);
     let selected = progress.model.clone();
@@ -1251,6 +1256,9 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
 }
 
 fn evaluate_fixture(base: &State, progress: &mut Progress, before: u32, after: u32) {
+    progress.evaluation = transfer::Evidence::default();
+    progress.transfer = transfer::Summary::default();
+    progress.causal = causal::test_fixture(&progress.model, before, after);
     progress.first_loss = Some(1.);
     progress.last_loss = Some(0.5);
     for _ in 0..curriculum::DEVELOPMENT + base.anchors.len() {
@@ -1268,7 +1276,7 @@ fn evaluate_fixture(base: &State, progress: &mut Progress, before: u32, after: u
 }
 
 #[test]
-fn native_promotion_uses_paired_value_even_with_a_lost_case() {
+fn causal_promotion_preserves_transfer_and_uses_the_original_knowledge() {
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
     let mut job = state.job();
@@ -1284,6 +1292,10 @@ fn native_promotion_uses_paired_value_even_with_a_lost_case() {
     evaluate_fixture(&job.base, &mut p, 1, 0b01010100);
     assert!(p.assessment.unwrap().accepts());
     assert_eq!(p.assessment.unwrap().losses, 1);
+    job.progress = Some(p.clone());
+    assert!(job.validate().is_err());
+    assert!(!state.clone().qualify(&job));
+    evaluate_fixture(&job.base, &mut p, 1, 0b01010101);
     job.progress = Some(p.clone());
     job.validate().unwrap();
     let mut changed = state.clone();
@@ -1316,17 +1328,32 @@ fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     p.unit = model::TRAINING_UNITS + 1;
     p.first_loss = Some(1.);
     p.last_loss = Some(0.5);
-    p.transfer.record(0, true, true).unwrap();
-    p.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
-    p.evaluation.push(true, [true; 2], [32; 2], [1; 2]);
+    p.candidate = Some(Checkpoint {
+        updates: 250,
+        model: Some(Blob::of(&[1; 32])),
+        optimizer: Some(Blob::of(&[2; 32])),
+        ..state.model.clone()
+    });
+    let candidate = p.candidate.clone().unwrap();
+    p.causal
+        .discover(0, &candidate, &causal::test_pair([true, true]))
+        .unwrap();
     job.progress = Some(p.clone());
     let before = digest(&job);
     p.unit += 1;
-    p.transfer.record(1, false, true).unwrap();
-    p.evaluation.push(false, [false; 2], [32; 2], [1; 2]);
-    p.evaluation.push(true, [false, true], [32; 2], [1; 2]);
+    p.causal
+        .discover(1, &candidate, &causal::test_pair([false, true]))
+        .unwrap();
     let mut forged = p.clone();
-    forged.transfer.before ^= 1;
+    forged.causal = causal::Trial::default();
+    forged
+        .causal
+        .discover(0, &candidate, &causal::test_pair([false, true]))
+        .unwrap();
+    forged
+        .causal
+        .discover(1, &candidate, &causal::test_pair([false, true]))
+        .unwrap();
     assert!(job.retain_progress(71, forged).is_err());
     assert_eq!(digest(&job), before);
     job.retain_progress(71, p).unwrap();

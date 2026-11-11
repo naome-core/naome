@@ -63,6 +63,7 @@ pub(in crate::learning) fn graphs(
         actions: Vec::new(),
         selection: Selection::Checked(Vec::new()),
         work: Work::default(),
+        observations: None,
     };
     let binding = &engine.manifest().program_hash;
     let mut replayed = Vec::new();

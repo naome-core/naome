@@ -22,6 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) const TIME_LIMIT: Duration = Duration::from_millis(2500);
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Action {
     Double(usize),
@@ -699,7 +701,7 @@ impl Search<'_> {
         parent: Option<trace::Branch>,
         incoming: Option<(&super::model::Plan, usize)>,
     ) -> Result<Option<Tree>, crate::Error> {
-        if self.started.elapsed() > Duration::from_millis(2500) || depth > 32 {
+        if self.started.elapsed() > TIME_LIMIT || depth > 32 {
             if let Some(report) = &mut self.frontier {
                 report.observe(state, depth);
             }
@@ -883,7 +885,7 @@ impl Search<'_> {
         }
         if let Some(key) = key
             && self.expansions < self.limit
-            && self.started.elapsed() <= Duration::from_millis(2500)
+            && self.started.elapsed() <= TIME_LIMIT
             && self.exhausted.len() < 256
         {
             self.exhausted.insert(key);
