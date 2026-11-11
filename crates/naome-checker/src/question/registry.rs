@@ -65,7 +65,7 @@ impl QuestionRegistry {
                 .map_err(|_| RejectionReason::InvalidRegistry)?,
             None => self.records.contains_key(&entry.record),
         };
-        if !entry.formula.is_closed() || duplicate {
+        if duplicate {
             return Err(RejectionReason::InvalidRegistry);
         }
         let length = self
