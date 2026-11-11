@@ -203,6 +203,7 @@ pub(super) struct Outcome {
     pub micros: u64,
     pub proof_id: Option<String>,
     pub decisions: Vec<super::SearchTrace>,
+    pub typed_decisions: Vec<super::search::scope::generation::DecisionObservation>,
 }
 pub(super) struct Evaluation {
     pub before: Outcome,
@@ -217,7 +218,8 @@ pub(super) fn solve(
 ) -> Result<Outcome, crate::Error> {
     let start = std::time::Instant::now();
     let cpu = super::meta::cpu_micros()?;
-    let generation = super::solve_with_report_typed(
+    let mut typed_decisions = Vec::new();
+    let generation = super::solve_with_generation_observed(
         source,
         runtime,
         usize::from(ALLOWANCE),
@@ -228,6 +230,8 @@ pub(super) fn solve(
             native_programs: true,
             ..Default::default()
         },
+        true,
+        Some(&mut typed_decisions),
     )?;
     let expansions = u8::try_from(generation.cost.search_expansions)
         .ok()
@@ -248,6 +252,7 @@ pub(super) fn solve(
         micros: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         proof_id: generation.solution.map(|s| s.proof_id),
         decisions: generation.executions,
+        typed_decisions,
     })
 }
 

@@ -1310,6 +1310,18 @@ fn solve_with_generation(
     context: SolveContext<'_>,
     generate: bool,
 ) -> Result<Generation, crate::Error> {
+    solve_with_generation_observed(source, model, budget, job, context, generate, None)
+}
+
+fn solve_with_generation_observed(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    context: SolveContext<'_>,
+    generate: bool,
+    typed_decisions: Option<&mut Vec<search::scope::generation::DecisionObservation>>,
+) -> Result<Generation, crate::Error> {
     let question = ResearchQuestion::from_hex(source)?;
     let definitions = context
         .prerequisites
@@ -1360,6 +1372,7 @@ fn solve_with_generation(
             budget.saturating_sub(prior_work),
             started,
             &context,
+            typed_decisions,
         )?;
         if work.actions != 0 || work.model_decisions != 0 {
             typed_generation = Some(work);

@@ -1,7 +1,7 @@
 //! Solver counterfactuals within a reserved training job. Every success comes
 //! from the installed native search and independent target checker.
 mod selection;
-use super::{model::intervention::Span, transfer, *};
+use super::{model::intervention::Span, search::scope::generation, transfer, *};
 use selection::{Subset, intervention, rank};
 
 pub(super) const SCREEN: usize = 32;
@@ -37,12 +37,19 @@ pub(crate) struct Trial {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fork {
+    route: Route,
     case: usize,
     event: usize,
     state: String,
     menu: String,
     before: usize,
     after: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum Route {
+    TypedProgram,
+    Tableau,
 }
 
 impl Trial {
@@ -446,7 +453,11 @@ impl Trial {
             crate::object::id_bytes(&fork.menu)?;
             if fork.case >= transfer::CASES
                 || self.gained() & (1 << fork.case) == 0
-                || fork.event >= usize::from(transfer::ALLOWANCE)
+                || fork.event
+                    >= match fork.route {
+                        Route::TypedProgram => generation::DECISION_LIMIT,
+                        Route::Tableau => usize::from(transfer::ALLOWANCE),
+                    }
                 || fork.before == fork.after
             {
                 return Err(Self::invalid().into());
@@ -465,16 +476,24 @@ impl Trial {
 }
 
 fn fixed_search_miss(outcome: &transfer::Outcome) -> bool {
-    use experience::{Budget, TerminalEvidence};
-    !outcome.solved
-        && outcome.expansions > 0
-        && matches!(
-            outcome.terminal,
-            TerminalEvidence::PolicyExhausted
-                | TerminalEvidence::Budget(
-                    Budget::Expansions | Budget::BranchExpansions | Budget::Depth
-                )
-        )
+    use experience::{Budget, Capacity, TerminalEvidence};
+    if outcome.solved || outcome.expansions == 0 {
+        return false;
+    }
+    match outcome.terminal {
+        TerminalEvidence::PolicyExhausted
+        | TerminalEvidence::Budget(Budget::Expansions | Budget::BranchExpansions | Budget::Depth) => {
+            true
+        }
+        // A branch can exceed the fixed fact bound before the search spends
+        // the remaining allowance on other branches. The terminal reports the
+        // branch limit even when the entire paid allowance was used.
+        TerminalEvidence::Unsupported(Capacity::Facts) => {
+            outcome.expansions == transfer::ALLOWANCE
+                && u128::from(outcome.micros) < search::TIME_LIMIT.as_micros()
+        }
+        _ => false,
+    }
 }
 
 fn observation(
@@ -483,12 +502,14 @@ fn observation(
     u8,
     &experience::TerminalEvidence,
     &Option<String>,
+    &[generation::DecisionObservation],
     Vec<String>,
 ) {
     (
         outcome.expansions,
         &outcome.terminal,
         &outcome.proof_id,
+        &outcome.typed_decisions,
         outcome
             .decisions
             .iter()
@@ -498,6 +519,27 @@ fn observation(
 }
 
 fn fork(case: usize, original: &transfer::Outcome, changed: &transfer::Outcome) -> Option<Fork> {
+    for (event, (a, b)) in original
+        .typed_decisions
+        .iter()
+        .zip(&changed.typed_decisions)
+        .enumerate()
+    {
+        if a.state != b.state || a.offered != b.offered {
+            break;
+        }
+        if a.selected != b.selected {
+            return Some(Fork {
+                route: Route::TypedProgram,
+                case,
+                event,
+                state: a.state.clone(),
+                menu: a.offered.clone(),
+                before: a.selected,
+                after: b.selected,
+            });
+        }
+    }
     let found = original.decisions.iter().find_map(|a| {
         changed
             .decisions
@@ -505,6 +547,7 @@ fn fork(case: usize, original: &transfer::Outcome, changed: &transfer::Outcome) 
             .find_map(|b| a.first_decision_fork(b))
     })?;
     Some(Fork {
+        route: Route::Tableau,
         case,
         event: found.index,
         state: found.state.to_owned(),

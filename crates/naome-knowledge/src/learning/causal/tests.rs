@@ -15,6 +15,7 @@ pub(in crate::learning) fn test_pair(solved: [bool; 2]) -> transfer::Evaluation 
         micros: 1,
         proof_id: solved.then(|| digest(&solved)),
         decisions: Vec::new(),
+        typed_decisions: Vec::new(),
     };
     transfer::Evaluation {
         before: make(solved[0]),
@@ -117,6 +118,25 @@ fn opposing_halves_and_interactions_use_only_explicit_coordinates() {
 }
 
 #[test]
+fn typed_forks_require_the_same_prefix_and_ordered_menu() {
+    let mut sample = test_pair([false, true]);
+    let decision = |state, offered, selected| generation::DecisionObservation {
+        state: digest(&state),
+        offered: digest(&offered),
+        selected,
+    };
+    sample.before.typed_decisions = vec![decision(1, 1, 0), decision(2, 2, 0)];
+    sample.after.typed_decisions = vec![decision(1, 1, 0), decision(2, 2, 1)];
+    let fork = fork(0, &sample.before, &sample.after).unwrap();
+    assert_eq!(
+        (fork.route, fork.event, fork.before, fork.after),
+        (Route::TypedProgram, 1, 0, 1)
+    );
+    sample.after.typed_decisions[0] = decision(1, 3, 0);
+    assert!(super::fork(0, &sample.before, &sample.after).is_none());
+}
+
+#[test]
 fn elapsed_time_and_failed_checks_do_not_supply_causal_misses() {
     let mut sample = test_pair([false, true]);
     for terminal in [
@@ -128,6 +148,31 @@ fn elapsed_time_and_failed_checks_do_not_supply_causal_misses() {
         let mut trial = Trial::default();
         trial.discover(0, &Checkpoint::fresh(), &sample).unwrap();
         assert_eq!(trial.gained(), 0);
+    }
+}
+
+#[test]
+fn a_branch_fact_limit_counts_only_with_the_full_paid_allowance_before_the_time_limit() {
+    use experience::{Capacity, TerminalEvidence};
+    let mut sample = test_pair([false, true]);
+    sample.before.terminal = TerminalEvidence::Unsupported(Capacity::Facts);
+    sample.before.expansions = transfer::ALLOWANCE - 1;
+    assert!(!fixed_search_miss(&sample.before));
+    sample.before.expansions = transfer::ALLOWANCE;
+    let mut trial = Trial::default();
+    trial.discover(0, &Checkpoint::fresh(), &sample).unwrap();
+    assert_eq!(trial.gained(), 1);
+
+    sample.before.micros = search::TIME_LIMIT.as_micros().try_into().unwrap();
+    assert!(!fixed_search_miss(&sample.before));
+    sample.before.micros = 1;
+    for capacity in [
+        Capacity::Graph,
+        Capacity::Certificate,
+        Capacity::Dependencies,
+    ] {
+        sample.before.terminal = TerminalEvidence::Unsupported(capacity);
+        assert!(!fixed_search_miss(&sample.before));
     }
 }
 
