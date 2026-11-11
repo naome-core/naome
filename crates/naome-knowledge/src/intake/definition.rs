@@ -67,10 +67,6 @@ impl Intake {
         Ok(())
     }
 
-    pub(crate) fn definition_active(&self) -> bool {
-        self.definition.is_some()
-    }
-
     pub(crate) fn helper_definition_request(&mut self, graph: &Graph) -> Option<DefinitionRequest> {
         if self.definition.is_some() {
             return None;
