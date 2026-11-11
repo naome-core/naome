@@ -78,12 +78,12 @@ impl Ranker for Continuation<'_> {
     fn plan(
         &mut self,
         decision: &Decision,
-        graph: &graph::Graph,
+        binding: &str,
         offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, crate::Error> {
         let started = meta::cpu_micros()?;
-        let mut plan = self.learned.plan(decision, graph, offered, memory)?;
+        let mut plan = self.learned.plan(decision, binding, offered, memory)?;
         self.plan_cpu_micros += meta::cpu_micros()?.saturating_sub(started);
         let bits = |values: &[f32]| values.iter().map(|value| value.to_bits()).collect();
         let record = self.calls <= self.switch_after;
@@ -95,7 +95,7 @@ impl Ranker for Continuation<'_> {
         }
         if let Some(learned) = learned {
             self.prefix.push(RankedMenu {
-                state: graph.binding.clone(),
+                state: binding.to_owned(),
                 offered: offered.to_owned(),
                 memory: memory.map(digest),
                 learned,

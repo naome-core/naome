@@ -81,23 +81,57 @@ impl From<Failure> for String {
     }
 }
 
-struct Builder<'a> {
-    nodes: Vec<Node>,
+/// Receives the shared, bounded formula traversal. Inference can lower each
+/// record as it arrives without materializing an intermediate decision graph.
+pub(super) trait NodeSink: Default {
+    fn len(&self) -> usize;
+    fn push(&mut self, node: Node);
+    fn mark(&mut self, index: usize, role: i32);
+    fn action(&mut self, _premises: Vec<usize>, _effects: Vec<usize>) {}
+}
+
+impl NodeSink for Vec<Node> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn push(&mut self, node: Node) {
+        self.push(node);
+    }
+
+    fn mark(&mut self, index: usize, role: i32) {
+        self[index].role |= role;
+    }
+}
+
+pub(super) struct Encoded<S> {
+    pub nodes: S,
+    pub goal: usize,
+    pub context: Vec<usize>,
+    pub candidates: Vec<usize>,
+    pub expert: usize,
+    pub successes: Vec<usize>,
+}
+
+struct Builder<'a, S> {
+    nodes: S,
     formulas: HashMap<(FormulaView<'a>, usize), usize>,
     variables: HashMap<i32, usize>,
     free: HashMap<u32, usize>,
 }
 
-impl<'a> Builder<'a> {
+impl<'a, S: NodeSink> Builder<'a, S> {
     fn new() -> Self {
+        let mut nodes = S::default();
+        nodes.push(Node {
+            kind: 0,
+            left: 0,
+            right: 0,
+            role: 0,
+            symbol: 0,
+        });
         Self {
-            nodes: vec![Node {
-                kind: 0,
-                left: 0,
-                right: 0,
-                role: 0,
-                symbol: 0,
-            }],
+            nodes,
             formulas: HashMap::new(),
             variables: HashMap::new(),
             free: HashMap::new(),
@@ -242,42 +276,35 @@ impl Graph {
             &self.candidates,
         ))
     }
-    /// The Finder supplies relation operands and the finite question grammar.
-    /// This inference menu carries no checked action labels.
+    #[cfg(test)]
     pub(super) fn question_recipes(
         relations: &[&naome_foundation::Formula],
     ) -> Result<Self, Failure> {
-        let mut builder = Builder::new();
-        let mut context = Vec::with_capacity(relations.len());
-        for formula in relations {
-            let root = builder.formula(formula.view(), 0, 4)?;
-            builder.nodes[root].role |= 2;
-            context.push(root);
-        }
-        let goal = *context.first().ok_or(Failure::DecisionCapacity)?;
-        builder.nodes[goal].role |= 1;
-        let mut candidates = Vec::with_capacity(QUESTION_RECIPES);
-        for variation in 0..QUESTION_VARIATIONS {
-            for operator in 0..QUESTION_OPERATORS {
-                candidates.push(builder.push(Node {
-                    kind: QUESTION_OPERATOR_START + operator as i32,
-                    left: goal,
-                    right: 0,
-                    role: 0,
-                    symbol: variation as i32,
-                })?);
-            }
-        }
-        Ok(Self {
-            binding: String::new(),
-            field: Field::QuestionRecipe,
-            nodes: builder.nodes,
+        Ok(Self::from_encoding(
+            encode_recipes(relations)?,
+            Field::QuestionRecipe,
+        ))
+    }
+
+    fn from_encoding(input: Encoded<Vec<Node>>, field: Field) -> Self {
+        let Encoded {
+            nodes,
             goal,
             context,
             candidates,
-            expert: 0,
-            successes: Vec::new(),
-        })
+            expert,
+            successes,
+        } = input;
+        Self {
+            binding: String::new(),
+            field,
+            nodes,
+            goal,
+            context,
+            candidates,
+            expert,
+            successes,
+        }
     }
 
     pub fn encode(decision: &Decision) -> Result<Self, Failure> {
@@ -293,86 +320,132 @@ impl Graph {
     /// A bounded view of existing checked operands, for replay choices whose
     /// full formulas cannot jointly fit the model's graph.
     pub(super) fn encode_at_depth(decision: &Decision, depth: usize) -> Result<Self, Failure> {
-        if decision.context.len() > MAX_CONTEXT || decision.candidates.is_empty() {
-            return Err(Failure::DecisionCapacity);
-        }
-        let witnessed = decision
-            .candidates
-            .get(decision.expert)
-            .ok_or(Failure::MissingExpert)?;
-        // Equivalent universal effects share the checked target mass and
-        // the same model representation, including a vacuous instantiation.
-        let equivalent = |a: &super::model::Candidate, b: &super::model::Candidate| {
-            a.rule == super::model::Rule::UniversalInstance
-                && a.rule == b.rule
-                && a.premises == b.premises
-                && a.consequences == b.consequences
-        };
-        let successes = decision
-            .candidates
-            .iter()
-            .enumerate()
-            .filter(|(i, candidate)| *i == decision.expert || equivalent(witnessed, candidate))
-            .map(|(i, _)| i)
-            .collect();
-        let mut builder = Builder::new();
-        let goal = builder.formula(decision.goal.view(), 0, depth)?;
-        let mut context = Vec::new();
-        for binding in &decision.context {
-            let root = builder.formula(binding.formula.view(), 0, depth)?;
-            builder.nodes[root].role |= 2;
-            context.push(root);
-        }
-        builder.nodes[goal].role |= 1;
-        let mut candidates = Vec::new();
-        for (position, candidate) in decision.candidates.iter().enumerate() {
-            let premises = candidate
-                .premises
-                .iter()
-                .map(|i| context.get(*i).copied().ok_or(Failure::MissingPremise))
-                .collect::<Result<Vec<_>, Failure>>()?;
-            if premises.is_empty() {
-                return Err(Failure::MissingPremise);
-            }
-            let conclusions = candidate
-                .consequences
-                .iter()
-                .map(|formula| builder.formula(formula.view(), 0, depth))
-                .collect::<Result<Vec<_>, _>>()?;
-            let left = builder.pair(&premises)?;
-            let right = builder.pair(&conclusions)?;
-            let redundant = candidate.replacement.is_some()
-                && decision
-                    .candidates
-                    .iter()
-                    .enumerate()
-                    .any(|(other, action)| position != other && equivalent(candidate, action));
-            let symbol = if redundant {
-                0
-            } else {
-                candidate
-                    .replacement
-                    .map(|v| builder.free_slot(v.identifier()))
-                    .transpose()?
-                    .unwrap_or(0)
-            };
-            candidates.push(builder.push(Node {
-                kind: candidate.rule.kind(),
-                left,
-                right,
-                role: 0,
-                symbol,
-            })?);
-        }
-        Ok(Self {
-            binding: String::new(),
-            field: Field::Action,
-            nodes: builder.nodes,
-            goal,
-            context,
-            candidates,
-            expert: decision.expert,
-            successes,
-        })
+        Ok(Self::from_encoding(
+            encode_decision(decision, depth)?,
+            Field::Action,
+        ))
     }
+}
+
+/// The Finder supplies relation operands and the finite question grammar.
+/// This inference menu carries no checked action labels.
+pub(super) fn encode_recipes<S: NodeSink>(
+    relations: &[&naome_foundation::Formula],
+) -> Result<Encoded<S>, Failure> {
+    let mut builder = Builder::<S>::new();
+    let mut context = Vec::with_capacity(relations.len());
+    for formula in relations {
+        let root = builder.formula(formula.view(), 0, 4)?;
+        builder.nodes.mark(root, 2);
+        context.push(root);
+    }
+    let goal = *context.first().ok_or(Failure::DecisionCapacity)?;
+    builder.nodes.mark(goal, 1);
+    let mut candidates = Vec::with_capacity(QUESTION_RECIPES);
+    for variation in 0..QUESTION_VARIATIONS {
+        for operator in 0..QUESTION_OPERATORS {
+            candidates.push(builder.push(Node {
+                kind: QUESTION_OPERATOR_START + operator as i32,
+                left: goal,
+                right: 0,
+                role: 0,
+                symbol: variation as i32,
+            })?);
+            builder.nodes.action(vec![goal], Vec::new());
+        }
+    }
+    Ok(Encoded {
+        nodes: builder.nodes,
+        goal,
+        context,
+        candidates,
+        expert: 0,
+        successes: Vec::new(),
+    })
+}
+
+pub(super) fn encode_decision<S: NodeSink>(
+    decision: &Decision,
+    depth: usize,
+) -> Result<Encoded<S>, Failure> {
+    if decision.context.len() > MAX_CONTEXT || decision.candidates.is_empty() {
+        return Err(Failure::DecisionCapacity);
+    }
+    let witnessed = decision
+        .candidates
+        .get(decision.expert)
+        .ok_or(Failure::MissingExpert)?;
+    // Equivalent universal effects share the checked target mass and
+    // the same model representation, including a vacuous instantiation.
+    let equivalent = |a: &super::model::Candidate, b: &super::model::Candidate| {
+        a.rule == super::model::Rule::UniversalInstance
+            && a.rule == b.rule
+            && a.premises == b.premises
+            && a.consequences == b.consequences
+    };
+    let successes = decision
+        .candidates
+        .iter()
+        .enumerate()
+        .filter(|(i, candidate)| *i == decision.expert || equivalent(witnessed, candidate))
+        .map(|(i, _)| i)
+        .collect();
+    let mut builder = Builder::<S>::new();
+    let goal = builder.formula(decision.goal.view(), 0, depth)?;
+    let mut context = Vec::new();
+    for binding in &decision.context {
+        let root = builder.formula(binding.formula.view(), 0, depth)?;
+        builder.nodes.mark(root, 2);
+        context.push(root);
+    }
+    builder.nodes.mark(goal, 1);
+    let mut candidates = Vec::new();
+    for (position, candidate) in decision.candidates.iter().enumerate() {
+        let premises = candidate
+            .premises
+            .iter()
+            .map(|i| context.get(*i).copied().ok_or(Failure::MissingPremise))
+            .collect::<Result<Vec<_>, Failure>>()?;
+        if premises.is_empty() {
+            return Err(Failure::MissingPremise);
+        }
+        let conclusions = candidate
+            .consequences
+            .iter()
+            .map(|formula| builder.formula(formula.view(), 0, depth))
+            .collect::<Result<Vec<_>, _>>()?;
+        let left = builder.pair(&premises)?;
+        let right = builder.pair(&conclusions)?;
+        let redundant = candidate.replacement.is_some()
+            && decision
+                .candidates
+                .iter()
+                .enumerate()
+                .any(|(other, action)| position != other && equivalent(candidate, action));
+        let symbol = if redundant {
+            0
+        } else {
+            candidate
+                .replacement
+                .map(|v| builder.free_slot(v.identifier()))
+                .transpose()?
+                .unwrap_or(0)
+        };
+        candidates.push(builder.push(Node {
+            kind: candidate.rule.kind(),
+            left,
+            right,
+            role: 0,
+            symbol,
+        })?);
+        builder.nodes.action(premises, conclusions);
+    }
+    Ok(Encoded {
+        nodes: builder.nodes,
+        goal,
+        context,
+        candidates,
+        expert: decision.expert,
+        successes,
+    })
 }
