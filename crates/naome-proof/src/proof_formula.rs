@@ -83,9 +83,14 @@ impl ProofFormula {
     /// Returns definition references in canonical prefix order.
     #[must_use]
     pub fn definition_references(&self) -> Vec<DefinitionId> {
-        match &self.0 {
-            FormulaRepresentation::Primitive(_) => Vec::new(),
-            FormulaRepresentation::Defined(formula) => formula.definition_references(),
+        let mut references = Vec::new();
+        self.append_definition_references(&mut references);
+        references
+    }
+
+    pub(crate) fn append_definition_references(&self, references: &mut Vec<DefinitionId>) {
+        if let Some(formula) = self.as_defined() {
+            formula.append_definition_references(references);
         }
     }
 

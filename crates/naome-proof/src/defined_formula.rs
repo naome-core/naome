@@ -211,8 +211,12 @@ impl DefinedFormula {
     #[must_use]
     pub fn definition_references(&self) -> Vec<DefinitionId> {
         let mut references = Vec::new();
-        collect_definition_references(&self.0, &mut references);
+        self.append_definition_references(&mut references);
         references
+    }
+
+    pub(crate) fn append_definition_references(&self, references: &mut Vec<DefinitionId>) {
+        collect_definition_references(&self.0, references);
     }
 
     pub(crate) fn first_definition_reference(&self) -> Option<DefinitionId> {

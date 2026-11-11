@@ -408,7 +408,7 @@ impl ProofStep {
     pub fn definition_references(&self) -> Vec<DefinitionId> {
         let mut references = Vec::new();
         let mut extend = |formula: &ProofFormula| {
-            references.extend(formula.definition_references());
+            formula.append_definition_references(&mut references);
         };
         match self {
             Self::Simplification {
