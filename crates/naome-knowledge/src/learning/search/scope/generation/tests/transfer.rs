@@ -101,7 +101,8 @@ fn checked_decoder_replay_weight_transfer() {
     let mut cursor = 91;
     let mut trainer = Engine::default();
     let phase = crate::learning::meta::Plan::targeted().phase(0);
-    for _ in 0..4 {
+    const UNITS: u64 = 4;
+    for _ in 0..UNITS {
         after = trainer
             .train_replay_using(
                 &after,
@@ -119,7 +120,10 @@ fn checked_decoder_replay_weight_transfer() {
         state.model, before,
         "candidate training must preserve the serving checkpoint"
     );
-    assert_eq!(after.updates, before.updates + 4);
+    assert_eq!(
+        after.updates,
+        before.updates + UNITS * crate::learning::model::UPDATES_PER_UNIT
+    );
     assert!(after.model.is_some() && after.optimizer.is_some());
 
     let mut engine = Engine::default();
