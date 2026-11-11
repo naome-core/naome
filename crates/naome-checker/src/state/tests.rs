@@ -361,3 +361,28 @@ fn verification_only_registration_rejects_every_identity_collision() {
     assert_eq!(state.derivations.len(), 1);
     assert_eq!(state.statements.len(), 1);
 }
+
+#[test]
+fn memory_statement_lookup_borrows_known_formula_and_enforces_length() {
+    use crate::context::{ContextError, ContextView};
+    use naome_proof::StatementId;
+    let mut state = ArtifactState::new();
+    let proof = axiom(ZfcAxiom::Pairing);
+    let id = proof.statement_id();
+    let expected = proof.conclusion().clone();
+    state.register_proof(proof).unwrap();
+    let (_, known, length) = state.known_statement(id).unwrap();
+    let found = state.statement_formula(id, length).unwrap().unwrap();
+    assert!(std::ptr::eq(known, found.as_ref()));
+    assert_eq!(found.as_ref(), &expected);
+    assert!(matches!(
+        state.statement_formula(id, length - 1),
+        Err(ContextError::Limit)
+    ));
+    assert!(
+        state
+            .statement_formula(StatementId::from_bytes([0; 32]), length)
+            .unwrap()
+            .is_none()
+    );
+}
