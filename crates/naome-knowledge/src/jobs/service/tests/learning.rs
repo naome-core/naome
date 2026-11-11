@@ -73,6 +73,156 @@ fn finder_keeps_the_active_policy_across_feedback_revisions() {
 }
 
 #[test]
+fn a_qualified_proposal_survives_context_growth_and_reopens_with_a_paid_retry() {
+    use crate::learning::{ArtifactIo, Engine, Preparation, TRAINING_UNITS, tests as fixture};
+    let (directory, mut owner) = native();
+    let mut initial = learning(&owner);
+    initial["preparation"] = serde_json::json!(Preparation::Targeted);
+    owner.journal.learning = Some(serde_json::from_value(initial).unwrap());
+    let question = fixture::own_question();
+    let (proof_job, _reply) = submit_native(
+        &mut owner,
+        Input::Solve {
+            question: question.clone(),
+        },
+    );
+    let solution = checked_solution();
+    finish(&mut owner, proof_job, solution.clone());
+    admit_own_solution(&mut owner, proof_job, &question, &solution);
+    let (original, _reply) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
+    owner.journal.records.get_mut(&original).unwrap().state = State::Running;
+    owner.reserve(original, 1).unwrap();
+    let mut completed = owner.journal.records[&original]
+        .native
+        .as_deref()
+        .unwrap()
+        .clone();
+    let blobs = fixture::qualified_job_fixture(&mut completed);
+    let chunk_bytes = crate::resources::limits().native_model_chunk_bytes;
+    for (blob, bytes) in &blobs {
+        for range in blob.ranges() {
+            let part =
+                &bytes[range.start * chunk_bytes..(range.end * chunk_bytes).min(bytes.len())];
+            owner
+                .disk
+                .model_io(
+                    &mut owner.journal,
+                    original,
+                    1,
+                    blob,
+                    range,
+                    Some(part.to_vec()),
+                )
+                .unwrap();
+        }
+    }
+    let record = owner.journal.records.get_mut(&original).unwrap();
+    let job = record.native.as_mut().unwrap();
+    job.progress = completed.progress;
+    job.history_request = None;
+    let units = job.units();
+    record.checkpoint = units;
+    record.reserved_units = units;
+    owner
+        .journal
+        .accounts
+        .get_mut(&record.input.account_key())
+        .unwrap()
+        .reserved_units = units;
+    owner.journal.total_reserved_units += u64::from(units - 1);
+
+    fixture::grow_qualification_context(owner.journal.learning.as_mut().unwrap());
+    let base = learning(&owner);
+    owner
+        .complete(
+            original,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(Output::Native {
+                    solution: None,
+                    frontier: None,
+                    terminal: crate::learning::experience::TerminalEvidence::NoSearch(
+                        crate::learning::experience::NoSearch::TrainingOnly,
+                    )
+                    .into(),
+                }),
+            },
+        )
+        .unwrap();
+    assert!(!owner.journal.records[&original].acknowledged);
+    assert_eq!(learning(&owner), base);
+
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
+    owner.recover_internal().unwrap();
+    let retry = owner.journal.next_id - 1;
+    assert_eq!(retry, original + 1);
+    assert!(owner.journal.records[&original].acknowledged);
+    let record = &owner.journal.records[&retry];
+    assert_eq!(
+        record.input,
+        Input::Train {
+            epoch: 1,
+            requalify: Some(original)
+        }
+    );
+    assert_eq!(record.reserved_units, 0);
+    let native = record.native.as_ref().unwrap();
+    assert_eq!(native.units(), units - TRAINING_UNITS);
+    assert!(native.history_request.is_none());
+    assert_eq!(serde_json::to_value(&native.base).unwrap(), base);
+    owner.recover_internal().unwrap();
+    assert_eq!(owner.journal.next_id, retry + 1);
+    owner.disk.collect_models(&mut owner.journal).unwrap();
+
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
+    assert_eq!(learning(&owner)["model"], base["model"]);
+    owner.journal.records.get_mut(&retry).unwrap().state = State::Running;
+    owner.reserve(retry, 1).unwrap();
+    let mut store = fixture::MemoryStore::default();
+    for (blob, expected) in blobs {
+        for range in blob.ranges() {
+            let actual = owner
+                .disk
+                .model_io(&mut owner.journal, retry, 1, &blob, range.clone(), None)
+                .unwrap();
+            assert_eq!(
+                actual,
+                expected[range.start * chunk_bytes..(range.end * chunk_bytes).min(expected.len())]
+            );
+            store.write(&blob, range, actual).unwrap();
+        }
+    }
+    let native = owner
+        .journal
+        .records
+        .get_mut(&retry)
+        .unwrap()
+        .native
+        .as_mut()
+        .unwrap();
+    let mut worker = native.as_ref().clone();
+    worker
+        .execute(1, None, retry, &mut Engine::default(), &mut store)
+        .unwrap();
+    let progress = worker.progress.unwrap();
+    assert_eq!(progress.unit, 1);
+    assert_eq!(progress.training_cost.states, 0);
+    native.retain_progress(retry, progress).unwrap();
+    owner.disk.verify_models(native).unwrap();
+}
+
+#[test]
 fn native_completion_binds_its_actual_model_terminal_trace_and_work() {
     use crate::learning::experience::{ExperienceSummary, TerminalEvidence};
     let (_directory, mut owner) = native();
@@ -419,7 +569,13 @@ fn bounded_journal_history_includes_terminal_failures_without_invented_training_
     state["history_cursor"]["lane"] = serde_json::json!("Records");
     owner.journal.learning = Some(serde_json::from_value(state.clone()).unwrap());
     owner.save().unwrap();
-    let (id, _receiver) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receiver) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     let request = owner.journal.records[&id]
         .native
         .as_ref()
@@ -633,7 +789,13 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
             .len()
     );
     let epoch = owner.journal.learning.as_ref().unwrap().learning_epoch();
-    let (training, _) = submit_native(&mut owner, Input::Train { epoch });
+    let (training, _) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch,
+            requalify: None,
+        },
+    );
     let native = owner
         .journal
         .records
@@ -767,7 +929,13 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
 fn the_job_owner_accepts_the_complete_bounded_training_artifact_allowance() {
     let (_directory, mut owner) = native();
     accepted(&mut owner);
-    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
     for index in 0..crate::learning::MAX_TRAINING_ARTIFACTS {
@@ -793,7 +961,13 @@ fn the_job_owner_accepts_the_complete_bounded_training_artifact_allowance() {
 fn native_model_chunks_require_original_training_reservations_and_immutable_read_custody() {
     let (_directory, mut owner) = native();
     accepted(&mut owner);
-    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     let blob = crate::learning::Blob::of(b"bounded-model");
     assert_eq!(
         owner
@@ -956,7 +1130,13 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
 fn model_chunk_groups_commit_atomically_and_charge_every_original_chunk_after_restart() {
     let (directory, mut owner) = native();
     accepted(&mut owner);
-    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
     let bytes = vec![37; crate::resources::limits().native_model_chunk_bytes * 2 + 17];
@@ -1014,7 +1194,13 @@ fn model_chunk_groups_commit_atomically_and_charge_every_original_chunk_after_re
 fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allowance() {
     let (_directory, mut owner) = native();
     accepted(&mut owner);
-    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
     let before = owner.journal.records[&id].clone();
@@ -1634,7 +1820,13 @@ fn evicted_own_history_is_reserved_once_and_reloads_identically_after_reopening(
     state["anchors"] = serde_json::json!([]);
     owner.journal.learning = Some(serde_json::from_value(state.clone()).unwrap());
     owner.save().unwrap();
-    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     let request = owner.journal.records[&id]
         .native
         .as_ref()
@@ -1850,7 +2042,13 @@ fn an_unselected_checked_peer_source_is_rechecked_without_claiming_new_samples()
     let receipt: PeerReceipt = crate::checkpoint::decode(&payload).unwrap();
     assert!(matches!(receipt.status, PeerStatus::Unsupported { .. }));
     let before = learning(&owner);
-    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    let (id, _receive) = submit_native(
+        &mut owner,
+        Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
+    );
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
     let request = owner.journal.records[&id]
@@ -1908,7 +2106,13 @@ fn historical_admission_must_still_exist_and_match_the_original_source_record() 
     for swapped in [false, true] {
         let (_directory, mut owner) = native();
         let source = accepted(&mut owner);
-        let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+        let (id, _receive) = submit_native(
+            &mut owner,
+            Input::Train {
+                epoch: 1,
+                requalify: None,
+            },
+        );
         owner.journal.records.get_mut(&id).unwrap().state = State::Running;
         owner.reserve(id, 1).unwrap();
         let request = owner.journal.records[&id]

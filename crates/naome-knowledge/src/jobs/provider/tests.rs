@@ -193,7 +193,10 @@ fn supervisor_failure_survives_provider_drive() {
 #[test]
 fn mock_provider_rejects_native_jobs_with_a_registered_code() {
     let mut provider = Mock {
-        input: Input::Train { epoch: 1 },
+        input: Input::Train {
+            epoch: 1,
+            requalify: None,
+        },
         work: MockWork::default(),
     };
     let failure = provider.result(&mut Grants::default()).unwrap_err();

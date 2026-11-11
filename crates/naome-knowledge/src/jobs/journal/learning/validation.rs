@@ -208,6 +208,16 @@ pub(in crate::jobs::journal) fn validate_rows(
     c.scan("record", crate::checkpoint::MAX_ROW, |key, bytes| {
         let source: Record = crate::checkpoint::decode(bytes)?;
         if let Some(native) = &source.native {
+            if let Input::Train { requalify: Some(original), .. } = source.input {
+                let original = record(c, original)?;
+                if original.state != State::Complete
+                    || original.id >= source.id
+                    || original.native.as_ref().and_then(|job| native.base.requalify(job))
+                        != native.requalification
+                {
+                    return Err(crate::ResearchFailure::JobPromotionBinding.into());
+                }
+            }
             for evidence in &native.evidence {
                 let origin = record(c, evidence.job)?;
                 let Some(Output::Native {

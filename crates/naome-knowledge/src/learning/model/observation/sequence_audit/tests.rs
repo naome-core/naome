@@ -18,6 +18,7 @@ fn an_unstarted_job_and_closed_resource_gate_cannot_produce_an_audit() {
         promotions: 0,
         rejections: 0,
         candidate: None,
+        proposal: None,
         rng: state.draws,
         first_loss: None,
         last_loss: None,

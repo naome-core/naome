@@ -454,6 +454,10 @@ impl Disk {
     ) -> Result<(), crate::Error> {
         for blob in native.blobs() {
             let inherited = native.base.blobs().any(|known| known == blob)
+                || native
+                    .requalification
+                    .as_ref()
+                    .is_some_and(|source| source.blobs().any(|known| known == blob))
                 || native.history.as_ref().is_some_and(|receipt| {
                     &receipt.blob == blob
                         && native

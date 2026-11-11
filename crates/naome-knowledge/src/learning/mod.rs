@@ -210,6 +210,7 @@ pub(crate) struct Progress {
     promotions: u64,
     rejections: u64,
     candidate: Option<Checkpoint>,
+    proposal: Option<Checkpoint>,
     rng: u64,
     first_loss: Option<f32>,
     last_loss: Option<f32>,
@@ -366,6 +367,7 @@ pub(crate) struct Job {
     pub history: Option<history::Receipt>,
     pub evidence: Vec<Evidence>,
     pub training: bool,
+    pub requalification: Option<Requalification>,
     pub research: Option<crate::research_value::Frame>,
     pub required: Vec<String>,
     pub prerequisites: Prerequisites,
@@ -375,6 +377,20 @@ pub(crate) struct Job {
     pub written: Vec<(u32, Blob)>,
     pub io_bytes: usize,
     pub io_operations: usize,
+}
+
+/// An already trained proposal inherited from a completed local learning job.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Requalification {
+    pub epoch: u64,
+    candidate: Checkpoint,
+}
+
+impl Requalification {
+    pub fn blobs(&self) -> impl Iterator<Item = &Blob> {
+        self.candidate.blobs()
+    }
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -485,9 +501,36 @@ impl Job {
                 .map_or(&self.base.model, |p| &p.model),
         )
     }
+    fn training_units(&self) -> u32 {
+        if self.training && self.requalification.is_none() && self.base.epoch > self.base.trained {
+            model::TRAINING_UNITS
+        } else {
+            0
+        }
+    }
+
+    fn meta_trial(&self) -> bool {
+        self.training_units() != 0 && self.base.preparation == Preparation::Meta
+    }
+
+    pub(crate) fn qualified_proposal(&self) -> Option<Requalification> {
+        let progress = self.progress.as_ref()?;
+        if self.requalification.is_some()
+            || progress.qualification != Qualification::Promoted
+            || !self.promotion_bound(progress)
+        {
+            return None;
+        }
+        Some(Requalification {
+            epoch: progress.trained,
+            candidate: progress.proposal.clone()?,
+        })
+    }
+
     fn promotion_bound(&self, progress: &Progress) -> bool {
-        let evaluated =
-            self.training && progress.unit == self.units() && progress.first_loss.is_some();
+        let evaluated = self.training
+            && progress.unit == self.units()
+            && (progress.first_loss.is_some() || self.requalification.is_some());
         if evaluated != progress.assessment.is_some() {
             return false;
         }
@@ -548,6 +591,7 @@ impl Job {
                 || next.wall_micros < previous.wall_micros
                 || next.meta_cpu_micros < previous.meta_cpu_micros
                 || next.meta_wall_micros < previous.meta_wall_micros
+                || previous.proposal.is_some() && next.proposal != previous.proposal
                 || !next.evaluation.extends(&previous.evaluation)
                 || previous.transfer.observed & next.transfer.observed != previous.transfer.observed
                 || (previous.transfer.before ^ next.transfer.before) & previous.transfer.observed
@@ -556,7 +600,7 @@ impl Job {
             {
                 return Err(crate::ResearchFailure::ProgressContinuationMismatch.into());
             }
-            if next.unit > model::TRAINING_UNITS
+            if next.unit > self.training_units()
                 && next.unit < self.units()
                 && previous.causal.selected == next.causal.selected
                 && next.candidate != previous.candidate
@@ -591,6 +635,9 @@ impl Job {
     }
     pub fn blobs(&self) -> Vec<&Blob> {
         let mut blobs: Vec<_> = self.base.blobs().collect();
+        if let Some(proposal) = &self.requalification {
+            blobs.extend(proposal.blobs());
+        }
         if let Some(history) = &self.history {
             blobs.push(&history.blob);
         }
@@ -602,6 +649,9 @@ impl Job {
             if let Some(candidate) = &p.candidate {
                 blobs.extend(candidate.blobs());
             }
+            if let Some(proposal) = &p.proposal {
+                blobs.extend(proposal.blobs());
+            }
             if let Some(update) = &p.meta_update {
                 blobs.extend(update.model.blobs());
             }
@@ -612,8 +662,9 @@ impl Job {
         self.blobs().into_iter().any(|b| b == blob)
     }
     pub fn units(&self) -> u32 {
-        if self.training && self.base.epoch > self.base.trained {
-            model::TRAINING_UNITS + EVALUATIONS + 1
+        let training = self.training_units();
+        if training != 0 || self.requalification.is_some() {
+            training + EVALUATIONS + 1
         } else {
             1
         }
@@ -663,6 +714,18 @@ impl Job {
             return Err(crate::ResearchFailure::JobParentSnapshot.into());
         }
         self.base.validate()?;
+        if let Some(proposal) = &self.requalification {
+            proposal.candidate.validate()?;
+            if !self.training
+                || self.history_request.is_some()
+                || proposal.epoch <= self.base.trained
+                || proposal.epoch > self.base.epoch
+                || proposal.candidate.seed != self.base.model.seed
+                || proposal.candidate.updates <= self.base.model.updates
+            {
+                return Err(crate::ResearchFailure::JobPromotionBinding.into());
+            }
+        }
         if self.training && !self.prerequisites.is_empty() {
             return Err(crate::ResearchFailure::JobPrerequisiteRole.into());
         }
@@ -731,6 +794,32 @@ impl Job {
             blob.validate()?;
         }
         if let Some(p) = &self.progress {
+            if let Some(proposal) = &p.proposal {
+                proposal.validate()?;
+                let training = self.training_units();
+                if training == 0
+                    || p.unit < training
+                    || p.unit == training && p.candidate.as_ref() != Some(proposal)
+                    || !p.causal.proposal_matches(proposal)
+                {
+                    return Err(crate::ResearchFailure::CausalTrialBinding.into());
+                }
+            } else if self.training_units() != 0
+                && p.unit >= self.training_units()
+                && p.first_loss.is_some()
+            {
+                return Err(crate::ResearchFailure::CausalTrialBinding.into());
+            }
+            if let Some(source) = &self.requalification
+                && (p.trained != source.epoch
+                    || p.first_loss.is_some()
+                    || p.last_loss.is_some()
+                    || p.plan.is_some()
+                    || p.rng != self.base.draws
+                    || !p.causal.proposal_matches(&source.candidate))
+            {
+                return Err(crate::ResearchFailure::CausalTrialBinding.into());
+            }
             if let Some(prepared) = &p.prepared {
                 prepared.blob.validate()?;
                 if self.units() == 1
@@ -775,7 +864,7 @@ impl Job {
                 {
                     return Err(crate::ResearchFailure::JobMetaPlanContext.into());
                 }
-            } else if self.units() > 1 && self.base.preparation == Preparation::Meta {
+            } else if self.meta_trial() {
                 return Err(crate::ResearchFailure::JobMetaPlanMissing.into());
             }
             if p.meta_cpu_micros > p.cpu_micros || p.meta_wall_micros > p.wall_micros {
@@ -790,7 +879,7 @@ impl Job {
                     .ok_or(crate::ResearchFailure::JobMetaUpdatePlanMissing)?;
                 if self.units() == 1
                     || p.unit != self.units()
-                    || self.base.preparation != Preparation::Meta
+                    || !self.meta_trial()
                     || update.model.updates
                         != self.base.meta.model.updates.saturating_add(meta::UPDATES)
                     || update.experience.context != selected.context
@@ -812,10 +901,7 @@ impl Job {
                 {
                     return Err(crate::ResearchFailure::JobMetaUpdateBinding.into());
                 }
-            } else if self.units() > 1
-                && p.unit == self.units()
-                && self.base.preparation == Preparation::Meta
-            {
+            } else if self.meta_trial() && p.unit == self.units() {
                 return Err(crate::ResearchFailure::JobMetaUpdateMissing.into());
             }
             if crate::checkpoint::encode(p)?
@@ -831,9 +917,9 @@ impl Job {
                 return Err(crate::ResearchFailure::JobPromotionBinding.into());
             }
             p.transfer.validate()?;
-            let evaluated_units = if p.first_loss.is_some() {
+            let evaluated_units = if p.first_loss.is_some() || self.requalification.is_some() {
                 p.unit
-                    .saturating_sub(model::TRAINING_UNITS)
+                    .saturating_sub(self.training_units())
                     .min(EVALUATIONS) as usize
             } else {
                 0
@@ -931,6 +1017,7 @@ impl Job {
         }
         let wall_started = std::time::Instant::now();
         let cpu_started = meta::cpu_micros()?;
+        let training_units = self.training_units();
         let mut p = self.progress.clone().unwrap_or(Progress {
             finder: None,
             prepared: None,
@@ -941,10 +1028,17 @@ impl Job {
             training_cost: model::TrainingCost::default(),
             unit: 0,
             model: self.base.model.clone(),
-            trained: self.base.trained,
+            trained: self
+                .requalification
+                .as_ref()
+                .map_or(self.base.trained, |source| source.epoch),
             promotions: self.base.promotions,
             rejections: self.base.rejections,
-            candidate: None,
+            candidate: self
+                .requalification
+                .as_ref()
+                .map(|source| source.candidate.clone()),
+            proposal: None,
             rng: self.base.draws,
             first_loss: None,
             last_loss: None,
@@ -968,10 +1062,14 @@ impl Job {
             meta_cpu_micros: 0,
             meta_wall_micros: 0,
             result: None,
-            qualification: Qualification::NoNewAcceptedSolutions,
+            qualification: if self.requalification.is_some() {
+                Qualification::Pending
+            } else {
+                Qualification::NoNewAcceptedSolutions
+            },
             generation: None,
         });
-        let working = if self.units() > 1 && unit <= model::TRAINING_UNITS {
+        let working = if unit <= training_units {
             self.prepare_history(&mut p, engine, io)?
         } else {
             None
@@ -986,7 +1084,7 @@ impl Job {
                 )
             },
         );
-        if self.units() > 1 && unit == 1 {
+        if training_units != 0 && unit == 1 {
             let wall = std::time::Instant::now();
             let cpu = meta::cpu_micros()?;
             let selection =
@@ -997,7 +1095,7 @@ impl Job {
             p.meta_cpu_micros += meta::cpu_micros()?.saturating_sub(cpu);
             p.meta_wall_micros += wall.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         }
-        if self.units() > 1 && unit <= model::TRAINING_UNITS {
+        if unit <= training_units {
             let parent = p.candidate.as_ref().unwrap_or(&self.base.model);
             let phase = p
                 .plan
@@ -1066,11 +1164,12 @@ impl Job {
             } else {
                 p.qualification = Qualification::NoAmbiguousTrainingDecisions;
             }
-            if unit == model::TRAINING_UNITS {
+            if unit == training_units {
                 p.trained = self.base.epoch;
+                p.proposal = p.candidate.clone();
             }
-        } else if self.units() > 1 && unit <= model::TRAINING_UNITS + EVALUATIONS {
-            let index = (unit - model::TRAINING_UNITS - 1) as usize;
+        } else if self.units() > 1 && unit <= training_units + EVALUATIONS {
+            let index = (unit - training_units - 1) as usize;
             p.evaluate(job, index, &self.base, engine, io)?;
         } else {
             let candidate_model = p.candidate.as_ref().map(digest);
@@ -1092,7 +1191,7 @@ impl Job {
                     p.qualification = p.rejection(assessment);
                 }
             }
-            if self.units() > 1 && self.base.preparation == Preparation::Meta {
+            if self.meta_trial() {
                 let selection = p
                     .plan
                     .as_ref()

@@ -1004,10 +1004,15 @@ fn validate_record(
         if native.training != matches!(r.input, Input::Train { .. }) {
             return Err(crate::ResearchFailure::JournalTrainingRole.into());
         }
-        if let Input::Train { epoch } = r.input
-            && epoch != native.base.learning_epoch()
-        {
-            return Err(crate::ResearchFailure::JournalLearningEpoch.into());
+        if let Input::Train { epoch, requalify } = r.input {
+            let expected = match (&native.requalification, requalify) {
+                (Some(proposal), Some(source)) if source < id => proposal.epoch,
+                (None, None) => native.base.learning_epoch(),
+                _ => return Err(crate::ResearchFailure::JobPromotionBinding.into()),
+            };
+            if epoch != expected {
+                return Err(crate::ResearchFailure::JournalLearningEpoch.into());
+            }
         }
         native.validate()?;
         if let Some(report) = native.progress.as_ref().and_then(|p| p.frontier.as_ref()) {
@@ -1076,7 +1081,16 @@ fn validate_record(
         {
             return Err(crate::ResearchFailure::JournalProviderRole.into());
         }
-    } else if r.provider == crate::learning::PROVIDER || r.binding.catalog.is_some() {
+    } else if r.provider == crate::learning::PROVIDER
+        || r.binding.catalog.is_some()
+        || matches!(
+            r.input,
+            Input::Train {
+                requalify: Some(_),
+                ..
+            }
+        )
+    {
         return Err(crate::ResearchFailure::JournalProviderMissing.into());
     }
     r.binding.validate_role(&r.input)?;
