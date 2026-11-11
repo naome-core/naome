@@ -12,10 +12,7 @@ struct Theorem {
 }
 
 fn length(formula: &Formula) -> Result<usize, Failure> {
-    formula
-        .encode_canonical()
-        .map(|bytes| bytes.len())
-        .map_err(|_| LIMIT)
+    formula.encoded_length().map_err(|_| LIMIT)
 }
 
 fn reserve(formulas: &[&Formula], work: &mut Work) -> Result<(), Failure> {
