@@ -22,7 +22,7 @@ autotests = false
 autobenches = false
 description = "Tensor library with user-friendly APIs and automatic differentiation support"
 documentation = "https://docs.rs/burn-tensor"
-readme = "README.md"
+readme = false
 keywords = [
     "deep-learning",
     "machine-learning",
@@ -44,8 +44,6 @@ features = ["doc"]
 rustdoc-args = [
     "--cfg",
     "docsrs",
-    "--html-in-header",
-    "katex-header.html",
 ]
 
 [features]
@@ -157,34 +155,6 @@ x86-v4 = ["burn-dispatch/x86-v4"]
 [lib]
 name = "burn_tensor"
 path = "src/lib.rs"
-
-[[example]]
-name = "einsum"
-path = "examples/einsum.rs"
-
-[[test]]
-name = "device_settings"
-path = "tests/device_settings.rs"
-
-[[test]]
-name = "device_settings_default_creation"
-path = "tests/device_settings_default_creation.rs"
-
-[[test]]
-name = "device_settings_explicit_creation"
-path = "tests/device_settings_explicit_creation.rs"
-
-[[test]]
-name = "einsum_diagonal_dtype"
-path = "tests/einsum_diagonal_dtype.rs"
-
-[[test]]
-name = "einsum_macros"
-path = "tests/einsum_macros.rs"
-
-[[test]]
-name = "shape_macros"
-path = "tests/shape_macros.rs"
 
 [dependencies.branches]
 version = "0.4.6"

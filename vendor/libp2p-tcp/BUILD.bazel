@@ -13,13 +13,6 @@ rust_library(
     name = "libp2p_tcp",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    compile_data = glob(
-        [
-            "src/**/*.hex",
-            "tests/fixtures/**",
-        ],
-        allow_empty = True,
-    ),
     crate_features = ["tokio"],
     edition = "2024",
     lint_config = ":cargo_lints",

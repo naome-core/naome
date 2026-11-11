@@ -104,10 +104,6 @@ features = [
 ]
 default-features = false
 
-[dev-dependencies.tracing-subscriber]
-version = "0.3.19"
-features = ["env-filter"]
-
 [lints.clippy]
 dbg_macro = "warn"
 manual_let_else = "warn"

@@ -13,13 +13,6 @@ rust_library(
     name = "libp2p_dcutr",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    compile_data = glob(
-        [
-            "src/**/*.hex",
-            "tests/fixtures/**",
-        ],
-        allow_empty = True,
-    ),
     edition = "2021",
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
