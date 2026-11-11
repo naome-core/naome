@@ -1480,7 +1480,7 @@ fn solve_with_generation_observed(
                             .certificate
                             .steps()
                             .iter()
-                            .map(|step| step.definition_references().len())
+                            .map(|step| step.definition_reference_count())
                             .sum();
                         if let search::Tree::Definitions {
                             entries,
@@ -1496,7 +1496,7 @@ fn solve_with_generation_observed(
                         {
                             cost.definition_references = operands
                                 .iter()
-                                .map(|(_, formula)| formula.definition_references().len())
+                                .map(|(_, formula)| formula.definition_reference_count())
                                 .sum();
                         }
                     } else {
@@ -2043,7 +2043,7 @@ fn search_compiled_question(
                     .steps()
                     .iter()
                     .chain(verified.lemmas.iter().flat_map(|c| c.steps().iter()))
-                    .map(|step| step.definition_references().len())
+                    .map(|step| step.definition_reference_count())
                     .sum::<usize>(),
                 verified.certificate.steps().len()
                     + verified
