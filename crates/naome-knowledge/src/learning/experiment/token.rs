@@ -8,7 +8,7 @@ use serde_json::json;
 mod policy;
 use policy::Policy;
 
-const SEED: u64 = 0x544f_4b45_4e;
+const SEED: u64 = 0x0054_4f4b_454e;
 const TRAIN_QUESTIONS: usize = 48;
 const TRAIN_UNITS: u64 = 4;
 const TRAIN_BUDGET: usize = 64;
