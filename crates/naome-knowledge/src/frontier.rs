@@ -151,11 +151,12 @@ impl Frontier {
             structural_recall: true,
             observed_root: None,
             _memory: crate::resources::MemoryLease::acquire(
-                // Resident goals, proposals and returned candidate copies have
-                // separate lifetimes. Reserve their bounded working sets.
-                crate::resources::active_limits()
+                // Goals and proposals can each occupy a full question cache.
+                // Their page copies and generated questions coexist with them.
+                // Reserve against the installed ceiling as live limits can grow.
+                crate::resources::limits()
                     .question_cache_bytes
-                    .saturating_mul(4)
+                    .saturating_mul(5)
                     .saturating_add(std::mem::size_of::<Self>())
                     .saturating_add(32 * std::mem::size_of::<Features>())
                     .saturating_add(if settings.native_proof_learning {
@@ -306,7 +307,7 @@ impl Frontier {
     ) {
         let limits = crate::resources::active_limits();
         let limit = limits.question_page.min(32);
-        let budget = limits.question_cache_bytes / 4;
+        let budget = limits.question_cache_bytes;
         let cost = question.canonical_bytes().len() * 8 + 256;
         // An item that cannot fit must not evict the useful resident pool.
         if limit == 0

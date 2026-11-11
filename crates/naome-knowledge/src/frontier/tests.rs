@@ -943,7 +943,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
             .iter()
             .map(|q| q.canonical_bytes().len() * 8 + 256)
             .sum::<usize>();
-        assert!(bytes <= crate::resources::active_limits().question_cache_bytes / 4);
+        assert!(bytes <= crate::resources::active_limits().question_cache_bytes);
     }
     assert_eq!(pending.len(), 3);
     assert_eq!(graph.accepted_count(), 3);
