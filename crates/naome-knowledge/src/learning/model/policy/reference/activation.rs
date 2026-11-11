@@ -71,7 +71,7 @@ pub(in crate::learning::model) struct Activation {
     pub node_count: usize,
     pub candidate_count: usize,
     pub embedding_nodes: Signature,
-    pub message_three_nodes: Signature,
+    pub role_conditioned_nodes: Signature,
     pub goal: Signature,
     pub context: Signature,
     pub actions: Vec<Signature>,
@@ -110,7 +110,7 @@ impl Policy {
     pub(in crate::learning::model) fn activation_definition() -> String {
         digest(&(
             include_str!("activation.rs"),
-            "detached ordinary encoder; node means exclude shared sentinel; 8 Walsh signs; L2-normalized mean; zero search memory; no historical-state claim",
+            "detached token encoder and role embeddings; means exclude the shared sentinel; 8 Walsh signs; L2-normalized mean; zero search memory",
         ))
     }
 
@@ -124,24 +124,18 @@ impl Policy {
             return Err("activation observer graph capacity or mapping differs".into());
         }
         let batch = Batch::from_graphs(graphs, device)?;
-        let mut h =
-            self.embedding(batch.kinds.clone(), batch.symbols.clone()) * batch.valid.clone();
+        let h = self.formula_rows(&batch);
         if h.is_autodiff() {
             return Err("activation observer requires detached inference".into());
         }
         let embedding = node_summaries(h.clone(), graphs)?;
-        // Replay only the first three ordinary layers for their intermediate
-        // measurement. All final representations and scores below use encode.
-        // This extra work is measured and charged to the diagnostic, never free.
-        for layer in self.messages.iter().take(3) {
-            h = self.next_rows(&batch, layer, h);
-        }
-        let middle = node_summaries(h, graphs)?;
+        let conditioned = h + self.roles.forward(batch.roles.clone()) * batch.valid.clone();
+        let role_conditioned = node_summaries(conditioned, graphs)?;
         let encoded = self.encode(&batch);
         let goal = values(encoded.goal.clone())?;
         let context = values(encoded.context.clone())?;
         let actions = values(encoded.candidate.clone())?;
-        let memory = recurrent.then(|| Tensor::zeros([graphs.len(), WIDTH], &batch.kinds.device()));
+        let memory = recurrent.then(|| Tensor::zeros([graphs.len(), WIDTH], &batch.device()));
         let scores = values(self.readout(encoded, memory).0)?;
         let c = batch.candidates.dims()[1];
         graphs
@@ -155,7 +149,7 @@ impl Policy {
                     node_count: graph.nodes.len() - 1,
                     candidate_count: graph.candidates.len(),
                     embedding_nodes: embedding[i].clone(),
-                    message_three_nodes: middle[i].clone(),
+                    role_conditioned_nodes: role_conditioned[i].clone(),
                     goal: Signature::of(&goal[offset..offset + WIDTH])?,
                     context: Signature::of(&context[offset..offset + WIDTH])?,
                     actions: actions[offset..offset + graph.candidates.len() * WIDTH]

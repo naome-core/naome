@@ -10,8 +10,6 @@ mod knowledge;
 mod lemma_loop;
 #[cfg(feature = "developer-tools")]
 mod lookup;
-#[cfg(feature = "developer-tools")]
-mod token;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,

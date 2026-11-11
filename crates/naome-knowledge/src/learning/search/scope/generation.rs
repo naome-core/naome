@@ -61,6 +61,21 @@ enum Field<'a> {
     },
 }
 
+impl Field<'_> {
+    fn slot(&self) -> crate::learning::graph::Field {
+        use crate::learning::graph::Field as Slot;
+        match self {
+            Self::Operation => Slot::Operation,
+            Self::ConjunctionLeft => Slot::ConjunctionLeft,
+            Self::ConjunctionRight(_) => Slot::ConjunctionRight,
+            Self::Universal => Slot::Universal,
+            Self::Replacement(_) => Slot::Replacement,
+            Self::Premise { .. } => Slot::Premise,
+            Self::Definition { .. } => Slot::Definition,
+        }
+    }
+}
+
 struct Choice<T> {
     value: T,
     rule: Rule,
@@ -176,7 +191,7 @@ impl Decoder<'_> {
         let ranker = match &mut self.selection {
             Selection::Model { ranker, .. } => ranker,
             Selection::Checked(graphs) => {
-                match Graph::encode(&decision) {
+                match Graph::encode_field(&decision, field.slot()) {
                     Ok(graph) => graphs.push(graph),
                     Err(crate::LearningGraphFailure::Capacity) => return Ok(None),
                     Err(error) => return Err(error.into()),
@@ -184,7 +199,7 @@ impl Decoder<'_> {
                 return Ok(Some(choices.swap_remove(expert).value));
             }
         };
-        let scores = match ranker.scores(&decision) {
+        let scores = match ranker.field_scores(&decision, field.slot()) {
             Ok(scores) => scores,
             Err(crate::Error::LearningGraph(crate::LearningGraphFailure::Capacity)) => {
                 return Ok(None);

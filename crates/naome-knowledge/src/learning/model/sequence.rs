@@ -31,7 +31,7 @@ impl Runtime {
             let scores = self.sequence_scores(&batch, &references.samples)?;
             Ok((batch, scores))
         } else {
-            // Keep the independent-graph control's original numerical path.
+            // Start each retained decision with independent working memory.
             let references = pool.batch(cursor);
             let batch = Batch::from_graphs(&references, &self.device)?;
             if self.observe_batches() {
@@ -181,11 +181,7 @@ impl Runtime {
             &self.device,
         );
         let denominator = mask.clone().sum().clamp_min(1.);
-        let probability = burn::tensor::activation::log_softmax(logits.clone(), 1).exp();
-        let marginal = -(probability * batch.successes.clone())
-            .sum_dim(1)
-            .clamp_min(1e-12)
-            .log();
+        let marginal = checked_losses(logits.clone(), batch);
         let per_graph = if phase.ranking_quarters == 0 {
             marginal
         } else {
@@ -211,30 +207,28 @@ impl Runtime {
         for (row, sample) in sample.iter().enumerate() {
             let witnesses = pool.witnesses(sample.graph);
             for (index, witness) in witnesses.iter().enumerate() {
-                // This predicts checked symbolic suffix work. It is not a
-                // measurement or label for physical CPU or future search time.
                 let score = logits
                     .clone()
                     .slice([row..row + 1, witness.action..witness.action + 1])
                     .reshape([1]);
-                let residual = score.clone() + (witness.remaining_steps as f32).ln_1p();
-                costs.push(residual.clone() * residual);
                 for other in &witnesses[index + 1..] {
-                    if witness.source == other.source
-                        || witness.remaining_steps == other.remaining_steps
-                    {
+                    if witness.source == other.source || witness.action == other.action {
                         continue;
                     }
                     let other_score = logits
                         .clone()
                         .slice([row..row + 1, other.action..other.action + 1])
                         .reshape([1]);
-                    let difference = if witness.remaining_steps < other.remaining_steps {
-                        other_score - score.clone()
-                    } else {
-                        score.clone() - other_score
-                    };
-                    preferences.push((difference + 0.2).clamp_min(0.));
+                    // Legal prefix probabilities are normalized within the
+                    // menu. Checked suffix work supervises relative choices.
+                    let difference = score.clone() - other_score;
+                    let target = (other.remaining_steps as f32).ln_1p()
+                        - (witness.remaining_steps as f32).ln_1p();
+                    let residual = difference.clone() - target;
+                    costs.push(residual.clone() * residual);
+                    if target != 0. {
+                        preferences.push((difference * -target.signum() + 0.2).clamp_min(0.));
+                    }
                 }
             }
         }

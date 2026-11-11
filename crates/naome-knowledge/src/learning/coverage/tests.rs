@@ -170,6 +170,7 @@ fn coverage_filter_keeps_exact_bits_and_rejects_an_unbounded_decode() {
 fn coverage_graph_failure_keeps_the_missing_index() {
     let graph = Graph {
         binding: String::new(),
+        field: crate::learning::graph::Field::Action,
         nodes: vec![],
         goal: 0,
         context: vec![],

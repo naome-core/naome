@@ -1,24 +1,24 @@
-//! A small learned graph representation and shared proof-action scorer.
+//! Shared neural policy over legal, typed action prefixes.
 
-use super::super::graph::{Batch, SYMBOLS};
+use super::{
+    batch::Batch,
+    token::{FEATURES, Row, VOCABULARY},
+};
 mod cache;
 use burn::{
-    module::{Module, Param},
-    nn::{Embedding, EmbeddingConfig, Initializer, Linear, LinearConfig},
-    tensor::{Bool, Device, Int, Tensor, activation::tanh},
+    module::Module,
+    nn::{Embedding, EmbeddingConfig, Linear, LinearConfig},
+    tensor::{Bool, Device, Int, Tensor, TensorData, activation::tanh},
 };
-pub(super) use cache::FormulaCache;
+pub(super) use cache::RowCache;
 
-pub const WIDTH: usize = 160;
-pub const LAYERS: usize = 6;
-pub const READOUT: usize = 480;
+pub const WIDTH: usize = 96;
+pub const READOUT: usize = 256;
 
 #[derive(Module, Debug)]
 pub struct Policy {
-    kinds: Embedding,
-    symbols: Embedding,
+    tokens: Embedding,
     roles: Embedding,
-    messages: Vec<Param<Tensor<2>>>,
     transition: Linear,
     readout: Linear,
     output: Linear,
@@ -29,6 +29,11 @@ pub(super) struct Encoded {
     candidate: Tensor<3>,
     context: Tensor<3>,
     invalid: Tensor<2, Bool>,
+    edges: Tensor<3>,
+    priors: Tensor<2>,
+    siblings: Tensor<3, Bool>,
+    paths: Tensor<3>,
+    aliases: Tensor<2>,
 }
 /// One inference decision's transition inputs. Only entered actions need a
 /// successor; siblings reuse the selected action's computed row.
@@ -62,7 +67,12 @@ impl Encoded {
             goal: self.goal.clone().select(0, indices.clone()),
             candidate: self.candidate.clone().select(0, indices.clone()),
             context: self.context.clone().select(0, indices.clone()),
-            invalid: self.invalid.clone().select(0, indices),
+            invalid: self.invalid.clone().select(0, indices.clone()),
+            edges: self.edges.clone().select(0, indices.clone()),
+            priors: self.priors.clone().select(0, indices.clone()),
+            siblings: self.siblings.clone().select(0, indices.clone()),
+            paths: self.paths.clone().select(0, indices.clone()),
+            aliases: self.aliases.clone().select(0, indices),
         }
     }
 }
@@ -71,28 +81,16 @@ impl Policy {
     /// Keep the native formula encoder and recurrent transition fixed while
     /// adapting the existing action readout. This changes no inference feature.
     pub(super) fn readout_training(mut self) -> Self {
-        self.kinds = self.kinds.no_grad();
-        self.symbols = self.symbols.no_grad();
+        self.tokens = self.tokens.no_grad();
         self.roles = self.roles.no_grad();
-        self.messages = self.messages.into_iter().map(Module::no_grad).collect();
         self.transition = self.transition.no_grad();
         self
     }
 
     pub fn new(device: &Device) -> Self {
         Self {
-            kinds: EmbeddingConfig::new(19, WIDTH).init(device),
-            symbols: EmbeddingConfig::new(SYMBOLS, WIDTH).init(device),
+            tokens: EmbeddingConfig::new(VOCABULARY, WIDTH).init(device),
             roles: EmbeddingConfig::new(4, WIDTH).init(device),
-            messages: (0..LAYERS)
-                .map(|_| {
-                    Initializer::Uniform {
-                        min: -0.5,
-                        max: 0.5,
-                    }
-                    .init([4, WIDTH], device)
-                })
-                .collect(),
             transition: LinearConfig::new(4 * WIDTH, WIDTH).init(device),
             readout: LinearConfig::new(5 * WIDTH, READOUT).init(device),
             output: LinearConfig::new(READOUT, 1).init(device),
@@ -100,12 +98,12 @@ impl Policy {
     }
 
     #[cfg(test)]
-    pub fn forward(&self, batch: &Batch) -> Tensor<2> {
+    pub(super) fn forward(&self, batch: &Batch) -> Tensor<2> {
         self.independent(batch, false)
     }
     pub(super) fn independent(&self, batch: &Batch, recurrent: bool) -> Tensor<2> {
         let memory =
-            recurrent.then(|| Tensor::zeros([batch.goal.dims()[0], WIDTH], &batch.kinds.device()));
+            recurrent.then(|| Tensor::zeros([batch.goal.dims()[0], WIDTH], &batch.device()));
         let encoded = self.encode(batch);
         let state = memory.map(|memory| self.recurrent_state(&encoded, memory));
         self.action_scores(encoded, state)
@@ -114,64 +112,21 @@ impl Policy {
         self.encode_with_context(batch, self.formula_rows(batch), None)
     }
 
-    fn embedding(&self, kinds: Tensor<2, Int>, symbols: Tensor<2, Int>) -> Tensor<3> {
-        self.kinds.forward(kinds) + self.symbols.forward(symbols)
-    }
-
-    fn message(
-        layer: &Param<Tensor<2>>,
-        current: Tensor<3>,
-        left: Tensor<3>,
-        right: Tensor<3>,
-    ) -> Tensor<3> {
-        let weight = layer.val();
-        let row = |i| {
-            weight
-                .clone()
-                .slice([i..i + 1, 0..WIDTH])
-                .unsqueeze_dim::<3>(0)
-        };
-        // Ordered operands have different trainable channels. Mixing adjacent
-        // channels also lets successive layers combine features.
-        let shifted = Tensor::cat(
-            vec![
-                current
-                    .clone()
-                    .slice([0..1, 0..current.dims()[1], 1..WIDTH]),
-                current.clone().slice([0..1, 0..current.dims()[1], 0..1]),
-            ],
-            2,
+    fn embed(&self, rows: &[Row], device: &Device) -> Tensor<2> {
+        let input = Tensor::from_data(
+            TensorData::new(
+                rows.iter().flatten().copied().collect::<Vec<_>>(),
+                [rows.len(), FEATURES],
+            ),
+            device,
         );
-        (current + tanh(shifted * row(0) + left * row(1) + right * row(2) + row(3)))
-            * std::f32::consts::FRAC_1_SQRT_2
-    }
-
-    fn next_rows(&self, batch: &Batch, layer: &Param<Tensor<2>>, h: Tensor<3>) -> Tensor<3> {
-        let n = batch.nodes.len();
-        let child = |indices: &Tensor<2, Int>| {
-            if h.is_autodiff() {
-                h.clone().gather(
-                    1,
-                    indices.clone().unsqueeze_dim::<3>(2).expand([1, n, WIDTH]),
-                )
-            } else {
-                h.clone()
-                    .squeeze_dim::<2>(0)
-                    .select(0, indices.clone().reshape([n]))
-                    .unsqueeze_dim::<3>(0)
-            }
-        };
-        Self::message(layer, h.clone(), child(&batch.left), child(&batch.right))
-            * batch.valid.clone()
+        self.tokens.forward(input).sum_dim(1).squeeze_dim::<2>(1) / (FEATURES as f32).sqrt()
     }
 
     fn formula_rows(&self, batch: &Batch) -> Tensor<3> {
-        let mut h =
-            self.embedding(batch.kinds.clone(), batch.symbols.clone()) * batch.valid.clone();
-        for layer in &self.messages {
-            h = self.next_rows(batch, layer, h);
-        }
-        h
+        self.embed(&batch.rows, &batch.device())
+            .unsqueeze_dim::<3>(0)
+            * batch.valid.clone()
     }
 
     fn encode_with_context(
@@ -250,11 +205,19 @@ impl Policy {
             weights.matmul(h)
         }
         .expand([b, c, WIDTH]);
+        let edges =
+            self.embed(&batch.edges, &batch.device())
+                .reshape([b, batch.edges.len() / b, WIDTH]);
         Encoded {
             goal,
             candidate,
             context,
             invalid: batch.invalid.clone(),
+            edges,
+            priors: batch.priors.clone(),
+            siblings: batch.siblings.clone(),
+            paths: batch.paths.clone(),
+            aliases: batch.aliases.clone(),
         }
     }
     fn recurrent_state(&self, encoded: &Encoded, mut state: Tensor<2>) -> Tensor<3> {
@@ -304,27 +267,37 @@ impl Policy {
     fn action_scores(&self, encoded: Encoded, state: Option<Tensor<3>>) -> Tensor<2> {
         let Encoded {
             goal,
-            candidate,
-            mut context,
+            context,
             invalid,
+            edges,
+            priors,
+            siblings,
+            paths,
+            aliases,
+            ..
         } = encoded;
+        let [b, e, _] = edges.dims();
+        let goal = goal.slice([0..b, 0..1, 0..WIDTH]).expand([b, e, WIDTH]);
+        let mut context = context.slice([0..b, 0..1, 0..WIDTH]).expand([b, e, WIDTH]);
         if let Some(state) = state {
-            context = (context + state.expand(goal.dims())) * std::f32::consts::FRAC_1_SQRT_2;
+            context = (context + state.expand([b, e, WIDTH])) * std::f32::consts::FRAC_1_SQRT_2;
         }
         let joined = Tensor::cat(
             vec![
                 goal.clone(),
-                candidate.clone(),
+                edges.clone(),
                 context,
-                goal.clone() - candidate.clone(),
-                goal * candidate,
+                goal.clone() - edges.clone(),
+                goal * edges,
             ],
             2,
         );
-        self.output
+        let logits = self
+            .output
             .forward(tanh(self.readout.forward(joined)))
-            .squeeze_dim::<2>(2)
-            .mask_fill(invalid, -10000.)
+            .squeeze_dim::<2>(2);
+        let scores = prefix_probabilities(logits + priors, siblings, paths) - aliases;
+        scores.mask_fill(invalid, -10000.)
     }
 
     pub(super) fn readout(
@@ -362,5 +335,29 @@ impl Policy {
     }
 }
 
+/// The probability of an action is the product of the conditional token
+/// probabilities along its legal prefix. Every row has a finite normalizer.
+fn prefix_probabilities(
+    logits: Tensor<2>,
+    siblings: Tensor<3, Bool>,
+    paths: Tensor<3>,
+) -> Tensor<2> {
+    let [batch, edges] = logits.dims();
+    let grouped = logits
+        .clone()
+        .unsqueeze_dim::<3>(1)
+        .expand([batch, edges, edges])
+        .mask_fill(siblings, f32::NEG_INFINITY);
+    let maximum = grouped.clone().max_dim(2);
+    let normalizer = (grouped - maximum.clone()).exp().sum_dim(2).log() + maximum;
+    let log_tokens = logits - normalizer.squeeze_dim::<2>(2);
+    paths
+        .matmul(log_tokens.unsqueeze_dim::<3>(2))
+        .squeeze_dim::<2>(2)
+}
+
 #[cfg(test)]
 mod reference;
+
+#[cfg(test)]
+mod tests;

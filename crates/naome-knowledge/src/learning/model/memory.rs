@@ -129,7 +129,7 @@ impl Runtime {
             )
         });
         let (scores, successors) = policy.infer(
-            policy.encode_cached(&batch, &graph.context, &mut self.formulas.borrow_mut())?,
+            policy.encode_cached(&batch, &graph.context, &mut self.token_rows.borrow_mut())?,
             initial,
         );
         let scores = scores
