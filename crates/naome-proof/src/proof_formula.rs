@@ -65,9 +65,10 @@ impl ProofFormula {
             FormulaRepresentation::Primitive(formula) => Self(FormulaRepresentation::Primitive(
                 formula.map_free_variables(map),
             )),
-            FormulaRepresentation::Defined(formula) => Self(FormulaRepresentation::Defined(
-                Box::new((*formula).map_free_variables(map)),
-            )),
+            FormulaRepresentation::Defined(mut formula) => {
+                formula.map_free_variables_in_place(map);
+                Self(FormulaRepresentation::Defined(formula))
+            }
         }
     }
 
