@@ -233,6 +233,21 @@ pub(super) struct Replay {
     _memory: Arc<crate::resources::MemoryLease>,
 }
 
+struct CheckedPacket {
+    program: CheckedProgram,
+    commands: Vec<Command>,
+    context: DiskArtifactState,
+    _work: Arc<crate::resources::MemoryLease>,
+}
+
+impl CheckedPacket {
+    fn conclusion(&self) -> Result<&Formula, crate::Error> {
+        self.program
+            .conclusion()
+            .ok_or_else(|| crate::ResearchFailure::PeerProgramConclusionCapacity.into())
+    }
+}
+
 // Only already rechecked inputs from this process, keyed by the complete packet
 // and exact target. Durable replay always starts with the canonical records.
 thread_local! {
@@ -294,7 +309,13 @@ impl Packet {
     }
 
     pub(crate) fn target(&self) -> Result<Formula, crate::Error> {
-        Ok(self.rechecked()?.target.clone())
+        self.validate_width()?;
+        let key = crate::learning::digest(self);
+        if let Some(replay) = Self::cached(&key) {
+            return Ok(replay.target.clone());
+        }
+        LAST.with(|last| last.borrow_mut().take());
+        Ok(self.check_program()?.conclusion()?.clone())
     }
 
     pub(super) fn replay(&self, target: &Formula) -> Result<Arc<Replay>, crate::Error> {
@@ -308,12 +329,7 @@ impl Packet {
     fn rechecked(&self) -> Result<Arc<Replay>, crate::Error> {
         self.validate_width()?;
         let key = crate::learning::digest(self);
-        if let Some(value) = LAST.with(|last| {
-            last.borrow()
-                .as_ref()
-                .filter(|(known, _)| known == &key)
-                .map(|(_, replay)| Arc::clone(replay))
-        }) {
+        if let Some(value) = Self::cached(&key) {
             return Ok(value);
         }
         // The previous graph-only cache can yield its lease before the checker
@@ -322,6 +338,15 @@ impl Packet {
         let replay = Arc::new(self.check()?);
         LAST.with(|last| *last.borrow_mut() = Some((key, Arc::clone(&replay))));
         Ok(replay)
+    }
+
+    fn cached(key: &str) -> Option<Arc<Replay>> {
+        LAST.with(|last| {
+            last.borrow()
+                .as_ref()
+                .filter(|(known, _)| known == key)
+                .map(|(_, replay)| Arc::clone(replay))
+        })
     }
 
     fn decoded(&self) -> Result<Vec<u8>, crate::Error> {
@@ -467,9 +492,9 @@ impl Packet {
         Ok(inputs.context)
     }
 
-    fn check(&self) -> Result<Replay, crate::Error> {
+    fn check_program(&self) -> Result<CheckedPacket, crate::Error> {
         let limits = crate::resources::limits();
-        let _work = crate::resources::MemoryLease::acquire(32 * limits.closure_bytes)?;
+        let work = crate::resources::MemoryLease::acquire(32 * limits.closure_bytes)?;
         let raw = self.decoded()?;
         let mut tail = raw.as_slice();
         let commands = read_commands(&self.manifest, &mut tail)?;
@@ -478,13 +503,21 @@ impl Packet {
             inputs.register(take(&mut tail)?)?;
         }
         let context = inputs.context;
-        let mut checked = evaluate(&self.manifest, &commands, &context, &mut inputs.work)?;
-        let target = checked
-            .conclusion()
-            .ok_or(crate::ResearchFailure::PeerProgramConclusionCapacity)?
-            .clone();
-        let used = used_commands(&commands, Command::operands)?;
-        let definitions = commands
+        let program = evaluate(&self.manifest, &commands, &context, &mut inputs.work)?;
+        Ok(CheckedPacket {
+            program,
+            commands,
+            context,
+            _work: work,
+        })
+    }
+
+    fn check(&self) -> Result<Replay, crate::Error> {
+        let mut checked = self.check_program()?;
+        let target = checked.conclusion()?.clone();
+        let used = used_commands(&checked.commands, Command::operands)?;
+        let definitions = checked
+            .commands
             .iter()
             .zip(used)
             .filter(|(_, contributes)| *contributes)
@@ -494,8 +527,13 @@ impl Packet {
             .collect();
         let graph_memory =
             crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)?;
-        let graphs = graphs(&mut checked, &target, &commands, &context)?;
-        let retained = graphs.work_bytes() + 4 * limits.proof_bytes;
+        let graphs = graphs(
+            &mut checked.program,
+            &target,
+            &checked.commands,
+            &checked.context,
+        )?;
+        let retained = graphs.work_bytes() + 4 * crate::resources::limits().proof_bytes;
         drop(graph_memory);
         Ok(Replay {
             target,
@@ -873,6 +911,34 @@ fn graphs(
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
+
+    #[test]
+    fn checking_a_packet_target_does_not_materialize_learning_replay() {
+        crate::resources::tests::budget(false);
+        use naome_proof::program::Axiom;
+        let target = naome_foundation::ZfcAxiom::Pairing.formula();
+        let packet = Packet::compose(
+            &target,
+            &[
+                Command::Axiom {
+                    axiom: Axiom::Pairing,
+                },
+                Command::Seal { proof: 0 },
+            ],
+            &[],
+            [],
+        )
+        .unwrap();
+        LAST.with(|last| last.borrow_mut().take());
+        assert_eq!(packet.target().unwrap(), target);
+        assert!(LAST.with(|last| last.borrow().is_none()));
+        assert_eq!(packet.replay(&target).unwrap().target, target);
+        assert!(LAST.with(|last| last.borrow().is_some()));
+
+        let mut forged = packet;
+        forged.manifest.stream_root[0] ^= 1;
+        assert!(matches!(forged.target(), Err(crate::Error::Proof(_))));
+    }
 
     #[test]
     fn input_checker_preserves_artifact_and_proof_diagnostics() {
