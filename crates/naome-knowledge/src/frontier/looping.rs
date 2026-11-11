@@ -375,6 +375,37 @@ impl Frontier {
         Ok((planned.to_vec(), inputs))
     }
 
+    pub(super) fn witness_source(
+        graph: &Graph,
+        question: &ResearchQuestion,
+    ) -> Result<Option<naome_proof::ProofId>, crate::Error> {
+        use crate::learning::{State, knowledge};
+        use naome_checker::question::QUESTION_BYTES;
+
+        let target = question.proved_target();
+        if target.view().negated().is_none() {
+            return Ok(None);
+        }
+        let Ok(_scratch) = crate::resources::MemoryLease::acquire(QUESTION_BYTES * 16) else {
+            return Ok(None);
+        };
+        let Some(source) = knowledge::universal_source(target) else {
+            return Ok(None);
+        };
+        let statement = naome_proof::StatementId::of_canonical_formula(&source.encode_canonical()?)
+            .ok_or(crate::InputFault::FinderOperandStatementWidth)?;
+        if let Some(header) = graph.checked_context().statement_header(statement)?
+            && header.canonical_length() <= QUESTION_BYTES
+            && let Ok(lemma) = ResearchQuestion::from_formula(source)
+            && State::eligible(&question.to_hex())
+            && State::eligible(&lemma.to_hex())
+            && finder::independent_goal(&lemma, question)
+        {
+            return Ok(Some(header.proof_id()));
+        }
+        Ok(None)
+    }
+
     /// Cold retrieval looks up an exact witness source or uses the checker's
     /// specialization index. Neither lookup requires a previous citation.
     fn first_checked_offer(
@@ -391,26 +422,16 @@ impl Frontier {
         if !self.recall_enabled() || !State::eligible(&question.to_hex()) {
             return Ok(None);
         }
+        if let Some(proof) = Self::witness_source(graph, question)?
+            && let Some(inputs) = graph.offered_solving_inputs(proof, question.dependencies())?
+        {
+            return Ok(Some(inputs));
+        }
         let Ok(_scratch) = crate::resources::MemoryLease::acquire(QUESTION_BYTES * 16) else {
             return Ok(None);
         };
         let target = question.proved_target();
         let context = graph.checked_context();
-        // A witness question can recover its source even after the Finder's
-        // resident proposals have been evicted or the node has restarted.
-        if let Some(source) = knowledge::universal_source(target)
-            && let Some(statement) =
-                naome_proof::StatementId::of_canonical_formula(&source.encode_canonical()?)
-            && let Some(header) = context.statement_header(statement)?
-            && header.canonical_length() <= QUESTION_BYTES
-            && let Ok(lemma) = ResearchQuestion::from_formula(source)
-            && State::eligible(&lemma.to_hex())
-            && finder::independent_goal(&lemma, question)
-            && let Some(inputs) =
-                graph.offered_solving_inputs(header.proof_id(), question.dependencies())?
-        {
-            return Ok(Some(inputs));
-        }
         // The question target is closed. Open its prefix in binder order and
         // look up the final consequent. This is only an index projection.
         let mut goal = target.clone();

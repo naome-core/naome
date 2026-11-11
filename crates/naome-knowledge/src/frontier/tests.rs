@@ -218,6 +218,56 @@ fn native_backoff_abstains_and_unrelated_peer_knowledge_does_not_reset_it() {
 }
 
 #[test]
+fn free_solver_uses_unchanged_retry_turns_for_checked_witness_questions() {
+    let (graph, lemma, _, retried, _) = helper_use_fixture();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let x = FreeVariable::new(0);
+    let instance = lemma.proved_target().open_outer_universal(x).unwrap();
+    let witness = ResearchQuestion::from_formula(Formula::exists(x, instance)).unwrap();
+    let candidates = [&retried, &witness];
+    let run = |reuse_on_retry| {
+        let directory = Directory::new();
+        let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        frontier.feedback(Some(crate::learning::State::fresh().feedback()));
+        frontier
+            .attempted(
+                &retried,
+                &graph,
+                &native_failure(&retried, 1, None),
+                Outcome::NoCandidate,
+            )
+            .unwrap();
+        for _ in 0..2 {
+            frontier.evidence.selected(frontier.random.0).unwrap();
+        }
+        let retries = (0..32)
+            .filter(|_| {
+                let choice = if reuse_on_retry {
+                    frontier.choose_free_solver(&candidates, &graph, settings.solving)
+                } else {
+                    frontier.choose(&candidates, &graph, settings.solving, false)
+                };
+                choice.unwrap() == Some(0)
+            })
+            .count();
+        assert_eq!(
+            frontier
+                .choose_free_solver(&[&retried], &graph, settings.solving)
+                .unwrap(),
+            Some(0)
+        );
+        retries
+    };
+    let control = run(false);
+    let preferred = run(true);
+    assert!(control > 0);
+    assert_eq!(preferred, 0);
+}
+
+#[test]
 fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_success() {
     let directory = Directory::new();
     let mut graph = Graph::default();
@@ -429,7 +479,13 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
     frontier
         .attempted(candidates[index], &graph, &result, Outcome::NoCandidate)
         .unwrap();
-    assert!(!frontier.retry_ready(candidates[index], &graph).unwrap());
+    let hint = frontier.previous(candidates[index]).unwrap();
+    let checkpoint = hint.unwrap().checkpoint;
+    assert!(
+        !frontier
+            .retry_ready(candidates[index], &graph, hint, checkpoint)
+            .unwrap()
+    );
     let old = frontier.evidence.get(candidates[index]).unwrap().unwrap();
     assert_eq!(old.last_job, result.id);
     feedback.checkpoint = "22".repeat(32);
@@ -437,7 +493,9 @@ fn current_development_feedback_changes_the_actual_next_frontier_draw() {
     feedback.development = crate::training::ability::Profile::new(feedback.checkpoint.clone());
     frontier.feedback(Some(feedback));
     assert!(
-        frontier.retry_ready(candidates[index], &graph).unwrap(),
+        frontier
+            .retry_ready(candidates[index], &graph, hint, Some([0x22; 32]))
+            .unwrap(),
         "old-model failures cannot cool down a new checkpoint"
     );
     let retained = frontier.evidence.get(candidates[index]).unwrap().unwrap();
