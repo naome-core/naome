@@ -1,7 +1,7 @@
 use super::*;
 use crate::program::{CheckedProgram, Engine};
 use naome_foundation::ZfcAxiom;
-use naome_proof::{ProofCertificate, program::Command};
+use naome_proof::{ProofCertificate, ProofStep, program::Command};
 use rusqlite::Connection;
 use std::{collections::BTreeMap, sync::Mutex};
 mod definitions;
@@ -53,6 +53,57 @@ pub(super) fn register_axiom(
     );
     state.register_proof_for_replication(proof).unwrap();
     expected
+}
+
+#[test]
+fn certificate_registration_reuses_the_authenticated_dependency_record() {
+    let storage = Arc::new(MemoryStorage::default());
+    let mut state = DiskArtifactState::new(storage.clone());
+    let (parent, _, _) = register_axiom(&mut state, ZfcAxiom::Pairing);
+    let parent_address = state.proofs.root().unwrap().address;
+    let check = || {
+        let certificate =
+            ProofCertificate::new(vec![ProofStep::ProofReference { proof_id: parent }]).unwrap();
+        crate::normalize_and_check_with_state(certificate, &state).unwrap()
+    };
+    let proof = check();
+    let id = proof.proof_id();
+
+    let mut malformed = state.clone();
+    malformed.proofs.set(*parent.as_bytes(), &[0; 40]).unwrap();
+    let malformed_root = malformed.proofs.root();
+    let mut collision = malformed.clone();
+    let derivation_id = proof.derivation_id();
+    let mut different_statement = *proof.statement_id().as_bytes();
+    different_statement[0] ^= 1;
+    collision
+        .derivations
+        .set(*derivation_id.as_bytes(), &different_statement)
+        .unwrap();
+    assert!(matches!(
+        collision.register_proof_for_replication(check()),
+        Err(ArtifactStateError::DerivationIdentityCollision { derivation_id: id }) if id == derivation_id
+    ));
+    assert!(storage.failures.lock().unwrap().is_empty());
+
+    assert!(matches!(
+        malformed.register_proof_for_replication(check()),
+        Err(ArtifactStateError::Context(ContextError::Corrupt))
+    ));
+    assert_eq!(malformed.proofs.root(), malformed_root);
+    assert_eq!(
+        storage.failures.lock().unwrap().as_slice(),
+        &[ContextError::Corrupt]
+    );
+
+    storage.reads.lock().unwrap().clear();
+    state.register_proof_for_replication(proof).unwrap();
+    assert_eq!(
+        storage.reads.lock().unwrap().get(&parent_address),
+        Some(&3),
+        "new ID check, cited proof read, and insertion"
+    );
+    assert_eq!(state.proof_dependency_depth(id), Ok(Some(2)));
 }
 
 #[test]

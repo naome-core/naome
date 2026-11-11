@@ -246,7 +246,7 @@ impl ArtifactState {
         &self,
         proof: &CheckedProof,
     ) -> Result<(), ArtifactStateError> {
-        registration::validate(self, proof, false)
+        registration::validate(self, proof, false, |id| Ok(self.contains_proof(id)))
     }
 
     /// Registers one checked definition without replacing selected state.
@@ -316,9 +316,6 @@ impl ArtifactState {
 }
 
 impl registration::RegistrationView for ArtifactState {
-    fn has_proof(&self, id: ProofId) -> Result<bool, crate::ContextError> {
-        Ok(self.proofs.contains_key(&id))
-    }
     fn derivation_statement(
         &self,
         id: DerivationId,
