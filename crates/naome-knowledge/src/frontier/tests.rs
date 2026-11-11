@@ -17,7 +17,7 @@ fn finder_outcomes_have_distinct_numeric_codes() {
 }
 
 #[test]
-fn recipe_weights_are_retained_until_the_policy_changes() {
+fn recipe_weights_follow_policy_and_fresh_relation_context() {
     let directory = Directory::new();
     let graph = Graph::default();
     let settings = jobs::Settings {
@@ -31,12 +31,17 @@ fn recipe_weights_are_retained_until_the_policy_changes() {
     };
     frontier.finder_snapshot(Some(snapshot.clone()));
     let weights = frontier.recipe_weights().unwrap().unwrap();
-    let [membership, equality] = finder::builtin_relations();
-    frontier.retain_predicate(Formula::implies(membership, equality));
     snapshot.feedback.revision += 1;
     frontier.finder_snapshot(Some(snapshot.clone()));
-    assert_eq!(frontier.recipe_weights, Some(weights));
     assert_eq!(frontier.recipe_weights().unwrap(), Some(weights));
+    let [membership, equality] = finder::builtin_relations();
+    let relation = Formula::implies(membership, equality);
+    frontier.retain_predicate(relation.clone());
+    frontier.recipe_weights().unwrap();
+    assert_eq!(
+        frontier.recipe_weights.as_ref().unwrap().checked_relations,
+        [relation]
+    );
     snapshot.policy = Some(Arc::new(QuestionPolicy::fresh().unwrap()));
     frontier.finder_snapshot(Some(snapshot));
     assert!(frontier.recipe_weights.is_none());

@@ -57,12 +57,17 @@ struct AttemptHint {
     paid_open_search: bool,
 }
 
+struct RecipeWeights {
+    checked_relations: Vec<Formula>,
+    values: [u32; QUESTION_RECIPES],
+}
+
 pub(crate) struct Frontier {
     evidence: Evidence,
     native: bool,
     feedback: Option<crate::training::ability::Feedback>,
     question_policy: Option<Arc<QuestionPolicy>>,
-    recipe_weights: Option<[u32; QUESTION_RECIPES]>,
+    recipe_weights: Option<RecipeWeights>,
     #[cfg(test)]
     owns_policy_snapshot: bool,
     research_limits: jobs::Limits,
@@ -786,15 +791,25 @@ impl Frontier {
         let Some(policy) = &self.question_policy else {
             return Ok(None);
         };
-        if let Some(weights) = self.recipe_weights {
-            return Ok(Some(weights));
+        // A trained model rates the question grammar on its primitive
+        // relations. The sampled constructors still apply to checked operands.
+        // At initialization the existing context-dependent scores seed discovery.
+        let checked = self
+            .predicates
+            .iter()
+            .take(if policy.trained() { 0 } else { 4 });
+        if let Some(cached) = &self.recipe_weights
+            && cached.checked_relations.iter().eq(checked.clone())
+        {
+            return Ok(Some(cached.values));
         }
-        // The model rates the question grammar once per checkpoint. Checked
-        // relations are operands of the sampled constructors, so knowledge
-        // growth does not invalidate this distribution.
-        let [membership, equality] = finder::builtin_relations();
-        let weights = policy.recipe_weights(&[&membership, &equality])?;
-        self.recipe_weights = Some(weights);
+        let builtins = finder::builtin_relations();
+        let relations = builtins.iter().chain(checked.clone()).collect::<Vec<_>>();
+        let weights = policy.recipe_weights(&relations)?;
+        self.recipe_weights = Some(RecipeWeights {
+            checked_relations: checked.cloned().collect(),
+            values: weights,
+        });
         Ok(Some(weights))
     }
 
