@@ -155,6 +155,34 @@ fn simultaneous_disk_preparations_share_custody_and_release_it() {
 }
 
 #[test]
+fn disk_custody_includes_filesystem_block_overhead() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let stats = nix::sys::statvfs::statvfs(&directory.0).unwrap();
+    let overhead = stats
+        .block_size()
+        .max(stats.fragment_size())
+        .checked_mul(4)
+        .unwrap()
+        .max(65_536);
+    let required = u128::from(limits().disk_reserve_bytes) + u128::from(overhead) + 1024;
+    with_disk_available(required - 1, || {
+        assert!(matches!(
+            DiskLease::acquire_with_filesystem_overhead(&directory.0, 1024, 65_536, 4),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+    });
+    with_disk_available(required, || {
+        let lease =
+            DiskLease::acquire_with_filesystem_overhead(&directory.0, 1024, 65_536, 4).unwrap();
+        assert!(matches!(
+            DiskLease::acquire(&directory.0, 1),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+        drop(lease);
+    });
+}
+
+#[test]
 fn growing_disk_custody_reserves_only_the_delta_and_preserves_failure() {
     let directory = crate::checkpoint::tests::Directory::new();
     with_disk_available(u128::from(limits().disk_reserve_bytes) + 1024, || {
