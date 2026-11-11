@@ -194,11 +194,10 @@ impl Engine {
                 let mut complete = false;
                 for _ in 0..steps {
                     let id: Option<u64> = sql(self
-                        .connection
-                        .query_row(
+                        .query_cached(
                             "SELECT id FROM export_pending ORDER BY id DESC LIMIT 1",
                             [],
-                            |r| unsigned(r, 0),
+                            |row| unsigned(row, 0),
                         )
                         .optional())?;
                     let Some(id) = id else {
@@ -206,15 +205,13 @@ impl Engine {
                         break;
                     };
                     let node = self.load(id)?.0;
-                    added += sql(self.connection.execute(
+                    added += self.execute_cached(
                         "INSERT OR IGNORE INTO export_node VALUES(?1)",
                         [number(id)?],
-                    ))? as u64;
-                    sql(self
-                        .connection
-                        .execute("DELETE FROM export_pending WHERE id=?1", [number(id)?]))?;
+                    )? as u64;
+                    self.execute_cached("DELETE FROM export_pending WHERE id=?1", [number(id)?])?;
                     for child in node.children().into_iter().flatten() {
-                        sql(self.connection.execute("INSERT OR IGNORE INTO export_pending SELECT ?1 WHERE NOT EXISTS(SELECT 1 FROM export_node WHERE id=?1)", [number(child)?]))?;
+                        self.execute_cached("INSERT OR IGNORE INTO export_pending SELECT ?1 WHERE NOT EXISTS(SELECT 1 FROM export_node WHERE id=?1)", [number(child)?])?;
                     }
                 }
                 sql(self.connection.execute_batch("COMMIT"))?;

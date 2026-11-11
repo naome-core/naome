@@ -8,7 +8,6 @@ pub(in crate::learning::peer) struct Decisions {
     nodes: Vec<Node>,
     ids: HashMap<Node, u32>,
     rows: Vec<Row>,
-    keys: HashSet<String>,
     unique: usize,
 }
 
@@ -19,7 +18,6 @@ struct Row {
 
 impl Decisions {
     pub(super) fn push(&mut self, mut graph: Graph) {
-        self.keys.insert(graph.key());
         let nodes = std::mem::take(&mut graph.nodes)
             .into_iter()
             .map(|node| {
@@ -38,8 +36,24 @@ impl Decisions {
 
     pub(super) fn finish(mut self) -> Self {
         self.ids = HashMap::new();
-        self.unique = self.keys.len();
-        self.keys = HashSet::new();
+        // The local node IDs preserve exact node equality across every row.
+        // Count the same fields as Graph::key using the already interned rows.
+        self.unique = self
+            .rows
+            .iter()
+            .map(|row| {
+                let graph = &row.shape;
+                (
+                    graph.binding.as_str(),
+                    graph.field as u8,
+                    row.nodes.as_ref(),
+                    graph.goal,
+                    graph.context.as_slice(),
+                    graph.candidates.as_slice(),
+                )
+            })
+            .collect::<HashSet<_>>()
+            .len();
         self
     }
 
@@ -90,14 +104,17 @@ mod tests {
             .remove(0);
         let mut second = graph.clone();
         second.binding = "01".repeat(32);
-        let bytes = graph.work_bytes() + second.work_bytes();
+        let bytes = 2 * graph.work_bytes() + second.work_bytes();
         let mut tape = Decisions::default();
         tape.push(graph.clone());
         tape.push(second.clone());
+        tape.push(graph.clone());
         let tape = tape.finish();
         assert!(tape.work_bytes() < bytes);
         assert_eq!(tape.unique(), 2);
-        for (actual, expected) in tape.materialize().iter().zip([graph, second]) {
+        let materialized = tape.materialize();
+        assert_eq!(materialized.len(), 3);
+        for (actual, expected) in materialized.iter().zip([&graph, &second, &graph]) {
             assert_eq!(actual.key(), expected.key());
             assert_eq!(actual.successes, expected.successes);
             assert_eq!(actual.expert, expected.expert);

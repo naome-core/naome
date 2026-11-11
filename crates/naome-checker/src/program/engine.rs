@@ -464,7 +464,7 @@ impl Engine {
                     break;
                 }
                 let position = cursor.before - 1;
-                let bytes: Vec<u8> = sql(self.connection.query_row(
+                let bytes: Vec<u8> = sql(self.query_cached(
                     "SELECT substr(command,1,4097) FROM input WHERE position=?1",
                     [number(position)?],
                     |row| row.get(0),
@@ -477,10 +477,10 @@ impl Engine {
                     .bytes
                     .checked_add(bytes.len() as u64)
                     .ok_or(ProgramFault::ProgramByteWidth)?;
-                sql(self.connection.execute(
+                self.execute_cached(
                     "INSERT OR REPLACE INTO stream VALUES(?1,?2)",
                     params![number(position)?, cursor.hash.as_slice()],
-                ))?;
+                )?;
                 cursor.before = position;
             }
             sql(self.connection.execute_batch("COMMIT"))?;
@@ -626,9 +626,7 @@ impl Engine {
         })
     }
     fn live(&self) -> Result<(), Error> {
-        let version: i64 = sql(self
-            .connection
-            .pragma_query_value(None, "data_version", |r| r.get(0)))?;
+        let version: i64 = sql(self.query_cached("PRAGMA data_version", [], |row| row.get(0)))?;
         if version != self.data_version {
             return Err(ProgramFault::ForeignMutation.into());
         }
@@ -642,11 +640,7 @@ impl Engine {
         self.live()?;
         sql(self.connection.execute_batch("BEGIN IMMEDIATE"))?;
         let outcome = (|| {
-            let mut first = None;
-            for command in commands {
-                let position = self.append_record(command)?;
-                first.get_or_insert(position);
-            }
+            let first = self.append_records(commands)?;
             sql(self.connection.execute_batch("COMMIT"))?;
             Ok(first)
         })();
@@ -659,40 +653,45 @@ impl Engine {
         }
         outcome
     }
-    fn append_record(&mut self, command: &Command) -> Result<u64, Error> {
+    fn append_records(&self, commands: &[Command]) -> Result<Option<u64>, Error> {
+        if commands.is_empty() {
+            return Ok(None);
+        }
         if self.active.is_some() {
             return Err(ProgramFault::UncommittedInstruction.into());
         }
-        let (position, sealed, previous): (u64, bool, Vec<u8>) = sql(self.connection.query_row(
+        let (first, mut sealed, hash): (u64, bool, Vec<u8>) = sql(self.connection.query_row(
             "SELECT commands,sealed,hash FROM state WHERE id=1",
             [],
-            |r| Ok((unsigned(r, 0)?, r.get(1)?, r.get(2)?)),
+            |row| Ok((unsigned(row, 0)?, row.get(1)?, row.get(2)?)),
         ))?;
         if sealed {
             return Err(ProgramFault::Sealed.into());
         }
-        let bytes = encode_command(command)?;
-        let previous = previous
+        let mut position = first;
+        let mut hash = hash
             .try_into()
             .map_err(|_| ProgramFault::CorruptProgramHash)?;
-        let hash = command_hash(previous, &bytes);
-        sql(self.connection.execute(
-            "INSERT INTO input VALUES(?1,?2,?3)",
-            params![number(position)?, bytes, hash.as_slice()],
-        ))?;
+        let mut insert = sql(self
+            .connection
+            .prepare_cached("INSERT INTO input VALUES(?1,?2,?3)"))?;
+        for command in commands {
+            if sealed {
+                return Err(ProgramFault::Sealed.into());
+            }
+            let bytes = encode_command(command)?;
+            hash = command_hash(hash, &bytes);
+            sql(insert.execute(params![number(position)?, bytes, hash.as_slice()]))?;
+            position = position
+                .checked_add(1)
+                .ok_or(ProgramFault::ProgramAddress)?;
+            sealed = matches!(command, Command::Seal { .. });
+        }
         sql(self.connection.execute(
             "UPDATE state SET commands=?1,sealed=?2,hash=?3 WHERE id=1",
-            params![
-                number(
-                    position
-                        .checked_add(1)
-                        .ok_or(ProgramFault::ProgramAddress)?
-                )?,
-                matches!(command, Command::Seal { .. }),
-                hash.as_slice()
-            ],
+            params![number(position)?, sealed, hash.as_slice()],
         ))?;
-        Ok(position)
+        Ok(Some(first))
     }
     pub fn record_budget(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.live()?;
@@ -806,7 +805,12 @@ impl Engine {
         let mut progress = false;
         for _ in 0..steps {
             if self.active.is_none() {
-                let input:Option<(Vec<u8>,Vec<u8>)>=sql(self.connection.query_row("SELECT substr(command,1,4097),substr(hash,1,33) FROM input WHERE position=?1",[number(self.cursor)?],|r|Ok((r.get(0)?,r.get(1)?))).optional())?;
+                let input: Option<(Vec<u8>, Vec<u8>)> = sql(self.query_cached(
+                    "SELECT substr(command,1,4097),substr(hash,1,33) FROM input WHERE position=?1",
+                    [number(self.cursor)?],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional())?;
                 let Some((bytes, stored_hash)) = input else {
                     break;
                 };
@@ -921,39 +925,38 @@ impl Engine {
             if active.position == active.operations.len() {
                 let node = *active.registers.last().ok_or(ProgramFault::EmptyRecipe)?;
                 let previous: Option<(u64, bool)> = sql(self
-                    .connection
-                    .query_row(
+                    .query_cached(
                         "SELECT node,proved FROM result WHERE position=?1",
                         [number(self.cursor)?],
-                        |r| Ok((unsigned(r, 0)?, r.get(1)?)),
+                        |row| Ok((unsigned(row, 0)?, row.get(1)?)),
                     )
                     .optional())?;
                 if previous.is_some_and(|value| value != (node, active.proved)) {
                     return Err(ProgramFault::ReplayResultMismatch.into());
                 }
-                sql(self.connection.execute(
+                self.execute_cached(
                     "INSERT OR IGNORE INTO result VALUES(?1,?2,?3)",
                     params![number(self.cursor)?, number(node)?, active.proved],
-                ))?;
-                sql(self.connection.execute(
+                )?;
+                self.execute_cached(
                     "INSERT INTO checked VALUES(?1,?2,?3)",
                     params![number(self.cursor)?, number(node)?, active.proved],
-                ))?;
+                )?;
                 if let Some(axiom) = active.instantiation_axiom {
-                    sql(self.connection.execute(
+                    self.execute_cached(
                         "INSERT INTO checked_instantiation VALUES(?1,?2)",
                         params![number(self.cursor)?, number(active.registers[axiom])?],
-                    ))?;
+                    )?;
                 }
                 self.cursor = self
                     .cursor
                     .checked_add(1)
                     .ok_or(ProgramFault::ProofAddress)?;
                 self.checked_hash = active.source_hash;
-                sql(self.connection.execute(
+                self.execute_cached(
                     "UPDATE state SET committed=max(committed,?1) WHERE id=1",
                     [number(self.cursor)?],
-                ))?;
+                )?;
                 if active.seal {
                     let (commands, hash, sealed): (u64, Vec<u8>, bool) =
                         sql(self.connection.query_row(
@@ -1047,11 +1050,10 @@ impl Engine {
     }
     fn memo(&self, source: u64, depth: u64) -> Result<Option<u64>, Error> {
         sql(self
-            .connection
-            .query_row(
+            .query_cached(
                 "SELECT result FROM verified WHERE source=?1 AND depth=?2",
                 params![number(source)?, number(depth)?],
-                |r| unsigned(r, 0),
+                |row| unsigned(row, 0),
             )
             .optional())
     }
@@ -1092,11 +1094,23 @@ impl Engine {
         if active.restoring {
             if active.restore_sequence == 0 {
                 // Scratch rows belong to one traversal, including during replay.
-                sql(self
-                    .connection
-                    .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
+                self.execute_cached("DELETE FROM verified", [])?;
+                self.execute_cached("DELETE FROM stack", [])?;
             }
-            let row:Option<(i64,u64,u64,u64)>=sql(self.connection.query_row("SELECT sequence,source,depth,result FROM equation WHERE position=?1 AND operation=?2 AND sequence>?3 ORDER BY sequence LIMIT 1",params![position,operation,active.restore_sequence],|r|Ok((r.get(0)?,unsigned(r,1)?,unsigned(r,2)?,unsigned(r,3)?))).optional())?;
+            let row: Option<(i64, u64, u64, u64)> = sql(self
+                .query_cached(
+                    "SELECT sequence,source,depth,result FROM equation WHERE position=?1 AND operation=?2 AND sequence>?3 ORDER BY sequence LIMIT 1",
+                    params![position, operation, active.restore_sequence],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            unsigned(row, 1)?,
+                            unsigned(row, 2)?,
+                            unsigned(row, 3)?,
+                        ))
+                    },
+                )
+                .optional())?;
             if let Some((sequence, input, depth, result)) = row {
                 let node = self
                     .transformed_node(input, depth, transform)?
@@ -1105,10 +1119,10 @@ impl Engine {
                 if expected != result {
                     return Err(ProgramFault::ReplayTransformMismatch.into());
                 }
-                sql(self.connection.execute(
+                self.execute_cached(
                     "INSERT INTO verified VALUES(?1,?2,?3)",
                     params![number(input)?, number(depth)?, number(result)?],
-                ))?;
+                )?;
                 active.restore_sequence = sequence;
                 return Ok(None);
             }
@@ -1118,36 +1132,31 @@ impl Engine {
             return Ok(Some(result));
         }
         let top: Option<(i64, u64, u64)> = sql(self
-            .connection
-            .query_row(
+            .query_cached(
                 "SELECT sequence,source,depth FROM stack ORDER BY sequence DESC LIMIT 1",
                 [],
-                |r| Ok((r.get(0)?, unsigned(r, 1)?, unsigned(r, 2)?)),
+                |row| Ok((row.get(0)?, unsigned(row, 1)?, unsigned(row, 2)?)),
             )
             .optional())?;
         let Some((sequence, input, depth)) = top else {
-            sql(self.connection.execute(
+            self.execute_cached(
                 "INSERT INTO stack(source,depth) VALUES(?1,0)",
                 [number(source)?],
-            ))?;
+            )?;
             return Ok(None);
         };
         if self.memo(input, depth)?.is_some() {
-            sql(self
-                .connection
-                .execute("DELETE FROM stack WHERE sequence=?1", [sequence]))?;
+            self.execute_cached("DELETE FROM stack WHERE sequence=?1", [sequence])?;
             return Ok(None);
         }
         if let Some(node) = self.transformed_node(input, depth, transform)? {
             let result = self.intern(node)?;
-            sql(self.connection.execute("INSERT INTO equation(position,operation,source,depth,result) VALUES(?1,?2,?3,?4,?5)",params![position,operation,number(input)?,number(depth)?,number(result)?]))?;
-            sql(self.connection.execute(
+            self.execute_cached("INSERT INTO equation(position,operation,source,depth,result) VALUES(?1,?2,?3,?4,?5)",params![position,operation,number(input)?,number(depth)?,number(result)?])?;
+            self.execute_cached(
                 "INSERT INTO verified VALUES(?1,?2,?3)",
                 params![number(input)?, number(depth)?, number(result)?],
-            ))?;
-            sql(self
-                .connection
-                .execute("DELETE FROM stack WHERE sequence=?1", [sequence]))?;
+            )?;
+            self.execute_cached("DELETE FROM stack WHERE sequence=?1", [sequence])?;
         } else {
             let (node, _, _) = self.load(input)?;
             let nested = node
@@ -1155,15 +1164,29 @@ impl Engine {
                 .ok_or(ProgramFault::BinderAddress)?;
             for child in node.children().into_iter().flatten() {
                 if self.memo(child, nested)?.is_none() {
-                    sql(self.connection.execute(
+                    self.execute_cached(
                         "INSERT INTO stack(source,depth) VALUES(?1,?2)",
                         params![number(child)?, number(nested)?],
-                    ))?;
+                    )?;
                     break;
                 }
             }
         }
         Ok(None)
+    }
+    fn execute_cached(&self, statement: &str, args: impl rusqlite::Params) -> Result<usize, Error> {
+        let mut query = sql(self.connection.prepare_cached(statement))?;
+        sql(query.execute(args))
+    }
+    fn query_cached<T>(
+        &self,
+        statement: &str,
+        args: impl rusqlite::Params,
+        read: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
+        self.connection
+            .prepare_cached(statement)?
+            .query_row(args, read)
     }
     fn raw(&self, id: u64) -> Result<(Node<u64>, [u8; 32], Properties), Error> {
         type Row = (i64, i64, i64, i64, i64, bool, u64, Vec<u8>);
@@ -1223,11 +1246,11 @@ impl Engine {
         for (i, child) in node.children().into_iter().enumerate() {
             if let Some(child) = child {
                 let (_, hash, p) = self.raw(child)?;
-                let authenticated = self
+                let (_, _, shape) = self
                     .authenticated(child)?
                     .filter(|(expected, properties, _)| *expected == hash && *properties == p)
                     .ok_or(ProgramFault::UnauthenticatedChild)?;
-                shapes[i] = Some(authenticated.2);
+                shapes[i] = Some(shape);
                 hashes[i] = Some(hash);
                 properties[i] = Some(p);
             }
@@ -1295,9 +1318,16 @@ impl Engine {
         properties: Properties,
         shape: Shape,
     ) -> Result<(), Error> {
-        let mut insert = sql(self.connection.prepare_cached(
-            "INSERT OR IGNORE INTO authenticated_node VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        ))?;
+        if let Some(previous) = self.authenticated(id)? {
+            return if previous == (hash, properties, shape) {
+                Ok(())
+            } else {
+                Err(ProgramFault::FormulaMutation.into())
+            };
+        }
+        let mut insert = sql(self
+            .connection
+            .prepare_cached("INSERT INTO authenticated_node VALUES(?1,?2,?3,?4,?5,?6,?7)"))?;
         sql(insert.execute(params![
             number(id)?,
             hash.as_slice(),
@@ -1315,17 +1345,19 @@ impl Engine {
     fn intern(&mut self, node: Node<u64>) -> Result<u64, Error> {
         let (hash, properties, shape) = self.representation(node)?;
         let previous: Option<u64> = sql(self
-            .connection
-            .query_row(
+            .query_cached(
                 "SELECT id FROM node WHERE hash=?1",
                 [hash.as_slice()],
-                |r| unsigned(r, 0),
+                |row| unsigned(row, 0),
             )
             .optional())?;
         if let Some(id) = previous {
-            if self.load(id)? != (node, hash, properties) {
+            // The representation above already authenticated the children.
+            // Require the exact stored node before reusing that result.
+            if self.raw(id)? != (node, hash, properties) {
                 return Err(ProgramFault::GraphIdentity.into());
             }
+            self.remember_authenticated(id, hash, properties, shape)?;
             return Ok(id);
         }
         let var = |v| match v {
@@ -1352,7 +1384,7 @@ impl Engine {
             Node::Implies(a, b) => (3, number(a)?, number(b)?, 0, 0),
             Node::ForAll(a) => (4, number(a)?, 0, 0, 0),
         };
-        sql(self.connection.execute(
+        self.execute_cached(
             "INSERT INTO node(hash,tag,a,b,ak,bk,free,required) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 hash.as_slice(),
@@ -1364,7 +1396,7 @@ impl Engine {
                 properties.has_free_variables,
                 number(properties.required_binders)?
             ],
-        ))?;
+        )?;
         let id = u64::try_from(self.connection.last_insert_rowid())
             .map_err(|_| ProgramFault::InsertedRowAddress)?;
         self.remember_authenticated(id, hash, properties, shape)?;
