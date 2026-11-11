@@ -4,7 +4,7 @@ mod replay;
 use crate::learning::{MODEL_REQUIREMENTS, proof};
 use naome_checker::{
     ContextError, ContextStorage, ContextView, DiskArtifactState,
-    program::{CheckedProgram, Engine},
+    program::{CheckedProgram, Engine, ProvedFormulas},
 };
 use naome_foundation::Formula;
 use naome_proof::{
@@ -478,7 +478,7 @@ impl Packet {
             inputs.register(take(&mut tail)?)?;
         }
         let context = inputs.context;
-        let checked = evaluate(&self.manifest, &commands, &context, &mut inputs.work)?;
+        let mut checked = evaluate(&self.manifest, &commands, &context, &mut inputs.work)?;
         let target = checked
             .conclusion()
             .ok_or(crate::ResearchFailure::PeerProgramConclusionCapacity)?
@@ -494,7 +494,7 @@ impl Packet {
             .collect();
         let graph_memory =
             crate::resources::MemoryLease::acquire(MODEL_REQUIREMENTS.work_bytes / 16)?;
-        let graphs = graphs(&checked, &target, &commands, &context)?;
+        let graphs = graphs(&mut checked, &target, &commands, &context)?;
         let retained = graphs.work_bytes() + 4 * limits.proof_bytes;
         drop(graph_memory);
         Ok(Replay {
@@ -541,18 +541,16 @@ fn differing_operands(mut left: Formula, mut right: Formula) -> Option<(Formula,
 }
 
 fn operand_mp(
-    engine: &CheckedProgram,
+    proved: &mut ProvedFormulas<'_>,
     target: &Formula,
     recent: &VecDeque<(usize, Formula, Rule)>,
     observed: (usize, usize),
 ) -> Result<Option<Graph>, crate::Error> {
-    let lookup = |position| -> Result<Option<Formula>, crate::Error> {
+    let mut lookup = |position| -> Result<Option<Formula>, crate::Error> {
         if let Some((_, formula, _)) = recent.iter().find(|(index, _, _)| *index == position) {
             return Ok(Some(formula.clone()));
         }
-        engine
-            .proved_formula(position as u64)
-            .map_err(crate::Error::from)
+        proved.get(position as u64).map_err(crate::Error::from)
     };
     let (Some(premise), Some(implication)) = (lookup(observed.0)?, lookup(observed.1)?) else {
         return Ok(None);
@@ -714,7 +712,7 @@ pub(crate) fn contributing_proofs(
 }
 
 fn graphs(
-    engine: &CheckedProgram,
+    engine: &mut CheckedProgram,
     target: &Formula,
     commands: &[Command],
     context: &dyn ContextView,
@@ -759,6 +757,7 @@ fn graphs(
             available.push((id, formula));
         }
     }
+    let mut proved = engine.proved_formulas();
     for (position, command) in commands.iter().enumerate() {
         // The checked dependency context exists before the program runs.
         // Replay only an actual citation against other legal context proofs.
@@ -841,7 +840,7 @@ fn graphs(
             )?;
             let graph = match graph {
                 Some(graph) => Some(graph),
-                None => operand_mp(engine, target, &recent, operands)?,
+                None => operand_mp(&mut proved, target, &recent, operands)?,
             };
             if let Some(mut graph) = graph {
                 graph.binding = crate::learning::digest(&(position, operands));
@@ -854,10 +853,7 @@ fn graphs(
                 graphs.push(graph);
             }
         }
-        if let Some(formula) = engine
-            .proved_formula(position as u64)
-            .map_err(crate::Error::from)?
-        {
+        if let Some(formula) = proved.get(position as u64)? {
             if recent.len() == 32 {
                 recent.pop_front();
             }

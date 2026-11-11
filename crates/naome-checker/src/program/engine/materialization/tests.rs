@@ -3,7 +3,11 @@ use naome_foundation::{FreeVariable, Logic};
 use naome_proof::program::Command;
 
 fn shared(levels: usize, unused: u32) -> Engine {
-    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    shared_on(Connection::open_in_memory().unwrap(), levels, unused)
+}
+
+fn shared_on(connection: Connection, levels: usize, unused: u32) -> Engine {
+    let mut engine = Engine::open(connection).unwrap();
     let mut commands = Vec::new();
     for v in 1..=unused {
         commands.push(Command::Equal { left: v, right: v });
@@ -35,6 +39,37 @@ fn shared(levels: usize, unused: u32) -> Engine {
         .unwrap()
     {}
     engine
+}
+
+#[test]
+fn repeated_checked_projection_rejects_foreign_writes() {
+    let path = std::env::temp_dir().join(format!(
+        "naome-projection-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let mut engine = shared_on(Connection::open(&path).unwrap(), 3, 0);
+        while !engine.prepare_export(256).unwrap() {}
+        let mut proof = engine.checked().unwrap();
+        let expected = proof.proved_formula(4).unwrap().unwrap();
+        let mut formulas = proof.proved_formulas();
+        assert!(formulas.get(3).unwrap().is_none());
+        assert_eq!(formulas.get(4).unwrap().as_ref(), Some(&expected));
+        assert_eq!(formulas.get(4).unwrap().as_ref(), Some(&expected));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE other_owner(value INTEGER)")
+            .unwrap();
+        assert!(matches!(
+            formulas.get(4),
+            Err(Error::Invalid(ProgramFault::ForeignMutation))
+        ));
+    }
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -113,8 +148,8 @@ fn incremental_tree_projection_preserves_foundation_formula_and_golden_identity(
                 .and_then(|state| state.tree.as_ref())
                 .unwrap();
             assert!(
-                tree.cache.len() * Tree::entry_bytes()
-                    + tree.order.capacity() * std::mem::size_of::<u64>()
+                tree.cache.nodes.len() * NodeCache::<Node<u64>>::entry_bytes()
+                    + tree.cache.order.capacity() * std::mem::size_of::<u64>()
                     <= Tree::cache_bytes(4096) as usize
             );
         }
