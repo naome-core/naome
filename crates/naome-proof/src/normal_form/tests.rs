@@ -5,6 +5,42 @@ use crate::{
 };
 
 #[test]
+fn inference_keys_preserve_canonical_equality_and_lengths() {
+    let steps = [
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 1,
+        },
+        ProofStep::ModusPonens {
+            premise: 1,
+            implication: 0,
+        },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: FreeVariable::new(1),
+        },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: FreeVariable::new(0),
+        },
+        ProofStep::EqualityReflexivity {
+            variable: FreeVariable::new(1),
+        },
+    ];
+    for left in &steps {
+        let key = super::StepKey::new(left);
+        let mut encoded = Vec::new();
+        crate::codec::encode_step(left, &mut encoded).unwrap();
+        assert_eq!(key.encoded_length(), encoded.len());
+        for right in &steps {
+            let mut other = Vec::new();
+            crate::codec::encode_step(right, &mut other).unwrap();
+            assert_eq!(key == super::StepKey::new(right), encoded == other);
+        }
+    }
+}
+
+#[test]
 fn topological_order_and_free_variable_names_do_not_change_the_normal_form() {
     let first = identity_proof(FreeVariable::new(7), false).into_unchecked_normal_form();
     let reordered = identity_proof(FreeVariable::new(42), true).into_unchecked_normal_form();

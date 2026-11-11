@@ -48,17 +48,13 @@ pub(super) fn normalize_with_variables(
                     .take()
                     .expect("an exiting proof step has not been consumed");
                 let step = normalize_step(step, &normalized_indices, &mut variables);
-                // Modus ponens and generalization encode a tag and two u32 fields.
-                let mut key = Vec::with_capacity(9);
-                codec::encode_step(&step, &mut key)
-                    .expect("a certificate step remains canonically encodable");
-
+                let key = StepKey::new(&step);
                 let normalized = match interned_steps.entry(key) {
                     Entry::Occupied(entry) => *entry.get(),
                     Entry::Vacant(entry) => {
                         let index = u32::try_from(normalized_steps.len())
                             .expect("the source certificate bounds normalized step indices");
-                        encoded_length += entry.key().len();
+                        encoded_length += entry.key().encoded_length();
                         entry.insert(index);
                         normalized_steps.push(step);
                         index
@@ -78,6 +74,41 @@ pub(super) fn normalize_with_variables(
         },
         variables.normalized,
     )
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum StepKey {
+    ModusPonens(u32, u32),
+    Generalization(u32, u32),
+    Encoded(Vec<u8>),
+}
+
+impl StepKey {
+    fn new(step: &ProofStep) -> Self {
+        match step {
+            ProofStep::ModusPonens {
+                premise,
+                implication,
+            } => Self::ModusPonens(*premise, *implication),
+            ProofStep::Generalization { premise, variable } => {
+                Self::Generalization(*premise, variable.identifier())
+            }
+            _ => {
+                let mut bytes = Vec::with_capacity(9);
+                codec::encode_step(step, &mut bytes)
+                    .expect("a certificate step remains canonically encodable");
+                Self::Encoded(bytes)
+            }
+        }
+    }
+
+    fn encoded_length(&self) -> usize {
+        match self {
+            // Both inference records encode a tag and two u32 fields.
+            Self::ModusPonens(..) | Self::Generalization(..) => 1 + 2 * size_of::<u32>(),
+            Self::Encoded(bytes) => bytes.len(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
