@@ -89,22 +89,22 @@ impl DiskRegistry {
     pub(super) fn records_for(
         &self,
         statement: StatementId,
-    ) -> Result<Box<dyn Iterator<Item = Result<Identity, ContextError>>>, ContextError> {
+    ) -> Result<impl Iterator<Item = Result<Identity, ContextError>> + use<>, ContextError> {
         let bucket = self.report(self.bucket(statement))?;
         let storage = self.records.storage();
-        Ok(Box::new(bucket.entries().map(move |entry| {
-            let result = entry.and_then(|(key, value)| {
+        Ok(bucket
+            .map_entries_after(None, |key, value| {
                 if value.is_empty() {
                     Ok(key)
                 } else {
                     Err(ContextError::Corrupt)
                 }
-            });
-            if let Err(error) = &result {
-                storage.record_failure(error)
-            }
-            result
-        })))
+            })
+            .inspect(move |result| {
+                if let Err(error) = result {
+                    storage.record_failure(error);
+                }
+            }))
     }
     pub(super) fn insert(
         &mut self,

@@ -146,17 +146,16 @@ impl QuestionRegistry {
     pub(super) fn records_for(
         &self,
         statement: StatementId,
-    ) -> Result<Box<dyn Iterator<Item = Result<Identity, ContextError>> + '_>, ContextError> {
-        match &self.cold {
-            Some(cold) => cold.records_for(statement),
-            None => Ok(Box::new(
-                self.statements
-                    .get(&statement)
-                    .into_iter()
-                    .flat_map(PersistentMap::entries)
-                    .map(|(record, ())| Ok(*record)),
-            )),
-        }
+    ) -> Result<impl Iterator<Item = Result<Identity, ContextError>> + '_, ContextError> {
+        let (memory, disk) = match &self.cold {
+            Some(cold) => (None, Some(cold.records_for(statement)?)),
+            None => (self.statements.get(&statement), None),
+        };
+        Ok(memory
+            .into_iter()
+            .flat_map(PersistentMap::entries)
+            .map(|(record, ())| Ok(*record))
+            .chain(disk.into_iter().flatten()))
     }
 
     /// Exact canonical equality against the entire registry; errors are never absence.
