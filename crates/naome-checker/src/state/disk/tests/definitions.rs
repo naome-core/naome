@@ -115,3 +115,42 @@ fn definition_cache_respects_the_exact_byte_budget() {
         );
     }
 }
+
+#[test]
+fn mixed_cached_formulas_and_definitions_keep_their_limits_and_identity() {
+    let (storage, mut state, certificate) = fixture();
+    let (first_id, _, _) = register_axiom(&mut state, ZfcAxiom::Pairing);
+    let (second_id, _, _) = register_axiom(&mut state, ZfcAxiom::Union);
+    let context = ReadContext::new(&state);
+    let first_header = context.proof_header(first_id).unwrap().unwrap();
+    let second_header = context.proof_header(second_id).unwrap().unwrap();
+    let first = context
+        .proof_formula(first_header, first_header.length)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        context
+            .resolve_definition(certificate.definition_id())
+            .unwrap()
+            .unwrap()
+            .body(),
+        certificate.body()
+    );
+    let second = context
+        .proof_formula(second_header, second_header.length)
+        .unwrap()
+        .unwrap();
+    let reads = storage.reads.lock().unwrap().values().sum::<usize>();
+    for (header, expected) in [(first_header, &first), (second_header, &second)] {
+        let cached = context
+            .proof_formula(header, header.length)
+            .unwrap()
+            .unwrap();
+        assert!(std::ptr::eq(expected.as_ref(), cached.as_ref()));
+        assert!(matches!(
+            context.proof_formula(header, header.length - 1),
+            Err(ContextError::Limit)
+        ));
+    }
+    assert_eq!(storage.reads.lock().unwrap().values().sum::<usize>(), reads);
+}
