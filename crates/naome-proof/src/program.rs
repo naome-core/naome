@@ -28,7 +28,7 @@ pub use codec_failure::CodecFailure;
 mod projection;
 mod stream;
 pub use binary::{decode_command, encode_command};
-pub use projection::{Projection, ProjectionFailure, StepResult};
+pub use projection::{Projection, ProjectionFailure, ScopedInput, StepResult};
 pub use stream::{
     ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_records, encode_records,
 };

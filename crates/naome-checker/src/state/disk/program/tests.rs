@@ -53,6 +53,46 @@ fn small_program_facts_share_checked_membership_and_resolve_certificate_referenc
 }
 
 #[test]
+fn program_registration_reads_dependency_identity_and_depth_together() {
+    use crate::program::Engine;
+    use crate::state::disk::tests::register_axiom;
+    use naome_foundation::ZfcAxiom;
+    use naome_proof::program::Command;
+    use rusqlite::Connection;
+
+    let storage = Arc::new(MemoryStorage::default());
+    let mut state = DiskArtifactState::new(storage.clone());
+    let (parent, _, _) = register_axiom(&mut state, ZfcAxiom::Pairing);
+    let parent_address = state.proofs.root().unwrap().address;
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    engine
+        .append_group(&[
+            Command::ProofReference {
+                proof_id: *parent.as_bytes(),
+            },
+            Command::Seal { proof: 0 },
+        ])
+        .unwrap();
+    while engine.advance(16, 4096, &state).unwrap() {}
+    while !engine.prepare_export(16).unwrap() {}
+    let proof = engine.checked().unwrap();
+    assert!(proof.conclusion().is_some());
+
+    let mut registration = state.begin_program_registration(&proof).unwrap();
+    storage.reads.lock().unwrap().clear();
+    registration.advance(&proof, 1).unwrap();
+    assert_eq!(storage.reads.lock().unwrap().get(&parent_address), Some(&1));
+    while !registration.complete() {
+        registration.advance(&proof, 1).unwrap();
+    }
+    let registered = registration.finish().unwrap();
+    assert_eq!(
+        registered.proof_dependency_depth(proof.manifest().proof_id()),
+        Ok(Some(2))
+    );
+}
+
+#[test]
 fn huge_conclusions_register_and_survive_bounded_context_copy_without_tree_materialization() {
     let proof = checked_program(true);
     assert!(proof.conclusion().is_none());

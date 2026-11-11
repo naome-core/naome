@@ -420,6 +420,36 @@ impl DiskArtifactState {
             Ok(Some((address, length)))
         })())
     }
+
+    fn proof_header_and_depth(
+        &self,
+        id: ProofId,
+    ) -> Result<Option<(ProofHeader, usize)>, ContextError> {
+        self.report((|| {
+            let Some(record) = self.proofs.get(id.as_bytes())? else {
+                return Ok(None);
+            };
+            let (derivation, depth) = proof_record(&record)?;
+            let statement = self
+                .derivations
+                .get(derivation.as_bytes())?
+                .ok_or(ContextError::Corrupt)?;
+            let statement = StatementId::from_bytes(fixed(&statement)?);
+            let (address, length) = self
+                .statement_record(statement)?
+                .ok_or(ContextError::Corrupt)?;
+            let header = ProofHeader {
+                location: Some(FormulaLocation {
+                    address,
+                    snapshot: self.snapshot_id(),
+                }),
+                derivation,
+                statement,
+                length: if length == 0 { usize::MAX } else { length },
+            };
+            Ok(Some((header, depth)))
+        })())
+    }
 }
 
 impl super::registration::RegistrationView for DiskArtifactState {
@@ -488,29 +518,8 @@ impl ContextView for DiskArtifactState {
         self.artifacts.contains_key(id.as_bytes())
     }
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError> {
-        self.report((|| {
-            let Some(derivation) = self.proofs.get(id.as_bytes())? else {
-                return Ok(None);
-            };
-            let (derivation, _) = proof_record(&derivation)?;
-            let statement = self
-                .derivations
-                .get(derivation.as_bytes())?
-                .ok_or(ContextError::Corrupt)?;
-            let statement = StatementId::from_bytes(fixed(&statement)?);
-            let (address, length) = self
-                .statement_record(statement)?
-                .ok_or(ContextError::Corrupt)?;
-            Ok(Some(ProofHeader {
-                location: Some(FormulaLocation {
-                    address,
-                    snapshot: self.snapshot_id(),
-                }),
-                derivation,
-                statement,
-                length: if length == 0 { usize::MAX } else { length },
-            }))
-        })())
+        self.proof_header_and_depth(id)
+            .map(|record| record.map(|(header, _)| header))
     }
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
         self.report((|| {
