@@ -15,12 +15,50 @@ pub(super) fn rank(
     gains: u32,
     protected: u32,
 ) -> (bool, u32, u32, std::cmp::Reverse<u32>) {
+    rank_checked(mask.checked, mask.changed, gains, protected)
+}
+
+fn rank_checked(
+    checked: u32,
+    changed: u32,
+    gains: u32,
+    protected: u32,
+) -> (bool, u32, u32, std::cmp::Reverse<u32>) {
     (
-        mask.checked & protected == protected && mask.checked & gains != 0,
-        (mask.checked & gains).count_ones(),
-        (mask.checked & protected).count_ones(),
-        std::cmp::Reverse(mask.changed),
+        checked & protected == protected && checked & gains != 0,
+        (checked & gains).count_ones(),
+        (checked & protected).count_ones(),
+        std::cmp::Reverse(changed),
     )
+}
+
+/// Verify the candidate only while it can still outrank the current selection.
+/// An unvisited case counts as a success solely for this upper bound.
+pub(super) fn screen(
+    incumbent: &Subset,
+    changed: u32,
+    gains: u32,
+    protected: u32,
+    mut check: impl FnMut(usize) -> Result<(bool, u8), crate::Error>,
+) -> Result<(u32, u32), crate::Error> {
+    let best = rank(incumbent, gains, protected);
+    let mut remaining = gains | protected;
+    let mut checked = 0;
+    let mut paid = 0;
+    while remaining != 0 && rank_checked(checked | remaining, changed, gains, protected) > best {
+        // Prioritize capabilities the best update has not yet retained.
+        let missing = remaining & protected & !incumbent.checked;
+        let next = if missing != 0 { missing } else { remaining };
+        let index = next.trailing_zeros();
+        let bit = 1 << index;
+        let (solved, expansions) = check(index as usize)?;
+        if solved {
+            checked |= bit;
+        }
+        remaining &= !bit;
+        paid += u32::from(expansions);
+    }
+    Ok((checked, paid))
 }
 
 pub(super) fn intervention(

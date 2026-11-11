@@ -130,22 +130,19 @@ impl Trial {
         let spans = intervention(round, &modules, incumbent, self.gained());
         let changed = weights.changed(&spans) as u32;
         if changed != 0 && spans.len() <= 16 && spans != incumbent.spans {
-            let required = self.required();
             let (checked, paid) =
                 engine.with_intervention(&base.model, candidate, &spans, false, io, |runtime| {
-                    let mut checked = 0;
-                    let mut paid = 0;
-                    for (index, case) in curriculum::adaptive::BANK.transfer.iter().enumerate() {
-                        let bit = 1 << index;
-                        if required & bit != 0 {
+                    selection::screen(
+                        incumbent,
+                        changed,
+                        self.gained(),
+                        self.discovery.before,
+                        |index| {
+                            let case = &curriculum::adaptive::BANK.transfer[index];
                             let result = transfer::solve(&case.source, base, runtime, job)?;
-                            paid += u32::from(result.expansions);
-                            if result.solved {
-                                checked |= bit;
-                            }
-                        }
-                    }
-                    Ok((checked, paid))
+                            Ok((result.solved, result.expansions))
+                        },
+                    )
                 })?;
             self.tested_masks += 1;
             self.screen_expansions += paid;
