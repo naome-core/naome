@@ -94,7 +94,7 @@ impl Runtime {
             }
             depths.push(depth);
         }
-        // Disjoint adjacency and attention masks prevent one encoded example
+        // Disjoint token rows and attention masks prevent one encoded example
         // from observing another. Only checked chronological edges below carry
         // gradients across examples. For preservation these are reconstructed
         // checked-proof edges, not observed chronology. Truncation starts at zero.

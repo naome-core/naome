@@ -12,6 +12,8 @@ use std::collections::HashMap;
 pub const MAX_NODES: usize = 256;
 pub const MAX_CONTEXT: usize = 48;
 pub(super) const SYMBOLS: usize = 2 * MAX_NODES + 1;
+pub(super) const NEGATION: i32 = 3;
+pub(super) const PAIR: i32 = 14;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Node {
@@ -99,7 +101,7 @@ impl<'a> Builder<'a> {
         };
         rest.iter().try_fold(first, |left, &right| {
             self.push(Node {
-                kind: 14,
+                kind: PAIR,
                 left,
                 right,
                 role: 0,
@@ -182,7 +184,7 @@ impl<'a> Builder<'a> {
                 node.right = self.variable(b, binders)?;
             }
             FormulaNode::Not(body) => {
-                node.kind = 3;
+                node.kind = NEGATION;
                 node.left = self.formula(body, binders, children)?;
             }
             FormulaNode::Implies(left, right) => {

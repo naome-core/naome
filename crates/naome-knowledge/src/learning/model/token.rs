@@ -1,11 +1,10 @@
 //! Decision-local typed prefixes shared by search and checked replay.
 use crate::LearningGraphFailure as Failure;
-use crate::learning::graph::{Graph, Node};
+use crate::learning::graph::{Graph, NEGATION, Node, PAIR};
 use std::ops::Range;
 
 pub(super) const VOCABULARY: usize = 2048;
-pub(super) const FEATURES: usize = 8;
-const PAIR: i32 = 14;
+pub(super) const FEATURES: usize = 10;
 const MAX_OPERANDS: usize = naome_proof::program::ACTION_PREMISES + 1;
 pub(super) type Row = [i32; FEATURES];
 
@@ -60,6 +59,8 @@ fn structural_rows(nodes: &[Node], signatures: &[Signature]) -> Vec<Row> {
                 mix(kind, signatures[node.left].shape),
                 mix(kind, signatures[node.right].shape),
                 mix(mix(kind, left.symbol as u64), right.symbol as u64),
+                left_kind,
+                right_kind,
             ])
         })
         .collect()
@@ -99,6 +100,7 @@ struct Step {
     head: u64,
     detail: u64,
     syntax: u64,
+    relation: u64,
 }
 
 struct Input<'a> {
@@ -106,6 +108,7 @@ struct Input<'a> {
     signatures: Vec<Signature>,
     goal_parts: Vec<bool>,
     context: Vec<bool>,
+    opposites: Vec<bool>,
     context_shape: u64,
 }
 
@@ -130,11 +133,21 @@ impl<'a> Input<'a> {
                 context[index] = true;
             }
         }
+        let mut opposites = vec![false; graph.nodes.len()];
+        for (index, node) in graph.nodes.iter().enumerate().skip(1) {
+            if node.kind == NEGATION {
+                // Compare exact local formula references, including the
+                // variable bindings, before reducing them to token features.
+                opposites[index] |= context[node.left];
+                opposites[node.left] |= context[index];
+            }
+        }
         Self {
             graph,
             signatures,
             goal_parts,
             context,
+            opposites,
             context_shape,
         }
     }
@@ -145,6 +158,7 @@ impl<'a> Input<'a> {
             | (u64::from(self.goal_parts[index]) << 1)
             | (u64::from(self.context[index]) << 2)
             | (u64::from(self.signatures[index].shape == self.signatures[goal].shape) << 3)
+            | (u64::from(self.opposites[index]) << 4)
     }
 
     fn describe(&self, token: Token) -> Step {
@@ -174,6 +188,7 @@ impl<'a> Input<'a> {
             head,
             detail,
             syntax,
+            relation,
         }
     }
 
@@ -182,6 +197,7 @@ impl<'a> Input<'a> {
             head,
             detail,
             syntax,
+            relation,
         } = step;
         let field = self.graph.field as u64;
         let goal = self.signatures[self.graph.goal];
@@ -194,6 +210,8 @@ impl<'a> Input<'a> {
             mix(mix(detail, syntax), goal.syntax),
             mix(detail, self.context_shape),
             mix(mix(head, rule), suffix),
+            mix(head, self.graph.nodes[self.graph.goal].kind as u64),
+            mix(head, relation | (suffix << 5)),
         ])
     }
 }
