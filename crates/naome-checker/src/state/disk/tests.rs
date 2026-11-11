@@ -242,3 +242,30 @@ pub(super) fn checked_program(deep: bool) -> CheckedProgram {
     while !engine.prepare_export(256).unwrap() {}
     engine.checked().unwrap()
 }
+
+#[test]
+fn absent_statement_buckets_are_empty_and_malformed_roots_fail() {
+    let storage = Arc::new(MemoryStorage::default());
+    let mut state = DiskArtifactState::new(storage.clone());
+    let target = StatementId::from_bytes([42; 32]);
+    for kind in [
+        BucketKind::Outgoing,
+        BucketKind::Deductions,
+        BucketKind::Instances,
+    ] {
+        assert!(state.bucket(kind, target).unwrap().next().is_none());
+        state.index_mut(kind).set(*target.as_bytes(), &[2]).unwrap();
+        assert!(matches!(
+            state.bucket(kind, target),
+            Err(ContextError::Corrupt)
+        ));
+    }
+    assert_eq!(
+        storage.failures.lock().unwrap().as_slice(),
+        &[
+            ContextError::Corrupt,
+            ContextError::Corrupt,
+            ContextError::Corrupt
+        ]
+    );
+}

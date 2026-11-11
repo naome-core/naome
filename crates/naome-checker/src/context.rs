@@ -239,10 +239,9 @@ impl ContextView for ArtifactState {
         kind: BucketKind,
         target: StatementId,
     ) -> Result<StatementCursor<'_>, ContextError> {
-        Ok(match kind {
-            BucketKind::Outgoing => Box::new(self.question_index.outgoing(target).map(Ok)),
-            BucketKind::Deductions => Box::new(self.question_index.deductions(target).map(Ok)),
-            BucketKind::Instances => Box::new(self.question_index.instances(target).map(Ok)),
+        Ok(match self.question_index.bucket(kind, target) {
+            Some(bucket) => Box::new(bucket.map(Ok)),
+            None => Box::new(std::iter::empty()),
         })
     }
     fn definition_certificate(

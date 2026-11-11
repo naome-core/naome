@@ -588,12 +588,15 @@ impl ContextView for DiskArtifactState {
         kind: BucketKind,
         target: StatementId,
     ) -> Result<StatementCursor<'_>, ContextError> {
-        self.report((|| {
+        self.report((|| -> Result<StatementCursor<'_>, ContextError> {
             let index = self.index(kind);
             let root = index.get(target.as_bytes())?;
-            let bucket = DiskMap::from_root(index.storage(), decode_root(root.as_deref())?);
+            let Some(root) = decode_root(root.as_deref())? else {
+                return Ok(Box::new(std::iter::empty()));
+            };
+            let bucket = DiskMap::from_root(index.storage(), Some(root));
             let storage = index.storage();
-            Ok::<StatementCursor<'_>, ContextError>(Box::new(bucket.entries().map(move |entry| {
+            Ok(Box::new(bucket.entries().map(move |entry| {
                 let result = entry.and_then(|(key, value)| {
                     if !value.is_empty() {
                         return Err(ContextError::Corrupt);
