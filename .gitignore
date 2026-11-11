@@ -13,3 +13,6 @@ __pycache__/
 
 # Bazel output symlinks
 /bazel-*
+
+/vendor/burn-dispatch/BUILD.bazel
+/vendor/burn-tensor/BUILD.bazel

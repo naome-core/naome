@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 import unittest
 from unittest.mock import patch
@@ -191,11 +192,32 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("steps.cache.outputs.cache-hit != 'true'", save)
         self.assertIn("steps.cache.outputs.cache-primary-key", save)
 
+    def test_generated_burn_builds_match_checked_definitions(self):
+        script = ROOT / "tools/ci/verify-generated-burn-builds.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            def check():
+                return subprocess.run(["bash", str(script), str(root)], capture_output=True).returncode
+            self.assertEqual(check(), 0)
+            definitions = root / "tools/bazel"
+            definitions.mkdir(parents=True)
+            for crate in ("burn-dispatch", "burn-tensor"):
+                (definitions / f"{crate}.BUILD").write_text("library()\n")
+                generated = root / "vendor" / crate / "BUILD.bazel"
+                generated.parent.mkdir(parents=True)
+                generated.write_text("library()  \n")
+            self.assertEqual(check(), 0)
+            generated.write_text("other_library()\n")
+            self.assertNotEqual(check(), 0)
+            generated.unlink()
+            self.assertNotEqual(check(), 0)
+
     def test_ci_builds_both_aggregates_before_running_tests(self):
         workflow = " ".join((ROOT / ".github/workflows/bazel-tests.yml").read_text().split())
         build = ("run: >- bazel build --config=ci "
                  "--aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect "
-                 "--output_groups=+clippy_checks //:mr_build //:mr_tests //crates/... //vendor/...")
+                 "--output_groups=+clippy_checks //:mr_build //:mr_tests //crates/... //vendor/... "
+                 "@burn_dispatch_local//... @burn_tensor_local//...")
         execute = "run: >- bazel test --config=ci //:mr_tests"
         self.assertIn(build, workflow)
         self.assertIn(execute, workflow)

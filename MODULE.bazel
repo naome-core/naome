@@ -85,13 +85,13 @@ use_repo(
 new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
 new_local_repository(
     name = "burn_dispatch_local",
-    build_file = "//vendor/burn-dispatch:BUILD.bazel",
+    build_file = "//tools/bazel:burn-dispatch.BUILD",
     path = "vendor/burn-dispatch",
 )
 override_repo(crate, **{"crates__burn-dispatch-0.22.1": "burn_dispatch_local"})
 new_local_repository(
     name = "burn_tensor_local",
-    build_file = "//vendor/burn-tensor:BUILD.bazel",
+    build_file = "//tools/bazel:burn-tensor.BUILD",
     path = "vendor/burn-tensor",
 )
 override_repo(crate, **{"crates__burn-tensor-0.22.1": "burn_tensor_local"})
