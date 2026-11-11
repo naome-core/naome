@@ -332,7 +332,7 @@ impl Disk {
                 .written
                 .iter()
                 .any(|(owner, known)| *owner == unit && known == blob);
-            if new && native.written.len() >= 2 * (crate::learning::TRAINING_UNITS as usize + 2) {
+            if new && native.written.len() >= crate::learning::MAX_TRAINING_ARTIFACTS {
                 return Err(crate::ResearchFailure::NativeModelArtifactCountExhausted.into());
             }
             for (index, part) in

@@ -741,6 +741,32 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
     assert_eq!(learning(&owner)["peer_examples"], 0);
 }
 #[test]
+fn the_job_owner_accepts_the_complete_bounded_training_artifact_allowance() {
+    let (_directory, mut owner) = native();
+    accepted(&mut owner);
+    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    for index in 0..crate::learning::MAX_TRAINING_ARTIFACTS {
+        let bytes = index.to_le_bytes();
+        let blob = crate::learning::Blob::of(&bytes);
+        owner
+            .disk
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, Some(bytes.to_vec()))
+            .unwrap();
+    }
+    let bytes = crate::learning::MAX_TRAINING_ARTIFACTS.to_le_bytes();
+    let blob = crate::learning::Blob::of(&bytes);
+    assert_eq!(
+        owner
+            .disk
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, Some(bytes.to_vec()))
+            .unwrap_err(),
+        crate::ResearchFailure::NativeModelArtifactCountExhausted.into()
+    );
+}
+
+#[test]
 fn native_model_chunks_require_original_training_reservations_and_immutable_read_custody() {
     let (_directory, mut owner) = native();
     accepted(&mut owner);

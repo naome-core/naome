@@ -1319,6 +1319,104 @@ fn causal_promotion_preserves_transfer_and_uses_the_original_knowledge() {
 }
 
 #[test]
+fn causal_selection_is_retained_before_the_worker_can_qualify_it() {
+    let _reservation = qualification_fixture();
+    struct OwnedSnapshots<'a> {
+        owner: &'a Job,
+        store: &'a mut MemoryStore,
+    }
+    impl ArtifactIo for OwnedSnapshots<'_> {
+        fn read(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+        ) -> Result<Vec<u8>, crate::Error> {
+            if !self.owner.allows_read(blob) {
+                return Err(
+                    crate::ResearchFailure::NativeModelReadOutsideImmutableOwnedSnapshots.into(),
+                );
+            }
+            self.store.read(blob, range)
+        }
+
+        fn write(
+            &mut self,
+            blob: &Blob,
+            range: std::ops::Range<usize>,
+            bytes: Vec<u8>,
+        ) -> Result<(), crate::Error> {
+            self.store.write(blob, range, bytes)
+        }
+    }
+
+    let mut state = fixed_state();
+    state.accept(own_example()).unwrap();
+    let mut store = MemoryStore::default();
+    let graphs = state.training_graphs().unwrap();
+    let candidate = model::test_update(&state.model, &graphs[..1], &mut 10, &mut store).unwrap();
+    let mut engine = Engine::default();
+    let weights = engine
+        .intervention_weights(&state.model, &candidate, &mut store)
+        .unwrap();
+    let span = (0..weights.parameters)
+        .map(|start| model::intervention::Span {
+            start,
+            end: start + 1,
+        })
+        .find(|span| weights.changed(&[*span]) == 1)
+        .unwrap();
+    let mut owner = state.job();
+    owner.training = true;
+    let mut progress = finished_progress(&state);
+    progress.causal = causal::before_freeze(&candidate, span);
+    progress.unit = model::TRAINING_UNITS + (transfer::CASES + causal::LOCALIZATION) as u32;
+    progress.first_loss = Some(1.);
+    progress.last_loss = Some(0.5);
+    progress.candidate = Some(candidate.clone());
+    let selection_unit = progress.unit + 1;
+    let initial_evaluation = digest(&progress.evaluation);
+    owner.progress = Some(progress);
+    owner.validate().unwrap();
+    let mut worker = owner.clone();
+    worker
+        .execute(
+            selection_unit,
+            None,
+            71,
+            &mut engine,
+            &mut OwnedSnapshots {
+                owner: &owner,
+                store: &mut store,
+            },
+        )
+        .unwrap();
+    let selected = worker.progress.take().unwrap();
+    assert_eq!(digest(&selected.evaluation), initial_evaluation);
+    let checkpoint = selected.candidate.clone().unwrap();
+    assert_ne!(checkpoint.model, candidate.model);
+    assert!(!owner.allows_read(checkpoint.model.as_ref().unwrap()));
+    owner.retain_progress(71, selected).unwrap();
+    let mut reopened: Job =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&owner).unwrap()).unwrap();
+    reopened
+        .execute(
+            selection_unit + 1,
+            None,
+            71,
+            &mut Engine::default(),
+            &mut OwnedSnapshots {
+                owner: &owner,
+                store: &mut store,
+            },
+        )
+        .unwrap();
+    let evaluated = reopened.progress.take().unwrap();
+    assert_eq!(evaluated.candidate.as_ref(), Some(&checkpoint));
+    assert_ne!(digest(&evaluated.evaluation), initial_evaluation);
+    owner.retain_progress(71, evaluated).unwrap();
+}
+
+#[test]
 fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     let mut state = fixed_state();
     state.accept(own_example()).unwrap();
