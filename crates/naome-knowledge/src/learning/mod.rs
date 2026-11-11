@@ -45,6 +45,9 @@ use std::collections::BTreeMap;
 pub(crate) const PROVIDER: &str = "naome-native-proof-learning";
 const REPLAY: usize = 32;
 const EVALUATIONS: u32 = curriculum::DEVELOPMENT as u32 + 4;
+// Training writes a model and optimizer per unit, plus bounded artifacts for
+// preparation, causal selection, and the final Meta update.
+pub(crate) const MAX_TRAINING_ARTIFACTS: usize = 2 * (TRAINING_UNITS as usize + 3);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Preparation {
     Balanced,
@@ -274,13 +277,13 @@ impl Progress {
                 .causal
                 .witness(offset - causal::SCREEN, base, &candidate, engine, io, job);
         }
-        let evaluated = if localization != 0 && offset == localization {
-            let evaluated = self.causal.freeze(&base.model, &candidate, engine, io)?;
-            self.candidate = Some(evaluated.clone());
-            evaluated
-        } else {
-            candidate
-        };
+        if localization != 0 && offset == localization {
+            // The owner must retain the selected model and optimizer before a
+            // later reservation can read those blobs as an immutable input.
+            self.candidate = Some(self.causal.freeze(&base.model, &candidate, engine, io)?);
+            return Ok(());
+        }
+        let evaluated = candidate;
         let development = curriculum::development();
         let normal = development.len() + base.anchors.len();
         let confirmation = self.causal.confirmation_cases();
@@ -709,7 +712,7 @@ impl Job {
             return Err(crate::ResearchFailure::JobReplaySnapshotBinding.into());
         }
 
-        if self.written.len() > 2 * (model::TRAINING_UNITS as usize + 3)
+        if self.written.len() > MAX_TRAINING_ARTIFACTS
             || self.io_bytes > crate::resources::limits().native_model_io_bytes
             || self.io_operations
                 > crate::resources::limits().native_model_io_bytes

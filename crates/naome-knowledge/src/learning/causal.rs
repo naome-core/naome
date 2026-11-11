@@ -469,7 +469,8 @@ impl Trial {
     /// Each existing paid evaluation checkpoint covers the same deterministic
     /// interval on replay. The confirmation set is consulted after the mask freezes.
     pub(super) fn evaluated(&self, units: usize, normal_cases: usize) -> usize {
-        let start = transfer::CASES + self.localization();
+        let localization = self.localization();
+        let start = transfer::CASES + localization + usize::from(localization != 0);
         let count = normal_cases + self.confirmation_cases().len();
         count * units.saturating_sub(start) / (EVALUATIONS as usize - start)
     }
@@ -560,4 +561,4 @@ fn fork(case: usize, original: &transfer::Outcome, changed: &transfer::Outcome) 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(super) use tests::{test_fixture, test_pair};
+pub(super) use tests::{before_freeze, test_fixture, test_pair};

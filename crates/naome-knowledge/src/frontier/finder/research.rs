@@ -361,11 +361,43 @@ impl Policy {
             .filter(|(_, r)| r.group() == group);
         let first = group_rows.next().map(|(i, _)| i);
         if group_rows.count() + usize::from(first.is_some()) >= PER_GROUP {
-            self.transitions
-                .remove(first.expect("full transition group"));
+            let oldest = first.expect("full transition group");
+            let evicted = if group.0 {
+                self.redundant_validation_row(&row).unwrap_or(oldest)
+            } else {
+                oldest
+            };
+            self.transitions.remove(evicted);
         }
         self.transitions.push_back(row);
         self.advance()
+    }
+
+    /// Prefer dropping the oldest row whose removal would leave the same
+    /// comparable validation blocks. The incoming row can replace a witness
+    /// for its own block. If every row represents a distinct block, age wins.
+    fn redundant_validation_row(&self, incoming: &Transition) -> Option<usize> {
+        let group = incoming.group();
+        let opposite = (group.0, !group.1);
+        self.transitions
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.group() == group)
+            .find_map(|(index, row)| {
+                let paired = self
+                    .transitions
+                    .iter()
+                    .any(|other| other.group() == opposite && row.comparable(other));
+                let replaced = row.comparable(incoming)
+                    || self
+                        .transitions
+                        .iter()
+                        .enumerate()
+                        .any(|(other_index, other)| {
+                            index != other_index && other.group() == group && row.comparable(other)
+                        });
+                (!paired || replaced).then_some(index)
+            })
     }
 
     fn pairs(&self, held_out: bool) -> Vec<(&Transition, &Transition)> {

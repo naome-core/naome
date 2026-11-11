@@ -57,6 +57,16 @@ pub(in crate::learning) fn test_fixture(candidate: &Checkpoint, before: u32, aft
     trial
 }
 
+pub(in crate::learning) fn before_freeze(candidate: &Checkpoint, span: Span) -> Trial {
+    let mut trial = test_fixture(candidate, 0, 1);
+    trial.best.as_mut().unwrap().spans = vec![span];
+    trial.selected = None;
+    trial.confirmation = transfer::Summary::default();
+    trial.confirmation_trace = None;
+    trial.confirmation_gains = 0;
+    trial
+}
+
 #[test]
 fn confirmation_uses_independent_related_families_and_cannot_waive_retention() {
     let candidate = Checkpoint::fresh();
