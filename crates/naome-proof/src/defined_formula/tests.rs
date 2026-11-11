@@ -70,6 +70,25 @@ fn primitive_conversion_preserves_the_canonical_depth_limit() {
 }
 
 #[test]
+fn primitive_conversion_rejects_a_projected_dangling_bound_variable() {
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let quantified = Formula::for_all(y, Formula::member(x, y));
+    let PrimitiveNode::ForAll(body) = quantified.view().graph_node() else {
+        panic!("constructed formula must be universal");
+    };
+    let projected = body.to_owned();
+
+    assert_eq!(
+        DefinedFormula::from_primitive(&projected),
+        Err(DefinedFormulaCodecError::DanglingBoundVariable {
+            index: 0,
+            binder_depth: 0,
+        })
+    );
+}
+
+#[test]
 fn expansion_shifts_an_outer_bound_argument_beneath_body_binders() {
     let formal = FreeVariable::new(0);
     let inner = FreeVariable::new(1);
