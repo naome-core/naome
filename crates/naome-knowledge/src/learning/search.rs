@@ -791,9 +791,20 @@ impl Search<'_> {
                 return Ok(None);
             }
             let d = decision_for(&self.goal, state, &offers, 0)?;
-            let mut graph = match Graph::encode(&d) {
-                Ok(graph) => graph,
-                Err(_) => {
+            let plan = match self
+                .ranker
+                .plan(&d, &state_binding, &offered, memory.as_ref())
+            {
+                Ok(plan) => plan,
+                Err(crate::Error::LearningGraph(
+                    crate::LearningGraphFailure::Capacity
+                    | crate::LearningGraphFailure::ActionArity
+                    | crate::LearningGraphFailure::BoundIndexWidth
+                    | crate::LearningGraphFailure::DanglingBoundVariable
+                    | crate::LearningGraphFailure::DecisionCapacity
+                    | crate::LearningGraphFailure::MissingExpert
+                    | crate::LearningGraphFailure::MissingPremise,
+                )) => {
                     if let Some(report) = &mut self.frontier {
                         report.observe(state, depth);
                     }
@@ -802,12 +813,9 @@ impl Search<'_> {
                         .include(TerminalEvidence::Unsupported(Capacity::Graph));
                     return Ok(None);
                 }
+                Err(error) => return Err(error),
             };
-            graph.binding.clone_from(&state_binding);
-            (
-                self.ranker.plan(&d, &graph, &offered, memory.as_ref())?,
-                Some(key),
-            )
+            (plan, Some(key))
         };
         let scores = &plan.scores;
         if scores.len() != actions.len() || scores.iter().any(|s| !s.is_finite()) {

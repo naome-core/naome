@@ -111,6 +111,13 @@ pub(super) fn decode_scores(scores: Tensor<2>, count: usize) -> Result<Vec<f32>,
     Ok(scores)
 }
 
+struct ScoringInput<'a> {
+    batch: Batch,
+    context: &'a [usize],
+    binding: &'a str,
+    candidates: usize,
+}
+
 impl Runtime {
     pub(super) fn plan_graph(
         &self,
@@ -118,17 +125,55 @@ impl Runtime {
         offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, crate::Error> {
+        self.plan_input(
+            ScoringInput {
+                batch: self.scoring_batch(graph)?,
+                context: &graph.context,
+                binding: &graph.binding,
+                candidates: graph.candidates.len(),
+            },
+            offered,
+            memory,
+        )
+    }
+
+    pub(super) fn plan_decision(
+        &self,
+        decision: &Decision,
+        field: Field,
+        binding: &str,
+        offered: &str,
+        memory: Option<&Memory>,
+    ) -> Result<Plan, crate::Error> {
+        let (batch, context) = Batch::from_decision(decision, field, &self.device.clone().inner())?;
+        self.plan_input(
+            ScoringInput {
+                batch,
+                context: &context,
+                binding,
+                candidates: decision.candidates.len(),
+            },
+            offered,
+            memory,
+        )
+    }
+
+    fn plan_input(
+        &self,
+        input: ScoringInput<'_>,
+        offered: &str,
+        memory: Option<&Memory>,
+    ) -> Result<Plan, crate::Error> {
         if let Some(memory) = memory {
             memory.validate()?;
             if self.recurrence != Recurrence::Carry
                 || memory.model != self.identity
-                || memory.state != graph.binding
+                || memory.state != input.binding
                 || memory.offered != offered
             {
                 return Err(ResearchFailure::MemoryContext.into());
             }
         }
-        let batch = self.scoring_batch(graph)?;
         let policy = self.policy.valid();
         let initial = (self.recurrence != Recurrence::Disabled).then(|| {
             Tensor::from_data(
@@ -140,10 +185,14 @@ impl Runtime {
             )
         });
         let (scores, successors) = policy.infer(
-            policy.encode_cached(&batch, &graph.context, &mut self.token_rows.borrow_mut())?,
+            policy.encode_cached(
+                &input.batch,
+                input.context,
+                &mut self.token_rows.borrow_mut(),
+            )?,
             initial,
         );
-        let scores = decode_scores(scores, graph.candidates.len())?;
+        let scores = decode_scores(scores, input.candidates)?;
         let rows = if successors.is_some() {
             vec![OnceCell::new(); scores.len()]
         } else {

@@ -1288,16 +1288,16 @@ struct Exploring<'a> {
     explore: bool,
 }
 impl Exploring<'_> {
-    fn scores_encoded(&mut self, graph: &graph::Graph) -> Result<Vec<f32>, crate::Error> {
+    fn scores_decision(&mut self, decision: &model::Decision) -> Result<Vec<f32>, crate::Error> {
         // Commit the draw only after the input passes the model's gates.
         let mut next = self.seed;
         let scores = if self.explore && model::random(&mut next).is_multiple_of(5) {
-            self.model.validate_graph(graph)?;
-            (0..graph.candidates.len())
+            self.model.validate_decision(decision)?;
+            (0..decision.candidates.len())
                 .map(|_| (model::random(&mut next) >> 11) as f32 / 9007199254740992.)
                 .collect()
         } else {
-            self.model.scores_graph(graph)?
+            model::Ranker::scores(self.model, decision)?
         };
         self.seed = next;
         Ok(scores)
@@ -1305,17 +1305,17 @@ impl Exploring<'_> {
 }
 impl model::Ranker for Exploring<'_> {
     fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, crate::Error> {
-        self.scores_encoded(&graph::Graph::encode(d)?)
+        self.scores_decision(d)
     }
     fn plan(
         &mut self,
         d: &model::Decision,
-        graph: &graph::Graph,
+        binding: &str,
         offered: &str,
         memory: Option<&model::Memory>,
     ) -> Result<model::Plan, crate::Error> {
         let mut plan = if self.model.recurrent() {
-            let mut plan = self.model.plan(d, graph, offered, memory)?;
+            let mut plan = self.model.plan(d, binding, offered, memory)?;
             let mut next = self.seed;
             if d.candidates.len() > 1 && self.explore && model::random(&mut next).is_multiple_of(5)
             {
@@ -1330,9 +1330,10 @@ impl model::Ranker for Exploring<'_> {
                 return Err(crate::ResearchFailure::StatelessExplorationMemory.into());
             }
             model::Plan::scores(if d.candidates.len() == 1 {
+                self.model.validate_decision(d)?;
                 vec![0.]
             } else {
-                self.scores_encoded(graph)?
+                self.scores_decision(d)?
             })
         };
         search::focus::rank(d, &mut plan.scores);

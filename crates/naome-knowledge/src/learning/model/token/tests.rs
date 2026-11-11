@@ -67,10 +67,54 @@ fn opposite_fact_features_preserve_variable_bindings() {
     ];
     decision.candidates[0].consequences = vec![Formula::member(b, a)];
     let graph = Graph::encode(&decision).unwrap();
-    let input = Input::new(&graph);
+    let mut nodes = TokenNodes::default();
+    for node in &graph.nodes {
+        nodes.lower_node(node);
+    }
+    let input = Input::new(
+        &nodes.forms,
+        graph.field,
+        graph.goal,
+        graph_goal_parts(&graph),
+        &graph.context,
+    );
     let swapped = graph.nodes[graph.candidates[0]].right;
     assert!(input.opposites[graph.goal]);
     assert!(input.opposites[swapped]);
     assert!(input.opposites[graph.context[0]]);
     assert!(!input.opposites[graph.context[1]]);
+}
+
+#[test]
+fn direct_solver_tokens_preserve_replay_features_and_aliases() {
+    let mut decision = decision();
+    decision.candidates[0].premises = vec![0, 1, 2];
+    decision.candidates[0]
+        .consequences
+        .push(decision.goal.clone());
+    let graph = Graph::encode_field(&decision, Field::Premise).unwrap();
+    let typed = crate::learning::graph::encode_decision(&decision, usize::MAX).unwrap();
+    let (menu, layout) = Menu::from_typed(typed, Field::Premise);
+    assert_eq!(menu, Menu::lower(&graph).unwrap());
+    assert_eq!(layout.goal, graph.goal);
+    assert_eq!(layout.context, graph.context);
+    assert_eq!(layout.candidates, graph.candidates);
+    assert_eq!(layout.successes, graph.successes);
+}
+
+#[test]
+fn direct_finder_tokens_preserve_all_recipe_paths_and_relation_features() {
+    let decision = decision();
+    let relations = decision
+        .context
+        .iter()
+        .map(|b| &b.formula)
+        .collect::<Vec<_>>();
+    let graph = Graph::question_recipes(&relations).unwrap();
+    let typed = crate::learning::graph::encode_recipes(&relations).unwrap();
+    let (menu, layout) = Menu::from_typed(typed, Field::QuestionRecipe);
+    assert_eq!(menu, Menu::lower(&graph).unwrap());
+    assert_eq!(layout.goal, graph.goal);
+    assert_eq!(layout.context, graph.context);
+    assert_eq!(layout.candidates, graph.candidates);
 }

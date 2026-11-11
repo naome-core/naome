@@ -107,13 +107,15 @@ pub trait Ranker {
     fn plan(
         &mut self,
         d: &Decision,
-        _graph: &Graph,
+        _binding: &str,
         _offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, crate::Error> {
         if memory.is_some() {
             return Err(crate::ResearchFailure::StatelessRankerMemory.into());
         }
+        // Match the production decision admission for custom rankers.
+        super::graph::encode_decision::<token::TokenNodes>(d, usize::MAX)?;
         Ok(Plan::scores(if d.candidates.len() == 1 {
             vec![0.]
         } else {
@@ -480,10 +482,12 @@ impl Runtime {
             &self.device.clone().inner(),
         )?)
     }
-    /// Uniform exploration has the same graph/tensor input gates as inference.
-    /// Only the unused neural forward pass is omitted.
-    pub(super) fn validate_graph(&self, graph: &Graph) -> Result<(), crate::Error> {
-        self.scoring_batch(graph).map(drop)
+    /// Uniform exploration shares input admission with learned inference.
+    pub(super) fn validate_decision(&self, decision: &Decision) -> Result<(), crate::Error> {
+        Ok(
+            Batch::from_decision(decision, Field::Action, &self.device.clone().inner())
+                .map(drop)?,
+        )
     }
     fn load<I: ArtifactIo + ?Sized>(
         checkpoint: &Checkpoint,
@@ -710,19 +714,19 @@ fn loss_value(loss: &Tensor<1>) -> Result<f32, crate::Error> {
 
 impl Ranker for Runtime {
     fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, crate::Error> {
-        self.scores_graph(&Graph::encode(d)?)
+        self.field_scores(d, Field::Action)
     }
     fn field_scores(&mut self, d: &Decision, field: Field) -> Result<Vec<f32>, crate::Error> {
-        self.scores_graph(&Graph::encode_field(d, field)?)
+        Ok(self.plan_decision(d, field, "", "", None)?.scores)
     }
     fn plan(
         &mut self,
-        _decision: &Decision,
-        graph: &Graph,
+        decision: &Decision,
+        binding: &str,
         offered: &str,
         memory: Option<&Memory>,
     ) -> Result<Plan, crate::Error> {
-        self.plan_graph(graph, offered, memory)
+        self.plan_decision(decision, Field::Action, binding, offered, memory)
     }
     fn identity(&self) -> Option<String> {
         Some(super::digest(&(&self.identity, self.recurrence)))

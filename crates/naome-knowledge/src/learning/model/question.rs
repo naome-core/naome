@@ -49,14 +49,13 @@ impl QuestionPolicy {
         relations: &[&Formula],
     ) -> Result<[u32; QUESTION_RECIPES], crate::Error> {
         let _scratch = crate::resources::MemoryLease::acquire(REQUIREMENTS.work_bytes / 128)?;
-        let graph = Graph::question_recipes(relations)?;
-        let batch = Batch::for_question_recipes(&graph, &self.device)?;
+        let (batch, context) = Batch::for_question_recipes(relations, &self.device)?;
         let (scores, _) = self.policy.infer(
             self.policy
-                .encode_cached(&batch, &graph.context, &mut Default::default())?,
+                .encode_cached(&batch, &context, &mut Default::default())?,
             Some(Tensor::zeros([1, policy::WIDTH], &self.device)),
         );
-        let scores = memory::decode_scores(scores, graph.candidates.len())?;
+        let scores = memory::decode_scores(scores, QUESTION_RECIPES)?;
         let scores: [f32; QUESTION_RECIPES] = scores
             .try_into()
             .map_err(|_| crate::ResearchFailure::MemoryPrediction)?;

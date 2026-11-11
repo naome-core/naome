@@ -1,6 +1,6 @@
 //! Decision-local typed prefixes shared by search and checked replay.
 use crate::LearningGraphFailure as Failure;
-use crate::learning::graph::{Field, Graph, NEGATION, Node, PAIR};
+use crate::learning::graph::{Encoded, Field, Graph, NEGATION, Node, NodeSink, PAIR};
 use std::ops::Range;
 
 pub(super) const VOCABULARY: usize = 2048;
@@ -23,47 +23,87 @@ struct Signature {
     syntax: u64,
 }
 
-fn signatures(nodes: &[Node]) -> Vec<Signature> {
-    let mut signatures = vec![Signature::default(); nodes.len()];
-    for (index, node) in nodes.iter().enumerate().skip(1) {
-        let [left, right] = [node.left, node.right].map(|child| signatures[child]);
-        let kind = node.kind as u64;
-        signatures[index] = Signature {
-            shape: mix(mix(kind, left.shape), right.shape),
-            syntax: mix(
-                mix(mix(kind, node.symbol as u64), left.syntax),
-                right.syntax,
-            ),
-        };
-    }
-    signatures
+#[derive(Clone, Copy, Default)]
+struct Form {
+    kind: i32,
+    symbol: i32,
+    signature: Signature,
+    negated: Option<usize>,
 }
 
-fn structural_rows(nodes: &[Node], signatures: &[Signature]) -> Vec<Row> {
-    nodes
-        .iter()
-        .zip(signatures)
-        .map(|(node, form)| {
-            let kind = node.kind as u64;
-            let symbol = node.symbol as u64;
-            let left = &nodes[node.left];
-            let right = &nodes[node.right];
-            let left_kind = left.kind as u64;
-            let right_kind = right.kind as u64;
-            row([
-                kind,
-                mix(kind, symbol),
-                mix(mix(kind, left_kind), right_kind),
-                form.shape,
-                form.syntax,
-                mix(kind, signatures[node.left].shape),
-                mix(kind, signatures[node.right].shape),
-                mix(mix(kind, left.symbol as u64), right.symbol as u64),
-                left_kind,
-                right_kind,
-            ])
-        })
-        .collect()
+#[derive(Default)]
+pub(super) struct TokenNodes {
+    forms: Vec<Form>,
+    rows: Vec<Row>,
+    roles: Vec<i32>,
+    actions: Vec<Operands>,
+}
+
+struct Operands {
+    premises: Vec<usize>,
+    effects: Vec<usize>,
+}
+
+impl NodeSink for TokenNodes {
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn push(&mut self, node: Node) {
+        self.lower_node(&node);
+    }
+
+    fn mark(&mut self, index: usize, role: i32) {
+        self.roles[index] |= role;
+    }
+
+    fn action(&mut self, premises: Vec<usize>, effects: Vec<usize>) {
+        self.actions.push(Operands { premises, effects });
+    }
+}
+
+impl TokenNodes {
+    fn lower_node(&mut self, node: &Node) {
+        let [left, right] = if self.forms.is_empty() {
+            [Form::default(); 2]
+        } else {
+            [self.forms[node.left], self.forms[node.right]]
+        };
+        let kind = node.kind as u64;
+        let symbol = node.symbol as u64;
+        let signature = if self.forms.is_empty() {
+            Signature::default()
+        } else {
+            Signature {
+                shape: mix(mix(kind, left.signature.shape), right.signature.shape),
+                syntax: mix(
+                    mix(mix(kind, symbol), left.signature.syntax),
+                    right.signature.syntax,
+                ),
+            }
+        };
+        self.forms.push(Form {
+            kind: node.kind,
+            symbol: node.symbol,
+            signature,
+            negated: (node.kind == NEGATION).then_some(node.left),
+        });
+        let left_kind = left.kind as u64;
+        let right_kind = right.kind as u64;
+        self.rows.push(row([
+            kind,
+            mix(kind, symbol),
+            mix(mix(kind, left_kind), right_kind),
+            signature.shape,
+            signature.syntax,
+            mix(kind, left.signature.shape),
+            mix(kind, right.signature.shape),
+            mix(mix(kind, left.symbol as u64), right.symbol as u64),
+            left_kind,
+            right_kind,
+        ]));
+        self.roles.push(node.role);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,8 +145,9 @@ struct Step {
 }
 
 struct Input<'a> {
-    graph: &'a Graph,
-    signatures: Vec<Signature>,
+    forms: &'a [Form],
+    field: Field,
+    goal: usize,
     goal_parts: Vec<bool>,
     context: Vec<bool>,
     opposites: Vec<bool>,
@@ -114,38 +155,34 @@ struct Input<'a> {
 }
 
 impl<'a> Input<'a> {
-    fn new(graph: &'a Graph) -> Self {
-        let signatures = signatures(&graph.nodes);
-        let mut goal_parts = vec![false; graph.nodes.len()];
-        goal_parts[graph.goal] = true;
-        for i in (1..=graph.goal).rev() {
-            if goal_parts[i] {
-                let node = &graph.nodes[i];
-                goal_parts[node.left] = true;
-                goal_parts[node.right] = true;
-            }
-        }
-        goal_parts[0] = false;
-        let mut context = vec![false; graph.nodes.len()];
+    fn new(
+        forms: &'a [Form],
+        field: Field,
+        goal: usize,
+        goal_parts: Vec<bool>,
+        roots: &[usize],
+    ) -> Self {
+        let mut context = vec![false; forms.len()];
         let mut context_shape = 0u64;
-        for &index in &graph.context {
+        for &index in roots {
             if !context[index] {
-                context_shape = context_shape.wrapping_add(mix(signatures[index].shape, 1));
+                context_shape = context_shape.wrapping_add(mix(forms[index].signature.shape, 1));
                 context[index] = true;
             }
         }
-        let mut opposites = vec![false; graph.nodes.len()];
-        for (index, node) in graph.nodes.iter().enumerate().skip(1) {
-            if node.kind == NEGATION {
-                // Compare exact local formula references, including the
-                // variable bindings, before reducing them to token features.
-                opposites[index] |= context[node.left];
-                opposites[node.left] |= context[index];
+        let mut opposites = vec![false; forms.len()];
+        for (index, form) in forms.iter().enumerate().skip(1) {
+            if let Some(body) = form.negated {
+                // Compare exact local formula references before reducing
+                // variable bindings to token features.
+                opposites[index] |= context[body];
+                opposites[body] |= context[index];
             }
         }
         Self {
-            graph,
-            signatures,
+            forms,
+            field,
+            goal,
             goal_parts,
             context,
             opposites,
@@ -154,11 +191,12 @@ impl<'a> Input<'a> {
     }
 
     fn relationship(&self, index: usize) -> u64 {
-        let goal = self.graph.goal;
+        let goal = self.goal;
         u64::from(index == goal)
             | (u64::from(self.goal_parts[index]) << 1)
             | (u64::from(self.context[index]) << 2)
-            | (u64::from(self.signatures[index].shape == self.signatures[goal].shape) << 3)
+            | (u64::from(self.forms[index].signature.shape == self.forms[goal].signature.shape)
+                << 3)
             | (u64::from(self.opposites[index]) << 4)
     }
 
@@ -171,12 +209,12 @@ impl<'a> Input<'a> {
                 } else {
                     4
                 };
-                let form = self.signatures[index];
+                let form = self.forms[index];
                 (
                     tag,
-                    self.graph.nodes[index].kind as u64,
-                    form.shape,
-                    form.syntax,
+                    form.kind as u64,
+                    form.signature.shape,
+                    form.signature.syntax,
                     self.relationship(index),
                 )
             }
@@ -201,8 +239,8 @@ impl<'a> Input<'a> {
             syntax,
             relation,
         } = step;
-        let field = self.graph.field as u64;
-        let goal = self.signatures[self.graph.goal];
+        let field = self.field as u64;
+        let goal = self.forms[self.goal].signature;
         row([
             mix(head, field),
             detail,
@@ -212,7 +250,7 @@ impl<'a> Input<'a> {
             mix(mix(detail, syntax), goal.syntax),
             mix(detail, self.context_shape),
             mix(mix(head, rule), suffix),
-            mix(head, self.graph.nodes[self.graph.goal].kind as u64),
+            mix(head, self.forms[self.goal].kind as u64),
             mix(head, relation | (suffix << 5)),
         ])
     }
@@ -231,8 +269,10 @@ struct Prefix {
 
 /// All rows and branch masks come from the same allowed action set. Forced
 /// tokens contribute log probability zero and require no model row.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(super) struct Menu {
     pub rows: Vec<Row>,
+    pub roles: Vec<i32>,
     pub edges: Vec<Row>,
     pub priors: Vec<f32>,
     pub groups: Vec<Range<usize>>,
@@ -240,29 +280,87 @@ pub(super) struct Menu {
     pub aliases: Vec<f32>,
 }
 
+pub(super) struct Layout {
+    pub goal: usize,
+    pub context: Vec<usize>,
+    pub candidates: Vec<usize>,
+    pub successes: Vec<usize>,
+}
+
 impl Menu {
     /// The batch owner has validated topological node references and the menu.
     pub fn lower(graph: &Graph) -> Result<Self, Failure> {
-        let input = Input::new(graph);
-        let mut prefixes = vec![Prefix::default()];
-        let mut leaves = Vec::with_capacity(graph.candidates.len());
+        let mut nodes = TokenNodes::default();
+        for node in &graph.nodes {
+            nodes.lower_node(node);
+        }
         for &candidate in &graph.candidates {
             let action = &graph.nodes[candidate];
+            nodes.action(
+                operands(&graph.nodes, action.left)?,
+                operands(&graph.nodes, action.right)?,
+            );
+        }
+        Ok(Self::from_nodes(
+            nodes,
+            graph.field,
+            graph.goal,
+            graph_goal_parts(graph),
+            &graph.context,
+            &graph.candidates,
+        ))
+    }
+
+    pub fn from_typed(input: Encoded<TokenNodes>, field: Field) -> (Self, Layout) {
+        let Encoded {
+            nodes,
+            goal,
+            context,
+            candidates,
+            successes,
+            ..
+        } = input;
+        // Typed construction emits the goal before any other formulas.
+        let goal_parts = (0..nodes.len()).map(|i| i != 0 && i <= goal).collect();
+        let menu = Self::from_nodes(nodes, field, goal, goal_parts, &context, &candidates);
+        (
+            menu,
+            Layout {
+                goal,
+                context,
+                candidates,
+                successes,
+            },
+        )
+    }
+
+    fn from_nodes(
+        nodes: TokenNodes,
+        field: Field,
+        goal: usize,
+        goal_parts: Vec<bool>,
+        context: &[usize],
+        candidates: &[usize],
+    ) -> Self {
+        let input = Input::new(&nodes.forms, field, goal, goal_parts, context);
+        let mut prefixes = vec![Prefix::default()];
+        let mut leaves = Vec::with_capacity(candidates.len());
+        for (&candidate, operands) in candidates.iter().zip(&nodes.actions) {
+            let action = nodes.forms[candidate];
             let rule = action.kind as u64;
-            let premises = operands(&graph.nodes, action.left)?;
-            let effects = operands(&graph.nodes, action.right)?;
+            let Operands { premises, effects } = operands;
             let suffix = effects
                 .iter()
                 .fold(0, |flags, &index| flags | input.relationship(index));
-            let variant = if graph.field == Field::QuestionRecipe {
+            let variant = if field == Field::QuestionRecipe {
                 Token::Variation(action.symbol)
             } else {
                 Token::Replacement(action.symbol)
             };
             let tokens = std::iter::once(Token::Rule(action.kind))
-                .chain(premises.into_iter().map(Token::Premise))
+                .chain(premises.iter().copied().map(Token::Premise))
                 .chain([variant])
-                .chain(effects.into_iter().map(Token::Effect))
+                .chain(effects.iter().copied().map(Token::Effect))
                 .chain([Token::End]);
             let mut parent = 0;
             for token in tokens {
@@ -325,7 +423,7 @@ impl Menu {
             groups.push(start..edges.len());
         }
         // A trie with c leaves has at most 2c-2 edges leaving branch points.
-        debug_assert!(edges.len() <= 2 * graph.candidates.len().saturating_sub(1));
+        debug_assert!(edges.len() <= 2 * candidates.len().saturating_sub(1));
         let paths = leaves
             .iter()
             .map(|&leaf| {
@@ -342,15 +440,30 @@ impl Menu {
             .iter()
             .map(|&leaf| (prefixes[leaf].aliases as f32).ln())
             .collect();
-        Ok(Self {
-            rows: structural_rows(&graph.nodes, &input.signatures),
+        Self {
+            rows: nodes.rows,
+            roles: nodes.roles,
             edges,
             priors,
             groups,
             paths,
             aliases,
-        })
+        }
     }
+}
+
+fn graph_goal_parts(graph: &Graph) -> Vec<bool> {
+    let mut parts = vec![false; graph.nodes.len()];
+    parts[graph.goal] = true;
+    for index in (1..=graph.goal).rev() {
+        if parts[index] {
+            let node = &graph.nodes[index];
+            parts[node.left] = true;
+            parts[node.right] = true;
+        }
+    }
+    parts[0] = false;
+    parts
 }
 
 #[cfg(test)]
