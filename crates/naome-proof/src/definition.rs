@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use naome_foundation::{FORMULA_MAX_BYTES, FOUNDATION_ID};
+use naome_foundation::{FORMULA_MAX_BYTES, FOUNDATION_ID, FreeVariable};
 use sha2::{Digest, Sha256};
 
 use crate::{DefinedFormula, DefinedFormulaCodecError, DefinitionId};
@@ -227,24 +227,21 @@ impl DefinitionCertificate {
             return Err(DefinitionCertificateError::DefinitionReference { definition_id });
         }
         let free_variables = formula.free_variables();
-        if let Some(variable) = free_variables
-            .iter()
-            .find(|variable| variable.identifier() >= arity)
-        {
+        if let Some(variable) = free_variables.range(FreeVariable::new(arity)..).next() {
             return Err(DefinitionCertificateError::UndeclaredFormalVariable {
                 identifier: variable.identifier(),
                 arity,
             });
         }
-        for identifier in 0..arity {
-            if !free_variables
-                .iter()
-                .any(|variable| variable.identifier() == identifier)
-            {
-                return Err(DefinitionCertificateError::MissingFormalVariable {
-                    identifier,
-                    arity,
-                });
+        if free_variables.len() < arity as usize {
+            let mut present = free_variables.into_iter().map(FreeVariable::identifier);
+            for identifier in 0..arity {
+                if present.next() != Some(identifier) {
+                    return Err(DefinitionCertificateError::MissingFormalVariable {
+                        identifier,
+                        arity,
+                    });
+                }
             }
         }
         let actual = 1 + 4 + 4 + body_length;
