@@ -73,11 +73,7 @@ impl ResearchQuestion {
 
     /// Constructs a closed research obligation from the Foundation formula.
     pub fn from_formula(formula: Formula) -> Result<Self, QuestionError> {
-        let target = QuestionTarget::from_formula(formula)?;
-        let bytes = target
-            .formula()
-            .encode_canonical()
-            .map_err(QuestionError::Formula)?;
+        let (target, bytes) = QuestionTarget::from_formula_with_encoding(formula)?;
         Self::new(bytes, target, Vec::new())
     }
 

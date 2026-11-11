@@ -98,6 +98,11 @@ pub struct QuestionTarget {
 }
 impl QuestionTarget {
     pub fn from_formula(formula: Formula) -> Result<Self, QuestionError> {
+        Self::from_formula_with_encoding(formula).map(|(target, _)| target)
+    }
+
+    /// Constructs a target and returns the canonical encoding of its source formula.
+    pub fn from_formula_with_encoding(formula: Formula) -> Result<(Self, Vec<u8>), QuestionError> {
         Self::bounded(
             formula,
             QUESTION_TARGET_MAX_NODES,
@@ -113,13 +118,14 @@ impl QuestionTarget {
             QUESTION_EXPANSION_MAX_NODES,
             QUESTION_EXPANSION_MAX_DEPTH,
         )
+        .map(|(target, _)| target)
     }
 
     fn bounded(
         formula: Formula,
         max_nodes: usize,
         max_depth: usize,
-    ) -> Result<Self, QuestionError> {
+    ) -> Result<(Self, Vec<u8>), QuestionError> {
         let encoded = formula.encode_canonical().map_err(QuestionError::Formula)?;
         if !formula.is_closed() {
             return Err(QuestionError::Invalid(QuestionFault::FreeVariables));
@@ -153,14 +159,17 @@ impl QuestionTarget {
             b"naome:state:resolution:v1\0",
             &[FOUNDATION_ID.as_bytes(), &canonical_core],
         );
-        Ok(Self {
-            formula,
-            negative_target,
-            core,
-            canonical_core,
-            negation_parity: leading % 2 != 0,
-            resolution_id,
-        })
+        Ok((
+            Self {
+                formula,
+                negative_target,
+                core,
+                canonical_core,
+                negation_parity: leading % 2 != 0,
+                resolution_id,
+            },
+            encoded,
+        ))
     }
 
     pub const fn formula(&self) -> &Formula {
