@@ -30,6 +30,7 @@ struct Segment {
     table: u64,
     capacity: u64,
     count: u64,
+    filter: [u64; 4],
 }
 #[derive(Clone, Copy)]
 struct Location {
@@ -42,7 +43,28 @@ impl Segment {
         table: 0,
         capacity: 0,
         count: 0,
+        filter: [0; 4],
     };
+
+    fn may_contain(&self, hash: u64) -> bool {
+        filter_positions(hash)
+            .into_iter()
+            .all(|bit| self.filter[bit / 64] & (1u64 << (bit % 64)) != 0)
+    }
+
+    fn record(&mut self, hash: u64) {
+        for bit in filter_positions(hash) {
+            self.filter[bit / 64] |= 1u64 << (bit % 64);
+        }
+    }
+}
+
+fn filter_positions(hash: u64) -> [usize; 3] {
+    [
+        (hash & 255) as usize,
+        ((hash >> 21) & 255) as usize,
+        ((hash >> 42) & 255) as usize,
+    ]
 }
 
 #[cfg(test)]
@@ -78,6 +100,8 @@ pub(crate) struct IndexStorage {
     label: String,
     mirror: Mutex<Option<Arc<Self>>>,
 }
+// The membership hints live inside the already charged fixed-size index.
+const _: () = assert!(std::mem::size_of::<IndexStorage>() + 128 <= 4096);
 impl IndexStorage {
     pub(crate) fn open(directory: &Path, label: &str) -> Result<Arc<Self>, crate::Error> {
         let root = crate::storage::research_directory(directory)?;
@@ -141,6 +165,7 @@ impl IndexStorage {
             table: FIRST_TABLE,
             capacity: INITIAL_SLOTS,
             count: 0,
+            filter: [0; 4],
         };
         Ok(Arc::new(Self {
             state: Mutex::new(Some(NativeIndex {
@@ -308,8 +333,8 @@ impl NativeIndex {
         table: u64,
         capacity: u64,
         address: &[u8; 32],
+        hash: u64,
     ) -> Result<(u64, Option<Location>), ContextError> {
-        let hash = self.hash.hash_one(address);
         let fingerprint = (hash >> 32) as u32;
         let mut bucket = hash & (capacity - 1);
         let mut remaining = capacity.min(MAX_PROBES);
@@ -367,8 +392,25 @@ impl NativeIndex {
         Err(ContextError::Limit)
     }
     fn find(&self, address: &[u8; 32]) -> Result<Option<Location>, ContextError> {
+        let hash = self.hash.hash_one(address);
         for segment in self.segments[..self.segment_count].iter().rev() {
-            let (_, found) = self.lookup(segment.table, segment.capacity, address)?;
+            let (_, found) = self.lookup(segment.table, segment.capacity, address, hash)?;
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
+    }
+    fn find_for_write(
+        &self,
+        address: &[u8; 32],
+        hash: u64,
+    ) -> Result<Option<Location>, ContextError> {
+        for segment in self.segments[..self.segment_count].iter().rev() {
+            if !segment.may_contain(hash) {
+                continue;
+            }
+            let (_, found) = self.lookup(segment.table, segment.capacity, address, hash)?;
             if found.is_some() {
                 return Ok(found);
             }
@@ -438,6 +480,7 @@ impl NativeIndex {
             table,
             capacity,
             count: 0,
+            filter: [0; 4],
         };
         self.segment_count += 1;
         self.end = end;
@@ -474,7 +517,8 @@ impl ContextStorage for IndexStorage {
         let mut guard = self.state.lock().map_err(|_| ContextError::Corrupt)?;
         let state = guard.as_mut().ok_or(ContextError::Corrupt)?;
         self.live(state)?;
-        let existing = state.find(&address)?;
+        let hash = state.hash.hash_one(address);
+        let existing = state.find_for_write(&address, hash)?;
         if let Some(location) = existing {
             if u64::try_from(bytes.len()).ok() != Some(location.length) {
                 return Err(ContextError::Corrupt);
@@ -492,7 +536,7 @@ impl ContextStorage for IndexStorage {
             self.live(state)?;
         } else {
             let active = state.segments[state.segment_count - 1];
-            let (bucket, found) = state.lookup(active.table, active.capacity, &address)?;
+            let (bucket, found) = state.lookup(active.table, active.capacity, &address, hash)?;
             if found.is_some() {
                 return Err(ContextError::Corrupt);
             }
@@ -530,7 +574,8 @@ impl ContextStorage for IndexStorage {
                     state.grow()?;
                 }
                 let active = state.segments[state.segment_count - 1];
-                let (bucket, found) = state.lookup(active.table, active.capacity, &address)?;
+                let (bucket, found) =
+                    state.lookup(active.table, active.capacity, &address, hash)?;
                 if found.is_some() {
                     return Err(ContextError::Corrupt);
                 }
@@ -564,8 +609,7 @@ impl ContextStorage for IndexStorage {
                     std::process::exit(79);
                 }
                 let mut slot = [0u8; SLOT_BYTES as usize];
-                slot[..4]
-                    .copy_from_slice(&((state.hash.hash_one(address) >> 32) as u32).to_be_bytes());
+                slot[..4].copy_from_slice(&((hash >> 32) as u32).to_be_bytes());
                 slot[4..12].copy_from_slice(
                     &offset
                         .checked_add(1)
@@ -578,6 +622,7 @@ impl ContextStorage for IndexStorage {
                     .map_err(system)?;
                 state.segments[state.segment_count - 1].count =
                     active.count.checked_add(1).ok_or(ContextError::Limit)?;
+                state.segments[state.segment_count - 1].record(hash);
                 state.end = end;
                 state.generation =
                     crate::storage::FileGeneration::of(&state.file.metadata().map_err(system)?);

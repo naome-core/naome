@@ -66,6 +66,36 @@ fn growing_index_preserves_values_and_rejects_conflicting_writes() {
 }
 
 #[test]
+fn membership_hints_never_hide_an_existing_address() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let storage = IndexStorage::open(&directory.0, "questions").unwrap();
+    for i in 0u64..512 {
+        storage.write(address(i), &i.to_be_bytes()).unwrap();
+    }
+    for i in 0u64..512 {
+        storage.write(address(i), &i.to_be_bytes()).unwrap();
+        assert_eq!(
+            storage.write(address(i), &(!i).to_be_bytes()),
+            Err(ContextError::Corrupt)
+        );
+    }
+}
+
+#[test]
+fn membership_hint_false_positives_do_not_hide_new_addresses() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let storage = IndexStorage::open(&directory.0, "questions").unwrap();
+    storage.write(address(0), b"first").unwrap();
+    {
+        let mut state = storage.state.lock().unwrap();
+        state.as_mut().unwrap().segments[0].filter.fill(u64::MAX);
+    }
+    storage.write(address(1), b"second").unwrap();
+    assert_eq!(storage.read(address(0), 5).unwrap(), b"first");
+    assert_eq!(storage.read(address(1), 6).unwrap(), b"second");
+}
+
+#[test]
 fn concurrent_writers_and_readers_preserve_all_inserted_values() {
     let directory = crate::checkpoint::tests::Directory::new();
     let storage = IndexStorage::open(&directory.0, "questions").unwrap();
@@ -191,7 +221,12 @@ fn fingerprint_collisions_compare_the_complete_address() {
         let state = guard.as_mut().unwrap();
         let segment = state.segments[0];
         let (bucket, _) = state
-            .lookup(segment.table, segment.capacity, &first)
+            .lookup(
+                segment.table,
+                segment.capacity,
+                &first,
+                state.hash.hash_one(first),
+            )
             .unwrap();
         let fingerprint = ((state.hash.hash_one(second) >> 32) as u32).to_be_bytes();
         state
