@@ -94,6 +94,16 @@ impl ProofFormula {
         }
     }
 
+    pub(crate) fn try_for_each_definition_reference<E>(
+        &self,
+        visit: &mut impl FnMut(DefinitionId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self.as_defined() {
+            Some(formula) => formula.try_for_each_definition_reference(visit),
+            None => Ok(()),
+        }
+    }
+
     /// Counts definition references, including repeated applications.
     #[must_use]
     pub fn definition_reference_count(&self) -> usize {
