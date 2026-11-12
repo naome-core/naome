@@ -47,6 +47,7 @@ async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
         naome_proof::ArtifactId::from_bytes([1; 32]),
         crate::jobs::Purpose::Initial,
         Instant::now() + Duration::from_secs(3600),
+        graph.checked_context(),
     );
     assert_eq!(local.pending.len(), 5);
     assert_eq!(owner.requests().len(), 5);

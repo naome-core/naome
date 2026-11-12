@@ -178,6 +178,21 @@ impl Closure {
     pub(in crate::intake) fn take_prefix(&mut self) -> Option<CheckedBatch> {
         self.prefix.take()
     }
+    pub(in crate::intake) fn adopt_prefix(
+        &mut self,
+        graph: &Graph,
+        prefix: CheckedBatch,
+    ) -> Result<(), crate::Error> {
+        if !graph.batch_current(&prefix)? {
+            return Err(crate::Error::StaleAuthority);
+        }
+        self.synchronize(graph)?;
+        self.prefix = Some(prefix);
+        Ok(())
+    }
+    pub(in crate::intake) fn restore_prefix(&mut self, prefix: CheckedBatch) {
+        self.prefix = Some(prefix);
+    }
     pub(in crate::intake) fn invalidate_prefix(&mut self) {
         self.prefix = None;
         self.registration = None;

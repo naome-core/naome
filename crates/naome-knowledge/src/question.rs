@@ -316,6 +316,7 @@ enum Reply {
         deadline: Instant,
         root: Option<naome_proof::ArtifactId>,
         purpose: crate::jobs::Purpose,
+        context: Option<naome_checker::DiskArtifactState>,
     },
 }
 
@@ -334,6 +335,19 @@ impl Reply {
 
     fn exchange(&self) -> bool {
         matches!(self, Self::Exchange { .. })
+    }
+
+    fn checked_context<'a>(
+        &'a self,
+        graph: &'a Graph,
+    ) -> &'a naome_checker::DiskArtifactState {
+        match self {
+            Self::Exchange {
+                context: Some(context),
+                ..
+            } => context,
+            _ => graph.checked_context(),
+        }
     }
 
     fn send(self, assessment: QuestionAssessment, outcome: AdmissionOutcome) -> bool {
@@ -755,8 +769,16 @@ where
     }
 
     pub(crate) fn formal_context(&self, graph: &Graph) -> FormalContext {
+        self.formal_context_with(graph.checked_context())
+    }
+
+    pub(crate) fn formal_context_with(
+        &self,
+        context: &naome_checker::DiskArtifactState,
+    ) -> FormalContext {
         FormalContext {
-            snapshot: self.snapshot(graph).identity(),
+            snapshot: KnowledgeSnapshot::new(crate::compatibility(), context, &self.registry)
+                .identity(),
             policy: self.policy.identity(),
         }
     }
@@ -796,15 +818,26 @@ where
         reuse: bool,
         record: Option<Identity>,
     ) -> PrefilterDecision {
+        self.evaluate_record_with_context(
+            graph.checked_context(),
+            question,
+            reuse,
+            record,
+        )
+    }
+
+    fn evaluate_record_with_context(
+        &mut self,
+        context: &naome_checker::DiskArtifactState,
+        question: &ResearchQuestion,
+        reuse: bool,
+        record: Option<Identity>,
+    ) -> PrefilterDecision {
         let cache_bytes = crate::resources::adaptive::cache(
             crate::resources::active_limits().question_cache_bytes,
         );
         self.cache.trim(cache_bytes);
-        let snapshot = KnowledgeSnapshot::new(
-            crate::compatibility(),
-            graph.checked_context(),
-            &self.registry,
-        );
+        let snapshot = KnowledgeSnapshot::new(crate::compatibility(), context, &self.registry);
         let request = AssessmentQuestion::from_research_question(question, record)
             .expect("bounded parser-validated question input");
         if !crate::resources::adaptive::work_available() {
@@ -921,6 +954,7 @@ where
                 deadline,
                 root: None,
                 purpose: crate::jobs::Purpose::Publication,
+                context: None,
             },
         );
         (question, receiver)
@@ -933,6 +967,7 @@ where
         root: naome_proof::ArtifactId,
         purpose: crate::jobs::Purpose,
         deadline: Instant,
+        context: &naome_checker::DiskArtifactState,
     ) -> (ResearchQuestion, oneshot::Receiver<QuestionAssessment>) {
         let question = self
             .provenance(graph, derived.resolution_id())
@@ -951,6 +986,7 @@ where
                 deadline,
                 root: Some(root),
                 purpose,
+                context: Some(context.clone()),
             },
         );
         (question, receiver)
@@ -979,11 +1015,26 @@ where
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
+        self.refresh_exchange_with_context(
+            graph,
+            graph.checked_context(),
+            question,
+            assessment,
+        )
+    }
+
+    pub(crate) fn refresh_exchange_with_context(
+        &mut self,
+        graph: &Graph,
+        context: &naome_checker::DiskArtifactState,
+        question: &ResearchQuestion,
+        assessment: &QuestionAssessment,
+    ) -> Result<QuestionAssessment, crate::Error> {
         if !self.exchange_eligible(graph, question, assessment) {
             return Err(crate::InputFault::QuestionSelectionStale.into());
         }
-        let fresh = self.evaluate_record(
-            graph,
+        let fresh = self.evaluate_record_with_context(
+            context,
             question,
             false,
             self.exchange_record(graph, question),
@@ -1006,9 +1057,24 @@ where
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionDelta, crate::Error> {
+        self.prepare_exchange_with_context(
+            graph,
+            graph.checked_context(),
+            question,
+            assessment,
+        )
+    }
+
+    pub(crate) fn prepare_exchange_with_context(
+        &mut self,
+        graph: &Graph,
+        context: &naome_checker::DiskArtifactState,
+        question: &ResearchQuestion,
+        assessment: &QuestionAssessment,
+    ) -> Result<QuestionDelta, crate::Error> {
         let record = self.exchange_record(graph, question);
         let fresh = self
-            .refresh_exchange(graph, question, assessment)?
+            .refresh_exchange_with_context(graph, context, question, assessment)?
             .prefilter;
         let mut registry = self.registry.clone();
         let insert = record.is_none();
@@ -1148,8 +1214,8 @@ where
             return;
         }
         let mut prefilter = if reply.exchange() {
-            self.evaluate_record(
-                graph,
+            self.evaluate_record_with_context(
+                reply.checked_context(graph),
                 &question,
                 false,
                 self.exchange_record(graph, &question),
@@ -1415,8 +1481,8 @@ where
         // Admission always computes again; a cached or caller-manufactured Pass
         // cannot authorize a write. Nothing below awaits or relinquishes ownership.
         let mut prefilter = if pending.reply.exchange() {
-            self.evaluate_record(
-                graph,
+            self.evaluate_record_with_context(
+                pending.reply.checked_context(graph),
                 &pending.question,
                 false,
                 self.exchange_record(graph, &pending.question),

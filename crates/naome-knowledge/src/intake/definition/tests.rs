@@ -39,6 +39,7 @@ fn definition_preflight_cannot_fetch_the_unselected_parent_as_its_witness() {
                 definition,
                 question_proof: Some(witness),
                 helper_deadline: None,
+                pending: None,
             },
             &graph,
             None,
@@ -76,6 +77,7 @@ fn unrelated_proof_cannot_authorize_a_function_definition() {
                 definition,
                 question_proof: Some(ArtifactId::from_bytes([7; 32])),
                 helper_deadline: None,
+                pending: None,
             },
             &graph,
             None,
@@ -97,10 +99,11 @@ fn unrelated_proof_cannot_authorize_a_function_definition() {
 }
 
 #[test]
-fn work_offer_fetch_checks_function_witness_before_decoding_question() {
+fn description_definition_stays_staged_until_parent_selection() {
     use naome_foundation::FreeVariable;
-    use naome_proof::DefinedFormula;
-    const CASE: &str = "intake::definition::tests::work_offer_fetch_checks_function_witness_before_decoding_question";
+    use naome_proof::{DefinedFormula, ProofId};
+    const CASE: &str =
+        "intake::definition::tests::description_definition_stays_staged_until_parent_selection";
     if std::env::var("NAOME_DEFINITION_OFFER_CASE").as_deref() != Ok(CASE) {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", CASE, "--nocapture"])
@@ -137,6 +140,18 @@ fn work_offer_fetch_checks_function_witness_before_decoding_question() {
     let x = FreeVariable::new(0);
     let source = DefinedFormula::for_all(x, DefinedFormula::defined_relation(definition, [x, x]));
     let question = ResearchQuestion::from_defined_formula(source, donor.checked_context()).unwrap();
+    let proof = ProofId::from_bytes([9; 32]);
+    let artifact = ArtifactId::from_proof_id(proof);
+    let metadata = crate::object::Metadata {
+        artifact_id: crate::hex(artifact.as_bytes()),
+        proof_id: crate::hex(proof.as_bytes()),
+        statement_id: crate::hex(
+            crate::object::target_id(question.positive_target())
+                .unwrap()
+                .as_bytes(),
+        ),
+        question: question.to_hex(),
+    };
     let mut graph = Graph::default();
     assert!(
         matches!(ResearchQuestion::from_hex_with_context(&question.to_hex(), graph.checked_context()), Err(naome_proof::QuestionError::MissingDefinition(missing)) if missing == definition)
@@ -148,8 +163,9 @@ fn work_offer_fetch_checks_function_witness_before_decoding_question() {
             DefinitionRequest {
                 peer,
                 definition,
-                question_proof: None,
-                helper_deadline: Some(Instant::now() + Duration::from_secs(10)),
+                question_proof: Some(artifact),
+                helper_deadline: None,
+                pending: Some(PendingDescription::Certificate(metadata)),
             },
             &graph,
             None,
@@ -170,21 +186,19 @@ fn work_offer_fetch_checks_function_witness_before_decoding_question() {
         )
         .unwrap();
     let result = intake.advance_definition(&mut graph);
-    match result {
-        Progress::Accepted(_) => {}
-        Progress::Waiting => panic!(
-            "definition remained pending: {:?}",
-            crate::resources::adaptive::current()
-        ),
-        Progress::Skipped(_, error) => panic!("definition rejected: {error}"),
-    }
-    assert!(graph.contains(witness).unwrap());
-    assert!(graph.contains(id).unwrap());
+    assert!(matches!(result, Progress::Waiting));
+    assert!(!graph.contains(witness).unwrap());
+    assert!(!graph.contains(id).unwrap());
+    let queued = intake.queue.front().expect("resolved description queued");
+    let prefix = queued.prefix.as_ref().expect("definition remains staged");
     assert_eq!(
-        ResearchQuestion::from_hex_with_context(&question.to_hex(), graph.checked_context())
-            .unwrap(),
+        ResearchQuestion::from_hex_with_context(&question.to_hex(), prefix.context()).unwrap(),
         question
     );
+    assert!(matches!(
+        ResearchQuestion::from_hex_with_context(&question.to_hex(), graph.checked_context()),
+        Err(naome_proof::QuestionError::MissingDefinition(_))
+    ));
 
     // An unrelated proof cannot make the same offer usable.
     let (unrelated, receipt) = donor
@@ -205,6 +219,7 @@ fn work_offer_fetch_checks_function_witness_before_decoding_question() {
                 definition,
                 question_proof: None,
                 helper_deadline: Some(Instant::now() + Duration::from_secs(10)),
+                pending: None,
             },
             &cold,
             None,

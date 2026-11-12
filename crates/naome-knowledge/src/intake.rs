@@ -3,7 +3,7 @@ use crate::outcome::OfferStatus;
 use crate::{
     Envelope, Graph,
     graph::CheckedBatch,
-    object::Metadata,
+    object::{Metadata, ProgramMetadata},
     question::{FormalContext, LocalQuestions, QuestionAssessment},
 };
 use libp2p::PeerId;
@@ -33,11 +33,38 @@ use transfer::TransferGrant;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone)]
 struct Description {
     transfer: TransferGrant,
     statement: StatementId,
     question: ResearchQuestion,
+    prefix: Option<CheckedBatch>,
+}
+
+impl Description {
+    fn context<'a>(&'a self, graph: &'a Graph) -> &'a naome_checker::DiskArtifactState {
+        self.prefix
+            .as_ref()
+            .map_or(graph.checked_context(), CheckedBatch::context)
+    }
+}
+
+pub(crate) enum PendingDescription {
+    Certificate(Metadata),
+    Program(ProgramMetadata),
+}
+
+impl PendingDescription {
+    fn validate(&self, context: &dyn naome_checker::ContextView) -> Result<(), crate::Error> {
+        match self {
+            Self::Certificate(metadata) => metadata.compile(context).map(|_| ()),
+            Self::Program(metadata) => {
+                metadata
+                    .question(context)?
+                    .ok_or(crate::InputFault::IntakeSelectionQuestionMissing)?;
+                Ok(())
+            }
+        }
+    }
 }
 
 enum Phase {
@@ -136,7 +163,21 @@ impl Intake {
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
     ) -> Result<OfferStatus, crate::Error> {
-        let (id, statement, question) = metadata.compile(graph.checked_context())?;
+        self.enqueue_certificate(peer, metadata, graph, grant, None)
+    }
+
+    fn enqueue_certificate(
+        &mut self,
+        peer: PeerId,
+        metadata: Metadata,
+        graph: &Graph,
+        grant: Option<crate::publication::PeerGrant>,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<OfferStatus, crate::Error> {
+        let context = prefix
+            .as_ref()
+            .map_or(graph.checked_context(), CheckedBatch::context);
+        let (id, statement, question) = metadata.compile(context)?;
         if graph.contains(id)? {
             return Ok(OfferStatus::Duplicate);
         }
@@ -194,8 +235,27 @@ impl Intake {
             transfer: TransferGrant::new(peer, id, grant),
             statement,
             question,
+            prefix,
         });
         Ok(OfferStatus::Queued)
+    }
+
+    fn enqueue_pending(
+        &mut self,
+        peer: PeerId,
+        pending: PendingDescription,
+        graph: &Graph,
+        grant: Option<crate::publication::PeerGrant>,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<OfferStatus, crate::Error> {
+        match pending {
+            PendingDescription::Certificate(metadata) => {
+                self.enqueue_certificate(peer, metadata, graph, grant, prefix)
+            }
+            PendingDescription::Program(metadata) => {
+                self.enqueue_program_with_prefix(peer, metadata, graph, grant, prefix)
+            }
+        }
     }
 
     pub(crate) fn needed(&self) -> Vec<(PeerId, ArtifactId, ArtifactId)> {
@@ -413,9 +473,15 @@ impl Intake {
         if self
             .definition
             .as_ref()
-            .is_some_and(|fetch| fetch.transfer.root() == root_id)
+            .is_some_and(|fetch| {
+                fetch.transfer.root() == root_id
+                    || fetch.question_proof == Some(root_id)
+                    || fetch.helper.is_some_and(|(parent, _)| parent == root_id)
+            })
         {
-            self.definition = None;
+            if let Some(fetch) = self.definition.take() {
+                self.abandon_definition(&fetch);
+            }
         }
         self.programs.remove(root_id);
         self.waiting
@@ -435,7 +501,9 @@ impl Intake {
             .as_ref()
             .is_some_and(|fetch| fetch.transfer.peer() == peer)
         {
-            self.definition = None;
+            if let Some(fetch) = self.definition.take() {
+                self.abandon_definition(&fetch);
+            }
         }
         self.programs.failed(peer, None);
         self.waiting
@@ -478,7 +546,14 @@ impl Intake {
                 crate::InputFault::IntakeStagedCapacity.into(),
             );
         }
-        if let Err(error) = self.advance_program_helpers(graph, questions)
+        let metadata_waiter = self.metadata_waiter();
+        let active_waiting = metadata_waiter.is_some_and(|waiting| {
+            self.active
+                .as_ref()
+                .is_some_and(|root| root.description.transfer.root() == waiting)
+        });
+        if !active_waiting
+            && let Err(error) = self.advance_program_helpers(graph, questions)
             && !error.retryable()
         {
             graph.program_failure(&error);
@@ -486,16 +561,11 @@ impl Intake {
                 return Progress::Skipped(root.description.transfer.root(), error);
             }
         }
-        let metadata_waiter = self.metadata_waiter();
         match self.programs.advance(graph, questions, metadata_waiter) {
             Progress::Waiting => {}
             progress => return progress,
         }
-        if metadata_waiter.is_some_and(|waiting| {
-            self.active
-                .as_ref()
-                .is_some_and(|root| root.description.transfer.root() == waiting)
-        }) {
+        if active_waiting {
             return Progress::Waiting;
         }
         if questions.uses_jobs() {
@@ -522,12 +592,23 @@ impl Intake {
                 graph,
                 questions,
                 description.transfer.deadline(),
+                description.context(graph),
             );
             if let Err(error) = started {
                 return Progress::Skipped(description.transfer.root(), error);
             }
+            let mut description = description;
+            let mut closure = Closure::new(
+                description.transfer.root(),
+                Some(description.statement),
+            );
+            if let Some(prefix) = description.prefix.take()
+                && let Err(error) = closure.adopt_prefix(graph, prefix)
+            {
+                return Progress::Skipped(description.transfer.root(), error);
+            }
             self.active = Some(ApprovedRoot {
-                closure: Closure::new(description.transfer.root(), Some(description.statement)),
+                closure,
                 description,
                 selection,
                 phase: Phase::Initial,
@@ -549,9 +630,13 @@ impl Intake {
                 && root
                     .selection
                     .selected()
-                    .is_some_and(|assessment| assessment.formal_context() != context)
+                    .is_some_and(|assessment| {
+                        assessment.formal_context()
+                            != questions.formal_context_with(root.closure.context(graph))
+                    })
             {
-                root.selection.prepare(graph, questions)?;
+                root.selection
+                    .prepare(graph, questions, root.closure.context(graph))?;
             }
             match &mut root.phase {
                 Phase::Initial => {
@@ -581,6 +666,7 @@ impl Intake {
                         graph,
                         questions,
                         root.description.transfer.deadline(),
+                        batch.context(),
                     )? {
                         return Err(crate::Error::ExecutionLimit);
                     }

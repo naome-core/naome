@@ -152,7 +152,8 @@ impl Intake {
         if !root.fetching() || !root.closure.has_programs() {
             return Ok(());
         }
-        root.selection.prepare(graph, questions)?;
+        root.selection
+            .prepare(graph, questions, root.closure.context(graph))?;
         if !root.description.transfer.live(Instant::now()) {
             return Ok(());
         }

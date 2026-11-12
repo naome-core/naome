@@ -1821,13 +1821,14 @@ impl Node {
         peer: PeerId,
         artifact: ArtifactId,
         grant: Option<crate::publication::PeerGrant>,
+        pending: crate::intake::PendingDescription,
         result: Result<OfferStatus, crate::Error>,
     ) -> Result<OfferStatus, crate::Error> {
         let Err(crate::Error::MissingQuestionDefinition(definition)) = result else {
             return result;
         };
-        // An offer cannot create local interest. Keep the existing selection
-        // while the definition is checked and the description is retried.
+        // An offer cannot create local interest. Keep the existing fetch intent
+        // while definitions and the description remain in disposable staging.
         if !self.wanted.contains_key(&artifact) {
             return Err(crate::Error::MissingQuestionDefinition(definition));
         }
@@ -1837,6 +1838,7 @@ impl Node {
                 definition,
                 question_proof: Some(artifact),
                 helper_deadline: None,
+                pending: Some(pending),
             },
             &self.graph,
             grant,
@@ -2537,10 +2539,11 @@ impl Node {
             }
             Body::ProgramOffer { metadata } => {
                 let id = metadata.manifest.artifact_id();
+                let pending = crate::intake::PendingDescription::Program(metadata.clone());
                 let queued =
                     self.intake
                         .enqueue_program(peer, metadata, &self.graph, grant.clone());
-                match self.finish_description(peer, id, grant, queued) {
+                match self.finish_description(peer, id, grant, pending, queued) {
                     Ok(status) => Body::Receipt { status },
                     Err(error) => Body::Error {
                         code: peer_failure(&error),
@@ -2577,11 +2580,18 @@ impl Node {
                     .unwrap_or(Body::Missing),
             },
             Body::Offer { metadata } => {
+                let pending = crate::intake::PendingDescription::Certificate(metadata.clone());
                 let queued = id_bytes(&metadata.artifact_id).and_then(|id| {
                     let queued =
                         self.intake
                             .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
-                    self.finish_description(peer, ArtifactId::from_bytes(id), grant, queued)
+                    self.finish_description(
+                        peer,
+                        ArtifactId::from_bytes(id),
+                        grant,
+                        pending,
+                        queued,
+                    )
                 });
                 match queued {
                     Ok(status) => Body::Receipt { status },
@@ -2647,10 +2657,11 @@ impl Node {
                         json!({"event":crate::outcome::NodeEvent::Rejected,"error":WireFailure::DescriptionIdentityMismatch}),
                     );
                 } else {
+                    let pending = crate::intake::PendingDescription::Program(metadata.clone());
                     let queued =
                         self.intake
                             .enqueue_program(peer, metadata, &self.graph, grant.clone());
-                    match self.finish_description(peer, id, grant, queued) {
+                    match self.finish_description(peer, id, grant, pending, queued) {
                         Ok(OfferStatus::Duplicate) => {
                             self.wanted.remove(&id);
                         }
@@ -2769,10 +2780,11 @@ impl Node {
                     );
                     return Ok(());
                 }
+                let pending = crate::intake::PendingDescription::Certificate(metadata.clone());
                 let queued =
                     self.intake
                         .enqueue_with_grant(peer, metadata, &self.graph, grant.clone());
-                match self.finish_description(peer, id, grant, queued) {
+                match self.finish_description(peer, id, grant, pending, queued) {
                     Ok(OfferStatus::Duplicate) => {
                         self.wanted.remove(&id);
                     }

@@ -96,7 +96,11 @@ impl Intake {
             Phase::Initial => {
                 waiting.selection.poll(graph, questions)?;
                 if waiting.selection.ready(SelectionStage::Initial) {
-                    waiting.selection.prepare(graph, questions)?;
+                    waiting.selection.prepare(
+                        graph,
+                        questions,
+                        waiting.description.context(graph),
+                    )?;
                     waiting.phase = Phase::Refresh { ready: false };
                 }
             }
@@ -118,13 +122,19 @@ impl Intake {
                             .publish(graph, questions, &waiting.description.transfer, *batch)
                             .map(WaitingStep::Published);
                     }
-                    waiting.selection.prepare(graph, questions)?;
                     waiting.phase = Phase::Refresh { ready: false };
                 }
             }
             Phase::Refresh { ready } => {
-                if context_changed || *ready {
-                    waiting.selection.prepare(graph, questions)?;
+                if (context_changed || *ready)
+                    && (waiting.description.prefix.is_some()
+                        || waiting.description.question.dependencies().is_empty())
+                {
+                    waiting.selection.prepare(
+                        graph,
+                        questions,
+                        waiting.description.context(graph),
+                    )?;
                 }
                 if self.active.is_none() && *ready {
                     if !waiting.description.transfer.live(now) {
@@ -171,7 +181,13 @@ impl Intake {
             }
             let until = questions.selection_deadline(now);
             let mut selection = Selection::new(id, description.question.clone());
-            if let Err(error) = selection.begin(SelectionStage::Initial, graph, questions, until) {
+            if let Err(error) = selection.begin(
+                SelectionStage::Initial,
+                graph,
+                questions,
+                until,
+                description.context(graph),
+            ) {
                 return Progress::Skipped(id, error);
             }
             self.waiting.push_back(Waiting {
@@ -192,8 +208,14 @@ impl Intake {
                 Ok(WaitingStep::Published(ids)) => return Progress::Accepted(ids),
                 Ok(WaitingStep::Waiting) => self.waiting.push_back(waiting),
                 Ok(WaitingStep::Activate) => {
+                    let mut waiting = waiting;
                     let mut closure = Closure::new(id, Some(waiting.description.statement));
                     if let Err(error) = closure.require_root(graph) {
+                        return Progress::Skipped(id, error);
+                    }
+                    if let Some(prefix) = waiting.description.prefix.take()
+                        && let Err(error) = closure.adopt_prefix(graph, prefix)
+                    {
                         return Progress::Skipped(id, error);
                     }
                     self.active = Some(ApprovedRoot {
@@ -223,7 +245,8 @@ impl Intake {
                 return Ok(ActiveStep::Waiting);
             }
             if context_changed || root.closure.needed().next().is_none() {
-                root.selection.prepare(graph, questions)?;
+                root.selection
+                    .prepare(graph, questions, root.closure.context(graph))?;
             }
             if root.closure.needed().next().is_some() || !root.closure.certificate_ready() {
                 return Ok(ActiveStep::Waiting);
@@ -253,7 +276,13 @@ impl Intake {
             let until = questions.selection_deadline(Instant::now());
             if !root
                 .selection
-                .begin(SelectionStage::Final, graph, questions, until)?
+                .begin(
+                    SelectionStage::Final,
+                    graph,
+                    questions,
+                    until,
+                    batch.context(),
+                )?
             {
                 return Err(crate::Error::ExecutionLimit);
             }

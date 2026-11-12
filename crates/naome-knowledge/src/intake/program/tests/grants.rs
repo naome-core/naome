@@ -18,6 +18,7 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
             offer: Offer {
                 metadata,
                 transfer: TransferGrant::new(peer, id, None),
+                prefix: None,
             },
             stage: Stage::Fetch,
             refresh: false,
@@ -81,6 +82,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_selecti
         offer: Offer {
             metadata: metadata.clone(),
             transfer: TransferGrant::new(peer, id, Some(capability.clone())),
+            prefix: None,
         },
         stage: Stage::Fetch,
         refresh: false,
@@ -170,7 +172,11 @@ async fn expired_queued_program_metadata_cannot_start_selection_or_input_staging
     let mut transfer = TransferGrant::new(PeerId::random(), id, None);
     transfer.set_received_for_test(Instant::now() - crate::resources::limits().root_timeout);
     let mut programs = Programs::default();
-    programs.queue.push_back(Offer { metadata, transfer });
+    programs.queue.push_back(Offer {
+        metadata,
+        transfer,
+        prefix: None,
+    });
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
     assert!(
         matches!(programs.advance(&mut graph, &mut questions, None), Progress::Skipped(skipped, _) if skipped == id)

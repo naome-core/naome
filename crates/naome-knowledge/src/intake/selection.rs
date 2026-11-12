@@ -11,6 +11,7 @@ pub(super) enum SelectionStage {
 struct Pending {
     stage: SelectionStage,
     deadline: Instant,
+    context: naome_checker::DiskArtifactState,
     reply: oneshot::Receiver<QuestionAssessment>,
     received: Option<QuestionAssessment>,
 }
@@ -55,6 +56,7 @@ impl Selection {
         graph: &Graph,
         questions: &mut LocalQuestions<F>,
         deadline: Instant,
+        context: &naome_checker::DiskArtifactState,
     ) -> Result<bool, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
@@ -77,6 +79,7 @@ impl Selection {
             self.root,
             purpose,
             deadline,
+            context,
         );
         if stage == SelectionStage::Final && question != self.question {
             return Err(crate::InputFault::SelectionProvenanceChanged.into());
@@ -85,6 +88,7 @@ impl Selection {
         self.pending = Some(Pending {
             stage,
             deadline,
+            context: context.clone(),
             reply,
             received: None,
         });
@@ -123,8 +127,9 @@ impl Selection {
         }
         // Keep the received value until fresh formal work succeeds. Receiving a
         // oneshot is irreversible; retrying its receiver would lose the decision.
-        let assessment = questions.refresh_exchange(
+        let assessment = questions.refresh_exchange_with_context(
             graph,
+            &pending.context,
             &self.question,
             pending.received.as_ref().expect("received selection"),
         )?;
@@ -144,6 +149,7 @@ impl Selection {
         &mut self,
         graph: &Graph,
         questions: &mut LocalQuestions<F>,
+        context: &naome_checker::DiskArtifactState,
     ) -> Result<crate::question::QuestionDelta, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
@@ -160,7 +166,7 @@ impl Selection {
         let selected = self
             .selected()
             .ok_or(crate::InputFault::SelectionQuestionMissing)?;
-        questions.prepare_exchange(graph, &self.question, selected)
+        questions.prepare_exchange_with_context(graph, context, &self.question, selected)
     }
     /// Every intake format crosses the same current selection and short
     /// transfer boundary before the existing atomic Graph/Question publication.
@@ -182,7 +188,8 @@ impl Selection {
         if !self.ready(SelectionStage::Final) {
             return Err(crate::InputFault::SelectionFinalMissing.into());
         }
-        let delta = self.prepare(graph, questions)?;
+        let context = batch.context().clone();
+        let delta = self.prepare(graph, questions, &context)?;
         transfer.check(Instant::now())?;
         questions.publish_exchange(
             graph,
@@ -200,6 +207,7 @@ impl Selection {
         stage: SelectionStage,
         graph: &Graph,
         questions: &mut LocalQuestions<F>,
+        context: &naome_checker::DiskArtifactState,
     ) -> Result<bool, crate::Error>
     where
         F: Fn(ResearchQuestion) -> Fut + Send + Sync + 'static,
@@ -227,16 +235,21 @@ impl Selection {
             } else {
                 Instant::now() + crate::resources::limits().root_timeout
             };
-            self.begin(next, graph, questions, deadline)?;
+            self.begin(next, graph, questions, deadline, context)?;
         }
         self.poll(graph, questions)?;
         if self.pending.is_some() || !self.ready(stage) {
             return Ok(false);
         }
         if let Some(assessment) = self.selected()
-            && assessment.formal_context() != questions.formal_context(graph)
+            && assessment.formal_context() != questions.formal_context_with(context)
         {
-            let fresh = questions.refresh_exchange(graph, &self.question, assessment)?;
+            let fresh = questions.refresh_exchange_with_context(
+                graph,
+                context,
+                &self.question,
+                assessment,
+            )?;
             if self.final_assessment.is_some() {
                 self.final_assessment = Some(fresh);
             } else {

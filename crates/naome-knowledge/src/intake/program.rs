@@ -36,6 +36,7 @@ pub(super) struct Programs {
 struct Offer {
     metadata: ProgramMetadata,
     transfer: TransferGrant,
+    prefix: Option<CheckedBatch>,
 }
 struct Root {
     offer: Offer,
@@ -103,12 +104,13 @@ impl Programs {
                 && matches!(&root.stage, Stage::Prepare(prepared) if !prepared.pending())
         })
     }
-    fn enqueue(
+    pub(super) fn enqueue(
         &mut self,
         peer: PeerId,
         metadata: ProgramMetadata,
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
+        prefix: Option<CheckedBatch>,
     ) -> Result<OfferStatus, crate::Error> {
         let id = metadata.manifest.artifact_id();
         if graph.contains(id)? {
@@ -131,7 +133,10 @@ impl Programs {
         {
             return Ok(OfferStatus::Declined);
         }
-        if metadata.question(graph.checked_context())?.is_none() {
+        let context = prefix
+            .as_ref()
+            .map_or(graph.checked_context(), CheckedBatch::context);
+        if metadata.question(context)?.is_none() {
             return Ok(OfferStatus::Unselected);
         }
         if self
@@ -144,8 +149,40 @@ impl Programs {
         self.queue.push_back(Offer {
             metadata,
             transfer: TransferGrant::new(peer, id, grant),
+            prefix,
         });
         Ok(OfferStatus::Queued)
+    }
+
+    pub(in crate::intake) fn take_prefix(&mut self, root: ArtifactId) -> Option<CheckedBatch> {
+        self.active
+            .as_mut()
+            .filter(|active| active.offer.transfer.root() == root)
+            .and_then(|active| active.closure.take_prefix())
+    }
+
+    pub(in crate::intake) fn restore_prefix(
+        &mut self,
+        root: ArtifactId,
+        prefix: CheckedBatch,
+    ) -> Result<(), crate::Error> {
+        let active = self
+            .active
+            .as_mut()
+            .filter(|active| active.offer.transfer.root() == root)
+            .ok_or(crate::InputFault::IntakeSelectionQuestionMissing)?;
+        active.closure.restore_prefix(prefix);
+        Ok(())
+    }
+
+    pub(in crate::intake) fn invalidate_prefix(&mut self, root: ArtifactId) {
+        if let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|active| active.offer.transfer.root() == root)
+        {
+            active.closure.invalidate_prefix();
+        }
     }
     fn request(&self, graph: &Graph) -> Result<Option<ProgramRequest>, crate::Error> {
         let Some(root) = &self.active else {
@@ -256,14 +293,25 @@ impl Programs {
                 return Progress::Skipped(id, crate::InputFault::IntakeQueuedProgramExpired.into());
             }
             let authority = (|| -> Result<Selection, crate::Error> {
+                let context = offer
+                    .prefix
+                    .as_ref()
+                    .map_or(graph.checked_context(), CheckedBatch::context);
                 let question = offer
                     .metadata
-                    .question(graph.checked_context())?
+                    .question(context)?
                     .ok_or(crate::InputFault::IntakeSelectionQuestionMissing)?;
                 Ok(Selection::new(id, question))
             })();
             match authority {
                 Ok(authority) => {
+                    let mut offer = offer;
+                    let mut closure = Closure::new(id, None);
+                    if let Some(prefix) = offer.prefix.take()
+                        && let Err(error) = closure.adopt_prefix(graph, prefix)
+                    {
+                        return Progress::Skipped(id, error);
+                    }
                     self.active = Some(Root {
                         offer,
                         authority,
@@ -271,7 +319,7 @@ impl Programs {
                         refresh: false,
                         allowed: false,
                         budget: Observer::default(),
-                        closure: Closure::new(id, None),
+                        closure,
                         scanned: 0,
                         input_complete: false,
                     })
@@ -300,7 +348,12 @@ impl Programs {
             } else {
                 SelectionStage::Initial
             };
-            root.allowed = root.authority.renew(selection_stage, graph, questions)?;
+            root.allowed = root.authority.renew(
+                selection_stage,
+                graph,
+                questions,
+                root.closure.context(graph),
+            )?;
             if !root.allowed {
                 return Ok(None);
             }
@@ -463,6 +516,17 @@ impl Intake {
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
     ) -> Result<OfferStatus, crate::Error> {
+        self.enqueue_program_with_prefix(peer, metadata, graph, grant, None)
+    }
+
+    pub(super) fn enqueue_program_with_prefix(
+        &mut self,
+        peer: PeerId,
+        metadata: ProgramMetadata,
+        graph: &Graph,
+        grant: Option<crate::publication::PeerGrant>,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<OfferStatus, crate::Error> {
         if self
             .programs
             .helper_contains(metadata.manifest.artifact_id())
@@ -478,7 +542,7 @@ impl Intake {
         {
             return Err(crate::InputLimit::IntakeProgramDescriptionCapacity.into());
         }
-        self.programs.enqueue(peer, metadata, graph, grant)
+        self.programs.enqueue(peer, metadata, graph, grant, prefix)
     }
     pub(crate) fn program_request(
         &self,
