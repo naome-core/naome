@@ -478,6 +478,11 @@ mod tests {
     }
     #[test]
     fn a_checked_library_does_not_starve_diverse_replay_at_the_existing_state_byte_bound() {
+        if !crate::learning::tests::isolated(
+            "learning::knowledge::tests::a_checked_library_does_not_starve_diverse_replay_at_the_existing_state_byte_bound",
+        ) {
+            return;
+        }
         use super::super::{Example, Origin, State};
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -623,6 +628,11 @@ mod tests {
     }
     #[test]
     fn checked_closed_lemmas_compose_through_native_citations_and_exact_replay() {
+        if !crate::learning::tests::isolated(
+            "learning::knowledge::tests::checked_closed_lemmas_compose_through_native_citations_and_exact_replay",
+        ) {
+            return;
+        }
         let axiom = naome_foundation::ZfcAxiom::Pairing;
         let term = calculus::axiom(naome_proof::ProofStep::ZfcAxiom(axiom)).unwrap();
         let lemma = proof::verify(&term, &axiom.formula()).unwrap();
