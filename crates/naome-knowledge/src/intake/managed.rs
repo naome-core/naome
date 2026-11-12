@@ -274,16 +274,13 @@ impl Intake {
                 }
             }
             let until = questions.selection_deadline(Instant::now());
-            if !root
-                .selection
-                .begin(
-                    SelectionStage::Final,
-                    graph,
-                    questions,
-                    until,
-                    batch.context(),
-                )?
-            {
+            if !root.selection.begin(
+                SelectionStage::Final,
+                graph,
+                questions,
+                until,
+                batch.context(),
+            )? {
                 return Err(crate::Error::ExecutionLimit);
             }
             Ok(ActiveStep::Final(Box::new(batch), until))

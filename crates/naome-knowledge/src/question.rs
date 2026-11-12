@@ -316,7 +316,7 @@ enum Reply {
         deadline: Instant,
         root: Option<naome_proof::ArtifactId>,
         purpose: crate::jobs::Purpose,
-        context: Option<naome_checker::DiskArtifactState>,
+        context: Option<Box<naome_checker::DiskArtifactState>>,
     },
 }
 
@@ -337,10 +337,7 @@ impl Reply {
         matches!(self, Self::Exchange { .. })
     }
 
-    fn checked_context<'a>(
-        &'a self,
-        graph: &'a Graph,
-    ) -> &'a naome_checker::DiskArtifactState {
+    fn checked_context<'a>(&'a self, graph: &'a Graph) -> &'a naome_checker::DiskArtifactState {
         match self {
             Self::Exchange {
                 context: Some(context),
@@ -818,12 +815,7 @@ where
         reuse: bool,
         record: Option<Identity>,
     ) -> PrefilterDecision {
-        self.evaluate_record_with_context(
-            graph.checked_context(),
-            question,
-            reuse,
-            record,
-        )
+        self.evaluate_record_with_context(graph.checked_context(), question, reuse, record)
     }
 
     fn evaluate_record_with_context(
@@ -986,7 +978,7 @@ where
                 deadline,
                 root: Some(root),
                 purpose,
-                context: Some(context.clone()),
+                context: Some(Box::new(context.clone())),
             },
         );
         (question, receiver)
@@ -1015,12 +1007,7 @@ where
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
-        self.refresh_exchange_with_context(
-            graph,
-            graph.checked_context(),
-            question,
-            assessment,
-        )
+        self.refresh_exchange_with_context(graph, graph.checked_context(), question, assessment)
     }
 
     pub(crate) fn refresh_exchange_with_context(
@@ -1057,12 +1044,7 @@ where
         question: &ResearchQuestion,
         assessment: &QuestionAssessment,
     ) -> Result<QuestionDelta, crate::Error> {
-        self.prepare_exchange_with_context(
-            graph,
-            graph.checked_context(),
-            question,
-            assessment,
-        )
+        self.prepare_exchange_with_context(graph, graph.checked_context(), question, assessment)
     }
 
     pub(crate) fn prepare_exchange_with_context(

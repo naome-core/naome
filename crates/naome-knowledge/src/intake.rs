@@ -470,18 +470,12 @@ impl Intake {
     }
 
     pub(crate) fn abort(&mut self, root_id: ArtifactId) {
-        if self
-            .definition
-            .as_ref()
-            .is_some_and(|fetch| {
-                fetch.transfer.root() == root_id
-                    || fetch.question_proof == Some(root_id)
-                    || fetch.helper.is_some_and(|(parent, _)| parent == root_id)
-            })
-        {
-            if let Some(fetch) = self.definition.take() {
-                self.abandon_definition(&fetch);
-            }
+        if let Some(fetch) = self.definition.take_if(|fetch| {
+            fetch.transfer.root() == root_id
+                || fetch.question_proof == Some(root_id)
+                || fetch.helper.is_some_and(|(parent, _)| parent == root_id)
+        }) {
+            self.abandon_definition(&fetch);
         }
         self.programs.remove(root_id);
         self.waiting
@@ -496,14 +490,11 @@ impl Intake {
     }
 
     pub(crate) fn disconnected(&mut self, peer: PeerId) {
-        if self
+        if let Some(fetch) = self
             .definition
-            .as_ref()
-            .is_some_and(|fetch| fetch.transfer.peer() == peer)
+            .take_if(|fetch| fetch.transfer.peer() == peer)
         {
-            if let Some(fetch) = self.definition.take() {
-                self.abandon_definition(&fetch);
-            }
+            self.abandon_definition(&fetch);
         }
         self.programs.failed(peer, None);
         self.waiting
@@ -598,10 +589,8 @@ impl Intake {
                 return Progress::Skipped(description.transfer.root(), error);
             }
             let mut description = description;
-            let mut closure = Closure::new(
-                description.transfer.root(),
-                Some(description.statement),
-            );
+            let mut closure =
+                Closure::new(description.transfer.root(), Some(description.statement));
             if let Some(prefix) = description.prefix.take()
                 && let Err(error) = closure.adopt_prefix(graph, prefix)
             {
@@ -627,13 +616,10 @@ impl Intake {
                 }
             }
             if matches!(root.phase, Phase::Fetch)
-                && root
-                    .selection
-                    .selected()
-                    .is_some_and(|assessment| {
-                        assessment.formal_context()
-                            != questions.formal_context_with(root.closure.context(graph))
-                    })
+                && root.selection.selected().is_some_and(|assessment| {
+                    assessment.formal_context()
+                        != questions.formal_context_with(root.closure.context(graph))
+                })
             {
                 root.selection
                     .prepare(graph, questions, root.closure.context(graph))?;
