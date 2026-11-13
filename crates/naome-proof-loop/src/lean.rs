@@ -1,5 +1,6 @@
 use crate::{Action, Reference, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -19,6 +20,8 @@ struct Request<'a> {
     references: &'a [String],
     #[serde(rename = "describeActions")]
     describe_actions: bool,
+    kernel: Option<&'a Value>,
+    names: &'a [(String, String)],
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -61,6 +64,8 @@ struct Reply {
     view: View,
     axioms: Vec<String>,
     symbols: Vec<String>,
+    kernel: Value,
+    dependencies: Vec<String>,
 }
 
 pub(crate) struct Checked {
@@ -201,7 +206,7 @@ impl Lean {
         serde_json::to_writer(&mut self.input, &request)?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
-        if matches!(request.op, "step" | "finish" | "define") {
+        if matches!(request.op, "step" | "finish" | "define" | "importKernel") {
             self.checker_calls = self
                 .checker_calls
                 .checked_add(1)
@@ -333,6 +338,41 @@ impl Lean {
             })?
             .require()?
             .into())
+    }
+
+    pub(crate) fn export_kernel(
+        &mut self,
+        declaration: &str,
+        names: &[(String, String)],
+    ) -> Result<(Value, Vec<String>)> {
+        let reply = self
+            .request(Request {
+                op: "exportKernel",
+                declaration,
+                names,
+                ..Request::default()
+            })?
+            .require()?;
+        Ok((reply.kernel, reply.dependencies))
+    }
+
+    pub(crate) fn import_kernel(
+        &mut self,
+        declaration: &str,
+        dependencies: &[String],
+        kernel: &Value,
+    ) -> Result<(Checked, String)> {
+        let mut reply = self
+            .request(Request {
+                op: "importKernel",
+                declaration,
+                dependencies,
+                kernel: Some(kernel),
+                ..Request::default()
+            })?
+            .require()?;
+        let target = std::mem::take(&mut reply.view.target);
+        Ok((reply.into(), target))
     }
 }
 

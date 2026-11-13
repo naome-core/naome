@@ -13,7 +13,7 @@ extract_cargo_lints(
 rust_library(
     name = "naome_proof_loop",
     version = "0.1.0-alpha.1",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/*.rs", "src/archive/*.rs"]),
     compile_data = [
         "lake-manifest.json",
         "lakefile.toml",

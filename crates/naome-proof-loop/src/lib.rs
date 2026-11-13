@@ -7,7 +7,9 @@ mod model;
 mod solver;
 mod value;
 
-pub use archive::{Archive, Artifact, EntryId, Verification};
+pub use archive::{
+    Archive, Artifact, EntryId, KernelArtifact, KernelBundle, KernelImport, Verification,
+};
 pub use solver::{AdaptiveSolver, Outcome, Task};
 pub use value::{ActionValues, Experience, LearningSignal};
 

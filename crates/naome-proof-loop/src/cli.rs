@@ -1,6 +1,6 @@
-use crate::{ActionValues, AdaptiveSolver, Archive, Artifact, EntryId, Result, Task};
+use crate::{ActionValues, AdaptiveSolver, Archive, Artifact, EntryId, KernelBundle, Result, Task};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 
 const HELP: &str = "naome proof prove <Lean proposition> <seed> [Lean declaration names ...]
@@ -9,6 +9,8 @@ naome proof prove-sequence <goals-file> <seed> --archive <archive.sqlite>
 naome proof compile-archived <archive.sqlite> <artifact.json>
 naome proof define-archived <archive.sqlite> <Lean type> <Lean term> [archive IDs ...]
 naome proof replay-archived <archive.sqlite> <archive-id>
+naome proof export-kernel <archive.sqlite> <archive-id>
+naome proof import-kernel <archive.sqlite> <bundle.json>
 
 Sequence input accepts one Lean proposition per line, optionally preceded by a
 decimal search seed and tab. A JSON line can specify target, hints, dependencies,
@@ -20,6 +22,8 @@ checkpoint and backtracks on repeated obligations. It resumes deep branches
 in turns alongside shallower alternatives. Its weights stay fixed during proof
 search. The sequence command learns and reuses checked fragments.
 Use prove-with-values for a saved checkpoint from branch-study.
+Export writes a checked kernel bundle to stdout. Import checks the full
+bundle in a fresh Lean session and prints the resulting archive ID.
 
 Lean uses the pinned project files and Mathlib revisions shipped with NAOME.
 Set NAOME_LEAN_PROJECT to select an alternate copy of the pinned project.
@@ -120,6 +124,19 @@ pub fn execute(args: &[String]) -> Result<()> {
         }
         [mode, archive, id] if mode == "replay-archived" => {
             output(&Archive::open_for_replay(Path::new(archive))?.replay(id.parse()?)?)?;
+        }
+        [mode, archive, id] if mode == "export-kernel" => {
+            let bundle =
+                Archive::open_for_replay(Path::new(archive))?.export_kernel(id.parse()?)?;
+            io::stdout().lock().write_all(&bundle.to_bytes()?)?;
+        }
+        [mode, archive, bundle] if mode == "import-kernel" => {
+            let mut bytes = Vec::new();
+            File::open(bundle)?
+                .take(KernelBundle::MAX_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            let bundle = KernelBundle::from_bytes(&bytes)?;
+            output(&Archive::open(Path::new(archive))?.import_kernel(bundle)?)?;
         }
         _ => return Err(HELP.into()),
     }

@@ -4,6 +4,116 @@ open Lean Meta Elab
 
 namespace Naome
 
+inductive NamePart where
+  | text (value : String)
+  | number (value : Nat)
+  deriving ToJson, FromJson
+
+structure WireName where
+  parts : List NamePart
+  deriving ToJson, FromJson
+
+def WireName.encode (name : Name) : WireName := ⟨go name []⟩
+where
+  go : Name → List NamePart → List NamePart
+    | .anonymous, parts => parts
+    | .str parent value, parts => go parent (.text value :: parts)
+    | .num parent value, parts => go parent (.number value :: parts)
+
+def WireName.decode (name : WireName) : Name :=
+  name.parts.foldl (init := .anonymous) fun parent part =>
+    match part with
+    | .text value => .str parent value
+    | .number value => .num parent value
+
+inductive WireLevel where
+  | zero
+  | succ (level : WireLevel)
+  | max (left right : WireLevel)
+  | imax (left right : WireLevel)
+  | parameter (name : WireName)
+  deriving ToJson, FromJson
+
+def WireLevel.decode : Nat → WireLevel → Except String Level
+  | 0, _ => throw "universe depth exceeded"
+  | _ + 1, .zero => pure .zero
+  | fuel + 1, .succ level => return .succ (← decode fuel level)
+  | fuel + 1, .max left right => return .max (← decode fuel left) (← decode fuel right)
+  | fuel + 1, .imax left right => return .imax (← decode fuel left) (← decode fuel right)
+  | _ + 1, .parameter name => pure (.param name.decode)
+
+def WireLevel.encode : Level → Except String WireLevel
+  | .zero => pure .zero
+  | .succ level => return .succ (← encode level)
+  | .max left right => return .max (← encode left) (← encode right)
+  | .imax left right => return .imax (← encode left) (← encode right)
+  | .param name => pure (.parameter (WireName.encode name))
+  | .mvar _ => throw "unresolved universe"
+
+inductive WireExpr where
+  | variable (index : Nat)
+  | sort (level : WireLevel)
+  | constant (name : WireName) (levels : List WireLevel)
+  | apply (function argument : WireExpr)
+  | lambda (name : WireName) (type body : WireExpr) (binder : Nat)
+  | forallE (name : WireName) (type body : WireExpr) (binder : Nat)
+  | letE (name : WireName) (type value body : WireExpr) (nondependent : Bool)
+  | natLit (value : Nat)
+  | stringLit (value : String)
+  | projection (typeName : WireName) (index : Nat) (subject : WireExpr)
+  deriving ToJson, FromJson
+
+def encodeBinder : BinderInfo → Nat
+  | .default => 0
+  | .implicit => 1
+  | .strictImplicit => 2
+  | .instImplicit => 3
+
+def decodeBinder : Nat → Except String BinderInfo
+  | 0 => pure .default
+  | 1 => pure .implicit
+  | 2 => pure .strictImplicit
+  | 3 => pure .instImplicit
+  | _ => throw "invalid binder annotation"
+
+partial def WireExpr.encode : Expr → Except String WireExpr
+  | .bvar index => pure (.variable index)
+  | .sort level => return .sort (← WireLevel.encode level)
+  | .const name levels => return .constant (WireName.encode name) (← levels.mapM WireLevel.encode)
+  | .app fn arg => return .apply (← encode fn) (← encode arg)
+  | .lam name type body binder =>
+    return .lambda (WireName.encode name) (← encode type) (← encode body) (encodeBinder binder)
+  | .forallE name type body binder =>
+    return .forallE (WireName.encode name) (← encode type) (← encode body) (encodeBinder binder)
+  | .letE name type value body nondependent =>
+    return .letE (WireName.encode name) (← encode type) (← encode value) (← encode body) nondependent
+  | .lit (.natVal value) => pure (.natLit value)
+  | .lit (.strVal value) => pure (.stringLit value)
+  | .mdata _ expr => encode expr
+  | .proj typeName index subject => return .projection (WireName.encode typeName) index (← encode subject)
+  | _ => throw "expression contains a free variable or metavariable"
+
+partial def WireExpr.decode (fuel scope : Nat) (expr : WireExpr) : Except String Expr := do
+  if fuel == 0 then throw "expression depth exceeded"
+  let descend := decode (fuel - 1) scope
+  let underBinder := decode (fuel - 1) (scope + 1)
+  match expr with
+  | .variable index =>
+    if index < scope then pure (.bvar index) else throw "unbound de Bruijn index"
+  | .sort level => return .sort (← level.decode fuel)
+  | .constant name levels => return .const name.decode (← levels.mapM (WireLevel.decode fuel))
+  | .apply fn arg => return .app (← descend fn) (← descend arg)
+  | .lambda name type body binder =>
+    return .lam name.decode (← descend type) (← underBinder body) (← decodeBinder binder)
+  | .forallE name type body binder =>
+    return .forallE name.decode (← descend type) (← underBinder body) (← decodeBinder binder)
+  | .letE name type value body nondependent =>
+    return .letE name.decode (← descend type) (← descend value) (← underBinder body) nondependent
+  | .natLit value => pure (.lit (.natVal value))
+  | .stringLit value => pure (.lit (.strVal value))
+  | .projection typeName index subject => return .proj typeName.decode index (← descend subject)
+
+
 structure Request where
   op : String
   target : String
@@ -17,6 +127,8 @@ structure Request where
   dependencies : Array String
   references : Array String
   describeActions : Bool
+  kernel : Json
+  names : Array (String × String)
   deriving FromJson
 
 structure Signature where
@@ -43,6 +155,8 @@ structure Reply where
   view : View := {}
   axioms : Array String := #[]
   symbols : Array String := #[]
+  kernel : Json := .null
+  dependencies : Array String := #[]
   deriving ToJson, Inhabited
 
 structure Frame where
@@ -173,6 +287,13 @@ def step (worker : Worker) (req : Request) : IO (Worker × Reply) := do
 
 def trustedAxioms : Array Name := #[`propext, `Classical.choice, `Quot.sound]
 
+def checkedAxioms (name : Name) : CoreM (Array String) := do
+  let axioms ← collectAxioms name
+  for axiomName in axioms do
+    unless trustedAxioms.contains axiomName do
+      throwError "unapproved axiom {axiomName}"
+  return axioms.map Name.toString
+
 def checkDeclaration (req : Request) (type value : Expr) (decl : Declaration) :
     CoreM (Array String) := do
   let allowed := req.dependencies
@@ -183,11 +304,7 @@ def checkDeclaration (req : Request) (type value : Expr) (decl : Declaration) :
       throwError "undeclared archive dependency {name}"
   let name := req.declaration.toName
   Lean.addDecl decl
-  let axioms ← collectAxioms name
-  for axiomName in axioms do
-    unless trustedAxioms.contains axiomName do
-      throwError "unapproved axiom {axiomName}"
-  return axioms.map Name.toString
+  checkedAxioms name
 
 def declarationSymbols (type : Expr) (value : Option Expr := none) : Array String :=
   symbols type ++ (value.map symbols).getD #[]
@@ -232,12 +349,79 @@ def define (worker : Worker) (req : Request) : IO (Worker × Reply) := do
   let (reply, core, _, _) ← action.toIO coreContext { env := worker.env } {} {} {} {}
   return ({ env := core.env }, reply)
 
+structure KernelTerms where
+  isProof : Bool
+  levelParameters : List WireName
+  type : WireExpr
+  value : WireExpr
+  deriving FromJson, ToJson
+
+def isArchiveName (name : Name) : Bool :=
+  (`NaomeArchive).isPrefixOf name
+
+def archiveConstants (type value : Expr) : Array Name :=
+  (type.getUsedConstants ++ value.getUsedConstants).toList
+    |>.filter isArchiveName |>.mergeSort Name.lt |>.eraseDups |>.toArray
+
+def exportKernel (worker : Worker) (req : Request) : IO (Worker × Reply) := do
+  let name := req.declaration.toName
+  let some info := worker.env.find? name | throw (IO.userError "missing checked declaration")
+  let some value := info.value? (allowOpaque := true) | throw (IO.userError "missing declaration body")
+  let aliases := req.names.map fun (old, replacement) => (old.toName, replacement.toName)
+  let used := archiveConstants info.type value
+  unless used.all (fun name => aliases.any (·.1 == name)) do
+    throw (IO.userError "missing portable name for a used declaration")
+  let rewrite := Expr.replace fun expr => do
+    let .const name universes := expr | none
+    let (_, replacement) ← aliases.find? (·.1 == name)
+    return .const replacement universes
+  let isProof := match info with | .thmInfo _ => true | _ => false
+  let type := rewrite info.type
+  let value := rewrite value
+  let terms : KernelTerms ← IO.ofExcept do
+    return {
+      isProof
+      levelParameters := info.levelParams.map WireName.encode
+      type := ← WireExpr.encode type
+      value := ← WireExpr.encode value }
+  return (worker, { kernel := toJson terms, dependencies := (archiveConstants type value).map Name.toString })
+
+def importKernel (worker : Worker) (req : Request) : IO (Worker × Reply) := do
+  let terms : KernelTerms ← IO.ofExcept (fromJson? req.kernel)
+  unless toJson terms == req.kernel do
+    throw (IO.userError "noncanonical kernel term")
+  let name := req.declaration.toName
+  unless isArchiveName name do
+    throw (IO.userError "invalid archive name")
+  let type ← IO.ofExcept (terms.type.decode 256 0)
+  let value ← IO.ofExcept (terms.value.decode 256 0)
+  let declared := (req.dependencies.map String.toName).toList.mergeSort Name.lt
+  unless declared == (archiveConstants type value).toList do
+    throw (IO.userError "archive dependencies differ from kernel terms")
+  let levelParams := terms.levelParameters.map WireName.decode
+  let declaration := if terms.isProof then
+    Declaration.thmDecl { name, levelParams, type, value }
+  else
+    Declaration.defnDecl { name, levelParams, type, value, hints := .abbrev, safety := .safe }
+  let check : CoreM Reply := do
+    match worker.env.addDeclCore 200000 512 declaration none (doCheck := true) with
+    | .error failure => throwKernelException failure
+    | .ok checked => setEnv checked
+    let axioms ← checkedAxioms name
+    let target ← MetaM.run' (return (← ppExpr type).pretty)
+    let symbols := declarationSymbols type (if terms.isProof then none else some value)
+    return { axioms, symbols, view := { target } }
+  let (reply, state) ← check.toIO coreContext { env := worker.env }
+  return ({ env := state.env }, reply)
+
 def dispatch (worker : Worker) (req : Request) : IO (Worker × Reply) :=
   match req.op with
   | "start" => start worker req
   | "step" => step worker req
   | "finish" => finish worker req
   | "define" => define worker req
+  | "exportKernel" => exportKernel worker req
+  | "importKernel" => importKernel worker req
   | _ => throw (IO.userError "unknown bridge operation")
 
 end Naome

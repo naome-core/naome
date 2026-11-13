@@ -1,6 +1,6 @@
 use naome_proof_loop::{
     APPLY, Action, AdaptiveSolver, Archive, Artifact, CATALOG_SLOTS, CONSTRUCTOR, EXACT, EntryId,
-    INTRO, RFL, Reference, Task,
+    INTRO, KernelBundle, RFL, Reference, Task,
 };
 use std::path::{Path, PathBuf};
 
@@ -452,4 +452,92 @@ fn search_restores_a_relevant_proof_across_a_deep_definition_chain() {
     let replayed = fresh.replay(checked.id).unwrap();
     assert_eq!(replayed.axioms, checked.axioms);
     assert!(replayed.checker_calls > 70);
+}
+
+#[test]
+fn kernel_bundle_transfers_a_proof_and_its_definition_atomically() {
+    let temp = Temp::new("kernel-transfer");
+    let source = temp.0.join("source.sqlite");
+    let destination = temp.0.join("destination.sqlite");
+    let mut producer = Archive::open(&source).unwrap();
+    let increment = producer
+        .compile(Artifact::Definition {
+            target: "Nat → Nat".into(),
+            value: "fun n => n.succ".into(),
+            dependencies: vec![],
+        })
+        .unwrap()
+        .id;
+    let target = format!("∀ n : Nat, {} n = n.succ", increment.lean_name());
+    let original = producer
+        .compile(Artifact::Proof {
+            target,
+            steps: vec![step(INTRO), step(RFL)],
+            dependencies: vec![increment],
+        })
+        .unwrap()
+        .id;
+    let bundle = producer.export_kernel(original).unwrap();
+    let root = bundle.root;
+    let bytes = bundle.to_bytes().unwrap();
+    drop(producer);
+    let mut producer = Archive::open_for_replay(&source).unwrap();
+    assert_eq!(
+        producer
+            .export_kernel(original)
+            .unwrap()
+            .to_bytes()
+            .unwrap(),
+        bytes
+    );
+
+    let mut receiver = Archive::open(&destination).unwrap();
+    let mut modified: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let declarations = modified["declarations"].as_array_mut().unwrap();
+    assert_eq!(declarations.len(), 2);
+    let definition_bytes = serde_json::to_vec(&declarations[0]).unwrap();
+    let definition: naome_proof_loop::KernelArtifact =
+        serde_json::from_slice(&definition_bytes).unwrap();
+    let definition_id = definition.id().unwrap();
+    declarations[1]["terms"]["type"] =
+        serde_json::json!({"constant":{"name":{"parts":[{"text":{"value":"False"}}]},"levels":[]}});
+    let wrong: naome_proof_loop::KernelArtifact =
+        serde_json::from_value(declarations[1].clone()).unwrap();
+    modified["root"] = serde_json::to_value(wrong.id().unwrap()).unwrap();
+    let modified: KernelBundle = serde_json::from_value(modified).unwrap();
+    let invalid = KernelBundle::from_bytes(&modified.to_bytes().unwrap()).unwrap();
+    let error = receiver.import_kernel(invalid).unwrap_err();
+    assert!(error.to_string().contains("type mismatch"), "{error}");
+    assert!(receiver.read(definition_id).is_err());
+    assert!(receiver.read(root).is_err());
+
+    let receipt = receiver
+        .import_kernel(KernelBundle::from_bytes(&bytes).unwrap())
+        .unwrap();
+    assert_eq!(receipt.root, root);
+    assert_eq!(receipt.checked, [definition_id, root]);
+    assert!(receipt.axioms.is_empty());
+    drop(receiver);
+
+    let mut receiver = Archive::open(&destination).unwrap();
+    assert_eq!(receiver.replay(root).unwrap().checker_calls, 2);
+    assert_eq!(
+        receiver.export_kernel(root).unwrap().to_bytes().unwrap(),
+        bytes
+    );
+    let mut solver = AdaptiveSolver::new(receiver);
+    let mut follow_up = task(&format!(
+        "True ∧ (∀ n : Nat, {} n = n.succ)",
+        definition_id.lean_name()
+    ));
+    follow_up.dependencies.push(definition_id);
+    follow_up.activate.push(root);
+    let result = solver.prove(follow_up, 11).unwrap();
+    assert!(result.solved);
+    assert!(
+        result
+            .steps
+            .iter()
+            .any(|step| step.argument == Some(Reference::Archived(root)))
+    );
 }
