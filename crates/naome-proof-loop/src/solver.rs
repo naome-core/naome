@@ -45,6 +45,14 @@ pub struct Outcome {
     pub active_entries: usize,
 }
 
+/// A checked question, its search outcome, and the portable answer if solved.
+#[derive(Serialize)]
+pub struct QuestionOutcome {
+    pub question: EntryId,
+    pub search: Outcome,
+    pub answer: Option<crate::KernelImport>,
+}
+
 #[derive(Clone)]
 struct Entry {
     id: EntryId,
@@ -116,6 +124,24 @@ impl AdaptiveSolver {
 
     pub fn prove(&mut self, task: Task, seed: u64) -> Result<Outcome> {
         self.prove_with_values(task, seed, ActionValues::bundled())
+    }
+
+    /// Solve a local question and index its independently replayed answer.
+    pub fn prove_question(&mut self, task: Task, seed: u64) -> Result<QuestionOutcome> {
+        let question = self.archive.question(&task.target, &task.dependencies)?;
+        let identity = question.id()?;
+        let search = self.prove(task, seed)?;
+        let answer = if let Some(proof) = &search.proof {
+            let bundle = self.archive.export_kernel(proof.id)?;
+            Some(self.archive.import_answer(&question, bundle)?)
+        } else {
+            None
+        };
+        Ok(QuestionOutcome {
+            question: identity,
+            search,
+            answer,
+        })
     }
 
     fn prepare_task(&mut self, task: &Task) -> Result<()> {

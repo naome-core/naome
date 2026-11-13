@@ -9,8 +9,11 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
+mod question;
 mod transfer;
-pub use transfer::{KernelArtifact, KernelBundle, KernelImport};
+pub use question::Question;
+pub(crate) use question::QuestionType;
+pub use transfer::{KernelArtifact, KernelBundle, KernelImport, PreparedAnswer};
 
 const LEAN_TOOLCHAIN: &str = include_str!("../lean-toolchain");
 const LEAN_LIBRARIES: &str = include_str!("../lake-manifest.json");
@@ -165,6 +168,10 @@ pub struct Archive {
 
 impl Archive {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::connect(Self::open_connection(path)?)
+    }
+
+    fn open_connection(path: &Path) -> Result<Connection> {
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch(
@@ -183,9 +190,14 @@ impl Archive {
                 id BLOB NOT NULL REFERENCES declaration_symbols(id) ON DELETE CASCADE,
                 PRIMARY KEY (symbol, id)
              ) WITHOUT ROWID;
-             CREATE INDEX IF NOT EXISTS symbol_entry_id ON symbol_entry(id, symbol);",
+             CREATE INDEX IF NOT EXISTS symbol_entry_id ON symbol_entry(id, symbol);
+             CREATE TABLE IF NOT EXISTS kernel_answer (
+                question BLOB NOT NULL CHECK(length(question) = 32),
+                proof BLOB NOT NULL REFERENCES declaration(id) ON DELETE CASCADE,
+                PRIMARY KEY (question, proof)
+             ) WITHOUT ROWID;",
         )?;
-        Self::connect(connection)
+        Ok(connection)
     }
 
     pub fn open_for_replay(path: &Path) -> Result<Self> {
@@ -242,7 +254,9 @@ impl Archive {
         }
         let before = self.lean.checker_calls();
         self.load(artifact.dependencies())?;
-        let Checked { axioms, symbols } = self.verify(id, &artifact)?;
+        let Checked {
+            axioms, symbols, ..
+        } = self.verify(id, &artifact)?;
         self.store(id, &artifact, &axioms, symbols)?;
         Ok(Verification {
             id,
@@ -277,8 +291,9 @@ impl Archive {
             }));
         }
         let names = names(artifact.dependencies());
-        let Some(Checked { axioms, symbols }) =
-            self.lean.finish_candidate(state, &id.lean_name(), &names)?
+        let Some(Checked {
+            axioms, symbols, ..
+        }) = self.lean.finish_candidate(state, &id.lean_name(), &names)?
         else {
             return Ok(None);
         };

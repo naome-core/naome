@@ -157,6 +157,7 @@ structure Reply where
   symbols : Array String := #[]
   kernel : Json := .null
   dependencies : Array String := #[]
+  question : Json := .null
   deriving ToJson, Inhabited
 
 structure Frame where
@@ -363,6 +364,68 @@ def archiveConstants (type value : Expr) : Array Name :=
   (type.getUsedConstants ++ value.getUsedConstants).toList
     |>.filter isArchiveName |>.mergeSort Name.lt |>.eraseDups |>.toArray
 
+partial def eraseBinderNames : Expr → Expr
+  | .forallE _ type body binder => .forallE .anonymous (eraseBinderNames type) (eraseBinderNames body) binder
+  | .lam _ type body binder => .lam .anonymous (eraseBinderNames type) (eraseBinderNames body) binder
+  | .letE _ type value body _ =>
+    .letE .anonymous (eraseBinderNames type) (eraseBinderNames value) (eraseBinderNames body) false
+  | .app fn arg => .app (eraseBinderNames fn) (eraseBinderNames arg)
+  | .mdata _ body => eraseBinderNames body
+  | .proj name index body => .proj name index (eraseBinderNames body)
+  | expr => expr
+
+def questionNames (type : Expr) : Array Name :=
+  type.getUsedConstants.toList.filter isArchiveName |>.mergeSort Name.lt |>.toArray
+
+def questionType (type : Expr) : Expr :=
+  let type := eraseBinderNames type
+  let names := (collectLevelParams {} type).params
+  let levels := names.mapIdx fun index _ => Level.param (.num .anonymous index)
+  type.instantiateLevelParamsArray names levels
+
+def describeQuestion (type : Expr) : CoreM Json := do
+  let expression ← ofExcept (WireExpr.encode (questionType type))
+  return Json.mkObj [
+    ("term", toJson expression),
+    ("dependencies", toJson ((questionNames type).map Name.toString))]
+
+def checkQuestion (worker : Worker) (req : Request) : IO (Worker × Reply) := do
+  let type ← if req.kernel == .null then do
+    let stx ← parseTerm worker.env req.target
+    let (type, core, _) ← ((elaborate stx none).run' : MetaM Expr).toIO coreContext { env := worker.env }
+    if core.messages.hasErrors then
+      let messages ← core.messages.toList.mapM fun message => message.data.toString
+      throw (IO.userError (String.intercalate "\n" messages))
+    pure (questionType type)
+  else do
+    let encoded : WireExpr ← IO.ofExcept (fromJson? req.kernel)
+    let type ← IO.ofExcept (encoded.decode 256 0)
+    let normalized ← IO.ofExcept (WireExpr.encode (questionType type))
+    unless toJson normalized == req.kernel do
+      throw (IO.userError "noncanonical question term")
+    pure type
+  let used := questionNames type
+  let declared := (req.dependencies.map String.toName).toList.mergeSort Name.lt
+  unless declared == used.toList do
+    throw (IO.userError "archive dependencies differ from question type")
+  let name := `NaomeQuestion.verify
+  let declaration := Declaration.thmDecl {
+    name
+    levelParams := (collectLevelParams {} type).params.toList
+    type := .forallE .anonymous type (type.liftLooseBVars 0 1) .default
+    value := .lam .anonymous type (.bvar 0) .default
+  }
+  let check : CoreM Reply := do
+    match worker.env.addDeclCore 200000 512 declaration none (doCheck := true) with
+    | .error failure => throwKernelException failure
+    | .ok checked => setEnv checked
+    unless ← MetaM.run' (isProp type) do
+      throwError "question type must be a proposition"
+    let _ ← checkedAxioms name
+    return { question := ← describeQuestion type }
+  let (reply, _) ← check.toIO coreContext { env := worker.env }
+  return (worker, reply)
+
 def exportKernel (worker : Worker) (req : Request) : IO (Worker × Reply) := do
   let name := req.declaration.toName
   let some info := worker.env.find? name | throw (IO.userError "missing checked declaration")
@@ -410,7 +473,8 @@ def importKernel (worker : Worker) (req : Request) : IO (Worker × Reply) := do
     let axioms ← checkedAxioms name
     let target ← MetaM.run' (return (← ppExpr type).pretty)
     let symbols := declarationSymbols type (if terms.isProof then none else some value)
-    return { axioms, symbols, view := { target } }
+    let question ← if terms.isProof then describeQuestion type else pure .null
+    return { axioms, symbols, view := { target }, question }
   let (reply, state) ← check.toIO coreContext { env := worker.env }
   return ({ env := state.env }, reply)
 
@@ -422,6 +486,7 @@ def dispatch (worker : Worker) (req : Request) : IO (Worker × Reply) :=
   | "define" => define worker req
   | "exportKernel" => exportKernel worker req
   | "importKernel" => importKernel worker req
+  | "question" => checkQuestion worker req
   | _ => throw (IO.userError "unknown bridge operation")
 
 end Naome

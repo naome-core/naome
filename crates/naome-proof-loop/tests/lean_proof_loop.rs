@@ -1,6 +1,6 @@
 use naome_proof_loop::{
     APPLY, Action, AdaptiveSolver, Archive, Artifact, CATALOG_SLOTS, CONSTRUCTOR, EXACT, EntryId,
-    INTRO, KernelBundle, RFL, Reference, Task,
+    INTRO, KernelBundle, Question, RFL, Reference, Task,
 };
 use std::path::{Path, PathBuf};
 
@@ -525,11 +525,13 @@ fn kernel_bundle_transfers_a_proof_and_its_definition_atomically() {
         receiver.export_kernel(root).unwrap().to_bytes().unwrap(),
         bytes
     );
+    let resolved_goal = format!("∀ n : Nat, {} n = n.succ", definition_id.lean_name());
+    let selected = receiver.question(&resolved_goal, &[definition_id]).unwrap();
+    assert_eq!(selected.id().unwrap(), receipt.question.unwrap());
+    assert_eq!(receiver.answer(selected.id().unwrap()).unwrap(), Some(root));
+    assert!(receiver.question(&resolved_goal, &[]).is_err());
     let mut solver = AdaptiveSolver::new(receiver);
-    let mut follow_up = task(&format!(
-        "True ∧ (∀ n : Nat, {} n = n.succ)",
-        definition_id.lean_name()
-    ));
+    let mut follow_up = task(&format!("True ∧ ({resolved_goal})"));
     follow_up.dependencies.push(definition_id);
     follow_up.activate.push(root);
     let result = solver.prove(follow_up, 11).unwrap();
@@ -540,4 +542,92 @@ fn kernel_bundle_transfers_a_proof_and_its_definition_atomically() {
             .iter()
             .any(|step| step.argument == Some(Reference::Archived(root)))
     );
+}
+
+#[test]
+fn kernel_answers_are_bound_to_the_selected_proposition() {
+    let temp = Temp::new("lean-question");
+    let receiver_path = temp.db();
+    let mut receiver = Archive::open(&receiver_path).unwrap();
+    let goal = receiver.question("∀ n : Nat, n = n", &[]).unwrap();
+    let renamed = receiver.question("forall x : Nat, x = x", &[]).unwrap();
+    let goal_bytes = goal.to_bytes().unwrap();
+    assert_eq!(goal_bytes, renamed.to_bytes().unwrap());
+    assert_eq!(goal.id().unwrap(), renamed.id().unwrap());
+    receiver
+        .check_question(&Question::from_bytes(&goal_bytes).unwrap())
+        .unwrap();
+    let universe = receiver
+        .question("∀ (α : Type _) (a : α), a = a", &[])
+        .unwrap();
+    assert_eq!(
+        universe.id().unwrap(),
+        receiver
+            .question("∀ (β : Type _) (b : β), b = b", &[])
+            .unwrap()
+            .id()
+            .unwrap(),
+    );
+    receiver
+        .check_question(&Question::from_bytes(&universe.to_bytes().unwrap()).unwrap())
+        .unwrap();
+    assert!(receiver.question("Nat", &[]).is_err());
+    assert!(receiver.question("False", &[]).is_ok());
+    let mut tampered: serde_json::Value = serde_json::from_slice(&goal_bytes).unwrap();
+    tampered["term"] = serde_json::json!({"variable":{"index":0}});
+    let tampered: Question = serde_json::from_value(tampered).unwrap();
+    assert!(receiver.check_question(&tampered).is_err());
+
+    let mut producer = Archive::open(Path::new(":memory:")).unwrap();
+    let wrong = producer
+        .compile(proof("True", vec![step(CONSTRUCTOR)]))
+        .unwrap();
+    let wrong = producer.export_kernel(wrong.id).unwrap();
+    let wrong_root = wrong.root;
+    assert!(receiver.import_answer(&goal, wrong).is_err());
+    assert!(receiver.read(wrong_root).is_err());
+    assert!(receiver.answer(goal.id().unwrap()).unwrap().is_none());
+
+    let direct = producer
+        .compile(proof("forall a : Nat, a = a", vec![step(INTRO), step(RFL)]))
+        .unwrap();
+    let lemma = producer
+        .compile(proof(
+            "forall m : Nat, m = m",
+            vec![step(INTRO), decl(APPLY, "Eq.refl")],
+        ))
+        .unwrap();
+    let mut answers = Vec::new();
+    for original in [direct.id, lemma.id] {
+        let bundle = producer.export_kernel(original).unwrap();
+        let root = bundle.root;
+        let receipt = receiver.import_answer(&goal, bundle).unwrap();
+        assert_eq!(receipt.question, Some(goal.id().unwrap()));
+        assert_eq!(receipt.root, root);
+        answers.push(root);
+    }
+    assert_ne!(answers[0], answers[1]);
+    drop(receiver);
+    let mut receiver = Archive::open_for_replay(&receiver_path).unwrap();
+    let stored = receiver.answer(goal.id().unwrap()).unwrap().unwrap();
+    assert_eq!(stored, *answers.iter().min().unwrap());
+    assert!(receiver.replay(stored).unwrap().axioms.is_empty());
+}
+
+#[test]
+fn solving_a_question_publishes_a_checked_portable_answer() {
+    let temp = Temp::new("lean-produce-answer");
+    let path = temp.db();
+    let mut solver = AdaptiveSolver::new(Archive::open(&path).unwrap());
+    let outcome = solver
+        .prove_question(task("True ∧ (∀ k : Nat, k = k)"), 37)
+        .unwrap();
+    let answer = outcome.answer.unwrap();
+    assert_eq!(answer.question, Some(outcome.question));
+    assert!(outcome.search.solved);
+    assert!(answer.axioms.is_empty());
+    drop(solver);
+    let mut archive = Archive::open_for_replay(&path).unwrap();
+    assert_eq!(archive.answer(outcome.question).unwrap(), Some(answer.root));
+    assert_eq!(archive.replay(answer.root).unwrap().checker_calls, 1);
 }

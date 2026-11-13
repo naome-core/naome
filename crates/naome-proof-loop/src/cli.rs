@@ -1,4 +1,6 @@
-use crate::{ActionValues, AdaptiveSolver, Archive, Artifact, EntryId, KernelBundle, Result, Task};
+use crate::{
+    ActionValues, AdaptiveSolver, Archive, Artifact, EntryId, KernelBundle, Question, Result, Task,
+};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -11,6 +13,11 @@ naome proof define-archived <archive.sqlite> <Lean type> <Lean term> [archive ID
 naome proof replay-archived <archive.sqlite> <archive-id>
 naome proof export-kernel <archive.sqlite> <archive-id>
 naome proof import-kernel <archive.sqlite> <bundle.json>
+naome proof question <archive.sqlite> <Lean proposition> [portable archive IDs ...]
+naome proof check-question <archive.sqlite> <question.json>
+naome proof prove-question <archive.sqlite> <Lean proposition> <seed> [portable archive IDs ...]
+naome proof import-answer <archive.sqlite> <question.json> <bundle.json>
+naome proof find-answer <archive.sqlite> <question-id>
 
 Sequence input accepts one Lean proposition per line, optionally preceded by a
 decimal search seed and tab. A JSON line can specify target, hints, dependencies,
@@ -24,6 +31,10 @@ search. The sequence command learns and reuses checked fragments.
 Use prove-with-values for a saved checkpoint from branch-study.
 Export writes a checked kernel bundle to stdout. Import checks the full
 bundle in a fresh Lean session and prints the resulting archive ID.
+Question writes the canonical goal to stdout. Check-question verifies its
+type and prints its question ID. Import-answer checks that the bundle proves
+that exact goal before saving it. Find-answer prints an archive ID or null.
+Prove-question searches for a proof and indexes the checked portable answer.
 
 Lean uses the pinned project files and Mathlib revisions shipped with NAOME.
 Set NAOME_LEAN_PROJECT to select an alternate copy of the pinned project.
@@ -59,6 +70,17 @@ fn output(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer(&mut stdout, value)?;
     stdout.write_all(b"\n")?;
     Ok(())
+}
+
+fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > maximum {
+        return Err("input byte limit exceeded".into());
+    }
+    Ok(bytes)
 }
 
 /// Execute a local Lean proof or archive command.
@@ -131,12 +153,45 @@ pub fn execute(args: &[String]) -> Result<()> {
             io::stdout().lock().write_all(&bundle.to_bytes()?)?;
         }
         [mode, archive, bundle] if mode == "import-kernel" => {
-            let mut bytes = Vec::new();
-            File::open(bundle)?
-                .take(KernelBundle::MAX_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)?;
+            let bytes = read_bounded(bundle, KernelBundle::MAX_BYTES)?;
             let bundle = KernelBundle::from_bytes(&bytes)?;
             output(&Archive::open(Path::new(archive))?.import_kernel(bundle)?)?;
+        }
+        [mode, archive, goal, dependencies @ ..] if mode == "question" => {
+            let dependencies = dependencies
+                .iter()
+                .map(|id| id.parse())
+                .collect::<Result<Vec<_>>>()?;
+            let question = Archive::open(Path::new(archive))?.question(goal, &dependencies)?;
+            io::stdout().lock().write_all(&question.to_bytes()?)?;
+        }
+        [mode, archive, question] if mode == "check-question" => {
+            let question = Question::from_bytes(&read_bounded(question, Question::MAX_BYTES)?)?;
+            Archive::open_for_replay(Path::new(archive))?.check_question(&question)?;
+            output(&question.id()?)?;
+        }
+        [mode, archive, target, seed, dependencies @ ..] if mode == "prove-question" => {
+            let task = Task {
+                target: target.clone(),
+                hints: Vec::new(),
+                dependencies: dependencies
+                    .iter()
+                    .map(|id| id.parse())
+                    .collect::<Result<Vec<_>>>()?,
+                activate: Vec::new(),
+                seed: None,
+            };
+            let mut solver = AdaptiveSolver::new(Archive::open(Path::new(archive))?);
+            output(&solver.prove_question(task, seed.parse()?)?)?;
+        }
+        [mode, archive, question, bundle] if mode == "import-answer" => {
+            let question = Question::from_bytes(&read_bounded(question, Question::MAX_BYTES)?)?;
+            let bundle = KernelBundle::from_bytes(&read_bounded(bundle, KernelBundle::MAX_BYTES)?)?;
+            let checked = Archive::prepare_answer(&question, bundle)?;
+            output(&Archive::commit_answer_to(Path::new(archive), checked)?)?;
+        }
+        [mode, archive, question] if mode == "find-answer" => {
+            output(&Archive::open_for_replay(Path::new(archive))?.answer(question.parse()?)?)?;
         }
         _ => return Err(HELP.into()),
     }
