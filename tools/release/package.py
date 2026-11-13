@@ -104,6 +104,13 @@ def smoke_proof(binary):
     (cache / "packages").symlink_to(PROOF_PROJECT / ".lake/packages", target_is_directory=True)
     environment = dict(os.environ)
     environment.pop("NAOME_LEAN_PROJECT", None)
+    subprocess.run(
+        [environment.get("NAOME_LEAN_LAKE", "lake"), "build", "naome-lean-bridge"],
+        cwd=project,
+        env=environment,
+        check=True,
+        timeout=180,
+    )
     output = subprocess.check_output(
         [str(binary), "proof", "prove", "∀ n : Nat, n = n", "37"],
         env=environment,

@@ -57,7 +57,7 @@ Local proof commands additionally require the pinned Lean toolchain on PATH
 through Lake (for example via Elan). After installing Lake, initialize the
 packaged proof project once and run a checked proof:
 
-(cd "$HOME/.local/share/naome/lean-proof" && lake exe cache get Mathlib.SetTheory.ZFC.Basic Mathlib.Data.List.Basic Mathlib.Data.Option.Basic Mathlib.Data.Set.Basic Mathlib.Data.Nat.Basic)
+(cd "$HOME/.local/share/naome/lean-proof" && lake exe cache get Mathlib.SetTheory.ZFC.Basic Mathlib.Data.List.Basic Mathlib.Data.Option.Basic Mathlib.Data.Set.Basic Mathlib.Data.Nat.Basic && lake build naome-lean-bridge)
 naome proof prove 'True' 37
 Keep the included license notices. Cargo.lock, sbom.cdx.json and build.json
 record dependencies, source, features, binary digest and build environment.

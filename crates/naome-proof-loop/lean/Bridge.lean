@@ -491,6 +491,8 @@ def dispatch (worker : Worker) (req : Request) : IO (Worker × Reply) :=
 
 end Naome
 
+private def bridgeSource : String := include_str "Bridge.lean"
+
 unsafe def main : IO Unit := do
   initSearchPath (← findSysroot)
   enableInitializersExecution
@@ -504,7 +506,9 @@ unsafe def main : IO Unit := do
   let input ← IO.getStdin
   let output ← IO.getStdout
   let mut worker : Naome.Worker := { env }
-  output.putStrLn s!"naome-lean {Lean.versionString}"
+  output.putStrLn (Json.mkObj [
+    ("version", toJson Lean.versionString),
+    ("source", toJson bridgeSource)]).compress
   output.flush
   repeat
     let line ← input.getLine

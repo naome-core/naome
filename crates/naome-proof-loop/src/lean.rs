@@ -2,7 +2,7 @@ use crate::archive::QuestionType;
 use crate::{Action, Reference, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -68,6 +68,13 @@ struct Reply {
     kernel: Value,
     dependencies: Vec<String>,
     question: Option<QuestionType>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BridgeIdentity {
+    version: String,
+    source: String,
 }
 
 pub(crate) struct Checked {
@@ -168,14 +175,47 @@ impl Lean {
     pub fn spawn() -> Result<Self> {
         let project = project()?;
         let lake = std::env::var_os("NAOME_LEAN_LAKE").unwrap_or_else(|| "lake".into());
-        let mut child = Command::new(lake)
-            .args(["env", "lean", "--run", "lean/Bridge.lean"])
-            .current_dir(project)
+        let binary = project.join(".lake/build/bin/naome-lean-bridge");
+        if !binary.is_file() {
+            return Err(format!(
+                "Lean bridge is missing at {}. Run `lake build naome-lean-bridge` in {}",
+                binary.display(),
+                project.display()
+            )
+            .into());
+        }
+        let environment = Command::new(lake)
+            .args([
+                "env",
+                "sh",
+                "-c",
+                "printf '%s\\0%s' \"$LEAN_SYSROOT\" \"$LEAN_PATH\"",
+            ])
+            .current_dir(&project)
+            .output()
+            .map_err(|error| format!("cannot read the Lean environment via Lake: {error}"))?;
+        if !environment.status.success() {
+            return Err(format!(
+                "Lake did not supply the Lean environment: {}",
+                String::from_utf8_lossy(&environment.stderr)
+            )
+            .into());
+        }
+        let settings = std::str::from_utf8(&environment.stdout)?;
+        let (sysroot, search_path) = settings.split_once('\0').unwrap_or_default();
+        if sysroot.is_empty() || search_path.is_empty() || search_path.contains('\0') {
+            return Err("Lake did not supply a complete Lean environment".into());
+        }
+        let executable = binary.canonicalize()?;
+        let mut child = Command::new(executable)
+            .env("LEAN_SYSROOT", sysroot)
+            .env("LEAN_PATH", search_path)
+            .current_dir(&project)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|error| format!("cannot start Lean via Lake: {error}"))?;
+            .map_err(|error| format!("cannot start the compiled Lean bridge: {error}"))?;
         let input = BufWriter::new(child.stdin.take().expect("piped Lean input"));
         let output = BufReader::new(child.stdout.take().expect("piped Lean output"));
         let mut session = Self {
@@ -185,17 +225,23 @@ impl Lean {
             checker_calls: 0,
         };
         let mut ready = String::new();
-        session.output.read_line(&mut ready)?;
+        session
+            .output
+            .by_ref()
+            .take((include_bytes!("../lean/Bridge.lean").len() * 6 + 1024) as u64)
+            .read_line(&mut ready)?;
+        let identity: BridgeIdentity = serde_json::from_str(&ready)
+            .map_err(|error| format!("invalid compiled Lean bridge identity: {error}"))?;
         let pinned = include_str!("../lean-toolchain").trim();
         let version = pinned
             .rsplit(':')
             .next()
             .unwrap_or(pinned)
             .trim_start_matches('v');
-        if ready.trim_end() != format!("naome-lean {version}") {
+        if identity.version != version || identity.source != include_str!("../lean/Bridge.lean") {
             return Err(format!(
-                "expected Lean {version}; bridge reported {:?}",
-                ready.trim_end()
+                "compiled bridge differs from the pinned Lean {version} source. Run `lake build naome-lean-bridge` in {}",
+                project.display()
             )
             .into());
         }
