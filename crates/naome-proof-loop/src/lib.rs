@@ -8,9 +8,10 @@ mod solver;
 mod value;
 
 pub use archive::{
-    Archive, Artifact, EntryId, KernelArtifact, KernelBundle, KernelImport, Verification,
+    Archive, Artifact, EntryId, KernelArtifact, KernelBundle, KernelImport, PreparedAnswer,
+    Question, Verification,
 };
-pub use solver::{AdaptiveSolver, Outcome, Task};
+pub use solver::{AdaptiveSolver, Outcome, QuestionOutcome, Task};
 pub use value::{ActionValues, Experience, LearningSignal};
 
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,4 @@
+use crate::archive::QuestionType;
 use crate::{Action, Reference, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,11 +67,13 @@ struct Reply {
     symbols: Vec<String>,
     kernel: Value,
     dependencies: Vec<String>,
+    question: Option<QuestionType>,
 }
 
 pub(crate) struct Checked {
     pub axioms: Vec<String>,
     pub symbols: Vec<String>,
+    pub question: Option<QuestionType>,
 }
 
 impl From<Reply> for Checked {
@@ -78,6 +81,7 @@ impl From<Reply> for Checked {
         Self {
             axioms: reply.axioms,
             symbols: reply.symbols,
+            question: reply.question,
         }
     }
 }
@@ -373,6 +377,24 @@ impl Lean {
             .require()?;
         let target = std::mem::take(&mut reply.view.target);
         Ok((reply.into(), target))
+    }
+
+    pub(crate) fn question(
+        &mut self,
+        target: &str,
+        dependencies: &[String],
+        term: Option<&Value>,
+    ) -> Result<QuestionType> {
+        self.request(Request {
+            op: "question",
+            target,
+            dependencies,
+            kernel: term,
+            ..Request::default()
+        })?
+        .require()?
+        .question
+        .ok_or_else(|| "Lean did not return a checked question type".into())
     }
 }
 
