@@ -158,14 +158,14 @@ impl Archive {
              PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS declaration (
                 id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 32),
-                artifact BLOB NOT NULL,
-                symbol_count INTEGER NOT NULL CHECK(symbol_count >= 0)
+                artifact BLOB NOT NULL
              );
              CREATE TABLE IF NOT EXISTS declaration_symbol (
                 symbol TEXT NOT NULL,
                 id BLOB NOT NULL REFERENCES declaration(id) ON DELETE CASCADE,
                 PRIMARY KEY (symbol, id)
-             ) WITHOUT ROWID;",
+             ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS declaration_symbol_by_id ON declaration_symbol(id, symbol);",
         )?;
         Self::connect(connection)
     }
@@ -338,8 +338,8 @@ impl Archive {
         let bytes = serde_json::to_vec(artifact)?;
         let transaction = self.connection.transaction()?;
         let inserted = transaction.execute(
-            "INSERT OR IGNORE INTO declaration(id, artifact, symbol_count) VALUES (?1, ?2, ?3)",
-            params![id.0.as_slice(), &bytes, i64::try_from(symbols.len())?],
+            "INSERT OR IGNORE INTO declaration(id, artifact) VALUES (?1, ?2)",
+            params![id.0.as_slice(), &bytes],
         )?;
         if inserted != 0 {
             let mut insert = transaction
@@ -362,52 +362,73 @@ impl Archive {
         Ok(())
     }
 
-    pub(crate) fn retrieve(&self, mut query: Vec<String>, limit: usize) -> Result<Vec<EntryId>> {
-        query.sort_unstable();
-        query.dedup();
-        let population: i64 =
-            self.connection
-                .query_row("SELECT count(*) FROM declaration", [], |row| row.get(0))?;
-        if population == 0 {
+    pub(crate) fn has_entries(&self) -> Result<bool> {
+        Ok(self
+            .connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM declaration)", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    pub(crate) fn retrieve(&self, query: &[String], limit: usize) -> Result<Vec<EntryId>> {
+        if query.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let mut matches: HashMap<EntryId, (f64, i64, i64)> = HashMap::new();
-        let mut lookup = self.connection.prepare_cached(
-            "SELECT d.id, d.symbol_count
-             FROM declaration_symbol s JOIN declaration d USING(id)
-             WHERE s.symbol = ?1 ORDER BY d.id LIMIT 512",
+        let query = query.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let snapshot = self.connection.unchecked_transaction()?;
+        let population: i64 =
+            snapshot.query_row("SELECT count(*) FROM declaration", [], |row| row.get(0))?;
+        let mut candidates = snapshot.prepare(
+            "SELECT DISTINCT posting.id
+             FROM json_each(?1) query JOIN declaration_symbol posting ON posting.symbol = query.value
+             ORDER BY posting.id",
         )?;
-        let mut frequency = self
-            .connection
-            .prepare_cached("SELECT count(*) FROM declaration_symbol WHERE symbol = ?1")?;
-        for symbol in query {
-            let count: i64 = frequency.query_row([&symbol], |row| row.get(0))?;
-            if count == 0 {
-                continue;
-            }
-            let weight = (1.0 + population as f64 / count as f64).ln();
-            let rows = lookup.query_map([symbol], |row| {
-                Ok((EntryId(row.get(0)?), row.get::<_, i64>(1)?))
-            })?;
-            for row in rows {
-                let (id, symbols) = row?;
-                if symbols < 1 {
-                    return Err(format!("invalid symbol index cardinality for {id}").into());
+        let mut ids = candidates.query([serde_json::to_string(&query)?])?;
+        let mut symbols = snapshot.prepare_cached(
+            "SELECT symbol FROM declaration_symbol WHERE id = ?1 ORDER BY symbol",
+        )?;
+        let mut frequency =
+            snapshot.prepare_cached("SELECT count(*) FROM declaration_symbol WHERE symbol = ?1")?;
+        let mut weights = HashMap::new();
+        let mut ranked = Vec::<(EntryId, f64)>::new();
+        while let Some(row) = ids.next()? {
+            let id = EntryId(row.get(0)?);
+            let mut signature = symbols.query([id.0.as_slice()])?;
+            let mut shared = 0.0;
+            let mut extra = 0.0;
+            while let Some(row) = signature.next()? {
+                let symbol: &str = row.get_ref(0)?.as_str()?;
+                let weight = if let Some(&weight) = weights.get(symbol) {
+                    weight
+                } else {
+                    let occurrences: i64 = frequency.query_row([symbol], |row| row.get(0))?;
+                    if occurrences == 0 {
+                        return Err("missing archive symbol posting".into());
+                    }
+                    let weight = (1.0 + population as f64 / occurrences as f64).ln();
+                    if weights.len() < 4_096 {
+                        weights.insert(symbol.to_owned(), weight);
+                    }
+                    weight
+                };
+                if query.contains(symbol) {
+                    shared += weight;
+                } else {
+                    extra += weight;
                 }
-                let entry = matches.entry(id).or_insert((0.0, 0, symbols));
-                entry.0 += weight;
-                entry.1 += 1;
+            }
+            let score = shared / (1.0 + 0.35 * extra);
+            let index = ranked
+                .binary_search_by(|(previous, value)| {
+                    score.total_cmp(value).then_with(|| previous.cmp(&id))
+                })
+                .unwrap_or_else(|index| index);
+            if index < limit {
+                ranked.insert(index, (id, score));
+                ranked.truncate(limit);
             }
         }
-        let mut ranked = matches
-            .into_iter()
-            .map(|(id, (overlap, count, size))| {
-                let unmatched = size.saturating_sub(count);
-                (id, overlap / (1.0 + 0.35 * unmatched as f64))
-            })
-            .collect::<Vec<_>>();
-        ranked.sort_unstable_by(|(a, x), (b, y)| y.total_cmp(x).then_with(|| a.cmp(b)));
-        Ok(ranked.into_iter().take(limit).map(|(id, _)| id).collect())
+        Ok(ranked.into_iter().map(|(id, _)| id).collect())
     }
 }
 

@@ -377,3 +377,79 @@ fn search_recalls_checked_theorems_from_a_cold_archive() {
     );
     assert_eq!(reopened.replay(receipt.id).unwrap().axioms, receipt.axioms);
 }
+
+#[test]
+fn search_restores_a_relevant_proof_across_a_deep_definition_chain() {
+    let temp = Temp::new("question-retrieval");
+    let path = temp.db();
+    let mut archive = Archive::open(&path).unwrap();
+
+    let mut top = archive
+        .compile(Artifact::Definition {
+            target: "Nat → Nat → Nat".into(),
+            value: "fun a b : Nat => a + b".into(),
+            dependencies: vec![],
+        })
+        .unwrap()
+        .id;
+    for level in 0..70 {
+        top = archive
+            .compile(Artifact::Definition {
+                target: "Nat → Nat → Nat".into(),
+                value: format!(
+                    "fun a b : Nat => let x{level} := {}; x{level} a b",
+                    top.lean_name()
+                ),
+                dependencies: vec![top],
+            })
+            .unwrap()
+            .id;
+    }
+    let name = top.lean_name();
+    let donor_target = format!("∀ a b : Nat, {name} a b = {name} b a");
+    let supplier = archive
+        .compile(Artifact::Definition {
+            target: donor_target.clone(),
+            value: "fun a b => show a + b = b + a from Nat.add_comm a b".into(),
+            dependencies: vec![top],
+        })
+        .unwrap()
+        .id;
+    let mut donor = proof(
+        &donor_target,
+        vec![reference(EXACT, Reference::Archived(supplier))],
+    );
+    let Artifact::Proof { dependencies, .. } = &mut donor else {
+        unreachable!()
+    };
+    dependencies.push(top);
+    let donor = archive.compile(donor).unwrap().id;
+    let unrelated = archive
+        .compile(Artifact::Definition {
+            target: "List Nat".into(),
+            value: "[17, 31]".into(),
+            dependencies: vec![],
+        })
+        .unwrap()
+        .id;
+    drop(archive);
+
+    let mut solver = AdaptiveSolver::new(Archive::open(&path).unwrap());
+    let mut follow_up = task(&format!("∀ a b : Nat, True → {name} b a = {name} a b"));
+    follow_up.dependencies.push(top);
+    let result = solver.prove(follow_up, 11).unwrap();
+    assert!(result.solved);
+    assert!(result.recalled.iter().any(|&(_, id)| id == donor));
+    assert!(result.recalled.iter().all(|&(_, id)| id != unrelated));
+    assert!(result.active_entries < 16);
+    assert!(result.steps.iter().any(|step| {
+        matches!(step.argument, Some(Reference::Archived(id)) if id == donor || id == supplier)
+    }));
+    drop(solver);
+
+    let checked = result.proof.unwrap();
+    let mut fresh = Archive::open_for_replay(&path).unwrap();
+    let replayed = fresh.replay(checked.id).unwrap();
+    assert_eq!(replayed.axioms, checked.axioms);
+    assert!(replayed.checker_calls > 70);
+}

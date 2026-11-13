@@ -140,12 +140,15 @@ impl AdaptiveSolver {
     }
 
     fn recall(&mut self, target: &str, pinned: u64) -> Result<Vec<(u8, EntryId)>> {
+        if !self.archive.has_entries()? {
+            return Ok(Vec::new());
+        }
         let query = self
             .archive
             .lean
             .start_search(target, &[], true)?
             .target_symbols;
-        let best = self.archive.retrieve(query, RECALL_SLOTS)?;
+        let best = self.archive.retrieve(&query, RECALL_SLOTS)?;
         let mut pinned = self
             .catalog
             .iter()
@@ -157,15 +160,19 @@ impl AdaptiveSolver {
                     mask
                 }
             });
-        self.archive.load(&best)?;
         let mut recalled = Vec::new();
         for id in best {
+            if self.catalog.iter().flatten().any(|entry| entry.id == id) {
+                continue;
+            }
             let entry = self.archive.read(id)?;
             if let Some(slot) = self.install(id, entry.target().to_owned(), pinned) {
                 pinned |= 1 << slot;
                 recalled.push((slot, id));
             }
         }
+        let roots = recalled.iter().map(|&(_, id)| id).collect::<Vec<_>>();
+        self.archive.load(&roots)?;
         Ok(recalled)
     }
 
