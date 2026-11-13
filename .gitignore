@@ -16,3 +16,6 @@ __pycache__/
 
 /vendor/burn-dispatch/BUILD.bazel
 /vendor/burn-tensor/BUILD.bazel
+
+# Lean project build and dependency cache
+/crates/naome-proof-loop/.lake/

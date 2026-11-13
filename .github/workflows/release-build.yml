@@ -102,6 +102,9 @@ jobs:
           cargo about generate --manifest-path crates/naome-knowledge/Cargo.toml --target "$RELEASE_TARGET" --no-default-features --locked --fail --config tools/release/about.toml tools/release/licenses.hbs --output-file "$RUNNER_TEMP/third-party-licenses.html"
           git diff --exit-code HEAD
 
+      - name: Install pinned Lean and Mathlib for the extracted proof smoke test
+        run: bash tools/ci/install-lean.sh
+
       - name: Package, extract and smoke-test the final archive
         run: |
           python3 tools/release/release.py package --target "$RELEASE_TARGET" --version "$RELEASE_VERSION" --directory .local/release-package --notices "$RUNNER_TEMP/third-party-licenses.html" --sbom crates/naome-knowledge/release-sbom.json --system-licenses "$RUNNER_TEMP/system-licenses.txt"

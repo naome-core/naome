@@ -70,6 +70,12 @@ jobs:
           bazel test --config=ci //:mr_tests
           --profile="$RUNNER_TEMP/naome-bazel-test.json.gz"
 
+      - name: Install pinned Lean and Mathlib
+        run: bash tools/ci/install-lean.sh
+
+      - name: Test Lean proof search and cold archive replay
+        run: cargo test --locked -p naome-proof-loop --features lean-runtime-tests --test lean_proof_loop
+
       - name: Retain Bazel timing profiles
         if: ${{ always() }}
         continue-on-error: true

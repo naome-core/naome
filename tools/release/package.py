@@ -18,6 +18,13 @@ from installation import instructions
 
 FILES = {"naome", "LICENSE", "THIRD_PARTY_LICENSES.html", "SYSTEM_LICENSES.txt", "INSTALL.txt", "Cargo.lock", "sbom.cdx.json", "build.json"}
 
+PROOF_PROJECT = ROOT / "crates/naome-proof-loop"
+PROOF_PROJECT_FILES = {
+    f"lean-proof/{name}": PROOF_PROJECT / name
+    for name in ("lean-toolchain", "lakefile.toml", "lake-manifest.json", "lean/Bridge.lean")
+}
+FILES.update(PROOF_PROJECT_FILES)
+
 
 def digest(path):
     with path.open("rb") as stream:
@@ -73,7 +80,8 @@ def smoke(binary, version, *, start=False):
         environment = {**os.environ, "NAOME_NODE_DIR": str(node)}
         def run(*arguments):
             return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=60).strip()
-        if run("--version") != f"naome {version}" or "naome start" not in run("--help"):
+        if (run("--version") != f"naome {version}" or "naome start" not in run("--help")
+                or "naome proof prove" not in run("proof", "--help")):
             raise ValueError("packaged executable has incorrect version/help")
         expected = {"running": False, "computation": 0x001f_0001, "artifact_verification": 0x0020_0002, "accepted_artifacts": 0}
         status = json.loads(run("--json", "status"))
@@ -85,6 +93,26 @@ def smoke(binary, version, *, start=False):
                 raise ValueError("packaged product accepts an invalid command or creates state for a stopped node")
         if start:
             lifecycle(run, node)
+
+
+def smoke_proof(binary):
+    # Test the extracted project's bridge and manifest against the prepared
+    # dependencies. They are user-installed and are not part of the archive.
+    project = binary.parent / "lean-proof"
+    cache = project / ".lake"
+    cache.mkdir()
+    (cache / "packages").symlink_to(PROOF_PROJECT / ".lake/packages", target_is_directory=True)
+    environment = dict(os.environ)
+    environment.pop("NAOME_LEAN_PROJECT", None)
+    output = subprocess.check_output(
+        [str(binary), "proof", "prove", "∀ n : Nat, n = n", "37"],
+        env=environment,
+        text=True,
+        timeout=60,
+    )
+    result = json.loads(output)
+    if result.get("solved") is not True or result["proof"]["axioms"]:
+        raise ValueError("extracted proof failed independent Lean checking")
 
 
 def build_package(target, version, output, notices, sbom, system_licenses):
@@ -115,6 +143,7 @@ def build_package(target, version, output, notices, sbom, system_licenses):
              "INSTALL.txt": instructions(version, sha).encode(),
              "THIRD_PARTY_LICENSES.html": notices.read_bytes(), "SYSTEM_LICENSES.txt": system_licenses.read_bytes(),
              "build.json": (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode()}
+    files.update({name: source.read_bytes() for name, source in PROOF_PROJECT_FILES.items()})
     if any(not data for data in files.values()):
         raise ValueError("empty release payload")
     name = f"naome-{version}-{target}"
@@ -138,7 +167,10 @@ def verify_package(path, version, sha, *, execute=False):
         if any(not entry.isfile() or entry.mode != (0o755 if entry.name.endswith("/naome") else 0o644)
                or entry.size > 256 * 1024 * 1024 for entry in entries):
             raise ValueError("archive contains a link, invalid permissions or oversized member")
-        files = {entry.name.rsplit("/", 1)[1]: tar.extractfile(entry).read() for entry in entries}
+        files = {entry.name.split("/", 1)[1]: tar.extractfile(entry).read() for entry in entries}
+    for relative, source in PROOF_PROJECT_FILES.items():
+        if files[relative] != source.read_bytes():
+            raise ValueError(f"Lean project file differs from the reviewed release source: {relative}")
     build = json.loads(files["build.json"])
     if files["INSTALL.txt"] != instructions(version, sha).encode():
         raise ValueError("installation instructions differ from the reviewed release source")
@@ -155,7 +187,12 @@ def verify_package(path, version, sha, *, execute=False):
             binary = Path(directory) / "naome"
             binary.write_bytes(files["naome"])
             binary.chmod(0o755)
+            for relative in PROOF_PROJECT_FILES:
+                destination = Path(directory) / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(files[relative])
             smoke(binary, version, start=True)
+            smoke_proof(binary)
     return build
 
 

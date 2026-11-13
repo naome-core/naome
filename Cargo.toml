@@ -8,6 +8,7 @@ members = [
     "crates/naome-foundation",
     "crates/naome-knowledge",
     "crates/naome-proof",
+    "crates/naome-proof-loop",
     "crates/naome-storage",
 ]
 exclude = ["vendor/burn-dispatch", "vendor/burn-tensor"]

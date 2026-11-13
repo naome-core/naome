@@ -1,0 +1,35 @@
+load("@crates//:crates.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+extract_cargo_lints(
+    name = "cargo_lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "naome_proof_loop",
+    version = "0.1.0-alpha.1",
+    srcs = glob(["src/*.rs"]),
+    compile_data = [
+        "lake-manifest.json",
+        "lakefile.toml",
+        "lean-toolchain",
+        "lean/Bridge.lean",
+        "models/acceptance.json",
+    ],
+    aliases = aliases(),
+    edition = "2024",
+    lint_config = ":cargo_lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit_tests",
+    crate = ":naome_proof_loop",
+    lint_config = ":cargo_lints",
+)

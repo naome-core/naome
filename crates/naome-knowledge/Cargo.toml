@@ -32,6 +32,7 @@ naome-checker = { path = "../naome-checker" }
 naome-foundation = { path = "../naome-foundation" }
 naome-storage = { path = "../naome-storage" }
 naome-proof = { path = "../naome-proof" }
+naome-proof-loop = { path = "../naome-proof-loop" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { workspace = true, features = ["hooks"] }
