@@ -160,12 +160,16 @@ impl Archive {
                 id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 32),
                 artifact BLOB NOT NULL
              );
-             CREATE TABLE IF NOT EXISTS declaration_symbol (
+             CREATE TABLE IF NOT EXISTS declaration_symbols (
+                id BLOB PRIMARY KEY REFERENCES declaration(id) ON DELETE CASCADE,
+                symbols TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS symbol_entry (
                 symbol TEXT NOT NULL,
-                id BLOB NOT NULL REFERENCES declaration(id) ON DELETE CASCADE,
+                id BLOB NOT NULL REFERENCES declaration_symbols(id) ON DELETE CASCADE,
                 PRIMARY KEY (symbol, id)
              ) WITHOUT ROWID;
-             CREATE INDEX IF NOT EXISTS declaration_symbol_by_id ON declaration_symbol(id, symbol);",
+             CREATE INDEX IF NOT EXISTS symbol_entry_id ON symbol_entry(id, symbol);",
         )?;
         Self::connect(connection)
     }
@@ -337,24 +341,28 @@ impl Archive {
         symbols.dedup();
         let bytes = serde_json::to_vec(artifact)?;
         let transaction = self.connection.transaction()?;
-        let inserted = transaction.execute(
+        transaction.execute(
             "INSERT OR IGNORE INTO declaration(id, artifact) VALUES (?1, ?2)",
             params![id.0.as_slice(), &bytes],
         )?;
+        let existing: Vec<u8> = transaction.query_row(
+            "SELECT artifact FROM declaration WHERE id = ?1",
+            [id.0.as_slice()],
+            |row| row.get(0),
+        )?;
+        if existing != bytes {
+            return Err(format!("archive identity conflict for {id}").into());
+        }
+        let signature = serde_json::to_string(&symbols)?;
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO declaration_symbols(id, symbols) VALUES (?1, ?2)",
+            params![id.0.as_slice(), signature],
+        )?;
         if inserted != 0 {
-            let mut insert = transaction
-                .prepare("INSERT INTO declaration_symbol(symbol, id) VALUES (?1, ?2)")?;
+            let mut insert =
+                transaction.prepare("INSERT INTO symbol_entry(symbol, id) VALUES (?1, ?2)")?;
             for symbol in symbols {
                 insert.execute(params![symbol, id.0.as_slice()])?;
-            }
-        } else {
-            let existing: Vec<u8> = transaction.query_row(
-                "SELECT artifact FROM declaration WHERE id = ?1",
-                [id.0.as_slice()],
-                |row| row.get(0),
-            )?;
-            if existing != bytes {
-                return Err(format!("archive identity conflict for {id}").into());
             }
         }
         transaction.commit()?;
@@ -363,11 +371,11 @@ impl Archive {
     }
 
     pub(crate) fn has_entries(&self) -> Result<bool> {
-        Ok(self
-            .connection
-            .query_row("SELECT EXISTS(SELECT 1 FROM declaration)", [], |row| {
-                row.get(0)
-            })?)
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM declaration_symbols)",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     pub(crate) fn retrieve(&self, query: &[String], limit: usize) -> Result<Vec<EntryId>> {
@@ -377,27 +385,28 @@ impl Archive {
         let query = query.iter().map(String::as_str).collect::<BTreeSet<_>>();
         let snapshot = self.connection.unchecked_transaction()?;
         let population: i64 =
-            snapshot.query_row("SELECT count(*) FROM declaration", [], |row| row.get(0))?;
+            snapshot.query_row("SELECT count(*) FROM declaration_symbols", [], |row| {
+                row.get(0)
+            })?;
         let mut candidates = snapshot.prepare(
             "SELECT DISTINCT posting.id
-             FROM json_each(?1) query JOIN declaration_symbol posting ON posting.symbol = query.value
+             FROM json_each(?1) query JOIN symbol_entry posting ON posting.symbol = query.value
              ORDER BY posting.id",
         )?;
         let mut ids = candidates.query([serde_json::to_string(&query)?])?;
-        let mut symbols = snapshot.prepare_cached(
-            "SELECT symbol FROM declaration_symbol WHERE id = ?1 ORDER BY symbol",
-        )?;
+        let mut signatures =
+            snapshot.prepare_cached("SELECT symbols FROM declaration_symbols WHERE id = ?1")?;
         let mut frequency =
-            snapshot.prepare_cached("SELECT count(*) FROM declaration_symbol WHERE symbol = ?1")?;
+            snapshot.prepare_cached("SELECT count(*) FROM symbol_entry WHERE symbol = ?1")?;
         let mut weights = HashMap::new();
         let mut ranked = Vec::<(EntryId, f64)>::new();
         while let Some(row) = ids.next()? {
             let id = EntryId(row.get(0)?);
-            let mut signature = symbols.query([id.0.as_slice()])?;
+            let encoded: String = signatures.query_row([id.0.as_slice()], |row| row.get(0))?;
+            let signature: Vec<String> = serde_json::from_str(&encoded)?;
             let mut shared = 0.0;
             let mut extra = 0.0;
-            while let Some(row) = signature.next()? {
-                let symbol: &str = row.get_ref(0)?.as_str()?;
+            for symbol in &signature {
                 let weight = if let Some(&weight) = weights.get(symbol) {
                     weight
                 } else {
@@ -407,11 +416,11 @@ impl Archive {
                     }
                     let weight = (1.0 + population as f64 / occurrences as f64).ln();
                     if weights.len() < 4_096 {
-                        weights.insert(symbol.to_owned(), weight);
+                        weights.insert(symbol.clone(), weight);
                     }
                     weight
                 };
-                if query.contains(symbol) {
+                if query.contains(symbol.as_str()) {
                     shared += weight;
                 } else {
                     extra += weight;

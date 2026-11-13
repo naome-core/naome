@@ -190,9 +190,7 @@ def checkDeclaration (req : Request) (type value : Expr) (decl : Declaration) :
   return axioms.map Name.toString
 
 def declarationSymbols (type : Expr) (value : Option Expr := none) : Array String :=
-  let sig := signature type
-  sig.conclusionSymbols ++ sig.premiseSymbols.flatten ++
-    (value.map symbols).getD #[]
+  symbols type ++ (value.map symbols).getD #[]
 
 def finish (worker : Worker) (req : Request) : IO (Worker × Reply) := do
   let some frame := worker.frames[req.state]? | throw (IO.userError "unknown proof state")
