@@ -15,7 +15,17 @@ fn information_options_and_commands_are_exact() {
             .lines()
             .filter_map(|line| line.strip_prefix("  naome "))
             .collect::<Vec<_>>();
-        assert_eq!(commands, ["start", "stop", "status", "--help", "--version"]);
+        assert_eq!(
+            commands,
+            [
+                "start",
+                "stop",
+                "status",
+                "proof --help",
+                "--help",
+                "--version"
+            ]
+        );
         assert!(help.contains("--json") && help.contains("adapt automatically"));
     }
     assert!(information(&["--help", "start"].map(OsString::from)).is_none());
