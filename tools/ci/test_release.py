@@ -262,13 +262,15 @@ class PackageTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def payload(self, target):
-        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":2031617,"artifact_verification":2097154,"accepted_artifacts":0}}\';;\n*) exit 1;;\nesac\n'.encode()
+        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"proof --help") echo "naome proof prove";;\n"--json status") echo \'{{"running":false,"computation":2031617,"artifact_verification":2097154,"accepted_artifacts":0}}\';;\n*) exit 1;;\nesac\n'.encode()
         lockfile = (ROOT / "Cargo.lock").read_bytes()
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
                  "binary_sha256": hashlib.sha256(binary).hexdigest(), "cargo_lock_sha256": hashlib.sha256(lockfile).hexdigest()}
         return {name: b"notice" for name in package.FILES} | {"naome": binary, "build.json": json.dumps(build).encode(),
-                "Cargo.lock": lockfile, "INSTALL.txt": package.instructions(VERSION, SHA).encode()}
+                "Cargo.lock": lockfile, "INSTALL.txt": package.instructions(VERSION, SHA).encode()} | {
+            name: source.read_bytes() for name, source in package.PROOF_PROJECT_FILES.items()
+        }
 
     def make_archive(self, target=None, files=None, directory=None):
         target = target or policy.TARGETS[0]
@@ -300,7 +302,7 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(first, second.read_bytes())
         # This unit fixture exercises extraction and metadata routing; both
         # native CI jobs run the lifecycle against the actual compiled node.
-        with patch.object(package, "lifecycle"):
+        with patch.object(package, "lifecycle"), patch.object(package, "smoke_proof"):
             build = package.verify_package(second, VERSION, SHA, execute=True)
         self.assertEqual(build["target"], "x86_64-unknown-linux-musl")
         with tarfile.open(second) as tar:
@@ -311,7 +313,8 @@ class PackageTests(unittest.TestCase):
         for mutation in [lambda files: files.update(naome=b"changed"), lambda files: files.update({"Cargo.lock": b"changed"}),
                          lambda files: files.update({"build.json": files["build.json"].replace(SHA.encode(), b"b" * 40)}),
                          lambda files: files.update({"../escape": b"outside"}),
-                         lambda files: files.update({"INSTALL.txt": b"run before verifying"})]:
+                         lambda files: files.update({"INSTALL.txt": b"run before verifying"}),
+                         lambda files: files.update({"lean-proof/lean/Bridge.lean": b"changed"})]:
             files = self.payload(policy.TARGETS[0])
             mutation(files)
             with tempfile.TemporaryDirectory() as name:
