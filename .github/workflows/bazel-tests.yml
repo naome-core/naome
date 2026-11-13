@@ -70,12 +70,6 @@ jobs:
           bazel test --config=ci //:mr_tests
           --profile="$RUNNER_TEMP/naome-bazel-test.json.gz"
 
-      - name: Install pinned Lean and Mathlib
-        run: bash tools/ci/install-lean.sh
-
-      - name: Test Lean proof search and cold archive replay
-        run: cargo test --locked -p naome-proof-loop --features lean-runtime-tests --test lean_proof_loop
-
       - name: Retain Bazel timing profiles
         if: ${{ always() }}
         continue-on-error: true
@@ -125,3 +119,40 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
           key: ${{ steps.cargo-downloads.outputs.cache-primary-key }}
+
+  lean:
+    name: Lean proof integration
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Lean and Mathlib
+        run: bash tools/ci/install-lean.sh
+
+      - name: Test Lean proof search and cold archive replay
+        run: cargo test --locked -p naome-proof-loop --features lean-runtime-tests --test lean_proof_loop
+
+      - name: Verify tracked sources are unchanged
+        run: git diff --exit-code HEAD
+
+  result:
+    name: Platform checks result
+    if: ${{ always() }}
+    needs: [checks, lean]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require successful Bazel and Lean jobs
+        env:
+          BAZEL_RESULT: ${{ needs.checks.result }}
+          LEAN_RESULT: ${{ needs.lean.result }}
+        run: |
+          if [[ "$BAZEL_RESULT" != success || "$LEAN_RESULT" != success ]]; then
+            echo "Bazel result: $BAZEL_RESULT, Lean result: $LEAN_RESULT"
+            exit 1
+          fi

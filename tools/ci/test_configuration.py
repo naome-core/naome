@@ -232,6 +232,26 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("build:ci --@rules_rust//rust/settings:clippy_flag=-Dwarnings",
                       (ROOT / ".bazelrc").read_text().splitlines())
 
+    def test_platform_requires_both_bazel_and_lean(self):
+        workflow = (ROOT / ".github/workflows/bazel-tests.yml").read_text()
+        checks, lean_and_result = workflow.split("\n  lean:\n", 1)
+        lean, result = lean_and_result.split("\n  result:\n", 1)
+        self.assertNotIn("install-lean.sh", checks)
+        self.assertIn("runs-on: ${{ inputs.runner }}", lean)
+        self.assertIn("bash tools/ci/install-lean.sh", lean)
+        self.assertIn("cargo test --locked -p naome-proof-loop --features lean-runtime-tests --test lean_proof_loop", lean)
+        self.assertIn("if: ${{ always() }}", result)
+        self.assertIn("needs: [checks, lean]", result)
+        self.assertIn("BAZEL_RESULT: ${{ needs.checks.result }}", result)
+        self.assertIn("LEAN_RESULT: ${{ needs.lean.result }}", result)
+        gate = result.split("        run: |\n", 1)[1]
+        for bazel in ("success", "failure", "cancelled", "skipped", ""):
+            for lean in ("success", "failure", "cancelled", "skipped", ""):
+                with self.subTest(bazel=bazel, lean=lean):
+                    checked = subprocess.run(["bash", "-c", gate], capture_output=True,
+                                             env={"BAZEL_RESULT": bazel, "LEAN_RESULT": lean})
+                    self.assertEqual(checked.returncode == 0, bazel == lean == "success")
+
 
 class PinnedToolTests(unittest.TestCase):
     def payload(self, *, link=False):
