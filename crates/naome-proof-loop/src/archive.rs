@@ -9,6 +9,9 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
+mod transfer;
+pub use transfer::{KernelArtifact, KernelBundle, KernelImport};
+
 const LEAN_TOOLCHAIN: &str = include_str!("../lean-toolchain");
 const LEAN_LIBRARIES: &str = include_str!("../lake-manifest.json");
 
@@ -75,12 +78,18 @@ pub enum Artifact {
         #[serde(default)]
         dependencies: Vec<EntryId>,
     },
+    Kernel {
+        target: String,
+        artifact: KernelArtifact,
+    },
 }
 
 impl Artifact {
     pub fn target(&self) -> &str {
         match self {
-            Self::Proof { target, .. } | Self::Definition { target, .. } => target,
+            Self::Proof { target, .. }
+            | Self::Definition { target, .. }
+            | Self::Kernel { target, .. } => target,
         }
     }
 
@@ -89,6 +98,7 @@ impl Artifact {
             Self::Proof { dependencies, .. } | Self::Definition { dependencies, .. } => {
                 dependencies
             }
+            Self::Kernel { artifact, .. } => &artifact.dependencies,
         }
     }
 
@@ -100,6 +110,7 @@ impl Artifact {
                 ..
             } => (dependencies, Some(steps)),
             Self::Definition { dependencies, .. } => (dependencies, None),
+            Self::Kernel { artifact, .. } => return artifact.validate(),
         };
         let mut ids: BTreeSet<_> = dependencies.iter().copied().collect();
         if let Some(steps) = steps {
@@ -123,6 +134,9 @@ impl Artifact {
     }
 
     pub fn id(&self) -> Result<EntryId> {
+        if let Self::Kernel { artifact, .. } = self {
+            return artifact.id();
+        }
         let mut hash = Sha256::new();
         for part in [
             LEAN_TOOLCHAIN.as_bytes(),
@@ -214,6 +228,9 @@ impl Archive {
     }
 
     pub fn compile(&mut self, mut artifact: Artifact) -> Result<Verification> {
+        if matches!(artifact, Artifact::Kernel { .. }) {
+            return Err("use a kernel bundle to import checked kernel terms".into());
+        }
         artifact.normalize()?;
         let id = artifact.id()?;
         if let Some(axioms) = self.verified.get(&id) {
@@ -327,6 +344,14 @@ impl Archive {
             Artifact::Definition { target, value, .. } => {
                 self.lean.define(target, value, &name, &names)
             }
+            Artifact::Kernel { artifact, target } => {
+                let (checked, rendered) =
+                    self.lean.import_kernel(&name, &names, &artifact.terms)?;
+                if &rendered != target {
+                    return Err("archived kernel statement differs from its checked type".into());
+                }
+                Ok(checked)
+            }
         }
     }
 
@@ -335,12 +360,24 @@ impl Archive {
         id: EntryId,
         artifact: &Artifact,
         axioms: &[String],
+        symbols: Vec<String>,
+    ) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        Self::store_checked(&transaction, id, artifact, symbols)?;
+        transaction.commit()?;
+        self.verified.insert(id, axioms.to_vec());
+        Ok(())
+    }
+
+    fn store_checked(
+        transaction: &rusqlite::Transaction<'_>,
+        id: EntryId,
+        artifact: &Artifact,
         mut symbols: Vec<String>,
     ) -> Result<()> {
         symbols.sort_unstable();
         symbols.dedup();
         let bytes = serde_json::to_vec(artifact)?;
-        let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT OR IGNORE INTO declaration(id, artifact) VALUES (?1, ?2)",
             params![id.0.as_slice(), &bytes],
@@ -365,8 +402,6 @@ impl Archive {
                 insert.execute(params![symbol, id.0.as_slice()])?;
             }
         }
-        transaction.commit()?;
-        self.verified.insert(id, axioms.to_vec());
         Ok(())
     }
 
