@@ -3,6 +3,11 @@ use crate::learning::tests::{MemoryStore, binary_program, own_example};
 
 #[test]
 fn diagnostics_use_checked_local_training_sources_and_neutralize_seed_copies() {
+    if !crate::learning::tests::isolated(
+        "learning::finder::tests::diagnostics_use_checked_local_training_sources_and_neutralize_seed_copies",
+    ) {
+        return;
+    }
     let mut state = State::fresh();
     state.accept(own_example()).unwrap();
     let mut engine = Engine::default();

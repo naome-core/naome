@@ -872,6 +872,11 @@ fn an_exhausted_pair_releases_the_next_complete_alternative() {
 
 #[test]
 fn a_known_local_cut_is_checked_inline_under_the_original_search_budget() {
+    if !crate::learning::tests::isolated(
+        "learning::tests::native_prerequisite::a_known_local_cut_is_checked_inline_under_the_original_search_budget",
+    ) {
+        return;
+    }
     use naome_checker::{
         ArtifactState,
         question::{

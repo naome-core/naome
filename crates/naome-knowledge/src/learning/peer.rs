@@ -611,6 +611,11 @@ mod tests {
     }
     #[test]
     fn admitted_definition_references_keep_exact_native_identity_during_peer_replay() {
+        if !crate::learning::tests::isolated(
+            "learning::peer::tests::admitted_definition_references_keep_exact_native_identity_during_peer_replay",
+        ) {
+            return;
+        }
         let solution = super::super::tests::own_solution();
         let question = super::super::tests::own_question();
         let q = naome_checker::question::ResearchQuestion::from_hex(&question).unwrap();

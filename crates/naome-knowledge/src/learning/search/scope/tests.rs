@@ -61,6 +61,9 @@ fn isolated(name: &str) -> bool {
 
 #[test]
 fn a_wide_transport_scope_pays_for_each_actual_step_and_replays_its_choice() {
+    if !isolated("a_wide_transport_scope_pays_for_each_actual_step_and_replays_its_choice") {
+        return;
+    }
     let question = transport();
     assert!(solve(&question, 1).is_none());
     let result = solve(&question, 2).expect("two supported scoped instantiations");
@@ -148,6 +151,9 @@ fn a_free_variable_does_not_hide_a_later_scoped_witness() {
 
 #[test]
 fn a_valid_peer_deduction_can_include_an_action_the_local_policy_omits() {
+    if !isolated("a_valid_peer_deduction_can_include_an_action_the_local_policy_omits") {
+        return;
+    }
     let question = transport();
     let target = question.proved_target();
     let scope = Scope::open(target).unwrap().unwrap();
@@ -207,6 +213,9 @@ fn a_valid_peer_deduction_can_include_an_action_the_local_policy_omits() {
 
 #[test]
 fn a_checked_prefix_unlocks_transport_beyond_one_scope() {
+    if !isolated("a_checked_prefix_unlocks_transport_beyond_one_scope") {
+        return;
+    }
     use crate::learning::{Prerequisites, solve_with_report};
     let element = FreeVariable::new(30);
     let binder = FreeVariable::new(31);

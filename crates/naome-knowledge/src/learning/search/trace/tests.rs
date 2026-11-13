@@ -219,6 +219,11 @@ impl Ranker for Distracted {
 
 #[test]
 fn a_budgeted_detour_recovers_a_checked_decision_for_replay() {
+    if !crate::learning::tests::isolated(
+        "learning::search::trace::tests::a_budgeted_detour_recovers_a_checked_decision_for_replay",
+    ) {
+        return;
+    }
     use native::experience::{ExperienceSummary, Observation, TraceBinding};
     let variables = (0..7).map(FreeVariable::new).collect::<Vec<_>>();
     let [a, _, c, d, e, f, g] = variables.as_slice() else {
