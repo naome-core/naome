@@ -226,13 +226,13 @@ impl ContextView for ArtifactState {
         id: StatementId,
         maximum: usize,
     ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
-        let Some((_, _, length)) = self.known_statement(id) else {
+        let Some((_, formula, length)) = self.known_statement(id) else {
             return Ok(None);
         };
         if length > maximum {
             return Err(ContextError::Limit);
         }
-        Ok(self.resolve_statement(id).map(Cow::Borrowed))
+        Ok(Some(Cow::Borrowed(formula)))
     }
     fn bucket(
         &self,

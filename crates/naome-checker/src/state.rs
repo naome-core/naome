@@ -310,12 +310,6 @@ impl ArtifactState {
         let witness = *self.question_index.witness(statement_id)?;
         Some((witness, &stored.conclusion, stored.canonical_length))
     }
-
-    pub(crate) fn resolve_statement(&self, statement_id: StatementId) -> Option<&Formula> {
-        self.statements
-            .get(&statement_id)
-            .map(|statement| &statement.conclusion)
-    }
 }
 
 impl registration::RegistrationView for ArtifactState {
