@@ -38,7 +38,7 @@ Prove-question searches for a proof and indexes the checked portable answer.
 
 Lean uses the pinned project files and Mathlib revisions shipped with NAOME.
 Set NAOME_LEAN_PROJECT to select an alternate copy of the pinned project.
-Run lake exe cache get in the project to prepare the imported Mathlib modules.
+Run lake exe cache get and lake build naome-lean-bridge in the project.
 NAOME_LEAN_LAKE optionally selects a Lake executable. The default is lake on PATH.
 
 A proof artifact has kind=proof, target, and steps. The fixed action IDs are

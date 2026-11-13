@@ -36,6 +36,7 @@ fi
   cd "$project"
   "$lake" exe cache get Mathlib.SetTheory.ZFC.Basic Mathlib.Data.List.Basic \
     Mathlib.Data.Option.Basic Mathlib.Data.Set.Basic Mathlib.Data.Nat.Basic
+  "$lake" build naome-lean-bridge
 )
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf 'NAOME_LEAN_LAKE=%s\n' "$lake" >> "$GITHUB_ENV"
