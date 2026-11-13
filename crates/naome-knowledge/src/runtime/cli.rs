@@ -13,7 +13,7 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
         }
         [option] if option == "--help" || option == "-h" => Some(
             "NAOME checked-knowledge node\n\n\
-             Usage:\n  naome start\n  naome stop\n  naome status\n  naome --help\n  naome --version\n\n\
+             Usage:\n  naome start\n  naome stop\n  naome status\n  naome proof --help\n  naome --help\n  naome --version\n\n\
              Place --json before a command for machine output.\n\
              \nData and configuration:\n\
              NAOME_NODE_DIR selects an isolated node directory. The default is\n\

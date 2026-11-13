@@ -1,0 +1,31 @@
+[package]
+name = "naome-proof-loop"
+version.workspace = true
+edition.workspace = true
+description = "Lean-checked proof search and reusable mathematical knowledge."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autobins = false
+
+[features]
+lean-runtime-tests = []
+
+[[bin]]
+name = "branch-study"
+path = "src/bin/branch-study.rs"
+required-features = ["lean-runtime-tests"]
+
+[[test]]
+name = "lean_proof_loop"
+path = "tests/lean_proof_loop.rs"
+required-features = ["lean-runtime-tests"]
+
+[dependencies]
+rusqlite.workspace = true
+sha2.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

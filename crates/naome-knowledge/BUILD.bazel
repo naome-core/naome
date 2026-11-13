@@ -80,6 +80,7 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [
         ":naome_knowledge",
+        "//crates/naome-proof-loop:naome_proof_loop",
         "//crates/naome-checker:naome_checker",
         "//crates/naome-foundation:naome_foundation",
         "//crates/naome-storage:naome_storage",

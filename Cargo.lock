@@ -5392,6 +5392,7 @@ dependencies = [
  "naome-checker",
  "naome-foundation",
  "naome-proof",
+ "naome-proof-loop",
  "naome-storage",
  "nix",
  "rusqlite",
@@ -5409,6 +5410,16 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "naome-foundation",
  "serde",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "naome-proof-loop"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
  "sha2 0.11.1",
 ]
 

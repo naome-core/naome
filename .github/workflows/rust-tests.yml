@@ -89,6 +89,9 @@ jobs:
           echo "NAOME_MDNS_CI_ROOT=$NAOME_CI_MDNS_ROOT" >> "$GITHUB_ENV"
           echo "NAOME_MDNS_CI_PYTHON=$NAOME_CI_PYTHON" >> "$GITHUB_ENV"
 
+      - name: Install pinned Lean and Mathlib
+        run: bash tools/ci/install-lean.sh
+
       - name: Run all tests
         run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-fail-fast -- --nocapture
 
