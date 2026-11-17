@@ -15,14 +15,25 @@ pub use question::Question;
 pub(crate) use question::QuestionType;
 pub use transfer::{KernelArtifact, KernelBundle, KernelImport, PreparedAnswer};
 
-const LEAN_TOOLCHAIN: &str = include_str!("../lean-toolchain");
-const LEAN_LIBRARIES: &str = include_str!("../lake-manifest.json");
-
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct EntryId([u8; 32]);
 
 impl EntryId {
+    fn from_content(domain: &[u8], bytes: &[u8]) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(domain);
+        for part in [
+            include_bytes!("../lean-toolchain").as_slice(),
+            include_bytes!("../lake-manifest.json").as_slice(),
+            bytes,
+        ] {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part);
+        }
+        Self(hash.finalize().into())
+    }
+
     pub fn lean_name(self) -> String {
         format!("NaomeArchive.e_{self}")
     }
@@ -140,16 +151,7 @@ impl Artifact {
         if let Self::Kernel { artifact, .. } = self {
             return artifact.id();
         }
-        let mut hash = Sha256::new();
-        for part in [
-            LEAN_TOOLCHAIN.as_bytes(),
-            LEAN_LIBRARIES.as_bytes(),
-            &serde_json::to_vec(self)?,
-        ] {
-            hash.update((part.len() as u64).to_le_bytes());
-            hash.update(part);
-        }
-        Ok(EntryId(hash.finalize().into()))
+        Ok(EntryId::from_content(b"", &serde_json::to_vec(self)?))
     }
 }
 

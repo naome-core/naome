@@ -1,8 +1,7 @@
-use super::{Archive, Artifact, EntryId, LEAN_LIBRARIES, LEAN_TOOLCHAIN, names};
+use super::{Archive, Artifact, EntryId, names};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 /// A Lean question with exact portable dependencies.
 ///
@@ -51,18 +50,10 @@ impl Question {
 
     /// Content address under the pinned Lean and Mathlib environment.
     pub fn id(&self) -> Result<EntryId> {
-        let bytes = self.to_bytes()?;
-        let mut hash = Sha256::new();
-        hash.update(b"naome:lean-question\0");
-        for part in [
-            LEAN_TOOLCHAIN.as_bytes(),
-            LEAN_LIBRARIES.as_bytes(),
-            bytes.as_slice(),
-        ] {
-            hash.update((part.len() as u64).to_le_bytes());
-            hash.update(part);
-        }
-        Ok(EntryId(hash.finalize().into()))
+        Ok(EntryId::from_content(
+            b"naome:lean-question\0",
+            &self.to_bytes()?,
+        ))
     }
 
     pub fn dependencies(&self) -> &[EntryId] {

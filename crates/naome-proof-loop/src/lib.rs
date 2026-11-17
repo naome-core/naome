@@ -63,6 +63,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn content_addresses_match_the_pinned_lean_environment() {
+        let proof: Artifact = serde_json::from_str(
+            r#"{"kind":"proof","target":"True","steps":[{"id":1,"argument":{"declaration":"True.intro"}}],"dependencies":[]}"#,
+        )
+        .unwrap();
+        let kernel: KernelArtifact = serde_json::from_value(serde_json::json!({
+            "dependencies": [],
+            "terms": {
+                "isProof": true,
+                "levelParameters": [],
+                "type": {"constant": {"name": {"parts": [{"text": {"value": "True"}}]}, "levels": []}},
+                "value": {"constant": {"name": {"parts": [
+                    {"text": {"value": "True"}}, {"text": {"value": "intro"}}
+                ]}, "levels": []}}
+            }
+        }))
+        .unwrap();
+        let question = Question::from_bytes(
+            br#"{"dependencies":[],"term":{"constant":{"levels":[],"name":{"parts":[{"text":{"value":"True"}}]}}}}"#,
+        )
+        .unwrap();
+
+        for (id, expected) in [
+            (
+                proof.id().unwrap(),
+                "046e20777076a4047575ae45c2cc8a0086c6bb1d68a64a513fe89d6ddc761de5",
+            ),
+            (
+                kernel.id().unwrap(),
+                "3377075d1e1dedb5d0fde4422ec6a3205e7c57c4fbcd55630d243119bed359f3",
+            ),
+            (
+                question.id().unwrap(),
+                "14cfa375dcb740286a209d24b084dbf69dd4b52882e4d5342cb8cbdf6f45a7be",
+            ),
+        ] {
+            assert_eq!(id.to_string(), expected);
+        }
+    }
+
+    #[test]
     fn an_archive_artifact_binds_references_to_durable_ids() {
         let prior = "37".repeat(32).parse::<EntryId>().unwrap();
         let make = |reference| Artifact::Proof {

@@ -1,10 +1,9 @@
-use super::{Archive, Artifact, EntryId, LEAN_LIBRARIES, LEAN_TOOLCHAIN, Question};
+use super::{Archive, Artifact, EntryId, Question};
 use crate::Result;
 use crate::lean::Lean;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 const MAX_ARTIFACT_BYTES: usize = 65_536;
@@ -28,17 +27,10 @@ impl KernelArtifact {
         if bytes.len() > MAX_ARTIFACT_BYTES {
             return Err("kernel artifact byte limit exceeded".into());
         }
-        let mut hash = Sha256::new();
-        hash.update(b"naome:lean-kernel-artifact\0");
-        for part in [
-            LEAN_TOOLCHAIN.as_bytes(),
-            LEAN_LIBRARIES.as_bytes(),
-            bytes.as_slice(),
-        ] {
-            hash.update((part.len() as u64).to_le_bytes());
-            hash.update(part);
-        }
-        Ok((EntryId(hash.finalize().into()), bytes.len()))
+        Ok((
+            EntryId::from_content(b"naome:lean-kernel-artifact\0", &bytes),
+            bytes.len(),
+        ))
     }
 
     pub(super) fn validate(&self) -> Result<()> {
