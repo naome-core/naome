@@ -1,0 +1,46 @@
+REP research profile 1
+A body is a byte string containing the compact UTF-8 JSON array [subject,scope,fields].
+Subject and scope are nonempty strings. Fields is a string-keyed object. Object keys
+are ordered by UTF-8 byte order. The reference writer is serde_json without pretty
+printing or preserve_order. Scientific integer comparisons use exact integer fields.
+Structured content addresses occur exclusively in envelope references and input
+edges. Field strings, even digest-shaped strings, are literals. An original
+inventory or signed statement is referenced as immutable evidence.
+Each ordered edge is [1,reference,[role,qualifier]] with nonempty text role and text
+qualifier. Exact duplicate edges and ambiguous singleton roles are invalid.
+Kinds 1 through 23 respectively identify profile, question, plan, occurrence,
+derivation, claim, argument, assessment, notice, decision, attestation, mapping,
+label, manifest, model, calibration, guarantee, projection, policy, authority,
+closure, selection and descriptor. All critical extensions are unknown in version 1.
+Access is a blob containing a version 1 JSON descriptor with an array of permitted
+purposes. An absent, invalid or unknown access descriptor grants no purpose.
+The local archive operator is the custody and admission boundary. Read and train
+are distinct purposes. Access to a record grants no inherited access to its inputs.
+
+
+Verification vocabulary
+The source-bound original_query and original_transcript of an assessment are frozen
+audit literals. They describe the creation of the source assessment. Native graph
+navigation uses the claim, argument, policy, snapshot, dependency, visible-notice,
+required-notice, previous-receipt and mapping edges. A signed-original edge always
+retains the original identifier. A translation never issues a second signature.
+Authority and snapshot changes create new records. Literal historical identifiers
+are never silently rebound to a translated object. Source bytes remain addressable.
+
+A query pins one local policy and the inventory it searches. Budget counts inventory
+entries, byte_limit counts native record bytes considered for decoding. The default
+byte_limit is 67108864. The decoder admits at most 16777216 bytes per object,
+500000 logical terms and 48 nested levels below the root. An unfinished required
+check is unknown. These are local operational ceilings. Recipients may choose a
+different budget and must bind it to the resulting assessment. The full graph and
+the decoded scientific implementations are supplied in the versioned Rust release.
+Scientific profiles and keys outside this release require explicit admission.
+
+The native scientific predicates include strict integer above, inclusive within,
+score-above and score-within. The last two query the registered hull rule alone.
+Signed-tests evaluates a policy-named warrant. Required tests need pass or an
+explicit not_applicable outcome with a passing named exemption; a scientific
+test must pass. Positive and negative admitted warrants determine the standing.
+Available statuses are pass, fail, unknown and not_applicable. Scientific standing
+is supported, refuted, unresolved or contested. Admission of an archive, evaluator
+or signing key is a local decision. Test signing seeds in the fixture are public.

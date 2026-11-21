@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/naome-network", "vendor/libp2p-tcp"]
+default-members = [".", "crates/naome-network"]
+resolver = "3"
+
+[patch.crates-io]
+libp2p-tcp = { path = "vendor/libp2p-tcp" }
+
+[package]
+name = "naome-protocol"
+default-run = "rep"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/naome-core/naome"
+description = "An offline, content-addressed research evidence archive and evaluator"
+readme = "README.md"
+include = ["src/**", "tests/**", "kits/**", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "research-evidence-protocol.tex", "research-evidence-protocol.pdf"]
+
+[[bin]]
+name = "rep"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = "2"
+getrandom = "0.3"
+hex = "0.4"
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+tempfile = "3"

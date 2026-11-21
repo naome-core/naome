@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  merge_group:
+    types:
+      - checks_requested
+    branches:
+      - main
+  pull_request:
+  push:
+    branches:
+      - main
+      - task/empty-repository
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.run_id || '' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Rust quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component list --installed
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Validate workflow syntax and expressions
+        run: python3 tools/ci/check_workflows.py
+
+      - name: Audit locked dependencies
+        run: python3 tools/ci/audit_dependencies.py
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --all-features --locked
+
+  linux:
+    name: Rust platform (Linux x86_64)
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: ubuntu-24.04
+      profile: test
+
+  macos:
+    name: Rust platform (macOS ARM64)
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: macos-15
+      profile: test
+
+  required:
+    name: Rust CI
+    if: ${{ always() }}
+    needs: [quality, linux, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out gate implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify required jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_results.py quality linux macos
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
