@@ -3,6 +3,7 @@ use crate::{identity, initialize, node, read_bounded};
 use anyhow::{Context, Result, bail, ensure};
 use naome_protocol::{store::Archive, wire::Id};
 use serde::{Deserialize, Serialize};
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions, TryLockError},
@@ -115,10 +116,21 @@ fn owned() -> Result<bool> {
 }
 
 fn request(socket: &str, timeout: Duration) -> Result<Status> {
-    let stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(timeout))?;
+    // Darwin rejects SO_RCVTIMEO after the peer has closed its end, even
+    // while its complete reply is still buffered. Configure before connecting.
+    let client = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    client
+        .set_read_timeout(Some(timeout))
+        .context("set node reply timeout")?;
+    client
+        .connect(&SockAddr::unix(socket)?)
+        .with_context(|| format!("connect {socket}"))?;
+    let stream = UnixStream::from(client);
     let mut bytes = Vec::new();
-    stream.take(32 * 1024 + 1).read_to_end(&mut bytes)?;
+    stream
+        .take(32 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .context("read node reply")?;
     ensure!(bytes.len() <= 32 * 1024, "oversized node status");
     Ok(serde_json::from_slice(&bytes)?)
 }
