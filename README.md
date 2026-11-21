@@ -1,6 +1,6 @@
 # Research Evidence Protocol
 
-The `naome-protocol` Rust crate and its `rep` CLI preserve scientific evidence, inspect the warrant for a claim, and revisit it after a correction. The separate `naome-network` crate supplies the `rep-node` binary for replication among configured peers. Release 0.1.0 implements the bootstrap formats and a local research profile for [A Research Evidence Protocol for Autonomous Science](research-evidence-protocol.pdf). The [editable paper](research-evidence-protocol.tex) describes the wider protocol and its independent validation criteria.
+Use `naome` to run a node and `naome archive` to store, examine and publish research evidence. The `naome-protocol` crate owns the archive and evaluator. The `naome-network` crate provides the operator CLI and replicates released inventories among configured peers. Release 0.1.0 implements the bootstrap formats and a local research profile for [A Research Evidence Protocol for Autonomous Science](research-evidence-protocol.pdf). The [editable paper](research-evidence-protocol.tex) describes the wider protocol and its independent validation criteria.
 
 ## Try the calibration case
 
@@ -8,10 +8,10 @@ Install Rust and a C compiler for bundled SQLite. Build from the locked dependen
 
 ```sh
 cargo build --locked --release
-rep=./target/release/rep
-"$rep" trial /tmp/rep-trial > /tmp/rep-trial-summary.json
-"$rep" suite /tmp/rep-trial/conformance > /tmp/rep-trial-submission.json
-"$rep" grade /tmp/rep-trial/conformance/answers.json /tmp/rep-trial-submission.json
+naome=./target/release/naome
+"$naome" archive trial /tmp/rep-trial > /tmp/rep-trial-summary.json
+"$naome" archive suite /tmp/rep-trial/conformance > /tmp/rep-trial-submission.json
+"$naome" archive grade /tmp/rep-trial/conformance/answers.json /tmp/rep-trial-submission.json
 ```
 
 The trial creates two SQLite archives, a separate disclosure archive, six portable exchange files, 24 queries and a separate answer key. Each query names a claim, its arguments, a policy and a resource budget. The suite opens a fresh database for each packet. The reference fixture includes public synthetic laboratory credentials. A new installation establishes its own trust roots.
@@ -23,11 +23,13 @@ The trial creates two SQLite archives, a separate disclosure archive, six portab
 | Accepted 80 µm and 10 µm alternatives | Fail under one, pass under the other | Both contested |
 | Certified corrected hull alone | Both fail | Both unresolved |
 
-The summary identifies the original and migrated records, dated inventories, corrected receipts, both notices and learning dependencies. To inspect a receipt directly, use `rep --db /tmp/rep-trial/west.sqlite show HEAD ID` with an inventory containing that receipt. `rep --help` lists the available commands. Global `--format a` and `--format b` select the native output encoding.
+The summary identifies the original and migrated records, dated inventories, corrected receipts, both notices and learning dependencies. To inspect a receipt directly, use `rep --db /tmp/rep-trial/west.sqlite show HEAD ID` with an inventory containing that receipt. The standalone `rep --db FILE` interface remains available for existing databases and scripts. `naome archive --help` lists the archive operations. Choose a native output encoding with `naome archive --format a` or `--format b`.
 
 ## Replicate a released inventory
 
-Build both binaries with `cargo build --workspace --locked`. Run `rep-node --directory A init` once for each custodian. This creates its private transport key and `archive.sqlite` and prints the stable peer ID. Supply a JSON configuration with the local listen address and each counterparty's independently obtained peer ID and TCP address. For example, A's configuration for a connection to B has this shape.
+Build with `cargo build --workspace --locked --release`. Install the operator command on macOS or Linux with `cargo install --path crates/naome-network --locked`. All commands select the same node directory with `--directory DIR`, then `NAOME_NODE_DIR`, then `$XDG_DATA_HOME/naome-rep` or `$HOME/.local/share/naome-rep`. The REP default has its own directory alongside historical NAOME installations.
+
+`naome start` initializes a new node with a persistent Ed25519 key, an archive and a loopback listener on an automatically assigned port. To configure peers first, run `naome --directory A archive init` for each custodian. Its JSON output includes the stable `peer_id`. Edit the generated `A/node.json` with the listen address and each counterparty's independently obtained ID and TCP address. Existing REP node directories already contain the key and archive. Place their peer configuration at `node.json`. For example, A can use this configuration for a connection to B.
 
 ```json
 {
@@ -38,7 +40,22 @@ Build both binaries with `cargo build --workspace --locked`. Run `rep-node --dir
 }
 ```
 
-Run `rep-node --directory A run A/node.json`. Use `rep --db A/archive.sqlite` for ordinary deposit, import, assessment and snapshot operations. Release a selected inventory using `rep-node --directory A publish HEAD`. Publication authorises all members of this configured custody group, including downstream mirrors, to see the membership and receive every readable member under its existing access descriptor. Use a separate disclosure inventory for a narrower audience. A complete mirror serves the same head when the publisher is offline. `rep-node --directory B heads` lists complete releases on B.
+Start the configured node and use its archive from another command or terminal.
+
+```sh
+export NAOME_NODE_DIR="$PWD/A"
+naome start --json
+naome status --json
+naome archive import bundle.json
+naome archive search HEAD --subject bar-7
+naome archive publish HEAD
+naome archive heads
+naome stop --json
+```
+
+`start` returns the background process ID and the bound listen addresses when the listener is ready. `status` queries the running process over a private local socket. It reports configured and connected peers, complete local releases, pending requests, queued heads and the active transfer. The replication state `caught_up` means every configured peer is connected, has supplied a catalog during this connection and every head in those last catalogs is locally accounted for. An observed, locally withdrawn head stays accounted for. `available_heads` lists the releases the node can currently serve. A node with no configured peers reports `standalone`. `stop` drains the local reviewer, closes the listener and waits for the node to release its directory. Repeated starts and stops are idempotent. The node writes replication events to `events.jsonl` and diagnostics to `node.log`.
+
+Publication authorises every member of the configured custody group, including downstream mirrors, to see the membership and receive each readable member under its existing access descriptor. Use a separate disclosure inventory for a narrower audience. A complete mirror serves the same head when the publisher is offline.
 
 Peers use signed GossipSub on `naome-rep-releases-v2` to announce a head. Connected peers reconcile their release catalogs on connection and every four seconds. A receiver fetches the manifest by its hash and requests each object by head and content ID on `/naome/rep/archive/2`. Upgrade the configured peers together to exchange on version 2. An upgraded node can serve an existing version 1 archive directly.
 
@@ -46,7 +63,7 @@ Responses have a four-byte big-endian length followed by a one-byte tag. Tags 0 
 
 The receiver verifies the requested content identity and canonical record bytes. For a record the access reference comes from the hashed envelope. For a blob the payload ID covers the bytes and the authenticated custodian supplies the separate access reference. The receiver requires the descriptor in the inventory, verifies its bytes and read permission, and rejects conflicts with existing local custody metadata. For a first-seen blob the reference has the authority of the sending custodian. Noise authenticates the channel, while the blob hash authenticates the payload. A single SQLite transaction admits the full release after these checks and cryptographic verification of research-profile attestations. A local withdrawal removes affected heads from the serving catalog and keeps their historical membership for review. An interrupted transfer restarts from its manifest.
 
-A node's optional `review` configuration is a local current-standing training request in the same JSON form as `rep train`. It pins the recipient's policy, baseline label inventory, feature cutoff and examples. On startup and on a changed catalog, the evaluator considers the union of the baseline and all previously admitted release memberships. A local review record links the evaluated horizon, extraction manifest and withheld labels with their reasons. The node emits their IDs in its JSON log. Historical assessments stay addressable. The operator controls publication of any locally derived review.
+A node's optional `review` configuration is a local current-standing training request in the same JSON form as `naome archive train`. It pins the recipient's policy, baseline label inventory, feature cutoff and examples. On startup and on a changed catalog, the evaluator considers the union of the baseline and all previously admitted release memberships. A local review record links the evaluated horizon, extraction manifest and withheld labels with their reasons. The node emits their IDs in its JSON log. Historical assessments stay addressable. The operator controls publication of any locally derived review.
 
 The transport retains the static-peer path from NAOME commit `9c368e6a`, including Ed25519 peer identity, Noise over TCP, Yamux, signed gossip, bounded request/response, peer allowlisting, redial and rate accounting. The vendored TCP crate includes the macOS occupied-port-reuse fix and its regression test. The REP network uses direct IP/TCP for configured peers. Public discovery, multicast, circuit relays, hole punching and the proof/work-offer protocols have no role in this configuration. B is an archive mirror with its own stored copy.
 
@@ -81,8 +98,8 @@ mkdir -p /tmp/rep-example
 cat > /tmp/rep-example/question.json <<'JSON'
 {"kind":"question","subject":"bar-7","scope":"transition-1","fields":{"purpose":"measure axial displacement","target":"change between the two registered windows"},"inputs":[]}
 JSON
-"$rep" --db /tmp/rep-example/archive.sqlite put /tmp/rep-example/question.json
-"$rep" --db /tmp/rep-example/archive.sqlite snapshot laboratory
+"$naome" --directory /tmp/rep-example archive put /tmp/rep-example/question.json
+"$naome" --directory /tmp/rep-example archive snapshot laboratory
 ```
 
 Use the printed inventory identifier as `HEAD`. Use the first identifier as `ID`. The commands print structured JSON. Scientific refutation and an inconclusive assessment are successful query executions.
@@ -101,9 +118,9 @@ Use the printed inventory identifier as `HEAD`. Use the first identifier as `ID`
 
 ## Training requests
 
-`rep train request.json` uses a recipient-admitted `policy` ID, a `feature_cutoff` inventory and a `label_head` inventory. Examples contain ordered `features`, a `label` ID and a `partition` name. The manifest always groups by claim identity. Supply relevant dependency roles in `independent_roles`, such as `patient`, `specimen` or `manuscript`. The extractor rejects crossings along those roles and exact repeated examples. Verified format mappings can be listed in `mappings`.
+`naome archive train request.json` uses a recipient-admitted `policy` ID, a `feature_cutoff` inventory and a `label_head` inventory. Examples contain ordered `features`, a `label` ID and a `partition` name. The manifest always groups by claim identity. Supply relevant dependency roles in `independent_roles`, such as `patient`, `specimen` or `manuscript`. The extractor rejects crossings along those roles and exact repeated examples. Verified format mappings can be listed in `mappings`.
 
-- **Provenance.** An argument declares an `origin`. A detached `data-origin` attestation identifies the authorised classifier. `rep label HEAD RECEIPT ORIGIN` checks the requested origin and binds the admitted signatures. The extractor checks them again under the requested policy. For prospective use, set `forecast_plan`. Each argument then requires a signed `release` occurrence that pins the same plan and feature inventory and attests to concealment. The `reading`, `outcome` and `outcome-input` roles mark known outcomes for the cutoff check.
+- **Provenance.** An argument declares an `origin`. A detached `data-origin` attestation identifies the authorised classifier. `naome archive label HEAD RECEIPT ORIGIN` checks the requested origin and binds the admitted signatures. The extractor checks them again under the requested policy. For prospective use, set `forecast_plan`. Each argument then requires a signed `release` occurrence that pins the same plan and feature inventory and attests to concealment. The `reading`, `outcome` and `outcome-input` roles mark known outcomes for the cutoff check.
 - **Labels after corrections.** The default `standing: "current"` checks the pinned query against the requested label head and withholds an affected label until reassessment. Set `standing: "historical"` for an as-of extraction. A historical manifest still requires currently valid use permission.
 - **Project grants.** An access descriptor can include `"training": {"project": "methods-study", "not_before": 0, "expires": 1900000000}` alongside `"purposes": ["read", "train"]`. Enter that project as `project` in the request. Times are Unix seconds with exclusive expiry. Plain `export --purpose train` applies access filters and omits scoped data. Use the extraction manifest to select eligible examples. The local operator is responsible for supplying the authorised project.
 - **Typed targets.** For a `training-target` claim, use the `typed-outcome` argument and link the signed occurrence through `outcome`. The occurrence and claim share a `target-profile` link to a `profile` record with scope `training-target-1`. The occurrence provides a structured `target`. The `outcome` signing role attests to it. Use `binary: false` to keep exact quantities, interpreted intervals, right-censored endpoints, referenced text variants or explicit missing values. The typed fixture in `tests/conformance.rs` gives complete records for the three disciplines and their exchange.
@@ -120,7 +137,7 @@ A full query scans the specified notice inventory and reports exhaustion or unav
 
 ## Bootstrap and verification
 
-The repository ships the canonical [format A kit](kits/A.json), [format B kit](kits/B.json) and [research profile](kits/research-profile.txt). Each kit includes grammar, decoding rules, resource registry and six cases covering canonical representation, identity, rejection, missing interpretation and exhaustion. A receiver can compare a package with its previously obtained digest using `rep kit FILE SHA256`. `capabilities` identifies the built-in versions and their digests.
+The repository ships the canonical [format A kit](kits/A.json), [format B kit](kits/B.json) and [research profile](kits/research-profile.txt). Each kit includes grammar, decoding rules, resource registry and six cases covering canonical representation, identity, rejection, missing interpretation and exhaustion. A receiver can compare a package with its previously obtained digest using `naome archive kit FILE SHA256`. `capabilities` identifies the built-in versions and their digests.
 
 ```sh
 cargo fmt --all --check

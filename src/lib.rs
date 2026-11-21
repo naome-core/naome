@@ -1,4 +1,5 @@
 //! A local archive, evaluator and exchange implementation of the research evidence protocol.
+pub mod cli;
 pub mod evaluation;
 pub mod executor;
 pub mod fixture;

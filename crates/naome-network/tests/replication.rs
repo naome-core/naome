@@ -9,14 +9,14 @@ use naome_protocol::{
 };
 use serde_json::{Value, json};
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::Command,
     time::{Duration, Instant},
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_rep-node");
+const BIN: &str = env!("CARGO_BIN_EXE_naome");
 // Pinned against the actual archive produced by faf37db.
 const LEGACY_HEAD: &str = "1:1:b7826ed27f6f1fdc30fad29e48727cc2fef11b9c7316669f3fef7018700ef0a9";
 const LEGACY_READING: &str = "1:0:83b3ce65fc517bdc0621659230972548a0f75dce9446ae55a472db88f488cac7";
@@ -24,32 +24,39 @@ const LEGACY_RECEIPT: &str = "1:0:ee829956a6e4e9a2469d51ed8385c85b493ca9f286c6ea
 const LEGACY_SIGNATURE: &str =
     "1:0:c51a2b0c66d48c7b608cc00e1ab56770aff38ea3fead9da94a7b8788f0d92e3c";
 
+fn cli(dir: &Path, args: &[&str]) -> Result<Value> {
+    let output = Command::new(BIN)
+        .arg("--json")
+        .arg("--directory")
+        .arg(dir)
+        .args(args)
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "naome {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
 struct Node {
     path: PathBuf,
     peer: String,
     address: String,
     reservation: Option<TcpListener>,
-    process: Option<Child>,
+    running: bool,
 }
 impl Node {
     fn init(path: PathBuf) -> Result<Self> {
-        let init = Command::new(BIN)
-            .arg("--directory")
-            .arg(&path)
-            .arg("init")
-            .output()?;
-        ensure!(
-            init.status.success(),
-            "init failed: {}",
-            String::from_utf8_lossy(&init.stderr)
-        );
+        let init = cli(&path, &["archive", "init"])?;
+        assert_eq!(cli(&path, &["status"])?["running"], false);
         let reservation = TcpListener::bind("127.0.0.1:0")?;
         Ok(Self {
             address: format!("/ip4/127.0.0.1/tcp/{}", reservation.local_addr()?.port()),
             path,
-            peer: String::from_utf8(init.stdout)?.trim().into(),
+            peer: init["peer_id"].as_str().context("peer ID")?.into(),
             reservation: Some(reservation),
-            process: None,
+            running: false,
         })
     }
 
@@ -69,35 +76,36 @@ impl Node {
 
     fn start(&mut self) -> Result<()> {
         drop(self.reservation.take());
-        let log = |name| {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.path.join(name))
-        };
-        self.process = Some(
-            Command::new(BIN)
-                .arg("--directory")
-                .arg(&self.path)
-                .arg("run")
-                .arg(self.path.join("node.json"))
-                .stdout(log("events.jsonl")?)
-                .stderr(log("node.log")?)
-                .spawn()?,
-        );
+        let reply = cli(&self.path, &["start"])?;
+        self.running = true;
+        assert_eq!(reply["running"], true);
+        assert_eq!(reply["peer_id"], self.peer);
+        assert_eq!(reply["listen_addresses"], json!([self.address]));
+        assert!(reply["pid"].as_u64().is_some());
+        assert_eq!(cli(&self.path, &["status"])?["pid"], reply["pid"]);
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
-        let mut child = self.process.take().context("process was not started")?;
-        ensure!(
-            child.try_wait()?.is_none(),
-            "node exited early in {}",
-            self.path.display()
-        );
-        child.kill()?;
-        child.wait()?;
+        assert_eq!(cli(&self.path, &["stop"])?["running"], false);
+        assert_eq!(cli(&self.path, &["status"])?["pid"], Value::Null);
+        self.running = false;
         Ok(())
+    }
+
+    fn wait_status(&self, check: impl Fn(&Value) -> bool) -> Result<Value> {
+        let start = Instant::now();
+        loop {
+            let state = cli(&self.path, &["status"])?;
+            if check(&state) {
+                return Ok(state);
+            }
+            ensure!(
+                start.elapsed() < Duration::from_secs(30),
+                "unexpected status: {state}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn archive(&self) -> Result<Archive> {
@@ -105,16 +113,9 @@ impl Node {
     }
 
     fn publish(&self, head: Id) -> Result<()> {
-        let r = Command::new(BIN)
-            .arg("--directory")
-            .arg(&self.path)
-            .arg("publish")
-            .arg(head.to_string())
-            .output()?;
-        ensure!(
-            r.status.success(),
-            "publish: {}",
-            String::from_utf8_lossy(&r.stderr)
+        assert_eq!(
+            cli(&self.path, &["archive", "publish", &head.to_string()])?,
+            json!(head)
         );
         Ok(())
     }
@@ -122,15 +123,6 @@ impl Node {
     fn wait(&mut self, condition: impl Fn(&Value) -> bool) -> Result<Value> {
         let start = Instant::now();
         loop {
-            ensure!(
-                self.process
-                    .as_mut()
-                    .context("node stopped")?
-                    .try_wait()?
-                    .is_none(),
-                "node exited in {}",
-                self.path.display()
-            );
             let events = fs::read_to_string(self.path.join("events.jsonl"))?;
             if let Some(event) = events
                 .lines()
@@ -153,7 +145,10 @@ impl Node {
     fn mirrored(&mut self, head: Id, supplier: &Node) -> Result<()> {
         self.wait(|e| e["mirrored"] == json!(head) && e["supplier"] == supplier.peer)?;
         ensure!(
-            self.archive()?.releases()?.contains(&head),
+            cli(&self.path, &["archive", "heads"])?
+                .as_array()
+                .context("released heads")?
+                .contains(&json!(head)),
             "missing durable release"
         );
         Ok(())
@@ -162,9 +157,8 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        if let Some(mut child) = self.process.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if self.running {
+            let _ = cli(&self.path, &["stop"]);
         }
     }
 }
@@ -173,7 +167,7 @@ fn exercise(path: &Path) -> Result<()> {
     let mut a = Node::init(path.join("A"))?;
     let mut b = Node::init(path.join("B"))?;
     let mut c = Node::init(path.join("C"))?;
-    let mut author = a.archive()?;
+    let author = a.archive()?;
     let case = fixture::seed(&author, Format::A)?;
 
     let legacy = Archive::memory()?;
@@ -181,7 +175,16 @@ fn exercise(path: &Path) -> Result<()> {
     assert_eq!(legacy_case.published, LEGACY_HEAD.parse()?);
     assert_eq!(legacy_case.receipts[2], LEGACY_RECEIPT.parse()?);
     let legacy_snapshot = legacy.head(legacy_case.published)?;
-    author.import(&legacy.export(&legacy_snapshot, "read")?)?;
+    let bundle = path.join("original-calibration.json");
+    fs::write(
+        &bundle,
+        serde_json::to_vec(&legacy.export(&legacy_snapshot, "read")?)?,
+    )?;
+    let imported = cli(
+        &a.path,
+        &["archive", "import", bundle.to_str().context("bundle path")?],
+    )?;
+    assert_eq!(imported, json!(legacy_case.published));
     let legacy_reading: Id = LEGACY_READING.parse()?;
     let legacy_sig: Id = LEGACY_SIGNATURE.parse()?;
     let legacy_key = legacy.read(&legacy_snapshot, legacy_sig, "read")?;
@@ -225,10 +228,42 @@ fn exercise(path: &Path) -> Result<()> {
     a.publish(legacy_case.published)?;
     b.mirrored(case.published, &a)?;
     b.mirrored(legacy_case.published, &a)?;
+    let publisher = a.wait_status(|s| {
+        s["connected_peers"] == json!([b.peer]) && s["sync"]["state"] == "caught_up"
+    })?;
     a.stop()?;
     c.start()?;
     c.mirrored(case.published, &b)?;
     c.mirrored(legacy_case.published, &b)?;
+    let relay_status = c.wait_status(|s| {
+        s["connected_peers"] == json!([b.peer])
+            && s["sync"]["state"] == "caught_up"
+            && s["sync"]["available_heads"]
+                .as_array()
+                .is_some_and(|heads| heads.contains(&json!(case.published)))
+    })?;
+    let discovered = cli(
+        &c.path,
+        &[
+            "archive",
+            "search",
+            &case.published.to_string(),
+            "--subject",
+            "bar-7",
+            "--scope",
+            "transition-1",
+            "--kind",
+            "occurrence",
+            "--budget",
+            "512",
+        ],
+    )?;
+    assert!(
+        discovered["ids"]
+            .as_array()
+            .context("search results")?
+            .contains(&json!(reading))
+    );
     let original_review = c.wait(|e| e["extraction"]["included"] == json!([affected, control]))?;
     let reader = c.archive()?;
     let published = reader.head(case.published)?;
@@ -361,6 +396,13 @@ fn exercise(path: &Path) -> Result<()> {
             == "label requires reassessment at the requested notice horizon"
     })?;
 
+    let recovered_status = c.wait_status(|s| {
+        s["connected_peers"] == json!([b.peer])
+            && s["sync"]["state"] == "caught_up"
+            && s["sync"]["available_heads"]
+                .as_array()
+                .is_some_and(|heads| heads.contains(&json!(corrected)))
+    })?;
     let view = reader.head(corrected)?;
     let assessment = assess(&reader, &view, &query)?;
     assert_eq!(assessment.result, Some(Standing::Refuted));
@@ -421,6 +463,7 @@ fn exercise(path: &Path) -> Result<()> {
     );
 
     let summary = json!({
+        "cli":{"publisher":publisher,"recipient_with_A_offline":relay_status,"after_restart":recovered_status,"search":discovered},
         "peers":{"A":a.peer,"B":b.peer,"C":c.peer}, "initial_head":case.published,"initial_members":published.objects.len(),
         "additional_head":sample_head,"additional_datasets":samples,"corrected_head":corrected,"corrected_members":view.objects.len(),
         "notice":notice, "original_receipt":case.receipts[2], "corrected_receipt":corrected_receipt,
@@ -454,4 +497,49 @@ fn three_processes_mirror_correct_and_recover() -> Result<()> {
         None => scratch.path().into(),
     };
     exercise(&root).with_context(|| format!("three-node evidence in {}", root.display()))
+}
+
+#[test]
+fn lifecycle_serializes_starts_and_reports_failed_readiness() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("isolated");
+    assert_eq!(cli(&path, &["status"])?["running"], false);
+    assert!(!path.exists());
+
+    let mut node = Node::init(path)?;
+    node.config(&[], None)?;
+    // The reservation occupies the configured TCP address. No ready result
+    // may escape from the child while its listener cannot bind.
+    let failed = Command::new(BIN)
+        .env("NAOME_NODE_DIR", &node.path)
+        .args(["start", "--json"])
+        .output()?;
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(serde_json::from_slice::<Value>(&failed.stderr)?["error"].is_string());
+    assert_eq!(cli(&node.path, &["status"])?["running"], false);
+    drop(node.reservation.take());
+
+    let start = || {
+        Command::new(BIN)
+            .env("NAOME_NODE_DIR", &node.path)
+            .args(["start", "--json"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+    };
+    let first = start()?;
+    let second = start()?;
+    node.running = true;
+    let first = first.wait_with_output()?;
+    let second = second.wait_with_output()?;
+    assert!(first.status.success() && second.status.success());
+    let first: Value = serde_json::from_slice(&first.stdout)?;
+    let second: Value = serde_json::from_slice(&second.stdout)?;
+    assert_eq!(first["pid"], second["pid"]);
+    assert_eq!(first["peer_id"], node.peer);
+    assert_eq!(second["sync"]["state"], "standalone");
+    assert_eq!(second["listen_addresses"], json!([node.address]));
+    node.stop()?;
+    assert_eq!(cli(&node.path, &["stop"])?["running"], false);
+    Ok(())
 }

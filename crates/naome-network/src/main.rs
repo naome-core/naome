@@ -1,3 +1,4 @@
+mod lifecycle;
 mod node;
 mod quota;
 mod wire;
@@ -5,7 +6,11 @@ mod wire;
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use libp2p::identity;
-use naome_protocol::{store::Archive, wire::Id};
+use naome_protocol::{
+    cli::{self, ArchiveCommand},
+    store::Archive,
+    wire::Format,
+};
 use std::{
     fs::File,
     io::{Read, Write},
@@ -13,24 +18,48 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(about = "Replicate released Research Evidence Protocol inventories")]
+#[command(
+    version,
+    about = "Operate a Research Evidence Protocol node and its archive"
+)]
 struct Cli {
-    #[arg(long)]
-    directory: PathBuf,
+    /// Node directory (also NAOME_NODE_DIR).
+    #[arg(long, global = true)]
+    directory: Option<PathBuf>,
+    /// Emit machine-readable lifecycle results. Archive results already use JSON.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create or read a persistent Ed25519 transport identity.
-    Init,
-    /// Release a complete readable inventory to all configured replicas.
-    Publish { head: Id },
-    /// Print the locally published and completely mirrored inventory identifiers.
-    Heads,
-    /// Listen and reconcile with the configured peers.
-    Run { config: PathBuf },
+    /// Start the node in the background and wait for its network listener.
+    Start,
+    /// Wait for the node to finish local work and shut down.
+    Stop,
+    /// Read live connection and replication state.
+    Status,
+    /// Store, inspect, evaluate and publish research evidence.
+    Archive {
+        #[arg(long, global = true, value_enum, default_value = "a")]
+        format: Format,
+        #[command(subcommand)]
+        command: ArchiveCommand,
+    },
+    #[command(hide = true)]
+    Serve,
+}
+
+fn directory(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    explicit
+        .or_else(|| std::env::var_os("NAOME_NODE_DIR").map(PathBuf::from))
+        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(|p| PathBuf::from(p).join("naome-rep")))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share/naome-rep"))
+        })
+        .context("select a node directory with --directory or NAOME_NODE_DIR")
 }
 
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
@@ -60,42 +89,66 @@ fn identity(directory: &Path, create: bool) -> Result<identity::Keypair> {
     )?)?)
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let dir = &cli.directory;
-    if matches!(cli.command, Command::Init) {
-        std::fs::create_dir_all(dir)?;
-        let key = identity(dir, true)?;
-        Archive::open(dir.join("archive.sqlite"))?;
-        println!("{}", key.public().to_peer_id());
-        return Ok(());
-    }
-    ensure!(
-        dir.join("archive.sqlite").is_file(),
-        "initialize the node directory first"
-    );
-    let archive = Archive::open(dir.join("archive.sqlite"))?;
-    match cli.command {
-        Command::Init => unreachable!(),
-        Command::Publish { head } => {
-            archive.release(head)?;
-            println!("{head}");
-        }
-        Command::Heads => println!("{}", serde_json::to_string(&archive.releases()?)?),
-        Command::Run { config } => {
-            let config = serde_json::from_slice(&read_bounded(&config, 16_384)?)
-                .context("invalid peer configuration")?;
-            node::run(
-                archive,
-                dir.join("archive.sqlite"),
-                identity(dir, false)?,
-                config,
-            )
-            .await?;
+fn initialize(dir: &Path) -> Result<identity::Keypair> {
+    std::fs::create_dir_all(dir)?;
+    let previously_running =
+        dir.join("events.jsonl").try_exists()? || dir.join("node.log").try_exists()?;
+    let key = identity(dir, !previously_running).context("open node identity")?;
+    Archive::open(dir.join("archive.sqlite"))?;
+    let path = dir.join("node.json");
+    if !path.exists() {
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+        writeln!(file, r#"{{"listen":"/ip4/127.0.0.1/tcp/0","peers":[]}}"#)?;
+        file.as_file().sync_all()?;
+        if let Err(e) = file.persist_noclobber(path)
+            && e.error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(e.into());
         }
     }
-    Ok(())
+    Ok(key)
+}
+
+fn execute(args: Cli) -> Result<()> {
+    let dir = directory(args.directory)?;
+    let status = match args.command {
+        Command::Archive {
+            command: ArchiveCommand::Init,
+            ..
+        } => {
+            let peer = initialize(&dir)?.public().to_peer_id();
+            println!(
+                "{}",
+                serde_json::json!({"peer_id":peer.to_string(),"directory":dir})
+            );
+            return Ok(());
+        }
+        Command::Archive { format, command } => {
+            std::fs::create_dir_all(&dir)?;
+            return cli::run(command, dir.join("archive.sqlite"), format);
+        }
+        Command::Serve => return lifecycle::serve(&dir),
+        Command::Start => lifecycle::start(&dir)?,
+        Command::Stop => lifecycle::stop(&dir)?,
+        Command::Status => lifecycle::status(&dir)?,
+    };
+    status.print(args.json)
+}
+
+fn main() -> std::process::ExitCode {
+    let args = Cli::parse();
+    let json = args.json;
+    match execute(args) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            if json {
+                eprintln!("{}", serde_json::json!({"error":format!("{e:#}")}));
+            } else {
+                eprintln!("Error: {e:#}");
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

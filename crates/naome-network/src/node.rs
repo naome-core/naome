@@ -1,4 +1,5 @@
 use crate::{
+    lifecycle::{self, Control, Status, SyncStatus},
     quota::{Quota, Rate},
     wire::{Codec, PROTOCOL, Request, Response, TOPIC},
 };
@@ -156,11 +157,53 @@ struct Node {
     pending: HashMap<rr::OutboundRequestId, (PeerId, Request)>,
     inbound: BTreeMap<PeerId, Quota>,
     last_poll: BTreeMap<PeerId, Instant>,
+    catalogs: BTreeMap<PeerId, BTreeSet<Id>>,
     next_dial: Instant,
     next_refresh: Instant,
 }
 
 impl Node {
+    fn status(&self) -> Status {
+        let connected: BTreeSet<_> = self.swarm.connected_peers().copied().collect();
+        let listen_addresses: Vec<_> = self.swarm.listeners().map(ToString::to_string).collect();
+        let state = if self.transfer.is_some() || !self.queue.is_empty() {
+            "replicating"
+        } else if self.peers.is_empty() {
+            "standalone"
+        } else if self
+            .catalogs
+            .values()
+            .any(|heads| !heads.is_subset(&self.known))
+        {
+            "missing_heads"
+        } else if connected.len() < self.peers.len() {
+            "peers_offline"
+        } else if connected
+            .iter()
+            .any(|peer| !self.catalogs.contains_key(peer))
+        {
+            "checking_catalogs"
+        } else {
+            "caught_up"
+        };
+        Status {
+            running: !listen_addresses.is_empty(),
+            pid: Some(std::process::id()),
+            peer_id: Some(self.swarm.local_peer_id().to_string()),
+            listen_addresses,
+            configured_peers: self.peers.keys().map(ToString::to_string).collect(),
+            connected_peers: connected.iter().map(ToString::to_string).collect(),
+            sync: Some(SyncStatus {
+                state: state.into(),
+                available_heads: self.available.clone(),
+                queued_heads: self.queue.len(),
+                active_head: self.transfer.as_ref().map(|transfer| transfer.head),
+                pending_requests: self.pending.len(),
+                peers_with_catalog: self.catalogs.keys().map(ToString::to_string).collect(),
+            }),
+        }
+    }
+
     fn request(&mut self, peer: PeerId, request: Request) {
         let id = self
             .swarm
@@ -298,6 +341,7 @@ impl Node {
         if matches!(request, Request::Heads) {
             if let Response::Heads(heads) = response {
                 ensure!(heads.len() <= MAX_RELEASES, "oversized catalog");
+                self.catalogs.insert(peer, heads.iter().copied().collect());
                 for head in heads {
                     self.offer(peer, head, "catalog");
                 }
@@ -321,6 +365,7 @@ impl Node {
                         .expect("checked replica")
                         .commit(&self.archive)?;
                     self.known.insert(head);
+                    self.available.insert(head);
                     println!("{}", json!({"mirrored":head,"supplier":peer.to_string()}));
                     self.transfer = None;
                 }
@@ -339,6 +384,14 @@ impl Node {
             SwarmEvent::ListenerClosed { reason, .. } => bail!("listener closed: {reason:?}"),
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 self.last_poll.remove(&peer_id);
+                self.catalogs.remove(&peer_id);
+            }
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                num_established: 0,
+                ..
+            } => {
+                self.catalogs.remove(&peer_id);
             }
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,
@@ -423,7 +476,8 @@ pub async fn run(
     archive_path: std::path::PathBuf,
     key: identity::Keypair,
     config: Config,
-) -> Result<()> {
+    control: Control,
+) -> Result<std::os::unix::net::UnixStream> {
     let own = key.public().to_peer_id();
     ensure!(config.peers.len() <= MAX_PEERS, "peer limit exceeded");
     let mut peers = BTreeMap::new();
@@ -449,6 +503,7 @@ pub async fn run(
         pending: HashMap::new(),
         inbound: BTreeMap::new(),
         last_poll: BTreeMap::new(),
+        catalogs: BTreeMap::new(),
         next_dial: now,
         next_refresh: now,
     };
@@ -457,10 +512,10 @@ pub async fn run(
     // One archive worker coalesces catalog changes. The REP crate owns all
     // policy, dependency and training decisions. Startup replays missed work.
     let (catalog, changes) = tokio::sync::watch::channel(node.available.clone());
-    if let Some(review) = config.review {
-        tokio::spawn(watch_training(archive_path, review, changes));
-    }
-    loop {
+    let reviewer = config
+        .review
+        .map(|review| tokio::spawn(watch_training(archive_path, review, changes)));
+    let stop_client = loop {
         tokio::select! {
             _ = interval.tick() => {
                 node.tick(Instant::now())?;
@@ -471,8 +526,26 @@ pub async fn run(
                 });
             },
             event = node.swarm.select_next_some() => node.event(event)?,
+            connection = control.status.accept() => {
+                lifecycle::reply(connection?.0, &node.status()).await;
+            }
+            connection = control.stop.accept() => break connection?.0.into_std()?,
         }
+    };
+    let final_catalog = node.archive.releases()?;
+    catalog.send_if_modified(|previous| {
+        if *previous == final_catalog {
+            return false;
+        }
+        *previous = final_catalog;
+        true
+    });
+    drop(node);
+    drop(catalog);
+    if let Some(reviewer) = reviewer {
+        reviewer.await?;
     }
+    Ok(stop_client)
 }
 
 async fn watch_training(
