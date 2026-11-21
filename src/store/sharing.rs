@@ -1,5 +1,5 @@
 //! Complete inventories explicitly released to a configured replication group.
-use super::{Archive, Packet, Snapshot, insert, validate};
+use super::{Archive, Snapshot, insert};
 use crate::{
     profile::{Document, Kind, PROFILE, verify_attestation},
     wire::{Id, Record},
@@ -24,6 +24,14 @@ fn check_manifest(head: Id, snapshot: &Snapshot) -> Result<()> {
         "invalid or oversized release manifest"
     );
     Ok(())
+}
+
+/// Exact object bytes. Records carry their own access reference in the envelope.
+#[derive(Debug)]
+pub struct Member {
+    pub id: Id,
+    pub blob_access: Option<Id>,
+    pub bytes: Vec<u8>,
 }
 
 /// Holds checked bytes until the complete inventory can be admitted atomically.
@@ -51,23 +59,32 @@ impl Replica {
         self.missing.first().copied()
     }
 
-    pub fn accept(&mut self, expected: Id, packet: Packet) -> Result<()> {
+    pub fn accept(&mut self, expected: Id, member: Member) -> Result<()> {
         ensure!(
-            self.missing.contains(&expected) && packet.id == expected,
+            self.missing.contains(&expected) && member.id == expected,
             "unsolicited object"
         );
+        let bytes = member.bytes;
         ensure!(
-            packet.hex.len() <= 2 * MAX_MEMBER_BYTES,
+            bytes.len() <= MAX_MEMBER_BYTES,
             "object exceeds network limit"
         );
-        let bytes = hex::decode(packet.hex)?;
         ensure!(
             self.bytes + bytes.len() <= MAX_RELEASE_BYTES,
             "release exceeds network limit"
         );
-        validate(expected, &bytes, packet.access)?;
+        expected.verify(&bytes)?;
+        let access = match (expected.format(), member.blob_access) {
+            (Some(format), None) => Record::decode(&bytes, format)?.access,
+            (None, Some(access)) => access,
+            _ => anyhow::bail!("object class and access metadata disagree"),
+        };
+        ensure!(
+            access.format().is_none() && self.snapshot.objects.contains(&access),
+            "access descriptor outside release"
+        );
         self.bytes += bytes.len();
-        self.members.insert(expected, (packet.access, bytes));
+        self.members.insert(expected, (access, bytes));
         self.missing.remove(&expected);
         Ok(())
     }
@@ -112,16 +129,27 @@ impl Archive {
         self.head(head)
     }
 
-    pub fn released_member(&self, head: Id, id: Id) -> Result<Packet> {
+    pub fn released_member(&self, head: Id, id: Id) -> Result<Member> {
         let tx = self.db.unchecked_transaction()?;
         let s = self.released_manifest(head)?;
         ensure!(
             self.size(id)? <= MAX_MEMBER_BYTES,
             "object exceeds network limit"
         );
-        let packet = self.packet(&s, id, "read")?;
+        let (bytes, access) =
+            self.resolve_with(&s, id, |policy| crate::profile::allows(policy, "read"))?;
+        if let Some(format) = id.format() {
+            ensure!(
+                Record::decode(&bytes, format)?.access == access,
+                "stored access disagrees with record"
+            );
+        }
         tx.commit()?;
-        Ok(packet)
+        Ok(Member {
+            id,
+            blob_access: id.format().is_none().then_some(access),
+            bytes,
+        })
     }
 
     pub fn release(&self, head: Id) -> Result<()> {

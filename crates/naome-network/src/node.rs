@@ -46,6 +46,8 @@ pub struct Config {
     peers: Vec<Peer>,
     #[serde(default)]
     review: Option<naome_protocol::learning::TrainingRequest>,
+    #[serde(default)]
+    trace_object_frames: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,7 +76,11 @@ struct Behaviour {
     exchange: rr::Behaviour<Codec>,
 }
 
-fn swarm(key: identity::Keypair, peers: &BTreeMap<PeerId, Multiaddr>) -> Result<Swarm<Behaviour>> {
+fn swarm(
+    key: identity::Keypair,
+    peers: &BTreeMap<PeerId, Multiaddr>,
+    trace_object_frames: bool,
+) -> Result<Swarm<Behaviour>> {
     let mut allowed = allow_block_list::Behaviour::default();
     let limits = connection_limits::Behaviour::new(
         connection_limits::ConnectionLimits::default()
@@ -96,7 +102,9 @@ fn swarm(key: identity::Keypair, peers: &BTreeMap<PeerId, Multiaddr>) -> Result<
         gossip.add_explicit_peer(peer);
     }
     let exchange = rr::Behaviour::with_codec(
-        Codec,
+        Codec {
+            trace_object_frames,
+        },
         [(PROTOCOL, rr::ProtocolSupport::Full)],
         rr::Config::default()
             .with_request_timeout(TIMEOUT)
@@ -426,7 +434,7 @@ pub async fn run(
             "self or duplicate peer"
         );
     }
-    let mut swarm = swarm(key, &peers)?;
+    let mut swarm = swarm(key, &peers, config.trace_object_frames)?;
     swarm.listen_on(tcp_address(&config.listen, true)?)?;
     let now = Instant::now();
     let mut node = Node {
@@ -509,7 +517,11 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_but_unconfigured_identity_is_denied_before_exchange() -> Result<()> {
-        let mut listener = swarm(identity::Keypair::generate_ed25519(), &BTreeMap::new())?;
+        let mut listener = swarm(
+            identity::Keypair::generate_ed25519(),
+            &BTreeMap::new(),
+            false,
+        )?;
         let listener_id = *listener.local_peer_id();
         listener.listen_on(tcp_address("/ip4/127.0.0.1/tcp/0", true)?)?;
         let address = loop {
@@ -520,6 +532,7 @@ mod tests {
         let mut other = swarm(
             identity::Keypair::generate_ed25519(),
             &[(listener_id, address.clone())].into(),
+            false,
         )?;
         let other_id = *other.local_peer_id();
         other.dial(

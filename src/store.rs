@@ -2,7 +2,9 @@ pub mod sharing;
 
 use crate::profile::TrainingAccess;
 use crate::{
-    profile::{Document, Kind, PROFILE, PUBLIC, READ_ONLY, allows},
+    profile::{
+        Document, Kind, MEASUREMENT_PROFILE, PROFILE, PUBLIC, READ_ONLY, allows, supported_profile,
+    },
     wire::{Format, Id, MAX_BYTES, Record},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -107,7 +109,11 @@ impl Archive {
         Ok(id)
     }
     pub fn document(&self, d: &Document, f: Format, access: Id) -> Result<Id> {
-        self.record(&d.encode(access)?, f)
+        let record = d.encode(access)?;
+        if record.profile == Id::blob(MEASUREMENT_PROFILE) && self.raw(record.profile)?.is_none() {
+            self.blob(MEASUREMENT_PROFILE, Id::blob(PUBLIC))?;
+        }
+        self.record(&record, f)
     }
     pub fn record(&self, r: &Record, f: Format) -> Result<Id> {
         let b = r.encode(f);
@@ -122,7 +128,8 @@ impl Archive {
     pub fn withdraw(&self, id: Id) -> Result<()> {
         ensure!(
             id.format().is_none()
-                && ![Id::blob(PUBLIC), Id::blob(READ_ONLY), Id::blob(PROFILE)].contains(&id),
+                && ![Id::blob(PUBLIC), Id::blob(READ_ONLY)].contains(&id)
+                && supported_profile(id).is_none(),
             "withdraw a non-bootstrap payload"
         );
         let tx = rusqlite::Transaction::new_unchecked(
@@ -230,7 +237,8 @@ impl Archive {
     fn read_with(&self, id: Id, resolve: impl Fn(Id) -> Result<Vec<u8>>) -> Result<Document> {
         let format = id.format().context("expected record")?;
         let r = Record::decode(&resolve(id)?, format)?;
-        ensure!(resolve(r.profile)? == PROFILE, "unsupported profile");
+        let profile = supported_profile(r.profile).context("unsupported profile")?;
+        ensure!(resolve(r.profile)? == profile, "inconsistent profile bytes");
         Document::decode(&r)
     }
     pub fn snapshot(&self, source: &str, parents: BTreeSet<Id>) -> Result<Snapshot> {

@@ -74,6 +74,15 @@ pub struct Investigation {
     pub control_label: Id,
 }
 pub fn seed(store: &Archive, f: Format) -> Result<Investigation> {
+    seed_measurements(store, f, false)
+}
+
+/// Recreate the published pre-measurement-profile calibration fixture.
+pub fn seed_legacy(store: &Archive, f: Format) -> Result<Investigation> {
+    seed_measurements(store, f, true)
+}
+
+fn seed_measurements(store: &Archive, f: Format, legacy: bool) -> Result<Investigation> {
     let policy = policy(store, f)?;
     let question = bar(
         store,
@@ -121,27 +130,25 @@ pub fn seed(store: &Archive, f: Format) -> Result<Investigation> {
         json!({"type":"simultaneous-absolute","radius":30,"unit":"um"}),
         vec![link("calibration", calibration)],
     )?;
-    let read = |g: &str, b: i64, e: i64, event: i64| {
-        bar(
-            store,
-            f,
+    let read = |g: &str, b: i64, e: i64, event: i64, scope: &str| {
+        let document = Document::new(
             Kind::Occurrence,
+            SUBJECT,
+            scope,
             json!({"gauge":g,"positions":[b,e],"mode":"axial","event":event,"unit":"um","source":"synthetic"}),
             vec![link("calibration", calibration)],
-        )
+        )?;
+        let access = Id::blob(PUBLIC);
+        if legacy {
+            store.record(&document.encode_legacy(access)?, f)
+        } else {
+            store.document(&document, f, access)
+        }
     };
-    let a = read("A", 10000, 10260, 1)?;
-    let b = read("B", 13000, 13250, 1)?;
+    let a = read("A", 10000, 10260, 1, SCOPE)?;
+    let b = read("B", 13000, 13250, 1, SCOPE)?;
     let control_scope = "transition-3";
-    let control = put(
-        store,
-        f,
-        Kind::Occurrence,
-        SUBJECT,
-        control_scope,
-        json!({"gauge":"Z","positions":[800,810],"mode":"axial","event":3,"unit":"um","source":"synthetic"}),
-        vec![link("calibration", calibration)],
-    )?;
+    let control = read("Z", 800, 810, 3, control_scope)?;
     let control_claim = put(
         store,
         f,

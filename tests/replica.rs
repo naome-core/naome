@@ -4,8 +4,8 @@ use naome_protocol::{
     fixture,
     profile::{self, PUBLIC, READ_ONLY},
     store::{
-        Archive, Packet, Snapshot,
-        sharing::{MAX_MEMBER_BYTES, MAX_MEMBERS, Replica},
+        Archive, Snapshot,
+        sharing::{MAX_MEMBER_BYTES, MAX_MEMBERS, Member, Replica},
     },
     wire::{Format, Id},
 };
@@ -13,7 +13,14 @@ use naome_protocol::{
 fn replica(source: &Archive, s: &Snapshot) -> Result<Replica> {
     let mut replica = Replica::new(s.id()?, s.clone())?;
     for packet in source.export(s, "read")?.packets {
-        replica.accept(packet.id, packet)?;
+        replica.accept(
+            packet.id,
+            Member {
+                id: packet.id,
+                blob_access: packet.id.format().is_none().then_some(packet.access),
+                bytes: hex::decode(packet.hex)?,
+            },
+        )?;
     }
     Ok(replica)
 }
@@ -30,7 +37,10 @@ fn only_released_readable_members_are_served_and_mirrors_preserve_rights() -> Re
     let outside = source.blob(b"not released", Id::blob(PUBLIC))?;
     assert!(source.released_member(head, outside).is_err());
     assert_eq!(replica(&source, &s)?.commit(&dest)?, head);
-    assert_eq!(dest.released_member(head, id)?.access, Id::blob(READ_ONLY));
+    assert_eq!(
+        dest.released_member(head, id)?.blob_access,
+        Some(Id::blob(READ_ONLY))
+    );
     assert!(dest.resolve(&s, id, "train").is_err());
     dest.withdraw(id)?;
     assert!(!dest.releases()?.contains(&head));
@@ -41,6 +51,26 @@ fn only_released_readable_members_are_served_and_mirrors_preserve_rights() -> Re
     assert!(dest.resolve(&s, id, "read").is_err());
 
     let denied = source.blob(br#"{"purposes":[],"version":1}"#, Id::blob(PUBLIC))?;
+    let unrestricted_head = source.snapshot("lab with another descriptor", [head].into())?;
+    let mut direct = Replica::new(unrestricted_head.id()?, unrestricted_head.clone())?;
+    for packet in source.export(&unrestricted_head, "read")?.packets {
+        direct.accept(
+            packet.id,
+            Member {
+                id: packet.id,
+                blob_access: Some(if packet.id == id {
+                    denied
+                } else {
+                    packet.access
+                }),
+                bytes: hex::decode(packet.hex)?,
+            },
+        )?;
+    }
+    let fresh = Archive::memory()?;
+    assert!(direct.commit(&fresh).is_err());
+    assert!(fresh.observed_releases()?.is_empty());
+    assert!(fresh.resolve(&unrestricted_head, id, "read").is_err());
     source.blob(b"withheld", denied)?;
     let private = source.snapshot("restricted", [head].into())?.id()?;
     assert!(source.release(private).is_err());
@@ -68,10 +98,10 @@ fn frames_must_match_the_requested_identity_and_inventory_before_commit() -> Res
         partial
             .accept(
                 id,
-                Packet {
+                Member {
                     id,
-                    access: public,
-                    hex: "ff".into()
+                    blob_access: Some(public),
+                    bytes: vec![0xff]
                 }
             )
             .is_err()
@@ -80,14 +110,20 @@ fn frames_must_match_the_requested_identity_and_inventory_before_commit() -> Res
         partial
             .accept(
                 id,
-                Packet {
+                Member {
                     id,
-                    access: public,
-                    hex: "00".repeat(MAX_MEMBER_BYTES + 1)
+                    blob_access: Some(public),
+                    bytes: vec![0; MAX_MEMBER_BYTES + 1]
                 }
             )
             .is_err()
     );
+    let mut bad = source.released_member(head, id)?;
+    bad.blob_access = None;
+    assert!(partial.accept(id, bad).is_err());
+    let mut unknown = source.released_member(head, id)?;
+    unknown.blob_access = Some(Id::blob(b"missing access"));
+    assert!(partial.accept(id, unknown).is_err());
     partial.accept(id, source.released_member(head, id)?)?;
     assert!(
         partial
@@ -153,5 +189,41 @@ fn an_authentic_but_unadmitted_correction_does_not_change_the_judgment() -> Resu
     assert!(result.visible_notices.contains(&notice));
     assert!(!result.applicable_notices.contains(&notice));
     assert_eq!(result.result, Some(Standing::Supported));
+    Ok(())
+}
+
+#[test]
+fn record_access_comes_from_the_envelope() -> Result<()> {
+    let source = Archive::memory()?;
+    let access = Id::blob(READ_ONLY);
+    let doc = profile::Document::new(
+        profile::Kind::Occurrence,
+        "sample",
+        "bench",
+        serde_json::json!({}),
+        vec![],
+    )?;
+    let id = source.document(&doc, Format::A, access)?;
+    let snapshot = source.snapshot("lab", Default::default())?;
+    let head = snapshot.id()?;
+    source.release(head)?;
+    let mut receiver = Replica::new(head, snapshot)?;
+    let mut inconsistent = source.released_member(head, id)?;
+    inconsistent.blob_access = Some(Id::blob(PUBLIC));
+    assert!(receiver.accept(id, inconsistent).is_err());
+    let promoted = doc.encode(Id::blob(PUBLIC))?.encode(Format::A);
+    assert!(
+        receiver
+            .accept(
+                id,
+                Member {
+                    id,
+                    blob_access: None,
+                    bytes: promoted
+                }
+            )
+            .is_err()
+    );
+    receiver.accept(id, source.released_member(head, id)?)?;
     Ok(())
 }

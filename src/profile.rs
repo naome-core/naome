@@ -1,3 +1,5 @@
+mod measurement;
+
 use crate::wire::{Edge, Id, Record, Term};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -5,6 +7,20 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROFILE: &[u8] = include_bytes!("../kits/research-profile.txt");
+pub const MEASUREMENT_PROFILE: &[u8] = include_bytes!("../kits/measurement-profile-v1.txt");
+
+pub(crate) fn supported_profile(id: Id) -> Option<&'static [u8]> {
+    static PROFILES: std::sync::LazyLock<[(Id, &[u8]); 2]> = std::sync::LazyLock::new(|| {
+        [
+            (Id::blob(PROFILE), PROFILE),
+            (Id::blob(MEASUREMENT_PROFILE), MEASUREMENT_PROFILE),
+        ]
+    });
+    PROFILES
+        .iter()
+        .find_map(|&(profile, bytes)| (profile == id).then_some(bytes))
+}
+
 pub const PUBLIC: &[u8] = br#"{"purposes":["read","train"],"version":1}"#;
 pub const READ_ONLY: &[u8] = br#"{"purposes":["read"],"version":1}"#;
 
@@ -105,6 +121,26 @@ impl Document {
         })
     }
     pub fn encode(&self, access: Id) -> Result<Record> {
+        if let Some(fields) = self.measurement_fields() {
+            return self.envelope(MEASUREMENT_PROFILE, fields.encode(self), access);
+        }
+        self.encode_legacy(access)
+    }
+    fn measurement_fields(&self) -> Option<measurement::Fields> {
+        if self.kind != Kind::Occurrence {
+            return None;
+        }
+        serde_json::from_value(serde_json::to_value(&self.fields).ok()?).ok()
+    }
+    pub(crate) fn encode_legacy(&self, access: Id) -> Result<Record> {
+        let body = Term::Bytes(serde_json::to_vec(&json!([
+            self.subject,
+            self.scope,
+            self.fields
+        ]))?);
+        self.envelope(PROFILE, body, access)
+    }
+    fn envelope(&self, profile: &[u8], body: Term, access: Id) -> Result<Record> {
         ensure!(
             !self.subject.is_empty() && !self.scope.is_empty(),
             "empty subject or scope"
@@ -116,14 +152,9 @@ impl Document {
                 "duplicate or empty role"
             );
         }
-        let body = Term::Bytes(serde_json::to_vec(&json!([
-            self.subject,
-            self.scope,
-            self.fields
-        ]))?);
         Ok(Record {
             kind: self.kind as u64,
-            profile: Id::blob(PROFILE),
+            profile: Id::blob(profile),
             access,
             body,
             critical: vec![],
@@ -142,14 +173,18 @@ impl Document {
         })
     }
     pub fn decode(r: &Record) -> Result<Self> {
-        ensure!(
-            r.profile == Id::blob(PROFILE) && r.critical.is_empty(),
-            "unknown profile or critical extension"
-        );
-        let Term::Bytes(b) = &r.body else {
-            bail!("invalid research body")
+        ensure!(r.critical.is_empty(), "unknown critical extension");
+        let kind = Kind::decode(r.kind)?;
+        let profile = supported_profile(r.profile).context("unknown profile")?;
+        let (subject, scope, fields) = if profile == PROFILE {
+            let Term::Bytes(bytes) = &r.body else {
+                bail!("invalid research body")
+            };
+            serde_json::from_slice(bytes)?
+        } else {
+            ensure!(kind == Kind::Occurrence, "invalid measurement kind");
+            measurement::Fields::decode(&r.body)?
         };
-        let (subject, scope, fields) = serde_json::from_slice(b)?;
         let mut inputs = Vec::new();
         for e in &r.edges {
             ensure!(e.role == 1, "unknown input role");
@@ -166,13 +201,18 @@ impl Document {
             });
         }
         let d = Self {
-            kind: Kind::decode(r.kind)?,
+            kind,
             subject,
             scope,
             fields,
             inputs,
         };
-        ensure!(d.encode(r.access)? == *r, "noncanonical research record");
+        let encoded = if profile == PROFILE {
+            d.encode_legacy(r.access)?
+        } else {
+            d.encode(r.access)?
+        };
+        ensure!(encoded == *r, "noncanonical research record");
         Ok(d)
     }
     pub fn roles<'a>(&'a self, role: &'a str) -> impl Iterator<Item = Id> + 'a {

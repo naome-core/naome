@@ -41,6 +41,16 @@ impl Id {
     pub fn blob(bytes: &[u8]) -> Self {
         Self::new(1, 1, b"REP-blob", bytes)
     }
+    pub fn blob_digest(self) -> Option<[u8; 32]> {
+        (self.class == 1).then_some(self.digest)
+    }
+    pub fn from_blob_digest(digest: [u8; 32]) -> Self {
+        Self {
+            suite: 1,
+            class: 1,
+            digest,
+        }
+    }
     pub fn format(self) -> Option<Format> {
         match (self.suite, self.class) {
             (1, 0) => Some(Format::A),

@@ -269,6 +269,7 @@ fn main() -> Result<()> {
                 "capabilities": ["carrier","profile-reader","evaluator","local-executor-reservations"],
                 "kits": {"A":kit::pin(Format::A),"B":kit::pin(Format::B)},
                 "profile": Id::blob(profile::PROFILE),
+                "measurement_profile": Id::blob(profile::MEASUREMENT_PROFILE),
                 "public": public,
                 "evaluators": ["simultaneous-bounds","certified-hull","signed-tests","typed-outcome","delegated","recorded-difference","least-zero","domain-inclusion","source-independence","sample-description","survey-identification","unit-grid-map"],
             }));

@@ -19,3 +19,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
+
+[dev-dependencies]
+hex = "0.4"

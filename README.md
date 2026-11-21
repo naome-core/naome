@@ -40,7 +40,11 @@ Build both binaries with `cargo build --workspace --locked`. Run `rep-node --dir
 
 Run `rep-node --directory A run A/node.json`. Use `rep --db A/archive.sqlite` for ordinary deposit, import, assessment and snapshot operations. Release a selected inventory using `rep-node --directory A publish HEAD`. Publication authorises all members of this configured custody group, including downstream mirrors, to see the membership and receive every readable member under its existing access descriptor. Use a separate disclosure inventory for a narrower audience. A complete mirror serves the same head when the publisher is offline. `rep-node --directory B heads` lists complete releases on B.
 
-Peers use signed GossipSub on `naome-rep-releases-v1` to announce a head. Connected peers also reconcile their release catalogs on connection and every four seconds. A receiver fetches the manifest by its hash and requests each object by head and content ID on `/naome/rep/archive/1`. It verifies framing, member identity, canonical record bytes and matching access fields, then checks local read permission and the cryptographic integrity of research-profile attestations. A single SQLite transaction commits the complete mirror and its release entry. An interrupted transfer restarts from its manifest. A local withdrawal also removes affected heads from the serving catalog and preserves their historical membership for review. The raw-blob identifier covers the payload bytes. For a first-seen raw blob, the custodian supplies its access descriptor over the authenticated connection. Conflicts with an existing local descriptor reject the incoming release.
+Peers use signed GossipSub on `naome-rep-releases-v2` to announce a head. Connected peers reconcile their release catalogs on connection and every four seconds. A receiver fetches the manifest by its hash and requests each object by head and content ID on `/naome/rep/archive/2`. Upgrade the configured peers together to exchange on version 2. An upgraded node can serve an existing version 1 archive directly.
+
+Responses have a four-byte big-endian length followed by a one-byte tag. Tags 0 and 1 indicate unavailable and busy. Tags 2 and 3 carry the JSON catalog and manifest. Tags 4 and 5 carry the exact stored record bytes for formats A and B. Tag 6 carries the 32-byte SHA-256 digest of the REP blob access descriptor followed by the exact blob bytes. Requests, catalogs and manifests use JSON. The file bundle format remains portable JSON.
+
+The receiver verifies the requested content identity and canonical record bytes. For a record the access reference comes from the hashed envelope. For a blob the payload ID covers the bytes and the authenticated custodian supplies the separate access reference. The receiver requires the descriptor in the inventory, verifies its bytes and read permission, and rejects conflicts with existing local custody metadata. For a first-seen blob the reference has the authority of the sending custodian. Noise authenticates the channel, while the blob hash authenticates the payload. A single SQLite transaction admits the full release after these checks and cryptographic verification of research-profile attestations. A local withdrawal removes affected heads from the serving catalog and keeps their historical membership for review. An interrupted transfer restarts from its manifest.
 
 A node's optional `review` configuration is a local current-standing training request in the same JSON form as `rep train`. It pins the recipient's policy, baseline label inventory, feature cutoff and examples. On startup and on a changed catalog, the evaluator considers the union of the baseline and all previously admitted release memberships. A local review record links the evaluated horizon, extraction manifest and withheld labels with their reasons. The node emits their IDs in its JSON log. Historical assessments stay addressable. The operator controls publication of any locally derived review.
 
@@ -54,9 +58,23 @@ Run the local process trial with the command below. The optional directory must 
 REP_TRIAL_DIRECTORY="$PWD/trial-evidence" cargo test -p naome-network --locked --test replication
 ```
 
+### Measured object sizes
+
+The three-process calibration trial fetched gauge A for `bar-7 / transition-1`, with positions `[10000, 10260]` µm. The archive column counts the original SQLite BLOB for the object on C. It excludes SQLite overhead, referenced objects and indexes. The response column counts successful application-codec writes from B to its negotiated stream. It includes the four-byte length and excludes the request, discovery, Noise, Yamux, and TCP/IP overhead.
+
+| Reading and transport | Stored object | Object response |
+| --- | ---: | ---: |
+| Legacy reading and JSON/hex response, measured on `faf37db` | 255 B | 691 B |
+| Same original reading over the binary response | 255 B | 260 B |
+| Paired measurement profile in CBOR over the binary response | 180 B | 185 B |
+
+The baseline trial used the previous writer with a trace after writing the length and JSON bytes. The current trial records successful object writes with `"trace_object_frames": true` in the node configurations. The retained `result.json` and B's `events.jsonl` identify the measured objects and frame lengths. Blob frames include a further 32 bytes for the separate access reference.
+
 ## Create and query an archive
 
 The JSON document interface provides a convenient way to author a research record. Its ordered links have a role, target content identifier and optional qualifier. Strings in scientific fields are literals. The typed links carry machine-traversable dependencies.
+
+An occurrence with exactly the fields `gauge`, `positions`, `mode`, `event`, `unit` and `source` and the types in the [paired measurement profile](kits/measurement-profile-v1.txt) uses that content-addressed profile. With format A, `put` writes the typed array directly as canonical CBOR. Both representation profiles resolve to the same named fields for assessment. Existing records preserve their exact bytes, content identifiers, and detached attestations. A newly encoded reading has its own identifier and requires its own attestation where policy calls for one.
 
 ```sh
 mkdir -p /tmp/rep-example
