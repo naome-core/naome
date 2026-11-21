@@ -1,9 +1,10 @@
 [workspace]
-members = ["crates/naome-network", "vendor/libp2p-tcp"]
+members = ["crates/naome-network", "vendor/libp2p-tcp", "vendor/libp2p-relay"]
 default-members = [".", "crates/naome-network"]
 resolver = "3"
 
 [patch.crates-io]
+libp2p-relay = { path = "vendor/libp2p-relay" }
 libp2p-tcp = { path = "vendor/libp2p-tcp" }
 
 [package]
@@ -16,7 +17,7 @@ license = "MIT"
 repository = "https://github.com/naome-core/naome"
 description = "An offline, content-addressed research evidence archive and evaluator"
 readme = "README.md"
-include = ["src/**", "tests/**", "kits/**", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "research-evidence-protocol.tex", "research-evidence-protocol.pdf"]
+include = ["src/**", "tests/**", "kits/**", "docs/internet-trial.md", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "research-evidence-protocol.tex", "research-evidence-protocol.pdf"]
 
 [[bin]]
 name = "rep"

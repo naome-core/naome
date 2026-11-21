@@ -65,7 +65,9 @@ The receiver verifies the requested content identity and canonical record bytes.
 
 A node's optional `review` configuration is a local current-standing training request in the same JSON form as `naome archive train`. It pins the recipient's policy, baseline label inventory, feature cutoff and examples. On startup and on a changed catalog, the evaluator considers the union of the baseline and all previously admitted release memberships. A local review record links the evaluated horizon, extraction manifest and withheld labels with their reasons. The node emits their IDs in its JSON log. Historical assessments stay addressable. The operator controls publication of any locally derived review.
 
-The transport retains the static-peer path from NAOME commit `9c368e6a`, including Ed25519 peer identity, Noise over TCP, Yamux, signed gossip, bounded request/response, peer allowlisting, redial and rate accounting. The vendored TCP crate includes the macOS occupied-port-reuse fix and its regression test. The REP network uses direct IP/TCP for configured peers. Public discovery, multicast, circuit relays, hole punching and the proof/work-offer protocols have no role in this configuration. B is an archive mirror with its own stored copy.
+The transport retains the static-peer path from NAOME commit `9c368e6a`, including Ed25519 peer identity, Noise over TCP, Yamux, signed gossip, bounded request/response, peer allowlisting, redial and rate accounting. The vendored TCP crate includes the macOS occupied-port-reuse fix and its regression test. Static replicas can dial each other directly by IP/TCP. An optional pinned rendezvous and relay lets a custodian configure its counterpart by identity alone. The service returns signed address records and supplies bounded Circuit Relay v2 reservations. Identify provides observed TCP address candidates. The dialer tries available direct routes before falling back to a circuit. Each custodian negotiates gossip and archive exchange only with its own replication peer list. The historical relay patch retains per-source and global circuit accounting. B in the archive trial is a durable mirror. A circuit relay transports encrypted streams between custodians.
+
+Follow the [two-laptop Internet trial](docs/internet-trial.md) for the server and laptop configurations, publication and verification. The private rendezvous uses the `naome-rep-archive-v2` namespace. Routing service admission is limited to 16 named clients. Registrations last 60 seconds and clients renew them. Each circuit has a 10-minute duration and a 64 MiB traffic budget, with at most 16 circuits in total and four per source. The release and object limits below also apply across a circuit.
 
 The exchange supports up to 16 configured peers and 64 released heads per node. Each head has up to 512 members, 1 MiB per member and 16 MiB total. The receiver stages one transfer at a time. Use REP chunk descriptors for larger individual payloads and select inventories that fit the release budget. The transfer request timeout is 10 seconds, with a 90-second lifetime for a head. Per-peer request quotas and stream and connection ceilings also apply.
 
@@ -73,6 +75,12 @@ Run the local process trial with the command below. The optional directory must 
 
 ```sh
 REP_TRIAL_DIRECTORY="$PWD/trial-evidence" cargo test -p naome-network --locked --test replication
+```
+
+The routing cases use three additional local topologies to exercise discovery authorization, direct fetch after an address change and automatic circuit fallback after a failed direct handshake. To retain the status snapshots, process logs and recovered files, set `REP_ROUTE_TRIAL_DIRECTORY` to a fresh output directory.
+
+```sh
+REP_ROUTE_TRIAL_DIRECTORY="$PWD/routing-evidence" cargo test -p naome-network --locked --test replication routing::
 ```
 
 ### Measured object sizes

@@ -1,5 +1,7 @@
+mod discovery;
 mod lifecycle;
 mod node;
+mod peer_protocols;
 mod quota;
 mod wire;
 
@@ -19,6 +21,7 @@ use std::{
 
 #[derive(Parser)]
 #[command(
+    name = "naome",
     version,
     about = "Operate a Research Evidence Protocol node and its archive"
 )]

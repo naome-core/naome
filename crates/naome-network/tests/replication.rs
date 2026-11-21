@@ -80,7 +80,12 @@ impl Node {
         self.running = true;
         assert_eq!(reply["running"], true);
         assert_eq!(reply["peer_id"], self.peer);
-        assert_eq!(reply["listen_addresses"], json!([self.address]));
+        assert!(
+            reply["listen_addresses"]
+                .as_array()
+                .context("listen addresses")?
+                .contains(&json!(self.address))
+        );
         assert!(reply["pid"].as_u64().is_some());
         assert_eq!(cli(&self.path, &["status"])?["pid"], reply["pid"]);
         Ok(())
@@ -543,3 +548,6 @@ fn lifecycle_serializes_starts_and_reports_failed_readiness() -> Result<()> {
     assert_eq!(cli(&node.path, &["stop"])?["running"], false);
     Ok(())
 }
+
+#[path = "replication/routing.rs"]
+mod routing;

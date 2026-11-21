@@ -1,5 +1,7 @@
 use crate::{
+    discovery::{self, MAX_PEERS, Routing},
     lifecycle::{self, Control, Status, SyncStatus},
+    peer_protocols::PeerProtocols,
     quota::{Quota, Rate},
     wire::{Codec, PROTOCOL, Request, Response, TOPIC},
 };
@@ -7,11 +9,12 @@ use anyhow::{Context, Result, bail, ensure};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits,
     futures::StreamExt,
-    gossipsub, identity,
+    gossipsub, identify, identity,
     multiaddr::Protocol,
-    noise, request_response as rr,
+    noise, relay, rendezvous, request_response as rr,
     swarm::{
-        NetworkBehaviour, SwarmEvent,
+        ConnectionId, NetworkBehaviour, SwarmEvent,
+        behaviour::toggle::Toggle,
         dial_opts::{DialOpts, PeerCondition},
     },
     tcp, yamux,
@@ -30,7 +33,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_PEERS: usize = 16;
 const RATE: Rate = Rate {
     burst: 96,
     period: Duration::from_secs(1),
@@ -46,6 +48,8 @@ pub struct Config {
     listen: String,
     peers: Vec<Peer>,
     #[serde(default)]
+    discovery: Option<discovery::Config>,
+    #[serde(default)]
     review: Option<naome_protocol::learning::TrainingRequest>,
     #[serde(default)]
     trace_object_frames: bool,
@@ -54,10 +58,10 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 struct Peer {
     id: String,
-    address: String,
+    address: Option<String>,
 }
 
-fn tcp_address(value: &str, listen: bool) -> Result<Multiaddr> {
+pub(crate) fn tcp_address(value: &str, listen: bool) -> Result<Multiaddr> {
     let addr: Multiaddr = value.parse()?;
     let mut parts = addr.iter();
     ensure!(
@@ -73,13 +77,19 @@ fn tcp_address(value: &str, listen: bool) -> Result<Multiaddr> {
 struct Behaviour {
     limits: connection_limits::Behaviour,
     allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
-    gossip: gossipsub::Behaviour,
-    exchange: rr::Behaviour<Codec>,
+    gossip: PeerProtocols<gossipsub::Behaviour>,
+    exchange: PeerProtocols<rr::Behaviour<Codec>>,
+    identify: Toggle<identify::Behaviour>,
+    rendezvous: Toggle<rendezvous::client::Behaviour>,
+    directory: PeerProtocols<Toggle<rendezvous::server::Behaviour>>,
+    relay_client: relay::client::Behaviour,
+    relay_service: PeerProtocols<Toggle<relay::Behaviour>>,
 }
 
 fn swarm(
     key: identity::Keypair,
-    peers: &BTreeMap<PeerId, Multiaddr>,
+    peers: &BTreeSet<PeerId>,
+    routing: &Routing,
     trace_object_frames: bool,
 ) -> Result<Swarm<Behaviour>> {
     let mut allowed = allow_block_list::Behaviour::default();
@@ -87,7 +97,7 @@ fn swarm(
         connection_limits::ConnectionLimits::default()
             .with_max_pending_incoming(Some(8))
             .with_max_pending_outgoing(Some(8))
-            .with_max_established(Some(MAX_PEERS as u32))
+            .with_max_established(Some(2 * MAX_PEERS as u32 + 1))
             .with_max_established_per_peer(Some(1)),
     );
     let config = gossipsub::ConfigBuilder::default()
@@ -98,10 +108,31 @@ fn swarm(
         gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(key.clone()), config)
             .map_err(anyhow::Error::msg)?;
     gossip.subscribe(&gossipsub::IdentTopic::new(TOPIC))?;
-    for peer in peers.keys() {
+    for peer in peers {
         allowed.allow_peer(*peer);
         gossip.add_explicit_peer(peer);
     }
+    if let Some((id, _)) = routing.bootstrap.as_ref() {
+        allowed.allow_peer(*id);
+    }
+    for id in &routing.clients {
+        allowed.allow_peer(*id);
+    }
+    let client = routing
+        .bootstrap
+        .as_ref()
+        .map(|_| rendezvous::client::Behaviour::new(key.clone()));
+    let server = !routing.clients.is_empty();
+    let own = key.public().to_peer_id();
+    let identify = (server || client.is_some())
+        .then(|| {
+            identify::Behaviour::new(
+                identify::Config::new("/naome/rep/routing/1".into(), key.public())
+                    .with_cache_size(0)
+                    .with_hide_listen_addrs(true),
+            )
+        })
+        .into();
     let exchange = rr::Behaviour::with_codec(
         Codec {
             trace_object_frames,
@@ -122,11 +153,31 @@ fn swarm(
                 config
             },
         )?
-        .with_behaviour(|_| Behaviour {
+        .with_relay_client(noise::Config::new, || {
+            let mut config = yamux::Config::default();
+            config.set_max_num_streams(STREAMS);
+            config
+        })?
+        .with_behaviour(|_, relay_client| Behaviour {
             limits,
             allowed,
-            gossip,
-            exchange,
+            relay_client,
+            identify,
+            gossip: PeerProtocols::new(gossip, peers),
+            exchange: PeerProtocols::new(exchange, peers),
+            rendezvous: client.into(),
+            directory: PeerProtocols::new(
+                server
+                    .then(|| rendezvous::server::Behaviour::new(discovery::server_config()))
+                    .into(),
+                &routing.clients,
+            ),
+            relay_service: PeerProtocols::new(
+                server
+                    .then(|| relay::Behaviour::new(own, discovery::relay_config()))
+                    .into(),
+                &routing.clients,
+            ),
         })?
         .with_swarm_config(|config| {
             config
@@ -148,7 +199,11 @@ struct Transfer {
 struct Node {
     archive: Archive,
     swarm: Swarm<Behaviour>,
-    peers: BTreeMap<PeerId, Multiaddr>,
+    peers: BTreeMap<PeerId, Option<Multiaddr>>,
+    routing: Routing,
+    routes: BTreeMap<PeerId, &'static str>,
+    dials: BTreeMap<ConnectionId, (PeerId, bool)>,
+    direct_failed: BTreeSet<PeerId>,
     known: BTreeSet<Id>,
     available: BTreeSet<Id>,
     announced: BTreeSet<Id>,
@@ -162,9 +217,16 @@ struct Node {
     next_refresh: Instant,
 }
 
+mod routing;
+
 impl Node {
     fn status(&self) -> Status {
-        let connected: BTreeSet<_> = self.swarm.connected_peers().copied().collect();
+        let connected: BTreeSet<_> = self
+            .swarm
+            .connected_peers()
+            .filter(|p| self.peers.contains_key(p))
+            .copied()
+            .collect();
         let listen_addresses: Vec<_> = self.swarm.listeners().map(ToString::to_string).collect();
         let state = if self.transfer.is_some() || !self.queue.is_empty() {
             "replicating"
@@ -193,6 +255,17 @@ impl Node {
             listen_addresses,
             configured_peers: self.peers.keys().map(ToString::to_string).collect(),
             connected_peers: connected.iter().map(ToString::to_string).collect(),
+            connections: self
+                .routes
+                .iter()
+                .map(|(p, r)| (p.to_string(), r.to_string()))
+                .collect(),
+            discovered_addresses: self
+                .routing
+                .learned
+                .iter()
+                .map(|(p, a)| (p.to_string(), a.iter().map(ToString::to_string).collect()))
+                .collect(),
             sync: Some(SyncStatus {
                 state: state.into(),
                 available_heads: self.available.clone(),
@@ -209,6 +282,7 @@ impl Node {
             .swarm
             .behaviour_mut()
             .exchange
+            .inner
             .send_request(&peer, request.clone());
         self.pending.insert(id, (peer, request));
     }
@@ -235,15 +309,7 @@ impl Node {
     fn tick(&mut self, now: Instant) -> Result<()> {
         if now >= self.next_dial {
             self.next_dial = now + REDIAL;
-            for (peer, addr) in &self.peers {
-                if !self.swarm.is_connected(peer) {
-                    let opts = DialOpts::peer_id(*peer)
-                        .addresses(vec![addr.clone()])
-                        .condition(PeerCondition::DisconnectedAndNotDialing)
-                        .build();
-                    let _ = self.swarm.dial(opts);
-                }
-            }
+            self.maintain_routes(now);
         }
         if now >= self.next_refresh {
             self.next_refresh = now + Duration::from_millis(300);
@@ -259,6 +325,7 @@ impl Node {
                     .swarm
                     .behaviour_mut()
                     .gossip
+                    .inner
                     .publish(gossipsub::IdentTopic::new(TOPIC), head.to_string())
                     .is_ok()
                 {
@@ -267,7 +334,12 @@ impl Node {
                 }
             }
         }
-        let connected: Vec<_> = self.swarm.connected_peers().copied().collect();
+        let connected: Vec<_> = self
+            .swarm
+            .connected_peers()
+            .filter(|p| self.peers.contains_key(p))
+            .copied()
+            .collect();
         for peer in connected {
             if self
                 .last_poll
@@ -377,14 +449,69 @@ impl Node {
 
     fn event(&mut self, event: SwarmEvent<BehaviourEvent>) -> Result<()> {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => println!(
-                "{}",
-                json!({"listening":address.to_string(),"peer":self.swarm.local_peer_id().to_string()})
-            ),
+            SwarmEvent::NewListenAddr { address, .. } => {
+                if self.routing.bootstrap.is_some()
+                    && self.routing.external.is_none()
+                    && self.routing.direct_allowed(&address)
+                {
+                    self.swarm.add_external_address(address.clone());
+                }
+                println!(
+                    "{}",
+                    json!({"listening":address.to_string(),"peer":self.swarm.local_peer_id().to_string()})
+                );
+            }
+            SwarmEvent::ExpiredListenAddr { address, .. }
+                if self.routing.bootstrap.is_some()
+                    && self.routing.external.is_none()
+                    && self.routing.direct_allowed(&address) =>
+            {
+                self.swarm.remove_external_address(&address);
+            }
+            SwarmEvent::ListenerClosed { listener_id, .. }
+                if self.routing.reservation == Some(listener_id) =>
+            {
+                self.routing.reservation = None;
+            }
             SwarmEvent::ListenerClosed { reason, .. } => bail!("listener closed: {reason:?}"),
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                connection_id,
+                endpoint,
+                ..
+            } => {
+                self.dials.remove(&connection_id);
+                self.direct_failed.remove(&peer_id);
                 self.last_poll.remove(&peer_id);
                 self.catalogs.remove(&peer_id);
+                let route = if endpoint.is_relayed() {
+                    "relay"
+                } else {
+                    "direct"
+                };
+                self.routes.insert(peer_id, route);
+                println!("{}", json!({"connected":peer_id,"route":route}));
+                if self
+                    .routing
+                    .bootstrap
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == peer_id)
+                {
+                    self.routing.next_lookup = None;
+                    self.routing.next_register = None;
+                    self.next_dial = Instant::now();
+                }
+            }
+            SwarmEvent::OutgoingConnectionError { connection_id, .. } => {
+                if let Some((peer, circuit)) = self.dials.remove(&connection_id) {
+                    if !circuit {
+                        self.direct_failed.insert(peer);
+                    }
+                    println!(
+                        "{}",
+                        json!({"dial_failed":peer,"route":if circuit {"relay"} else {"direct"}})
+                    );
+                }
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -392,7 +519,48 @@ impl Node {
                 ..
             } => {
                 self.catalogs.remove(&peer_id);
+                self.routes.remove(&peer_id);
             }
+            SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
+                peer_id,
+                info,
+                ..
+            })) => {
+                if self
+                    .routing
+                    .bootstrap
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == peer_id)
+                    && self.routing.external.is_none()
+                    && info.public_key.to_peer_id() == peer_id
+                    && self.routing.direct_allowed(&info.observed_addr)
+                    && self.routing.observed.as_ref() != Some(&info.observed_addr)
+                {
+                    let addr = info.observed_addr;
+                    if let Some(old) = self.routing.observed.replace(addr.clone())
+                        && !self.swarm.listeners().any(|a| a == &old)
+                    {
+                        self.swarm.remove_external_address(&old);
+                    }
+                    self.swarm.add_external_address(addr);
+                }
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Rendezvous(event)) => self.discovery_event(event),
+            SwarmEvent::Behaviour(BehaviourEvent::Directory(
+                rendezvous::server::Event::PeerRegistered { peer, .. },
+            )) => println!("{}", json!({"registered_client":peer})),
+            SwarmEvent::Behaviour(BehaviourEvent::RelayService(
+                relay::Event::CircuitReqAccepted {
+                    src_peer_id,
+                    dst_peer_id,
+                },
+            )) => println!(
+                "{}",
+                json!({"relay_circuit":{"source":src_peer_id,"destination":dst_peer_id}})
+            ),
+            SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
+                relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
+            )) => println!("{}", json!({"reserved_relay":relay_peer_id})),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,
                 message,
@@ -433,6 +601,7 @@ impl Node {
                         .swarm
                         .behaviour_mut()
                         .exchange
+                        .inner
                         .send_response(channel, answer);
                 }
                 rr::Message::Response {
@@ -484,16 +653,42 @@ pub async fn run(
     for p in config.peers {
         let id = p.id.parse()?;
         ensure!(
-            id != own && peers.insert(id, tcp_address(&p.address, false)?).is_none(),
+            id != own
+                && peers
+                    .insert(
+                        id,
+                        p.address
+                            .as_deref()
+                            .map(|addr| tcp_address(addr, false))
+                            .transpose()?
+                    )
+                    .is_none(),
             "self or duplicate peer"
         );
     }
-    let mut swarm = swarm(key, &peers, config.trace_object_frames)?;
+    let routing = Routing::new(config.discovery, own)?;
+    ensure!(
+        routing.bootstrap.is_some() || peers.values().all(Option::is_some),
+        "an identity-only replica needs a bootstrap"
+    );
+    let mut swarm = swarm(
+        key,
+        &peers.keys().copied().collect(),
+        &routing,
+        config.trace_object_frames,
+    )?;
+    if let Some(external) = &routing.external {
+        swarm.add_external_address(external.clone());
+    }
     swarm.listen_on(tcp_address(&config.listen, true)?)?;
     let now = Instant::now();
     let mut node = Node {
         swarm,
         peers,
+        routing,
+        routes: Default::default(),
+        dials: Default::default(),
+        direct_failed: Default::default(),
         known: archive.observed_releases()?,
         available: archive.releases()?,
         archive,
@@ -592,7 +787,8 @@ mod tests {
     async fn authenticated_but_unconfigured_identity_is_denied_before_exchange() -> Result<()> {
         let mut listener = swarm(
             identity::Keypair::generate_ed25519(),
-            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &Routing::default(),
             false,
         )?;
         let listener_id = *listener.local_peer_id();
@@ -604,7 +800,8 @@ mod tests {
         };
         let mut other = swarm(
             identity::Keypair::generate_ed25519(),
-            &[(listener_id, address.clone())].into(),
+            &[listener_id].into(),
+            &Routing::default(),
             false,
         )?;
         let other_id = *other.local_peer_id();
@@ -623,6 +820,59 @@ mod tests {
                             break;
                         }
                         SwarmEvent::ConnectionEstablished{..} | SwarmEvent::Behaviour(BehaviourEvent::Exchange(_)) => panic!("unconfigured peer reached exchange"),
+                        _ => {}
+                    }
+                }
+            }
+        }).await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod routing_authorization {
+    use super::*;
+
+    #[tokio::test]
+    async fn routing_only_connection_cannot_negotiate_an_archive_catalog() -> Result<()> {
+        let key = identity::Keypair::generate_ed25519();
+        let client_id = key.public().to_peer_id();
+        let routing = Routing {
+            clients: [client_id].into(),
+            ..Default::default()
+        };
+        let mut server = swarm(
+            identity::Keypair::generate_ed25519(),
+            &BTreeSet::new(),
+            &routing,
+            false,
+        )?;
+        let server_id = *server.local_peer_id();
+        server.listen_on(tcp_address("/ip4/127.0.0.1/tcp/0", true)?)?;
+        let addr = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = server.select_next_some().await {
+                break address;
+            }
+        };
+        let mut client = swarm(key, &[server_id].into(), &Routing::default(), false)?;
+        client.dial(DialOpts::peer_id(server_id).addresses(vec![addr]).build())?;
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                tokio::select! {
+                    event = server.select_next_some() => {
+                        if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(_)) = event {
+                            panic!("routing client reached the archive protocol");
+                        }
+                    }
+                    event = client.select_next_some() => match event {
+                        SwarmEvent::ConnectionEstablished{peer_id,..} => {
+                            assert_eq!(peer_id,server_id);
+                            client.behaviour_mut().exchange.inner.send_request(&server_id, Request::Heads);
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Exchange(rr::Event::OutboundFailure {error,..})) => {
+                            assert!(matches!(error,rr::OutboundFailure::UnsupportedProtocols));
+                            break;
+                        }
                         _ => {}
                     }
                 }

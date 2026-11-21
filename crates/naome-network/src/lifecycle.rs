@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use naome_protocol::{store::Archive, wire::Id};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions, TryLockError},
     io::{ErrorKind, Read, Write},
     os::unix::{
@@ -43,6 +43,8 @@ pub(crate) struct Status {
     pub listen_addresses: Vec<String>,
     pub configured_peers: Vec<String>,
     pub connected_peers: Vec<String>,
+    pub connections: BTreeMap<String, String>,
+    pub discovered_addresses: BTreeMap<String, Vec<String>>,
     pub sync: Option<SyncStatus>,
 }
 
@@ -54,10 +56,13 @@ impl Status {
             println!("Running (PID {pid})  {peer}");
             println!("Listening on {}", self.listen_addresses.join(", "));
             println!(
-                "Peers: {} connected of {} configured",
+                "Archive peers: {} connected of {} configured",
                 self.connected_peers.len(),
                 self.configured_peers.len()
             );
+            for (peer, route) in &self.connections {
+                println!("Connected to {peer} via {route}");
+            }
             println!(
                 "Replication: {} ({} available inventories)",
                 sync.state,
