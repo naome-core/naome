@@ -1,0 +1,13 @@
+REP paired measurement profile 1
+The envelope kind is occurrence (4). Access and ordered edges use research
+profile 1 rules. No critical extensions are defined. The body is the array
+[subject, scope, gauge, positions, mode, event, unit, source].
+Subject, scope, gauge, mode, unit and source are text. Subject and scope are
+nonempty. Positions is an array of two exact signed 64-bit integers in
+acquisition order. Event is an exact signed 64-bit integer. Encode each signed
+value x as the unsigned integer 2*x when x >= 0, or -2*x-1 when x < 0.
+The ordinary A and B envelope grammars and digest domains apply. Format A
+stores this array directly as CBOR. The research view exposes gauge, positions,
+mode, event, unit and source as named fields. Structured references live in
+the envelope edges. The identifier covers this profile reference and the exact
+original envelope; it cannot stand in for a legacy reading or its signature.

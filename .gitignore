@@ -1,21 +1,5 @@
-# Rust build and test output
-target/
-debug/
-**/*.rs.bk
-**/mutants.out*/
+/target/
 
-# Python caches and macOS metadata
+/.local/rep-trials/
+/.local/release-audit/
 __pycache__/
-.DS_Store
-
-# Local proof-network state, private configuration, and generated test evidence
-.local/
-
-# Bazel output symlinks
-/bazel-*
-
-/vendor/burn-dispatch/BUILD.bazel
-/vendor/burn-tensor/BUILD.bazel
-
-# Lean project build and dependency cache
-/crates/naome-proof-loop/.lake/

@@ -6,7 +6,6 @@ from pathlib import Path
 import platform
 import subprocess
 import tempfile
-import tomllib
 
 from pinned_tool import executable
 
@@ -18,7 +17,7 @@ ASSETS = {
 
 def main():
     root = Path(__file__).resolve().parents[2]
-    version = tomllib.loads((root / "tools/release/toolchain.toml").read_text())["cargo-audit"]
+    version = "0.22.2"
     target, checksum = ASSETS[(platform.system(), platform.machine())]
     name = f"cargo-audit-{target}-v{version}"
     url = f"https://github.com/rustsec/rustsec/releases/download/cargo-audit/v{version}/{name}.tgz"
